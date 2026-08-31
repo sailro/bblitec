@@ -7532,12 +7532,27 @@ bool run_dawn_engine(Engine& engine) {
     // before-render callback. Mirror all newly appended CPU records in handle
     // order both here and immediately after each callback run.
     const auto sync_sprite_gpu_contexts = [&]() {
-        while (
-            state.sprite_render_textures.size() <
-            engine.sprite_render_textures.size()) {
+        state.sprite_render_textures.resize(
+            engine.sprite_render_textures.size(), nullptr);
+        state.sprite_render_texture_views.resize(
+            engine.sprite_render_textures.size(), nullptr);
+        for (std::size_t index = 0;
+             index < engine.sprite_render_textures.size();
+             ++index) {
             const SpriteRenderTextureRecord& texture =
-                engine.sprite_render_textures[
-                    state.sprite_render_textures.size()];
+                engine.sprite_render_textures[index];
+            WGPUTexture& gpu_texture =
+                state.sprite_render_textures[index];
+            WGPUTextureView& gpu_view =
+                state.sprite_render_texture_views[index];
+            if (texture.disposed) {
+                if (gpu_view) wgpuTextureViewRelease(gpu_view);
+                if (gpu_texture) wgpuTextureRelease(gpu_texture);
+                gpu_view = nullptr;
+                gpu_texture = nullptr;
+                continue;
+            }
+            if (gpu_texture) continue;
             WGPUTextureDescriptor descriptor =
                 WGPU_TEXTURE_DESCRIPTOR_INIT;
             descriptor.usage = WGPUTextureUsage_RenderAttachment |
@@ -7549,12 +7564,11 @@ bool run_dawn_engine(Engine& engine) {
             descriptor.format = state.surface_format;
             descriptor.mipLevelCount = 1;
             descriptor.sampleCount = 1;
-            WGPUTexture gpu_texture =
-                wgpuDeviceCreateTexture(state.device, &descriptor);
+            gpu_texture = wgpuDeviceCreateTexture(
+                state.device, &descriptor);
             if (!gpu_texture) dawn_error("sprite render texture");
-            state.sprite_render_textures.push_back(gpu_texture);
-            state.sprite_render_texture_views.push_back(
-                wgpuTextureCreateView(gpu_texture, nullptr));
+            gpu_view = wgpuTextureCreateView(gpu_texture, nullptr);
+            if (!gpu_view) dawn_error("sprite render texture view");
         }
         while (
             state.sprite_passes.size() <
@@ -9435,7 +9449,7 @@ bool run_dawn_engine(Engine& engine) {
     long frame = 0;
     CameraPointerState pointer_state;
     CameraTraceState camera_trace_state;
-    KeyboardReplay keyboard_replay;
+    PlatformInputReplay input_replay;
     while (captures.keep_running(running, frame)) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
@@ -9448,7 +9462,7 @@ bool run_dawn_engine(Engine& engine) {
                     pointer_state);
             }
         }
-        keyboard_replay.dispatch(frame, engine);
+        input_replay.dispatch(frame, engine);
         // The benchmark bracket mirrors the SDL backend: frame CPU time
         // across the whole loop body -- scene callbacks and uploads, surface
         // acquire, submit and present -- under the immediate present mode
@@ -9480,19 +9494,12 @@ bool run_dawn_engine(Engine& engine) {
                 sprite_pass,
                 state.sprite_render_textures,
                 state.sprite_render_texture_views);
-            const SpriteRendererRecord& sprite_renderer =
-                engine.sprite_renderers[sprite_pass.renderer.value];
-            const SpriteRenderTextureRecord* sprite_target =
-                sprite_renderer.has_target
-                    ? &engine.sprite_render_textures[
-                          sprite_renderer.target.value]
-                    : nullptr;
             upload_dawn_sprite_pass(
                 state.queue,
                 engine,
                 sprite_pass,
-                sprite_target ? sprite_target->width : width,
-                sprite_target ? sprite_target->height : height,
+                width,
+                height,
                 delta_ms);
         }
 #endif

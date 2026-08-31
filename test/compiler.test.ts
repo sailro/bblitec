@@ -792,7 +792,8 @@ test("executes imported module initializers once in dependency order", () => {
     assert.equal(
         (result.cpp.match(new RegExp(`${values[1]}\\.push_back`, "g")) ?? [])
             .length,
-        2,
+        1,
+        "the one emitted loop body appends both runtime rows",
     );
     assert.match(
         result.cpp,
@@ -2462,7 +2463,9 @@ test("a record's methods and getter reach the scope it closed over", () => {
     // The method writes the captured local...
     assert.match(
         result.cpp,
-        new RegExp(`${local} = bblscene::Mode::arcade;`),
+        new RegExp(
+            `${local} = bblscene::Mode_from_string\\("arcade"\\);`,
+        ),
     );
     // ...and the getter reads it, rather than a snapshot of it.
     assert.match(
@@ -2680,6 +2683,94 @@ test("mutable object aliases retain JavaScript identity", () => {
         /bblscene::Record\d+ v_fn\d+_alias = v_fn\d+_holder\.inner;/,
     );
     assert.match(result.cpp, /v_fn\d+_alias->count = 5\.0;/);
+});
+
+test("shares explicitly typed mutable objects with stored callbacks", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface State { count: number }
+        interface Driver { update: () => void }
+        async function main() {
+            const engine = await createEngine({});
+            const state: State = { count: 0 };
+            const driver: Driver = {
+                update: () => { state.count = 1; },
+            };
+            driver.update();
+        }
+    `);
+
+    assert.match(result.cpp, /using State = std::shared_ptr<StateData>;/);
+    assert.match(result.cpp, /v_state->count = 1\.0;/);
+    assert.match(result.cpp, /stored_callback = \[=\]/);
+});
+
+test("captures the live engine by reference in stored callbacks", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        interface Factory { make: () => void }
+        async function main() {
+            const engine = await createEngine({});
+            const factory: Factory = {
+                make: () => { createBox(engine); },
+            };
+            factory.make();
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /stored_callback = \[=, &v_engine\]\(\) mutable -> void/,
+    );
+    assert.match(result.cpp, /bbl::create_box\(v_engine,/);
+});
+
+test("shares mutable primitive and render-target bindings across stored callbacks", () => {
+    const result = compileSource(
+        `
+            import {
+                createEngine,
+                createRenderTexture2D,
+                type Texture2D,
+            } from "babylon-lite";
+            interface Controller {
+                resize: () => void;
+                width: () => number;
+            }
+            async function main(): Promise<void> {
+                const engine = await createEngine({} as HTMLCanvasElement);
+                let width = 64;
+                let target: Texture2D | null =
+                    createRenderTexture2D(engine, width, width);
+                const controller: Controller = {
+                    resize: () => {
+                        target!.texture.destroy();
+                        target = createRenderTexture2D(engine, 128, 128);
+                        width = 128;
+                    },
+                    width: () => width,
+                };
+                controller.resize();
+                controller.width();
+            }
+            void main();
+        `,
+        {
+            fileName:
+                "corpus/babylon-lite/lab/lite/src/demos/closure-storage-test.ts",
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /std::make_shared<double>\(64\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /std::make_shared<std::optional<bbl::SpriteRenderTextureHandle>>/,
+    );
+    assert.match(result.cpp, /bbl::dispose_sprite_render_texture/);
+    assert.match(result.cpp, /\(\*v(?:_fn\d+)?_width\) = 128\.0/);
 });
 
 test("seeds Math.random deterministically and records the adaptation", () => {
@@ -2914,6 +3005,33 @@ test("narrows guarded optional strings before trim", () => {
     assert.match(result.cpp, /bbl::js::string_trim\(\(\*v_fn\d+_value\)\)/);
     assert.match(result.cpp, /bbl::js::RegExp\("\\\\s\+", false, false\)\.split\(v_cleaned\)/);
     assert.match(result.cpp, /bbl::js::number_from_string\(v_bblite_map_source_\d+\[v_bblite_map_index_\d+\]\)/);
+});
+
+test("calls a string method on a parenthesized runtime conditional", () => {
+    const result = compileSource(`
+        function clean(line: string): string {
+            const semi = line.indexOf(";");
+            return (semi >= 0 ? line.slice(0, semi) : line).trim();
+        }
+        const value = clean("key=value ; comment");
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::string_trim\([^;]+\? bbl::js::string_slice\([^;]+: v_fn\d+_line\)/,
+    );
+});
+
+test("dereferences an optional scalar through an explicit type assertion", () => {
+    const result = compileSource(`
+        interface Draft { width?: number }
+        function widthOf(draft: Draft): number {
+            return draft.width as number;
+        }
+        const width = widthOf({ width: 12 });
+    `);
+
+    assert.match(result.cpp, /return \(\*v_fn\d+_draft\.width\);/);
 });
 
 test("inlines function-valued parameters at their call sites", () => {
@@ -3906,18 +4024,19 @@ test("keeps the for incrementor reachable from continue", () => {
     assert.match(result.cpp, /continue;/);
 });
 
-test("rejects labeled loop control explicitly", () => {
-    assert.throws(
-        () =>
-            compileSource(`
-                let value = 0;
-                outer: while (value < 2) {
-                    value++;
-                    continue outer;
-                }
-            `),
-        /Unsupported statement: LabeledStatement/,
-    );
+test("lowers a labeled break out of nested loops", () => {
+    const result = compileSource(`
+        let value = 0;
+        outer: while (value < 2) {
+            while (value < 1) {
+                value++;
+                break outer;
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /goto v_bblite_label_outer_\d+;/);
+    assert.match(result.cpp, /v_bblite_label_outer_\d+:;/);
 });
 
 test("lowers numeric switch statements to native branches", () => {
@@ -6281,6 +6400,39 @@ test("deduplicates static and directory-discovered module assets", () => {
     );
 });
 
+test("packages runtime-selected module textures as a closed image directory", () => {
+    const result = compileSource(
+        `
+            import { createEngine, loadTexture2D } from "@babylonjs/lite";
+            import { demoAssetUrl } from "./demo-asset-url.js";
+
+            const root = demoAssetUrl("./freeciv", import.meta.url);
+            const names = new Map<string, string>();
+            names.set("terrain", "amplio2/terrain1.png");
+
+            async function main(): Promise<void> {
+                const engine = await createEngine({});
+                for (const name of names.values()) {
+                    await loadTexture2D(engine, root + "/" + name);
+                }
+            }
+            void main();
+        `,
+        {
+            fileName:
+                "corpus/babylon-lite/lab/lite/src/demos/freeciv-texture-test.ts",
+        },
+    );
+
+    assert.equal(result.manifest.assets.length, 11);
+    assert.ok(result.manifest.assets.every(({ kind }) => kind === "texture"));
+    assert.ok(
+        result.manifest.assets.every(({ source }) => /\.png$/i.test(source)),
+    );
+    assert.match(result.cpp, /Unknown packaged asset/);
+    assert.match(result.cpp, /bbl::load_file_texture/);
+});
+
 test("preserves numeric tuple identity except through array spread", () => {
     const result = compileSource(`
         type V3 = [number, number, number];
@@ -6310,6 +6462,26 @@ test("tests runtime strings against RegExp values", () => {
     `);
 
     assert.match(result.cpp, /\.test\(/);
+});
+
+test("matches runtime strings with RegExp values", () => {
+    const result = compileSource(`
+        function captures(line: string): string[] {
+            if (!/^\\d+,/.test(line)) return [];
+            const prefix = "^(\\\\d+),(.+)$";
+            const first = line.match(new RegExp(prefix));
+            if (!first) return [];
+            const names: string[] = [];
+            for (const match of first[2]!.matchAll(/"([^"]+)"/g)) {
+                names.push(match[1]!);
+            }
+            return names;
+        }
+        const values = captures('2,"road","river"');
+    `);
+
+    assert.match(result.cpp, /\.match\(v_fn\d+_line\)/);
+    assert.match(result.cpp, /\.match_all\(/);
 });
 
 test("mutates a Map array fallback before storing it back", () => {
@@ -6444,6 +6616,9 @@ test("lowers platform listeners through generic engine callbacks", () => {
             window.addEventListener("pointerdown", () => {
                 state = 1;
             });
+            window.addEventListener("resize", () => {
+                state += 2;
+            });
             document.addEventListener("visibilitychange", () => {
                 if (document.hidden) state = 0;
             });
@@ -6453,6 +6628,7 @@ test("lowers platform listeners through generic engine callbacks", () => {
     assert.match(result.cpp, /bbl::on_key_down/);
     assert.match(result.cpp, /bbl::on_key_up/);
     assert.match(result.cpp, /bbl::on_pointer_down/);
+    assert.match(result.cpp, /bbl::on_window_resize/);
     assert.match(result.cpp, /bbl::on_visibility_change/);
     assert.match(result.cpp, /const bbl::PlatformKeyboardEvent&/);
     assert.match(result.cpp, /std::string_view/);
@@ -6568,7 +6744,9 @@ test("keeps callback-local declarations inside platform listeners", () => {
     `);
 
     const listener = result.cpp.indexOf("bbl::on_key_down");
-    const toggleAssignment = result.cpp.indexOf("v_on = !(v_on)");
+    const toggleAssignment = result.cpp.search(
+        /\(\*v_(?:fn\d+_)?on\) = !\(\(\*v_(?:fn\d+_)?on\)\)/,
+    );
     assert.ok(listener >= 0);
     assert.ok(toggleAssignment > listener);
 });
@@ -7890,7 +8068,7 @@ test("carries pixels textures through typed records and maps", () => {
         result.cpp,
         /bbl::js::Map<std::string, bblscene::CachedImage>/,
     );
-    assert.match(result.cpp, /bbl::PixelsTexture texture;/);
+    assert.match(result.cpp, /bbl::StoredTexture texture;/);
     assert.match(result.cpp, /bbl::set_shader_pixels_texture\(/);
 });
 

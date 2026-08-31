@@ -128,12 +128,16 @@ analyzable entry file against one engine.
   by the engine after their source scope returns.
 - **The plain-data model.** Interface structs, `T | null` optionals, dynamic
   arrays, insertion-ordered `Map`/`Set`, `ArrayBuffer`/`DataView`,
-  `Uint8Array`/`Float32Array`/`Uint16Array`/`Uint32Array`, runtime strings,
+  `Uint8Array`/`Float32Array`/`Float64Array`/`Uint16Array`/`Uint32Array`, runtime strings,
   string-literal enum tags,
   `Record<Union, T>` indexed by tag, readonly numeric tables, tuples,
   destructuring, object spread, and constant arrays materialized on demand.
   Resource handles are storable inside data. Const locals bind container
-  elements as aliases; function-valued parameters inline. `Math` and the
+  elements as aliases; function-valued parameters inline, while function
+  fields stored in plain-data records become native closures over their
+  defining values. A stored callback that reaches the engine captures that
+  one live engine by reference, so its mutations remain visible to later
+  render passes. `Math` and the
   pinned seeded `Math.random` are available. A typed array takes `fill` and
   `set(source, offset)`, the latter for a source of the target's own kind —
   the spec converts every other source through the target's own store, and
@@ -1267,6 +1271,9 @@ renderers created by an application callback are synchronized before the
 frame's update/record split, then consecutive renderers for one target share a
 pass in registration order. Both backends end the offscreen pass before a
 later screen pass samples it, which is the platformer's scene-to-CRT chain.
+The sprite projection continues to use the canvas extent for an offscreen
+target, matching the pin's renderer; the Freeciv application deliberately
+draws through a 2x target and compensates for that stretch in its view.
 
 A layer opts into per-sprite UV scroll by setting an offset: the first
 `setSprite2DUvOffset` widens that layer's instance layout in place, adds the
@@ -1297,9 +1304,12 @@ A body may also sample textures the caller supplies. Each is named in the
 descriptor and reaches WGSL as the `<name>Tex` / `<name>Samp` pair the pin's
 own builder writes, re-homed after the atlas in this backend's fragment
 texture group. Their pixels come from `createTexture2DFromPixels`, whose
-bytes a scene module computes and generation bakes — see
+initial bytes a scene module computes and generation bakes — see
 [drawn and computed assets](#drawn-and-computed-assets) for why they are
-executed rather than ported. Its four sampler overrides
+executed rather than ported. A reached `GPUQueue.writeTexture` over the same
+texture replaces those bytes at runtime and advances the texture version, so
+both sprite backends upload a changed fog or minimap field before its next
+draw. Its four sampler overrides
 (`addressModeU`/`V`, `minFilter`, `magFilter`) travel as "named, and this
 value", because the generated factory resolves `?? default` where upstream
 resolves it; `srgb` picks a second texture format and no reached call
@@ -1879,7 +1889,8 @@ is the boundaries that belong to no single family.
   be rebound after construction. Mutually recursive plain-data groups lower;
   recursion carrying engine resources still refuses
 - the plain-data model preserves observable JavaScript identity for arrays,
-  maps, sets, stored/recursive records, composite parameters, and borrowed
+  maps, sets, stored/recursive records and their function fields, explicitly
+  typed mutable object locals, composite parameters, and borrowed
   typed-array spans. Aliases that cannot remain safe across container resizing
   reject later use; `new Array` elements zero-initialize; and `Math.random` is
   the pinned seeded sequence — each adaptation is recorded in `fidelity.json`

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstdint>
 #include <functional>
 #include <limits>
@@ -9,7 +10,9 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <unordered_map>
+#include <variant>
 #include <vector>
 
 namespace bbl {
@@ -147,6 +150,14 @@ struct SpriteAtlasHandle {
 
 struct Sprite2DLayerHandle {
     std::uint32_t value = invalid_handle;
+};
+
+/** The CPU answer returned by the pin's pure 2D sprite hit test. */
+struct Sprite2DPickResult {
+    Sprite2DLayerHandle layer{};
+    std::uint32_t sprite_index = 0;
+    double u = 0.0;
+    double v = 0.0;
 };
 
 struct SpriteRendererHandle {
@@ -1070,6 +1081,8 @@ struct TextureData {
 struct FileTexture {
     TextureData data{};
     bool srgb = false;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
 };
 
 /**
@@ -1083,6 +1096,10 @@ struct PixelsTexture {
     SharedTextureBytes rgba;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /** Object identity shared by copies bound into sprite descriptors. */
+    std::uint64_t identity = 0;
+    /** Incremented whenever a reached queue write replaces the texels. */
+    std::uint64_t version = 1;
     TextureSamplerState sampler{};
     // The `Texture2D` properties a scene writes on the result before binding
     // it: the per-texture transform `enableMaterialUvTransform` reads, and
@@ -1091,6 +1108,11 @@ struct PixelsTexture {
     TextureUvTransform uv_transform{};
     bool uv_invert_y = false;
 };
+
+// Texture2D is one upstream interface with multiple reached producers. Plain
+// data records therefore need storage that preserves either a decoded file
+// texture or caller-supplied pixels without changing the source type.
+using StoredTexture = std::variant<FileTexture, PixelsTexture>;
 
 struct ModelVertex {
     Vec3 position{};
@@ -1415,6 +1437,7 @@ struct SpriteAtlasRecord {
 struct SpriteRenderTextureRecord {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    bool disposed = false;
 };
 
 /**
@@ -1580,6 +1603,9 @@ struct Sprite2DLayerRecord {
     // custom-shader-core.ts: the descriptor's extra textures, in the order
     // they bind after the atlas. Empty unless a custom shader named any.
     std::vector<PixelsTexture> custom_textures;
+    // Shader identifiers for custom_textures, in the same order. SDL's
+    // compacted shader sidecar uses these to bind only the resources kept.
+    std::vector<std::string> custom_texture_names;
     // The `fx.params` vec4, zero until setSprite2DShaderParams writes it.
     Vec4 shader_params{};
     std::uint64_t version = 0;
@@ -1630,6 +1656,7 @@ struct BillboardSystemRecord {
     // custom-shader-core.ts: the descriptor's extra textures, in the order
     // they bind after the atlas. Empty unless a custom shader named any.
     std::vector<PixelsTexture> custom_textures;
+    std::vector<std::string> custom_texture_names;
     // The `fx.params` vec4, zero until setBillboardShaderParams writes it.
     Vec4 shader_params{};
 };
@@ -2524,7 +2551,10 @@ struct Engine {
         mouse_move_callbacks;
     std::vector<std::function<void(const PlatformMouseEvent&)>>
         mouse_wheel_callbacks;
-    std::vector<std::function<void()>> mouse_cancel_callbacks;
+    std::vector<std::function<void(const PlatformMouseEvent&)>>
+        mouse_cancel_callbacks;
+    /** Browser `window.resize` callbacks, dispatched after canvas size sync. */
+    std::vector<std::function<void()>> window_resize_callbacks;
     std::vector<std::function<void()>> pointer_lock_change_callbacks;
     /** Desired and applied equivalents of the browser pointer-lock state. */
     bool pointer_lock_requested = false;
@@ -2612,7 +2642,57 @@ struct Engine {
     // The same list for the effect half; an effect renderer is its own
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;
+    std::uint64_t next_pixels_texture_identity = 1;
 };
+
+/**
+ * Finds the topmost visible sprite containing a point in layer-local pixels.
+ * Layers and sprites both draw in array order, so picking walks each in the
+ * opposite direction. The inverse rotation is pivot-aware through the same
+ * normalized coordinates the sprite vertex path uses.
+ */
+[[nodiscard]] inline std::optional<Sprite2DPickResult> pick_sprite_2d(
+    const Engine& engine,
+    const std::vector<Sprite2DLayerHandle>& layers,
+    double x_px,
+    double y_px) {
+    for (auto layer_it = layers.rbegin(); layer_it != layers.rend(); ++layer_it) {
+        if (layer_it->value >= engine.sprite_layers.size()) {
+            continue;
+        }
+        const auto& layer = engine.sprite_layers[layer_it->value];
+        if (!layer.visible) {
+            continue;
+        }
+        const auto stride = static_cast<std::size_t>(
+            layer.instance_floats_per_sprite);
+        for (std::uint32_t sprite = layer.count; sprite > 0; --sprite) {
+            const auto index = sprite - 1u;
+            const auto base = static_cast<std::size_t>(index) * stride;
+            if (base + 8u >= layer.instance_data.size()) {
+                continue;
+            }
+            const double width = layer.instance_data[base + 2u];
+            const double height = layer.instance_data[base + 3u];
+            if (width == 0.0 || height == 0.0) {
+                continue;
+            }
+            const double dx = x_px - layer.instance_data[base];
+            const double dy = y_px - layer.instance_data[base + 1u];
+            const double rotation = layer.instance_data[base + 8u];
+            const double cosine = std::cos(rotation);
+            const double sine = std::sin(rotation);
+            const double local_x = cosine * dx + sine * dy;
+            const double local_y = -sine * dx + cosine * dy;
+            const double u = local_x / width + layer.pivot.x;
+            const double v = local_y / height + layer.pivot.y;
+            if (u >= 0.0 && u <= 1.0 && v >= 0.0 && v <= 1.0) {
+                return Sprite2DPickResult{*layer_it, index, u, v};
+            }
+        }
+    }
+    return std::nullopt;
+}
 
 inline MaterialHandle remember_scene_material(
     Engine& engine,
@@ -3156,6 +3236,11 @@ void set_shader_pixels_texture(
     MaterialHandle material,
     std::uint32_t slot,
     const PixelsTexture& texture);
+void set_shader_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    const StoredTexture& texture);
 void set_standard_diffuse_render_texture(
     Engine& engine,
     MaterialHandle material,
@@ -3546,6 +3631,9 @@ void on_mouse_wheel(
     std::function<void(const PlatformMouseEvent&)> callback);
 void on_mouse_cancel(
     Engine& engine,
+    std::function<void(const PlatformMouseEvent&)> callback);
+void on_window_resize(
+    Engine& engine,
     std::function<void()> callback);
 void on_pointer_lock_change(
     Engine& engine,
@@ -3694,6 +3782,7 @@ struct Sprite2DLayerOptions {
     Vec2 pivot{0.5f, 0.5f};
     std::uint32_t custom_shader = 0;
     std::vector<PixelsTexture> custom_textures;
+    std::vector<std::string> custom_texture_names;
 };
 
 /**
@@ -3718,6 +3807,7 @@ struct BillboardSystemOptions {
     bool has_alpha_cutoff;
     std::uint32_t custom_shader;
     std::vector<PixelsTexture> custom_textures;
+    std::vector<std::string> custom_texture_names;
     // particle-billboard-renderable.ts: the mode-4 wrapper's SECOND pass.
     // The pin builds it as `{...system, blendMode: createParticleBlend(2),
     // _customShader: undefined}` when the renderable is built; here the
@@ -3794,12 +3884,19 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     GridSpriteAtlasOptions options);
 SpriteAtlasHandle create_grid_sprite_atlas(
     Engine& engine,
+    const PixelsTexture& texture,
+    GridSpriteAtlasOptions options);
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
     SpriteRenderTextureHandle texture,
     GridSpriteAtlasOptions options);
 SpriteRenderTextureHandle create_sprite_render_texture(
     Engine& engine,
     double width,
     double height);
+void dispose_sprite_render_texture(
+    Engine& engine,
+    SpriteRenderTextureHandle texture);
 void set_sprite_renderer_target(
     Engine& engine,
     SpriteRendererHandle renderer,
@@ -3901,6 +3998,10 @@ PixelsTexture create_texture_2d_from_pixels(
     double width,
     double height,
     PixelsTextureOptions options = {});
+void update_pixels_texture(
+    Engine& engine,
+    PixelsTexture& texture,
+    const js::U8Array& pixels);
 PixelsTexture create_texture_2d_from_pixels(
     Engine& engine,
     const js::U8Array& pixels,

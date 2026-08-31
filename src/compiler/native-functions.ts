@@ -185,6 +185,18 @@ export class NativeFunctionLowerer {
             return undefined;
         }
         if (
+            signature.returnType &&
+            this.context.dataTypes.carriesFunction(
+                signature.returnType,
+            )
+        ) {
+            // A closure-bearing result can capture the entry engine and any
+            // locals selected while the factory runs. Keep the factory
+            // specialized inline; a namespace data function has neither the
+            // entry engine binding nor JavaScript closure lifetime.
+            return undefined;
+        }
+        if (
             call.arguments.length >
                 signature.parameters.length ||
             call.arguments.some(ts.isSpreadElement)
@@ -424,6 +436,7 @@ export class NativeFunctionLowerer {
             // where the engine binding is in scope.
             if (
                 !returnType ||
+                returnType.kind === "function" ||
                 this.context.dataTypes.carriesHandle(returnType)
             ) {
                 return undefined;
@@ -464,6 +477,7 @@ export class NativeFunctionLowerer {
             }
             if (
                 !parameterType ||
+                parameterType.kind === "function" ||
                 this.context.dataTypes.carriesHandle(parameterType)
             ) {
                 return undefined;
@@ -536,13 +550,18 @@ export class NativeFunctionLowerer {
     private containsShaderMaterialCreation(
         declaration: SupportedFunction,
     ): boolean {
+        const shaderFactories = new Set([
+            "createShaderMaterial",
+            "createSprite2DCustomShader",
+            "createBillboardCustomShader",
+        ]);
         let found = false;
         const visit = (node: ts.Node): void => {
             if (found) return;
             if (ts.isCallExpression(node)) {
                 if (
                     ts.isIdentifier(node.expression) &&
-                    node.expression.text === "createShaderMaterial"
+                    shaderFactories.has(node.expression.text)
                 ) {
                     found = true;
                     return;
@@ -553,7 +572,8 @@ export class NativeFunctionLowerer {
                 if (
                     called?.getSourceFile().isDeclarationFile &&
                     ts.isFunctionDeclaration(called) &&
-                    called.name?.text === "createShaderMaterial"
+                    called.name &&
+                    shaderFactories.has(called.name.text)
                 ) {
                     found = true;
                     return;
@@ -667,7 +687,11 @@ export class NativeFunctionLowerer {
      */
     private capturesEnclosingBindings(
         declaration: SupportedFunction,
+        root: SupportedFunction = declaration,
+        active = new Set<SupportedFunction>(),
     ): boolean {
+        if (active.has(declaration)) return false;
+        active.add(declaration);
         let captured = false;
         const classify = (
             bindingDeclaration: ts.Node,
@@ -676,7 +700,7 @@ export class NativeFunctionLowerer {
                 bindingDeclaration.parent;
             let sawFunction = false;
             while (node) {
-                if (node === declaration) {
+                if (node === declaration || node === root) {
                     return "internal";
                 }
                 if (ts.isFunctionLike(node)) {
@@ -753,11 +777,28 @@ export class NativeFunctionLowerer {
                     }
                 }
             }
+            if (ts.isCallExpression(node)) {
+                const called = this.context.checker
+                    .getResolvedSignature(node)
+                    ?.declaration;
+                if (
+                    isSupportedFunction(called) &&
+                    this.capturesEnclosingBindings(
+                        called,
+                        root,
+                        active,
+                    )
+                ) {
+                    captured = true;
+                    return;
+                }
+            }
             ts.forEachChild(node, visit);
         };
         if (declaration.body) {
             visit(declaration.body);
         }
+        active.delete(declaration);
         return captured;
     }
 

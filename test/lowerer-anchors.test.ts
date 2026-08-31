@@ -5,6 +5,7 @@ import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
+import { NodeParticleLowerer } from "../src/lowering/node-particle-lowerer.js";
 
 /**
  * Round-2 anchors: these lowerers no longer carry re-typed copies of the
@@ -14,6 +15,42 @@ import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.j
  * slot), while the structural contracts inside the lowerers are what stop
  * generation when the pin itself moves.
  */
+
+test("node-particle billboard options initialize custom texture names", () => {
+    const lowered = new NodeParticleLowerer(new LoweringContext()).lower([
+        {
+            bake: {
+                set: 0,
+                system: 0,
+                capacity: 16,
+                blendMode: 0,
+                updateSpeed: 0,
+                stepIsIdentity: true,
+                texture: {
+                    url: "textures/flare.png",
+                    invertY: false,
+                    sceneAssigned: false,
+                    width: 128,
+                    height: 128,
+                },
+                spriteSheet: null,
+                alive: 0,
+                positions: [],
+                sizes: [],
+                colors: [],
+                rotations: [],
+                frames: null,
+            },
+            exactBlend: false,
+            textureAsset: "flare.png",
+        },
+    ]);
+
+    assert.match(
+        lowered.source,
+        /\.custom_textures = \{\},\n\s*\.custom_texture_names = \{\},/,
+    );
+});
 
 test("the grown-array builders flow their pinned defaults and rounding", () => {
     // The half of the family that GROWS a `number[]` and converts at the

@@ -161,6 +161,7 @@ struct DawnSampledTexture {
     WGPUTexture texture = nullptr;
     WGPUTextureView view = nullptr;
     WGPUSampler sampler = nullptr;
+    std::uint64_t uploaded_version = 0;
 };
 
 /**
@@ -590,7 +591,30 @@ inline DawnSampledTexture upload_dawn_extra_texture(
         extra.height);
     texture.view = wgpuTextureCreateView(texture.texture, nullptr);
     texture.sampler = create_texture_sampler(device, extra.sampler);
+    texture.uploaded_version = extra.version;
     return texture;
+}
+
+/** Replaces the base level of an existing dynamic extra texture. */
+inline void update_dawn_extra_texture(
+    WGPUQueue queue,
+    DawnSampledTexture& uploaded,
+    const PixelsTexture& extra) {
+    WGPUTexelCopyTextureInfo destination =
+        WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = uploaded.texture;
+    WGPUTexelCopyBufferLayout layout{};
+    layout.bytesPerRow = extra.width * 4u;
+    layout.rowsPerImage = extra.height;
+    const WGPUExtent3D size{extra.width, extra.height, 1};
+    wgpuQueueWriteTexture(
+        queue,
+        &destination,
+        extra.rgba.data(),
+        extra.rgba.size(),
+        &layout,
+        &size);
+    uploaded.uploaded_version = extra.version;
 }
 
 /** Releases what {@link upload_dawn_extra_texture} built. */

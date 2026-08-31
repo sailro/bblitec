@@ -633,7 +633,7 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
 
     for (const backend of [sdl, dawn]) {
         assert.match(backend, /handle_platform_event\(event, engine\);/);
-        assert.match(backend, /keyboard_replay\.dispatch\(frame, engine\);/);
+        assert.match(backend, /input_replay\.dispatch\(frame, engine\);/);
         assert.match(backend, /const auto sync_render_textures = \[&\]\(\)/);
         assert.match(backend, /const auto sync_renderer_passes = \[&\]\(\)/);
         assert.match(
@@ -652,6 +652,56 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
     assert.match(dawn, /resize_dawn_surface\(state, engine\.options\)/);
 });
 
+test("projects offscreen sprite passes against the canvas extent", () => {
+    const sdlScene = source("native/src/pal_sdl_gpu.cpp");
+    const sdlSprite = source("native/src/pal_sdl_gpu_sprite.cpp");
+    const dawnScene = source("native/src/pal_dawn.cpp");
+    const dawnSprite = source("native/src/pal_dawn_sprite.cpp");
+
+    for (const backend of [sdlScene, sdlSprite]) {
+        assert.match(
+            backend,
+            /record_sprite_pass\([\s\S]{0,180}\bwidth,\s*height\);/,
+        );
+        assert.doesNotMatch(
+            backend,
+            /target_record\s*\?\s*target_record->(?:width|height)/,
+        );
+    }
+    for (const backend of [dawnScene, dawnSprite]) {
+        assert.match(
+            backend,
+            /upload_dawn_sprite_pass\([\s\S]{0,180}\bwidth,\s*height,\s*delta_ms\);/,
+        );
+        assert.doesNotMatch(
+            backend,
+            /target_record\s*\?\s*target_record->(?:width|height)/,
+        );
+    }
+});
+
+test("binds compacted sprite textures by shader resource name", () => {
+    const shared = source("native/src/pal_sdl_gpu_shared.hpp");
+    const sprite = source("native/src/pal_sdl_gpu_sprite.hpp");
+    const billboard = source("native/src/pal_sdl_gpu_billboard.hpp");
+    const intrinsics = source("src/compiler/intrinsics/sprite.ts");
+
+    assert.match(shared, /select_sprite_fragment_textures\(/);
+    assert.match(shared, /resource == name \+ "Tex"/);
+    assert.match(shared, /for \(const std::string& resource : slots\.textures\)/);
+    assert.match(intrinsics, /spriteCustomTextureNames: extraNames/);
+    for (const backend of [sprite, billboard]) {
+        assert.match(
+            backend,
+            /bound_textures = select_sprite_fragment_textures\(/,
+        );
+        assert.match(
+            backend,
+            /SDL_BindGPUFragmentSamplers\([\s\S]{0,140}bound_textures\.data\(\)/,
+        );
+    }
+});
+
 test("forwards DOM-compatible application input through every native loop", () => {
     const events = source("native/src/pal_platform_events.hpp");
     assert.match(events, /case SDL_SCANCODE_SPACE: return "Space";/);
@@ -662,6 +712,13 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /SDL_EVENT_MOUSE_WHEEL/);
     assert.match(events, /engine\.mouse_move_callbacks/);
     assert.match(events, /engine\.mouse_wheel_callbacks/);
+    assert.match(events, /engine\.window_resize_callbacks/);
+    assert.match(
+        events,
+        /browser_pixels_per_scroll_increment = 100\.0/,
+    );
+    assert.match(events, /dom_wheel_delta_y\(event\.wheel\)/);
+    assert.match(events, /code == "WheelUp" \? -100\.0 : 100\.0/);
     assert.match(events, /SDL_SetWindowRelativeMouseMode/);
     assert.match(events, /SDL_HINT_MOUSE_AUTO_CAPTURE/);
     assert.match(events, /SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE/);
@@ -685,6 +742,10 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /SDL_GetWindowSizeInPixels/);
     assert.match(events, /engine\.options\.width = width;/);
     assert.match(events, /engine\.options\.height = height;/);
+    assert.match(
+        events,
+        /for \(const auto& callback : engine\.window_resize_callbacks\)/,
+    );
 
     for (const path of [
         "native/src/pal_sdl_gpu.cpp",
@@ -698,8 +759,17 @@ test("forwards DOM-compatible application input through every native loop", () =
     ]) {
         const loop = source(path);
         assert.match(loop, /handle_platform_event\(event, engine\);/);
-        assert.match(loop, /keyboard_replay\.dispatch\(frame, engine\);/);
+        assert.match(loop, /input_replay\.dispatch\(frame, engine\);/);
     }
+});
+
+test("keeps image decoding available to standalone effect renderers", () => {
+    const platform = source("native/src/pal_sdl.cpp");
+    const decoderGuard =
+        /#if BBLITE_HAS_PBR_RENDERER \|\| BBLITE_HAS_SPRITE_RENDERER \|\| \\\s+BBLITE_HAS_EFFECT_RENDERER/;
+
+    assert.equal(platform.match(new RegExp(decoderGuard, "g"))?.length, 3);
+    assert.match(platform, /pal::DecodedImage pal::decode_image/);
 });
 
 test("shares large texture payloads and preserves tuple reference identity", () => {

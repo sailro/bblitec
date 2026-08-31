@@ -232,6 +232,7 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
 
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
+    private readonly labels: Array<{ source: string; target: string }> = [];
 
     public terminatesAfterLowering(statement: ts.Statement): boolean {
         return (
@@ -293,12 +294,29 @@ export class StatementLowerer {
             this.emitSwitch(context, statement);
             return;
         }
+        if (ts.isLabeledStatement(statement)) {
+            const target = context.allocateTemporaryCppName(
+                `label_${statement.label.text}`,
+            );
+            this.labels.push({ source: statement.label.text, target });
+            try {
+                this.emit(context, statement.statement);
+            } finally {
+                this.labels.pop();
+            }
+            context.emit(`${target}:;`);
+            return;
+        }
         if (ts.isBreakStatement(statement)) {
             if (statement.label) {
-                context.fail(
-                    statement,
-                    "Labeled break is not supported.",
+                const label = this.labels.slice().reverse().find(
+                    ({ source }) => source === statement.label!.text,
                 );
+                if (!label) {
+                    context.fail(statement, "Labeled break has no active target.");
+                }
+                context.emit(`goto ${label.target};`);
+                return;
             }
             context.emit("break;");
             return;
@@ -307,7 +325,7 @@ export class StatementLowerer {
             if (statement.label) {
                 context.fail(
                     statement,
-                    "Labeled continue is not supported.",
+                    "Labeled continue is not supported; use a labeled break or an unlabeled continue.",
                 );
             }
             context.emit("continue;");
@@ -1702,6 +1720,13 @@ export class StatementLowerer {
             return false;
         }
         if (this.bindsEnclosingLoop(statement.statement)) {
+            if (
+                context.dataIterationTarget(
+                    statement.expression,
+                )
+            ) {
+                return false;
+            }
             context.fail(
                 statement,
                 "break/continue in for...of requires a runtime data container.",

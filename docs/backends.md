@@ -219,6 +219,10 @@ compile the scene renderer's translation unit at all and draws from
 `pal_sdl_gpu_sprite.cpp` or `pal_dawn_sprite.cpp` instead.
 That split is upstream's own — a `SpriteRenderer` is its own `RenderingContext`
 on the engine rather than part of a scene.
+Its projection is still derived from the canvas extent when its colour
+attachment is an offscreen render texture. Both scene-owned and scene-less
+backend loops pass the canvas width and height into sprite upload; the target
+controls the attachment and viewport, not the coordinate system.
 
 The fullscreen-effect path takes the same shape and for the same reason: an
 `EffectRenderer` is a rendering context on the engine, so its two halves live

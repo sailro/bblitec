@@ -1038,8 +1038,14 @@ void on_mouse_wheel(
 
 void on_mouse_cancel(
     Engine& engine,
-    std::function<void()> callback) {
+    std::function<void(const PlatformMouseEvent&)> callback) {
     engine.mouse_cancel_callbacks.push_back(std::move(callback));
+}
+
+void on_window_resize(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.window_resize_callbacks.push_back(std::move(callback));
 }
 
 void on_pointer_lock_change(

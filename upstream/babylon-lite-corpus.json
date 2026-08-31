@@ -2650,6 +2650,258 @@
           "sha256": "2516a4e43526d71787bf2f678f951329f7f858f8f15f42d4bc9e370b31a0da3a"
         }
       ]
+    },
+    {
+      "id": "freeciv",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/freeciv.ts",
+      "reference": {
+        "source": "reference/freeciv/babylon-lite-golden.png",
+        "sha256": "fbcbb5bd06358004b287aceb7cc79d162b088ed93009c0a6ee3a5a34dab5e970"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv.ts",
+          "sha256": "8d04fe7ba58264e9682e2d75df9ade961a763ca7c5378bc0e391c017138ae110"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/animals.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/animals.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/animals.png",
+          "sha256": "3aa98d7c3828469c4a11f5e0491ca1b413550d9fdeaf3c01170ddf2ecd71c8b9"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/animals.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/animals.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/animals.spec",
+          "sha256": "fe6149a90157975a4b5bc12995add7f810617cc474eae8a8aa917af042ffe516"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/cities.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/cities.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/cities.png",
+          "sha256": "93724b0ea823383d29df4d7761790818c8e26285d406acd56f2f490b8a0144bd"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/cities.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/cities.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/cities.spec",
+          "sha256": "512f44fa1769c05a989a781f9b4d920929877ccbc25923ad3e8d78576806f8c0"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/hills.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/hills.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/hills.png",
+          "sha256": "6fadeffa4ab7b527851e2953df9e2ff34a9d7ff07bb462989f56d1154303000d"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/hills.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/hills.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/hills.spec",
+          "sha256": "103412c5ee56c48fbd312c75ffd86cc32aea8ced44a671221621c7d1edc0e226"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/mountains.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/mountains.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/mountains.png",
+          "sha256": "d1ad82ff495b515523bfa3e66d328413f850b0bb7a8704792c8e03e2d18acf37"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/mountains.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/mountains.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/mountains.spec",
+          "sha256": "3587241ded96642f2a0a75a318feb813dcc3bdb35501111e4538dc40074ddd4d"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/ocean.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/ocean.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/ocean.png",
+          "sha256": "9c24d34b87fd2914b48a11ca23ef1f3f8d2f405a5e3db2f4094e19bdbad557e1"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/ocean.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/ocean.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/ocean.spec",
+          "sha256": "ef968545e55e87f711dd4e5d68e5ae37479d5bbd65e09812bd448eb7bc086897"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/select-alpha.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/select-alpha.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/select-alpha.png",
+          "sha256": "f6f9822a6b96ef9ec12c01061e4f73aae148d46c8ee1d74a2cfa31438ef147c9"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/select.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/select.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/select.spec",
+          "sha256": "0b81fb8b09d3e954e146be9e9bdbf2b9ca31a6cf9d0132d3bcc7f30845a9358b"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/terrain1.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/terrain1.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/terrain1.png",
+          "sha256": "9acaab96dcafac9eba79ba3b2e87af84e4c136931a34dc8dabc9493033ebfe98"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/terrain1.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/terrain1.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/terrain1.spec",
+          "sha256": "9df2e831ac00a021fa734d30508b2e052386c9a75e9e15172db426a8dc57dd08"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/terrain2.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/terrain2.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/terrain2.png",
+          "sha256": "2b99a39ad9125981a96f7739f5981fd0c5cd847006125b14a720128131754350"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/terrain2.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/terrain2.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/terrain2.spec",
+          "sha256": "aa8c1b1dc1cd61f64da5786c69bc97a5155da14937184b5db74615873718fbc1"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/units.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/units.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/units.png",
+          "sha256": "d326676b3a69dc00845207ba3edcbdf141881777fb91f0410477c1ab2189159c"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/units.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/units.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/units.spec",
+          "sha256": "942fdb5391a4dd2315889f53bd45d9d1365fdacf8b4a1d7de67462271d344da7"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/water.png",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/water.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/water.png",
+          "sha256": "fab27f8a94527b92150c6b6a81e7806d13af485a571ca5a91e19bff494f77db7"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/amplio2/water.spec",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/data/amplio2/water.spec",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/amplio2/water.spec",
+          "sha256": "eec8c4a9e6bca670709e300061b9af5dce1401e8611ee4ce02cd6839fa3160d7"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/atlas.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/atlas.ts",
+          "sha256": "6a5d177c0bf7faa47d2bf93415cbfb01518c9078b4fb69d415a8df80a1f245bc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/atmosphere.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/atmosphere.ts",
+          "sha256": "59174d2f5330013159be4ebe6dccec9a839eb66b7a862bedea8876f2825f12f6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/backdrop.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/backdrop.ts",
+          "sha256": "685d4c3d1ccc9b387bc1cb2ace3588dea0728ace826f2f9b2c476446de7ca730"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/commandfx.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/commandfx.ts",
+          "sha256": "edf191973e45c68cfaca276ad1fa178c5d97c983bd181216e18c36f51e559cf1"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/COPYING",
+          "origin": "https://raw.githubusercontent.com/freeciv/freeciv/R3_1_5/COPYING",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/COPYING",
+          "sha256": "8177f97513213526df2cf6184d8ff986c675afb514d4e68a404010521b880643"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/daynight.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/daynight.ts",
+          "sha256": "b634d1fa6ab9853adff50f40e2568228424bf4b2f176e13c6c085bf7858c30ff"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/dust.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/dust.ts",
+          "sha256": "13d24515e321a3f33afdface3ce43ac332010efd73e0f98f26805fbfd8bde559"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/fog.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/fog.ts",
+          "sha256": "1cecd692e9afefe00630e6209ad94757ed14da80e22261fb3948ed915835dedf"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/glints.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/glints.ts",
+          "sha256": "a319b2256428fd7b25e6242892bc312c2ae963201c216e053ebb1fd6d95ec099"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/iso.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/iso.ts",
+          "sha256": "ed6bdc2213b6c8eebabfa07a431c2382c44013036993515fbe5edc15413bcd01"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/live.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/live.ts",
+          "sha256": "74a3b67803f06cfc1cfda36b52c1c9d1943d2efb7408de671aef902c8059537a"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/mercator-1569.LICENSE.txt",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/mercator-1569.LICENSE.txt",
+          "sha256": "1a86ed21750cd279c27ea001799808c516b8b32aa46c8d4d50eac9123312ed9e"
+        },
+        {
+          "upstreamPath": "lab/public/freeciv/mercator-1569.png",
+          "origin": "https://upload.wikimedia.org/wikipedia/commons/b/b2/Mercator_1569.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/mercator-1569.png",
+          "sha256": "5c1b84a3cf38b86d823edfc3144d0a6a158fc72fe60c167ce1afb7c126350291"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/minimap.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/minimap.ts",
+          "sha256": "f68beb7d6511eaece6d26bba23444b994c068a264d4d0125718d672c8c58e779"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/pick.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/pick.ts",
+          "sha256": "508a3f70934addc2008e0d0fc16b4d15784c4ba72a727b96b22953ab43d612f3"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/present.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/present.ts",
+          "sha256": "7ee3a9618cd702bdf1971f7fe192a2fe3fef5feeb4458e5b9fba20cd5df6ff6d"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/spec-parser.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/spec-parser.ts",
+          "sha256": "0cb2a41f6649265b4a1ee7227a73eb64aa389f7408c4690d168ba4d85c3b20e1"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/tilemap.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/tilemap.ts",
+          "sha256": "0030e02f376d232f5349906db05ce94e0ab23724ef68e92bf987155af2d0c02f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/vignette.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/vignette.ts",
+          "sha256": "ecc0f8c7664b619058cfbb2073a154a5f08385a3aa5a7999be8de5426885d0fc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/water.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/water.ts",
+          "sha256": "9c15db167bab89bd6ca32769d8ce7ad9bbe5a2e47508947903fbe775dc31bae8"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/freeciv/worldgen.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/worldgen.ts",
+          "sha256": "3624c4fb75b2256271204565dfa251b56df38413c1ac6e658adc01bc85d0ef94"
+        }
+      ]
     }
   ]
 }

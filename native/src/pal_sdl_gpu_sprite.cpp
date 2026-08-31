@@ -73,12 +73,20 @@ bool run_sprite_gpu_engine(Engine& engine) {
         const SDL_GPUTextureFormat swapchain_format = gpu.swapchain_format;
 
         const auto sync_render_textures = [&]() {
-            while (
-                render_textures.size() <
-                engine.sprite_render_textures.size()
-            ) {
+            render_textures.resize(
+                engine.sprite_render_textures.size(), nullptr);
+            for (std::size_t index = 0;
+                 index < engine.sprite_render_textures.size();
+                 ++index) {
                 const SpriteRenderTextureRecord& record =
-                    engine.sprite_render_textures[render_textures.size()];
+                    engine.sprite_render_textures[index];
+                SDL_GPUTexture*& texture = render_textures[index];
+                if (record.disposed) {
+                    if (texture) SDL_ReleaseGPUTexture(device, texture);
+                    texture = nullptr;
+                    continue;
+                }
+                if (texture) continue;
                 SDL_GPUTextureCreateInfo info{};
                 info.type = SDL_GPU_TEXTURETYPE_2D;
                 info.format = swapchain_format;
@@ -89,12 +97,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 info.layer_count_or_depth = 1;
                 info.num_levels = 1;
                 info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                SDL_GPUTexture* texture =
-                    SDL_CreateGPUTexture(device, &info);
+                texture = SDL_CreateGPUTexture(device, &info);
                 if (!texture) {
                     gpu_error("SDL_CreateGPUTexture sprite target");
                 }
-                render_textures.push_back(texture);
             }
         };
         const auto sync_renderer_passes = [&]() {
@@ -137,14 +143,14 @@ bool run_sprite_gpu_engine(Engine& engine) {
         bool running = true;
         long frame = 0;
         FrameClock frame_clock;
-        KeyboardReplay keyboard_replay;
+        PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
             }
-            keyboard_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,
@@ -230,16 +236,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     engine.sprite_renderers[
                         passes[first_index].renderer.value];
                 SDL_GPUTexture* target = color;
-                std::uint32_t target_width = width;
-                std::uint32_t target_height = height;
                 if (first_renderer.has_target) {
-                    const SpriteRenderTextureRecord& target_record =
-                        engine.sprite_render_textures[
-                            first_renderer.target.value];
                     target = render_textures[
                         first_renderer.target.value];
-                    target_width = target_record.width;
-                    target_height = target_record.height;
                 }
                 std::size_t end_index = first_index + 1;
                 while (end_index < passes.size()) {
@@ -282,8 +281,8 @@ bool run_sprite_gpu_engine(Engine& engine) {
                         render_pass,
                         engine,
                         passes[index],
-                        target_width,
-                        target_height);
+                        width,
+                        height);
                 }
                 SDL_EndGPURenderPass(render_pass);
                 first_index = end_index;

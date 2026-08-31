@@ -1471,6 +1471,21 @@ ${pushAtlasHandleCpp()}
 
 SpriteAtlasHandle create_grid_sprite_atlas(
     Engine& engine,
+    const PixelsTexture& texture,
+    GridSpriteAtlasOptions options) {
+    SpriteAtlasRecord atlas;
+    atlas.rgba.assign(texture.rgba.begin(), texture.rgba.end());
+    atlas.width = texture.width;
+    atlas.height = texture.height;
+    atlas.premultiplied_alpha = options.premultiplied_alpha;
+    atlas.mip_maps = texture.sampler.max_lod > 0.0f;
+    atlas.sampler = texture.sampler;
+    populate_grid_sprite_atlas_frames(atlas, options);
+${pushAtlasHandleCpp()}
+}
+
+SpriteAtlasHandle create_grid_sprite_atlas(
+    Engine& engine,
     SpriteRenderTextureHandle texture,
     GridSpriteAtlasOptions options) {
     const SpriteRenderTextureRecord& source =
@@ -1503,6 +1518,12 @@ SpriteRenderTextureHandle create_sprite_render_texture(
     return SpriteRenderTextureHandle{
         static_cast<std::uint32_t>(
             engine.sprite_render_textures.size() - 1u)};
+}
+
+void dispose_sprite_render_texture(
+    Engine& engine,
+    SpriteRenderTextureHandle texture) {
+    engine.sprite_render_textures[texture.value].disposed = true;
 }
 
 void set_sprite_renderer_target(
@@ -1651,6 +1672,7 @@ Sprite2DLayerHandle create_sprite_2d_layer(
     // its params start zeroed.
     layer.custom_shader = options.custom_shader;
     layer.custom_textures = std::move(options.custom_textures);
+    layer.custom_texture_names = std::move(options.custom_texture_names);
     layer.opacity = options.opacity;
     layer.visible = options.visible;
     layer.order = options.order;

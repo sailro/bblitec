@@ -1335,7 +1335,8 @@ ${
         .alpha_cutoff = 0.0f,
         .has_alpha_cutoff = false,
         .custom_shader = false,
-        .custom_textures = {},${
+        .custom_textures = {},
+        .custom_texture_names = {},${
         exact
             ? [
                   "",

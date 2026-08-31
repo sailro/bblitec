@@ -126,6 +126,7 @@ import {
     passesByReference,
     type DataIterationElement,
     type DataType,
+    type TypedArrayKind,
 } from "./compiler/data-types.js";
 import {
     ExpressionLowerer,
@@ -329,6 +330,10 @@ class Compiler
     private readonly browserUtilitySources = new Map<
         ts.SourceFile,
         boolean
+    >();
+    private readonly sharedClosureSymbols = new WeakMap<
+        ts.Node,
+        ReadonlySet<ts.Symbol>
     >();
     private staticAssetUrlCandidateCache: readonly string[] | undefined;
     private readonly expressions: ExpressionLowerer;
@@ -1083,6 +1088,12 @@ class Compiler
                 cppType: "bbl::SpriteRendererHandle",
             };
         }
+        if (name === "Sprite2DLayer") {
+            return {
+                kind: "sprite-layer",
+                cppType: "bbl::Sprite2DLayerHandle",
+            };
+        }
         if (name === "ObstacleHandle") {
             return {
                 kind: "navigation-obstacle",
@@ -1147,6 +1158,77 @@ class Compiler
         this.statements.emitExpression(this, expression);
     }
 
+    /**
+     * JavaScript record methods capture mutable bindings, not snapshots of
+     * their current values. A `let` read by a function-valued object member
+     * therefore needs a shared native cell: separately inlined methods and
+     * stored callbacks all dereference the same storage.
+     */
+    private needsSharedClosureStorage(
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.parent ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0
+        ) {
+            return false;
+        }
+        const symbol = this.symbols.valueSymbol(declaration.name);
+        if (!symbol) return false;
+        let owner: ts.Node = declaration;
+        while (owner.parent && !ts.isFunctionLike(owner.parent)) {
+            owner = owner.parent;
+        }
+        if (owner.parent) owner = owner.parent;
+        let captured = this.sharedClosureSymbols.get(owner);
+        if (!captured) {
+            captured = this.collectSharedClosureSymbols(owner);
+            this.sharedClosureSymbols.set(owner, captured);
+        }
+        return captured.has(symbol);
+    }
+
+    private collectSharedClosureSymbols(
+        owner: ts.Node,
+    ): ReadonlySet<ts.Symbol> {
+        const captured = new Set<ts.Symbol>();
+        const visit = (
+            node: ts.Node,
+            insideStoredRecordCallback: boolean,
+        ): void => {
+            const storedRecordCallback =
+                (ts.isMethodDeclaration(node) &&
+                    ts.isObjectLiteralExpression(node.parent)) ||
+                ((ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node)) &&
+                    ts.isPropertyAssignment(node.parent) &&
+                    ts.isObjectLiteralExpression(node.parent.parent));
+            const inside =
+                insideStoredRecordCallback || storedRecordCallback;
+            if (
+                inside &&
+                ts.isIdentifier(node)
+            ) {
+                const symbol = this.symbols.valueSymbol(node);
+                if (symbol) captured.add(symbol);
+            }
+            ts.forEachChild(node, (child) =>
+                visit(child, inside));
+        };
+        visit(owner, false);
+        return captured;
+    }
+
+    private isSharedClosureScalar(kind: string): boolean {
+        return (
+            kind === "number" ||
+            kind === "boolean" ||
+            kind === "string"
+        );
+    }
+
     public emitVariableDeclaration(declaration: ts.VariableDeclaration): void {
         if (ts.isObjectBindingPattern(declaration.name)) {
             this.emitObjectBindingDeclaration(declaration);
@@ -1172,6 +1254,8 @@ class Compiler
         }
         const sourceName = declaration.name.text;
         const cppName = this.cppIdentifier(sourceName);
+        const sharedClosureStorage =
+            this.needsSharedClosureStorage(declaration);
         if (!declaration.initializer) {
             if (
                 declaration.parent === undefined ||
@@ -1200,8 +1284,12 @@ class Compiler
             ) {
                 this.reachJsData();
             }
+            const cppType = this.dataTypes.cppType(dataType);
             this.emit(
-                `${this.dataTypes.cppType(dataType)} ${cppName};`,
+                sharedClosureStorage &&
+                    this.isSharedClosureScalar(dataType.kind)
+                    ? `auto ${cppName} = std::make_shared<${cppType}>();`
+                    : `${cppType} ${cppName};`,
             );
             if (
                 dataType.kind !== "number" &&
@@ -1215,7 +1303,10 @@ class Compiler
             this.defineVariable(
                 declaration.name,
                 this.dataLowerer.leafValue(
-                    cppName,
+                    sharedClosureStorage &&
+                        this.isSharedClosureScalar(dataType.kind)
+                        ? `(*${cppName})`
+                        : cppName,
                     dataType,
                 ),
             );
@@ -1237,6 +1328,19 @@ class Compiler
             if (symbol) {
                 this.staticConstants.delete(symbol);
             }
+        }
+        if (
+            declaration.type &&
+            (ts.isArrowFunction(declaration.initializer) ||
+                ts.isFunctionExpression(
+                    declaration.initializer,
+                )) &&
+            this.emitAnnotatedDataDeclaration(
+                declaration,
+                cppName,
+            )
+        ) {
+            return;
         }
         if (
             ts.isArrowFunction(declaration.initializer) ||
@@ -1273,14 +1377,20 @@ class Compiler
                 ts.SyntaxKind.NullKeyword &&
             nullableResource
         ) {
-            this.emit(
-                `std::optional<${nullableResource.cppType}> ${cppName};`,
-            );
+            this.emit(sharedClosureStorage
+                ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>();`
+                : `std::optional<${nullableResource.cppType}> ${cppName};`);
             this.defineVariable(declaration.name, {
                 kind: nullableResource.kind,
-                cpp: `(*${cppName})`,
-                optionalFoundCpp: `${cppName}.has_value()`,
-                optionalStorageCpp: cppName,
+                cpp: sharedClosureStorage
+                    ? `(**${cppName})`
+                    : `(*${cppName})`,
+                optionalFoundCpp: sharedClosureStorage
+                    ? `${cppName}->has_value()`
+                    : `${cppName}.has_value()`,
+                optionalStorageCpp: sharedClosureStorage
+                    ? `(*${cppName})`
+                    : cppName,
             });
             return;
         }
@@ -1338,14 +1448,20 @@ class Compiler
             // copied source guard could run.
             const initializerCpp =
                 value.optionalStorageCpp ?? value.cpp;
-            this.emit(
-                `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`,
-            );
+            this.emit(sharedClosureStorage
+                ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp});`
+                : `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`);
             this.defineVariable(declaration.name, {
                 ...value,
-                cpp: `(*${cppName})`,
-                optionalFoundCpp: `${cppName}.has_value()`,
-                optionalStorageCpp: cppName,
+                cpp: sharedClosureStorage
+                    ? `(**${cppName})`
+                    : `(*${cppName})`,
+                optionalFoundCpp: sharedClosureStorage
+                    ? `${cppName}->has_value()`
+                    : `${cppName}.has_value()`,
+                optionalStorageCpp: sharedClosureStorage
+                    ? `(*${cppName})`
+                    : cppName,
             });
             return;
         }
@@ -1510,6 +1626,12 @@ class Compiler
                 kind: "data",
                 cpp: cppName,
                 dataType: narrowed.dataType,
+                ...(narrowed.recordProperties
+                    ? {
+                          recordProperties:
+                              narrowed.recordProperties,
+                      }
+                    : {}),
                 ...(narrowed.borrowedData ? { borrowedData: true as const } : {}),
                 ...(optionalFoundCpp
                     ? { optionalFoundCpp }
@@ -1532,10 +1654,16 @@ class Compiler
         const initializerCpp = value.cpp;
         const maybeUnused =
             value.kind === "boolean" ? "[[maybe_unused]] " : "";
-        this.emit(
-            `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
-        );
-        const stored = { ...value, cpp: cppName };
+        const sharedPrimitive =
+            sharedClosureStorage &&
+            this.isSharedClosureScalar(value.kind);
+        this.emit(sharedPrimitive
+            ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
+            : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`);
+        const stored = {
+            ...value,
+            cpp: sharedPrimitive ? `(*${cppName})` : cppName,
+        };
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
             stored.animationDuration = `${cppName}.duration`;
@@ -1787,13 +1915,18 @@ class Compiler
             annotated?.kind === "struct" ||
             (annotated?.kind === "optional" &&
                 annotated.inner.kind === "struct");
-        const inferredMutableObject =
-            !declaration.type &&
+        const mutablePlainObject =
             ts.isIdentifier(declaration.name) &&
             inferredPlainObject &&
             (ts.isObjectLiteralExpression(initializer)
                 ? this.inferredObjectIsMutated(declaration.name)
                 : this.inferredObjectIsRebound(declaration.name));
+        const inferredMutableObject =
+            !declaration.type && mutablePlainObject;
+        const explicitlyTypedMutableEntryObject =
+            declaration.type !== undefined &&
+            mutablePlainObject &&
+            this.defaultEngine() !== undefined;
         if (
             !declaration.type &&
             !inferredMutableArray &&
@@ -1816,7 +1949,10 @@ class Compiler
             // requests ordinary runtime container semantics.
             return false;
         }
-        if (annotated && inferredMutableObject) {
+        if (
+            annotated &&
+            (inferredMutableObject || explicitlyTypedMutableEntryObject)
+        ) {
             annotated = this.dataTypes.markStoredObjectReferences(
                 annotated,
             );
@@ -1828,6 +1964,8 @@ class Compiler
             !annotated ||
             annotated.kind === "number" ||
             annotated.kind === "boolean" ||
+            (annotated.kind === "handle" &&
+                annotated.handle === "texture") ||
             annotated.kind === "span" ||
             annotated.kind === "table" ||
             (annotated.kind === "optional" &&
@@ -1923,10 +2061,33 @@ class Compiler
                 ? "owned"
                 : "copy",
         );
+        const staticRecordProperties: Record<string, Value> = {};
+        if (
+            annotated.kind === "struct" &&
+            ts.isObjectLiteralExpression(initializer)
+        ) {
+            for (const property of initializer.properties) {
+                if (!ts.isShorthandPropertyAssignment(property)) {
+                    continue;
+                }
+                const value = this.lookupOptional(property.name);
+                if (
+                    value &&
+                    (value.staticNumber !== undefined ||
+                        value.staticString !== undefined ||
+                        value.staticBoolean !== undefined)
+                ) {
+                    staticRecordProperties[property.name.text] = value;
+                }
+            }
+        }
         this.defineVariable(declaration.name as ts.Identifier, {
             kind: "data",
             cpp: cppName,
             dataType: annotated,
+            ...(Object.keys(staticRecordProperties).length > 0
+                ? { recordProperties: staticRecordProperties }
+                : {}),
             ...(staticHandleElements ? { staticHandleElements } : {}),
         });
         return true;
@@ -2435,6 +2596,26 @@ class Compiler
                         cppName,
                         field.type,
                     );
+                const staticField =
+                    value.recordProperties?.[property];
+                if (
+                    staticField?.staticNumber !== undefined
+                ) {
+                    fieldValue.staticNumber =
+                        staticField.staticNumber;
+                }
+                if (
+                    staticField?.staticString !== undefined
+                ) {
+                    fieldValue.staticString =
+                        staticField.staticString;
+                }
+                if (
+                    staticField?.staticBoolean !== undefined
+                ) {
+                    fieldValue.staticBoolean =
+                        staticField.staticBoolean;
+                }
                 this.defineVariable(name, fieldValue);
                 if (aliases) {
                     this.dataLowerer.registerAlias(
@@ -2860,6 +3041,13 @@ class Compiler
                 }
             }
             if (size === undefined) {
+                if (owner.textureStorage === "file") {
+                    return {
+                        kind: "number",
+                        cpp: `static_cast<double>(${owner.cpp}.${property})`,
+                        dataType: { kind: "number" },
+                    };
+                }
                 this.fail(
                     expression,
                     `Texture ${property} requires a PNG source with generation-known dimensions.`,
@@ -3069,6 +3257,83 @@ class Compiler
             cpp:
                 `bbl::upload_thin_instance_matrices(${this.requireEngine(mesh, call)}, ` +
                 `${mesh.cpp}, ${matrices}, ${count})`,
+        };
+    }
+
+    /**
+     * Lowers a full `GPUQueue.writeTexture` into the pixels texture object
+     * that owns the upload. The native sprite backends observe the texture's
+     * version during their ordinary update phase; no raw device object leaks
+     * into generated application code.
+     */
+    public compilePixelsTextureUpload(
+        call: ts.CallExpression,
+    ): Value | undefined {
+        const callee = this.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "writeTexture" ||
+            !ts.isPropertyAccessExpression(callee.expression) ||
+            callee.expression.name.text !== "queue" ||
+            !ts.isIdentifier(callee.expression.expression) ||
+            this.lookupOptional(callee.expression.expression)?.kind !==
+                "gpu-device"
+        ) {
+            return undefined;
+        }
+        this.expectArgumentCount(call, 4, 4);
+        const destination = this.unwrap(call.arguments[0]!);
+        if (!ts.isObjectLiteralExpression(destination)) {
+            this.fail(
+                destination,
+                "GPUQueue.writeTexture destination must name a pixels texture.",
+            );
+        }
+        const textureProperty = destination.properties.find(
+            (property): property is ts.PropertyAssignment =>
+                ts.isPropertyAssignment(property) &&
+                this.propertyName(property.name) === "texture",
+        );
+        const textureMember = textureProperty
+            ? this.unwrap(textureProperty.initializer)
+            : undefined;
+        if (
+            !textureMember ||
+            !ts.isPropertyAccessExpression(textureMember) ||
+            textureMember.name.text !== "texture"
+        ) {
+            this.fail(
+                destination,
+                "GPUQueue.writeTexture destination must be `{ texture: pixelsTexture.texture }`.",
+            );
+        }
+        const texture = this.compileValue(textureMember.expression);
+        if (
+            texture.kind !== "texture" ||
+            texture.textureStorage !== "pixels"
+        ) {
+            this.fail(
+                textureMember.expression,
+                "GPUQueue.writeTexture currently updates createTexture2DFromPixels results.",
+            );
+        }
+        const pixelValue = this.compileValue(call.arguments[1]!);
+        if (
+            pixelValue.kind !== "data" ||
+            pixelValue.dataType?.kind !== "u8array"
+        ) {
+            this.fail(
+                call.arguments[1]!,
+                "GPUQueue.writeTexture source must be a Uint8Array.",
+            );
+        }
+        this.reachFeature("texture:pixels", call);
+        return {
+            kind: "void",
+            cpp:
+                `bbl::update_pixels_texture(` +
+                `${this.requireEngine(texture, call)}, ` +
+                `${texture.cpp}, ${pixelValue.cpp})`,
         };
     }
 
@@ -3476,6 +3741,7 @@ class Compiler
         // data.
         const observableResult =
             this.checker.getAwaitedType(resultType) ?? resultType;
+        let writeOnlyObjectResult = false;
         if ((observableResult.flags & ts.TypeFlags.Object) !== 0) {
             const resultDeclarations = [
                 ...(observableResult.symbol?.declarations ?? []),
@@ -3487,6 +3753,33 @@ class Compiler
                 ),
             );
             if (!directlyDom) {
+                writeOnlyObjectResult =
+                    observableResult.getProperties().length > 0 &&
+                    observableResult.getProperties().every((property) => {
+                        const propertyDeclaration =
+                            property.valueDeclaration ??
+                            property.declarations?.[0];
+                        if (!propertyDeclaration) return false;
+                        const propertyType =
+                            this.checker.getTypeOfSymbolAtLocation(
+                                property,
+                                propertyDeclaration,
+                            );
+                        const signatures =
+                            propertyType.getCallSignatures();
+                        return (
+                            signatures.length > 0 &&
+                            signatures.every(
+                                (signature) =>
+                                    (this.checker
+                                        .getReturnTypeOfSignature(
+                                            signature,
+                                        ).flags &
+                                        ts.TypeFlags.Void) !==
+                                    0,
+                            )
+                        );
+                    });
                 const carriesNativeData = observableResult
                     .getProperties()
                     .some((property) => {
@@ -3513,6 +3806,36 @@ class Compiler
                     // individually rather than tainting the whole object.
                     return false;
                 }
+            }
+        }
+        if (writeOnlyObjectResult) {
+            let reachesBrowser = false;
+            let reachesBabylon = false;
+            const visit = (node: ts.Node): void => {
+                if (ts.isTypeNode(node)) {
+                    return;
+                }
+                if (ts.isIdentifier(node)) {
+                    if (
+                        this.symbols.importedName(node) !==
+                        undefined
+                    ) {
+                        reachesBabylon = true;
+                    }
+                    if (
+                        ["document", "window", "globalThis"].includes(
+                            node.text,
+                        ) &&
+                        this.isDefaultLibraryIdentifier(node)
+                    ) {
+                        reachesBrowser = true;
+                    }
+                }
+                ts.forEachChild(node, visit);
+            };
+            visit(declaration.body);
+            if (reachesBrowser && !reachesBabylon) {
+                return true;
             }
         }
         const hasBrowserInput = call.arguments.some((argument) =>
@@ -3943,6 +4266,7 @@ class Compiler
                     ["Int16Array", "i16array"],
                     ["Uint32Array", "u32array"],
                     ["Int32Array", "i32array"],
+                    ["Float64Array", "f64array"],
                     ["Float32Array", "f32array"],
                 ]).get(unwrapped.right.text);
                 if (expected) {
@@ -5112,7 +5436,7 @@ class Compiler
 
     public compileTypedArrayArgument(
         expression: ts.Expression,
-        kind: "f32array" | "u32array",
+        kind: TypedArrayKind,
     ): string {
         return this.dataLowerer.compileForSink(
             expression,
@@ -5773,6 +6097,18 @@ class Compiler
         this.returnFrames.pop();
     }
 
+    /**
+     * Stored callbacks retain their defining locals, but an entry callback
+     * must keep using the one live engine rather than mutating a copied scene.
+     * Namespace data-function closures have no entry engine in their scope.
+     */
+    public storedDataFunctionCapture(lines: readonly string[]): string {
+        const engine = this.defaultEngine();
+        return engine && lines.some((line) => line.includes(engine))
+            ? `[=, &${engine}]`
+            : "[=]";
+    }
+
     public beginInlineFrame(wrapped: boolean): void {
         this.returnFrames.push({
             kind: "inline",
@@ -6413,11 +6749,19 @@ class Compiler
                 receiver.expression,
             );
             if (texture.kind === "texture") {
-                // The native engine owns render-target allocation for the
-                // lifetime of its renderer. Rebuilding the CRT chain stops
-                // referencing this handle; physical GPU reclamation remains
-                // engine-owned rather than exposing WebGPUTexture.destroy().
-                return { kind: "void", cpp: "" };
+                if (texture.textureStorage !== "render") {
+                    // File and pixel textures are immutable engine assets;
+                    // only createRenderTexture2D exposes a live GPU target
+                    // whose WebGPU destroy call has observable lifetime.
+                    return { kind: "void", cpp: "" };
+                }
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::dispose_sprite_render_texture(` +
+                        `${texture.engineCpp ?? this.requireDefaultEngine(call)}, ` +
+                        `${texture.cpp})`,
+                };
             }
         }
         if (
@@ -6568,6 +6912,12 @@ class Compiler
             }
         }
         const engine = this.requireDefaultEngine(call);
+        if (target === "window" && event === "resize") {
+            this.emit(
+                `bbl::on_window_resize(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
+            );
+            return true;
+        }
         if (
             (target === "window" || target === "canvas") &&
             (event === "keydown" || event === "keyup")
@@ -6662,8 +7012,26 @@ class Compiler
             (target === "window" || target === "canvas") &&
             event === "pointercancel"
         ) {
+            const parameter =
+                this.allocateTemporaryCppName("mouse_event");
+            const lambda = this.compilePlatformCallback(
+                callback,
+                {
+                    cppType: "const bbl::PlatformMouseEvent&",
+                    name: parameter,
+                },
+                [
+                    {
+                        kind: "platform-mouse-event",
+                        cpp: parameter,
+                        readOnly: true,
+                    },
+                ],
+                undefined,
+                once,
+            );
             this.emit(
-                `bbl::on_mouse_cancel(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
+                `bbl::on_mouse_cancel(${engine}, ${lambda});`,
             );
             return true;
         }
@@ -7681,6 +8049,25 @@ class Compiler
             arguments_,
             callNode,
         );
+    }
+
+    public compileStoredDataFunction(
+        expression:
+            | ts.Identifier
+            | ts.FunctionDeclaration
+            | ts.ArrowFunction
+            | ts.FunctionExpression
+            | ts.MethodDeclaration,
+        dataType: DataType & { kind: "function" },
+        owner?: Value,
+    ): string {
+        const compile = (): string =>
+            this.userFunctions.compileStoredDataFunction(
+                this,
+                expression,
+                dataType,
+            );
+        return owner ? this.withRecordScopes(owner, compile) : compile();
     }
 
     public compilePredicateWithValues(

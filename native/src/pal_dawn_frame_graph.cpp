@@ -548,14 +548,14 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
         FrameClock clock;
         bool running = true;
         long frame = 0;
-        KeyboardReplay keyboard_replay;
+        PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
                 handle_platform_event(event, engine);
             }
-            keyboard_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, engine);
             (void)advance_frame(
                 engine,
                 context,

@@ -489,6 +489,9 @@ export interface UserFunctionIr {
 export interface UserFunctionContext {
     readonly dataTypes: DataTypeRegistry;
     compileValue(expression: ts.Expression): Value;
+    lookupIdentifierValue(
+        identifier: ts.Identifier,
+    ): Value | undefined;
     compileCondition(expression: ts.Expression): string;
     isBrowserOnlyExpression(expression: ts.Expression): boolean;
     compileForDataSink(
@@ -521,6 +524,7 @@ export interface UserFunctionContext {
     popScope(): void;
     allocateUserFunctionPrefix(): string;
     reachJsData(): void;
+    captureEmittedLines(emitBody: () => void): string[];
     emitNativeCallbackStorage(
         cppName: string,
         signature: string,
@@ -529,6 +533,7 @@ export interface UserFunctionContext {
     endInlineFrame(): void;
     beginNativeFunctionBody(returnType: DataType | undefined): void;
     endNativeFunctionBody(): void;
+    storedDataFunctionCapture(lines: readonly string[]): string;
     emit(line: string): void;
     increaseIndent(): void;
     decreaseIndent(): void;
@@ -1004,7 +1009,9 @@ export class UserFunctionLowerer {
             }
             const parameterTypes = ir.parameters.map(({ type, declaration: parameter }) => {
                 const mapped = context.dataTypes.fromTsType(type, parameter);
-                return mapped && !context.dataTypes.carriesHandle(mapped)
+                return mapped &&
+                    mapped.kind !== "function" &&
+                    !context.dataTypes.carriesHandle(mapped)
                     ? mapped
                     : undefined;
             });
@@ -1039,6 +1046,7 @@ export class UserFunctionLowerer {
                 cppName,
                 captured,
                 value,
+                returnMetadata: undefined as Value | undefined,
             };
         });
         const entryByDeclaration = new Map(
@@ -1046,9 +1054,15 @@ export class UserFunctionLowerer {
         );
         const rootEntry = entryByDeclaration.get(root.declaration)!;
         root.parameters.forEach((parameter, index) => {
+            const argument = rootArguments[index];
+            if (argument?.kind === "record") {
+                rootEntry.parameterTypes[index] = undefined;
+                rootEntry.captured[index] = argument;
+                return;
+            }
             if (rootEntry.parameterTypes[index]) return;
             const value =
-                rootArguments[index] ??
+                argument ??
                 (parameter.declaration.initializer
                     ? context.compileValue(parameter.declaration.initializer)
                     : context.fail(
@@ -1105,12 +1119,24 @@ export class UserFunctionLowerer {
                     );
                 }
                 pending.delete(entry);
-                this.emitRecursiveFunctionBody(context, entry);
+                entry.returnMetadata =
+                    this.emitRecursiveFunctionBody(context, entry);
             }
         } finally {
             context.popScope();
         }
-        return this.compileNativeCallbackCall(context, call, rootEntry.value)!;
+        const result = this.compileNativeCallbackCall(
+            context,
+            call,
+            rootEntry.value,
+        )!;
+        return rootEntry.returnMetadata?.recordProperties
+            ? {
+                  ...result,
+                  recordProperties:
+                      rootEntry.returnMetadata.recordProperties,
+              }
+            : result;
     }
 
     /** Recursive bodies run as real lambdas, so all return statements stay. */
@@ -1161,10 +1187,11 @@ export class UserFunctionLowerer {
             cppName: string;
             captured: readonly (Value | undefined)[];
         },
-    ): void {
+    ): Value | undefined {
         const returnCpp = entry.returnType
             ? context.dataTypes.cppType(entry.returnType)
             : "void";
+        let returnMetadata: Value | undefined;
         context.pushScope(context.allocateUserFunctionPrefix());
         try {
             const parameterDeclarations: string[] = [];
@@ -1211,6 +1238,16 @@ export class UserFunctionLowerer {
                 }
                 if (ts.isBlock(body)) {
                     for (const statement of body.statements) {
+                        if (
+                            ts.isReturnStatement(statement) &&
+                            statement.expression &&
+                            ts.isIdentifier(statement.expression)
+                        ) {
+                            returnMetadata =
+                                context.lookupIdentifierValue(
+                                    statement.expression,
+                                );
+                        }
                         context.emitStatement(statement);
                     }
                 } else {
@@ -1229,6 +1266,7 @@ export class UserFunctionLowerer {
         } finally {
             context.popScope();
         }
+        return returnMetadata;
     }
 
     private recursiveParameterCpp(
@@ -1311,6 +1349,102 @@ export class UserFunctionLowerer {
             arguments_.slice(0, ir.parameters.length),
             callNode,
         );
+    }
+
+    /** Materializes a read-only closure as a copyable native function value. */
+    public compileStoredDataFunction(
+        context: UserFunctionContext,
+        expression: ts.Identifier | SupportedFunction,
+        dataType: DataType & { kind: "function" },
+    ): string {
+        const unwrapped = ts.isFunctionDeclaration(expression) ||
+            ts.isMethodDeclaration(expression)
+            ? expression
+            : unwrapExpression(expression);
+        const declaration = ts.isIdentifier(unwrapped)
+            ? resolveFunctionDeclaration(
+                  this.checker,
+                  unwrapped,
+                  (node, message) => context.fail(node, message),
+              )
+            : isSupportedFunction(unwrapped)
+              ? unwrapped
+              : undefined;
+        if (!declaration) {
+            context.fail(
+                expression,
+                "Stored function must resolve to a local function declaration or literal.",
+            );
+        }
+        const ir = this.irFor(
+            declaration,
+            "stored callback",
+            (node, message) => context.fail(node, message),
+        );
+        if (ir.parameters.length !== dataType.parameters.length) {
+            context.fail(
+                declaration,
+                "Stored function declaration does not match its native data signature.",
+            );
+        }
+        const prefix = context.allocateUserFunctionPrefix();
+        const cppName = `${prefix}stored_callback`;
+        const parameters = ir.parameters.map((parameter, index) => ({
+            parameter,
+            type: dataType.parameters[index]!,
+            cppName: `${prefix}arg_${index}`,
+        }));
+        const returnCpp = dataType.result
+            ? context.dataTypes.cppType(dataType.result)
+            : "void";
+        context.pushScope(prefix);
+        context.beginNativeFunctionBody(dataType.result);
+        let lines: string[] = [];
+        try {
+            lines = context.captureEmittedLines(() => {
+                for (const { parameter, type, cppName: name } of parameters) {
+                    this.bindParameter(context, parameter, context.dataValue(name, type));
+                }
+                for (const statement of ir.statements) {
+                    context.emitStatement(statement);
+                }
+                if (ir.returnExpression) {
+                    if (!dataType.result) {
+                        const discarded = context.compileValue(
+                            ir.returnExpression,
+                        );
+                        if (
+                            discarded.kind !== "engine" &&
+                            discarded.cpp.length > 0
+                        ) {
+                            context.emit(
+                                discarded.kind !== "void" ||
+                                    discarded.requiresExplicitDiscard
+                                    ? `static_cast<void>(${discarded.cpp});`
+                                    : `${discarded.cpp};`,
+                            );
+                        }
+                    } else {
+                        context.emit(
+                            `return ${context.compileForDataSink(ir.returnExpression, dataType.result)};`,
+                        );
+                    }
+                }
+            });
+        } finally {
+            context.endNativeFunctionBody();
+            context.popScope();
+        }
+        const capture = context.storedDataFunctionCapture(lines);
+        context.emit(
+            `${context.dataTypes.cppType(dataType)} ${cppName} = ` +
+                `${capture}(${parameters.map(({ type, cppName: name }) => `${context.dataTypes.cppType(type)} ${name}`).join(", ")}) mutable -> ${returnCpp} {`,
+        );
+        context.increaseIndent();
+        for (const line of lines) context.emit(line);
+        context.decreaseIndent();
+        context.emit("};");
+        return cppName;
     }
 
     /** Invokes an Array predicate with JavaScript truthiness at its return. */
@@ -1447,7 +1581,7 @@ export class UserFunctionLowerer {
                 );
                 const result = `bbl_fn_${context.allocateUserFunctionPrefix()}result`;
                 context.emit(
-                    `const auto ${result} = [&]() -> ${context.dataTypes.cppType(returnType)} {`,
+                    `[[maybe_unused]] const auto ${result} = [&]() -> ${context.dataTypes.cppType(returnType)} {`,
                 );
                 context.increaseIndent();
                 context.beginNativeFunctionBody(returnType);

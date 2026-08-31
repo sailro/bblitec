@@ -45,19 +45,37 @@ inline void dispatch_platform_keyboard_event(
     }
 }
 
+inline void dispatch_platform_wheel_event(
+    Engine& engine,
+    double delta_y,
+    double client_x,
+    double client_y,
+    double buttons = 0.0) {
+    const PlatformMouseEvent event{
+        .button = -1.0,
+        .buttons = buttons,
+        .client_x = client_x,
+        .client_y = client_y,
+        .delta_y = delta_y,
+    };
+    for (const auto& callback : engine.mouse_wheel_callbacks) {
+        callback(event);
+    }
+}
+
 /**
- * Opt-in frame-indexed keyboard input for deterministic native diagnostics.
+ * Opt-in frame-indexed input for deterministic native diagnostics.
  *
  * BBLITE_INPUT_REPLAY is a comma-separated sequence of DOM KeyboardEvent.code
  * values. A plain entry is dispatched as a down/up pair in one frame, `+Code`
  * dispatches key-down only, `-Code` dispatches key-up only, and `-` is an idle
- * frame. The split form deterministically exercises held-input behaviour. All
- * forms reach the application's ordinary callbacks and do not mutate generated
- * source or camera state directly.
+ * frame. `WheelUp` and `WheelDown` dispatch one browser-sized wheel notch at
+ * the canvas centre. All forms reach the application's ordinary callbacks and
+ * do not mutate generated source or camera state directly.
  */
-class KeyboardReplay {
+class PlatformInputReplay {
 public:
-    KeyboardReplay() {
+    PlatformInputReplay() {
         const std::string source =
             environment_variable("BBLITE_INPUT_REPLAY");
         std::size_t begin = 0;
@@ -83,6 +101,14 @@ public:
         const std::string& code =
             codes_[static_cast<std::size_t>(frame)];
         if (code.empty() || code == "-") return;
+        if (code == "WheelUp" || code == "WheelDown") {
+            dispatch_platform_wheel_event(
+                engine,
+                code == "WheelUp" ? -100.0 : 100.0,
+                static_cast<double>(engine.options.width) / 2.0,
+                static_cast<double>(engine.options.height) / 2.0);
+            return;
+        }
         const bool down_only = code.size() > 1 && code.front() == '+';
         const bool up_only = code.size() > 1 && code.front() == '-';
         const std::string_view event_code =
@@ -173,7 +199,7 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
  * display. Every native loop drains events before advancing the application,
  * so a frame triggered by maximize/restore sees the new size in its callbacks.
  */
-inline void sync_engine_canvas_size(
+inline bool sync_engine_canvas_size(
     SDL_Window* window,
     Engine& engine) {
     int width = 0;
@@ -183,9 +209,14 @@ inline void sync_engine_canvas_size(
         SDL_GetWindowSizeInPixels(window, &width, &height) &&
         width > 0 &&
         height > 0) {
+        const bool changed =
+            engine.options.width != width ||
+            engine.options.height != height;
         engine.options.width = width;
         engine.options.height = height;
+        return changed;
     }
+    return false;
 }
 
 // TODO(window-move): adopt SDL's main-callback loop for interactive builds.
@@ -225,6 +256,24 @@ inline void update_tracked_mouse_button(const SDL_MouseButtonEvent& event) {
     } else {
         buttons &= ~changed;
     }
+}
+
+/**
+ * Translate SDL's wheel distance into the pixel-mode delta a browser reports.
+ *
+ * SDL exposes wheel motion in scroll increments (one ordinary Windows mouse
+ * notch is `1`), while Chromium's `WheelEvent.deltaY` for the same notch is
+ * 100 CSS pixels with `deltaMode === DOM_DELTA_PIXEL`. Application code uses
+ * that pixel value directly, so forwarding SDL's raw increment makes native
+ * wheel controls roughly one hundred times less sensitive.
+ */
+inline double dom_wheel_delta_y(const SDL_MouseWheelEvent& event) {
+    constexpr double browser_pixels_per_scroll_increment = 100.0;
+    const double increment =
+        event.direction == SDL_MOUSEWHEEL_FLIPPED
+            ? static_cast<double>(event.y)
+            : -static_cast<double>(event.y);
+    return increment * browser_pixels_per_scroll_increment;
 }
 
 inline void apply_pointer_lock_cursor(bool locked) {
@@ -326,9 +375,13 @@ inline void handle_platform_event(
     if (
         event.type == SDL_EVENT_WINDOW_RESIZED ||
         event.type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED) {
-        sync_engine_canvas_size(
-            SDL_GetWindowFromID(event.window.windowID),
-            engine);
+        if (sync_engine_canvas_size(
+                SDL_GetWindowFromID(event.window.windowID),
+                engine)) {
+            for (const auto& callback : engine.window_resize_callbacks) {
+                callback();
+            }
+        }
         return;
     }
     if (
@@ -434,26 +487,23 @@ inline void handle_platform_event(
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
         // DOM deltaY is positive when scrolling down. SDL's normalized Y is
         // positive away from the user; natural-scroll devices mark FLIPPED.
-        const double delta_y =
-            event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED
-                ? static_cast<double>(event.wheel.y)
-                : -static_cast<double>(event.wheel.y);
-        const PlatformMouseEvent mouse_event{
-            .button = -1.0,
-            .buttons = dom_mouse_buttons(tracked_mouse_buttons()),
-            .client_x = static_cast<double>(event.wheel.mouse_x),
-            .client_y = static_cast<double>(event.wheel.mouse_y),
-            .delta_y = delta_y,
-        };
-        for (const auto& callback : engine.mouse_wheel_callbacks) {
-            callback(mouse_event);
-        }
+        const double delta_y = dom_wheel_delta_y(event.wheel);
+        dispatch_platform_wheel_event(
+            engine,
+            delta_y,
+            static_cast<double>(event.wheel.mouse_x),
+            static_cast<double>(event.wheel.mouse_y),
+            dom_mouse_buttons(tracked_mouse_buttons()));
         return;
     }
     if (event.type == SDL_EVENT_WINDOW_FOCUS_LOST) {
         tracked_mouse_buttons() = 0;
+        const PlatformMouseEvent mouse_event{
+            .button = -1.0,
+            .buttons = 0.0,
+        };
         for (const auto& callback : engine.mouse_cancel_callbacks) {
-            callback();
+            callback(mouse_event);
         }
         engine.pointer_lock_requested = false;
         sync_pointer_lock(

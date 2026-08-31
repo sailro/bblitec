@@ -19,7 +19,7 @@ import {
 } from "./audio-surface.js";
 import type { ClassLowerer } from "./classes.js";
 import type { DataLowerer } from "./data-lowering.js";
-import type { DataType } from "./data-types.js";
+import { dataTypesEqual, type DataType } from "./data-types.js";
 import type { NativeFunctionLowerer } from "./native-functions.js";
 import {
     compileImmediatePromise,
@@ -213,6 +213,9 @@ export interface ExpressionContext
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined;
+    compilePixelsTextureUpload(
+        call: ts.CallExpression,
+    ): Value | undefined;
     compileStaticFetch(
         call: ts.CallExpression,
         callee: ts.Identifier,
@@ -258,6 +261,27 @@ export class ExpressionLowerer {
                         `(${asserted.cpp}.picked_kind == ` +
                         `bbl::PickedNodeKind::mesh)`,
                 };
+            }
+        }
+        if (
+            ts.isAsExpression(expression) ||
+            ts.isTypeAssertionExpression(expression)
+        ) {
+            const sourceType =
+                this.context.dataLowerer.dataTypeAt(
+                    expression.expression,
+                );
+            const assertedType =
+                this.context.dataLowerer.dataTypeAt(expression);
+            if (
+                sourceType?.kind === "optional" &&
+                assertedType &&
+                dataTypesEqual(sourceType.inner, assertedType)
+            ) {
+                return this.context.dataLowerer.narrowOptional(
+                    this.compileValue(expression.expression),
+                    expression,
+                );
             }
         }
         const assertedNonNull =
@@ -435,6 +459,49 @@ export class ExpressionLowerer {
             return this.context.compilePropertyAccess(unwrapped);
         }
         if (ts.isNewExpression(unwrapped)) {
+            if (
+                ts.isIdentifier(unwrapped.expression) &&
+                unwrapped.expression.text === "RegExp" &&
+                !this.context.lookupOptional(unwrapped.expression)
+            ) {
+                const arguments_ = unwrapped.arguments ?? [];
+                if (arguments_.length < 1 || arguments_.length > 2) {
+                    this.context.fail(
+                        unwrapped,
+                        "RegExp expects a pattern and optional flags.",
+                    );
+                }
+                const pattern =
+                    this.context.dataLowerer.compileForSink(
+                        arguments_[0]!,
+                        { kind: "string" },
+                    );
+                const flags = arguments_[1]
+                    ? this.compileValue(arguments_[1]!).staticString
+                    : "";
+                if (flags === undefined) {
+                    this.context.fail(
+                        arguments_[1]!,
+                        "Reached RegExp constructor flags must be static.",
+                    );
+                }
+                for (const flag of flags) {
+                    if (flag !== "g" && flag !== "i") {
+                        this.context.fail(
+                            arguments_[1] ?? unwrapped,
+                            `Reached RegExp constructors support the g and i flags, not '${flag}'.`,
+                        );
+                    }
+                }
+                this.context.reachJsData();
+                return {
+                    kind: "regexp",
+                    cpp:
+                        `bbl::js::RegExp(${pattern}, ` +
+                        `${flags.includes("g") ? "true" : "false"}, ` +
+                        `${flags.includes("i") ? "true" : "false"})`,
+                };
+            }
             const constructed =
                 this.context.dataLowerer.compileNewExpression(
                     unwrapped,
@@ -648,10 +715,16 @@ export class ExpressionLowerer {
                     // though a numeric property can be absent at runtime.
                     // The lookup is therefore nullable whether or not the
                     // checker already included undefined at this site.
+                    const ownerDataType =
+                        this.context.dataLowerer.dataTypeAt(
+                            unwrapped.expression,
+                        );
                     const declaredValueType =
-                        indexedType.kind === "optional"
-                            ? indexedType.inner
-                            : indexedType;
+                        ownerDataType?.kind === "map"
+                            ? ownerDataType.value
+                            : ownerDataType?.kind === "enummap"
+                              ? ownerDataType.element
+                              : indexedType;
                     // Materializing a compile-time record as a native Map
                     // stores its object values behind another container.
                     // JavaScript Map/Record lookup must return the same object,
@@ -684,7 +757,9 @@ export class ExpressionLowerer {
                         !ownerHasOptionalProperties;
                     const resultType = totalClosedKey
                         ? valueType
-                        : indexedType.kind === "optional"
+                        : valueType.kind === "optional"
+                          ? valueType
+                          : indexedType.kind === "optional"
                             ? indexedType
                             : ({
                                   kind: "optional",
@@ -1389,6 +1464,63 @@ export class ExpressionLowerer {
         this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
     }
 
+    /**
+     * Evaluates the reached transcendental constants only when JavaScript
+     * immediately formats them into generation-time source text. Ordinary
+     * numeric expressions remain native so their runtime width and library
+     * semantics are unchanged.
+     */
+    private generationTimeNumber(
+        expression: ts.Expression,
+    ): number | undefined {
+        const staticValue = staticNumberValue(
+            this.context,
+            expression,
+        );
+        if (staticValue !== undefined) {
+            return staticValue;
+        }
+        const unwrapped = this.context.unwrap(expression);
+        const node = this.context.resolveStaticExpression(
+            unwrapped,
+        );
+        if (node !== unwrapped) {
+            const resolved = this.generationTimeNumber(node);
+            if (resolved !== undefined) return resolved;
+        }
+        if (
+            !ts.isCallExpression(node) ||
+            !ts.isPropertyAccessExpression(node.expression) ||
+            !ts.isIdentifier(node.expression.expression) ||
+            node.expression.expression.text !== "Math"
+        ) {
+            return undefined;
+        }
+        const values = node.arguments.map((argument) =>
+            this.generationTimeNumber(argument),
+        );
+        if (values.some((value) => value === undefined)) {
+            return undefined;
+        }
+        const numbers = values as number[];
+        switch (node.expression.name.text) {
+            case "atan2":
+                return numbers.length === 2
+                    ? Math.atan2(numbers[0]!, numbers[1]!)
+                    : undefined;
+            case "cos":
+                return numbers.length === 1
+                    ? Math.cos(numbers[0]!)
+                    : undefined;
+            case "sin":
+                return numbers.length === 1
+                    ? Math.sin(numbers[0]!)
+                    : undefined;
+            default:
+                return undefined;
+        }
+    }
+
     private compileTemplate(
         expression: ts.TemplateExpression,
     ): Value {
@@ -1958,6 +2090,11 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const pixelsUpload =
+            this.context.compilePixelsTextureUpload(call);
+        if (pixelsUpload) {
+            return pixelsUpload;
+        }
         const platform = this.context.compilePlatformCall(call);
         if (platform) {
             return platform;
@@ -2110,7 +2247,11 @@ export class ExpressionLowerer {
             if (PURE_NUMBER_FORMATTERS.has(callee.name.text)) {
                 this.context.expectArgumentCount(call, 0, 1);
                 const owner = this.compileValue(callee.expression);
-                const number = owner.staticNumber;
+                const number =
+                    owner.staticNumber ??
+                    this.generationTimeNumber(
+                        callee.expression,
+                    );
                 const digits = call.arguments[0]
                     ? staticNumberValue(
                           this.context,
@@ -2176,15 +2317,23 @@ export class ExpressionLowerer {
                 );
                 if (mapped) return mapped;
             }
-            const regexpType = this.context.checker.getTypeAtLocation(
+            const regexpExpression = this.context.unwrap(
                 callee.expression,
             );
+            const regexpType = this.context.checker.getTypeAtLocation(
+                regexpExpression,
+            );
+            const boundRegexp = ts.isIdentifier(regexpExpression)
+                ? this.context.lookupOptional(regexpExpression)
+                : undefined;
             const regexpOwner =
-                ts.isIdentifier(callee.expression) &&
-                regexpType.symbol?.name === "RegExp"
-                    ? this.compileValue(callee.expression)
-                    : ts.isIdentifier(callee.expression)
-                      ? this.context.lookupOptional(callee.expression)
+                boundRegexp?.kind === "regexp"
+                    ? boundRegexp
+                    : regexpType.symbol?.name === "RegExp" ||
+                        regexpExpression.kind ===
+                            ts.SyntaxKind.RegularExpressionLiteral ||
+                        ts.isNewExpression(regexpExpression)
+                      ? this.compileValue(regexpExpression)
                       : undefined;
             if (regexpOwner?.kind === "regexp") {
                 if (
@@ -2558,6 +2707,27 @@ export class ExpressionLowerer {
                       bound.callbackDeclaration,
                       inRecordScope,
                   );
+        }
+        if (
+            bound?.kind === "data" &&
+            bound.dataType?.kind === "function"
+        ) {
+            const functionType = bound.dataType;
+            if (call.arguments.length !== functionType.parameters.length) {
+                this.context.fail(
+                    call,
+                    `Stored function expects ${functionType.parameters.length} arguments.`,
+                );
+            }
+            const argumentsCpp = call.arguments.map((argument, index) =>
+                this.context.dataLowerer.compileForSink(
+                    argument,
+                    functionType.parameters[index]!,
+                ));
+            const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
+            return functionType.result
+                ? this.context.dataLowerer.leafValue(cpp, functionType.result)
+                : { kind: "void", cpp };
         }
 
         // `await HavokPhysics({ locateFile: ... })` -- the browser's own
@@ -2972,6 +3142,44 @@ export class ExpressionLowerer {
                     );
                 });
             if (ts.isBlock(callback.body)) {
+                const statements = callback.body.statements;
+                const finalStatement = statements.at(-1);
+                if (
+                    finalStatement &&
+                    ts.isReturnStatement(finalStatement) &&
+                    finalStatement.expression
+                ) {
+                    let earlierReturn: ts.ReturnStatement | undefined;
+                    const findEarlierReturn = (node: ts.Node): void => {
+                        if (earlierReturn) return;
+                        if (ts.isReturnStatement(node)) {
+                            earlierReturn = node;
+                            return;
+                        }
+                        if (
+                            node !== callback.body &&
+                            ts.isFunctionLike(node)
+                        ) {
+                            return;
+                        }
+                        ts.forEachChild(node, findEarlierReturn);
+                    };
+                    statements
+                        .slice(0, -1)
+                        .forEach(findEarlierReturn);
+                    if (earlierReturn) {
+                        this.context.fail(
+                            earlierReturn,
+                            "Destructured static tuple block callbacks support only a final return statement.",
+                        );
+                    }
+                    for (const statement of statements.slice(0, -1)) {
+                        this.context.emitStatement(statement);
+                    }
+                    return this.context.compileValue(
+                        finalStatement.expression,
+                    );
+                }
                 let hasReturn = false;
                 const findReturn = (node: ts.Node): void => {
                     if (hasReturn) return;

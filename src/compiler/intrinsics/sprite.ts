@@ -19,13 +19,17 @@ import {
     type PositiveIntegerContext,
 } from "../option-helpers.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
+import { stringLiteral } from "../../cpp-literals.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext,
         PositiveIntegerContext {
     readonly dataTypes: DataTypeRegistry;
+    readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
     requireDefaultEngine(node: ts.Node): string;
+    requireEngine(value: Value, node: ts.Node): string;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -162,14 +166,14 @@ function extraTextureOption(
 }
 
 /**
- * The two fields a `customShader` option settles on the record: whether
- * there is a descriptor, and the extra textures it binds.
+ * The values a `customShader` option settles on the record: whether there is
+ * a descriptor, the extra textures it binds, and their shader identifiers.
  *
  * The pin's own hook copies the descriptor onto the layer or system and
  * every later read goes through it, so the program itself is composed once
- * per family and what the record carries is only this pair. The family is
- * checked because a 2D descriptor names a fragment written against a varying
- * struct carrying `uv` and `tint` alone, which a billboard stage would
+ * per family and what the record carries is only this binding metadata. The
+ * family is checked because a 2D descriptor names a fragment written against
+ * a varying struct carrying `uv` and `tint` alone, which a billboard stage would
  * compile against a different contract behind the same names.
  */
 function customShaderOption(
@@ -177,11 +181,11 @@ function customShaderOption(
     options: Value | undefined,
     family: "sprite" | "billboard",
     node: ts.Node,
-): { program: string; textures: string } {
+): { program: string; textures: string; textureNames: string } {
     const named = property(options, "customShader");
     if (!named) {
         context.recordPlainSpriteProgram(family);
-        return { program: "0u", textures: "{}" };
+        return { program: "0u", textures: "{}", textureNames: "{}" };
     }
     if (named.kind !== `${family}-custom-shader`) {
         context.fail(
@@ -204,6 +208,12 @@ function customShaderOption(
             "A custom-shader descriptor reached a layer without its texture list.",
         );
     }
+    if (!named.spriteCustomTextureNames) {
+        context.fail(
+            node,
+            "A custom-shader descriptor reached a layer without its texture names.",
+        );
+    }
     if (named.spriteCustomShaderIndex === undefined) {
         context.fail(
             node,
@@ -213,6 +223,9 @@ function customShaderOption(
     return {
         program: `${named.spriteCustomShaderIndex}u`,
         textures: `{${named.spriteCustomTextures.join(", ")}}`,
+        textureNames: `{${named.spriteCustomTextureNames
+            .map(stringLiteral)
+            .join(", ")}}`,
     };
 }
 
@@ -508,6 +521,92 @@ export function compileSpriteIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "pickSprite2D": {
+            context.expectArgumentCount(call, 3, 3);
+            const layers = context.compileValue(call.arguments[0]!);
+            const tupleLayers =
+                layers.kind === "tuple"
+                    ? layers.tupleElements
+                    : undefined;
+            const dataLayers =
+                layers.kind === "data" &&
+                layers.dataType?.kind === "vector" &&
+                layers.dataType.element.kind === "handle" &&
+                layers.dataType.element.handle === "sprite-layer";
+            if (!tupleLayers && !dataLayers) {
+                context.fail(
+                    call.arguments[0]!,
+                    "pickSprite2D requires an array of sprite layers.",
+                );
+            }
+            for (const layer of tupleLayers ?? []) {
+                context.expectKind(
+                    layer,
+                    "sprite-layer",
+                    call.arguments[0]!,
+                );
+            }
+            const firstLayer = tupleLayers?.[0];
+            for (const layer of tupleLayers?.slice(1) ?? []) {
+                context.expectSameEngine(firstLayer!, layer, call);
+            }
+            const engineCpp = firstLayer
+                ? context.requireEngine(firstLayer, call)
+                : layers.engineCpp ?? context.requireDefaultEngine(call);
+            const resultType = context.dataTypes.fromTsType(
+                context.checker.getTypeAtLocation(call),
+                call,
+            );
+            if (
+                resultType?.kind !== "optional" ||
+                resultType.inner.kind !== "struct"
+            ) {
+                context.fail(
+                    call,
+                    "pickSprite2D must return its pinned nullable hit record.",
+                );
+            }
+            const fields = context.dataTypes.structFields(
+                resultType.inner.name,
+                call,
+            );
+            const fieldValues: Record<string, string> = {
+                layer: "hit->layer",
+                spriteIndex: "static_cast<double>(hit->sprite_index)",
+                u: "hit->u",
+                v: "hit->v",
+            };
+            for (const field of fields) {
+                if (fieldValues[field.name] === undefined) {
+                    context.fail(
+                        call,
+                        `pickSprite2D hit record has unsupported field '${field.name}'.`,
+                    );
+                }
+            }
+            const cppType = context.dataTypes.cppType(resultType);
+            const hitType = context.dataTypes.cppType(resultType.inner);
+            const layerList = dataLayers
+                ? `bbl::js::array_to_vector(${layers.cpp})`
+                : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
+                      .map((layer) => layer.cpp)
+                      .join(", ")}}`;
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "data",
+                cpp:
+                    `([&]() -> ${cppType} { ` +
+                    `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ${layerList}, ` +
+                    `${context.compileNumber(call.arguments[1]!, "double")}, ` +
+                    `${context.compileNumber(call.arguments[2]!, "double")}); ` +
+                    `if (!hit) return ${cppType}{std::nullopt}; ` +
+                    `return ${cppType}{${hitType}{${fields
+                        .map((field) => fieldValues[field.name])
+                        .join(", ")}}}; }())`,
+                dataType: resultType,
+            };
+        }
+
         case "createRenderTexture2D": {
             context.expectArgumentCount(call, 3, 4);
             const engine = context.compileValue(call.arguments[0]!);
@@ -650,11 +749,12 @@ export function compileSpriteIntrinsic(
             context.expectKind(texture, "texture", call.arguments[0]!);
             if (
                 texture.textureStorage !== "file" &&
+                texture.textureStorage !== "pixels" &&
                 texture.textureStorage !== "render"
             ) {
                 context.fail(
                     call.arguments[0]!,
-                    "createGridSpriteAtlas currently requires a loadTexture2D or render texture.",
+                    "createGridSpriteAtlas currently requires a file, pixels, or render texture.",
                 );
             }
             const options = optionsRecord(
@@ -924,7 +1024,8 @@ export function compileSpriteIntrinsic(
                             ? `${pivot[0]!}, ${pivot[1]!}`
                             : "0.5f, 0.5f"
                     }}, ` +
-                    `${custom.program}, ${custom.textures}})`,
+                    `${custom.program}, ${custom.textures}, ` +
+                    `${custom.textureNames}})`,
                 engineCpp,
             };
         }
@@ -1354,6 +1455,7 @@ export function compileSpriteIntrinsic(
                     `.has_alpha_cutoff = ${property(options, "alphaCutoff") ? "true" : "false"}, ` +
                     `.custom_shader = ${custom.program}, ` +
                     `.custom_textures = ${custom.textures}, ` +
+                    `.custom_texture_names = ${custom.textureNames}, ` +
                     `.add_pass_blend = bbl::SpriteBlendDescriptor{}})`,
                 engineCpp,
             };
@@ -1686,6 +1788,7 @@ export function compileSpriteIntrinsic(
                 spriteCustomTextures: extras.map(
                     ({ cpp }) => cpp,
                 ),
+                spriteCustomTextureNames: extraNames,
             };
         }
 

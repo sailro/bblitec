@@ -100,6 +100,24 @@ export class CompilerSymbols {
         return declaration?.getSourceFile().fileName;
     }
 
+    /** Whether generation can reach this value through a module import. */
+    public isModuleExport(identifier: ts.Identifier): boolean {
+        const value = this.valueSymbol(identifier);
+        const declaration = value?.declarations?.[0];
+        if (!value || !declaration) return false;
+        const sourceSymbol = this.checker.getSymbolAtLocation(
+            declaration.getSourceFile(),
+        );
+        for (const exported of sourceSymbol?.exports?.values() ?? []) {
+            const resolved =
+                (exported.flags & ts.SymbolFlags.Alias) !== 0
+                    ? this.checker.getAliasedSymbol(exported)
+                    : exported;
+            if (resolved === value) return true;
+        }
+        return false;
+    }
+
     /**
      * The module an identifier was imported from, or undefined when it is
      * not an import. Both spellings resolve here: a NAMED import, whose

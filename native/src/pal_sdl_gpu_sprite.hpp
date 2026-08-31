@@ -49,9 +49,11 @@ struct SpriteLayerGpu {
     // layer's, not the renderer's. The pin keys its own cache the same way.
     SDL_GPUGraphicsPipeline* pipeline = nullptr;
     SDL_GPUBuffer* instances = nullptr;
-    // The atlas and any extra textures, in the order the composed program
-    // declares them, built when the pass is.
+    // Owners stay atlas-then-extras for updates and release. The bound list
+    // follows the compacted fragment sidecar and may omit either.
     std::vector<SDL_GPUTextureSamplerBinding> textures;
+    std::vector<SDL_GPUTextureSamplerBinding> bound_textures;
+    std::vector<std::uint64_t> extra_uploaded_versions;
     std::uint64_t uploaded_version = 0;
     bool uploaded = false;
     // Where this layer's fragment stage kept its two uniform blocks, from
@@ -283,6 +285,16 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
         create_texture_sampler(device, atlas.sampler),
         layer.custom_textures,
         "sprite custom texture");
+    gpu.bound_textures = select_sprite_fragment_textures(
+        slots,
+        gpu.textures,
+        layer.custom_texture_names,
+        "sprite fragment shader");
+    gpu.extra_uploaded_versions.reserve(
+        layer.custom_textures.size());
+    for (const PixelsTexture& extra : layer.custom_textures) {
+        gpu.extra_uploaded_versions.push_back(extra.version);
+    }
     return gpu;
 }
 
@@ -415,6 +427,29 @@ inline void upload_sprite_pass(
         Sprite2DLayerRecord& layer =
             engine.sprite_layers[renderer.layers[index].value];
         SpriteLayerGpu& gpu = pass.layers[index];
+        for (
+            std::size_t extra_index = 0;
+            extra_index < layer.custom_textures.size();
+            ++extra_index) {
+            const PixelsTexture& extra =
+                layer.custom_textures[extra_index];
+            if (
+                gpu.extra_uploaded_versions[extra_index] ==
+                extra.version
+            ) {
+                continue;
+            }
+            upload_2d_texture_into(
+                device,
+                gpu.textures[extra_index + 1u].texture,
+                extra.rgba.data(),
+                extra.rgba.size(),
+                extra.width,
+                extra.height,
+                "sprite custom texture update");
+            gpu.extra_uploaded_versions[extra_index] =
+                extra.version;
+        }
         // The pin advances the clock in `_update`, before and regardless of
         // whether the instance data moved.
         if (layer.custom_shader) {
@@ -498,11 +533,13 @@ inline void record_sprite_pass(
             push_stage_uniform(
                 command, gpu.fx_block_slot, fx.data(), sizeof(fx));
         }
-        SDL_BindGPUFragmentSamplers(
-            render_pass,
-            0,
-            gpu.textures.data(),
-            static_cast<Uint32>(gpu.textures.size()));
+        if (!gpu.bound_textures.empty()) {
+            SDL_BindGPUFragmentSamplers(
+                render_pass,
+                0,
+                gpu.bound_textures.data(),
+                static_cast<Uint32>(gpu.bound_textures.size()));
+        }
         const SDL_GPUBufferBinding instance_binding{gpu.instances, 0};
         SDL_BindGPUVertexBuffers(render_pass, 0, &instance_binding, 1);
         SDL_DrawGPUIndexedPrimitives(

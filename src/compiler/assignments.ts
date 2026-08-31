@@ -716,6 +716,64 @@ function emitPostProcessOptionAssignment(
   return true;
 }
 
+/** Writes the mutable view fields exposed by `Sprite2DLayer.view`. */
+function emitSpriteLayerViewAssignment(
+  context: AssignmentContext,
+  expression: ts.BinaryExpression,
+): boolean {
+  const left = context.unwrap(expression.left);
+  let layerExpression: ts.Expression | undefined;
+  let field: string | undefined;
+  if (
+    ts.isPropertyAccessExpression(left) &&
+    (left.name.text === "zoom" || left.name.text === "rotation") &&
+    ts.isPropertyAccessExpression(context.unwrap(left.expression)) &&
+    (context.unwrap(left.expression) as ts.PropertyAccessExpression).name
+      .text === "view"
+  ) {
+    layerExpression = (
+      context.unwrap(left.expression) as ts.PropertyAccessExpression
+    ).expression;
+    field = left.name.text;
+  } else if (
+    ts.isElementAccessExpression(left) &&
+    ts.isPropertyAccessExpression(context.unwrap(left.expression)) &&
+    (context.unwrap(left.expression) as ts.PropertyAccessExpression).name
+      .text === "positionPx"
+  ) {
+    const position = context.unwrap(
+      (context.unwrap(left.expression) as ts.PropertyAccessExpression)
+        .expression,
+    );
+    if (
+      ts.isPropertyAccessExpression(position) &&
+      position.name.text === "view"
+    ) {
+      const index = context.compileValue(left.argumentExpression);
+      if (
+        index.kind !== "number" ||
+        index.staticNumber === undefined ||
+        (index.staticNumber !== 0 && index.staticNumber !== 1)
+      ) {
+        context.fail(
+          left.argumentExpression,
+          "Sprite2DLayer view position requires static index 0 or 1.",
+        );
+      }
+      layerExpression = position.expression;
+      field = index.staticNumber === 0 ? "position_px.x" : "position_px.y";
+    }
+  }
+  if (!layerExpression || !field) return false;
+  requireSimpleAssignment(context, expression, "Sprite2DLayer view");
+  const layer = context.compileValue(layerExpression);
+  context.expectKind(layer, "sprite-layer", layerExpression);
+  context.emit(
+    `${context.requireEngine(layer, layerExpression)}.sprite_layers[${layer.cpp}.value].view.${field} = static_cast<float>(${context.compileNumber(expression.right, "double")});`,
+  );
+  return true;
+}
+
 export function emitPropertyAssignment(
   context: AssignmentContext,
   expression: ts.BinaryExpression,
@@ -724,6 +782,9 @@ export function emitPropertyAssignment(
   // recorded as a step rather than emitted -- and it is an ELEMENT
   // access, which the property gate below would refuse first.
   if (emitParticleBufferWrite(context, expression)) {
+    return;
+  }
+  if (emitSpriteLayerViewAssignment(context, expression)) {
     return;
   }
   if (!ts.isPropertyAccessExpression(expression.left)) {
