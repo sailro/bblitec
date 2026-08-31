@@ -204,9 +204,28 @@ export async function composeScenePipeline({
     const lightKinds = pinnedSingleLightTypes.filter((kind) =>
         result.manifest.features.includes(`light:${kind}`)
     );
-    const gltfAssets = result.manifest.assets.filter(
+    // Runtime material/mesh handles advance on every load, including a
+    // second load of the same compiled asset. Compose one row set per
+    // container so the static selector order remains the runtime order.
+    const uniqueGltfAssets = result.manifest.assets.filter(
         (asset) => asset.kind === "gltf",
     );
+    const gltfAssets = uniqueGltfAssets
+        .flatMap((asset) =>
+            Array.from(
+                { length: asset.containerCount ?? 1 },
+                () => asset,
+            ),
+        );
+    const gltfRenderableFeaturesByAsset = new Map<
+        CompileAsset,
+        ReturnType<typeof gltfRenderableFeatures>
+    >();
+    const gltfMaterialCountsByAsset = new Map<CompileAsset, number>();
+    const gltfMaterialCompositionsByAsset = new Map<
+        CompileAsset,
+        ReturnType<typeof composeGltfMaterials>
+    >();
     // Tone mapping is loader state, not an alias for IBL. The upstream .env
     // loader and EXT_lights_image_based enable it, whereas HDR explicitly
     // disables it and DDS leaves the scene default (off) in place. Preserve
@@ -214,7 +233,7 @@ export async function composeScenePipeline({
     // assignment makes both states reachable regardless of asset presence.
     const loaderEnablesToneMapping =
         result.manifest.features.includes("environment:env") ||
-        gltfAssets.some((asset) =>
+        uniqueGltfAssets.some((asset) =>
             gltfHasImageBasedLight(
                 resolve(outputPath, "assets", asset.output),
             )
@@ -238,7 +257,7 @@ export async function composeScenePipeline({
     // constructing a minimal manifest directly.
     if (toneMappingStates.length === 0) toneMappingStates.push(false);
     const assetLightsReached =
-        gltfAssets.some(
+        uniqueGltfAssets.some(
             (asset) =>
                 gltfLightNodeCount(
                     resolve(outputPath, "assets", asset.output),
@@ -354,9 +373,18 @@ export async function composeScenePipeline({
         }
         const asset = gltfAssets[loadCount];
         if (asset) {
-            const features = await gltfRenderableFeatures(
-                resolve(outputPath, "assets", asset.output),
-            );
+            let pendingFeatures =
+                gltfRenderableFeaturesByAsset.get(asset);
+            if (!pendingFeatures) {
+                pendingFeatures = gltfRenderableFeatures(
+                    resolve(outputPath, "assets", asset.output),
+                );
+                gltfRenderableFeaturesByAsset.set(
+                    asset,
+                    pendingFeatures,
+                );
+            }
+            const features = await pendingFeatures;
             gltfRenderableFeatureSets.push(features);
             renderableMeshFeatures.push(...features);
         }
@@ -478,9 +506,15 @@ export async function composeScenePipeline({
         sceneMeshAttributeValues.size > 0
             ? [...sceneMeshAttributeValues]
             : [await proceduralRenderableFeatures()];
-    const gltfMaterialCounts = gltfAssets.map((asset) =>
-        gltfMaterialCount(resolve(outputPath, "assets", asset.output)),
-    );
+    const gltfMaterialCounts = gltfAssets.map((asset) => {
+        const cached = gltfMaterialCountsByAsset.get(asset);
+        if (cached !== undefined) return cached;
+        const count = gltfMaterialCount(
+            resolve(outputPath, "assets", asset.output),
+        );
+        gltfMaterialCountsByAsset.set(asset, count);
+        return count;
+    });
     const gltfMaterialPrefix = [0];
     for (const count of gltfMaterialCounts) {
         gltfMaterialPrefix.push(gltfMaterialPrefix.at(-1)! + count);
@@ -551,10 +585,19 @@ export async function composeScenePipeline({
                 ? { selectedVariant: asset.selectedVariant }
                 : {}),
         };
-        const composed = await composeGltfMaterials(
-            path,
-            assetComposeOptions,
-        );
+        let pendingComposition =
+            gltfMaterialCompositionsByAsset.get(asset);
+        if (!pendingComposition) {
+            pendingComposition = composeGltfMaterials(
+                path,
+                assetComposeOptions,
+            );
+            gltfMaterialCompositionsByAsset.set(
+                asset,
+                pendingComposition,
+            );
+        }
+        const composed = await pendingComposition;
         assetMetallicReflectanceRegistered ||= composed.some(
             (material) => material.metallicReflectanceRegistered,
         );
@@ -967,6 +1010,7 @@ export async function composeScenePipeline({
             label,
             graphShadowLights,
             castsEsmShadow,
+            material.blockEmitters,
         );
         // The graph decides which bindings exist and the scene decides which
         // it supplies; only here are both known. Upstream raises the mismatch
@@ -986,16 +1030,12 @@ export async function composeScenePipeline({
                     `does not supply.${nodeSite}`,
             );
         }
-        for (const name of material.textureNames) {
-            if (composed.textures.some((binding) => binding.name === name)) {
-                continue;
-            }
-            throw new Error(
-                `Node material '${label}' is given a texture named ` +
-                    `'${name}', which its graph declares no binding for.` +
-                    nodeSite,
-            );
-        }
+        // Extra keys are inert upstream: parseNodeMaterialFromSnippet walks
+        // the COMPILED texture bindings and looks each one up in
+        // options.textures; it never walks the options record itself. Scene
+        // 83 deliberately supplies PositionSample for a disconnected
+        // TextureBlock, which the graph walk emits no binding for, so that
+        // key is ignored while the reached AoDepth binding remains checked.
         nodeVariants.push({
             index,
             ...nodeVariantStageStems(index),

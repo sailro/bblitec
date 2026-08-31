@@ -38,7 +38,10 @@ import ts from "typescript";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import type { DataType } from "./data-types.js";
 import { requireGroupSource } from "./intrinsics/animation.js";
-import { resolveFunctionDeclaration } from "./user-functions.js";
+import {
+    resolveFunctionDeclaration,
+    unwrapExpression as unwrapWalkExpression,
+} from "./user-functions.js";
 import {
     isHandleCollectionProperty,
     nativeLocation,
@@ -53,6 +56,7 @@ import type {
     ValueKind,
 } from "./types.js";
 import {
+    asIndex,
     asRecords,
     asString,
     glbJsonText,
@@ -1134,7 +1138,8 @@ export class HandleCollections {
      * The reached recursive `findNode(root, name)` walk over an imported
      * synthetic root. Native glTF loading has already flattened that root's
      * renderable descendants into AssetRecord::meshes, in traversal order,
-     * so the DFS result is the first mesh record with the requested name.
+     * so the DFS result is the first record whose flattened node wrapper or
+     * renderable child has the requested name.
      */
     public compileAssetDescendantNameSearch(
         call: ts.CallExpression,
@@ -1145,7 +1150,29 @@ export class HandleCollections {
         }
         const root = this.context.compileValue(call.arguments[0]!);
         if (root.kind !== "asset-root") return undefined;
+        const declaration = resolveFunctionDeclaration(
+            this.context.checker,
+            callee,
+            (node, message) => this.context.fail(node, message),
+        );
+        if (
+            !declaration ||
+            !ts.isFunctionDeclaration(declaration) ||
+            !isAssetDescendantNameSearch(declaration)
+        ) {
+            this.context.fail(
+                callee,
+                "findNode over a glTF root is lowered only for the exact depth-first helper that tests root.name, recurses through root.children, returns the first hit, and otherwise returns undefined.",
+            );
+        }
         const name = this.context.compileStringLiteral(call.arguments[1]!);
+        if (!root.asset || root.asset.kind !== "gltf") {
+            this.context.fail(
+                call.arguments[0]!,
+                "Asset descendant name search requires a materialized glTF root.",
+            );
+        }
+        this.requireUniqueAssetDescendantMatch(root.asset, name, call);
         const engine = this.context.requireEngine(root, call);
         const result = this.context.allocateTemporaryCppName(
             "asset_descendant_match",
@@ -1164,7 +1191,10 @@ export class HandleCollections {
         );
         this.context.increaseIndent();
         this.context.emit(
-            `if (${engine}.meshes[${item}.value].name == ` +
+            `if (` +
+                `${engine}.meshes[${item}.value].scene_node_name == ` +
+                `${this.context.cppString(name)} || ` +
+                `${engine}.meshes[${item}.value].name == ` +
                 `${this.context.cppString(name)}) {`,
         );
         this.context.increaseIndent();
@@ -1181,6 +1211,86 @@ export class HandleCollections {
             engineCpp: engine,
             optionalFoundCpp: found,
         };
+    }
+
+    /**
+     * Proves that the flattened native mesh table can stand for the DFS hit.
+     * A transform-only node has no mesh handle, a multi-primitive node has
+     * several, and two matching records do not prove which hierarchy branch
+     * the source walk reaches first. All three therefore refuse before the
+     * runtime loop is emitted.
+     */
+    private requireUniqueAssetDescendantMatch(
+        asset: CompileAsset,
+        name: string,
+        node: ts.Node,
+    ): void {
+        const document = this.readAssetDocument(asset, node);
+        const nodes = asRecords(document.nodes);
+        const meshes = asRecords(document.meshes);
+        let primitiveOrdinal = 0;
+        let matches = 0;
+
+        for (const [nodeIndex, gltfNode] of nodes.entries()) {
+            const authoredNodeName = asString(gltfNode.name);
+            const nodeName = authoredNodeName || `gltf_node_${nodeIndex}`;
+            const meshIndex = asIndex(gltfNode.mesh);
+            if (meshIndex === undefined) {
+                if (nodeName === name) {
+                    this.context.fail(
+                        node,
+                        `Asset '${asset.output}' has a geometry-less node named '${name}'; the flattened native mesh search cannot represent that DFS result.`,
+                    );
+                }
+                continue;
+            }
+
+            const mesh = meshes[meshIndex];
+            if (!mesh) {
+                if (nodeName === name) {
+                    this.context.fail(
+                        node,
+                        `Asset '${asset.output}' names '${name}' on node ${nodeIndex}, whose glTF mesh index ${meshIndex} is invalid.`,
+                    );
+                }
+                continue;
+            }
+            const primitives = asRecords(mesh.primitives);
+            const authoredMeshName = asString(mesh.name);
+            const nodeMatches = nodeName === name;
+            let thisNodeMatches = 0;
+            for (let primitive = 0; primitive < primitives.length; primitive++) {
+                const meshName =
+                    authoredMeshName || `gltf_mesh_${primitiveOrdinal}`;
+                if (nodeMatches || meshName === name) {
+                    thisNodeMatches++;
+                }
+                primitiveOrdinal++;
+            }
+            if (
+                (nodeMatches || authoredMeshName === name) &&
+                primitives.length === 0
+            ) {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' names '${name}' on a node or mesh with no primitives; the flattened native mesh search cannot represent that DFS result.`,
+                );
+            }
+            if (thisNodeMatches > 1) {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' names '${name}' on a glTF node or mesh with ${thisNodeMatches} primitives; one SceneNode DFS result cannot be represented by several native mesh handles.`,
+                );
+            }
+            matches += thisNodeMatches;
+        }
+
+        if (matches > 1) {
+            this.context.fail(
+                node,
+                `Asset '${asset.output}' resolves '${name}' to ${matches} flattened mesh records; the source DFS's first hierarchy hit is not proven by the flat native table.`,
+            );
+        }
     }
 
     /** The emitted search loop — the pre-concept lowering, byte for byte. */
@@ -1597,23 +1707,6 @@ function walkBodyStatements(
         : [statement.statement];
 }
 
-/** Type-only wrappers do not change the object a hierarchy walk tests. */
-function unwrapWalkExpression(
-    expression: ts.Expression,
-): ts.Expression {
-    let current = expression;
-    while (
-        ts.isParenthesizedExpression(current) ||
-        ts.isAsExpression(current) ||
-        ts.isTypeAssertionExpression(current) ||
-        ts.isNonNullExpression(current) ||
-        ts.isSatisfiesExpression(current)
-    ) {
-        current = current.expression;
-    }
-    return current;
-}
-
 function logicalAndOperands(
     expression: ts.Expression,
 ): ts.Expression[] {
@@ -1661,6 +1754,175 @@ function singleExpressionStatement(
         ts.isExpressionStatement(statements[0]!)
         ? statements[0]!.expression
         : undefined;
+}
+
+/** A block-wrapped or bare `return <expression>` arm. */
+function singleReturnExpression(
+    statement: ts.Statement,
+): ts.Expression | undefined {
+    const statements = ts.isBlock(statement)
+        ? statement.statements
+        : [statement];
+    return statements.length === 1 &&
+        ts.isReturnStatement(statements[0]!)
+        ? statements[0]!.expression
+        : undefined;
+}
+
+/**
+ * Proves Scene 269's recursive first-hit DFS exactly:
+ *
+ *     if (root.name === name) return root;
+ *     for (const child of root.children) {
+ *         const hit = findNode(child, name);
+ *         if (hit) return hit;
+ *     }
+ *     return undefined;
+ *
+ * The native representation has no hierarchy node for imported transforms,
+ * so only this closed walk may be replaced by a search of the materialized
+ * flat mesh table. Any extra predicate, side effect, traversal order, or
+ * fallback remains an ordinary user function and is deliberately refused at
+ * the asset-root call site.
+ */
+function isAssetDescendantNameSearch(
+    declaration: ts.FunctionDeclaration,
+): boolean {
+    if (
+        !declaration.name ||
+        !declaration.body ||
+        declaration.asteriskToken ||
+        declaration.modifiers?.some(
+            (modifier) =>
+                modifier.kind === ts.SyntaxKind.AsyncKeyword,
+        ) ||
+        declaration.typeParameters?.length ||
+        declaration.parameters.length !== 2 ||
+        declaration.parameters.some(
+            (parameter) =>
+                !ts.isIdentifier(parameter.name) ||
+                !!parameter.dotDotDotToken ||
+                !!parameter.initializer ||
+                !!parameter.questionToken,
+        ) ||
+        declaration.body.statements.length !== 3
+    ) {
+        return false;
+    }
+    const root = declaration.parameters[0]!.name as ts.Identifier;
+    const name = declaration.parameters[1]!.name as ts.Identifier;
+    if (
+        new Set([
+            declaration.name.text,
+            root.text,
+            name.text,
+            "undefined",
+        ]).size !== 4
+    ) {
+        return false;
+    }
+    const [selfArm, walk, miss] = declaration.body.statements;
+
+    if (
+        !ts.isIfStatement(selfArm!) ||
+        !!selfArm.elseStatement
+    ) {
+        return false;
+    }
+    const selfTest = unwrapWalkExpression(selfArm.expression);
+    if (
+        !ts.isBinaryExpression(selfTest) ||
+        selfTest.operatorToken.kind !==
+            ts.SyntaxKind.EqualsEqualsEqualsToken ||
+        !isPropertyReadOf(selfTest.left, root, "name") ||
+        !isIdentifierRead(selfTest.right, name) ||
+        !isIdentifierRead(
+            singleReturnExpression(selfArm.thenStatement),
+            root,
+        )
+    ) {
+        return false;
+    }
+
+    if (
+        !ts.isForOfStatement(walk!) ||
+        !ts.isVariableDeclarationList(walk.initializer) ||
+        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        walk.initializer.declarations.length !== 1 ||
+        !isPropertyReadOf(walk.expression, root, "children")
+    ) {
+        return false;
+    }
+    const childDeclaration = walk.initializer.declarations[0]!;
+    if (
+        !ts.isIdentifier(childDeclaration.name) ||
+        childDeclaration.initializer
+    ) {
+        return false;
+    }
+    const child = childDeclaration.name;
+    if (
+        [declaration.name, root, name].some(
+            (identifier) => identifier.text === child.text,
+        ) ||
+        child.text === "undefined"
+    ) {
+        return false;
+    }
+    const loopStatements = walkBodyStatements(walk);
+    if (loopStatements.length !== 2) return false;
+
+    const hit = singleConstDeclaration(loopStatements[0]!);
+    if (
+        !hit ||
+        !ts.isVariableStatement(loopStatements[0]!) ||
+        (loopStatements[0]!.declarationList.flags &
+            ts.NodeFlags.Const) ===
+            0
+    ) {
+        return false;
+    }
+    if (
+        [declaration.name, root, name, child].some(
+            (identifier) => identifier.text === hit.name.text,
+        ) ||
+        hit.name.text === "undefined"
+    ) {
+        return false;
+    }
+    const recursive = unwrapWalkExpression(hit.initializer);
+    if (
+        !ts.isCallExpression(recursive) ||
+        recursive.arguments.length !== 2 ||
+        !isIdentifierRead(recursive.expression, declaration.name) ||
+        !isIdentifierRead(recursive.arguments[0], child) ||
+        !isIdentifierRead(recursive.arguments[1], name)
+    ) {
+        return false;
+    }
+
+    const hitArm = loopStatements[1];
+    if (
+        !hitArm ||
+        !ts.isIfStatement(hitArm) ||
+        !!hitArm.elseStatement ||
+        !isIdentifierRead(hitArm.expression, hit.name) ||
+        !isIdentifierRead(
+            singleReturnExpression(hitArm.thenStatement),
+            hit.name,
+        )
+    ) {
+        return false;
+    }
+
+    if (!ts.isReturnStatement(miss!) || !miss.expression) {
+        return false;
+    }
+    const missValue = unwrapWalkExpression(miss.expression);
+    return (
+        missValue.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(missValue) && missValue.text === "undefined")
+    );
 }
 
 /**

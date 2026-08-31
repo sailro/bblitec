@@ -787,13 +787,24 @@ the first frame; one mirrored later flips its pipeline through a plan
 rebuild, which is where this port chooses a front face. The opt-in seeds
 every mesh present and then appends its watcher to the scene's own
 before-render list, exactly as `installMirroredMeshSupport` does, so the
-frame position is the pin's rather than a rule spelled in each backend. The PBR family
-gets no back-culled twin: the glTF loader rewinds a single-sided mirrored
-primitive's indices at load instead.
+frame position is the pin's rather than a rule spelled in each backend. The
+glTF loader still rewinds a single-sided mirrored primitive's indices at load
+and stamps that authored winding as the watcher's baseline, so an imported
+mesh does not flip twice. A procedural PBR mesh mirrored later has no loader
+pass to do that work; the opt-in selects the corresponding back-culled,
+clockwise PBR pipeline when its live determinant crosses the baseline.
 
-`setParent`, a matrix-declared node's reparent, and a recursive
-`SceneNode.children` walk are not reached; scene 269 is the scene behind
-them ([TODO](../TODO.md)).
+`setParent` preserves the child's current world transform while it rewires the
+public traversal list and the world-matrix invalidation registry. It snapshots
+the child world before the link changes, derives the new local as
+`inverse(parentWorld) * childWorld`, and applies the pin's full decomposition,
+including a negative determinant as signed Y scale and the documented
+position-only fallback for a singular parent. Reparenting a matrix-declared
+node clears its captured raw matrix so the decomposed TRS takes authority.
+Flattened asset roots apply the same operation to their rendered leaves, and
+recursive imported-node lookup uses each glTF scene-node name while it walks
+the loader-built `children` hierarchy. Scene 269 gates those paths together
+with the procedural PBR winding transition.
 
 A scene-local shader material draws through a mesh's thin instances. Both
 lanes are the **mesh's** decision: the pin's `hasColor` is
@@ -910,15 +921,6 @@ setter writes those channels into the already-composed emissive arm. A
 scene-code PBR material may also attach a file-loaded ORM texture. That slot is
 linear by contract, retains the texture's sampler and `invertY`, and rejects an
 explicit sRGB load rather than silently decoding it as colour.
-
-`setParent` preserves the child's current world transform while it rewires the
-public traversal list and the world-matrix invalidation registry. It snapshots
-the child world before the link changes, derives the new local as
-`inverse(parentWorld) * childWorld`, and applies the pin's full decomposition,
-including a negative determinant as signed Y scale and the documented
-position-only fallback for a singular parent. Ordinary mesh TRS writes dirty
-the whole dependent subtree, so moving only a parent updates baked child
-geometry as well as hierarchies whose frame callback touches every node.
 
 `setPbrUnlit` also takes the linear-RGB tint its fragment multiplies the base
 colour by. A **loaded** material is stampable too, over the flattened mesh
@@ -1084,14 +1086,21 @@ A graph may also sample textures: `TextureBlock` and `ImageSourceBlock` each
 declare a binding named after the block, and the scene supplies the image
 under that name through `parseNodeMaterialFromSnippet`'s `textures` record.
 Generation joins the two, refusing a binding the record omits or a name the
-graph declares no binding for. The pair's group-1 allocation belongs to the
-pin's composition ([fidelity](fidelity.md#shader-contract)).
+graph declares no binding for. Loaded images pass through as file textures;
+the pin's solid-texture factory normalizes to the same record as a 1x1 RGBA
+upload, preserving its clamp and bilinear sampling contract. Pixel buffers
+and render attachments still refuse. The pair's group-1 allocation belongs
+to the pin's composition ([fidelity](fidelity.md#shader-contract)).
 
 What refuses at generation, naming the block that reached it: morph targets,
 shadows, clip planes and the mesh-attribute test. A graph fetched by snippet
 id refuses too, because the fetch is a network read at page load, and a graph
-handed its own `blockLoader` refuses because that function is scene code
-deciding which emitter serves each block class.
+handed an arbitrary `blockLoader` refuses because that function is scene code
+deciding which emitter serves each block class. The accepted closed form is a
+local one-parameter switch whose string cases return only the `emitter` export
+of pinned `material/node/blocks/*.js` modules and whose default throws.
+Generation validates that whole switch statically, then composes with exactly
+its declared emitter set rather than executing the loader.
 
 ### Material plugins
 
@@ -1327,6 +1336,16 @@ rather than rebuilding the set, with a version compare saying when to walk it
 — the shape a scene whose mesh set changed takes. Disposing also
 unregisters, stopping the frame loop from walking that renderer and moving
 the frame's clear to whichever context is now first.
+
+`pickSprite2D` is the synchronous CPU side of that same layer model. It walks
+the renderer's live layer list and each layer's logical sprite order in
+reverse, so the last drawn hit wins, then inverts the pinned vertex
+transform's rotation and pivot to recover `u` and `v`. A miss remains null;
+a hit retains the pin's complete `SpritePickInfo` record — `layer`,
+`spriteIndex`, `u`, and `v` — so Scene 117 can feed the returned handle and
+index straight back into `updateSprite2DIndex`. The picker is emitted from the
+Freeciv/runtime implementation already used by the application gate, rather
+than introducing a render or readback pass.
 
 A sprite renderer may target a `SpriteRenderTexture` instead of the screen,
 and that texture may in turn become another layer's atlas. Render textures and

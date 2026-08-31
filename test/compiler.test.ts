@@ -7971,6 +7971,165 @@ test("keeps sprite layers as handles when returned through data records and arra
     );
 });
 
+test("retains Scene 117's nullable sprite pick record and all hit fields", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene117.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.match(
+        result.cpp,
+        /using SpritePickInfo = std::shared_ptr<SpritePickInfoData>;/,
+    );
+    assert.match(
+        result.cpp,
+        /if \(!hit\) return bblscene::SpritePickInfo\{\};/,
+    );
+    assert.match(
+        result.cpp,
+        /pick_sprite_2d\(v_engine, v_engine\.sprite_renderers\.at\([\s\S]*?\)\.layers,/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /array_to_vector\(v_engine\.sprite_renderers/,
+    );
+    assert.match(
+        result.cpp,
+        /std::make_shared<bblscene::SpritePickInfoData>\(bblscene::SpritePickInfoData\{hit->layer, static_cast<double>\(hit->sprite_index\), hit->u, hit->v\}\)/,
+    );
+    assert.match(
+        result.cpp,
+        /static bblscene::SpritePickInfo v_hit = /,
+    );
+    assert.match(
+        result.cpp,
+        /update_sprite_2d_index\(v_engine, v_hit->layer, v_hit->spriteIndex,/,
+    );
+});
+
+test("compiles a SpriteRenderer.layers owner only once for picking", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            loadSpriteAtlas,
+            pickSprite2D,
+            updateSprite2DIndex,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const layer = createSprite2DLayer(atlas, {
+                capacity: 1,
+                depth: "none",
+            });
+            const hit = pickSprite2D(
+                createSpriteRenderer(engine, { layers: [layer] }).layers,
+                0,
+                0,
+            );
+            if (hit) {
+                updateSprite2DIndex(hit.layer, hit.spriteIndex, {
+                    color: [1, 0, 0, 1],
+                });
+            }
+        }
+        void main();
+    `);
+
+    assert.equal(
+        [...result.cpp.matchAll(/bbl::create_sprite_renderer\(/g)].length,
+        1,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /array_to_vector\([^;]*sprite_renderers/,
+    );
+});
+
+test("preserves native SpriteRenderer.layers through a local pick alias", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            loadSpriteAtlas,
+            pickSprite2D,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const layer = createSprite2DLayer(atlas, {
+                capacity: 1,
+                depth: "none",
+            });
+            const renderer = createSpriteRenderer(engine, {
+                layers: [layer],
+            });
+            const layers = renderer.layers;
+            pickSprite2D(layers, 0, 0);
+        }
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto& v_layers = [^;]+\.layers;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::pick_sprite_2d\(v_engine, v_layers,/,
+    );
+    assert.doesNotMatch(result.cpp, /array_to_vector\(v_layers\)/);
+});
+
+test("passes direct SpriteRenderer.layers to another renderer natively", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            loadSpriteAtlas,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const layer = createSprite2DLayer(atlas, {
+                capacity: 1,
+                depth: "none",
+            });
+            const sourceRenderer = createSpriteRenderer(engine, {
+                layers: [layer],
+            });
+            createSpriteRenderer(engine, {
+                layers: sourceRenderer.layers,
+            });
+        }
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /SpriteRendererOptions\{v_engine\.sprite_renderers\.at\([^;]*?\.layers,/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /array_to_vector\([^;]*sprite_renderers/,
+    );
+});
+
 test("does not leak sprite depth metadata across conditional handles", () => {
     const result = compileSource(`
         import {
@@ -9590,16 +9749,92 @@ test("defers the capture behind a promise that resolves on a frame count", () =>
     );
 });
 
-test("refuses a nested frame yield, which waits two frames", () => {
+test("erases the pinned bounded nested two-frame yield", () => {
+    const result = compileSource(
+        frameYieldScene(
+            "    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));",
+        ),
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise/);
+    assert.match(
+        result.cpp,
+        /bbl::defer_capture_until\([^;]+\[frames = 0u\]\(\) mutable \{ return \+\+frames >= 2u; \}\);/,
+    );
+});
+
+test("erases Scene 117's exact bounded two-frame helper", () => {
+    const result = compileSource(
+        frameYieldScene(
+            `    function waitTwoFrames(): Promise<number> {
+        return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    }
+    await waitTwoFrames();`,
+        ),
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise|waitTwoFrames/);
+    assert.match(
+        result.cpp,
+        /bbl::defer_capture_until\([^;]+\[frames = 0u\]\(\) mutable \{ return \+\+frames >= 2u; \}\);/,
+    );
+});
+
+test("refuses a bounded frame wait beside observable RAF work", () => {
     assert.throws(
         () =>
             compileSource(
                 frameYieldScene(
-                    "    await new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));",
+                    `    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    requestAnimationFrame(() => { canvas.dataset.other = "done"; });`,
                 ),
                 frameYieldFile,
             ),
-        /Unsupported expression statement: NewExpression/,
+        /another requestAnimationFrame callback can interleave/,
+    );
+});
+
+test("does not erase a bounded wait through a shadowed Promise", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    `    const Promise = globalThis.Promise;
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));`,
+                ),
+                frameYieldFile,
+            ),
+        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+    );
+});
+
+test("does not erase a bounded wait through a shadowed RAF", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    `    const requestAnimationFrame = (callback: (time: number) => void): number => {
+        callback(0);
+        return 0;
+    };
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));`,
+                ),
+                frameYieldFile,
+            ),
+        /Unsupported (?:constructor expression|expression statement:[\s\S]*NewExpression)/,
+    );
+});
+
+test("refuses a nested frame yield whose result is retained", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    "    const timestamp = await new Promise<number>((r) => requestAnimationFrame(() => requestAnimationFrame(r)));\n    canvas.dataset.timestamp = String(timestamp);",
+                ),
+                frameYieldFile,
+            ),
+        /Unsupported constructor expression/,
     );
 });
 

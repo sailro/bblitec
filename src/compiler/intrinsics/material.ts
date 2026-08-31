@@ -1216,9 +1216,9 @@ export function compileMaterialIntrinsic(
             const textures = graph.textures
                 .map(
                     (entry) =>
-                        `bbl::NodeMaterialTexture{` +
+                        `bbl::node_material_texture(` +
                         `${context.cppString(entry.name)}, ` +
-                        `${entry.texture.cpp}}`,
+                        `${entry.texture.cpp})`,
                 )
                 .join(", ");
             return {

@@ -32,7 +32,7 @@ export function isSupportedFunction(
 }
 
 /** Strip the type-only and grouping wrappers around an expression. */
-function unwrapExpression(expression: ts.Expression): ts.Expression {
+export function unwrapExpression(expression: ts.Expression): ts.Expression {
     let current = expression;
     while (
         ts.isParenthesizedExpression(current) ||

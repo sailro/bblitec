@@ -349,15 +349,19 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
         plan.source,
         /return left\.sort_distance > right\.sort_distance \|\|\s*\r?\n\s*\(left\.sort_distance == right\.sort_distance &&\s*\r?\n\s*left\.item\.order < right\.item\.order\);/,
     );
-    // The PBR clockwise pipeline arms exist only under cull-none: the
-    // loader stamps clockwise_front_face only for double-sided mirrored
-    // materials and rewinds single-sided mirrored indices instead. The
-    // Standard family's own arms are the mirrored-mesh opt-in's, and they
-    // cover both cull modes -- there is no loader there to rewind, which
-    // is exactly why the pin installs a primitive resolver for it.
-    assert.ok(
-        !plan.header.includes("pbr_opaque_back_clockwise") &&
-            !plan.header.includes("pbr_transparent_back_clockwise"),
+    // The loader-authored baseline prevents glTF single-sided primitives
+    // from flipping twice, while a procedural PBR mesh can still cross the
+    // determinant sign boundary at runtime. Both cull modes therefore carry
+    // the watcher-resolved clockwise state into the pipeline key.
+    assert.match(plan.header, /pbr_opaque_back_clockwise/);
+    assert.match(plan.header, /pbr_transparent_back_clockwise/);
+    assert.match(
+        plan.source,
+        /if \(!double_sided\) \{\s*return item\.clockwise_front_face\s*\? RenderPipelineKind::pbr_transparent_back_clockwise\s*: RenderPipelineKind::pbr_transparent_back;/,
+    );
+    assert.match(
+        plan.source,
+        /if \(!double_sided\) \{\s*return item\.clockwise_front_face\s*\? RenderPipelineKind::pbr_opaque_back_clockwise\s*: RenderPipelineKind::pbr_opaque_back;/,
     );
     assert.match(plan.header, /pbr_opaque_none_clockwise/);
 });

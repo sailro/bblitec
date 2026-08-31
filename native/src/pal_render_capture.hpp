@@ -454,12 +454,16 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
     switch (kind) {
         case upstream::RenderPipelineKind::pbr_opaque_back:
             return "pbr_opaque_back";
+        case upstream::RenderPipelineKind::pbr_opaque_back_clockwise:
+            return "pbr_opaque_back_clockwise";
         case upstream::RenderPipelineKind::pbr_opaque_none:
             return "pbr_opaque_none";
         case upstream::RenderPipelineKind::pbr_opaque_none_clockwise:
             return "pbr_opaque_none_clockwise";
         case upstream::RenderPipelineKind::pbr_transparent_back:
             return "pbr_transparent_back";
+        case upstream::RenderPipelineKind::pbr_transparent_back_clockwise:
+            return "pbr_transparent_back_clockwise";
         case upstream::RenderPipelineKind::pbr_transparent_none:
             return "pbr_transparent_none";
         case upstream::RenderPipelineKind::pbr_transparent_none_clockwise:

@@ -487,6 +487,12 @@ ${parentMatrixHelpers}
 void apply_parent_local(
     MeshRecord& record,
     const PinnedParentDecomposed& local) {
+    // Imported roots are flattened into an outer TRS beside each rendered
+    // leaf. Once setParent writes a decomposed local TRS, that override has
+    // served the same purpose as the pin's raw local matrix and must be
+    // cleared before the observable TRS becomes authoritative.
+    record.outer_position = Vec3{};
+    record.outer_rotation = Vec3{};
     record.position = Vec3d{
         local.translation.x,
         local.translation.y,
@@ -502,6 +508,139 @@ void apply_parent_local(
         static_cast<float>(local.scale.x),
         static_cast<float>(local.scale.y),
         static_cast<float>(local.scale.z)};
+    // Static glTF leaves have their node world baked into their vertices.
+    // A newly live parent therefore belongs in the draw-world matrix rather
+    // than in another CPU vertex bake.
+    record.gpu_world_transform = true;
+}
+
+std::array<float, 16> parenting_world_matrix(
+    const Engine& engine,
+    const MeshRecord& record) {
+    const std::array<float, 16> local_world =
+        upstream::mesh_world_matrix(engine, record);
+    if (
+        record.outer_position.x == 0.0f &&
+        record.outer_position.y == 0.0f &&
+        record.outer_position.z == 0.0f &&
+        record.outer_rotation.x == 0.0f &&
+        record.outer_rotation.y == 0.0f &&
+        record.outer_rotation.z == 0.0f) {
+        return local_world;
+    }
+
+    // Asset-root position/rotation is an outer scene-node transform in the
+    // flattened loader. Fold it into the snapshot before clearing it, so
+    // reparenting after addToScene preserves the same visible world.
+    MeshRecord outer;
+    outer.position = Vec3d{
+        record.outer_position.x,
+        record.outer_position.y,
+        record.outer_position.z};
+    outer.rotation = record.outer_rotation;
+    const std::array<float, 16> outer_world =
+        upstream::mesh_local_matrix(outer);
+    std::array<float, 16> result{};
+    mat4_multiply_into(result, 0, outer_world, 0, local_world, 0);
+    return result;
+}
+
+void unlink_child_links(
+    std::vector<MeshHandle>& children,
+    std::vector<MeshHandle>& registered,
+    MeshHandle child) {
+    children.erase(
+        std::remove(children.begin(), children.end(), child),
+        children.end());
+    registered.erase(
+        std::remove(registered.begin(), registered.end(), child),
+        registered.end());
+}
+
+void link_child_links(
+    std::vector<MeshHandle>& children,
+    std::vector<MeshHandle>& registered,
+    MeshHandle child) {
+    if (std::find(children.begin(), children.end(), child) == children.end()) {
+        children.push_back(child);
+    }
+    if (std::find(registered.begin(), registered.end(), child) == registered.end()) {
+        registered.push_back(child);
+    }
+}
+
+void unlink_parent(
+    Engine& engine,
+    MeshHandle child,
+    const MeshRecord& child_record) {
+    if (child_record.transform_parent.value < engine.transform_nodes.size()) {
+        TransformNodeRecord& old_parent =
+            engine.transform_nodes[child_record.transform_parent.value];
+        unlink_child_links(
+            old_parent.children, old_parent.parented_meshes, child);
+    }
+    if (child_record.parent.value < engine.meshes.size()) {
+        MeshRecord& old_parent = engine.meshes[child_record.parent.value];
+        unlink_child_links(
+            old_parent.children, old_parent.parented_meshes, child);
+    }
+}
+
+void link_parent(
+    Engine& engine,
+    MeshHandle child,
+    MeshHandle parent) {
+    if (parent.value >= engine.meshes.size()) return;
+    MeshRecord& new_parent = engine.meshes[parent.value];
+    link_child_links(
+        new_parent.children, new_parent.parented_meshes, child);
+}
+
+void link_parent(
+    Engine& engine,
+    MeshHandle child,
+    TransformNodeHandle parent) {
+    if (parent.value >= engine.transform_nodes.size()) return;
+    TransformNodeRecord& new_parent = engine.transform_nodes[parent.value];
+    link_child_links(
+        new_parent.children, new_parent.parented_meshes, child);
+}
+
+void apply_preserved_parent_local(
+    Engine& engine,
+    MeshHandle child,
+    const std::array<float, 16>& child_world,
+    const std::optional<std::array<float, 16>>& parent_world) {
+    MeshRecord& child_record = engine.meshes[child.value];
+    if (!parent_world) {
+        apply_parent_local(
+            child_record,
+            pinned_parent_mat4_decompose(child_world));
+        mark_mesh_dirty(engine, child);
+        return;
+    }
+
+    const std::optional<std::array<float, 16>> inverse_parent =
+        mat4_invert(*parent_world);
+    if (!inverse_parent) {
+        // The pin cannot preserve a full transform beneath a singular
+        // parent. It keeps the new link, clears a raw matrix override, copies
+        // the old world position, and retains the existing rotation/scale.
+        child_record.outer_position = Vec3{};
+        child_record.outer_rotation = Vec3{};
+        child_record.gpu_world_transform = true;
+        child_record.position = Vec3d{
+            child_world[12], child_world[13], child_world[14]};
+        mark_mesh_dirty(engine, child);
+        return;
+    }
+
+    std::array<float, 16> local{};
+    mat4_multiply_into(local, 0, *inverse_parent, 0, child_world, 0);
+    apply_parent_local(
+        child_record,
+        pinned_parent_mat4_decompose(local));
+    mark_mesh_dirty(engine, child);
 }
 
 } // namespace
@@ -516,83 +655,65 @@ void set_mesh_parent(
     // The local TRS written below therefore preserves the visible transform,
     // including a mirrored signed scale, across attach and detach.
     const std::array<float, 16> child_world =
-        upstream::mesh_world_matrix(engine, child_record);
+        parenting_world_matrix(engine, child_record);
     const bool link_changed =
         child_record.parent != parent ||
         child_record.transform_parent.value < engine.transform_nodes.size();
     if (link_changed) {
-        if (child_record.transform_parent.value < engine.transform_nodes.size()) {
-            TransformNodeRecord& old_parent =
-                engine.transform_nodes[child_record.transform_parent.value];
-            old_parent.children.erase(
-                std::remove(
-                    old_parent.children.begin(),
-                    old_parent.children.end(),
-                    child),
-                old_parent.children.end());
-            old_parent.parented_meshes.erase(
-                std::remove(
-                    old_parent.parented_meshes.begin(),
-                    old_parent.parented_meshes.end(),
-                    child),
-                old_parent.parented_meshes.end());
-        }
-        if (child_record.parent.value < engine.meshes.size()) {
-            MeshRecord& old_parent = engine.meshes[child_record.parent.value];
-            std::vector<MeshHandle>& old_children = old_parent.children;
-            old_children.erase(
-                std::remove(old_children.begin(), old_children.end(), child),
-                old_children.end());
-            std::vector<MeshHandle>& old_registered = old_parent.parented_meshes;
-            old_registered.erase(
-                std::remove(old_registered.begin(), old_registered.end(), child),
-                old_registered.end());
-        }
+        unlink_parent(engine, child, child_record);
         child_record.transform_parent = TransformNodeHandle{};
         child_record.parent = parent;
-        if (parent.value < engine.meshes.size()) {
-            MeshRecord& new_parent = engine.meshes[parent.value];
-            std::vector<MeshHandle>& new_children = new_parent.children;
-            if (std::find(new_children.begin(), new_children.end(), child) ==
-                new_children.end()) {
-                new_children.push_back(child);
-            }
-            std::vector<MeshHandle>& new_registered = new_parent.parented_meshes;
-            if (std::find(new_registered.begin(), new_registered.end(), child) ==
-                new_registered.end()) {
-                new_registered.push_back(child);
-            }
-        }
+        link_parent(engine, child, parent);
     }
 
     if (parent.value >= engine.meshes.size()) {
-        apply_parent_local(
-            child_record,
-            pinned_parent_mat4_decompose(child_world));
-        mark_mesh_dirty(engine, child);
+        apply_preserved_parent_local(
+            engine, child, child_world, std::nullopt);
         return;
     }
 
     const std::array<float, 16> parent_world =
-        upstream::mesh_world_matrix(engine, engine.meshes[parent.value]);
-    const std::optional<std::array<float, 16>> inverse_parent =
-        mat4_invert(parent_world);
-    if (!inverse_parent) {
-        // The pin cannot preserve a full transform beneath a singular
-        // parent. Its documented best effort keeps the new link, copies the
-        // old world position into local space, and leaves rotation/scale.
-        child_record.position = Vec3d{
-            child_world[12], child_world[13], child_world[14]};
-        mark_mesh_dirty(engine, child);
-        return;
+        parenting_world_matrix(engine, engine.meshes[parent.value]);
+    apply_preserved_parent_local(
+        engine, child, child_world, parent_world);
+}
+
+void set_mesh_parent(
+    Engine& engine,
+    MeshHandle child,
+    TransformNodeHandle parent) {
+    MeshRecord& child_record = engine.meshes.at(child.value);
+    const std::array<float, 16> child_world =
+        parenting_world_matrix(engine, child_record);
+    const bool link_changed =
+        child_record.transform_parent.value != parent.value ||
+        child_record.parent.value < engine.meshes.size();
+    if (link_changed) {
+        unlink_parent(engine, child, child_record);
+        child_record.parent = MeshHandle{};
+        child_record.transform_parent = parent;
+        link_parent(engine, child, parent);
     }
 
-    std::array<float, 16> local{};
-    mat4_multiply_into(local, 0, *inverse_parent, 0, child_world, 0);
-    apply_parent_local(
-        child_record,
-        pinned_parent_mat4_decompose(local));
-    mark_mesh_dirty(engine, child);
+    const std::array<float, 16> parent_world =
+        upstream::transform_node_world(engine, parent);
+    apply_preserved_parent_local(
+        engine, child, child_world, parent_world);
+}
+
+void set_asset_root_parent(
+    Engine& engine,
+    AssetHandle child,
+    TransformNodeHandle parent) {
+    if (child.value >= engine.assets.size()) {
+        throw std::runtime_error("Invalid imported root handle.");
+    }
+    // The loader intentionally flattens imported hierarchy nodes. Reparent
+    // every rendered leaf as one operation; each leaf snapshots its own
+    // current world, so their relative arrangement is preserved exactly.
+    for (const MeshHandle mesh : engine.assets[child.value].meshes) {
+        set_mesh_parent(engine, mesh, parent);
+    }
 }
 `
       : "";

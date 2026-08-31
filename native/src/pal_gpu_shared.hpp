@@ -3966,12 +3966,16 @@ inline RenderPipelineKindTraits pipeline_kind_traits(
     switch (kind) {
         case Kind::pbr_opaque_back:
             return {Family::pbr, false, Cull::back, false};
+        case Kind::pbr_opaque_back_clockwise:
+            return {Family::pbr, false, Cull::back, true};
         case Kind::pbr_opaque_none:
             return {Family::pbr, false, Cull::none, false};
         case Kind::pbr_opaque_none_clockwise:
             return {Family::pbr, false, Cull::none, true};
         case Kind::pbr_transparent_back:
             return {Family::pbr, true, Cull::back, false};
+        case Kind::pbr_transparent_back_clockwise:
+            return {Family::pbr, true, Cull::back, true};
         case Kind::pbr_transparent_none:
             return {Family::pbr, true, Cull::none, false};
         case Kind::pbr_transparent_none_clockwise:

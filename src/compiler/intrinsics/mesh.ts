@@ -97,6 +97,7 @@ export interface MeshIntrinsicContext
         right: Value,
         node: ts.Node,
     ): void;
+    markAssetRootReparented(root: Value, node: ts.Node): void;
     unwrap(expression: ts.Expression): ts.Expression;
     resolveStaticExpression(
         expression: ts.Expression,
@@ -291,24 +292,56 @@ export function compileMeshIntrinsic(
         case "setParent": {
             context.expectArgumentCount(call, 2, 2);
             const child = context.compileValue(call.arguments[0]!);
-            context.expectKind(child, "mesh", call.arguments[0]!);
             const parent = context.compileValue(call.arguments[1]!);
-            if (parent.kind !== "mesh" && parent.kind !== "json-null") {
+
+            if (child.kind !== "mesh" && child.kind !== "asset-root") {
                 context.fail(
-                    call.arguments[1]!,
-                    `setParent's reached scene-graph slice accepts a Mesh or null, received ${parent.kind}.`,
+                    call.arguments[0]!,
+                    `setParent's reached scene-graph slice accepts a Mesh or imported root, received ${child.kind}.`,
                 );
             }
-            if (parent.kind === "mesh") {
+            if (
+                parent.kind !== "mesh" &&
+                parent.kind !== "transform-node" &&
+                parent.kind !== "json-null"
+            ) {
+                context.fail(
+                    call.arguments[1]!,
+                    `setParent's reached scene-graph slice accepts a Mesh, TransformNode, or null parent, received ${parent.kind}.`,
+                );
+            }
+            if (
+                child.kind === "asset-root" &&
+                parent.kind !== "transform-node"
+            ) {
+                context.fail(
+                    call,
+                    "An imported root is reached only when reparenting it to a TransformNode.",
+                );
+            }
+            if (parent.kind !== "json-null") {
                 context.expectSameEngine(child, parent, call);
             }
             context.reachFeature("mesh:parenting", call);
+            if (child.kind === "asset-root") {
+                context.markAssetRootReparented(
+                    child,
+                    call.arguments[0]!,
+                );
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::set_asset_root_parent(` +
+                        `${context.requireEngine(child, call)}, ${child.cpp}, ` +
+                        `${parent.cpp})`,
+                };
+            }
             return {
                 kind: "void",
                 cpp:
                     `bbl::set_mesh_parent(` +
                     `${context.requireEngine(child, call)}, ${child.cpp}, ` +
-                    `${parent.kind === "mesh" ? parent.cpp : "bbl::MeshHandle{}"})`,
+                    `${parent.kind === "json-null" ? "bbl::MeshHandle{}" : parent.cpp})`,
             };
         }
 
@@ -330,6 +363,7 @@ export function compileMeshIntrinsic(
                     `bbl::clone_asset_root(${engine}, ` +
                     `${source.cpp})`,
                 assetRootClone: true,
+                assetRootState: { reparented: false },
             };
         }
 

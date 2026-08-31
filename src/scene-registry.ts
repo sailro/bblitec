@@ -321,7 +321,7 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             maxFullMad: 0.01,
             maxForegroundMad: 0.02,
-            backgroundColor: [51, 51, 77],
+        backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
     },
@@ -1333,6 +1333,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene117",
+        name: "Scene 117 - 2D Sprite Picking",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene117.ts",
+        title: "Babylon Lite Native - 2D Sprite Picking",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [18, 20, 31],
+            backgroundThreshold: 30,
+            // The post-start continuation applies the CPU pick after native
+            // frame zero. Let that callback register its bounded settle gate
+            // before capture becomes eligible.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "1",
+            },
+        },
+    },
+    {
         id: "scene145",
         name: "Scene 145 - Standard Geometry Outputs",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene145.ts",
@@ -1459,6 +1477,18 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [15, 18, 26],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene269",
+        name: "Scene 269 - Mirrored Transform Reparenting",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene269.ts",
+        title: "Babylon Lite Native - Mirrored Transform Reparenting",
+        parity: {
+            maxFullMad: 0.002,
+            maxForegroundMad: 0.01,
+            backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },
     },
@@ -2311,6 +2341,18 @@ const sceneInputs: readonly SceneInput[] = [
         name: "Scene 82 - NME Procedural Noise",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene82.ts",
         title: "Babylon Lite Native - NME Procedural Noise",
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene83",
+        name: "Scene 83 - NME Normals",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene83.ts",
+        title: "Babylon Lite Native - NME Normals",
         parity: {
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,

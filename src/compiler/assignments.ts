@@ -469,6 +469,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
   expectKind(value: Value, kind: ValueKind, node: ts.Node): void;
   expectSameEngine(left: Value, right: Value, node: ts.Node): void;
   requireEngine(value: Value, node: ts.Node): string;
+  assertAssetRootWritable(root: Value, node: ts.Node): void;
   eraseBrowserInstrumentation(position: number): void;
   isBrowserOnlyExpression(expression: ts.Expression): boolean;
   isBrowserDomValue(expression: ts.Expression): boolean;
@@ -1059,6 +1060,7 @@ export function emitPropertyAssignment(
   ) {
     const root = context.compileValue(left.expression.expression);
     if (root.kind === "asset-root") {
+      context.assertAssetRootWritable(root, expression);
       const vector = left.expression.name.text;
       const axis = { x: 0, y: 1, z: 2 }[
         left.name.text as "x" | "y" | "z"
@@ -1793,37 +1795,6 @@ export function emitPropertyAssignment(
     const axis = { x: 0, y: 1, z: 2 }[left.name.text as "x" | "y" | "z"];
     if (axis === undefined) {
       context.fail(left.name, `Unsupported rotation axis '${left.name.text}'.`);
-    }
-    if (mesh.kind === "asset-root") {
-      const vector = left.expression.name.text;
-      if (vector === "scaling") {
-        context.fail(
-          left.expression,
-          "An imported root currently exposes position and Y rotation; scaling requires a retained outer matrix.",
-        );
-      }
-      requireSimpleAssignment(
-        context,
-        expression,
-        `imported root ${vector}`,
-      );
-      const engine = context.requireEngine(mesh, expression);
-      if (vector === "rotation") {
-        context.emit(
-          `bbl::set_asset_root_rotation_component(` +
-            `${engine}, ${mesh.cpp}, ` +
-            `${axis}u, ` +
-            `${context.compileNumber(expression.right)});`,
-        );
-        return;
-      }
-      context.emit(
-        `bbl::set_asset_root_position_component(` +
-          `${engine}, ` +
-          `${mesh.cpp}, ${axis}u, ` +
-          `${context.compileNumber(expression.right)});`,
-      );
-      return;
     }
     if (mesh.kind === "light") {
       const vector = left.expression.name.text;

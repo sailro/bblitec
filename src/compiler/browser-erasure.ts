@@ -94,6 +94,16 @@ export class BrowserErasure {
             : undefined;
     }
 
+    /** A real DOM RAF call, preserving ordinary lexical shadowing. */
+    public isDefaultRequestAnimationFrameCall(
+        call: ts.CallExpression,
+    ): boolean {
+        return (
+            this.browserGlobalNamed(call.expression)?.text ===
+            "requestAnimationFrame"
+        );
+    }
+
     /**
      * `setTimeout(callback, 0)` -- bare or through `window`.
      *
@@ -911,6 +921,9 @@ export class BrowserErasure {
             !ts.isNewExpression(unwrapped) ||
             !ts.isIdentifier(unwrapped.expression) ||
             unwrapped.expression.text !== "Promise" ||
+            !this.context.isDefaultLibraryIdentifier(
+                unwrapped.expression,
+            ) ||
             unwrapped.arguments?.length !== 1
         ) {
             return undefined;
@@ -938,8 +951,7 @@ export class BrowserErasure {
         );
         if (
             !ts.isCallExpression(raf) ||
-            !ts.isIdentifier(raf.expression) ||
-            raf.expression.text !== "requestAnimationFrame" ||
+            !this.isDefaultRequestAnimationFrameCall(raf) ||
             raf.arguments.length !== 1
         ) {
             return false;
@@ -959,6 +971,57 @@ export class BrowserErasure {
             ts.isIdentifier(resolveCall.expression) &&
             resolveCall.expression.text === resolveName &&
             resolveCall.arguments.length === 0
+        );
+    }
+
+    /**
+     * The one bounded two-frame wait the pin gives Scene 117:
+     *
+     * ```ts
+     * new Promise((resolve) =>
+     *     requestAnimationFrame(() => requestAnimationFrame(resolve)))
+     * ```
+     *
+     * This is deliberately not a recursive/counting matcher. The initial
+     * Scene 117 PR used a loop around single-frame promises; review replaced
+     * it with this closed two-RAF expression before the pinned commit. Native
+     * runs the post-start continuation on the frame conductor, after the
+     * initial draw, and applies its CPU sprite mutation before the following
+     * draw, so these two settling turns have no additional state to drain.
+     * Any third callback, callback body, argument, or different Promise
+     * executor remains outside the contract and keeps refusing.
+     */
+    public isBoundedNestedFrameYield(
+        expression: ts.Expression,
+    ): boolean {
+        const executor = this.promiseExecutor(expression);
+        if (!executor) return false;
+        const outer = this.context.unwrap(
+            executor.body as ts.Expression,
+        );
+        if (
+            !ts.isCallExpression(outer) ||
+            !this.isDefaultRequestAnimationFrameCall(outer) ||
+            outer.arguments.length !== 1
+        ) {
+            return false;
+        }
+        const callback = outer.arguments[0]!;
+        if (
+            !ts.isArrowFunction(callback) ||
+            callback.parameters.length !== 0
+        ) {
+            return false;
+        }
+        const inner = this.context.unwrap(
+            callback.body as ts.Expression,
+        );
+        return (
+            ts.isCallExpression(inner) &&
+            this.isDefaultRequestAnimationFrameCall(inner) &&
+            inner.arguments.length === 1 &&
+            ts.isIdentifier(inner.arguments[0]!) &&
+            inner.arguments[0]!.text === executor.resolveName
         );
     }
 
@@ -1038,8 +1101,7 @@ export class BrowserErasure {
         }
         if (
             !ts.isCallExpression(scheduled) ||
-            !ts.isIdentifier(scheduled.expression) ||
-            scheduled.expression.text !== "requestAnimationFrame" ||
+            !this.isDefaultRequestAnimationFrameCall(scheduled) ||
             scheduled.arguments.length !== 1 ||
             !ts.isIdentifier(scheduled.arguments[0]!) ||
             (scheduled.arguments[0] as ts.Identifier).text !== waitName

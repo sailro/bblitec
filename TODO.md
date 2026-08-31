@@ -196,7 +196,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-71 corpus scenes remain unregistered; measured scenes
+62 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -268,12 +268,12 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (33 scenes):**
-66, 72, 73, 83, 86, 90, 91, 111-115, 117, 118, 121-124,
+**Integrate first (30 scenes):**
+66, 72, 73, 86, 90, 91, 111-115, 118, 121-124,
 140, 149, 214, 215, 218, 219,
-223, 226, 231, 241, 261, 269, 271, 275, 300.
+223, 226, 231, 241, 261, 271, 275, 300.
 Includes static CSG/CSG2, compressed assets
-and splats, deterministic picking (113-115, 117, 118), and display-only
+and splats, deterministic picking (113-115, 118), and display-only
 gizmos (223). Every navigation scene the corpus carries is now
 integrated.
 
@@ -346,7 +346,7 @@ integrated.
   ([features](docs/features.md#picking)). The reached slice is one
   non-detailed pick over meshes and one cloud; each remaining arm refuses by
   name:
-  - `enableDetailedPicking` and `getPickedNormal` (114, 117): a third
+  - `enableDetailedPicking` and `getPickedNormal` (114): a third
     rgba32uint attachment, the primitive and barycentric readback, and the
     CPU position and normal arrays `detailed-picking.ts` interpolates.
   - `pickAsync`'s `filter`, `discard` and `ignore` options, which select
@@ -440,25 +440,16 @@ integrated.
     rendering.
 - [ ] The remaining sprite cluster, each at its measured first blocker:
   - Scenes 205, 206 reach the billboard path but stop at engine options.
-  - Scene 117: an unsupported constructor expression, then sprite picking.
-- [ ] Extend node materials past the slice scenes 60-63, 67-71, 77-82, 84, 85,
-  87, 88 and 89 measure. Each item is a block the composed graph reaches and
+- [ ] Extend node materials past the slice scenes 60-63, 67-71, 77-85 and
+  87-89 measure. Each item is a block the composed graph reaches and
   this port refuses by name at generation, though a scene whose first blocker
   is elsewhere reports that instead:
-  - a scene-supplied `blockLoader` (73, 83), which is the pin's bundle-size
-    device: the scene passes a function mapping each block class name to a
-    dynamic import of the pin's own emitter module, so `loadGraphEmitters`
-    pulls only what the graph reaches. It composes the same module the default
-    registry does *when* every arm maps to the pin's own emitter, and nothing
-    static proves that of an arbitrary function. The shape that would: read
-    the switch statically, refuse any arm whose import is not a pinned
-    `material/node/blocks/*.js` emitter, and compose with exactly those.
-    73 additionally wants camera viewports and a loader-returned collection.
   - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86).
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
   - a graph reached through `getSceneNNNme()` behind a gzip payload (66,
-    72, 73), which is a module function rather than an exported object.
+    72, 73), which is a module function rather than an exported object. Scene
+    73 additionally wants camera viewports and a loader-returned collection.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
   - the `inputs` handles, which no reached scene writes: a scene setting one
     would need the node UBO rewritten per frame instead of folded.
@@ -809,20 +800,6 @@ integrated.
     `createParticleSprite2DBridge` / `syncParticleSprite2DBridge` /
     `disposeNodeParticleSet2DBinding` entry points, none of which a corpus
     scene reaches: the two that do go through the managed registrars.
-- [ ] Scene 269: support `setParent`. Scene 270 ships, so the transform
-  node itself, a mesh's `parent` link, `children.push`, the node's own
-  ObservableVec3/Quat setters, the parent-chain world and the mirrored-mesh
-  opt-in are all reached. What 269 adds is the reparent: `setParent`
-  snapshots the child's world, sets the link, then writes the local TRS
-  back through `mat4Decompose` (already lowered, for the splat bake) so the
-  reflection in a mirrored glTF root survives, and it syncs both
-  `children` arrays. Beside it sit a recursive `findNode` walk over
-  `SceneNode.children` and a matrix-declared glTF node, whose
-  `_localMatrix` `setParent` clears so the decomposed TRS takes over. The
-  interaction to measure first is the loader's own winding pass: it rewinds
-  a single-sided mirrored primitive's INDICES at load, where the
-  mirrored-mesh opt-in flips the pipeline, and a mesh reaching both would
-  flip twice.
 - [ ] Scene 261: support the reached `box.material` assignment; temporal
   anti-aliasing sits behind it.
 - [ ] Scene 275: support `loadFont`.
@@ -836,7 +813,12 @@ integrated.
 - [ ] Lower `KHR_materials_anisotropy` from glTF assets. Scene 241 now reaches
   the loader after its query-derived `isNaN` predicates fold, and its
   AnimationPointerUVs fixture is the first corpus asset carrying the
-  extension.
+  extension. A full asset strip also exposed the follow-on family: nine
+  materials use textured `KHR_materials_diffuse_transmission`, including two
+  transformed texture pairs. That is not a scalar loader addition; it needs
+  the PBR2 translucency feature bits, material UBO vectors, shader/PAL
+  bindings, and animation-pointer plumbing before Scene 241 is a bounded
+  integration candidate.
 - [ ] Extend `KHR_materials_specular` past its two factors: `specularTexture`
   and `specularColorTexture` fail explicitly at load. Scene 241 is the only
   corpus asset carrying them and is blocked earlier by its anisotropy
