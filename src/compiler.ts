@@ -426,9 +426,11 @@ class Compiler
     private readonly shadowGenerators: ShadowGeneratorManifest[] = [];
     private readonly shadowReceiverMeshes = new Set<number>();
     private dynamicShadowReceivers = false;
-    /** How many lights `addToScene` has added, which is their slot order. */
-    private sceneLightCount = 0;
-    private readonly sceneLightKinds: LightKind[] = [];
+    /** The active lights and kinds, kept in one receiver-binding order. */
+    private readonly sceneLights: Array<{
+        identity: NonNullable<Value["lightIdentity"]>;
+        kind: LightKind;
+    }> = [];
     private dynamicSceneLights = false;
     private mutableToneMappingEnabled = false;
     private readonly sceneSpriteCustomShaders: SpriteCustomShaderManifest[] =
@@ -628,7 +630,7 @@ class Compiler
                 sceneMaterialGltfAssetsBefore:
                     this.sceneMaterialGltfAssetsBefore,
                 sceneMeshes: this.sceneMeshes,
-                sceneLightKinds: this.sceneLightKinds,
+                sceneLightKinds: this.sceneLights.map(({ kind }) => kind),
                 dynamicSceneLights: this.dynamicSceneLights,
                 mutableToneMappingEnabled: this.mutableToneMappingEnabled,
                 ...(this.clusteredContainer
@@ -639,18 +641,26 @@ class Compiler
                           },
                       }
                     : {}),
-                shadowGenerators: this.shadowGenerators.map((generator) => ({
-                    ...generator,
-                    // The caster's material as the mesh finally carried it,
-                    // which is what the pin's own lazy view lookup reads.
-                    casters: generator.casters.map((caster) => ({
-                        meshIndex: caster.meshIndex,
-                        pbrMaterial: null,
-                        nodeMaterial: null,
-                        ...(this.sceneMeshMaterials.get(caster.meshIndex) ??
-                            {}),
-                    })),
-                })),
+                shadowGenerators: this.shadowGenerators.map((generator) => {
+                    if (generator.lightIndex < 0) {
+                        throw new Error(
+                            "A shadow generator's light was never added to the scene.",
+                        );
+                    }
+                    return {
+                        ...generator,
+                        // The caster's material as the mesh finally carried
+                        // it, which is what the pin's lazy view lookup reads.
+                        casters: generator.casters.map((caster) => ({
+                            meshIndex: caster.meshIndex,
+                            pbrMaterial: null,
+                            nodeMaterial: null,
+                            ...(this.sceneMeshMaterials.get(
+                                caster.meshIndex,
+                            ) ?? {}),
+                        })),
+                    };
+                }),
                 shadowReceiverMeshes: [
                     ...this.shadowReceiverMeshes,
                 ].sort((left, right) => left - right),
@@ -1642,10 +1652,21 @@ class Compiler
                         : "copy",
                 );
             }
+            const staticElementsOwner = aliases && narrowed.staticElements
+                ? (narrowed.staticElementsOwner ?? narrowed)
+                : undefined;
             this.defineVariable(declaration.name, {
                 kind: "data",
                 cpp: cppName,
                 dataType: narrowed.dataType,
+                ...(staticElementsOwner
+                    ? {
+                          staticElements:
+                              staticElementsOwner.staticElements ??
+                              narrowed.staticElements,
+                          staticElementsOwner,
+                      }
+                    : {}),
                 ...(narrowed.recordProperties
                     ? {
                           recordProperties:
@@ -2034,6 +2055,12 @@ class Compiler
         )
             ? staticHandleEntries.map(({ value }) => value)
             : undefined;
+        const staticElements =
+            annotated.kind === "vector" &&
+            ts.isArrayLiteralExpression(initializer) &&
+            initializer.elements.length === 0
+                ? []
+                : staticHandleElements;
         this.reachJsData();
         const spreadTarget =
             annotated.kind === "struct"
@@ -2108,10 +2135,14 @@ class Compiler
             kind: "data",
             cpp: cppName,
             dataType: annotated,
-            ...(Object.keys(staticRecordProperties).length > 0
+            ...(annotated.kind === "map" &&
+            ts.isObjectLiteralExpression(initializer) &&
+            initializer.properties.length === 0
+                ? { recordProperties: {} }
+                : Object.keys(staticRecordProperties).length > 0
                 ? { recordProperties: staticRecordProperties }
                 : {}),
-            ...(staticHandleElements ? { staticHandleElements } : {}),
+            ...(staticElements ? { staticElements } : {}),
         });
         return true;
     }
@@ -2639,6 +2670,12 @@ class Compiler
                     fieldValue.staticBoolean =
                         staticField.staticBoolean;
                 }
+                if (aliases && staticField?.staticElements) {
+                    fieldValue.staticElements =
+                        staticField.staticElements;
+                    fieldValue.staticElementsOwner =
+                        staticField.staticElementsOwner ?? staticField;
+                }
                 this.defineVariable(name, fieldValue);
                 if (aliases) {
                     this.dataLowerer.registerAlias(
@@ -2929,7 +2966,8 @@ class Compiler
             !ts.isIdentifier(ownerExpression) &&
             !ts.isPropertyAccessExpression(ownerExpression) &&
             !ts.isElementAccessExpression(ownerExpression) &&
-            !ts.isCallExpression(ownerExpression)
+            !ts.isCallExpression(ownerExpression) &&
+            !ts.isStringLiteralLike(ownerExpression)
         ) {
             this.fail(
                 expression,
@@ -4188,7 +4226,17 @@ class Compiler
             if (left === absorbing) {
                 return absorbing;
             }
-            const right = this.compileCondition(unwrapped.right);
+            let right: string;
+            if (left === identity) {
+                right = this.compileCondition(unwrapped.right);
+            } else {
+                this.enterRuntimeControlFlow();
+                try {
+                    right = this.compileCondition(unwrapped.right);
+                } finally {
+                    this.leaveRuntimeControlFlow();
+                }
+            }
             if (right === absorbing) return absorbing;
             if (left === identity) return right;
             if (right === identity) return left;
@@ -4553,6 +4601,8 @@ class Compiler
 
     /** Nonzero while a frame callback's statements are being lowered. */
     private frameCallbackDepth = 0;
+    /** Native path-dependent bodies currently being lowered. */
+    private runtimeControlFlowDepth = 0;
 
     public meshTransformDirtyEntry():
         | "mark_mesh_dirty"
@@ -4847,6 +4897,22 @@ class Compiler
     public compileStringLiteral(expression: ts.Expression): string {
         const moduleAsset = this.moduleRelativeAssetUrl(expression);
         if (moduleAsset !== undefined) return moduleAsset;
+        const unwrapped = this.unwrap(expression);
+        const carried =
+            ts.isIdentifier(unwrapped) ||
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped)
+                ? this.probeEmission(
+                      () => this.compileValue(unwrapped),
+                      (value) => value.staticString !== undefined,
+                  )
+                : undefined;
+        if (carried?.staticString !== undefined) {
+            // Static helper scans commonly carry a URL through a decoded
+            // record and a statically unrolled loop.  The AST is no longer
+            // a literal at the asset call, but the bound Value still is.
+            return carried.staticString;
+        }
         const resolved = this.resolveStaticExpression(expression);
         if (ts.isCallExpression(resolved)) {
             const generated = browserGeneratedString(
@@ -5657,6 +5723,18 @@ class Compiler
         snapshot: Map<string, string>,
     ): void {
         this.dataLowerer.restoreAliasState(snapshot);
+    }
+
+    public enterRuntimeControlFlow(): void {
+        this.runtimeControlFlowDepth += 1;
+    }
+
+    public leaveRuntimeControlFlow(): void {
+        this.runtimeControlFlowDepth -= 1;
+    }
+
+    public isInRuntimeControlFlow(): boolean {
+        return this.runtimeControlFlowDepth > 0;
     }
 
     public defineThis(instance: Value | undefined): void {
@@ -7468,7 +7546,41 @@ class Compiler
     }
 
     public isFrameYield(expression: ts.Expression): boolean {
-        return this.browserErasure.isFrameYield(expression);
+        if (this.browserErasure.isFrameYield(expression)) {
+            return true;
+        }
+        // A zero-argument helper whose whole body returns the same closed
+        // Promise is the same yield, not a general async call. Keep the
+        // proof structural so a helper with setup, cleanup, parameters, or
+        // any other Promise body still takes ordinary lowering and refuses.
+        if (
+            !ts.isCallExpression(expression) ||
+            expression.arguments.length !== 0 ||
+            !ts.isIdentifier(expression.expression)
+        ) {
+            return false;
+        }
+        const declaration = resolveFunctionDeclaration(
+            this.checker,
+            expression.expression,
+            (node, message) => this.fail(node, message),
+        );
+        if (
+            !declaration ||
+            declaration.parameters.length !== 0 ||
+            !declaration.body
+        ) {
+            return false;
+        }
+        const returned = ts.isBlock(declaration.body)
+            ? declaration.body.statements.length === 1 &&
+              ts.isReturnStatement(declaration.body.statements[0]!)
+                ? declaration.body.statements[0]!.expression
+                : undefined
+            : declaration.body;
+        return Boolean(
+            returned && this.browserErasure.isFrameYield(returned),
+        );
     }
 
     public frameDrainCondition(
@@ -7658,10 +7770,18 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
+        const staticProperty = owner.recordProperties?.[
+            expression.name.text
+        ];
+        if (staticProperty) {
+            // A materialized record can still carry an exact value for a
+            // property produced during static iteration. Prefer that fact
+            // over reconstructing the field from its wider declared type
+            // (notably `boolean | undefined`), just as a plain record does.
+            return staticProperty;
+        }
         if (owner.kind === "record") {
-            return owner.recordProperties?.[
-                expression.name.text
-            ];
+            return undefined;
         }
         if (owner.kind === "data") {
             const dataProperty =
@@ -7696,6 +7816,20 @@ class Compiler
                 kind: "number",
                 cpp: `${length}.0f`,
                 staticNumber: length,
+            };
+        }
+        if (
+            owner.kind === "string" &&
+            expression.name.text === "length"
+        ) {
+            const length = owner.staticString?.length;
+            return {
+                kind: "number",
+                cpp: length === undefined
+                    ? `static_cast<double>(${owner.cpp}.size())`
+                    : doubleLiteral(length),
+                ...(length === undefined ? {} : { staticNumber: length }),
+                dataType: { kind: "number" },
             };
         }
         if (
@@ -8247,7 +8381,7 @@ class Compiler
                     ...dynamicProperty
                 } = property;
                 this.emit(
-                    `double ${cppName} = ${
+                    `[[maybe_unused]] double ${cppName} = ${
                         property.staticNumber === undefined
                             ? property.cpp
                             : doubleLiteral(property.staticNumber)
@@ -8260,7 +8394,9 @@ class Compiler
                 continue;
             }
             if (property.kind === "boolean") {
-                this.emit(`bool ${cppName} = ${property.cpp};`);
+                this.emit(
+                    `[[maybe_unused]] bool ${cppName} = ${property.cpp};`,
+                );
                 properties[name] = {
                     ...property,
                     cpp: cppName,
@@ -8269,12 +8405,13 @@ class Compiler
             }
             if (property.staticString !== undefined) {
                 this.emit(
-                    `std::string ${cppName} = ${this.cppString(property.staticString)};`,
+                    `[[maybe_unused]] std::string ${cppName} = ${this.cppString(property.staticString)};`,
                 );
                 properties[name] = {
                     kind: "data",
                     cpp: cppName,
                     dataType: { kind: "string" },
+                    staticString: property.staticString,
                 };
                 continue;
             }
@@ -8526,10 +8663,10 @@ class Compiler
             ...value,
             cpp: cppName,
             ...(parameter ? { parameterBinding: true } : {}),
-            ...(parameter && value.staticHandleElements
+            ...(parameter && value.staticElements
                 ? {
-                      staticHandleElementsOwner:
-                          value.staticHandleElementsOwner ?? value,
+                      staticElementsOwner:
+                          value.staticElementsOwner ?? value,
                   }
                 : {}),
         };
@@ -8567,6 +8704,58 @@ class Compiler
             }
         }
         return result;
+    }
+
+    /** Visit bindings and the generation facts nested inside their values. */
+    private visitScopedValues(visitor: (value: Value) => void): void {
+        const seen = new Set<Value>();
+        const visit = (value: Value): void => {
+            if (seen.has(value)) return;
+            seen.add(value);
+            const nested = [
+                ...Object.values(value.recordProperties ?? {}),
+                ...(value.staticElements ?? []),
+                ...(value.tupleElements ?? []),
+            ];
+            visitor(value);
+            for (const child of nested) visit(child);
+        };
+        for (const scope of this.variableScopes) {
+            for (const binding of scope.values()) visit(binding.value);
+        }
+    }
+
+    /** Invalidate one native array's complete snapshot through all aliases. */
+    public invalidateStaticElements(value: Value): void {
+        const owner = value.staticElementsOwner ?? value;
+        const elements = owner.staticElements ?? value.staticElements;
+        const invalidate = (candidate: Value): void => {
+            if (
+                candidate === value ||
+                candidate === owner ||
+                candidate.staticElementsOwner === owner ||
+                (elements !== undefined && candidate.staticElements === elements)
+            ) {
+                delete candidate.staticElements;
+                delete candidate.staticElementsOwner;
+            }
+        };
+        this.visitScopedValues(invalidate);
+        invalidate(value);
+        invalidate(owner);
+    }
+
+    /** Invalidate one native map/object snapshot through all shared aliases. */
+    public invalidateRecordProperties(value: Value): void {
+        const properties = value.recordProperties;
+        if (!properties) return;
+        const invalidate = (candidate: Value): void => {
+            if (candidate.recordProperties === properties) {
+                delete candidate.recordProperties;
+            }
+        };
+        this.visitScopedValues(invalidate);
+        invalidate(value);
     }
 
     /**
@@ -8849,6 +9038,12 @@ class Compiler
         if (!generator) {
             this.fail(node, `Shadow generator ${index} was never recorded.`);
         }
+        if (generator.lightIndex < 0) {
+            this.fail(
+                node,
+                "A node material's shadow generator light must be added to the scene before the material is parsed.",
+            );
+        }
         return { lightIndex: generator.lightIndex };
     }
 
@@ -8984,12 +9179,47 @@ class Compiler
         this.dynamicShadowReceivers = true;
     }
 
-    /** The scene slot the next `addToScene(scene, light)` fills. */
-    public nextSceneLightIndex(kind?: LightKind): number {
-        const index = this.sceneLightCount++;
-        if (kind) this.sceneLightKinds.push(kind);
-        if (this.frameCallbackDepth > 0) this.dynamicSceneLights = true;
-        return index;
+    /** Place a light in the current scene topology and bind its generators. */
+    public addSceneLight(light: Value, kind: LightKind): void {
+        const identity = light.lightIdentity;
+        if (!identity) {
+            throw new Error("A scene light is missing its compiler identity.");
+        }
+        const index = this.sceneLights.length;
+        this.sceneLights.push({ identity, kind });
+        identity.sceneLightIndex = index;
+        if (identity.shadowGeneratorIndex !== undefined) {
+            const generator =
+                this.shadowGenerators[identity.shadowGeneratorIndex];
+            if (generator) generator.lightIndex = index;
+        }
+        if (this.frameCallbackDepth > 0 || this.engineHasStarted()) {
+            this.dynamicSceneLights = true;
+        }
+    }
+
+    /** Remove a light and compact the slots exactly as Array.splice does. */
+    public removeSceneLight(light: Value): void {
+        const identity = light.lightIdentity;
+        if (!identity) return;
+        const index = this.sceneLights.findIndex(
+            (entry) => entry.identity === identity,
+        );
+        if (index < 0) return;
+        this.sceneLights.splice(index, 1);
+        delete identity.sceneLightIndex;
+        for (let slot = index; slot < this.sceneLights.length; slot++) {
+            const moved = this.sceneLights[slot]!.identity;
+            moved.sceneLightIndex = slot;
+            if (moved.shadowGeneratorIndex !== undefined) {
+                const generator =
+                    this.shadowGenerators[moved.shadowGeneratorIndex];
+                if (generator) generator.lightIndex = slot;
+            }
+        }
+        if (this.frameCallbackDepth > 0 || this.engineHasStarted()) {
+            this.dynamicSceneLights = true;
+        }
     }
 
     /** A tone-mapping enable write can occur after environment loading, and
@@ -9417,7 +9647,7 @@ class Compiler
         this.body.splice(
             index,
             0,
-            `${indent}bbl::defer_callback(${mark.engine}, [&]() {`,
+            `${indent}bbl::defer_start_continuation(${mark.engine}, [&]() {`,
             ...persistentTail.map((line) => `    ${line}`),
             `${indent}});`,
         );

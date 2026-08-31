@@ -717,6 +717,16 @@ const propertyRules: readonly PropertyRule[] = [
     field: "camera",
   },
   {
+    // The pin exposes this only as an internal lifecycle sentinel: removal
+    // arms it and a successful registration/rebuild clears it. Native's
+    // topology version applies the rebuild synchronously at the next frame,
+    // but retains the same observable pending/applied state.
+    owner: "scene",
+    property: "_rebuildHook",
+    value: "boolean",
+    field: "topology_rebuild_pending",
+  },
+  {
     owner: "render-target-texture",
     property: "rt",
     value: "render-target",
@@ -810,6 +820,10 @@ export function readProperty(
   // An engine handle names itself; anything else carries the engine it
   // was created from, so the value read out of it stays resolvable.
   const engineCpp = owner.kind === "engine" ? owner.cpp : owner.engineCpp;
+  const shadowGeneratorIndex =
+    owner.kind === "light"
+      ? owner.lightIdentity?.shadowGeneratorIndex
+      : owner.shadowGeneratorIndex;
   const read = (cpp: string): Value => ({
     kind: rule.value,
     cpp,
@@ -840,8 +854,8 @@ export function readProperty(
             : {}),
         }
       : {}),
-    ...(rule.carriesShadowGenerator && owner.shadowGeneratorIndex !== undefined
-      ? { shadowGeneratorIndex: owner.shadowGeneratorIndex }
+    ...(rule.carriesShadowGenerator && shadowGeneratorIndex !== undefined
+      ? { shadowGeneratorIndex }
       : {}),
     ...(rule.carriesNodeParticleSet && owner.nodeParticleSetIndex !== undefined
       ? { nodeParticleSetIndex: owner.nodeParticleSetIndex }

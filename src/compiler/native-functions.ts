@@ -197,6 +197,29 @@ export class NativeFunctionLowerer {
             return undefined;
         }
         if (
+            signature.returnType?.kind === "string" &&
+            signature.parameters.every(
+                (parameter) => parameter.type.kind === "string",
+            ) &&
+            signature.parameters.every((parameter, index) => {
+                const argument =
+                    call.arguments[index] ??
+                    (ts.isParameter(parameter.name.parent)
+                        ? parameter.name.parent.initializer
+                        : undefined);
+                return argument
+                    ? this.context.compileValue(argument).staticString !==
+                          undefined
+                    : false;
+            })
+        ) {
+            // Generation-known string transforms remain specialized at the
+            // call site. Hoisting them would erase the carried string fact
+            // before a computed Record key or another AOT-only sink reads
+            // the result (a regex-based name sanitizer is one example).
+            return undefined;
+        }
+        if (
             call.arguments.length >
                 signature.parameters.length ||
             call.arguments.some(ts.isSpreadElement)

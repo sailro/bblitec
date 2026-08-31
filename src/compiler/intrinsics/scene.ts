@@ -29,8 +29,9 @@ export interface SceneIntrinsicContext
      * deferred queue rather than emitted after a call that never returns.
      */
     markEngineStart(engineCpp: string, node: ts.Node): void;
-    /** The `scene.lights` slot the next added light fills. */
-    nextSceneLightIndex(kind?: LightKind): number;
+    /** Add/remove a light in the compiler's current scene-topology model. */
+    addSceneLight(light: Value, kind: LightKind): void;
+    removeSceneLight(light: Value): void;
     requireEngine(value: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
@@ -75,12 +76,16 @@ export function compileSceneIntrinsic(
             context.expectSameEngine(scene, resource, call);
             // The slot this light lands in. `scene.lights` order is what the
             // pin's shadow receiver fragment names its per-light varyings
-            // and bindings by, so a generator's light has to be added
-            // before the generator is created.
+            // and bindings by. Generators created before this call are
+            // patched to the slot here.
             if (resource.kind === "light") {
-                resource.sceneLightIndex = context.nextSceneLightIndex(
-                    resource.lightKind,
-                );
+                if (!resource.lightKind) {
+                    context.fail(
+                        call.arguments[1]!,
+                        "A scene light is missing its generated light kind.",
+                    );
+                }
+                context.addSceneLight(resource, resource.lightKind);
             }
             // A container's entity takes the pin's entity walk alone: its
             // animation groups, per-frame tick, camera and clear colour
@@ -111,15 +116,19 @@ export function compileSceneIntrinsic(
                 "scene",
                 call.arguments[0]!,
             );
-            // The pinned removal accepts the same union as addToScene;
-            // the reached subset removes meshes (the demo's particle
-            // retirement).
-            context.expectKind(
-                resource,
-                "mesh",
-                call.arguments[1]!,
-            );
+            // The pinned removal accepts the same union as addToScene. Mesh
+            // retirement and light-topology replacement are the two reached
+            // native paths; both retain their concrete handle kind here.
+            if (resource.kind !== "mesh" && resource.kind !== "light") {
+                context.fail(
+                    call.arguments[1]!,
+                    `removeFromScene currently supports mesh and light values, received ${resource.kind}.`,
+                );
+            }
             context.expectSameEngine(scene, resource, call);
+            if (resource.kind === "light") {
+                context.removeSceneLight(resource);
+            }
             context.reachFeature("scene:remove", call);
             return {
                 kind: "void",
@@ -369,6 +378,26 @@ export function compileSceneIntrinsic(
             return {
                 kind: "void",
                 cpp: `bbl::register_scene(${scene.cpp})`,
+            };
+        }
+
+        case "unregisterScene": {
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            return {
+                kind: "void",
+                cpp: `bbl::unregister_scene(${scene.cpp})`,
+            };
+        }
+
+        case "rebuildSceneRenderables": {
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            return {
+                kind: "void",
+                cpp: `bbl::rebuild_scene_renderables(${scene.cpp})`,
             };
         }
 

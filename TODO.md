@@ -145,6 +145,27 @@ act on it — not what was tried.
   beside its node matrix. The port must keep every sized scene bit-identical at
   its gated pose.
 - [ ] Add generation-checked handles and resource lifetime/leak checks.
+- [ ] Reclaim retired live-shadow topology state. Replacing a generator now
+  removes its task from the scene and both PALs rebuild only active task draw
+  lists, but the engine retains the old task, render target, generator caster
+  views, and their copied `MaterialRecord` texture payloads. Reusing those
+  slots requires generation-checked handles (so a retained source handle
+  cannot alias a replacement) plus a GPU binding path that resolves a caster
+  view's textures through `source_material` before the copied payload can be
+  dropped.
+- [ ] Make compiler shape probes non-emitting and symbol-aware. Native string
+  dispatch currently calls `compileValue` to decide whether to inline, while
+  expando-write and catch-binding scans match broad source text/property names.
+  A shared probe transaction must roll back emitted lines *and* compiler state;
+  owner/catch matching then needs canonical TypeScript symbols. Use that same
+  lookup boundary to remove the duplicate function/alias resolver and fold the
+  two loop-control subtree walks into one result.
+- [ ] Share one JSON-to-`Value` converter between compressed NME and static
+  fetch. Compressed helper recognition now proves the exact AST/dataflow shape,
+  and the direct/promise paths decode gzip only once, but the two recursive
+  converters retain deliberately different numeric/static metadata policies.
+  The shared converter needs those policies as explicit inputs so existing
+  output does not drift.
 - [ ] Add dirty flags and incremental GPU updates.
 - [ ] Add device-loss and resize-safe resource recreation.
 - [ ] Add multiple registered scenes and scene switching.
@@ -196,7 +217,7 @@ act on it — not what was tried.
 
 ## P1 — Full Babylon Lite corpus audit
 
-62 corpus scenes remain unregistered; measured scenes
+59 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -268,10 +289,10 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (30 scenes):**
-66, 72, 73, 86, 90, 91, 111-115, 118, 121-124,
+**Integrate first (27 scenes):**
+73, 86, 90, 91, 111-115, 118, 121-124,
 140, 149, 214, 215, 218, 219,
-223, 226, 231, 241, 261, 271, 275, 300.
+223, 226, 231, 241, 261, 275, 300.
 Includes static CSG/CSG2, compressed assets
 and splats, deterministic picking (113-115, 118), and display-only
 gizmos (223). Every navigation scene the corpus carries is now
@@ -440,16 +461,13 @@ integrated.
     rendering.
 - [ ] The remaining sprite cluster, each at its measured first blocker:
   - Scenes 205, 206 reach the billboard path but stop at engine options.
-- [ ] Extend node materials past the slice scenes 60-63, 67-71, 77-85 and
+- [ ] Extend node materials past the slice scenes 60-72, 77-85 and
   87-89 measure. Each item is a block the composed graph reaches and
   this port refuses by name at generation, though a scene whose first blocker
   is elsewhere reports that instead:
   - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86).
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
-  - a graph reached through `getSceneNNNme()` behind a gzip payload (66,
-    72, 73), which is a module function rather than an exported object. Scene
-    73 additionally wants camera viewports and a loader-returned collection.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
   - the `inputs` handles, which no reached scene writes: a scene setting one
     would need the node UBO rewritten per frame instead of folded.
@@ -604,10 +622,8 @@ integrated.
     near-duplicate branch for a task with its own camera. One consumer
     makes that proportionate today; the cascaded generator, which renders
     several light-space passes per light, is where it stops being.
-- [ ] Scenes 66, 72, 214, 215, 271: what each still wants beside the
-  shadow generator above — 66 morph deltas behind a gzip graph, 72 an NME
-  `blockLoader`, 214/215 the cascaded generator plus `createTorusKnot` (their
-  mulberry32 closures lower), 271 `unregisterScene` and a frame yield.
+- [ ] Scenes 214 and 215: the cascaded generator plus `createTorusKnot`
+  (their mulberry32 closures lower).
 - [ ] Correct SDL_image's greyscale palette in the dependency rather than
   at the PAL boundary. A PNG with no `PLTE` of its own is expanded over a
   ramp SDL_image builds as `(i * 255) / ncolors` (`IMG_libpng.c`), where the

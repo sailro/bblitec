@@ -1,0 +1,108 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Dawn render-capture JSON bypassed the shared continuation/drain gate used by screenshots and SDL; every Dawn capture now uses capture_ready",
+      "applied": true
+    },
+    {
+      "summary": "generation-time Record snapshots re-expanded effectful texture RHS expressions; static Record entries now read the exact runtime Map value already stored, reducing Scene 66 from 16 loads to 8 and Scene 72 from 22 to 11",
+      "applied": true
+    },
+    {
+      "summary": "explicitly typed record arrays were reclassified as tuples to retain Scene 66 metadata, breaking ordinary push, indexed writes, nested arrays, and object identity; runtime arrays now retain a separate complete staticElements snapshot",
+      "applied": true
+    },
+    {
+      "summary": "static array and Record facts were path-insensitive and array ownership was lost through ordinary aliases; aliases now share one root snapshot and runtime branches, loops, callbacks, switches, and conditional expressions invalidate rather than extend it",
+      "applied": true
+    },
+    {
+      "summary": "generalized snapshots conflated exact data arrays with conservative handle reach sets, dropping shader metadata for generation-known handles pushed inside runtime loops; complete data snapshots still invalidate while proven handle reachability is retained",
+      "applied": true
+    },
+    {
+      "summary": "plain-data snapshots kept pre-storage literal expressions, so later mutations emitted assignments to false and 0.0; stored facts now retain static metadata while rebasing their writable leaf to the actual native array slot",
+      "applied": true
+    },
+    {
+      "summary": "ribbon and tube Vec3 path consumers only understood tuple rows and plain records; they now reuse complete static snapshots and the same validated Vec3 conversion for typed data structs",
+      "applied": true
+    },
+    {
+      "summary": "SDL rebuilt and streamed draw lists for every historical frame task after live topology replacement; it now clears retired rows and rebuilds only scene.tasks",
+      "applied": true
+    },
+    {
+      "summary": "compressed JSON promise transforms built a full Value tree only to clone and rebuild it; the proven chain now decodes raw JSON, restores aliases, and constructs Value once with the real diagnostic node",
+      "applied": true
+    },
+    {
+      "summary": "compressed helper recognition trusted substring regexes and could erase extra observable behavior; exact AST and dataflow checks now prove statement counts, built-ins, guards, assignments, and return identity",
+      "applied": true
+    },
+    {
+      "summary": "runtime indexed-string Values were rejected by the generic known-value sink despite already carrying the correct native string expression; string sinks now accept that existing representation directly",
+      "applied": true
+    },
+    {
+      "summary": "static nullish selection treated explicit JSON null as a winning left arm and materialized record reads widened exact booleans; nullish folding now respects JSON null and property reads prefer retained exact snapshots",
+      "applied": true
+    },
+    {
+      "summary": "continue handling used only static-unroll depth and misclassified continues targeting nested native loops; it now resolves the nearest enclosing iteration against the exact set of source loops being unrolled",
+      "applied": true
+    },
+    {
+      "summary": "ESM and PCF caster composition duplicated the safety-critical shared-binding signature; one nodeSharedBindings extractor and compatibility assertion now serve both",
+      "applied": true
+    },
+    {
+      "summary": "node caster state allowed contradictory nullable ESM/PCF fields and gave PCF a fake parameter binding; it is now a discriminated caster union and composeNodeMaterial uses named options instead of six positional arguments",
+      "applied": true
+    },
+    {
+      "summary": "node-material texture records store a FileTexture or PixelsTexture variant but the runtime boundary accepted neither the variant nor raw pixels; shared StoredTexture dispatch now normalizes pixel metadata and visits the exact alternative",
+      "applied": true
+    },
+    {
+      "summary": "scene light identity used parallel value/kind arrays and unresolved generators silently targeted slot zero; ordered light entries are atomic and unresolved generator slots use a refusing sentinel",
+      "applied": true
+    },
+    {
+      "summary": "scene light removal keyed topology by compiler Value object identity, so aliases left stale manifests and generator slots; light factories now allocate a stable shared identity carrying compacted scene and generator slots",
+      "applied": true
+    },
+    {
+      "summary": "mesh_membership_version also invalidated light and shadow state while comments still described PCF as lacking a second module; names and documentation now describe render topology and both caster modules accurately",
+      "applied": true
+    },
+    {
+      "summary": "focused tests accepted arbitrary groups of duplicate texture loads and retained assertions invalidated by stronger static folding; they now require one load per binding and assert the intended folded/runtime semantics",
+      "applied": true
+    },
+    {
+      "summary": "retired shadow generators still retain engine task/target/view records, and caster MaterialRecord copies retain encoded texture payloads",
+      "applied": false,
+      "blockedBy": "safe slot reuse needs generation-checked handles, and dropping copied texture payloads needs caster GPU binding to resolve through source_material",
+      "filedIn": "TODO.md — P1 Runtime and validation: Reclaim retired live-shadow topology state"
+    },
+    {
+      "summary": "native string routing still compiles arguments speculatively, while expando/catch scans, function resolution, and loop-control walks duplicate broad analysis",
+      "applied": false,
+      "blockedBy": "a non-emitting probe must transactionally roll back compiler state as well as emitted text, and the shared scans need canonical TypeScript-symbol ownership",
+      "filedIn": "TODO.md — P1 Runtime and validation: Make compiler shape probes non-emitting and symbol-aware"
+    },
+    {
+      "summary": "compressed NME and static fetch retain separate recursive JSON-to-Value converters",
+      "applied": false,
+      "blockedBy": "the shared converter needs explicit numeric and static-metadata policies so the two existing conversion contracts do not drift",
+      "filedIn": "TODO.md — P1 Runtime and validation: Share one JSON-to-Value converter"
+    }
+  ]
+}

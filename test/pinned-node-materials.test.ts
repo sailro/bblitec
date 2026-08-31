@@ -63,6 +63,7 @@ test("compiles the minimal graph through the pin's own emitter", async () => {
     );
     assert.deepEqual(composed.attributes, [{ location: 0, name: "position" }]);
     assert.equal(composed.backFaceCulling, true);
+    assert.equal(composed.alphaBlending, false);
 });
 
 test("carries the vertex inputs the graph declares, in the pin's order", async () => {
@@ -228,14 +229,62 @@ test("runs a module that builds its graph rather than exporting one", async () =
     assert.ok(composed.uboBytes > 0);
 });
 
-test("refuses an arm outside the reached slice", async () => {
+test("carries the pin's alpha-combine state into the node variant", async () => {
     // `forceAlphaBlending` is the graph's own JSON-level override, and the
-    // pin's parser turns it into `needsAlphaBlending` — an arm that would
-    // need the transparent bucket and the sort.
+    // pin's parser turns it into `needsAlphaBlending`. Scene 60 already
+    // declares BJS alpha mode 2, whose src-over factors are the transparent
+    // blend shared by both native backends.
     const graph = { ...(await corpusGraph(60)), forceAlphaBlending: true };
+    const composed = await composeNodeMaterial(graph, "blended");
+    assert.equal(composed.alphaBlending, true);
+    const header = pinnedNodeVariantsHeader("test", [
+        { index: 0, ...nodeVariantStageStems(0), composed },
+    ]);
+    assert.match(
+        header,
+        /bool alpha_blending;/,
+    );
+});
+
+test("refuses a node alpha mode whose fixed-function state is not lowered", async () => {
+    const graph = {
+        ...(await corpusGraph(60)),
+        forceAlphaBlending: true,
+        alphaMode: 1,
+    };
     await assert.rejects(
-        () => composeNodeMaterial(graph, "blended"),
-        /alpha blending/,
+        () => composeNodeMaterial(graph, "additive"),
+        /alpha mode 1; only BJS alpha-combine mode 2 is lowered/,
+    );
+});
+
+test("both node backends apply alpha-combine blending without depth writes", () => {
+    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    assert.match(
+        sdl,
+        /const bool transparent = traits\.transparent && !shadow_pass && !caster;/,
+    );
+    assert.match(
+        sdl,
+        /color_target\.blend_state = blend_state_from\(transparent_blend\);/,
+    );
+    assert.match(
+        sdl,
+        /info\.depth_stencil_state\.enable_depth_write = !transparent;/,
+    );
+
+    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    assert.match(
+        dawn,
+        /const bool transparent = traits\.transparent && !shadow_pass && !caster;/,
+    );
+    assert.match(
+        dawn,
+        /blend = blend_state_from\(transparent_blend\);/,
+    );
+    assert.match(
+        dawn,
+        /depth_stencil\.depthWriteEnabled = transparent/,
     );
 });
 

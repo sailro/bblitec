@@ -62,6 +62,8 @@ export interface ShadowCapabilityInputs {
     nodeShadowReceivers: number;
     /** How many composed node graphs also carry an ESM caster module. */
     nodeEsmCasters: number;
+    /** How many composed node graphs cast through a depth-only PCF view. */
+    nodePcfCasters?: number;
 }
 
 export interface ShadowCapabilities {
@@ -109,7 +111,9 @@ export function shadowCapabilities(
     const standard = reached && inputs.standardVariants > 0;
     const pbr = reached && inputs.pbrVariants > 0;
     const node = reached &&
-        (inputs.nodeShadowReceivers > 0 || inputs.nodeEsmCasters > 0);
+        (inputs.nodeShadowReceivers > 0 ||
+            inputs.nodeEsmCasters > 0 ||
+            (inputs.nodePcfCasters ?? 0) > 0);
     const receivers = standard || pbr || node;
     return {
         reached,
@@ -132,16 +136,22 @@ export function nodeShadowInputs(
     nodeVariants: readonly {
         composed: {
             shadowBindings: readonly unknown[];
-            esmCaster: unknown;
+            caster: null | { kind: "esm" | "pcf" };
         };
     }[],
-): Pick<ShadowCapabilityInputs, "nodeShadowReceivers" | "nodeEsmCasters"> {
+): Pick<
+    ShadowCapabilityInputs,
+    "nodeShadowReceivers" | "nodeEsmCasters" | "nodePcfCasters"
+> {
     return {
         nodeShadowReceivers: nodeVariants.filter(
             (variant) => variant.composed.shadowBindings.length > 0,
         ).length,
         nodeEsmCasters: nodeVariants.filter(
-            (variant) => variant.composed.esmCaster !== null,
+            (variant) => variant.composed.caster?.kind === "esm",
+        ).length,
+        nodePcfCasters: nodeVariants.filter(
+            (variant) => variant.composed.caster?.kind === "pcf",
         ).length,
     };
 }

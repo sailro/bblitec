@@ -515,6 +515,10 @@ inline const char* pipeline_name(upstream::RenderPipelineKind kind) {
             return "node_opaque_back";
         case upstream::RenderPipelineKind::node_opaque_none:
             return "node_opaque_none";
+        case upstream::RenderPipelineKind::node_transparent_back:
+            return "node_transparent_back";
+        case upstream::RenderPipelineKind::node_transparent_none:
+            return "node_transparent_none";
     }
     return "unknown";
 }

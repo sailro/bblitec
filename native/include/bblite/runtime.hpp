@@ -1710,7 +1710,7 @@ struct SpriteRendererRecord {
     // Bumped whenever the layer list itself changes (add / remove / dispose).
     // Each backend builds one `SpriteLayerGpu` per layer, indexed positionally
     // against this vector, so a changed list has to rebuild that pass -- the
-    // same version-compare shape `mesh_membership_version` already gives a
+    // same version-compare shape `render_topology_version` already gives a
     // scene whose mesh set moved.
     std::uint64_t layers_version = 0;
     bool has_target = false;
@@ -2606,6 +2606,11 @@ struct Engine {
      * drains cannot run recursively in the same frame.
      */
     std::vector<std::function<void()>> deferred_callbacks;
+    /**
+     * Entry-code continuations waiting for the initial render boundary.
+     * A measured capture cannot precede code after `await startEngine`.
+     */
+    std::uint32_t pending_start_continuations = 0;
     /** Browser one-shot timers with non-zero delays. */
     struct TimeoutCallback {
         std::uint64_t id = 0;
@@ -2856,6 +2861,8 @@ struct Scene {
     std::vector<MeshHandle> meshes;
     std::vector<LightHandle> lights;
     std::vector<TaskHandle> tasks;
+    /** Shadow generators retired only after a replacement rebuild succeeds. */
+    std::vector<ShadowGeneratorHandle> pending_shadow_retirements;
     std::vector<AnimationGroupHandle> animation_groups;
     std::vector<BillboardSystemHandle> billboard_systems;
     // sprite-scene.ts: depth-enabled 2D layers are scene renderables and
@@ -2885,7 +2892,10 @@ struct Scene {
     std::vector<std::function<void()>> deferred_builders;
     EnvironmentState environment;
     float fixed_delta_ms = 0.0f;
-    std::uint64_t mesh_membership_version = 0;
+    /** Mesh, light, or shadow changes that require renderer state rebuild. */
+    std::uint64_t render_topology_version = 0;
+    /** A light/shadow topology mutation awaiting registration or rebuild. */
+    bool topology_rebuild_pending = false;
     std::uint32_t material_family_mask = 0;
     bool transmission_enabled = false;
     float fog_mode = 0.0f;
@@ -3284,7 +3294,13 @@ NodeMaterialTexture node_material_texture(
     FileTexture texture);
 NodeMaterialTexture node_material_texture(
     std::string name,
+    const PixelsTexture& texture);
+NodeMaterialTexture node_material_texture(
+    std::string name,
     const SolidTexture& texture);
+NodeMaterialTexture node_material_texture(
+    std::string name,
+    const StoredTexture& texture);
 
 MaterialHandle create_node_material(
     Engine& engine,
@@ -3467,6 +3483,9 @@ MaterialHandle create_node_esm_shadow_material_view(
     MaterialHandle source,
     ShadowGeneratorHandle generator);
 MaterialHandle create_pbr_no_color_material_view(
+    Engine& engine,
+    MaterialHandle source);
+MaterialHandle create_node_no_color_material_view(
     Engine& engine,
     MaterialHandle source);
 void mark_material_ubo_dirty(Engine& engine, MaterialHandle material);
@@ -3721,6 +3740,7 @@ void set_asset_root_rotation_component(
     std::size_t component,
     float value);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
+void remove_from_scene(Scene& scene, LightHandle light);
 void on_before_render(
     Scene& scene,
     std::function<void(float)> callback);
@@ -4224,6 +4244,8 @@ void register_sprite_renderer(
     SpriteRendererHandle renderer);
 
 void register_scene(Scene& scene);
+void unregister_scene(Scene& scene);
+void rebuild_scene_renderables(Scene& scene);
 void on_frame_graph_update(
     FrameGraphContext& context,
     std::function<void(float)> callback);
@@ -4252,6 +4274,10 @@ void start_engine(Engine& engine);
 void stop_engine(Engine& engine);
 /** `setTimeout(callback, 0)`; see `Engine::deferred_callbacks`. */
 void defer_callback(Engine& engine, std::function<void()> callback);
+/** Source following `await startEngine`, completed after the initial render. */
+void defer_start_continuation(
+    Engine& engine,
+    std::function<void()> callback);
 /** Browser `setTimeout` with a real delay, serviced by the frame conductor. */
 double set_timeout(
     Engine& engine,

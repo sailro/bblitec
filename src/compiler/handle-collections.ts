@@ -179,7 +179,7 @@ export interface HandleCollectionsContext
         minimum: number,
         maximum: number,
     ): void;
-    nextSceneLightIndex(kind?: LightKind): number;
+    addSceneLight(light: Value, kind: LightKind): void;
 }
 
 /**
@@ -810,7 +810,8 @@ export class HandleCollections {
               : undefined;
         return value?.kind === "tuple"
             ? value.tupleElements
-            : value?.staticHandleElements;
+            : value?.staticElementsOwner?.staticElements ??
+                  value?.staticElements;
     }
 
     /**
@@ -841,9 +842,13 @@ export class HandleCollections {
         const light = this.context.compileValue(call.arguments[0]!);
         this.context.expectKind(light, "light", call.arguments[0]!);
         this.context.expectSameEngine(scene, light, call);
-        light.sceneLightIndex = this.context.nextSceneLightIndex(
-            light.lightKind,
-        );
+        if (!light.lightKind) {
+            this.context.fail(
+                call.arguments[0]!,
+                "A scene light is missing its generated light kind.",
+            );
+        }
+        this.context.addSceneLight(light, light.lightKind);
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,

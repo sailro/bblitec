@@ -28,6 +28,7 @@ import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
     ResolvedCompileOptions,
+    Value,
 } from "./types.js";
 
 export interface AssetRegistryContext {
@@ -399,6 +400,7 @@ function hash(value: string): string {
  */
 export interface StaticGraphDocumentContext
     extends ExecutedModuleReferenceContext, StaticJsonContext {
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -433,6 +435,22 @@ export function staticGraphDocument(
         };
     }
     const unwrapped = context.unwrap(expression);
+    const carried = ts.isIdentifier(unwrapped)
+        ? context.lookupOptional(unwrapped)?.staticJson
+        : undefined;
+    if (carried !== undefined) {
+        if (
+            typeof carried !== "object" ||
+            carried === null ||
+            Array.isArray(carried)
+        ) {
+            context.fail(expression, `A ${label} graph is a JSON object.`);
+        }
+        return {
+            kind: "literal",
+            graph: carried as Record<string, unknown>,
+        };
+    }
     const call =
         factory === "factory" && ts.isCallExpression(unwrapped)
             ? unwrapped

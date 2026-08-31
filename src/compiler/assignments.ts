@@ -779,6 +779,144 @@ function emitSpriteLayerViewAssignment(
   return true;
 }
 
+function optionalNumberPropertyInAssertion(
+  type: ts.TypeNode,
+  property: string,
+): boolean {
+  if (ts.isParenthesizedTypeNode(type)) {
+    return optionalNumberPropertyInAssertion(type.type, property);
+  }
+  if (ts.isIntersectionTypeNode(type)) {
+    return type.types.some((member) =>
+      optionalNumberPropertyInAssertion(member, property),
+    );
+  }
+  if (!ts.isTypeLiteralNode(type)) return false;
+  return type.members.some((member) => {
+    if (
+      !ts.isPropertySignature(member) ||
+      !member.questionToken ||
+      member.type?.kind !== ts.SyntaxKind.NumberKeyword
+    ) {
+      return false;
+    }
+    return (
+      (ts.isIdentifier(member.name) || ts.isStringLiteral(member.name)) &&
+      member.name.text === property
+    );
+  });
+}
+
+function explicitOptionalNumberExpandoOwner(
+  expression: ts.Expression,
+  property: string,
+): ts.Expression | undefined {
+  let asserted = expression;
+  while (ts.isParenthesizedExpression(asserted)) {
+    asserted = asserted.expression;
+  }
+  if (
+    !ts.isAsExpression(asserted) &&
+    !ts.isTypeAssertionExpression(asserted)
+  ) {
+    return undefined;
+  }
+  if (!optionalNumberPropertyInAssertion(asserted.type, property)) {
+    return undefined;
+  }
+  return asserted.expression;
+}
+
+function propertyAccessName(node: ts.Node): string | undefined {
+  if (ts.isPropertyAccessExpression(node)) return node.name.text;
+  if (
+    ts.isElementAccessExpression(node) &&
+    node.argumentExpression &&
+    (ts.isStringLiteral(node.argumentExpression) ||
+      ts.isNoSubstitutionTemplateLiteral(node.argumentExpression))
+  ) {
+    return node.argumentExpression.text;
+  }
+  return undefined;
+}
+
+function isSimplePropertyWrite(node: ts.Node): boolean {
+  return (
+    ts.isBinaryExpression(node.parent) &&
+    node.parent.left === node &&
+    node.parent.operatorToken.kind === ts.SyntaxKind.EqualsToken
+  );
+}
+
+/**
+ * Erase an explicitly declared optional expando that the source only writes.
+ *
+ * A TypeScript intersection may widen a pinned resource with a JavaScript-own
+ * property that Babylon Lite neither declares nor reads. Native handles are
+ * not general JavaScript objects, so retaining arbitrary property bags would
+ * give every resource a run-time dictionary for a value with no observer.
+ * The fold is valid only when all of the following are proven from the source:
+ * the assertion spells the optional numeric member directly, the pinned owner
+ * type does not declare it, and no property access with that name is read.
+ * The right-hand side is still compiled and discarded so its evaluation is
+ * not lost.
+ */
+function emitWriteOnlyNumberExpandoAssignment(
+  context: AssignmentContext,
+  expression: ts.BinaryExpression,
+  left: ts.PropertyAccessExpression,
+): boolean {
+  const property = left.name.text;
+  const assertedOwner = explicitOptionalNumberExpandoOwner(
+    left.expression,
+    property,
+  );
+  if (!assertedOwner) return false;
+
+  const ownerExpression = context.unwrap(assertedOwner);
+  if (!ts.isIdentifier(ownerExpression)) return false;
+  const owner = context.lookup(ownerExpression);
+  if (owner.kind !== "mesh") return false;
+
+  // This is an expando only when the type before the assertion did not expose
+  // the member. A cast that merely widens or re-spells a real pinned property
+  // must continue through its ordinary lowering contract.
+  if (
+    context.checker
+      .getTypeAtLocation(ownerExpression)
+      .getProperty(property)
+  ) {
+    return false;
+  }
+
+  let observed: ts.Node | undefined;
+  const visit = (node: ts.Node): void => {
+    if (observed) return;
+    if (
+      node !== left &&
+      propertyAccessName(node) === property &&
+      !isSimplePropertyWrite(node)
+    ) {
+      observed = node;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(expression.getSourceFile());
+  if (observed) {
+    context.fail(
+      observed,
+      `Optional expando property '${property}' is read, so its assignment cannot be erased.`,
+    );
+  }
+
+  requireSimpleAssignment(context, expression, `optional expando ${property}`);
+  context.emit(
+    `static_cast<void>(${context.compileNumber(expression.right, "double")});`,
+  );
+  return true;
+}
+
 export function emitPropertyAssignment(
   context: AssignmentContext,
   expression: ts.BinaryExpression,
@@ -854,6 +992,9 @@ export function emitPropertyAssignment(
     context.isBrowserDomValue(left)
   ) {
     context.eraseBrowserInstrumentation(expression.pos);
+    return;
+  }
+  if (emitWriteOnlyNumberExpandoAssignment(context, expression, left)) {
     return;
   }
   if (operator === "=") {
@@ -1320,7 +1461,14 @@ export function emitPropertyAssignment(
       // `setShadowTaskCasterMeshes(light.shadowGenerator, ...)` reads
       // it back off the light, which is what this carries.
       if (generator.shadowGeneratorIndex !== undefined) {
-        target.shadowGeneratorIndex = generator.shadowGeneratorIndex;
+        if (!target.lightIdentity) {
+          context.fail(
+            left.expression,
+            "A light shadow generator assignment is missing its compiler identity.",
+          );
+        }
+        target.lightIdentity.shadowGeneratorIndex =
+          generator.shadowGeneratorIndex;
       }
       return;
     }

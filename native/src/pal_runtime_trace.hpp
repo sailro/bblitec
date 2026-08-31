@@ -99,7 +99,7 @@ inline void trace_scene_topology(
     if (!runtime_trace_enabled()) return;
     std::cerr
         << "[bblite trace] topology frame=" << frame
-        << " version=" << scene.mesh_membership_version
+        << " version=" << scene.render_topology_version
         << " scene-meshes=" << scene.meshes.size()
         << " render-items=" << previous_items << "->" << current_items
         << " shader-items=" << shader_items

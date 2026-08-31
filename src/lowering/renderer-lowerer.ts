@@ -1024,6 +1024,8 @@ enum class RenderPipelineKind {
     shader_a2c,
     node_opaque_back,
     node_opaque_none,
+    node_transparent_back,
+    node_transparent_none,
 };
 
 /**
@@ -1035,7 +1037,7 @@ enum class RenderPipelineKind {
  * here widens every key rather than silently colliding with one.
  */
 inline constexpr std::size_t render_pipeline_kind_count =
-    static_cast<std::size_t>(RenderPipelineKind::node_opaque_none) + 1;
+    static_cast<std::size_t>(RenderPipelineKind::node_transparent_none) + 1;
 
 enum class RenderStage {
     skybox,
@@ -1656,9 +1658,15 @@ RenderPipelineKind render_pipeline_kind(const RenderItem& item) {
             return item.alpha_to_coverage
                 ? RenderPipelineKind::shader_a2c
                 : RenderPipelineKind::shader;
-        // A node graph's blend state is its own; the reached slice composes
-        // only the opaque arm, so the bucket cannot be transparent here.
+        // A node graph's blend state is its own. parseNodeMaterialFromSnippet
+        // stores the graph-derived alpha-combine mode on the material, so the
+        // ordinary bucket axis selects the matching fixed-function arm.
         case RenderMaterialKind::node:
+            if (transparent) {
+                return double_sided
+                    ? RenderPipelineKind::node_transparent_none
+                    : RenderPipelineKind::node_transparent_back;
+            }
             return double_sided
                 ? RenderPipelineKind::node_opaque_none
                 : RenderPipelineKind::node_opaque_back;

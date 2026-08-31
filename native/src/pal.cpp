@@ -30,6 +30,18 @@ void defer_callback(Engine& engine, std::function<void()> callback) {
     engine.deferred_callbacks.push_back(std::move(callback));
 }
 
+void defer_start_continuation(
+    Engine& engine,
+    std::function<void()> callback) {
+    ++engine.pending_start_continuations;
+    defer_callback(
+        engine,
+        [&engine, callback = std::move(callback)]() mutable {
+            callback();
+            --engine.pending_start_continuations;
+        });
+}
+
 void run_deferred_callbacks(Engine& engine) {
     if (engine.deferred_callbacks.empty()) {
         return;

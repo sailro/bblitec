@@ -1993,6 +1993,11 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         color_target.format = esm_caster_color_format(esm_shadow_index);
     }
 #endif
+    const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
+    const bool transparent = traits.transparent && !shadow_pass && !caster;
+    if (transparent) {
+        color_target.blend_state = blend_state_from(transparent_blend);
+    }
     SDL_GPUGraphicsPipelineCreateInfo info{};
     info.vertex_shader = vertex_shader;
     info.fragment_shader = fragment_shader;
@@ -2008,18 +2013,20 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     };
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
-    // The backFaceCulling the graph declared, through the same shared
-    // decode as the other families: the reached slice composes no blend,
-    // so the kind carries nothing else.
+    // The graph's culling and alpha-combine state, decoded through the same
+    // shared kind table as the other families. Shadow views force the pin's
+    // alpha mode 0 and therefore keep depth writes and no colour blending.
     info.rasterizer_state.cull_mode =
-        gpu_cull_mode(pipeline_kind_traits(kind).cull);
+        gpu_cull_mode(traits.cull);
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
     apply_pass_depth_state(info, state, shadow_pass);
-    info.depth_stencil_state.enable_depth_write = true;
-    info.target_info.color_target_descriptions = &color_target;
-    info.target_info.num_color_targets = 1;
+    info.depth_stencil_state.enable_depth_write = !transparent;
+    const bool pcf_caster = caster && !entry.caster.esm;
+    info.target_info.color_target_descriptions =
+        pcf_caster ? nullptr : &color_target;
+    info.target_info.num_color_targets = pcf_caster ? 0 : 1;
     SDL_GPUGraphicsPipeline* pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &info);
     if (!pipeline) {
@@ -2060,7 +2067,8 @@ void draw_node_variant(
     // The generator whose map this pass writes, when it writes one.
     std::uint32_t esm_shadow_index = invalid_handle) {
 #if BBLITE_NODE_SHADOWS
-    const bool caster = material && material->esm_shadow;
+    const bool caster = material &&
+        (material->esm_shadow || material->no_color);
 #else
     const bool caster = false;
 #endif
@@ -7118,21 +7126,26 @@ bool run_gpu_engine(Engine& engine) {
         std::vector<upstream::RenderDrawLists> task_draw_lists(
             engine.frame_tasks.size());
         const auto rebuild_task_draw_lists = [&] {
-            for (
-                std::size_t index = 0;
-                index < engine.frame_tasks.size();
-                ++index) {
-                task_draw_lists[index] =
+            task_draw_lists.resize(engine.frame_tasks.size());
+            for (upstream::RenderDrawLists& lists : task_draw_lists) {
+                lists = {};
+            }
+            for (const TaskHandle handle : scene.tasks) {
+                if (handle.value >= engine.frame_tasks.size()) {
+                    throw std::runtime_error(
+                        "Scene frame task handle is invalid.");
+                }
+                task_draw_lists[handle.value] =
                     upstream::build_render_task_draw_lists(
                         render_plan.items,
                         engine,
-                        engine.frame_tasks[index]);
+                        engine.frame_tasks[handle.value]);
             }
         };
         rebuild_task_draw_lists();
         cpu_startup_mark("draw-lists-ready");
-        std::uint64_t synced_mesh_membership_version =
-            scene.mesh_membership_version;
+        std::uint64_t synced_render_topology_version =
+            scene.render_topology_version;
         std::uint32_t synced_material_family_mask =
             scene.material_family_mask;
 
@@ -7416,8 +7429,8 @@ bool run_gpu_engine(Engine& engine) {
             }
             bool topology_updated = false;
             if (
-                scene.mesh_membership_version !=
-                synced_mesh_membership_version) {
+                scene.render_topology_version !=
+                synced_render_topology_version) {
                 const std::size_t previous_item_count =
                     render_plan.items.size();
                 // SDL releases GPU resources only when pending command
@@ -7466,8 +7479,8 @@ bool run_gpu_engine(Engine& engine) {
                 state.meshes = std::move(updated_meshes);
                 render_plan = std::move(updated_plan);
                 rebuild_task_draw_lists();
-                synced_mesh_membership_version =
-                    scene.mesh_membership_version;
+                synced_render_topology_version =
+                    scene.render_topology_version;
                 synced_material_family_mask =
                     scene.material_family_mask;
                 const std::size_t shader_item_count =

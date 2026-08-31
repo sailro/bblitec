@@ -35,6 +35,7 @@ import {
 } from "../src/upstream-lower.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
+import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
@@ -96,7 +97,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     const lowered = new SceneLowerer(new LoweringContext()).lowerCore();
     assert.match(lowered.source, /scene\.clear_color = Color4\{\s*0\.2f,\s*0\.2f,\s*0\.3f,\s*1\.0f/s);
     assert.match(lowered.source, /for \(const MeshHandle mesh : record\.meshes\)/);
-    assert.match(lowered.source, /scene\.mesh_membership_version/);
+    assert.match(lowered.source, /scene\.render_topology_version/);
     assert.match(lowered.source, /scene\.material_family_mask/);
     assert.match(lowered.source, /void on_before_render/);
     assert.match(
@@ -112,7 +113,23 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /scene\.meshes\.erase\(found\);\s*\r?\n\s*\+\+scene\.mesh_membership_version;/,
+        /scene\.meshes\.erase\(found\);\s*\r?\n\s*\+\+scene\.render_topology_version;/,
+    );
+    assert.match(
+        lowered.source,
+        /void remove_from_scene\(Scene& scene, LightHandle light\)/,
+    );
+    assert.match(
+        lowered.source,
+        /pending_shadow_retirements\.push_back\(generator\);[\s\S]{0,120}scene\.lights\.erase\(found\);[\s\S]{0,120}scene\.topology_rebuild_pending = true;[\s\S]{0,120}\+\+scene\.render_topology_version;/,
+    );
+    assert.match(
+        lowered.source,
+        /void unregister_scene\(Scene& scene\)[\s\S]{0,400}registered_scenes\.erase/,
+    );
+    assert.match(
+        lowered.source,
+        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,1600}pending_shadow_retirements\.clear\(\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
     );
     assert.match(
         lowered.source,
@@ -211,6 +228,44 @@ test("omits the ESM selector local from a PCF-only caster view", () => {
             esm.indexOf("void refresh_shadow_task_meshes"),
         ),
         /const bool esm =\s*generator\.filter == ShadowFilter::esm_directional/,
+    );
+});
+
+test("clears an armed topology rebuild after replacement shadow tasks exist", () => {
+    const source = shadowFactorySource(
+        new LoweringContext(),
+        ["shadow:pcf"],
+    ).source;
+
+    assert.match(
+        source,
+        /void register_scene_with_shadow_support\(Scene& scene\)[\s\S]{0,1000}build_shadow_task\(scene, generator\);[\s\S]{0,160}register_scene\(scene\);\s*rebuild_scene_renderables\(scene\);/,
+    );
+});
+
+test("reuses one receiver binding for same-filter shadow replacements", () => {
+    assert.deepEqual(
+        receiverShadowLightSlots([
+            { kind: "pcf-spot", lightIndex: 0 },
+            { kind: "pcf-spot", lightIndex: 0 },
+        ]),
+        [{ lightIndex: 0, shadowType: "pcf" }],
+    );
+    assert.deepEqual(
+        receiverShadowLightSlots([
+            // The reached CSM adaptation remains manifest-truthful as the
+            // single-map directional PCF receiver contract.
+            { kind: "pcf-directional", lightIndex: 1 },
+        ]),
+        [{ lightIndex: 1, shadowType: "pcf" }],
+    );
+    assert.throws(
+        () =>
+            receiverShadowLightSlots([
+                { kind: "pcf-spot", lightIndex: 0 },
+                { kind: "esm-directional", lightIndex: 0 },
+            ]),
+        /dynamic shadow-filter variants are not lowered/,
     );
 });
 

@@ -37,6 +37,7 @@ export function compileLightIntrinsic(
                     `${engine}, ${direction}, ${intensity})`,
                 engineCpp: engine,
                 lightKind: "hemispheric",
+                lightIdentity: {},
             };
         }
 
@@ -56,6 +57,7 @@ export function compileLightIntrinsic(
                     `${engine}, ${direction}, ${intensity})`,
                 engineCpp: engine,
                 lightKind: "directional",
+                lightIdentity: {},
             };
         }
 
@@ -75,6 +77,7 @@ export function compileLightIntrinsic(
                     `${engine}, ${position}, ${intensity})`,
                 engineCpp: engine,
                 lightKind: "point",
+                lightIdentity: {},
             };
         }
 
@@ -108,6 +111,7 @@ export function compileLightIntrinsic(
                     `${angle}, ${exponent}, ${intensity})`,
                 engineCpp: engine,
                 lightKind: "spot",
+                lightIdentity: {},
             };
         }
 

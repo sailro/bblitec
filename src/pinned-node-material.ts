@@ -102,6 +102,8 @@ export interface ComposedNodeMaterial {
     textures: readonly ComposedNodeTextureBinding[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
+    /** Whether the graph selects BJS alpha-combine mode for its draw. */
+    alphaBlending: boolean;
     /** The environment bindings, or null when the graph reaches none. */
     envBindings: ComposedNodeEnvBindings | null;
     /** The morph storage pair, or null when the graph reaches no morph block. */
@@ -118,15 +120,8 @@ export interface ComposedNodeMaterial {
      * a non-receiving one alike.
      */
     shadowBindings: readonly ComposedNodeShadowBinding[];
-    /**
-     * The ESM caster module, when the scene casts a shadow from this graph.
-     *
-     * The pin re-compiles the same bodies with the depth code its own
-     * `createNodeEsmShadowMaterialView` carries, so this is a second module
-     * rather than a second graph -- `buildNodeRenderables` does exactly this
-     * for a view whose feature word carries `NODE_ESM_SHADOW_OUTPUT`.
-     */
-    esmCaster: ComposedNodeCaster | null;
+    /** The graph's one native caster module, or none for a receiver only. */
+    caster: ComposedNodeCaster | null;
 }
 
 /**
@@ -145,10 +140,27 @@ export interface ComposedNodeShadowBinding {
 }
 
 /** The ESM caster module and the one binding it adds. */
-export interface ComposedNodeCaster {
-    wgsl: string;
-    /** The group-1 binding `nmeShadowParams` took. */
-    paramsBinding: number;
+export type ComposedNodeCaster =
+    | {
+          kind: "esm";
+          wgsl: string;
+          /** The group-1 binding `nmeShadowParams` took. */
+          paramsBinding: number;
+      }
+    | {
+          kind: "pcf";
+          /** NODE_NO_COLOR_OUTPUT: depth only, with no caster-only binding. */
+          wgsl: string;
+      };
+
+export interface ComposeNodeMaterialOptions {
+    shadowLights?: readonly {
+        lightIndex: number;
+        shadowType: "esm" | "pcf" | "csm";
+    }[];
+    castsEsmShadow?: boolean;
+    blockEmitters?: readonly NodeMaterialBlockEmitter[] | undefined;
+    castsPcfShadow?: boolean;
 }
 
 /**
@@ -174,6 +186,53 @@ interface PinnedNodeCompiledBindings {
         _deltasBinding: number;
         _uboBinding: number;
     } | null;
+}
+
+/** Bindings that must keep the same numbers in receiver and caster modules. */
+function nodeSharedBindings(
+    compile: PinnedNodeCompiledBindings,
+): readonly (readonly [string, number])[] {
+    return [
+        ...(compile._nodeUboBinding === null
+            ? []
+            : [["nodeU", compile._nodeUboBinding] as const]),
+        ...compile._textureBindings.flatMap((binding) => [
+            [`${binding._name}.texture`, binding._texBinding] as const,
+            [`${binding._name}.sampler`, binding._sampBinding] as const,
+        ]),
+        ...(compile._envBindings
+            ? ([
+                ["env.ibl", compile._envBindings._iblTexture],
+                ["env.iblSampler", compile._envBindings._iblSampler],
+                ["env.brdf", compile._envBindings._brdfLUT],
+                ["env.brdfSampler", compile._envBindings._brdfSampler],
+            ] as const)
+            : []),
+        ...(compile._morphBindings
+            ? ([
+                ["morph.deltas", compile._morphBindings._deltasBinding],
+                ["morph.weights", compile._morphBindings._uboBinding],
+            ] as const)
+            : []),
+    ];
+}
+
+function assertCasterBindingsMatch(
+    receiver: PinnedNodeCompiledBindings,
+    caster: PinnedNodeCompiledBindings,
+    kind: "ESM" | "PCF",
+): readonly (readonly [string, number])[] {
+    const casterBindings = nodeSharedBindings(caster);
+    if (
+        JSON.stringify(casterBindings) !==
+        JSON.stringify(nodeSharedBindings(receiver))
+    ) {
+        throw new Error(
+            `The pinned node ${kind} caster numbered its shared bindings ` +
+                "differently from the receiver it was compiled from.",
+        );
+    }
+    return casterBindings;
 }
 
 /** The pin's build state, by the field names `node-types.ts` gives them. */
@@ -204,6 +263,7 @@ interface PinnedNodeMaterial {
     _graph: {
         backFaceCulling: boolean;
         needsAlphaBlending: boolean;
+        alphaMode: number;
     };
     _uniformValues: ReadonlyMap<
         string,
@@ -341,7 +401,16 @@ function assertReachedSlice(
     material: PinnedNodeMaterial,
     label: string,
 ): void {
-    if (material._graph.needsAlphaBlending) refuse(label, "alpha blending");
+    if (
+        material._graph.needsAlphaBlending &&
+        material._graph.alphaMode !== 2
+    ) {
+        refuse(
+            label,
+            `alpha mode ${material._graph.alphaMode}; only BJS ` +
+                "alpha-combine mode 2 is lowered",
+        );
+    }
     for (const [flag, value] of Object.entries(material._state)) {
         if (typeof value !== "boolean" || !value) continue;
         if (servedFlags.has(flag)) continue;
@@ -360,13 +429,14 @@ function assertReachedSlice(
 export async function composeNodeMaterial(
     json: JsonObject,
     label: string,
-    shadowLights: readonly {
-        lightIndex: number;
-        shadowType: "esm" | "pcf" | "csm";
-    }[] = [],
-    castsEsmShadow = false,
-    blockEmitters: readonly NodeMaterialBlockEmitter[] = [],
+    options: ComposeNodeMaterialOptions = {},
 ): Promise<ComposedNodeMaterial> {
+    const {
+        shadowLights = [],
+        castsEsmShadow = false,
+        blockEmitters = [],
+        castsPcfShadow = false,
+    } = options;
     const module = await importPinnedModule<PinnedNodeMaterialModule>(
         "material/node/node-material.js",
     );
@@ -445,9 +515,16 @@ export async function composeNodeMaterial(
     }
     const env = material._compile._envBindings;
     const morph = material._compile._morphBindings;
-    const esmCaster = castsEsmShadow
+    if (castsEsmShadow && castsPcfShadow) {
+        throw new Error(
+            `Node material '${label}' cannot serve both ESM and PCF caster views.`,
+        );
+    }
+    const caster = castsEsmShadow
         ? await composeNodeEsmCaster(material, engine)
-        : null;
+        : castsPcfShadow
+          ? await composeNodePcfCaster(material, engine)
+          : null;
     return {
         wgsl: material._compile._wgsl,
         uboBytes: material._compile._nodeUboSize,
@@ -460,6 +537,7 @@ export async function composeNodeMaterial(
             sampler: binding._sampBinding,
         })),
         backFaceCulling: material._graph.backFaceCulling,
+        alphaBlending: material._graph.needsAlphaBlending,
         envBindings: env
             ? {
                 iblTexture: env._iblTexture,
@@ -481,7 +559,7 @@ export async function composeNodeMaterial(
             ubo: binding._uboBinding,
             shadowType: binding._shadowType,
         })),
-        esmCaster,
+        caster,
     };
 }
 
@@ -556,41 +634,11 @@ async function composeNodeEsmCaster(
     // compiles, and while the params block landed on none of them: both are
     // properties of the pin's emission order rather than guarantees, so
     // both are checked.
-    const sharedBindings = (
-        compile: PinnedNodeCompiledBindings,
-    ): readonly (readonly [string, number])[] => [
-        ...(compile._nodeUboBinding === null
-            ? []
-            : [["nodeU", compile._nodeUboBinding] as const]),
-        ...compile._textureBindings.flatMap((binding) => [
-            [`${binding._name}.texture`, binding._texBinding] as const,
-            [`${binding._name}.sampler`, binding._sampBinding] as const,
-        ]),
-        ...(compile._envBindings
-            ? ([
-                ["env.ibl", compile._envBindings._iblTexture],
-                ["env.iblSampler", compile._envBindings._iblSampler],
-                ["env.brdf", compile._envBindings._brdfLUT],
-                ["env.brdfSampler", compile._envBindings._brdfSampler],
-            ] as const)
-            : []),
-        ...(compile._morphBindings
-            ? ([
-                ["morph.deltas", compile._morphBindings._deltasBinding],
-                ["morph.weights", compile._morphBindings._uboBinding],
-            ] as const)
-            : []),
-    ];
-    const casterShared = sharedBindings(compiled);
-    if (
-        JSON.stringify(casterShared) !==
-            JSON.stringify(sharedBindings(material._compile))
-    ) {
-        throw new Error(
-            "The pinned node ESM caster numbered its shared bindings " +
-                "differently from the receiver it was compiled from.",
-        );
-    }
+    const casterShared = assertCasterBindingsMatch(
+        material._compile,
+        compiled,
+        "ESM",
+    );
     // Binding 0 is the mesh block, which neither list carries.
     if (
         compiled._esmShadowParamsBinding === 0 ||
@@ -604,7 +652,49 @@ async function composeNodeEsmCaster(
         );
     }
     return {
+        kind: "esm",
         wgsl: compiled._wgsl,
         paramsBinding: compiled._esmShadowParamsBinding,
     };
+}
+
+/** The pin's NODE_NO_COLOR_OUTPUT compile used by a PCF depth task. */
+async function composeNodePcfCaster(
+    material: PinnedNodeMaterial,
+    engine: unknown,
+): Promise<ComposedNodeCaster> {
+    const pipeline = await importPinnedModule<PinnedNodePipelineModule>(
+        "material/node/node-pipeline.js",
+    );
+    const casterOptions = {
+        _engine: engine,
+        _format: "bgra8unorm",
+        _depthStencilFormat: "depth32float",
+        _depthCompare: "less-equal",
+        _msaaSamples: 1,
+        _backFaceCulling: material._graph.backFaceCulling,
+        _noColorOutput: true,
+        _esmShadowOutput: false,
+        _esmShadowDepthCode: undefined,
+        _alphaMode: undefined,
+        _envEmitter: material._envHelpers?.emitEnv,
+    };
+    new LoweringContext(sharedUpstreamStore()).assertSuppliedOptions(
+        "src/material/node/node-pipeline.ts",
+        "CompileOpts",
+        Object.keys(casterOptions),
+    );
+    const compiled = pipeline.compileNodePipeline(
+        material._state,
+        material._vertexBody,
+        material._fragmentBody,
+        casterOptions,
+    );
+    if (compiled._esmShadowParamsBinding !== null) {
+        throw new Error(
+            "The pinned node PCF caster unexpectedly allocated an ESM shadow-params binding.",
+        );
+    }
+    assertCasterBindingsMatch(material._compile, compiled, "PCF");
+    return { kind: "pcf", wgsl: compiled._wgsl };
 }

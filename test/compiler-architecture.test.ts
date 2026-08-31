@@ -990,6 +990,7 @@ test("selects live shadow-receiver variants for runtime meshes", () => {
 
 test("runs post-start RAF callbacks only after the engine render", () => {
     const runtime = source("native/include/bblite/runtime.hpp");
+    const pal = source("native/src/pal.cpp");
     const shared = source("native/src/pal_gpu_shared.hpp");
     const sdl = source("native/src/pal_sdl_gpu.cpp");
     const dawn = source("native/src/pal_dawn.cpp");
@@ -1015,6 +1016,23 @@ test("runs post-start RAF callbacks only after the engine render", () => {
     );
     assert.match(shared, /post_render_animation_frame_callbacks_armed = true/);
     assert.match(shared, /run_interval_callbacks\(engine\);/);
+    assert.match(runtime, /std::uint32_t pending_start_continuations = 0;/);
+    assert.match(
+        pal,
+        /void defer_start_continuation[\s\S]{0,300}\+\+engine\.pending_start_continuations;[\s\S]{0,400}--engine\.pending_start_continuations;/,
+    );
+    assert.match(
+        shared,
+        /drains_resolved\(\) const[\s\S]{0,600}pending_start_continuations != 0\) return false;/,
+    );
+    assert.equal(
+        (dawn.match(/captures\.drains_resolved\(\)/g) ?? []).length,
+        1,
+    );
+    assert.match(
+        dawn,
+        /const bool capture_frame =\s*capture_ready &&\s*!captures\.screenshot_saved/,
+    );
     for (const backend of [sdl, dawn]) {
         assert.match(backend, /finish_frame\(engine\);[\s\S]{0,220}\+\+frame/);
     }
@@ -1214,7 +1232,7 @@ test("does not idle either GPU backend for runtime scene topology updates", () =
 
     assert.match(
         sdl,
-        /scene\.mesh_membership_version !=[\s\S]{0,300}SDL releases GPU resources only when pending command/,
+        /scene\.render_topology_version !=[\s\S]{0,300}SDL releases GPU resources only when pending command/,
     );
     assert.doesNotMatch(sdl, /SDL_WaitForGPUIdle topology update/);
     assert.match(
@@ -1222,6 +1240,24 @@ test("does not idle either GPU backend for runtime scene topology updates", () =
         /std::vector<DawnMesh> updated_meshes =[\s\S]{0,1200}rematch_render_meshes\([\s\S]{0,1200}rebuild_task_draw_lists\(\);/,
     );
     assert.doesNotMatch(dawn, /wgpuQueueOnSubmittedWorkDone/);
+});
+
+test("grows post-start shadow task state on both GPU backends", () => {
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    assert.match(
+        sdl,
+        /const auto rebuild_task_draw_lists = \[&\] \{\s*task_draw_lists\.resize\(engine\.frame_tasks\.size\(\)\);/,
+    );
+    assert.match(
+        dawn,
+        /const auto rebuild_task_draw_lists = \[&\] \{\s*if \(state\.render_tasks\.size\(\) < engine\.frame_tasks\.size\(\)\) \{\s*state\.render_tasks\.resize\(engine\.frame_tasks\.size\(\)\);/,
+    );
+    assert.match(
+        dawn,
+        /DawnRenderTask& render_task =[\s\S]{0,120}if \(!render_task\.view_projection\) \{[\s\S]{0,180}WGPUBufferUsage_Uniform/,
+    );
 });
 
 test("instrumented draw census follows the submitted screenshot frame", () => {
