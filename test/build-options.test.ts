@@ -46,8 +46,36 @@ test("the repository manifest automatically feeds the full dev set", () => {
         developmentVcpkgFeatures(
             readFileSync("native/vcpkg.json", "utf8"),
         ),
-        ["jpeg", "navigation", "physics", "webp"],
+        ["jpeg", "navigation", "physics", "ui", "webp"],
     );
+});
+
+test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite renderers", () => {
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    const projection = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const spriteSdl = readFileSync(
+        "native/src/pal_sdl_gpu_sprite.cpp",
+        "utf8",
+    );
+    const spriteDawn = readFileSync(
+        "native/src/pal_dawn_sprite.cpp",
+        "utf8",
+    );
+
+    assert.doesNotMatch(cmake, /RmlUi_Renderer_SDL_GPU\.cpp/);
+    assert.doesNotMatch(projection, /RenderInterface_SDL_GPU|SDL_GPUDevice/);
+    assert.match(projection, /class UiRenderRecorder/);
+    assert.match(projection, /record_ui_rml_frame/);
+    assert.match(sdl, /render_ui_sdl_frame/);
+    assert.match(dawn, /render_ui_dawn_frame/);
+    assert.match(sdl, /multisample_layer/);
+    assert.match(dawn, /multisample_layer/);
+    assert.match(spriteSdl, /render_sprite_ui_sdl_frame/);
+    assert.match(spriteDawn, /render_sprite_ui_dawn_frame/);
+    assert.match(spriteSdl, /handle_ui_rml_event/);
+    assert.match(spriteDawn, /handle_ui_rml_event/);
 });
 
 test("canonicalizes the build-time backend flag", () => {

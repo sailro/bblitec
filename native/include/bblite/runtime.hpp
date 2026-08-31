@@ -103,6 +103,13 @@ struct PlatformMouseEvent {
     double delta_y = 0.0;
 };
 
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+/** Stable identity for one node in the scene-created, browser-neutral UI IR. */
+struct UiElementHandle {
+    std::uint32_t value = invalid_handle;
+};
+#endif
+
 struct MeshHandle {
     std::uint32_t value = invalid_handle;
 
@@ -2577,6 +2584,64 @@ struct ShadowGeneratorRecord {
     std::uint32_t esm_index = 0;
 };
 
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+/**
+ * The retained UI representation produced by DOM lowering.
+ *
+ * This deliberately contains browser-neutral data only. RmlUi element
+ * pointers and SDL_GPU resources belong to the PAL runtime built over it,
+ * allowing another backend to consume the same tree later.
+ */
+struct UiElementRecord {
+    struct CanvasPoint {
+        double x = 0.0;
+        double y = 0.0;
+    };
+    struct CanvasDrawCommand {
+        enum class Kind { Fill, Stroke } kind = Kind::Fill;
+        std::vector<CanvasPoint> points;
+        std::string color;
+        double line_width = 1.0;
+        bool closed = false;
+        bool round_join = false;
+        bool round_cap = false;
+    };
+    struct CanvasState {
+        double width = 300.0;
+        double height = 150.0;
+        double scale_x = 1.0;
+        double scale_y = 1.0;
+        std::string fill_style = "#000000";
+        std::string stroke_style = "#000000";
+        double line_width = 1.0;
+        std::string line_join = "miter";
+        std::string line_cap = "butt";
+        std::vector<CanvasPoint> path;
+        bool path_closed = false;
+        std::vector<CanvasDrawCommand> draws;
+    };
+    std::string tag;
+    std::string text;
+    /** Static markup assigned through the reached element.innerHTML surface. */
+    std::string inner_rml;
+    std::unordered_map<std::string, std::string> attributes;
+    std::unordered_map<std::string, std::string> style_properties;
+    UiElementHandle parent{};
+    std::vector<UiElementHandle> children;
+    std::vector<std::function<void()>> click_callbacks;
+    std::unordered_map<std::string, std::vector<std::function<void()>>>
+        event_callbacks;
+    std::optional<CanvasState> canvas;
+    bool attached_to_root = false;
+};
+
+/** One bounded `.class { ... }` rule imported from a browser host page. */
+struct UiClassStyleRule {
+    std::string class_name;
+    std::string style;
+};
+#endif
+
 struct Engine {
     EngineOptions options{};
     /**
@@ -2658,6 +2723,14 @@ struct Engine {
     bool pointer_lock_requested = false;
     bool pointer_locked = false;
     std::vector<std::function<void(bool)>> visibility_change_callbacks;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    /** Scene-created DOM after compiler lowering, independent of RmlUi. */
+    std::vector<UiElementRecord> ui_elements;
+    /** Static host-page class rules applied below inline element styles. */
+    std::vector<UiClassStyleRule> ui_class_style_rules;
+    /** Any tree/text/style/listener mutation invalidates the PAL projection. */
+    std::uint64_t ui_revision = 0;
+#endif
     /**
      * Application-owned `requestAnimationFrame` callbacks registered before
      * `startEngine`. Browser RAF callbacks run in registration order, so these

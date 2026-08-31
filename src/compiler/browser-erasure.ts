@@ -22,6 +22,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
     "static-fetch-response",
     "platform-keyboard-event",
     "platform-mouse-event",
+    "ui-element",
 ]);
 
 export interface BrowserErasureContext {
@@ -38,6 +39,8 @@ export interface BrowserErasureContext {
     ): boolean;
     isBrowserDomValue(expression: ts.Expression): boolean;
     isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
+    isNativeUiHelperCall(call: ts.CallExpression): boolean;
+    isNativeHostUiLookup(call: ts.CallExpression): boolean;
     isBrowserOnlyNullableClassFactoryCall(
         call: ts.CallExpression,
     ): boolean;
@@ -132,6 +135,17 @@ export class BrowserErasure {
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
+        // Scene-created DOM is not a browser object in the native program: it
+        // is the input syntax for the retained UI IR. Keep this deliberately
+        // narrower than general DOM support. Host-page lookups and arbitrary
+        // document calls continue down the browser-erasure path.
+        if (
+            ts.isCallExpression(unwrapped) &&
+            (this.isNativeUiCall(unwrapped) ||
+                this.context.isNativeUiHelperCall(unwrapped))
+        ) {
+            return false;
+        }
         // `import.meta.url` is the browser module's deployment URL. Native
         // asset sinks fold the reached `new URL(path, import.meta.url)`
         // helper before this erasure gate; every remaining use is browser
@@ -181,6 +195,16 @@ export class BrowserErasure {
             return true;
         }
         if (this.context.canvasSizeProperty(unwrapped)) {
+            return false;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            (unwrapped.name.text === "innerWidth" ||
+                unwrapped.name.text === "innerHeight") &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "window" &&
+            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+        ) {
             return false;
         }
         if (
@@ -248,13 +272,16 @@ export class BrowserErasure {
             );
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            const unresolvedBrowserOperand = (operand: ts.Expression) =>
+                this.isBrowserOnlyExpression(operand) &&
+                !(
+                    ts.isIdentifier(operand) &&
+                    operand.text === "devicePixelRatio" &&
+                    this.isDefaultBrowserGlobal(operand)
+                );
             return (
-                this.isBrowserOnlyExpression(
-                    unwrapped.left,
-                ) ||
-                this.isBrowserOnlyExpression(
-                    unwrapped.right,
-                )
+                unresolvedBrowserOperand(unwrapped.left) ||
+                unresolvedBrowserOperand(unwrapped.right)
             );
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
@@ -346,6 +373,36 @@ export class BrowserErasure {
             return false;
         }
         return false;
+    }
+
+    private isNativeUiCall(call: ts.CallExpression): boolean {
+        if (this.context.isNativeHostUiLookup(call)) return true;
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+
+        if (
+            callee.name.text === "createElement" &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "document" &&
+            this.context.isDefaultLibraryIdentifier(callee.expression)
+        ) {
+            return true;
+        }
+
+        if (this.isNativeDomBridge(callee.expression)) return true;
+
+        return (
+            callee.name.text === "appendChild" &&
+            call.arguments.length === 1 &&
+            this.isNativeDomBridge(call.arguments[0]!) &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "body" &&
+            ts.isIdentifier(callee.expression.expression) &&
+            callee.expression.expression.text === "document" &&
+            this.context.isDefaultLibraryIdentifier(
+                callee.expression.expression,
+            )
+        );
     }
 
     private isNativeDomBridge(

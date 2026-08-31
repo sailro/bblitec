@@ -405,6 +405,17 @@ export class ExpressionLowerer {
                     narrowed,
                 );
             }
+            if (
+                unwrapped.text === "devicePixelRatio" &&
+                this.context.isDefaultLibraryIdentifier(unwrapped)
+            ) {
+                return {
+                    kind: "number",
+                    cpp: "1.0",
+                    staticNumber: 1,
+                    dataType: { kind: "number" },
+                };
+            }
             if (unwrapped.text === "undefined") {
                 return { kind: "json-null", cpp: "std::nullopt" };
             }
@@ -2688,6 +2699,13 @@ export class ExpressionLowerer {
                 ts.isPropertyAccessExpression(callee) &&
                 ts.isIdentifier(callee.expression)
                     ? this.context.lookupOptional(callee.expression)
+                    : ts.isPropertyAccessExpression(callee) &&
+                        ts.isPropertyAccessExpression(callee.expression) &&
+                        callee.expression.expression.kind ===
+                            ts.SyntaxKind.ThisKeyword
+                      ? this.context.resolveThisField(
+                            callee.expression.name.text,
+                        )
                     : undefined;
             this.context.fail(
                 callee,
@@ -2712,6 +2730,13 @@ export class ExpressionLowerer {
                     dataType: { kind: "string" },
                 };
             }
+            if (value.kind === "boolean") {
+                return {
+                    kind: "data",
+                    cpp: `(${value.cpp} ? std::string("true") : std::string("false"))`,
+                    dataType: { kind: "string" },
+                };
+            }
             if (
                 value.kind === "string" ||
                 (value.kind === "data" &&
@@ -2725,7 +2750,7 @@ export class ExpressionLowerer {
             }
             this.context.fail(
                 call.arguments[0]!,
-                `String() supports number and string values, received ${value.kind}.`,
+                `String() supports number, boolean, and string values, received ${value.kind}.`,
             );
         }
 
@@ -2821,17 +2846,11 @@ export class ExpressionLowerer {
             bound.dataType?.kind === "function"
         ) {
             const functionType = bound.dataType;
-            if (call.arguments.length !== functionType.parameters.length) {
-                this.context.fail(
+            const argumentsCpp =
+                this.context.dataLowerer.compileFunctionArguments(
                     call,
-                    `Stored function expects ${functionType.parameters.length} arguments.`,
+                    functionType,
                 );
-            }
-            const argumentsCpp = call.arguments.map((argument, index) =>
-                this.context.dataLowerer.compileForSink(
-                    argument,
-                    functionType.parameters[index]!,
-                ));
             const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
             return functionType.result
                 ? this.context.dataLowerer.leafValue(cpp, functionType.result)

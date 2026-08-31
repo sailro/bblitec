@@ -38,6 +38,12 @@
         "bullet3"
       ]
     },
+    "ui": {
+      "description": "FreeType font rasterization for the optional RmlUi scene-created DOM projection.",
+      "dependencies": [
+        "freetype"
+      ]
+    },
     "webp": {
       "description": "WebP texture decoding for scenes whose materialized assets reach image/webp",
       "dependencies": [

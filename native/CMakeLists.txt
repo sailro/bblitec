@@ -45,6 +45,15 @@ if(
     list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
 endif()
 
+# Scene-created DOM lowers to a retained UI IR. Only that reached surface
+# installs the font dependency and composes RmlUi into the executable.
+if(
+    "ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES
+    AND NOT "ui" IN_LIST VCPKG_MANIFEST_FEATURES
+)
+    list(APPEND VCPKG_MANIFEST_FEATURES "ui")
+endif()
+
 # A scene reaching audio against an audio-disabled trimmed SDL would open no
 # device and throw at the first frame -- a late and uninformative way to learn
 # that a build option said no. The trimmed dependency builder writes its
@@ -479,6 +488,62 @@ if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=1)
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=0)
+endif()
+
+if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
+    # Pin the experiment to the exact RmlUi revision projected by our
+    # backend-neutral recorder. The generated application still links only
+    # against our UI IR entry points; this dependency remains behind the PAL.
+    include(FetchContent)
+    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
+    set(RMLUI_SAMPLES OFF CACHE BOOL "Build RmlUi samples" FORCE)
+    set(RMLUI_LUA_BINDINGS OFF CACHE BOOL "Build RmlUi Lua bindings" FORCE)
+    set(RMLUI_PRECOMPILED_HEADERS OFF CACHE BOOL "RmlUi PCH" FORCE)
+    set(RMLUI_COMPILER_OPTIONS OFF CACHE BOOL "RmlUi compiler flags" FORCE)
+    # The scene command selects clang-cl for this CXX-only parent project.
+    # RmlUi's nested project also enables C; without an explicit selection,
+    # CMake finds clang.exe and feeds it the MSVC command line inherited from
+    # the Ninja configuration. Use the matching clang-cl frontend for both.
+    if(
+        WIN32
+        AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
+        AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"
+    )
+        set(
+            CMAKE_C_COMPILER
+            "${CMAKE_CXX_COMPILER}"
+            CACHE FILEPATH "C compiler for RmlUi" FORCE
+        )
+    endif()
+    FetchContent_Declare(
+        rmlui
+        GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
+        GIT_TAG b7b4a0688262832eacf3b9abb41f8bbe73868af8
+        GIT_PROGRESS TRUE
+        EXCLUDE_FROM_ALL
+    )
+    FetchContent_MakeAvailable(rmlui)
+
+    find_package(SDL3_image CONFIG REQUIRED)
+    target_sources(
+        bblite_native
+        PRIVATE
+        "${rmlui_SOURCE_DIR}/Backends/RmlUi_Platform_SDL.cpp"
+    )
+    target_include_directories(
+        bblite_native PRIVATE "${rmlui_SOURCE_DIR}/Backends"
+    )
+    target_compile_definitions(
+        bblite_native PRIVATE BBLITE_HAS_UI=1 RMLUI_SDL_VERSION_MAJOR=3
+    )
+    target_link_libraries(
+        bblite_native
+        PRIVATE
+        RmlUi::Core
+        $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
+    )
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_UI=0)
 endif()
 
 if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES)

@@ -266,6 +266,14 @@ export class DataLowerer {
                     dataType: { kind: "number" },
                 };
             }
+            if (target?.kind === "boolean" && !target.dataStore) {
+                return {
+                    kind: "boolean",
+                    cpp: `(${target.cpp} = ${this.context.compileCondition(expression.right)})`,
+                    dataType: { kind: "boolean" },
+                    impure: true,
+                };
+            }
             return undefined;
         }
         if (!ts.isIdentifier(left)) {
@@ -292,6 +300,16 @@ export class DataLowerer {
         if (target?.kind !== "data" || !target.dataType) {
             return undefined;
         }
+        if (target.dataType.kind === "function") {
+            const value = this.compileForSink(
+                expression.right,
+                target.dataType,
+            );
+            return this.leafValue(
+                `(${target.cpp} = ${value})`,
+                target.dataType,
+            );
+        }
         const assignable = target.dataType.kind === "optional" &&
             [
                 "number",
@@ -315,6 +333,34 @@ export class DataLowerer {
             `(${target.cpp} = ${value})`,
             target.dataType,
         );
+    }
+
+    /** Arguments for a stored std::function, including omitted TS optionals. */
+    public compileFunctionArguments(
+        call: ts.CallExpression,
+        functionType: DataType & { kind: "function" },
+        label = "Stored function",
+    ): string[] {
+        if (call.arguments.length > functionType.parameters.length) {
+            this.context.fail(
+                call,
+                `${label} expects at most ${functionType.parameters.length} arguments.`,
+            );
+        }
+        return functionType.parameters.map((parameter, index) => {
+            const argument = call.arguments[index];
+            if (argument) {
+                return this.compileForSink(argument, parameter);
+            }
+            if (parameter.kind !== "optional") {
+                this.context.fail(
+                    call,
+                    `${label} expects ${functionType.parameters.length} arguments.`,
+                );
+            }
+            this.context.reachJsData();
+            return "std::nullopt";
+        });
     }
 
     /** Container root each live alias refers into, for invalidation. */
@@ -3072,17 +3118,11 @@ export class DataLowerer {
                 .find((candidate) => candidate.name === method);
             const functionType = field?.type;
             if (functionType?.kind === "function") {
-                if (call.arguments.length !== functionType.parameters.length) {
-                    this.context.fail(
-                        call,
-                        `Stored function '${method}' expects ${functionType.parameters.length} arguments.`,
-                    );
-                }
-                const argumentsCpp = call.arguments.map((argument, index) =>
-                    this.compileForSink(
-                        argument,
-                        functionType.parameters[index]!,
-                    ));
+                const argumentsCpp = this.compileFunctionArguments(
+                    call,
+                    functionType,
+                    `Stored function '${method}'`,
+                );
                 const member = this.context.dataTypes.isReferenceStruct(
                     dataType.name,
                 )
@@ -5286,6 +5326,30 @@ export class DataLowerer {
             }
             case "function": {
                 if (
+                    unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+                    (ts.isIdentifier(unwrapped) &&
+                        unwrapped.text === "undefined" &&
+                        !this.context.lookupIdentifierValue(unwrapped))
+                ) {
+                    return `${this.context.dataTypes.cppType(dataType)}{}`;
+                }
+                if (ts.isIdentifier(unwrapped)) {
+                    const bound =
+                        this.context.lookupIdentifierValue(unwrapped);
+                    if (
+                        bound &&
+                        (bound.kind === "callback" ||
+                            bound.kind === "data" ||
+                            bound.kind === "json-null")
+                    ) {
+                        return this.compileKnownValueForSink(
+                            bound,
+                            dataType,
+                            unwrapped,
+                        );
+                    }
+                }
+                if (
                     ts.isArrowFunction(unwrapped) ||
                     ts.isFunctionExpression(unwrapped) ||
                     ts.isIdentifier(unwrapped)
@@ -6105,6 +6169,9 @@ export class DataLowerer {
                 }
                 break;
             case "function":
+                if (value.kind === "json-null") {
+                    return `${this.context.dataTypes.cppType(dataType)}{}`;
+                }
                 if (
                     value.kind === "callback" &&
                     value.callbackDeclaration
@@ -7935,6 +8002,12 @@ export class DataLowerer {
         }
         if (value.kind === "json-null") {
             return "false";
+        }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "function"
+        ) {
+            return `static_cast<bool>(${value.cpp})`;
         }
         return undefined;
     }

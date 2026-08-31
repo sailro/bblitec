@@ -704,6 +704,27 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         argument: ts.Expression,
     ): Value {
+        const unwrapped = unwrapExpression(argument);
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.name.text === "body" &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "document" &&
+            (this.checker.getSymbolAtLocation(unwrapped.expression)
+                ?.declarations ?? [])
+                .some((declaration) =>
+                    /(?:^|[\\/])lib\.dom\.d\.ts$/i.test(
+                        declaration.getSourceFile().fileName,
+                    ),
+                )
+        ) {
+            return {
+                kind: "ui-element",
+                cpp: "",
+                uiRoot: true,
+                truthinessCpp: "true",
+            };
+        }
         if (
             ts.isArrowFunction(argument) ||
             ts.isFunctionExpression(argument)
@@ -788,7 +809,34 @@ export class UserFunctionLowerer {
         const parameterTypes = bound.nativeCallbackParameterTypes;
         const declaration = bound.callbackDeclaration;
         if (!declaration) {
-            return undefined;
+            if (!parameterTypes || bound.cpp.length === 0) {
+                return undefined;
+            }
+            if (call.arguments.length !== parameterTypes.length) {
+                context.fail(
+                    call,
+                    "Forward native callback received the wrong number of arguments.",
+                );
+            }
+            const argumentsCpp = parameterTypes.map((type, index) => {
+                if (!type) {
+                    context.fail(
+                        call,
+                        "Forward native callback parameters must be plain data.",
+                    );
+                }
+                return context.compileForDataSink(
+                    call.arguments[index]!,
+                    type,
+                );
+            });
+            const cpp = `${bound.cpp}(${argumentsCpp.join(", ")})`;
+            return bound.nativeCallbackReturnType
+                ? context.dataValue(
+                      cpp,
+                      bound.nativeCallbackReturnType,
+                  )
+                : { kind: "void", cpp };
         }
         if (ts.isIdentifier(declaration)) {
             if (bound.cpp.length > 0) {
@@ -1427,7 +1475,21 @@ export class UserFunctionLowerer {
         try {
             lines = context.captureEmittedLines(() => {
                 for (const { parameter, type, cppName: name } of parameters) {
-                    this.bindParameter(context, parameter, context.dataValue(name, type));
+                    let value = context.dataValue(name, type);
+                    if (
+                        parameter.declaration.initializer &&
+                        type.kind === "optional"
+                    ) {
+                        const fallback = context.compileForDataSink(
+                            parameter.declaration.initializer,
+                            type.inner,
+                        );
+                        value = context.dataValue(
+                            `(${name}.has_value() ? *${name} : ${fallback})`,
+                            type.inner,
+                        );
+                    }
+                    this.bindParameter(context, parameter, value);
                 }
                 for (const statement of ir.statements) {
                     context.emitStatement(statement);

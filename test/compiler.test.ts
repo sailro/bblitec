@@ -5694,6 +5694,545 @@ test("erases event callbacks owned by an optional DOM local", () => {
     );
 });
 
+test("lowers scene-created DOM controls to the retained native UI IR", () => {
+    const result = compileSource(`
+        import { createEngine, startEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            let enabled = false;
+            const button = document.createElement("button");
+            button.textContent = "Feature: OFF";
+            button.setAttribute(
+                "style",
+                "position:absolute;bottom:12px;left:calc(50% - 60px);",
+            );
+            button.addEventListener("click", () => {
+                enabled = !enabled;
+                button.textContent = "Feature: " + (enabled ? "ON" : "OFF");
+            });
+            document.body.appendChild(button);
+            await startEngine(engine);
+        }
+
+        void main();
+    `);
+
+    assert.ok(result.manifest.features.includes("ui:rml"));
+    assert.ok(
+        result.manifest.runtimeSources.includes("src/pal_ui_rml.cpp"),
+    );
+    assert.match(result.cpp, /#include <bblite\/pal_ui\.hpp>/);
+    assert.match(result.cpp, /bbl::ui_create_element/);
+    assert.match(result.cpp, /bbl::ui_set_text/);
+    assert.match(result.cpp, /bbl::ui_set_attribute/);
+    assert.match(result.cpp, /left:50%;margin-left:-60px;/);
+    assert.doesNotMatch(result.cpp, /calc\(/);
+    assert.match(result.cpp, /bbl::ui_on_click/);
+    assert.match(result.cpp, /bbl::ui_append_to_root/);
+    assert.doesNotMatch(result.cpp, /document|createElement|textContent/);
+});
+
+test("lowers retained UI properties, append, removal, and dynamic attributes", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            panel.className = "hud";
+            panel.style.cssText = "position:fixed;left:calc(50% - 20px);font:600 13px system-ui,sans-serif;backdrop-filter:blur(3px);";
+            const button = document.createElement("button");
+            button.id = "go";
+            button.type = "button";
+            button.innerText = "GO";
+            panel.append(button);
+            document.body.appendChild(panel);
+            let active = false;
+            button.addEventListener("click", () => {
+                active = !active;
+                button.style.background = active ? "#fff" : "#000";
+                button.setAttribute("aria-pressed", active ? "true" : "false");
+                panel.remove();
+            });
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_set_attribute/);
+    assert.match(result.cpp, /position:absolute/);
+    assert.match(result.cpp, /left:50%;margin-left:-20px;/);
+    assert.match(result.cpp, /font-weight:600;font-size:13px;font-family:sans-serif/);
+    assert.doesNotMatch(result.cpp, /backdrop-filter|system-ui|sans-serif,sans-serif/);
+    assert.match(result.cpp, /ui_set_style_property/);
+    assert.match(result.cpp, /ui_append_child/);
+    assert.match(result.cpp, /ui_remove/);
+});
+
+test("folds a static CSS fragment array joined into retained UI cssText", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            panel.style.cssText = [
+                "position:fixed",
+                "top:16px",
+                "background:rgba(10,12,20,0.75)",
+            ].join(";");
+            document.body.appendChild(panel);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /position:absolute;top:16px;background-color:rgba\(10,12,20,0\.75\)/,
+    );
+});
+
+test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            panel.style.cssText =
+                "position:absolute;right:16px;min-width:180px";
+            const grid = document.createElement("div");
+            grid.style.cssText =
+                "display:grid;grid-template-columns:repeat(4,18px);" +
+                "grid-template-rows:repeat(4,18px);gap:2px";
+            panel.appendChild(grid);
+            document.body.appendChild(panel);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /min-width:180px;width:180px/);
+    assert.match(result.cpp, /display:flex/);
+    assert.match(result.cpp, /flex-wrap:wrap;width:78px/);
+    assert.doesNotMatch(result.cpp, /grid-template/);
+});
+
+test("centres direct text in fixed-height retained flex controls", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const button = document.createElement("div");
+            button.textContent = "A";
+            button.style.cssText =
+                "display:flex;align-items:center;justify-content:center;" +
+                "width:64px;height:64px;font:700 26px system-ui,sans-serif;";
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /line-height:64px;text-align:center/);
+});
+
+test("stores retained UI elements in explicitly typed DOM arrays", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const cells: HTMLDivElement[] = [];
+            for (let index = 0; index < 2; index++) {
+                const cell = document.createElement("div");
+                cells.push(cell);
+                document.body.appendChild(cell);
+            }
+            for (const cell of cells) {
+                cell.style.background = "#fff";
+            }
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /bbl::js::Array<bbl::UiElementHandle>/);
+    assert.match(result.cpp, /\.push_back\(v_[^)]+cell\)/);
+    assert.match(result.cpp, /ui_set_style_property/);
+});
+
+test("carries document.body through an inlined retained UI mount helper", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        function mount(root: HTMLElement): void {
+            const panel = document.createElement("div");
+            panel.textContent = "mounted";
+            const footer = document.createElement("div");
+            root.append(panel, footer);
+        }
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            mount(document.body);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_append_to_root\([^,]+, v_[^)]+panel\)/);
+    assert.match(result.cpp, /ui_append_to_root\([^,]+, v_[^)]+footer\)/);
+});
+
+test("lowers static retained UI innerHTML to RmlUi markup", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const help = document.createElement("div");
+            help.innerHTML = [
+                "<div style='font-weight:600'>CONTROLS</div>",
+                "<div>← / → &nbsp; move</div>",
+            ].join("");
+            document.body.appendChild(help);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_set_inner_rml/);
+    assert.match(result.cpp, /CONTROLS/);
+    assert.match(result.cpp, /display:block/);
+    assert.doesNotMatch(result.cpp, /innerHTML/);
+});
+
+test("folds static string concatenation assigned to retained UI text", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = "@keyframes a{}" + "@keyframes b{}";
+            document.head.appendChild(style);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /ui_set_text\([^;]+"@keyframes a\{\}@keyframes b\{\}"\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /"@keyframes a\{\}" \+ "@keyframes b\{\}"/,
+    );
+});
+
+test("lowers retained UI replaceChildren clearing", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const pips = document.createElement("div");
+            const pip = document.createElement("span");
+            pips.appendChild(pip);
+            pips.replaceChildren();
+            document.body.appendChild(pips);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_replace_children/);
+});
+
+test("lowers conditional retained UI cssText fragments", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const pip = document.createElement("span");
+            let lit = true;
+            pip.style.cssText =
+                "width:22px;height:22px;" +
+                (lit
+                    ? "background:linear-gradient(#ff8a5d,#ff4d4d);"
+                    : "background:rgba(40,40,48,.7);");
+            document.body.appendChild(pip);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /v_lit \? "background-color:#ff8a5d;"/);
+    assert.match(result.cpp, /background-color:rgba\(40,40,48,.7\)/);
+    assert.doesNotMatch(result.cpp, /linear-gradient/);
+});
+
+test("uses the first gradient colour for retained gradient text", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const logo = document.createElement("div");
+            logo.style.cssText =
+                "background:linear-gradient(90deg,#ff5d5d,#ffd95d);" +
+                "-webkit-background-clip:text;background-clip:text;" +
+                "color:transparent;";
+            document.body.appendChild(logo);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /color:#ff5d5d/);
+    assert.doesNotMatch(
+        result.cpp,
+        /linear-gradient|-webkit-color|background-clip/,
+    );
+});
+
+test("stores nullable retained UI callbacks as empty native functions", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const button = document.createElement("button");
+            let callback: (() => void) | null = null;
+            button.addEventListener("click", () => {
+                if (callback) callback();
+            });
+            const install = (cb: () => void): void => {
+                callback = cb;
+            };
+            install(() => {
+                button.textContent = "done";
+            });
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /std::function<void\(\)> v_callback = std::function<void\(\)>\{\}/);
+    assert.match(result.cpp, /static_cast<bool>\(v_callback\)/);
+    assert.match(result.cpp, /v_callback\(\)/);
+    assert.match(result.cpp, /stored_callback = \[[^\]]*\]\(\) mutable -> void/);
+    assert.match(result.cpp, /v_callback = \w+_stored_callback/);
+});
+
+test("supplies omitted optional arguments to stored functions", () => {
+    const result = compileSource(`
+        interface Hud {
+            banner: (text: string | null, sub?: string) => void;
+        }
+        const hud: Hud = {
+            banner(text: string | null, sub = ""): void {
+                if (text !== null) {
+                    const combined = text + sub;
+                }
+            },
+        };
+        hud.banner("READY");
+    `);
+
+    assert.match(result.cpp, /\.banner\([^,]+, std::nullopt\)/);
+    assert.match(result.cpp, /has_value\(\) \? \*[^:]+ : ""/);
+});
+
+test("lowers boolean data-field assignment expression callbacks", () => {
+    const result = compileSource(`
+        interface State { left: boolean; }
+        function invoke(set: (value: boolean) => void): void {
+            set(true);
+        }
+        const state: State = { left: false };
+        invoke((value) => (state.left = value));
+    `);
+
+    assert.match(result.cpp, /v_state\.left = v_[^)]+value/);
+});
+
+test("projects an audited native host-page UI companion without changing scene source", () => {
+    const result = compileSource(
+        `
+            import { createEngine, startEngine } from "@babylonjs/lite";
+
+            async function main(): Promise<void> {
+                const engine = await createEngine({});
+                await startEngine(engine);
+            }
+
+            void main();
+        `,
+        {
+            nativeHostUi: {
+                classStyles: [
+                    {
+                        className: "touch-controls",
+                        style: "display:none;",
+                    },
+                ],
+                elements: [
+                    {
+                        tag: "div",
+                        text: "Keyboard help",
+                        attributes: {
+                            class: "controls-hint",
+                            style: "position:fixed;background:rgba(0,0,0,0.5);",
+                        },
+                    },
+                ],
+            },
+        },
+    );
+
+    assert.ok(result.manifest.features.includes("ui:rml"));
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"touch-controls"[^\n]*"display:none;"/);
+    assert.match(result.cpp, /ui_create_element[^\n]*"div"/);
+    assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
+    assert.match(result.cpp, /position:absolute;background-color:rgba\(0,0,0,0\.5\)/);
+    assert.match(result.cpp, /ui_append_to_root/);
+});
+
+test("resolves audited host UI ids before unchanged scene setup binds listeners", () => {
+    const result = compileSource(
+        `
+            import { createEngine, startEngine } from "@babylonjs/lite";
+
+            async function main(): Promise<void> {
+                const engine = await createEngine({});
+                let rotating = true;
+                const toggle = document.getElementById("rotateToggle");
+                if (toggle) {
+                    toggle.addEventListener("click", () => {
+                        rotating = !rotating;
+                        toggle.textContent = rotating ? "Pause" : "Resume";
+                    });
+                }
+                await startEngine(engine);
+            }
+
+            void main();
+        `,
+        {
+            nativeHostUi: {
+                elements: [
+                    {
+                        tag: "button",
+                        text: "Pause",
+                        attributes: {
+                            id: "rotateToggle",
+                            style: "position:fixed;left:12px;bottom:10px;",
+                        },
+                    },
+                ],
+            },
+        },
+    );
+
+    const create = result.cpp.indexOf("ui_create_element");
+    const lookup = result.cpp.indexOf("ui_get_element_by_id");
+    assert.ok(create >= 0 && lookup > create);
+    assert.match(result.cpp, /ui_get_element_by_id[^\n]*"rotateToggle"/);
+    assert.match(result.cpp, /ui_on_click/);
+    assert.match(result.cpp, /ui_set_text/);
+    assert.doesNotMatch(result.cpp, /if \(false\)/);
+});
+
+test("materializes a callback returned through its own closure cycle", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        function buildSelector(onSelect: (index: number) => void): (active: number) => void {
+            const button = document.createElement("button");
+            button.textContent = "Select";
+            button.addEventListener("click", () => onSelect(1));
+            document.body.appendChild(button);
+            return (active) => {
+                button.style.color = active > 0 ? "#fff" : "#000";
+            };
+        }
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const update = buildSelector((index) => select(index));
+            function select(index: number): void {
+                update(index);
+            }
+            update(0);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /std::make_shared<std::function<void\(double\)>>/);
+    assert.match(result.cpp, /ui_on_click/);
+    assert.match(result.cpp, /ui_set_style_property/);
+    assert.match(result.cpp, /v_update\([^)]*index/);
+    assert.match(result.cpp, /v_update = \[&\]\(double/);
+});
+
+test("lowers retained pointer state and class toggles", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const button = document.createElement("button");
+            button.addEventListener("pointerdown", (event) => {
+                button.classList.toggle("is-active", event.pointerId >= 0);
+                button.setPointerCapture(event.pointerId);
+            });
+            button.addEventListener("pointerup", (event) => {
+                button.releasePointerCapture(event.pointerId);
+            });
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_on_event[^\n]*"mousedown"/);
+    assert.match(result.cpp, /ui_on_event[^\n]*"mouseup"/);
+    assert.match(result.cpp, /ui_toggle_class/);
+    assert.doesNotMatch(result.cpp, /setPointerCapture|releasePointerCapture/);
+});
+
+test("lowers the reached Canvas2D overlay subset beside retained DOM UI", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const overlay = document.createElement("canvas");
+            overlay.width = 64;
+            overlay.getContext("2d")?.clearRect(0, 0, 64, 64);
+            document.body.appendChild(overlay);
+            createBox(engine);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /bbl::create_box/);
+    assert.match(result.cpp, /ui_create_element[^\n]*"canvas"/);
+    assert.match(result.cpp, /ui_canvas_set_width/);
+    assert.match(result.cpp, /ui_canvas_clear_rect/);
+    assert.match(result.cpp, /ui_append_to_root/);
+});
+
 test("uses JavaScript truthiness for browser query values in conditions", () => {
     const source = `
         import {

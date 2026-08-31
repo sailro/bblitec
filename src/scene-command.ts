@@ -215,6 +215,9 @@ async function compile(idOrSource: string): Promise<void> {
         if (scene.parity?.referenceSearch !== undefined) {
             arguments_.push("--search", scene.parity.referenceSearch);
         }
+        if (scene.nativeHostUi !== undefined) {
+            arguments_.push("--host-ui", scene.nativeHostUi);
+        }
         if (
             scene.parity?.attribution?.drawIds ||
             scene.parity?.attribution?.triangleClusters

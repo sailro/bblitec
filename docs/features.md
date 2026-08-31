@@ -60,6 +60,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | Feature family | Phase | Summary |
 | --- | --- | --- |
 | [Program compilation](#program-compilation) | Compile | the TypeScript subset, the plain-data model, browser erasure, AOT promises |
+| [Experimental native page UI](experimental-ui.md) | Compile → Run | a narrow scene-created DOM/CSS/event surface lowered to retained RmlUi controls on SDL_GPU and Dawn |
 | [Feature and capability selection](#feature-and-capability-selection) | Compile | which generated modules, shader variants, codecs, and capability defines exist at all |
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
 | [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, sparse accessors materialized, to ordinary geometry |
@@ -162,6 +163,15 @@ analyzable entry file against one engine.
   its WebGPU surface to it before acquisition. Generation-only size decisions
   still use the configured startup dimensions because they cannot vary at
   runtime.
+- **Experimental scene-created UI.** A handle returned by the recognized
+  `document.createElement` call is not erased: its static tag,
+  runtime text/attribute/style state, tree attachment, removal, and reached
+  click/pointer callbacks lower into a retained native UI IR. The `ui:rml`
+  feature projects that IR through RmlUi for reached SDL_GPU and Dawn scenes.
+  Scene-created canvases use a separate bounded live Canvas2D command IR for
+  the racer path/fill/stroke subset. This is a substitution surface, not a DOM
+  or HTML canvas implementation; host-page lookups still erase. See
+  [experimental native page UI](experimental-ui.md).
 - **`??` over the data model.** A nullish coalesce lowers by the left
   operand's own type: a static record property still settles at compile
   time, an asset-derived handle collection resolves through its concept,

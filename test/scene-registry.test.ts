@@ -106,11 +106,17 @@ test("registers unique generated scene targets", () => {
     assert.equal(getScene("break-meshes").parity?.maxFullMad, 0.001);
     assert.equal(getScene("break-meshes").parity?.maxForegroundMad, 0.001);
     assert.equal(getScene("racer").parity?.referenceFrame, 180);
+    assert.equal(getScene("racer").nativeHostUi, "ui/racer-host.json");
     assert.equal(
         getScene("racer").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
     assert.equal(getScene("littlest-tokyo").parity?.referenceFrame, 180);
+    assert.equal(
+        getScene("littlest-tokyo").nativeHostUi,
+        "ui/littlest-tokyo-host.json",
+    );
+    assert.equal(getScene("bath-day").nativeHostUi, "ui/bath-day-host.json");
     assert.equal(getScene("freeciv").parity?.referenceFrame, 180);
     assert.equal(getScene("freeciv").parity?.maxFullMad, 0.5);
     assert.equal(getScene("freeciv").parity?.maxForegroundMad, 0.5);

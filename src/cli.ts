@@ -16,6 +16,8 @@ import type { CompiledShaderProgram } from "./compiler.js";
 import type {
     CompiledNodeParticles,
     Feature,
+    NativeHostUi,
+    NativeHostUiElement,
 } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
@@ -96,11 +98,12 @@ interface CliOptions {
     width?: number;
     height?: number;
     search?: string;
+    hostUi?: string;
     idDiagnostics: boolean;
 }
 
 function usage(): never {
-    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--id-diagnostics]");
+    console.error("Usage: bblitec <entry.ts> --out <directory> [--title <text>] [--width <pixels>] [--height <pixels>] [--search <query>] [--host-ui <json>] [--id-diagnostics]");
     process.exit(2);
 }
 
@@ -123,6 +126,7 @@ function parseArguments(arguments_: string[]): CliOptions {
     let width: number | undefined;
     let height: number | undefined;
     let search: string | undefined;
+    let hostUi: string | undefined;
     let idDiagnostics = false;
 
     for (let index = 1; index < arguments_.length; index += 1) {
@@ -152,6 +156,11 @@ function parseArguments(arguments_: string[]): CliOptions {
                 search = value;
                 index += 1;
                 break;
+            case "--host-ui":
+                if (!value) usage();
+                hostUi = value;
+                index += 1;
+                break;
             case "--id-diagnostics":
                 idDiagnostics = true;
                 break;
@@ -172,6 +181,96 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(width ? { width } : {}),
         ...(height ? { height } : {}),
         ...(search ? { search } : {}),
+        ...(hostUi ? { hostUi } : {}),
+    };
+}
+
+function nativeHostUiElement(
+    value: unknown,
+    location: string,
+): NativeHostUiElement {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`${location} must be an object.`);
+    }
+    const record = value as Record<string, unknown>;
+    if (typeof record.tag !== "string") {
+        throw new Error(`${location}.tag must be a string.`);
+    }
+    if (record.text !== undefined && typeof record.text !== "string") {
+        throw new Error(`${location}.text must be a string.`);
+    }
+    let attributes: Record<string, string> | undefined;
+    if (record.attributes !== undefined) {
+        if (
+            !record.attributes ||
+            typeof record.attributes !== "object" ||
+            Array.isArray(record.attributes)
+        ) {
+            throw new Error(`${location}.attributes must be an object.`);
+        }
+        attributes = {};
+        for (const [name, attribute] of Object.entries(record.attributes)) {
+            if (typeof attribute !== "string") {
+                throw new Error(
+                    `${location}.attributes.${name} must be a string.`,
+                );
+            }
+            attributes[name] = attribute;
+        }
+    }
+    if (record.children !== undefined && !Array.isArray(record.children)) {
+        throw new Error(`${location}.children must be an array.`);
+    }
+    return {
+        tag: record.tag,
+        ...(record.text !== undefined ? { text: record.text } : {}),
+        ...(attributes ? { attributes } : {}),
+        ...(record.children
+            ? {
+                  children: record.children.map((child, index) =>
+                      nativeHostUiElement(
+                          child,
+                          `${location}.children[${index}]`,
+                      ),
+                  ),
+              }
+            : {}),
+    };
+}
+
+function readNativeHostUi(path: string): NativeHostUi {
+    const value: unknown = JSON.parse(readFileSync(resolve(path), "utf8"));
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new Error(`Native host UI '${path}' must contain an object.`);
+    }
+    const record = value as Record<string, unknown>;
+    if (!Array.isArray(record.elements)) {
+        throw new Error(`Native host UI '${path}' must contain elements[].`);
+    }
+    if (
+        record.classStyles !== undefined &&
+        !Array.isArray(record.classStyles)
+    ) {
+        throw new Error(`Native host UI '${path}' classStyles must be an array.`);
+    }
+    const classStyles = (record.classStyles ?? []).map((rule, index) => {
+        if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+            throw new Error(`Native host UI '${path}' classStyles[${index}] must be an object.`);
+        }
+        const item = rule as Record<string, unknown>;
+        if (
+            typeof item.className !== "string" ||
+            typeof item.style !== "string"
+        ) {
+            throw new Error(`Native host UI '${path}' classStyles[${index}] requires string className and style values.`);
+        }
+        return { className: item.className, style: item.style };
+    });
+    return {
+        ...(classStyles.length > 0 ? { classStyles } : {}),
+        elements: record.elements.map((element, index) =>
+            nativeHostUiElement(element, `elements[${index}]`),
+        ),
     };
 }
 
@@ -538,6 +637,9 @@ async function main(): Promise<void> {
         ...(options.width ? { width: options.width } : {}),
         ...(options.height ? { height: options.height } : {}),
         ...(options.search ? { search: options.search } : {}),
+        ...(options.hostUi
+            ? { nativeHostUi: readNativeHostUi(options.hostUi) }
+            : {}),
     });
 
     // The frozen node-particle bake is a Chromium run that nothing between

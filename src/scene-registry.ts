@@ -46,6 +46,8 @@ export interface SceneDefinition {
     output: string;
     title: string;
     buildDirectory: string;
+    /** Audited host-page UI that exists outside the immutable scene module. */
+    nativeHostUi?: string;
     parity?: SceneParityDefinition;
 }
 
@@ -3238,6 +3240,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/racer.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Racer",
+        nativeHostUi: "ui/racer-host.json",
         parity: {
             referenceFrame: 180,
             maxFullMad: 0.5,
@@ -3253,6 +3256,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Littlest Tokyo",
+        nativeHostUi: "ui/littlest-tokyo-host.json",
         parity: {
             referenceFrame: 180,
             maxFullMad: 0.02,
@@ -3268,6 +3272,7 @@ const sceneInputs: readonly SceneInput[] = [
         source: "corpus/babylon-lite/lab/lite/src/demos/bath-day.ts",
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Bath Day",
+        nativeHostUi: "ui/bath-day-host.json",
         parity: {
             referenceFrame: 180,
             maxFullMad: 0.001,

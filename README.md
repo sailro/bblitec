@@ -93,6 +93,7 @@ Build trees are disposable and generator-specific.
 | [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
 | [Status](docs/status.md) | Measured baselines, parity scenes, diagnostics |
 | [Backends](docs/backends.md) | The two GPU render backends: architecture, comparison, porting contracts |
+| [Experimental native page UI](docs/experimental-ui.md) | Scene-created DOM/CSS lowering to retained RmlUi controls |
 | [TODO](TODO.md) | Prioritized future work only |
 
 ## Design constraints
