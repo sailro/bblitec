@@ -165,6 +165,20 @@ set(
     "Installed pinned LabSound root"
 )
 
+# Installed pinned RmlUi root (tools/build-rmlui.ps1). vcpkg carries an
+# rmlui port, but not at the revision pinned in upstream/rmlui.json and
+# not carrying the premultiplied-rounding patch, so the library is built
+# once into artifacts/tools the way Dawn, Tint and LabSound are. Unlike
+# LabSound it is consumed through find_package: RmlUi's root-project
+# install exports exactly the targets it built, so its package config
+# resolves. Minimal builds point this at artifacts/tools/rmlui-static.
+set(
+    BBLITE_RMLUI_DIR
+    "${BBLITE_NATIVE_ROOT}/../artifacts/tools/rmlui"
+    CACHE PATH
+    "Installed pinned RmlUi root"
+)
+
 # Optional subsystem-trimmed static SDL3 (tools/build-sdl-min.ps1).
 # Empty selects the toolchain-provided SDL3 (vcpkg).
 set(
@@ -491,54 +505,57 @@ else()
 endif()
 
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # Pin the exact RmlUi revision projected by our
-    # backend-neutral recorder. The generated application still links only
-    # against our UI IR entry points; this dependency remains behind the PAL.
-    include(FetchContent)
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static dependencies" FORCE)
-    set(RMLUI_SAMPLES OFF CACHE BOOL "Build RmlUi samples" FORCE)
-    set(RMLUI_LUA_BINDINGS OFF CACHE BOOL "Build RmlUi Lua bindings" FORCE)
-    set(RMLUI_PRECOMPILED_HEADERS OFF CACHE BOOL "RmlUi PCH" FORCE)
-    set(RMLUI_COMPILER_OPTIONS OFF CACHE BOOL "RmlUi compiler flags" FORCE)
-    # The scene command selects clang-cl for this CXX-only parent project.
-    # RmlUi's nested project also enables C; without an explicit selection,
-    # CMake finds clang.exe and feeds it the MSVC command line inherited from
-    # the Ninja configuration. Use the matching clang-cl frontend for both.
-    if(
-        WIN32
-        AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang"
-        AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC"
-    )
-        set(
-            CMAKE_C_COMPILER
-            "${CMAKE_CXX_COMPILER}"
-            CACHE FILEPATH "C compiler for RmlUi" FORCE
+    # The exact RmlUi revision projected by our backend-neutral recorder
+    # is pinned in upstream/rmlui.json and installed once by
+    # tools/build-rmlui.ps1, patch included, instead of being re-fetched
+    # and re-built inside every UI tree at configure. The generated
+    # application still links only against our UI IR entry points; this
+    # dependency remains behind the PAL.
+    if(NOT EXISTS "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi/RmlUiConfig.cmake")
+        message(
+            FATAL_ERROR
+            "This scene reaches ui:rml but no RmlUi install was found at "
+            "${BBLITE_RMLUI_DIR}. Build it once with tools/build-rmlui.ps1, "
+            "or point BBLITE_RMLUI_DIR at an existing install."
         )
     endif()
-    FetchContent_Declare(
-        rmlui
-        GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
-        GIT_TAG b7b4a0688262832eacf3b9abb41f8bbe73868af8
-        GIT_PROGRESS TRUE
-        PATCH_COMMAND
-            "${CMAKE_COMMAND}"
-            "-DRMLUI_SOURCE_DIR=<SOURCE_DIR>"
-            "-DRMLUI_PATCH=${CMAKE_CURRENT_SOURCE_DIR}/patches/rmlui-premultiplied-rounding.patch"
-            -P
-            "${CMAKE_CURRENT_SOURCE_DIR}/apply-rmlui-patch.cmake"
-        EXCLUDE_FROM_ALL
+    set(
+        BBLITE_RMLUI_FEATURES
+        "${BBLITE_RMLUI_DIR}/bblite-rmlui-features.cmake"
     )
-    FetchContent_MakeAvailable(rmlui)
+    if(EXISTS "${BBLITE_RMLUI_FEATURES}")
+        include("${BBLITE_RMLUI_FEATURES}")
+    endif()
+    if(BBLITE_MINSIZE AND NOT BBLITE_RMLUI_STATIC_RUNTIME)
+        message(
+            FATAL_ERROR
+            "A minimal UI build requires the static-CRT RmlUi variant. "
+            "Build it with tools/build-rmlui.ps1 -StaticRuntime and point "
+            "BBLITE_RMLUI_DIR at that install."
+        )
+    endif()
+    # The package config resolves Freetype::Freetype itself (RmlUi's own
+    # Dependencies.cmake), against this tree's vcpkg install via the ui
+    # manifest feature -- so the linked FreeType follows the consuming
+    # triplet and CRT while the artifact only compiled against headers.
+    find_package(
+        RmlUi CONFIG REQUIRED
+        PATHS "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi"
+        NO_DEFAULT_PATH
+    )
 
     find_package(SDL3_image CONFIG REQUIRED)
     target_sources(
         bblite_native
         PRIVATE
         "${BBLITE_NATIVE_ROOT}/src/pal_system_fonts.cpp"
-        "${rmlui_SOURCE_DIR}/Backends/RmlUi_Platform_SDL.cpp"
+        # RmlUi builds Backends/ only under its samples and installs none
+        # of it, so build-rmlui.ps1 carries the SDL platform pair into
+        # the artifact and the translation unit compiles here, as before.
+        "${BBLITE_RMLUI_DIR}/Backends/RmlUi_Platform_SDL.cpp"
     )
     target_include_directories(
-        bblite_native PRIVATE "${rmlui_SOURCE_DIR}/Backends"
+        bblite_native PRIVATE "${BBLITE_RMLUI_DIR}/Backends"
     )
     target_compile_definitions(
         bblite_native PRIVATE BBLITE_HAS_UI=1 RMLUI_SDL_VERSION_MAJOR=3
