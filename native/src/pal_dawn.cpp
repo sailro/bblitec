@@ -549,6 +549,44 @@ struct DawnUiResources {
 };
 #endif
 
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || \
+    BBLITE_NODE_VARIANTS > 0
+/**
+ * One composed family's cache released in dependents-first order:
+ * pipelines, then the pipeline layouts built over the bind-group
+ * layouts, then those layouts and the modules. The PBR, Standard and
+ * node families each keep the same five containers, so the order lives
+ * once instead of three times.
+ */
+void release_variant_family(
+    std::map<std::uint32_t, std::map<std::size_t, WGPURenderPipeline>>&
+        pipelines,
+    std::vector<WGPUPipelineLayout>& pipeline_layouts,
+    std::vector<WGPUBindGroupLayout>& draw_layouts,
+    std::vector<WGPUShaderModule>& fragment_modules,
+    std::vector<WGPUShaderModule>& vertex_modules) {
+    for (auto& [key, by_variant] : pipelines) {
+        static_cast<void>(key);
+        for (auto& [variant, pipeline] : by_variant) {
+            static_cast<void>(variant);
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+        }
+    }
+    for (WGPUPipelineLayout layout : pipeline_layouts) {
+        if (layout) wgpuPipelineLayoutRelease(layout);
+    }
+    for (WGPUBindGroupLayout layout : draw_layouts) {
+        if (layout) wgpuBindGroupLayoutRelease(layout);
+    }
+    for (WGPUShaderModule module : fragment_modules) {
+        if (module) wgpuShaderModuleRelease(module);
+    }
+    for (WGPUShaderModule module : vertex_modules) {
+        if (module) wgpuShaderModuleRelease(module);
+    }
+}
+#endif
+
 struct DawnState : DawnDevice {
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
     /** The clustered light field's params buffer and three data textures. */
@@ -711,27 +749,6 @@ struct DawnState : DawnDevice {
     // groups interchangeable across shader variants.
     std::array<WGPUBindGroupLayout, 4> mesh_group_layouts{};
     WGPUPipelineLayout mesh_pipeline_layout = nullptr;
-
-#if BBLITE_SHADOWS_ESM
-/**
- * The ESM caster's own params block, from the generator its material view
- * was built for.
- *
- * `getEsmShadowView` closes over that generator's `_shadowParamsUBO`, and
- * every family's caster reads the same one, so the lookup is stated once.
- */
-WGPUBuffer esm_caster_params_buffer(
-    const DawnState& state,
-    const MaterialRecord* material) {
-    if (
-        !material ||
-        !material->esm_shadow ||
-        material->esm_shadow_generator.value >= state.shadow_params.size()) {
-        return nullptr;
-    }
-    return state.shadow_params[material->esm_shadow_generator.value];
-}
-#endif
 
 #if BBLITE_PINNED_MATERIALS
     // Babylon Lite's own grouping, which its composed fragments declare:
@@ -1441,6 +1458,80 @@ WGPUBuffer esm_caster_params_buffer(
                 wgpuRenderPipelineRelease(pipeline.pipeline);
             }
         }
+        // The shadow generators' own state, here rather than beside the
+        // receiver releases above because every caster draw group binds a
+        // `shadow_params` row -- the groups went with the meshes.
+#if BBLITE_SHADOW_RECEIVERS
+#if BBLITE_SHADOWS_ESM
+        for (WGPUBuffer buffer : shadow_params) {
+            if (buffer) wgpuBufferRelease(buffer);
+        }
+        for (EsmBlur& blur : esm_blurs) {
+            if (blur.horizontal) wgpuBindGroupRelease(blur.horizontal);
+            if (blur.vertical) wgpuBindGroupRelease(blur.vertical);
+            if (blur.pipeline) wgpuRenderPipelineRelease(blur.pipeline);
+            if (blur.layout) wgpuBindGroupLayoutRelease(blur.layout);
+            if (blur.horizontal_uniforms) {
+                wgpuBufferRelease(blur.horizontal_uniforms);
+            }
+            if (blur.vertical_uniforms) {
+                wgpuBufferRelease(blur.vertical_uniforms);
+            }
+            if (blur.blur_h_view) wgpuTextureViewRelease(blur.blur_h_view);
+            if (blur.blur_h) wgpuTextureRelease(blur.blur_h);
+            if (blur.blur_v_view) wgpuTextureViewRelease(blur.blur_v_view);
+            if (blur.blur_v) wgpuTextureRelease(blur.blur_v);
+        }
+        esm_blurs.clear();
+#endif
+#endif
+        // The composed families' caches, each in the dependents-first
+        // order `release_variant_family` owns; the frame layout goes
+        // last because every family's pipeline layouts name it.
+#if BBLITE_PINNED_MATERIALS
+        if (pinned_geometry_frame_group) {
+            wgpuBindGroupRelease(pinned_geometry_frame_group);
+        }
+        if (pinned_frame_group) wgpuBindGroupRelease(pinned_frame_group);
+        if (pinned_geometry_scene_uniforms) {
+            wgpuBufferRelease(pinned_geometry_scene_uniforms);
+        }
+        if (pinned_lights_uniforms) {
+            wgpuBufferRelease(pinned_lights_uniforms);
+        }
+        if (pinned_scene_uniforms) {
+            wgpuBufferRelease(pinned_scene_uniforms);
+        }
+#endif
+#if BBLITE_PBR_VARIANTS > 0
+        release_variant_family(
+            pinned_variant_pipelines,
+            pinned_pipeline_layouts,
+            pinned_draw_layouts,
+            pinned_fragment_modules,
+            pinned_vertex_modules);
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+        release_variant_family(
+            standard_variant_pipelines,
+            standard_pipeline_layouts,
+            standard_draw_layouts,
+            standard_fragment_modules,
+            standard_vertex_modules);
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+        release_variant_family(
+            node_variant_pipelines,
+            node_pipeline_layouts,
+            node_draw_layouts,
+            node_fragment_modules,
+            node_vertex_modules);
+#endif
+#if BBLITE_PINNED_MATERIALS
+        if (pinned_frame_layout) {
+            wgpuBindGroupLayoutRelease(pinned_frame_layout);
+        }
+#endif
         // Pipelines and bind groups depend on the shared pipeline/group
         // layouts. Release every dependent first: Dawn's D3D12 backend
         // tears down layout-owned binding metadata eagerly, so dropping a
@@ -1994,35 +2085,13 @@ void render_ui_dawn_frame(
     ensure_ui_dawn_layers(state, frame.width, frame.height);
     DawnUiResources& ui = state.ui;
 
-    std::vector<UiRenderVertex> vertices = frame.vertices;
-    std::vector<std::uint32_t> indices = frame.indices;
-    const std::uint32_t composite_first_index =
-        static_cast<std::uint32_t>(indices.size());
-    const std::uint32_t composite_first_vertex =
-        static_cast<std::uint32_t>(vertices.size());
-    vertices.insert(
-        vertices.end(),
-        {
-            UiRenderVertex{0, 0, 255, 255, 255, 255, 0, 0},
-            UiRenderVertex{static_cast<float>(frame.width), 0, 255, 255, 255, 255, 1, 0},
-            UiRenderVertex{static_cast<float>(frame.width), static_cast<float>(frame.height), 255, 255, 255, 255, 1, 1},
-            UiRenderVertex{0, static_cast<float>(frame.height), 255, 255, 255, 255, 0, 1},
-        });
-    indices.insert(
-        indices.end(),
-        {
-            composite_first_vertex,
-            composite_first_vertex + 1,
-            composite_first_vertex + 2,
-            composite_first_vertex,
-            composite_first_vertex + 2,
-            composite_first_vertex + 3,
-        });
-
+    // The recorder appended the full-frame composite quad after the RmlUi
+    // draws (`frame.composite_first_index` names it), so the aggregate
+    // geometry uploads verbatim -- no per-frame copy on this side.
     const std::uint64_t vertex_bytes =
-        vertices.size() * sizeof(UiRenderVertex);
+        frame.vertices.size() * sizeof(UiRenderVertex);
     const std::uint64_t index_bytes =
-        indices.size() * sizeof(std::uint32_t);
+        frame.indices.size() * sizeof(std::uint32_t);
     ensure_ui_dawn_buffer(
         state,
         ui.vertices,
@@ -2036,9 +2105,9 @@ void render_ui_dawn_frame(
         index_bytes,
         WGPUBufferUsage_Index);
     wgpuQueueWriteBuffer(
-        state.queue, ui.vertices, 0, vertices.data(), vertex_bytes);
+        state.queue, ui.vertices, 0, frame.vertices.data(), vertex_bytes);
     wgpuQueueWriteBuffer(
-        state.queue, ui.indices, 0, indices.data(), index_bytes);
+        state.queue, ui.indices, 0, frame.indices.data(), index_bytes);
     const std::array<float, 4> screen{
         static_cast<float>(frame.width),
         static_cast<float>(frame.height),
@@ -2108,23 +2177,15 @@ void render_ui_dawn_frame(
         0,
         WGPU_WHOLE_SIZE);
     for (const UiRenderDraw& draw : frame.draws) {
-        const int left = std::clamp(draw.scissor_x, 0, static_cast<int>(frame.width));
-        const int top = std::clamp(draw.scissor_y, 0, static_cast<int>(frame.height));
-        const int right = std::clamp(
-            draw.scissor_x + static_cast<int>(draw.scissor_width),
-            0,
-            static_cast<int>(frame.width));
-        const int bottom = std::clamp(
-            draw.scissor_y + static_cast<int>(draw.scissor_height),
-            0,
-            static_cast<int>(frame.height));
-        if (right <= left || bottom <= top || draw.index_count == 0) continue;
+        const std::optional<UiScissorRect> scissor =
+            clamped_ui_scissor(draw, frame.width, frame.height);
+        if (!scissor) continue;
         wgpuRenderPassEncoderSetScissorRect(
             layer_pass,
-            static_cast<std::uint32_t>(left),
-            static_cast<std::uint32_t>(top),
-            static_cast<std::uint32_t>(right - left),
-            static_cast<std::uint32_t>(bottom - top));
+            static_cast<std::uint32_t>(scissor->left),
+            static_cast<std::uint32_t>(scissor->top),
+            static_cast<std::uint32_t>(scissor->width),
+            static_cast<std::uint32_t>(scissor->height));
         if (draw.texture_id) {
             const auto texture = ui.textures.find(draw.texture_id);
             if (texture == ui.textures.end()) continue;
@@ -2183,7 +2244,7 @@ void render_ui_dawn_frame(
         composite_pass,
         6,
         1,
-        composite_first_index,
+        frame.composite_first_index,
         0,
         0);
     wgpuRenderPassEncoderEnd(composite_pass);
@@ -2699,11 +2760,7 @@ WGPUTexture upload_reflection_cube(
 // faces with pre-baked mips, uploaded unflipped (the SDL_GPU vertical
 // reversal is an SDL-only adaptation).
 void upload_environment(DawnState& state, const EnvironmentState& environment) {
-    const bool has_environment =
-        environment.specular_width != 0 &&
-        environment.specular_mip_count != 0 &&
-        environment.specular_faces.size() >=
-            static_cast<std::size_t>(environment.specular_mip_count) * 6;
+    const bool has_environment = environment_cube_present(environment);
     if (!has_environment) return;
     const std::uint32_t width = environment.specular_width;
     const std::uint32_t mip_count = environment.specular_mip_count;
@@ -2815,7 +2872,10 @@ void upload_brdf(DawnState& state, const EnvironmentState& environment) {
             environment.brdf_lut.bytes.data(),
             expected_size);
     } else {
-        if (environment.brdf_lut.bytes.empty()) return;
+        // No empty-bytes guard: the shared decode's own empty arm yields
+        // the 1x1 {0,0,0,1} half texel, so a build with no LUT samples
+        // the same fallback SDL_GPU uploads. An early return kept this
+        // backend's startup zeros instead -- a silent backend delta.
         int lut_width = 0;
         int lut_height = 0;
         half_pixels =
@@ -7780,26 +7840,16 @@ void record_post_process_pass(
         engine.render_targets[pass.output_target.value];
     DawnRenderTarget& output =
         state.render_targets[pass.output_target.value];
-    const std::uint32_t output_width = output_record.swapchain
-        ? width
-        : output.width;
-    const std::uint32_t output_height = output_record.swapchain
-        ? height
-        : output.height;
-    std::uint32_t source_width = output_width;
-    std::uint32_t source_height = output_height;
-    if (
-        pass.source.source ==
-            RenderTextureSource::render_target &&
-        pass.source.target.value <
-            state.render_targets.size()) {
-        source_width =
-            state.render_targets[pass.source.target.value]
-                .width;
-        source_height =
-            state.render_targets[pass.source.target.value]
-                .height;
-    }
+    const PostProcessExtent extent = resolve_post_process_extent(
+        output_record,
+        state.render_targets,
+        pass,
+        width,
+        height);
+    const std::uint32_t output_width = extent.output_width;
+    const std::uint32_t output_height = extent.output_height;
+    const std::uint32_t source_width = extent.source_width;
+    const std::uint32_t source_height = extent.source_height;
     if (gpu.program == std::numeric_limits<std::size_t>::max()) {
         gpu.program = post_process_program(
             state,
@@ -8101,6 +8151,9 @@ bool run_dawn_engine(Engine& engine) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
     const FrameOptions frame_options = read_frame_options();
+    const bool cpu_profile =
+        environment_variable("BBLITE_CPU_PROFILE") == "1";
+    CpuStartupMark cpu_startup_mark(cpu_profile, "dawn");
     reject_unsupported_frame_options(
         frame_options,
         "Dawn",
@@ -8184,6 +8237,7 @@ bool run_dawn_engine(Engine& engine) {
     create_dawn_device(engine.options, device_options, state);
     sync_engine_canvas_size(state.window, engine);
     resize_dawn_surface(state, engine.options);
+    cpu_startup_mark("window-device");
 
     std::uint32_t width = state.surface_width;
     std::uint32_t height = state.surface_height;
@@ -8203,6 +8257,10 @@ bool run_dawn_engine(Engine& engine) {
             engine.sprite_render_textures.size(), nullptr);
         state.sprite_render_texture_views.resize(
             engine.sprite_render_textures.size(), nullptr);
+        // The one refusal walk covers every disposed record, so it runs
+        // once per sync -- at the first disposed record, before any
+        // release -- rather than once per record per frame.
+        bool disposed_refused = false;
         for (std::size_t index = 0;
              index < engine.sprite_render_textures.size();
              ++index) {
@@ -8213,6 +8271,10 @@ bool run_dawn_engine(Engine& engine) {
             WGPUTextureView& gpu_view =
                 state.sprite_render_texture_views[index];
             if (texture.disposed) {
+                if (!disposed_refused) {
+                    refuse_disposed_sprite_render_texture_in_use(engine);
+                    disposed_refused = true;
+                }
                 if (gpu_view) wgpuTextureViewRelease(gpu_view);
                 if (gpu_texture) wgpuTextureRelease(gpu_texture);
                 gpu_view = nullptr;
@@ -8499,6 +8561,7 @@ bool run_dawn_engine(Engine& engine) {
         state.reflection_cubes.push_back(texture);
         state.reflection_cube_views.push_back(cube_view(texture));
     }
+    cpu_startup_mark("environment-background");
 
     upstream::RenderPlan render_plan;
     std::uint64_t synced_render_topology_version =
@@ -8935,11 +8998,14 @@ bool run_dawn_engine(Engine& engine) {
         render_plan = upstream::build_render_plan(scene, engine);
         // Validate every item's kind and variant before uploading anything.
         validate_render_plan_items(render_plan);
+        cpu_startup_mark("render-plan");
         state.meshes.reserve(render_plan.items.size());
         for (const upstream::RenderItem& item : render_plan.items) {
             state.meshes.push_back(upload_render_item(item));
         }
+        cpu_startup_mark("mesh-uploads");
         initialize_render_tasks();
+        cpu_startup_mark("draw-lists-ready");
     };
     upstream::initialize_composition_feature_rows(engine);
     rebuild_meshes();
@@ -9015,20 +9081,16 @@ bool run_dawn_engine(Engine& engine) {
             if (!state.skybox_texture) {
                 dawn_error("wgpuDeviceCreateTexture DDS skybox");
             }
-            std::size_t offset = environment.skybox_data_offset;
-            for (std::uint32_t face = 0; face < 6; ++face) {
-                for (std::uint32_t mip = 0;
-                     mip < environment.skybox_mip_count;
-                     ++mip) {
-                    const std::uint32_t mip_size =
-                        std::max(environment.skybox_width >> mip, 1u);
-                    const std::size_t byte_size =
-                        static_cast<std::size_t>(mip_size) *
-                        mip_size * 8;
-                    if (offset + byte_size > data.bytes.size()) {
-                        throw std::runtime_error(
-                            "DDS skybox payload is truncated.");
-                    }
+            // The face/mip/offset walk and its truncation guard are the
+            // shared half; only the queue write below is this backend's.
+            for_each_dds_skybox_level(
+                environment,
+                [&](
+                    std::uint32_t face,
+                    std::uint32_t mip,
+                    std::uint32_t mip_size,
+                    std::size_t offset,
+                    std::size_t byte_size) {
                     WGPUTexelCopyTextureInfo destination =
                         WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
                     destination.texture = state.skybox_texture;
@@ -9045,9 +9107,7 @@ bool run_dawn_engine(Engine& engine) {
                         byte_size,
                         &layout,
                         &size);
-                    offset += byte_size;
-                }
-            }
+                });
             WGPUTextureViewDescriptor view_descriptor =
                 WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
             view_descriptor.dimension = WGPUTextureViewDimension_Cube;
@@ -9718,6 +9778,9 @@ bool run_dawn_engine(Engine& engine) {
         wgpuBindGroupLayoutRelease(material_layout);
         state.ground_enabled = true;
     }
+    // The composed variant modules load lazily in the loop, so this phase
+    // covers only the background/skybox/ground half SDL_GPU builds here too.
+    cpu_startup_mark("shaders-pipelines");
 
     CameraRecord fallback_camera;
     CameraRecord& camera =
@@ -9750,7 +9813,11 @@ bool run_dawn_engine(Engine& engine) {
     // The pick pass. Installed before the loop, because the continuation
     // that calls it arrives on the deferred queue at the first frame
     // boundary; a pick taken before this point reports a miss, exactly as
-    // the pin's `pickAsync` does for a scene with no camera.
+    // the pin's `pickAsync` does for a scene with no camera. The guard
+    // clears the hook when this scope ends, however it ends: the hook
+    // holds `state`, the scene and the render plan by reference, all of
+    // which die with the scope.
+    PickHookGuard pick_hook_guard(engine);
     engine.pick_hook =
         [&state, &engine, &scene, &render_plan](
             GpuPickerHandle, double x, double y) -> PickingInfo {
@@ -9811,45 +9878,32 @@ bool run_dawn_engine(Engine& engine) {
         // because WebGPU forbids a queue write between draws inside one.
         std::vector<PickRange> ranges;
         std::vector<DawnPickMeshUniforms> blocks;
-        // Which plan item each block belongs to. Indices rather than
-        // pointers: the same function pushes into `state.splat_passes`
-        // below, and a raw pointer into a growing vector is the shape of
-        // the bloom-composite crash.
-        std::vector<std::size_t> drawn_items;
         std::uint32_t next_id = 1;
-        // The RENDER PLAN, not `scene.meshes`: `state.meshes` is indexed
-        // by plan item and the plan skips a mesh with no geometry, so the
-        // two agree only while nothing has been skipped or removed.
-        for (std::size_t item_index = 0;
-             item_index < render_plan.items.size() &&
-             item_index < state.meshes.size();
-             ++item_index) {
-            const MeshHandle handle = render_plan.items[item_index].mesh;
-            const DawnMesh& mesh = state.meshes[item_index];
-            if (!mesh.vertices || !mesh.indices) continue;
-            // A mesh the pin's picker would not take never enters the
-            // pass, so it can neither answer a pick nor occlude one
-            // behind it. The predicate is generated, and it reads the
-            // live record rather than the plan's snapshot of it.
-            if (!upstream::pick_candidate(engine.meshes[handle.value])) {
-                continue;
-            }
+        // The shared collector owns the plan walk, the generated pick
+        // predicate and the id/range assignment; only "does this row have
+        // GPU buffers" is answered here. Candidate rows carry plan-item
+        // indices rather than pointers: the same function pushes into
+        // `state.splat_passes` below, and a raw pointer into a growing
+        // vector is the shape of the bloom-composite crash.
+        const std::vector<PickMeshCandidate> candidates =
+            collect_pick_mesh_candidates(
+                engine,
+                render_plan,
+                state.meshes.size(),
+                [&](std::size_t item_index) {
+                    const DawnMesh& mesh = state.meshes[item_index];
+                    return mesh.vertices && mesh.indices;
+                },
+                ranges,
+                next_id);
+        blocks.reserve(candidates.size());
+        for (const PickMeshCandidate& candidate : candidates) {
+            // The shared block at this backend's 256-byte dynamic-offset
+            // stride.
             DawnPickMeshUniforms block{};
-            const MeshRecord& pick_mesh =
-                engine.meshes[handle.value];
-            block.world = pick_mesh.gpu_world_transform
-                ? shader_draw_world(engine, pick_mesh)
-                : std::array<float, 16>{
-                      1.0f, 0.0f, 0.0f, 0.0f,
-                      0.0f, 1.0f, 0.0f, 0.0f,
-                      0.0f, 0.0f, 1.0f, 0.0f,
-                      0.0f, 0.0f, 0.0f, 1.0f};
-            block.pick_id = next_id;
+            block.world = candidate.uniforms.world;
+            block.pick_id = candidate.uniforms.pick_id;
             blocks.push_back(block);
-            drawn_items.push_back(item_index);
-            ranges.push_back(
-                {next_id, PickedNodeKind::mesh, handle.value});
-            ++next_id;
         }
         if (blocks.size() > state.pick_mesh_capacity) {
             if (state.pick_mesh_group) {
@@ -10039,7 +10093,8 @@ bool run_dawn_engine(Engine& engine) {
         wgpuRenderPassEncoderSetBindGroup(
             pass, 0, state.pick_scene_group, 0, nullptr);
         for (std::size_t index = 0; index < blocks.size(); ++index) {
-            const DawnMesh& mesh = state.meshes[drawn_items[index]];
+            const DawnMesh& mesh =
+                state.meshes[candidates[index].item_index];
             const std::uint32_t offset = static_cast<std::uint32_t>(
                 index * sizeof(DawnPickMeshUniforms));
             wgpuRenderPassEncoderSetBindGroup(
@@ -10171,29 +10226,32 @@ bool run_dawn_engine(Engine& engine) {
     CameraPointerState pointer_state;
     CameraTraceState camera_trace_state;
     PlatformInputReplay input_replay;
+    // The shared drain owns the per-event contract; the scene loop only
+    // adds its camera-controls dispatch, which rides the hook so every
+    // event the scene receives also reaches the camera -- and none does
+    // in a deterministic test pass.
+    const auto camera_pointer_hook = [&](const SDL_Event& event) {
+        if (hidden_test_pass) return;
+        handle_camera_pointer_event(event, camera, pointer_state);
+    };
     while (captures.keep_running(running, frame)) {
-        SDL_Event event;
-        while (SDL_PollEvent(&event)) {
-            if (event.type == SDL_EVENT_QUIT) running = false;
-            if (hidden_test_pass && is_platform_input_event(event)) {
-                continue;
-            }
-            bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            propagate_to_scene =
-                handle_ui_rml_event(*ui_runtime, event);
+        poll_platform_events(
+            engine,
+            running,
+            hidden_test_pass,
+            [&](SDL_Event& event) {
+                return handle_ui_rml_event(*ui_runtime, event);
+            },
+            camera_pointer_hook);
+#else
+        poll_platform_events(
+            engine,
+            running,
+            hidden_test_pass,
+            [](const SDL_Event&) { return true; },
+            camera_pointer_hook);
 #endif
-            if (propagate_to_scene) {
-                handle_platform_event(event, engine);
-                apply_canvas_cursor(engine);
-            }
-            if (!hidden_test_pass && propagate_to_scene) {
-                handle_camera_pointer_event(
-                    event,
-                    camera,
-                    pointer_state);
-            }
-        }
         input_replay.dispatch(frame, state.window, engine);
         sync_engine_canvas_size(state.window, engine);
         if (resize_dawn_surface(state, engine.options)) {
@@ -10223,6 +10281,9 @@ bool run_dawn_engine(Engine& engine) {
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
 #endif
+        const double updated = monotonic_milliseconds();
+        std::size_t profile_transformed_meshes = 0;
+        std::size_t profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         // Upstream updates every rendering context before recording any of
@@ -10447,6 +10508,8 @@ bool run_dawn_engine(Engine& engine) {
                             upstream::RenderMaterialKind::shader
                         ? local_vertices(engine, geometry)
                         : transformed_vertices(engine, geometry, mesh);
+                ++profile_transformed_meshes;
+                profile_transformed_vertices += vertices.size();
                 wgpuQueueWriteBuffer(
                     state.queue,
                     dawn_mesh.vertices,
@@ -10554,6 +10617,7 @@ bool run_dawn_engine(Engine& engine) {
             dawn_mesh.gpu_world_transform =
                 mesh.gpu_world_transform;
         }
+        const double uploaded = monotonic_milliseconds();
         update_camera(camera);
         trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(
@@ -10986,7 +11050,7 @@ bool run_dawn_engine(Engine& engine) {
             const std::array<float, 16> skybox_view_projection =
                 upstream::build_skybox_view_projection(
                     camera,
-                    static_cast<float>(width) / height);
+                    aspect);
             if (scene.environment.skybox_uses_environment) {
                 wgpuQueueWriteBuffer(
                     state.queue,
@@ -11265,6 +11329,7 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
 
+        const double written = monotonic_milliseconds();
         WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
         if (
@@ -11276,10 +11341,18 @@ bool run_dawn_engine(Engine& engine) {
         }
         WGPUTextureView surface_view =
             wgpuTextureCreateView(surface_texture.texture, nullptr);
+        const double acquired = monotonic_milliseconds();
 
         WGPUCommandEncoder encoder =
             wgpuDeviceCreateCommandEncoder(state.device, nullptr);
         WGPUTexture capture_source = surface_texture.texture;
+        // Meaningful only under the frame-graph arm, where the default
+        // above is a never-rendered surface: set by the same two arms
+        // that name the SDL backend's capture source -- the
+        // copy-to-swapchain blit and the post-process present -- so a
+        // graph that presents through neither refuses capture below
+        // instead of reading the raw surface back.
+        bool frame_graph_presented = false;
         const auto draw_list_into = [&](
                                         WGPURenderPassEncoder list_pass,
                                         const upstream::RenderDrawList&
@@ -12779,6 +12852,12 @@ bool run_dawn_engine(Engine& engine) {
                                         "pinned geometry draw reached the "
                                         "encoder with no bindings.");
                                 }
+                                const InstanceStreams pinned_streams =
+                                    instance_streams_for(
+                                        engine.meshes[
+                                            draw.item.mesh.value],
+                                        mesh,
+                                        InstanceMatrixSource::pinned);
                                 encode_variant_draw(
                                     task_pass,
                                     pinned_variant_pipeline(
@@ -12794,7 +12873,7 @@ bool run_dawn_engine(Engine& engine) {
                                     mesh.pinned_mirrored_vertices
                                         ? mesh.vertices
                                         : mesh.pinned_vertices,
-                                    InstanceStreams{},
+                                    pinned_streams,
                                     mesh.indices,
                                     mesh.index_count);
                                 continue;
@@ -12953,6 +13032,13 @@ bool run_dawn_engine(Engine& engine) {
                         height,
                         index,
                         source_texture_view);
+                    const RenderTargetRecord& output_record =
+                        engine.render_targets[
+                            task.post_process.passes[index]
+                                .output_target.value];
+                    if (output_record.swapchain) {
+                        frame_graph_presented = true;
+                    }
                 }
                 continue;
             }
@@ -13100,6 +13186,7 @@ bool run_dawn_engine(Engine& engine) {
             }
             if (target_record.swapchain) {
                 capture_source = source_texture;
+                frame_graph_presented = true;
             }
         }
         }
@@ -13175,6 +13262,10 @@ bool run_dawn_engine(Engine& engine) {
         WGPUBuffer readback = nullptr;
         const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
         if (capture_frame) {
+            if (!scene.tasks.empty() && !frame_graph_presented) {
+                throw std::runtime_error(
+                    "Frame graph did not present a capture source.");
+            }
             WGPUBufferDescriptor readback_descriptor =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
             readback_descriptor.usage =
@@ -13300,11 +13391,41 @@ bool run_dawn_engine(Engine& engine) {
         }
         finish_frame(engine);
         ++frame;
+        const double end = monotonic_milliseconds();
+        const long completed_frame = frame - 1;
+        if (cpu_profile && completed_frame % 30 == 0) {
+            std::size_t draw_commands =
+                render_plan.draw_lists.opaque.commands.size() +
+                render_plan.draw_lists.transparent.commands.size();
+            for (const DawnRenderTask& profiled : state.render_tasks) {
+                draw_commands += profiled.draw_lists.opaque.commands.size() +
+                    profiled.draw_lists.transparent.commands.size();
+            }
+            // The SDL backend's labels where the phase is the same concept.
+            // The acquire sits late here rather than at the loop head, and
+            // `write_ms` is this backend's own phase: the per-draw block
+            // writes WebGPU's no-push-constants model forces.
+            print_cpu_frame_profile(
+                completed_frame,
+                end - benchmark_start,
+                acquired - written,
+                updated - benchmark_start,
+                uploaded - updated,
+                written - uploaded,
+                end - acquired,
+                render_plan.items.size(),
+                draw_commands,
+                profile_transformed_meshes,
+                profile_transformed_vertices);
+        }
     }
     report_benchmark(benchmark_samples, "Dawn", "D3D12");
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     ui_runtime.reset();
 #endif
+    // No catch arm: everything `~DawnState` and the unique_ptr UI runtime
+    // own unwinds on its own, and `pick_hook_guard` clears the hook on
+    // either exit.
     SDL_DestroyWindow(state.window);
     state.window = nullptr;
     return true;

@@ -17,6 +17,7 @@ import {
 } from "./data-types.js";
 import type { Value } from "./types.js";
 import { resizingArrayMethods } from "./data-methods.js";
+import { isTrsVectorName } from "./assignments.js";
 
 /**
  * The one-argument `Math` members scene code may call, each a `<cmath>`
@@ -239,6 +240,18 @@ export class DataLowerer {
     private readonly ownership = new Map<
         string,
         LocalOwnership
+    >();
+
+    /**
+     * Namespace-scope tables already emitted for constant typed-array
+     * literals, keyed on element type + the exact literal text. The
+     * first emission owns the symbol; a later identical literal
+     * references it instead of restating the bytes (tetris restated
+     * fourteen 74-124 KB vertex literals twice each).
+     */
+    private readonly typedArrayLiteralTables = new Map<
+        string,
+        string
     >();
 
     public constructor(
@@ -994,9 +1007,61 @@ export class DataLowerer {
         if (access.name.text !== "length") {
             return undefined;
         }
-        const source = this.context.resolveStaticExpression(
-            access.expression,
+        return this.staticTypedArrayLengthOf(access.expression);
+    }
+
+    /**
+     * The length of a typed array whose construction is statically
+     * resolvable — `new Float32Array(16)` or a literal-seeded
+     * constructor. A typed array never resizes, so this length also
+     * bounds every later element access.
+     */
+    private staticTypedArrayLengthOf(
+        expression: ts.Expression,
+    ): number | undefined {
+        return this.typedArrayConstructionLength(
+            this.context.resolveStaticExpression(expression),
         );
+    }
+
+    /**
+     * The construction length of a `const`-bound typed array, read off
+     * its declaration. Sound for the in-bounds proof alone: a typed
+     * array never resizes and `const` bars rebinding, so element
+     * writes through the binding cannot change its length. Kept off
+     * the `.length` read path, which must keep emitting the live read.
+     */
+    private declaredConstTypedArrayLength(
+        expression: ts.Expression,
+    ): number | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (!ts.isIdentifier(unwrapped)) {
+            return undefined;
+        }
+        const declarations =
+            this.context.checker.getSymbolAtLocation(unwrapped)
+                ?.declarations ?? [];
+        if (declarations.length !== 1) {
+            return undefined;
+        }
+        const declaration = declarations[0]!;
+        if (
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) ===
+                0 ||
+            declaration.initializer === undefined
+        ) {
+            return undefined;
+        }
+        return this.typedArrayConstructionLength(
+            this.context.unwrap(declaration.initializer),
+        );
+    }
+
+    private typedArrayConstructionLength(
+        source: ts.Expression,
+    ): number | undefined {
         if (
             !ts.isNewExpression(source) ||
             !ts.isIdentifier(source.expression) ||
@@ -1704,10 +1769,40 @@ export class DataLowerer {
                 dataType: { kind: "string" },
             };
         }
+        // Index provenance decides the emission arm. An index the
+        // compiler proves in bounds — a static index against a
+        // statically known length, or the induction variable of a
+        // canonical `for (let i = 0; i < arr.length; i++)` over the
+        // same array — keeps the raw fast path. Every other index
+        // reads or writes through a checked accessor that refuses out
+        // of bounds with this access's source location, in every build
+        // configuration. JavaScript would yield `undefined` there; no
+        // reached scene depends on that (a read whose result the
+        // source tests already rides the `array_at_or_default`
+        // found-flag path), so a reached out-of-bounds index is a
+        // scene or compiler defect to surface, not a value to default.
+        // A vector write stays on the JavaScript growth semantics
+        // either way; the checked form only refuses an index no
+        // JavaScript array element could have.
+        const proven =
+            this.indexProvenInBounds(owner, access, dataType) ||
+            (dataType.kind === "vector" &&
+                mode === "write" &&
+                this.staticGrowthIndex(access));
+        const site = (): string =>
+            this.context.cppString(this.indexSiteLabel(access));
         const indexed =
             dataType.kind === "vector" && mode === "write"
-                ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
-                : `${owner.cpp}[${nativeIndex}]`;
+                ? proven
+                    ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
+                    : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
+                : proven
+                  ? `${owner.cpp}[${nativeIndex}]`
+                  : mode === "write" &&
+                      (isTypedArrayType(dataType) ||
+                          dataType.kind === "tuple")
+                    ? `bbl::js::array_store_checked(${owner.cpp}, ${index}, ${site()})`
+                    : `bbl::js::array_index_checked(${owner.cpp}, ${index}, ${site()})`;
         if (
             isTypedArrayType(dataType)
         ) {
@@ -1778,6 +1873,502 @@ export class DataLowerer {
                     `Element access is not supported on data ${dataType.kind}.`,
                 );
         }
+    }
+
+    /**
+     * Whether this element access provably stays in bounds, so the raw
+     * `values[array_index(i)]` fast path is sound. Two cheap proofs,
+     * both over facts the emission site already holds:
+     *
+     *  - a static integer index against a statically known length — a
+     *    tuple's arity, a constant table's leading dimension, a typed
+     *    array's static construction length, or (outside runtime
+     *    control flow, where the source walk is execution order) the
+     *    exact element snapshot a generation-tracked array carries;
+     *  - the induction variable of an enclosing canonical
+     *    `for (let i = <static ≥ 0>; i < arr.length; i++)` over the
+     *    same array, with a body that provably cannot shrink it.
+     *
+     * A static index a snapshot proves OUT of bounds is deliberately
+     * not a generation-time refusal: an unrolled loop's dead-guarded
+     * first iteration legitimately folds one (scene20 reads
+     * `meshes[i - 1]` behind `level !== 0`), so it emits the checked
+     * accessor and refuses only if reached.
+     */
+    private indexProvenInBounds(
+        owner: Value,
+        access: ts.ElementAccessExpression,
+        dataType: DataType,
+    ): boolean {
+        const staticIndex = staticNumberValue(
+            this.context,
+            access.argumentExpression,
+        );
+        if (
+            staticIndex !== undefined &&
+            Number.isInteger(staticIndex) &&
+            staticIndex >= 0
+        ) {
+            const bound = this.staticIndexBound(
+                owner,
+                access,
+                dataType,
+            );
+            if (bound !== undefined && staticIndex < bound) {
+                return true;
+            }
+        }
+        return this.indexBoundByCanonicalLoop(access);
+    }
+
+    /**
+     * Whether a growing Array write's index is statically a valid
+     * JavaScript element index (an integer in `[0, 2^32-1)`). A vector
+     * write can never read out of bounds — `array_index_write` extends
+     * the array exactly as JavaScript does — so validity of the index
+     * itself is the whole proof, with no length needed.
+     */
+    private staticGrowthIndex(
+        access: ts.ElementAccessExpression,
+    ): boolean {
+        const staticIndex = staticNumberValue(
+            this.context,
+            access.argumentExpression,
+        );
+        return (
+            staticIndex !== undefined &&
+            Number.isInteger(staticIndex) &&
+            staticIndex >= 0 &&
+            staticIndex < 4294967295
+        );
+    }
+
+    /** The statically known element count of `owner`, if it has one. */
+    private staticIndexBound(
+        owner: Value,
+        access: ts.ElementAccessExpression,
+        dataType: DataType,
+    ): number | undefined {
+        if (dataType.kind === "tuple") {
+            return dataType.arity;
+        }
+        if (dataType.kind === "table") {
+            return dataType.dimensions[0];
+        }
+        if (isTypedArrayType(dataType) && access.pos >= 0) {
+            return (
+                this.staticTypedArrayLengthOf(access.expression) ??
+                this.declaredConstTypedArrayLength(
+                    access.expression,
+                )
+            );
+        }
+        if (
+            dataType.kind === "vector" &&
+            !this.context.isInRuntimeControlFlow()
+        ) {
+            // The snapshot is exact at this point of the walk, and at
+            // main scope the walk is execution order. Later writes only
+            // grow the array (every shrinking route clears the
+            // snapshot), so a static index below the snapshot length
+            // stays in bounds. Inside runtime control flow emission
+            // order is not execution order, so the snapshot proves
+            // nothing there.
+            return (owner.staticElementsOwner ?? owner)
+                .staticElements?.length;
+        }
+        return undefined;
+    }
+
+    /**
+     * Verdicts for `for` statements already examined by
+     * `indexBoundByCanonicalLoop`, keyed on the loop node. `undefined`
+     * records a loop that failed the canonical shape or the body scan.
+     */
+    private readonly canonicalLoopVerdicts = new Map<
+        ts.ForStatement,
+        | {
+              indexSymbol: ts.Symbol;
+              boundOwner: ts.Expression;
+          }
+        | undefined
+    >();
+
+    /**
+     * Whether the access indexes with the induction variable of an
+     * enclosing canonical length-bound `for` loop over the same array.
+     * The emitted loop re-tests `i < arr.length` before every
+     * iteration, so the read is in bounds as long as nothing between
+     * the test and the read mutates `i` or shrinks the array — which
+     * the body scan in `canonicalLoopFacts` rules out. The walk never
+     * crosses a function boundary: a closure body does not run under
+     * the loop's condition.
+     */
+    private indexBoundByCanonicalLoop(
+        access: ts.ElementAccessExpression,
+    ): boolean {
+        const indexExpression = this.context.unwrap(
+            access.argumentExpression,
+        );
+        if (!ts.isIdentifier(indexExpression)) {
+            return false;
+        }
+        const indexSymbol =
+            this.context.checker.getSymbolAtLocation(
+                indexExpression,
+            );
+        if (!indexSymbol) {
+            return false;
+        }
+        const ownerExpression = this.context.unwrap(
+            access.expression,
+        );
+        if (!this.isSimplePath(ownerExpression)) {
+            return false;
+        }
+        let child: ts.Node = access;
+        for (
+            let parent: ts.Node | undefined = access.parent;
+            parent !== undefined && !ts.isSourceFile(parent);
+            child = parent, parent = parent.parent
+        ) {
+            if (ts.isFunctionLike(parent)) {
+                return false;
+            }
+            if (
+                ts.isForStatement(parent) &&
+                child === parent.statement
+            ) {
+                const facts = this.canonicalLoopFacts(parent);
+                if (
+                    facts !== undefined &&
+                    facts.indexSymbol === indexSymbol &&
+                    this.sameSimplePath(
+                        facts.boundOwner,
+                        ownerExpression,
+                    )
+                ) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * The canonical-loop verdict for one `for` statement: its
+     * induction symbol and the array its condition bounds, or
+     * `undefined` when the loop is not `for (let i = <static ≥ 0>;
+     * i < path.length; i++)` (also `++i` / `i += 1`) or its body could
+     * mutate the induction variable or shrink an array. The body scan
+     * is deliberately strict — any call other than through the global
+     * `Math`, any `new`, any write to the induction variable, or any
+     * `.length` assignment rejects — because a rejected loop merely
+     * emits the checked accessor.
+     */
+    private canonicalLoopFacts(loop: ts.ForStatement):
+        | {
+              indexSymbol: ts.Symbol;
+              boundOwner: ts.Expression;
+          }
+        | undefined {
+        if (this.canonicalLoopVerdicts.has(loop)) {
+            return this.canonicalLoopVerdicts.get(loop);
+        }
+        const facts = this.deriveCanonicalLoopFacts(loop);
+        this.canonicalLoopVerdicts.set(loop, facts);
+        return facts;
+    }
+
+    private deriveCanonicalLoopFacts(loop: ts.ForStatement):
+        | {
+              indexSymbol: ts.Symbol;
+              boundOwner: ts.Expression;
+          }
+        | undefined {
+        const initializer = loop.initializer;
+        if (
+            initializer === undefined ||
+            !ts.isVariableDeclarationList(initializer) ||
+            initializer.declarations.length !== 1
+        ) {
+            return undefined;
+        }
+        const declaration = initializer.declarations[0]!;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            declaration.initializer === undefined
+        ) {
+            return undefined;
+        }
+        const start = staticNumberValue(
+            this.context,
+            declaration.initializer,
+        );
+        if (
+            start === undefined ||
+            !Number.isInteger(start) ||
+            start < 0
+        ) {
+            return undefined;
+        }
+        const indexSymbol =
+            this.context.checker.getSymbolAtLocation(
+                declaration.name,
+            );
+        if (!indexSymbol) {
+            return undefined;
+        }
+        const condition = loop.condition
+            ? this.context.unwrap(loop.condition)
+            : undefined;
+        if (
+            condition === undefined ||
+            !ts.isBinaryExpression(condition) ||
+            condition.operatorToken.kind !==
+                ts.SyntaxKind.LessThanToken ||
+            !this.isSameSymbolIdentifier(
+                condition.left,
+                indexSymbol,
+            )
+        ) {
+            return undefined;
+        }
+        const bound = this.context.unwrap(condition.right);
+        if (
+            !ts.isPropertyAccessExpression(bound) ||
+            bound.questionDotToken !== undefined ||
+            bound.name.text !== "length" ||
+            !this.isSimplePath(bound.expression)
+        ) {
+            return undefined;
+        }
+        if (!this.isCanonicalIncrement(loop.incrementor, indexSymbol)) {
+            return undefined;
+        }
+        if (!this.loopBodyPreservesBounds(loop.statement, indexSymbol)) {
+            return undefined;
+        }
+        return { indexSymbol, boundOwner: bound.expression };
+    }
+
+    private isSameSymbolIdentifier(
+        expression: ts.Expression,
+        symbol: ts.Symbol,
+    ): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        return (
+            ts.isIdentifier(unwrapped) &&
+            this.context.checker.getSymbolAtLocation(unwrapped) ===
+                symbol
+        );
+    }
+
+    private isCanonicalIncrement(
+        incrementor: ts.Expression | undefined,
+        indexSymbol: ts.Symbol,
+    ): boolean {
+        if (incrementor === undefined) {
+            return false;
+        }
+        const unwrapped = this.context.unwrap(incrementor);
+        if (
+            (ts.isPostfixUnaryExpression(unwrapped) ||
+                ts.isPrefixUnaryExpression(unwrapped)) &&
+            unwrapped.operator === ts.SyntaxKind.PlusPlusToken
+        ) {
+            return this.isSameSymbolIdentifier(
+                unwrapped.operand,
+                indexSymbol,
+            );
+        }
+        return (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.PlusEqualsToken &&
+            this.isSameSymbolIdentifier(
+                unwrapped.left,
+                indexSymbol,
+            ) &&
+            staticNumberValue(this.context, unwrapped.right) === 1
+        );
+    }
+
+    /**
+     * Whether a canonical loop body provably leaves its own bounds
+     * facts intact: no write to the induction variable, no `.length`
+     * assignment, and no call or construction that could run scene
+     * code (only reads through the global `Math` are pure by
+     * declaration). With no calls, only statements directly in the
+     * body can mutate anything, and the scan sees all of them —
+     * including inside a nested closure, which without a call can
+     * never run during the loop.
+     */
+    private loopBodyPreservesBounds(
+        body: ts.Statement,
+        indexSymbol: ts.Symbol,
+    ): boolean {
+        let safe = true;
+        const visit = (node: ts.Node): void => {
+            if (!safe) {
+                return;
+            }
+            if (ts.isNewExpression(node)) {
+                safe = false;
+                return;
+            }
+            if (
+                ts.isCallExpression(node) &&
+                !this.isGlobalMathCall(node)
+            ) {
+                safe = false;
+                return;
+            }
+            if (
+                (ts.isPostfixUnaryExpression(node) ||
+                    ts.isPrefixUnaryExpression(node)) &&
+                (node.operator === ts.SyntaxKind.PlusPlusToken ||
+                    node.operator ===
+                        ts.SyntaxKind.MinusMinusToken) &&
+                this.isSameSymbolIdentifier(
+                    node.operand,
+                    indexSymbol,
+                )
+            ) {
+                safe = false;
+                return;
+            }
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind >=
+                    ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <=
+                    ts.SyntaxKind.LastAssignment
+            ) {
+                const target = this.context.unwrap(node.left);
+                if (
+                    this.isSameSymbolIdentifier(
+                        target,
+                        indexSymbol,
+                    ) ||
+                    (ts.isPropertyAccessExpression(target) &&
+                        target.name.text === "length")
+                ) {
+                    safe = false;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(body);
+        return safe;
+    }
+
+    /** A call through the global `Math` object, pure by declaration. */
+    private isGlobalMathCall(call: ts.CallExpression): boolean {
+        const callee = this.context.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            !ts.isIdentifier(callee.expression) ||
+            callee.expression.text !== "Math"
+        ) {
+            return false;
+        }
+        const symbol = this.context.checker.getSymbolAtLocation(
+            callee.expression,
+        );
+        const declarations = symbol?.declarations ?? [];
+        return (
+            declarations.length > 0 &&
+            declarations.every((declaration) =>
+                /(?:^|[\\/])lib\.[^\\/]*\.d\.ts$/i.test(
+                    declaration.getSourceFile().fileName,
+                ),
+            )
+        );
+    }
+
+    /**
+     * A path of identifiers and plain property reads — the only owner
+     * shape whose loop-condition spelling and body spelling are
+     * guaranteed to denote the same array (a call could return a fresh
+     * one each evaluation).
+     */
+    private isSimplePath(expression: ts.Expression): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isIdentifier(unwrapped) ||
+            unwrapped.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            return true;
+        }
+        return (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            unwrapped.questionDotToken === undefined &&
+            this.isSimplePath(unwrapped.expression)
+        );
+    }
+
+    /**
+     * Whether two simple paths denote the same storage: identical
+     * member chains over the same root symbol (or `this`, which the
+     * function-boundary stop in the ancestor walk keeps unambiguous).
+     */
+    private sameSimplePath(
+        left: ts.Expression,
+        right: ts.Expression,
+    ): boolean {
+        const a = this.context.unwrap(left);
+        const b = this.context.unwrap(right);
+        if (ts.isIdentifier(a) && ts.isIdentifier(b)) {
+            const symbol =
+                this.context.checker.getSymbolAtLocation(a);
+            return (
+                symbol !== undefined &&
+                symbol ===
+                    this.context.checker.getSymbolAtLocation(b)
+            );
+        }
+        if (
+            a.kind === ts.SyntaxKind.ThisKeyword &&
+            b.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            return true;
+        }
+        return (
+            ts.isPropertyAccessExpression(a) &&
+            ts.isPropertyAccessExpression(b) &&
+            a.name.text === b.name.text &&
+            this.sameSimplePath(a.expression, b.expression)
+        );
+    }
+
+    /**
+     * The scene source location a checked accessor reports on an
+     * out-of-bounds index, as a stable path relative to the corpus
+     * root (falling back to the base name for a source outside it, and
+     * to a fixed label for a synthesized access with no position).
+     */
+    private indexSiteLabel(
+        access: ts.ElementAccessExpression,
+    ): string {
+        const node =
+            access.pos >= 0 ? access : access.argumentExpression;
+        if (node.pos < 0) {
+            return "generated";
+        }
+        const file = node.getSourceFile();
+        const position = file.getLineAndCharacterOfPosition(
+            node.getStart(file, false),
+        );
+        const fileName = file.fileName.replace(/\\/g, "/");
+        const marker = "/lab/lite/src/";
+        const markerIndex = fileName.lastIndexOf(marker);
+        const shortName =
+            markerIndex >= 0
+                ? fileName.slice(markerIndex + marker.length)
+                : fileName.slice(fileName.lastIndexOf("/") + 1);
+        return `${shortName}:${position.line + 1}:${position.character + 1}`;
     }
 
     /**
@@ -5010,9 +5601,24 @@ export class DataLowerer {
                         "double",
                     ),
             );
+            // Constant-ness is a structural fact of the elements, not of
+            // the emitted text: an element `staticNumberValue` folds is a
+            // generation-known double, and one it cannot fold references
+            // locals and must keep its expression at the use site.
+            const constant = unwrapped.elements.every(
+                (element) =>
+                    staticNumberValue(
+                        this.context,
+                        element,
+                    ) !== undefined,
+            );
             return {
                 kind: "data",
-                cpp: `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`,
+                cpp: this.typedArrayFromElements(
+                    prefix,
+                    elements,
+                    constant,
+                ),
                 dataType,
             };
         }
@@ -5039,7 +5645,13 @@ export class DataLowerer {
             );
             return {
                 kind: "data",
-                cpp: `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`,
+                // Every lane just proved a static number, so the whole
+                // tuple is generation-known by construction.
+                cpp: this.typedArrayFromElements(
+                    prefix,
+                    elements,
+                    true,
+                ),
                 dataType,
             };
         }
@@ -5059,6 +5671,63 @@ export class DataLowerer {
             cpp: `bbl::js::${prefix}_array_sized(${this.context.compileNumber(argument, "double")})`,
             dataType,
         };
+    }
+
+    /**
+     * At or past this many elements a constant typed-array literal is
+     * materialized as the namespace-scope `inline const std::array`
+     * table `registerConstantArray` already gives runtime-indexed
+     * constants, and the use site converts from the shared table. Two
+     * things fall out: a literal several sites restate is emitted once,
+     * and startup no longer constructs a heap `bbl::js::Array<double>`
+     * only to convert it and throw it away. Below the threshold the
+     * inline form is unchanged — a vector-sized literal reads best in
+     * place.
+     */
+    private static readonly HOISTED_TYPED_ARRAY_MIN_ELEMENTS = 128;
+
+    /**
+     * The conversion expression for a typed-array constructor over
+     * generation-known element text: inline below the hoisting
+     * threshold, a shared namespace-scope table at or above it. Runtime
+     * identity is untouched either way — every evaluation still
+     * constructs its own typed array, exactly as two `new Float32Array`
+     * expressions construct two arrays; only the immutable double
+     * source is shared.
+     *
+     * `constant` is the caller's structural fact that every element is a
+     * generation-known number; an element referencing locals must keep
+     * its expression at the use site, so only a fully constant literal
+     * hoists.
+     */
+    private typedArrayFromElements(
+        prefix: string,
+        elements: readonly string[],
+        constant: boolean,
+    ): string {
+        if (
+            elements.length <
+                DataLowerer.HOISTED_TYPED_ARRAY_MIN_ELEMENTS ||
+            !constant
+        ) {
+            return `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`;
+        }
+        const key = `double|${elements.join(", ")}`;
+        let name = this.typedArrayLiteralTables.get(key);
+        if (name === undefined) {
+            // The registry keys tables by node, and one source node can
+            // fold to different contents under an unrolled loop — a
+            // fresh synthetic key node per registration keeps the
+            // content map here the only authority.
+            name = this.context.dataTypes.registerConstantArray(
+                ts.factory.createNumericLiteral("0"),
+                `${prefix}_values`,
+                "double",
+                [...elements],
+            );
+            this.typedArrayLiteralTables.set(key, name);
+        }
+        return `bbl::js::${prefix}_array_from(bblscene::${name})`;
     }
 
     private compileDataViewNew(
@@ -7424,9 +8093,10 @@ export class DataLowerer {
         if (
             ts.isPropertyAccessExpression(left) &&
             ts.isPropertyAccessExpression(left.expression) &&
-            ["position", "rotation", "scaling", "target"].includes(
-                left.expression.name.text,
-            )
+            // The TRS trio plus the camera's `target` record: the engine
+            // vectors whose component writes carry side effects.
+            (isTrsVectorName(left.expression.name.text) ||
+                left.expression.name.text === "target")
         ) {
             const ownerExpression = this.context.unwrap(
                 left.expression.expression,
@@ -7487,6 +8157,11 @@ export class DataLowerer {
                         );
                     }
                     this.context.reachJsData();
+                    // Truncation shrinks the array, so the exact
+                    // element snapshot no longer describes it — and the
+                    // static in-bounds proof over the snapshot's length
+                    // must stop applying from here on.
+                    this.invalidateStaticElements(narrowed);
                     this.context.emit(
                         (this.invalidateAliases(narrowed.cpp), `bbl::js::array_truncate(${narrowed.cpp}, ${this.context.compileNumber(expression.right, "double")});`),
                     );

@@ -20,11 +20,13 @@ import {
     captureSeekBracketDirectory,
     defaultCaptureDirectory,
     defaultExecutable,
+    type DifferentialReportSummary,
     enableGpuDebug,
     flagNumber,
     formatPngMeasurement,
     measurePng,
     parityReportPath,
+    type ParityReportSummary,
     parseFlags,
     parseParityArguments,
     parseRgbTriple,
@@ -409,9 +411,13 @@ async function build(idOrSource: string): Promise<void> {
         selected.some((scene) =>
             sceneUsesNativeFeature(scene, "audio:engine"),
         );
+    const reachesUi =
+        idOrSource === "all" ||
+        selected.some((scene) => sceneUsesNativeFeature(scene, "ui:rml"));
     requireDevelopmentPreflight({
         browser: false,
         labSound: reachesAudio,
+        rmlUi: reachesUi,
         shaders: false,
     });
     await buildScenes(selected);
@@ -808,6 +814,7 @@ interface DevelopmentCheck {
 interface PreflightScope {
     browser: boolean;
     labSound: boolean;
+    rmlUi: boolean;
     shaders: boolean;
 }
 
@@ -897,6 +904,14 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
                 : { problem: `not built at ${tools.labSoundDirectory}` }),
         });
     }
+    if (scope.rmlUi) {
+        checks.push({
+            label: "RmlUi",
+            ...(tools.rmlUiInstalled
+                ? { path: tools.rmlUiDirectory }
+                : { problem: `not built at ${tools.rmlUiDirectory}` }),
+        });
+    }
     if (scope.browser) {
         try {
             checks.push({
@@ -929,6 +944,7 @@ function runDoctor(): void {
     const checks = developmentChecks({
         browser: true,
         labSound: true,
+        rmlUi: true,
         shaders: true,
     });
     for (const check of checks) {
@@ -1029,6 +1045,7 @@ function runDevelopmentSetup(): void {
     buildPinned(tools.dawnInstalled, "tools/build-dawn.ps1");
     buildPinned(!!tools.tint, "tools/build-tint.ps1");
     buildPinned(tools.labSoundInstalled, "tools/build-labsound.ps1");
+    buildPinned(tools.rmlUiInstalled, "tools/build-rmlui.ps1");
     sharedBuildSetup = undefined;
     sharedDevelopmentTools = undefined;
     sharedWindowsBuildTools = undefined;
@@ -1212,6 +1229,7 @@ async function processScene(idOrSource: string): Promise<void> {
     requireDevelopmentPreflight({
         browser: true,
         labSound: idOrSource === "all",
+        rmlUi: idOrSource === "all",
         shaders: true,
     });
     if (idOrSource === "all") {
@@ -1857,6 +1875,7 @@ async function runValidate(idOrSource: string): Promise<void> {
     requireDevelopmentPreflight({
         browser: true,
         labSound: idOrSource === "all",
+        rmlUi: idOrSource === "all",
         shaders: true,
     });
     const setup = buildSetup();
@@ -2047,8 +2066,9 @@ async function runDiagnose(
         console.log(`=== diagnose: ${name} ===`);
     };
 
-    // Rung 1 — the decisive differential (or a single-backend parity):
-    // backend agreement to one LSB puts a divergence on the CPU side.
+    // Ladder rung 2 — the decisive differential (or a single-backend
+    // parity): backend agreement to one LSB puts a divergence on the CPU
+    // side.
     const differential =
         backend === undefined && buildSetup().backend === "BOTH";
     const parityName = differential
@@ -2091,8 +2111,8 @@ async function runDiagnose(
         }
     }
 
-    // Rung 3 — the capture pairing, which recaptures stale evidence on
-    // its own and reports value/draw/shader findings worst-first.
+    // Ladder rung 3 — the capture pairing, which recaptures stale evidence
+    // on its own and reports value/draw/shader findings worst-first.
     heading("diff");
     const diffArguments = [
         ...(backend !== undefined ? ["--backend", backend] : []),
@@ -2118,8 +2138,8 @@ async function runDiagnose(
         });
     }
 
-    // Rung 4 — the fragment composition against the capture diff just
-    // ensured is fresh (same directory, same pose).
+    // Ladder rung 7 — the fragment composition against the capture diff
+    // just ensured is fresh (same directory, same pose).
     heading("compose");
     try {
         const { runComposeReport } = await import(
@@ -2182,11 +2202,7 @@ function parityVerdict(
                     parityReportPath(outputDirectory, "differential"),
                     "utf8",
                 ),
-            ) as {
-                goldenVersusSdlGpu: { fullMad: number };
-                goldenVersusDawn: { fullMad: number };
-                sdlGpuVersusDawn: { mad: number };
-            };
+            ) as DifferentialReportSummary;
             return (
                 ` — golden vs SDL_GPU ${report.goldenVersusSdlGpu.fullMad.toFixed(3)}, ` +
                 `vs Dawn ${report.goldenVersusDawn.fullMad.toFixed(3)}, ` +
@@ -2199,7 +2215,7 @@ function parityVerdict(
                 parityReportPath(outputDirectory, token),
                 "utf8",
             ),
-        ) as { full: { mad: number }; region: { mad: number } };
+        ) as ParityReportSummary;
         return ` — full MAD ${report.full.mad.toFixed(3)}, region ${report.region.mad.toFixed(3)}`;
     } catch {
         return "";

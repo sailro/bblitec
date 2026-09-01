@@ -550,14 +550,7 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
         long frame = 0;
         PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) running = false;
-                if (options.test_pass && is_platform_input_event(event)) {
-                    continue;
-                }
-                handle_platform_event(event, engine);
-            }
+            poll_platform_events(engine, running, options.test_pass);
             input_replay.dispatch(frame, state.window, engine);
             sync_engine_canvas_size(state.window, engine);
             if (resize_dawn_surface(state, engine.options)) {
@@ -652,6 +645,8 @@ bool run_frame_graph_dawn_engine(Engine& engine) {
                 frame >= options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !options.screenshot_path.empty();
+            captures.maybe_write_standalone_render_capture(
+                "dawn", engine, width, height, frame);
             DawnSurfaceCapture capture{};
             if (capture_frame) {
                 capture = begin_dawn_surface_capture(

@@ -543,6 +543,44 @@ test("flows the pinned camera inertia constants into the controls", () => {
         controls.source,
         /const double epsilon = camera\.speed \* 0\.001;/,
     );
+    // The event accumulators the platform layer calls instead of
+    // re-typing: the wheel-precision scale flows from onWheel, and the
+    // pan/orbit divisions mirror onPointerMove.
+    assert.match(
+        controls.source,
+        /\(delta_y \* camera\.radius\) \/\s*\(camera\.wheel_precision \* 1000\.0\)/,
+    );
+    assert.match(
+        controls.source,
+        /camera\.inertial_panning_x \+= -dx \/ camera\.panning_sensibility;/,
+    );
+    assert.match(
+        controls.source,
+        /camera\.inertial_alpha_offset -= dx \/ camera\.angular_sensibility;/,
+    );
+    // The free-look accumulator folds the pinned `_pitch -= crX` sign
+    // into the apply-additive record offset.
+    assert.match(
+        controls.source,
+        /camera\.inertial_pitch_offset -= dy \/ camera\.angular_sensibility;/,
+    );
+    // The per-frame move scale is the pinned formula, never a
+    // hand-evaluated constant: moveSpeed = speed * sqrt(dt*dt / 1e5)
+    // with dt floored at 1 ms, both numbers read from
+    // free-camera-controls.ts. The platform loop hands in its own frame
+    // step at call time.
+    assert.match(
+        controls.source,
+        /const double dt = std::max\(delta_ms, 1\.0\);/,
+    );
+    assert.match(
+        controls.source,
+        /return camera\.speed \*\s*std::sqrt\(\(dt \* dt\) \/ 100000\.0\);/,
+    );
+    assert.match(
+        controls.header,
+        /double free_camera_move_speed\(const CameraRecord& camera, double delta_ms\);/,
+    );
 });
 
 // One store load serves both light tests: the LoweringContext constructor
@@ -1687,6 +1725,48 @@ test("emits no transcribed standard fragments", () => {
         shaders.some((shader) =>
             shader.output.endsWith("pbr.vert.native.wgsl"),
         ),
+    );
+});
+
+test("anchors the deformation and instancing vertex arms to their pinned fragments", () => {
+    // The transcribed vertex stage's skinning and thin-instance bodies are
+    // marker-anchored like its storage-morph arm: running lowerShaders with
+    // the arms on exercises assertPinnedShaderFormulas against the pinned
+    // skeleton-fragment, thin-instance-fragment and pbr-template /*VW*/
+    // application lines, so a retuned pin refuses generation here.
+    const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
+        ground: false,
+        skybox: false,
+        shaderPrograms: [],
+        idDiagnostics: false,
+        geometryOutputTasks: [],
+        gpuDeformation: true,
+        morphStorage: true,
+        gpuInstancing: true,
+    });
+    const vertex = shaders.find((shader) =>
+        shader.output.endsWith("pbr.vert.native.wgsl"),
+    );
+    // The anchored formulas' transcribed counterparts: the sum runs to
+    // exactly four influences, the normal transforms at w=0 after a
+    // normalize, and the parent world composes on the left of the
+    // per-instance matrix before the upper-left 3x3 carries the normal.
+    assert.match(
+        String(vertex?.data),
+        /deformation\.boneMatrices\[u32\(input\.joints\.w\)\] \* input\.weights\.w;/,
+    );
+    assert.doesNotMatch(String(vertex?.data), /joints1|weights1/);
+    assert.match(
+        String(vertex?.data),
+        /worldNormal =\s*\(skin \* vec4<f32>\(normalize\(worldNormal\), 0\.0\)\)\.xyz;/,
+    );
+    assert.match(
+        String(vertex?.data),
+        /instanceUniforms\.parentWorld \* localInstanceMatrix;/,
+    );
+    assert.match(
+        String(vertex?.data),
+        /worldNormal = instanceNormal \* worldNormal;/,
     );
 });
 

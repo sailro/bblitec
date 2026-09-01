@@ -39,9 +39,12 @@
       ]
     },
     "ui": {
-      "description": "FreeType font rasterization for the optional RmlUi scene-created DOM projection.",
+      "description": "FreeType font rasterization for the optional RmlUi scene-created DOM projection. RmlUi's font engine reaches core FreeType only, so the port's default brotli/bzip2/png/zlib decoders stay out of the static executable.",
       "dependencies": [
-        "freetype"
+        {
+          "name": "freetype",
+          "default-features": false
+        }
       ]
     },
     "webp": {

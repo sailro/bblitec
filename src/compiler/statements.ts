@@ -13,7 +13,7 @@ import type {
     Value,
     ValueKind,
 } from "./types.js";
-import { lightVectorSetter } from "./assignments.js";
+import { isTrsVectorName, lightVectorSetter } from "./assignments.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -218,6 +218,47 @@ function bodyStatements(
         : [statement.statement];
 }
 
+function isCppWordCharacter(character: string | undefined): boolean {
+    return character !== undefined && /[A-Za-z0-9_]/.test(character);
+}
+
+/**
+ * Every stand-alone occurrence of one iteration's handle spelling in an
+ * emitted line, replaced by the placeholder.
+ *
+ * "Stand-alone" is the identifier-boundary rule: a match whose word-shaped
+ * edge touches another word character is part of a longer name —
+ * `v_sphere1` inside `v_sphere17` — and is left alone. The replacement is
+ * over the line's exact bytes, which is what makes the later uniformity
+ * comparison a proof: two iterations are the same emission exactly when
+ * their lines are equal after this substitution.
+ */
+function replaceHandleToken(line: string, token: string): string {
+    let result = "";
+    let from = 0;
+    for (;;) {
+        const found = line.indexOf(token, from);
+        if (found === -1) {
+            return result + line.slice(from);
+        }
+        const boundaryBefore = !(
+            isCppWordCharacter(line[found - 1]) &&
+            isCppWordCharacter(token[0])
+        );
+        const boundaryAfter = !(
+            isCppWordCharacter(line[found + token.length]) &&
+            isCppWordCharacter(token[token.length - 1])
+        );
+        if (boundaryBefore && boundaryAfter) {
+            result += line.slice(from, found) + HANDLE_TOKEN_PLACEHOLDER;
+            from = found + token.length;
+        } else {
+            result += line.slice(from, found + 1);
+            from = found + 1;
+        }
+    }
+}
+
 // Small counted loops unroll because that keeps generation-known values
 // available to scene composition. Large loops stay native when they are only
 // data processing, but a body that reaches pinned scene construction must
@@ -225,6 +266,20 @@ function bodyStatements(
 // one AOT effect for many runtime iterations.
 const MAX_STATIC_INDEX_ITERATIONS = 32;
 const MAX_REQUIRED_STATIC_INDEX_ITERATIONS = 4096;
+// The per-loop caps above compose multiplicatively in a nest, and the
+// generation-known-tuple `for...of` has no cap at all, so the emitted-text
+// budget is the PRODUCT of every enclosing static unroll. Past this product
+// the unrollers first run every iteration exactly as before — the
+// generation-time effects of an unrolled body (handle facts, scene records,
+// tuple growth) are the AOT model and must all still happen — and then fold
+// the EMITTED TEXT into one native loop when the iterations' captured lines
+// prove uniform. A body whose lines are not uniform keeps its unrolled
+// emission byte for byte; nothing under this budget ever refuses.
+const MAX_STATIC_UNROLL_PRODUCT = 256;
+// Stands for the folded iteration's own handle spelling inside captured
+// lines while they are compared and re-emitted. U+0001 cannot appear in
+// emitted C++, so a replacement can never collide with scene text.
+const HANDLE_TOKEN_PLACEHOLDER = "\u0001";
 const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
     "&=": "bitwise_and",
     "|=": "bitwise_or",
@@ -252,6 +307,93 @@ export class StatementLowerer {
     private readonly labels: Array<{ source: string; target: string }> = [];
     /** Source loops whose current iteration is being emitted statically. */
     private readonly staticUnrolledIterations: ts.IterationStatement[] = [];
+    /**
+     * The running product of enclosing static unroll counts. Each unroller
+     * pushes its own count multiplied in, so a nested loop reads the number
+     * of times its body will be emitted rather than only its own count.
+     */
+    private readonly staticUnrollProducts: number[] = [];
+
+    /** How many times a body emitted here appears in the output. */
+    private staticUnrollProduct(): number {
+        return this.staticUnrollProducts.at(-1) ?? 1;
+    }
+
+    /** Runs one unroller's whole iteration sweep under its nest product. */
+    private withStaticUnrollProduct<T>(
+        iterations: number,
+        emitIterations: () => T,
+    ): T {
+        this.staticUnrollProducts.push(
+            this.staticUnrollProduct() * Math.max(1, iterations),
+        );
+        try {
+            return emitIterations();
+        } finally {
+            this.staticUnrollProducts.pop();
+        }
+    }
+
+    /**
+     * Whether unrolling `iterations` more bodies here exceeds the emitted-
+     * text budget. Exceeding it never refuses; it only licenses the
+     * capture-and-fold attempt, whose fallback is today's emission.
+     */
+    private exceedsStaticUnrollBudget(iterations: number): boolean {
+        return (
+            iterations >= 2 &&
+            iterations * this.staticUnrollProduct() >
+                MAX_STATIC_UNROLL_PRODUCT
+        );
+    }
+
+    /** Re-emits captured unrolled iterations exactly as they were emitted. */
+    private emitCapturedIterations(
+        context: StatementLoweringContext,
+        captures: readonly (readonly string[])[],
+    ): void {
+        for (const lines of captures) {
+            for (const line of lines) {
+                context.emit(line);
+            }
+        }
+    }
+
+    /** Whether every capture matches the template's lines byte for byte. */
+    private capturesAreIdentical(
+        captures: readonly (readonly string[])[],
+        template: readonly string[],
+    ): boolean {
+        return (
+            template.length > 0 &&
+            captures.every(
+                (lines) =>
+                    lines.length === template.length &&
+                    lines.every(
+                        (line, at) => line === template[at],
+                    ),
+            )
+        );
+    }
+
+    /** Emits one native repeat loop around a proven-uniform template. */
+    private emitRepeatedTemplate(
+        context: StatementLoweringContext,
+        count: number,
+        templateLines: readonly string[],
+    ): void {
+        const counter =
+            context.allocateTemporaryCppName("repeat_index");
+        context.emit(
+            `for (int ${counter} = 0; ${counter} < ${count}; ++${counter}) {`,
+        );
+        context.increaseIndent();
+        for (const line of templateLines) {
+            context.emit(line);
+        }
+        context.decreaseIndent();
+        context.emit("}");
+    }
 
     /** Compile one body whose effects occur only on a native runtime path. */
     private inRuntimeControlFlow<T>(
@@ -1539,11 +1681,11 @@ export class StatementLowerer {
                 "Static index-loop bodies cannot mutate the loop index.",
             );
         }
-        for (
-            let index = start;
-            index < length.staticNumber;
-            index += 1
-        ) {
+        const iterations = Math.max(
+            0,
+            length.staticNumber - start,
+        );
+        const emitIndexIteration = (index: number): void => {
             this.emitUnrolledIteration(
                 context,
                 statement,
@@ -1556,8 +1698,76 @@ export class StatementLowerer {
                     });
                 },
             );
+        };
+        if (
+            !requiresStaticIteration &&
+            this.exceedsStaticUnrollBudget(iterations)
+        ) {
+            this.emitBudgetedUniformIterations(
+                context,
+                iterations,
+                (at) => emitIndexIteration(start + at),
+            );
+            return true;
         }
+        const end = length.staticNumber;
+        this.withStaticUnrollProduct(iterations, () => {
+            for (
+                let index = start;
+                index < end;
+                index += 1
+            ) {
+                emitIndexIteration(index);
+            }
+        });
         return true;
+    }
+
+    /**
+     * A statically unrolled loop past the nest budget: every iteration
+     * still runs — its generation-time effects are the reason the loop
+     * unrolls at all — but the emitted lines are captured per iteration,
+     * and when every capture is byte-identical the text collapses to one
+     * native repeat loop around a single copy. Identical captures mean
+     * the per-iteration binding never reached the emission (a folded
+     * constant would differ per iteration), so the repeated body has
+     * nothing to parameterize; the loop runs the same statements the
+     * same number of times in the same order.
+     *
+     * Anything short of identical re-emits the captures verbatim — the
+     * unrolled bytes exactly as today — because a body this cannot prove
+     * uniform (scene165's nest folds its indices into per-cell constants)
+     * is precisely the one whose unrolled form is the trusted emission.
+     *
+     * Shared by the static index loop and the static array-literal
+     * `for...of`, whose per-iteration bindings differ but whose fold
+     * proof is the same byte identity.
+     */
+    private emitBudgetedUniformIterations(
+        context: StatementLoweringContext,
+        iterations: number,
+        emitIteration: (at: number) => void,
+    ): void {
+        const captures: string[][] = [];
+        this.withStaticUnrollProduct(iterations, () => {
+            for (let at = 0; at < iterations; at += 1) {
+                captures.push(
+                    context.captureEmittedLines(() =>
+                        emitIteration(at),
+                    ),
+                );
+            }
+        });
+        const template = captures[0]!;
+        if (!this.capturesAreIdentical(captures, template)) {
+            this.emitCapturedIterations(context, captures);
+            return;
+        }
+        this.emitRepeatedTemplate(
+            context,
+            iterations,
+            template,
+        );
     }
 
     private emitWhile(
@@ -1724,7 +1934,9 @@ export class StatementLowerer {
         const values = context.expectStaticArrayLiteral(
             statement.expression,
         );
-        for (const element of values.elements) {
+        const emitElementIteration = (
+            element: ts.Expression,
+        ): void => {
             this.emitUnrolledIteration(
                 context,
                 statement,
@@ -1737,7 +1949,39 @@ export class StatementLowerer {
                     );
                 },
             );
+        };
+        // The same budget-triggered fold as the static index loop: past
+        // the nest budget the iterations are captured, and only a fully
+        // uniform body collapses to one native repeat loop — anything
+        // short of identical re-emits the unrolled bytes exactly. A body
+        // reaching pinned scene construction keeps the flat unroll; that
+        // is the AOT boundary the fold must not blur.
+        if (
+            !context.requiresStaticIteration(
+                statement.statement,
+            ) &&
+            this.exceedsStaticUnrollBudget(
+                values.elements.length,
+            )
+        ) {
+            this.emitBudgetedUniformIterations(
+                context,
+                values.elements.length,
+                (at) =>
+                    emitElementIteration(
+                        values.elements[at]!,
+                    ),
+            );
+            return;
         }
+        this.withStaticUnrollProduct(
+            values.elements.length,
+            () => {
+                for (const element of values.elements) {
+                    emitElementIteration(element);
+                }
+            },
+        );
     }
 
     /**
@@ -1956,20 +2200,214 @@ export class StatementLowerer {
                 );
             }
         }
-        for (const element of elements) {
-            this.emitUnrolledIteration(
+        if (
+            this.emitStaticHandleTableForOf(
                 context,
                 statement,
-                statement.statement,
-                () => {
-                    this.bindStaticIterationValue(
-                        context,
-                        declaration.name,
-                        element,
-                    );
-                },
+                declaration,
+                elements,
+            )
+        ) {
+            return true;
+        }
+        this.withStaticUnrollProduct(elements.length, () => {
+            for (const element of elements) {
+                this.emitUnrolledIteration(
+                    context,
+                    statement,
+                    statement.statement,
+                    () => {
+                        this.bindStaticIterationValue(
+                            context,
+                            declaration.name,
+                            element,
+                        );
+                    },
+                );
+            }
+        });
+        return true;
+    }
+
+    /**
+     * A `for...of` over a generation-known tuple of engine handles, past
+     * the nest budget: the AOT walk still happens — every iteration is
+     * compiled once with its real element, so handle facts learned in the
+     * body land on the same Value objects, and any generation-time record
+     * the body touches is touched per element exactly as before — but the
+     * emitted lines are captured per iteration instead of streamed. When
+     * every capture is the same bytes modulo that iteration's own handle
+     * spelling, the text collapses to a native table of the handles plus
+     * one loop over it.
+     *
+     * Why the substitution proof is sound: canonicalizing capture k
+     * replaces ALL stand-alone occurrences of element k's spelling, so
+     * equality of the canonical lines means capture k is exactly the
+     * template with the loop binding set to element k — which is what the
+     * emitted loop executes, in the same element order, through a const
+     * by-value binding just like the handle-collection loop's. The table
+     * is built at the statement's own position on every execution, so it
+     * reads the handle variables at the same moment the unrolled
+     * statements read them. A body that rebinds an element's own variable
+     * cannot slip through: the rebinding line either carries that
+     * iteration's token (declined by the placeholder-assignment guard) or
+     * another iteration's spelling (unequal canonical lines). Everything
+     * else — heterogeneous kinds, bodies doing pinned scene construction,
+     * per-iteration folds, locals (their block prefixes differ per
+     * iteration by construction) — fails uniformity and keeps the
+     * unrolled emission byte for byte.
+     */
+    private emitStaticHandleTableForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+        elements: readonly Value[],
+    ): boolean {
+        if (!ts.isIdentifier(declaration.name)) {
+            return false;
+        }
+        if (!this.exceedsStaticUnrollBudget(elements.length)) {
+            return false;
+        }
+        const kind = elements[0]!.kind;
+        const cppType =
+            context.handleCollections.staticHandleTableCppType(
+                kind,
+            );
+        // Every element must be spelled as a plain C++ identifier — a
+        // handle local the scene bound before pushing. An element compiled
+        // straight from its creation call carries that CALL as its
+        // spelling, and a table repeating it would re-create the mesh per
+        // execution; an identifier read is effect-free and reads the same
+        // handle the unrolled statements read.
+        if (
+            cppType === undefined ||
+            elements.some(
+                (element) =>
+                    element.kind !== kind ||
+                    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(
+                        element.cpp,
+                    ),
+            )
+        ) {
+            return false;
+        }
+        // A body that binds this loop's own control flow, or that reaches
+        // pinned scene construction, keeps the unrolled arms above: the
+        // first has its own continue/erasure semantics, and the second is
+        // the AOT boundary this fold must not blur even when its text
+        // would prove uniform.
+        if (
+            this.bindsEnclosingLoop(statement.statement) ||
+            context.requiresStaticIteration(statement.statement)
+        ) {
+            return false;
+        }
+        // From here every iteration is consumed exactly once: captured,
+        // then re-emitted either folded or verbatim. Falling back to the
+        // caller's unroll after this point would run the generation-time
+        // effects twice.
+        const captures: string[][] = [];
+        this.withStaticUnrollProduct(elements.length, () => {
+            for (const element of elements) {
+                captures.push(
+                    context.captureEmittedLines(() =>
+                        this.emitUnrolledIteration(
+                            context,
+                            statement,
+                            statement.statement,
+                            () => {
+                                this.bindStaticIterationValue(
+                                    context,
+                                    declaration.name,
+                                    element,
+                                );
+                            },
+                        ),
+                    ),
+                );
+            }
+        });
+        const canonical = captures.map((lines, at) =>
+            lines.map((line) =>
+                replaceHandleToken(line, elements[at]!.cpp),
+            ),
+        );
+        const template = canonical[0]!;
+        const uniform = this.capturesAreIdentical(
+            canonical,
+            template,
+        );
+        // The loop binding is a const copy, so a template line that would
+        // assign through or alias the bound handle itself cannot take the
+        // fold; the unrolled statements wrote the original variable.
+        const assignsElement = new RegExp(
+            `${HANDLE_TOKEN_PLACEHOLDER}\\s*=(?!=)`,
+        );
+        const aliasesElement = new RegExp(
+            `&\\s*${HANDLE_TOKEN_PLACEHOLDER}`,
+        );
+        const unsafe = template.some(
+            (line) =>
+                assignsElement.test(line) ||
+                aliasesElement.test(line),
+        );
+        if (!uniform || unsafe) {
+            this.emitCapturedIterations(context, captures);
+            return true;
+        }
+        if (
+            !template.some((line) =>
+                line.includes(HANDLE_TOKEN_PLACEHOLDER),
+            )
+        ) {
+            // The element never reached the text, so a table would bind an
+            // unreferenced loop variable; a plain repeat loop is the same
+            // statements the same number of times.
+            this.emitRepeatedTemplate(
+                context,
+                elements.length,
+                template,
+            );
+            return true;
+        }
+        const table =
+            context.allocateTemporaryCppName("handle_table");
+        const member = context.allocateTemporaryCppName(
+            "handle_table_member",
+        );
+        context.emit(
+            `const ${cppType} ${table}[${elements.length}] = {`,
+        );
+        context.increaseIndent();
+        const perLine = 16;
+        for (
+            let from = 0;
+            from < elements.length;
+            from += perLine
+        ) {
+            const row = elements
+                .slice(from, from + perLine)
+                .map((element) => element.cpp)
+                .join(", ");
+            context.emit(`${row},`);
+        }
+        context.decreaseIndent();
+        context.emit("};");
+        context.emit(
+            `for (const ${cppType} ${member} : ${table}) {`,
+        );
+        context.increaseIndent();
+        for (const line of template) {
+            context.emit(
+                line.replaceAll(
+                    HANDLE_TOKEN_PLACEHOLDER,
+                    member,
+                ),
             );
         }
+        context.decreaseIndent();
+        context.emit("}");
         return true;
     }
 
@@ -2638,11 +3076,7 @@ export class StatementLowerer {
             );
             return true;
         }
-        if (
-            !["position", "rotation", "scaling"].includes(
-                owner.name.text,
-            )
-        ) {
+        if (!isTrsVectorName(owner.name.text)) {
             return false;
         }
         if (call.arguments.length !== 3) {

@@ -11,8 +11,11 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <unordered_map>
 
+// The backend-neutral scissor clamp all four RmlUi consumers share.
+#include "pal_gpu_shared.hpp"
 #include "pal_dawn_shared.hpp"
 
 namespace bbl::pal {
@@ -407,25 +410,15 @@ inline void render_sprite_ui_dawn_frame(
         0,
         WGPU_WHOLE_SIZE);
     for (const UiRenderDraw& draw : frame.draws) {
-        const int left = std::clamp(
-            draw.scissor_x, 0, static_cast<int>(frame.width));
-        const int top = std::clamp(
-            draw.scissor_y, 0, static_cast<int>(frame.height));
-        const int right = std::clamp(
-            draw.scissor_x + static_cast<int>(draw.scissor_width),
-            0,
-            static_cast<int>(frame.width));
-        const int bottom = std::clamp(
-            draw.scissor_y + static_cast<int>(draw.scissor_height),
-            0,
-            static_cast<int>(frame.height));
-        if (right <= left || bottom <= top || draw.index_count == 0) continue;
+        const std::optional<UiScissorRect> scissor =
+            clamped_ui_scissor(draw, frame.width, frame.height);
+        if (!scissor) continue;
         wgpuRenderPassEncoderSetScissorRect(
             pass,
-            static_cast<std::uint32_t>(left),
-            static_cast<std::uint32_t>(top),
-            static_cast<std::uint32_t>(right - left),
-            static_cast<std::uint32_t>(bottom - top));
+            static_cast<std::uint32_t>(scissor->left),
+            static_cast<std::uint32_t>(scissor->top),
+            static_cast<std::uint32_t>(scissor->width),
+            static_cast<std::uint32_t>(scissor->height));
         if (draw.texture_id) {
             const auto texture = ui.textures.find(draw.texture_id);
             if (texture == ui.textures.end()) continue;

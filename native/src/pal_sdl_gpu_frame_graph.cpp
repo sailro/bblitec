@@ -261,6 +261,12 @@ SDL_GPUTexture* source_texture(
         throw std::runtime_error(
             "A standalone frame graph cannot sample a scene geometry task.");
     }
+    const RenderTargetRecord& record =
+        engine.render_targets.at(source.target.value);
+    if (record.swapchain) {
+        throw std::runtime_error(
+            "A post-process pass cannot sample the swapchain target.");
+    }
     return target_texture(state, engine, source.target, swapchain, true);
 }
 
@@ -529,14 +535,7 @@ bool run_frame_graph_gpu_engine(Engine& engine) {
         long frame = 0;
         PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) running = false;
-                if (options.test_pass && is_platform_input_event(event)) {
-                    continue;
-                }
-                handle_platform_event(event, engine);
-            }
+            poll_platform_events(engine, running, options.test_pass);
             input_replay.dispatch(frame, state.gpu.window, engine);
             (void)advance_frame(
                 engine,
@@ -640,6 +639,8 @@ bool run_frame_graph_gpu_engine(Engine& engine) {
                 frame >= options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !options.screenshot_path.empty();
+            captures.maybe_write_standalone_render_capture(
+                "sdl_gpu", engine, width, height, frame);
             if (capture_frame) {
                 if (!capture_texture) {
                     throw std::runtime_error(

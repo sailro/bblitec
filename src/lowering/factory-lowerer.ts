@@ -1,4 +1,1 @@
-export {
-    FactoryLowerer,
-    StandardMaterialSetters,
-} from "./factory/material-factories.js";
+export { FactoryLowerer } from "./factory/material-factories.js";

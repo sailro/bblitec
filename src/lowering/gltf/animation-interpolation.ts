@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { PINNED_MATH_FUNCTIONS } from "../pinned-operators.js";
+import {
+    PINNED_BOOLEAN_OPERATORS,
+    pinnedMathCall,
+} from "../pinned-operators.js";
 import {
     CppExpressionScope,
     RenderedCpp,
@@ -27,43 +30,50 @@ export const cppPrecedence = {
     primary: 8,
 } as const;
 
+/**
+ * The binary operators this renderer emits. The spelling column is the
+ * shared pinned table's — `pinned-operators.ts` owns what a pinned
+ * operator lowers to, so a spelling it changes or loses moves or fails
+ * here at load — while the precedence column is this renderer's own
+ * minimal-parenthesization decision and stays local. Two rows have no
+ * shared home and keep a local spelling: `!==` (the shared table folds
+ * only `===`/`==`, because no pinned writer guards with `!==`) and `%`.
+ */
+const cppOperatorRows: ReadonlyArray<
+    readonly [kind: ts.SyntaxKind, level: number, localSpelling?: string]
+> = [
+    [ts.SyntaxKind.BarBarToken, cppPrecedence.logicalOr],
+    [ts.SyntaxKind.AmpersandAmpersandToken, cppPrecedence.logicalAnd],
+    [ts.SyntaxKind.EqualsEqualsEqualsToken, cppPrecedence.equality],
+    [
+        ts.SyntaxKind.ExclamationEqualsEqualsToken,
+        cppPrecedence.equality,
+        "!=",
+    ],
+    [ts.SyntaxKind.LessThanToken, cppPrecedence.relational],
+    [ts.SyntaxKind.GreaterThanToken, cppPrecedence.relational],
+    [ts.SyntaxKind.PlusToken, cppPrecedence.additive],
+    [ts.SyntaxKind.MinusToken, cppPrecedence.additive],
+    [ts.SyntaxKind.AsteriskToken, cppPrecedence.multiplicative],
+    [ts.SyntaxKind.SlashToken, cppPrecedence.multiplicative],
+    [ts.SyntaxKind.PercentToken, cppPrecedence.multiplicative, "%"],
+];
+
 const cppBinaryOperators: ReadonlyMap<
     ts.SyntaxKind,
     { text: string; level: number }
-> = new Map([
-    [ts.SyntaxKind.BarBarToken, { text: "||", level: cppPrecedence.logicalOr }],
-    [
-        ts.SyntaxKind.AmpersandAmpersandToken,
-        { text: "&&", level: cppPrecedence.logicalAnd },
-    ],
-    [
-        ts.SyntaxKind.EqualsEqualsEqualsToken,
-        { text: "==", level: cppPrecedence.equality },
-    ],
-    [
-        ts.SyntaxKind.ExclamationEqualsEqualsToken,
-        { text: "!=", level: cppPrecedence.equality },
-    ],
-    [ts.SyntaxKind.LessThanToken, { text: "<", level: cppPrecedence.relational }],
-    [
-        ts.SyntaxKind.GreaterThanToken,
-        { text: ">", level: cppPrecedence.relational },
-    ],
-    [ts.SyntaxKind.PlusToken, { text: "+", level: cppPrecedence.additive }],
-    [ts.SyntaxKind.MinusToken, { text: "-", level: cppPrecedence.additive }],
-    [
-        ts.SyntaxKind.AsteriskToken,
-        { text: "*", level: cppPrecedence.multiplicative },
-    ],
-    [
-        ts.SyntaxKind.SlashToken,
-        { text: "/", level: cppPrecedence.multiplicative },
-    ],
-    [
-        ts.SyntaxKind.PercentToken,
-        { text: "%", level: cppPrecedence.multiplicative },
-    ],
-]);
+> = new Map(
+    cppOperatorRows.map(([kind, level, localSpelling]) => {
+        const text = localSpelling ?? PINNED_BOOLEAN_OPERATORS.get(kind);
+        if (text === undefined) {
+            throw new Error(
+                "The shared pinned operator table lost a row the glTF " +
+                    `expression renderer emits (${ts.SyntaxKind[kind]}).`,
+            );
+        }
+        return [kind, { text, level }] as const;
+    }),
+);
 
 /**
  * Parenthesize a rendered operand exactly where C++ would re-associate
@@ -152,34 +162,26 @@ export function renderCppExpression(
         return scope.elementRead(expression);
     }
     if (ts.isCallExpression(expression)) {
-        const callee = expression.expression;
-        if (
-            ts.isPropertyAccessExpression(callee) &&
-            ts.isIdentifier(callee.expression) &&
-            callee.expression.text === "Math"
-        ) {
-            const mapped = PINNED_MATH_FUNCTIONS[callee.name.text];
-            if (!mapped) {
-                refuseNode(
-                    scope.symbol,
-                    scope.file,
-                    expression,
-                    `calls Math.${callee.name.text}, which has no lowering`,
-                );
-            }
-            const argumentTexts = expression.arguments.map(
+        const math = pinnedMathCall(expression);
+        if (math) {
+            const argumentTexts = math.call.arguments.map(
                 (argument) => renderCppExpression(scope, argument).text,
             );
             return {
-                text: `${mapped}(${argumentTexts.join(", ")})`,
+                text: `${math.native}(${argumentTexts.join(", ")})`,
                 precedence: cppPrecedence.primary,
             };
         }
+        const callee = expression.expression;
         refuseNode(
             scope.symbol,
             scope.file,
             expression,
-            "calls a function this lowering cannot carry",
+            ts.isPropertyAccessExpression(callee) &&
+                    ts.isIdentifier(callee.expression) &&
+                    callee.expression.text === "Math"
+                ? `calls Math.${callee.name.text}, which has no lowering`
+                : "calls a function this lowering cannot carry",
         );
     }
     if (ts.isBinaryExpression(expression)) {

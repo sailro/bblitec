@@ -815,6 +815,36 @@ export class HandleCollections {
     }
 
     /**
+     * The native element type a static handle table may declare for a
+     * compile-time list of this kind, or undefined where no table arm
+     * exists and the list keeps unrolling.
+     *
+     * Only the plain creation-ordered `.value` handles qualify: they are
+     * trivially copyable ordinals whose emitted spelling is the complete
+     * value, so a table of them read by a native loop is exactly the
+     * unrolled statements' reads. A light is deliberately not here — its
+     * compile-time value carries scene-slot identity beyond the emitted
+     * spelling — and the fat resource kinds (textures, physics bodies)
+     * never form these lists at all.
+     */
+    public staticHandleTableCppType(
+        kind: ValueKind,
+    ): string | undefined {
+        if (
+            kind !== "mesh" &&
+            kind !== "material" &&
+            kind !== "camera" &&
+            kind !== "animation-group"
+        ) {
+            return undefined;
+        }
+        return this.context.dataTypes.cppType({
+            kind: "handle",
+            handle: kind,
+        });
+    }
+
+    /**
      * `scene.lights.push(light)`, which is what `addToScene` does with one.
      *
      * The pin's own `addToScene` branches on the entity: a light takes

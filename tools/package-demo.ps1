@@ -65,19 +65,46 @@ $runtime = $cache["CMAKE_MSVC_RUNTIME_LIBRARY"]
 if ($runtime -notmatch '^MultiThreaded(?:Debug)?(?:\$<.*>)?$') {
     throw "Shipping requires the static MSVC runtime (CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded); got '$runtime'."
 }
+# Every per-scene read below (features, deployed-payload comparison) must
+# describe the same generated tree the executable was built from, so a
+# cache naming a different one is refused rather than silently packaged.
+$generatedDirectory = $cache["BBLITE_GENERATED_DIR"]
+if (-not $generatedDirectory) {
+    throw "BBLITE_GENERATED_DIR is not recorded in $cacheFile. Reconfigure the exact mini tree with the current toolchain."
+}
+$generatedDirectory = [System.IO.Path]::GetFullPath($generatedDirectory)
+$expectedGenerated = [System.IO.Path]::GetFullPath(
+    (Join-Path $root "generated\$Scene")
+)
+if (-not [string]::Equals(
+    $generatedDirectory,
+    $expectedGenerated,
+    [System.StringComparison]::OrdinalIgnoreCase
+)) {
+    throw "Build directory $BuildDirectory was configured against $generatedDirectory, not $expectedGenerated. Reconfigure the mini tree for the packaged scene."
+}
 # Image codecs the generation reached (BBLITE_IMAGE_CODECS in the
 # scene's features.cmake). Generated directories predating codec
 # tree-shaking carry no list and keep the historical png+jpeg set.
+# The physics/navigation/ui flags mirror the runtime-feature tokens
+# native/CMakeLists.txt keys its vcpkg manifest features on, so the
+# notice set below follows exactly what the build linked.
 $jpegReached = $true
 $webpReached = $false
 $audioReached = $false
 $audioDecoded = $false
+$physicsReached = $false
+$navigationReached = $false
+$uiReached = $false
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
-$featuresPath = Join-Path $root "generated\$Scene\features.cmake"
+$featuresPath = Join-Path $generatedDirectory "features.cmake"
 if (Test-Path $featuresPath) {
     $featuresText = Get-Content $featuresPath -Raw
     $audioReached = $featuresText -match '"audio:engine"'
     $audioDecoded = $featuresText -match '"audio:decoded-buffer"'
+    $physicsReached = $featuresText -match '"physics:world"'
+    $navigationReached = $featuresText -match '"navigation:recast"'
+    $uiReached = $featuresText -match '"ui:rml"'
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
         $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
@@ -98,6 +125,49 @@ foreach ($required in @($executable, $shaderSource)) {
     if (-not (Test-Path $required)) {
         throw "Required shipping input not found: $required"
     }
+}
+
+# The CMake asset deploy merges rather than mirrors (native/CMakeLists.txt
+# records why beside the target), so a reused build tree can still hold
+# files the generated tree no longer owns — the exact leftover a pin bump
+# produces. A package ships only what the current generation owns; refuse
+# the stale tree instead of guessing.
+$orphans = @()
+foreach ($payload in @(
+    @{
+        Source = Join-Path $generatedDirectory "assets"
+        Deployed = $assetSource
+    },
+    @{
+        Source = Join-Path $generatedDirectory "upstream\shaders"
+        Deployed = $shaderSource
+    }
+)) {
+    if (-not (Test-Path $payload.Deployed)) { continue }
+    $owned = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    if (Test-Path $payload.Source) {
+        foreach ($file in Get-ChildItem $payload.Source -File -Recurse) {
+            [void]$owned.Add(
+                [System.IO.Path]::GetRelativePath($payload.Source, $file.FullName)
+            )
+        }
+    }
+    foreach ($file in Get-ChildItem $payload.Deployed -File -Recurse) {
+        # The build's own dot-named marker files (the shader snapshot
+        # stamp) are deployment machinery, not payload.
+        if ($file.Name.StartsWith(".")) { continue }
+        $relative = [System.IO.Path]::GetRelativePath(
+            $payload.Deployed, $file.FullName
+        )
+        if (-not $owned.Contains($relative)) {
+            $orphans += (Join-Path $payload.Deployed $relative)
+        }
+    }
+}
+if ($orphans.Count -gt 0) {
+    throw "Deployed payload holds files the generated tree no longer owns: $($orphans -join ', '). The deploy merges rather than mirrors; delete these files and rebuild the mini tree before packaging."
 }
 
 $backendToken = $backend.ToLowerInvariant().Replace("_", "-")
@@ -180,6 +250,7 @@ $licensePackages = @{
     "SDL3_image.txt" = "sdl3-image"
     "libpng.txt" = "libpng"
     "zlib.txt" = "zlib"
+    "nlohmann-json.txt" = "nlohmann-json"
 }
 if ($jpegReached) {
     $licensePackages["libjpeg-turbo.txt"] = "libjpeg-turbo"
@@ -187,12 +258,37 @@ if ($jpegReached) {
 if ($webpReached) {
     $licensePackages["libwebp.txt"] = "libwebp"
 }
+if ($physicsReached) {
+    $licensePackages["bullet3.txt"] = "bullet3"
+}
+if ($navigationReached) {
+    $licensePackages["recastnavigation.txt"] = "recastnavigation"
+}
+if ($uiReached) {
+    $licensePackages["FreeType.txt"] = "freetype"
+}
 foreach ($entry in $licensePackages.GetEnumerator()) {
     $source = Join-Path $vcpkgShare "$($entry.Value)\copyright"
     if (-not (Test-Path $source)) {
         throw "Dependency license not found: $source"
     }
     Copy-Item $source (Join-Path $licenses $entry.Key)
+}
+if ($uiReached) {
+    # RmlUi arrives as the pinned artifact (upstream/rmlui.json, built by
+    # tools/build-rmlui.ps1), not vcpkg, so its license travels inside the
+    # install the configure recorded as BBLITE_RMLUI_DIR -- the same way
+    # the LabSound and Dawn notices below travel inside theirs.
+    $rmluiDir = if ($cache.ContainsKey("BBLITE_RMLUI_DIR")) {
+        $cache["BBLITE_RMLUI_DIR"]
+    } else {
+        Join-Path $root "artifacts\tools\rmlui-static"
+    }
+    $rmluiLicense = Join-Path $rmluiDir "RmlUi-LICENSE.txt"
+    if (-not (Test-Path $rmluiLicense)) {
+        throw "RmlUi license not found: $rmluiLicense. Rebuild the RmlUi library (tools/build-rmlui.ps1 -StaticRuntime)."
+    }
+    Copy-Item $rmluiLicense (Join-Path $licenses "RmlUi.txt")
 }
 if ($audioReached) {
     $labSoundDir = $cache["BBLITE_LABSOUND_DIR"]
@@ -229,6 +325,9 @@ if ($backend -eq "DAWN") {
     }
     Copy-Item $dawnLicense (Join-Path $licenses "Dawn.txt")
 }
+# End of third-party notices. test/package-demo-notices.test.ts holds the
+# region above closed over native/vcpkg.json: a new linkable dependency
+# fails the suite until its notice entry lands between these markers.
 
 $primaryLines = @(
     "@echo off",

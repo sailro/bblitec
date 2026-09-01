@@ -3792,8 +3792,10 @@ struct EsmDirectionalShadowOptions {
  * The spot generator's own three, plus the ortho volume the caster fit
  * projects into — a directional light has no position to project from, so
  * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
- * takes. `normalBias` and `forceRefreshEveryFrame` are unreached and refuse
- * by name, exactly as they do on the other two factories.
+ * takes. `normalBias` and `forceRefreshEveryFrame` are unreached on the two
+ * PCF factories and refuse by name; the ESM and CSM factories accept
+ * `forceRefreshEveryFrame` as a generation-checked no-op (break-meshes
+ * reaches it — native refreshes every reached shadow task per frame).
  */
 struct PcfDirectionalShadowOptions {
     // No initialisers: generation writes every field from the factory's own

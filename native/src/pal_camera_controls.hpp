@@ -1,5 +1,11 @@
 // Camera controls layered over the application event bridge. Scene-less
 // drivers include pal_platform_events.hpp directly and pull no camera code.
+//
+// Every control formula lives in the generated camera_controls TU
+// (bblite/upstream/camera_controls.hpp), lowered from the pinned
+// attachControl/attachFreeControl declarations. This header only
+// translates SDL buttons, motion deltas, wheel detents, and scancodes
+// into the pinned units and calls the generated accumulators.
 #pragma once
 
 #include <bblite/runtime.hpp>
@@ -7,8 +13,6 @@
 #include <bblite/upstream/camera_controls.hpp>
 
 #include <SDL3/SDL.h>
-
-#include <algorithm>
 
 #include "pal_platform_events.hpp"
 
@@ -18,6 +22,12 @@ struct CameraPointerState {
     bool orbiting = false;
     bool panning = false;
 };
+
+// The fixed frame step this loop runs at, handed to the generated
+// free_camera_move_speed so the pin's own formula computes the per-frame
+// move scale at full precision. The cadence is the platform's fact; the
+// formula is the pin's.
+inline constexpr double nominal_frame_milliseconds = 1000.0 / 60.0;
 
 inline void handle_camera_pointer_event(
     const SDL_Event& event,
@@ -44,36 +54,29 @@ inline void handle_camera_pointer_event(
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
         if (camera.kind == CameraKind::free) {
             if (state.orbiting) {
-                camera.inertial_yaw_offset +=
-                    event.motion.xrel / camera.angular_sensibility;
-                camera.inertial_pitch_offset -=
-                    event.motion.yrel / camera.angular_sensibility;
+                upstream::apply_free_camera_pointer_rotation(
+                    camera, event.motion.xrel, event.motion.yrel);
             }
             return;
         }
         if (state.orbiting) {
-            camera.inertial_alpha_offset -=
-                event.motion.xrel / camera.angular_sensibility;
-            camera.inertial_beta_offset -=
-                event.motion.yrel / camera.angular_sensibility;
+            upstream::apply_arc_rotate_pointer_rotation(
+                camera, event.motion.xrel, event.motion.yrel);
         }
         if (state.panning) {
-            camera.inertial_panning_x +=
-                -event.motion.xrel / camera.panning_sensibility;
-            camera.inertial_panning_y +=
-                event.motion.yrel / camera.panning_sensibility;
+            upstream::apply_arc_rotate_pointer_pan(
+                camera, event.motion.xrel, event.motion.yrel);
         }
         return;
     }
 
     if (event.type == SDL_EVENT_MOUSE_WHEEL) {
-        double delta = event.wheel.y;
-        if (event.wheel.direction == SDL_MOUSEWHEEL_FLIPPED) {
-            delta = -delta;
-        }
-        camera.inertial_radius_offset -=
-            (delta * camera.radius) /
-            std::max(camera.wheel_precision * 10.0, 1.0);
+        // The pinned onWheel consumes a DOM WheelEvent deltaY; the one
+        // translation of SDL's detents into that convention (sign and the
+        // 100-pixel notch) is the application bridge's, so both wheel
+        // consumers cannot disagree on it.
+        upstream::apply_arc_rotate_wheel(
+            camera, dom_wheel_delta_y(event.wheel));
     }
 }
 
@@ -95,12 +98,11 @@ inline void update_camera(CameraRecord& camera) {
         const int index = static_cast<int>(scancode);
         return index >= 0 && index < key_count && keys[index];
     };
-    // The pin's per-frame move scale, evaluated at the fixed 60 FPS
-    // step this loop runs: free-camera-controls.ts computes
-    // moveSpeed = speed * sqrt(dt * dt / 1e5) each frame, and
-    // dt = 1000/60 ms gives (1000/60) / sqrt(1e5) = 0.05270463.
-    constexpr double nominal_frame_scale = 0.05270463;
-    const double movement = camera.speed * nominal_frame_scale;
+    // The pin's per-frame move scale (free-camera-controls.ts computes
+    // moveSpeed from the frame's delta milliseconds), evaluated by the
+    // generated formula at the fixed step this loop runs.
+    const double movement = upstream::free_camera_move_speed(
+        camera, nominal_frame_milliseconds);
     if (pressed(SDL_SCANCODE_W) || pressed(SDL_SCANCODE_UP)) {
         camera.inertial_direction.z += movement;
     }

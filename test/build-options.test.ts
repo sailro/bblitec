@@ -212,6 +212,48 @@ test("minimal audio dependencies use a static runtime and ship their notices", (
     assert.match(packager, /if \(\$audioCapture -or \$audioDecoded\)/);
 });
 
+test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () => {
+    const pin: unknown = JSON.parse(
+        readFileSync("upstream/rmlui.json", "utf8"),
+    );
+    assert.ok(
+        pin !== null && typeof pin === "object",
+        "upstream/rmlui.json must be an object",
+    );
+    const record = pin as Record<string, unknown>;
+    assert.match(String(record.repository), /^https:\/\/github\.com\//);
+    assert.match(String(record.commit), /^[0-9a-f]{40}$/);
+    assert.equal(record.license, "MIT");
+
+    const builder = readFileSync("tools/build-rmlui.ps1", "utf8");
+    assert.match(builder, /\[switch\]\$StaticRuntime/);
+    assert.match(builder, /upstream\\rmlui\.json/);
+    assert.match(builder, /apply-rmlui-patch\.cmake/);
+    assert.match(builder, /rmlui-premultiplied-rounding\.patch/);
+    assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
+    assert.match(builder, /bblite-rmlui-features\.cmake/);
+    // The SDL platform pair RmlUi itself never installs, and the license
+    // the packager copies out of the artifact.
+    assert.match(builder, /RmlUi_Platform_SDL\.cpp/);
+    assert.match(builder, /RmlUi_Platform_SDL\.h/);
+    assert.match(builder, /RmlUi-LICENSE\.txt/);
+
+    const cmake = readFileSync("native/CMakeLists.txt", "utf8");
+    // Consumed as an installed package at BBLITE_RMLUI_DIR — never
+    // re-fetched and re-built per build tree at configure.
+    assert.doesNotMatch(cmake, /FetchContent/);
+    assert.match(cmake, /tools\/build-rmlui\.ps1/);
+    assert.match(cmake, /NOT BBLITE_RMLUI_STATIC_RUNTIME/);
+    assert.match(
+        cmake,
+        /\$\{BBLITE_RMLUI_DIR\}\/Backends\/RmlUi_Platform_SDL\.cpp/,
+    );
+
+    const packager = readFileSync("tools/package-demo.ps1", "utf8");
+    assert.match(packager, /BBLITE_RMLUI_DIR/);
+    assert.match(packager, /RmlUi-LICENSE\.txt/);
+});
+
 test("shader compilation gates non-target formats", () => {
     const script = readFileSync("tools/compile-shaders.ps1", "utf8");
     assert.match(script, /\$emitDxil = \$Target -in/);

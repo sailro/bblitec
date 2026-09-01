@@ -545,6 +545,26 @@ function emitSceneLightListClear(
 }
 
 /**
+ * The three TRS vector properties a transform-component write names
+ * (`node.position.x = ...`). One list serves the imported-root intercept,
+ * the owner-path guard, and the generic component arm here — and, through
+ * the exported membership test, the handle read path (`compiler.ts`), the
+ * mesh `.set` guard (`statements.ts`), and the plain-data deferral
+ * (`data-lowering.ts`) — so the vectors one of them discriminates on
+ * cannot drift from the others'.
+ */
+const trsVectorNames: readonly string[] = ["position", "rotation", "scaling"];
+
+export function isTrsVectorName(name: string): boolean {
+  return trsVectorNames.includes(name);
+}
+
+/** The lane a TRS component name selects; `undefined` off the axes. */
+function trsAxisIndex(name: string): number | undefined {
+  return { x: 0, y: 1, z: 2 }[name as "x" | "y" | "z"];
+}
+
+/**
  * The scalars a scene writes on a particle system between simulation steps.
  *
  * All three are inputs to `animateParticleSystem` rather than properties of
@@ -1221,15 +1241,13 @@ export function emitPropertyAssignment(
   // property-owner path tries to materialize `root.rotation` as a record.
   if (
     ts.isPropertyAccessExpression(left.expression) &&
-    ["position", "rotation", "scaling"].includes(left.expression.name.text)
+    isTrsVectorName(left.expression.name.text)
   ) {
     const root = context.compileValue(left.expression.expression);
     if (root.kind === "asset-root") {
       context.assertAssetRootWritable(root, expression);
       const vector = left.expression.name.text;
-      const axis = { x: 0, y: 1, z: 2 }[
-        left.name.text as "x" | "y" | "z"
-      ];
+      const axis = trsAxisIndex(left.name.text);
       if (axis === undefined) {
         context.fail(
           left.name,
@@ -1268,9 +1286,7 @@ export function emitPropertyAssignment(
   const targetExpression = context.unwrap(left.expression);
   const transformComponent =
     ts.isPropertyAccessExpression(targetExpression) &&
-    ["position", "rotation", "scaling"].includes(
-      targetExpression.name.text,
-    );
+    isTrsVectorName(targetExpression.name.text);
   if (
     ts.isIdentifier(targetExpression) ||
     (ts.isPropertyAccessExpression(targetExpression) &&
@@ -1958,13 +1974,13 @@ export function emitPropertyAssignment(
 
   if (
     ts.isPropertyAccessExpression(left.expression) &&
-    ["position", "rotation", "scaling"].includes(left.expression.name.text)
+    isTrsVectorName(left.expression.name.text)
   ) {
     // The owner is compiled rather than looked up, so a mesh read
     // out of the data model (a handle stored in a struct or array)
     // writes its transform exactly like a mesh local.
     const mesh = context.compileValue(left.expression.expression);
-    const axis = { x: 0, y: 1, z: 2 }[left.name.text as "x" | "y" | "z"];
+    const axis = trsAxisIndex(left.name.text);
     if (axis === undefined) {
       context.fail(left.name, `Unsupported rotation axis '${left.name.text}'.`);
     }

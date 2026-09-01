@@ -85,7 +85,7 @@ const spotOptions = [
  * `near`/`far`: a directional light has no position to project from, so the
  * volume is fitted to the casters and these two are the depth range that fit
  * projects into. `normalBias` and `forceRefreshEveryFrame` are unreached and
- * refuse by name, exactly as they do on the other two factories.
+ * refuse by name, exactly as they do on the spot factory.
  */
 const pcfDirectionalOptions = [
     "mapSize",
@@ -122,7 +122,8 @@ const csmDirectionalOptions = [
  * folded into the blur fragment's own tap table by
  * `createShadowBlurFragmentWGSL`. The rest stay run-time expressions,
  * because scene 4 reads the two ortho bounds off the camera it just
- * configured. `forceRefreshEveryFrame` is unreached and refuses by name.
+ * configured. `forceRefreshEveryFrame` is accepted generation-known as a
+ * checked no-op: native refreshes every reached shadow task per frame.
  */
 const esmDirectionalOptions = [
     "mapSize",

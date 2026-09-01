@@ -1,10 +1,11 @@
 /**
  * What a pinned expression's operators and `Math` calls lower to.
  *
- * Two lowerers read arithmetic out of pinned bodies — the material UBO writers
- * and the post-process uniform writers — and both are lowering the same
- * language. Keeping the tables here means an operator one of them learns is an
- * operator both know, and means neither rebuilds a map per expression.
+ * The lowerers that read arithmetic out of pinned bodies — the material UBO
+ * writers, the post-process uniform writers, and the glTF loader's expression
+ * renderer — are all lowering the same language. Keeping the tables here means
+ * an operator one of them learns is an operator all of them know, and means
+ * none rebuilds a map per expression.
  *
  * What is deliberately *not* here is `||`. Its meaning depends on what the
  * pinned expression is doing with it: a boolean guard lowers to C++'s `||`,

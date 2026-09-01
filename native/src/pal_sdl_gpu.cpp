@@ -1,8 +1,5 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
-#if defined(BBLITE_HAS_GLTF) && BBLITE_HAS_GLTF
-#include <bblite/pal_gltf.hpp>
-#endif
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
@@ -1283,35 +1280,13 @@ void render_ui_sdl_frame(
     ensure_ui_sdl_layers(state, frame.width, frame.height);
     UiSdlGpuResources& ui = state.ui;
 
-    std::vector<UiRenderVertex> vertices = frame.vertices;
-    std::vector<std::uint32_t> indices = frame.indices;
-    const std::uint32_t composite_first_index =
-        static_cast<std::uint32_t>(indices.size());
-    const std::uint32_t composite_first_vertex =
-        static_cast<std::uint32_t>(vertices.size());
-    vertices.insert(
-        vertices.end(),
-        {
-            UiRenderVertex{0, 0, 255, 255, 255, 255, 0, 0},
-            UiRenderVertex{static_cast<float>(frame.width), 0, 255, 255, 255, 255, 1, 0},
-            UiRenderVertex{static_cast<float>(frame.width), static_cast<float>(frame.height), 255, 255, 255, 255, 1, 1},
-            UiRenderVertex{0, static_cast<float>(frame.height), 255, 255, 255, 255, 0, 1},
-        });
-    indices.insert(
-        indices.end(),
-        {
-            composite_first_vertex,
-            composite_first_vertex + 1,
-            composite_first_vertex + 2,
-            composite_first_vertex,
-            composite_first_vertex + 2,
-            composite_first_vertex + 3,
-        });
-
+    // The recorder appended the full-frame composite quad after the RmlUi
+    // draws (`frame.composite_first_index` names it), so the aggregate
+    // geometry uploads verbatim -- no per-frame copy on this side.
     const std::uint32_t vertex_bytes = static_cast<std::uint32_t>(
-        vertices.size() * sizeof(UiRenderVertex));
+        frame.vertices.size() * sizeof(UiRenderVertex));
     const std::uint32_t index_bytes = static_cast<std::uint32_t>(
-        indices.size() * sizeof(std::uint32_t));
+        frame.indices.size() * sizeof(std::uint32_t));
     ensure_ui_sdl_buffer(
         state.device,
         ui.vertices,
@@ -1340,13 +1315,13 @@ void render_ui_sdl_frame(
         state.device,
         copy,
         ui.vertices,
-        vertices.data(),
+        frame.vertices.data(),
         vertex_bytes));
     transfers.push_back(upload_ui_sdl_buffer(
         state.device,
         copy,
         ui.indices,
-        indices.data(),
+        frame.indices.data(),
         index_bytes));
     for (const UiRenderTexture& source_texture : frame.textures) {
         if (
@@ -1436,18 +1411,11 @@ void render_ui_sdl_frame(
     SDL_PushGPUVertexUniformData(
         command, 1, translation.data(), sizeof(translation));
     for (const UiRenderDraw& draw : frame.draws) {
-        const int left = std::clamp(draw.scissor_x, 0, static_cast<int>(frame.width));
-        const int top = std::clamp(draw.scissor_y, 0, static_cast<int>(frame.height));
-        const int right = std::clamp(
-            draw.scissor_x + static_cast<int>(draw.scissor_width),
-            0,
-            static_cast<int>(frame.width));
-        const int bottom = std::clamp(
-            draw.scissor_y + static_cast<int>(draw.scissor_height),
-            0,
-            static_cast<int>(frame.height));
-        if (right <= left || bottom <= top || draw.index_count == 0) continue;
-        const SDL_Rect clip{left, top, right - left, bottom - top};
+        const std::optional<UiScissorRect> scissor =
+            clamped_ui_scissor(draw, frame.width, frame.height);
+        if (!scissor) continue;
+        const SDL_Rect clip{
+            scissor->left, scissor->top, scissor->width, scissor->height};
         SDL_SetGPUScissor(layer_pass, &clip);
         if (draw.texture_id) {
             const auto texture = ui.textures.find(draw.texture_id);
@@ -1500,7 +1468,7 @@ void render_ui_sdl_frame(
         composite_pass,
         6,
         1,
-        composite_first_index,
+        frame.composite_first_index,
         0,
         0);
     SDL_EndGPURenderPass(composite_pass);
@@ -3945,11 +3913,7 @@ SDL_GPUTexture* upload_brdf_lut(
 }
 
 SDL_GPUTexture* upload_environment(SDL_GPUDevice* device, const EnvironmentState& environment) {
-    const bool has_environment =
-        environment.specular_width != 0 &&
-        environment.specular_mip_count != 0 &&
-        environment.specular_faces.size() >=
-            static_cast<std::size_t>(environment.specular_mip_count) * 6;
+    const bool has_environment = environment_cube_present(environment);
     const std::uint32_t width = has_environment ? environment.specular_width : 1;
     const std::uint32_t mip_count = has_environment ? environment.specular_mip_count : 1;
     SDL_GPUTextureCreateInfo texture_info{};
@@ -4077,14 +4041,16 @@ SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState&
     SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
     std::vector<SDL_GPUTransferBuffer*> transfers;
     transfers.reserve(static_cast<std::size_t>(environment.skybox_mip_count) * 6);
-    std::size_t offset = environment.skybox_data_offset;
-    for (std::uint32_t face = 0; face < 6; ++face) {
-        for (std::uint32_t mip = 0; mip < environment.skybox_mip_count; ++mip) {
-            const std::uint32_t size = std::max(environment.skybox_width >> mip, 1u);
-            const std::size_t byte_size = static_cast<std::size_t>(size) * size * 8;
-            if (offset + byte_size > data.bytes.size()) {
-                throw std::runtime_error("DDS skybox pixel data is truncated.");
-            }
+    // The face/mip/offset walk and its truncation guard are the shared
+    // half; only the upload below is this backend's.
+    for_each_dds_skybox_level(
+        environment,
+        [&](
+            std::uint32_t face,
+            std::uint32_t mip,
+            std::uint32_t size,
+            std::size_t offset,
+            std::size_t byte_size) {
             SDL_GPUTransferBufferCreateInfo transfer_info{};
             transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
             transfer_info.size = static_cast<Uint32>(byte_size);
@@ -4099,9 +4065,7 @@ SDL_GPUTexture* upload_dds_skybox(SDL_GPUDevice* device, const EnvironmentState&
             const SDL_GPUTextureRegion destination{
                 texture, mip, face, 0, 0, 0, size, size, 1};
             SDL_UploadToGPUTexture(copy, &source, &destination, false);
-            offset += byte_size;
-        }
-    }
+        });
     SDL_EndGPUCopyPass(copy);
     if (!SDL_SubmitGPUCommandBuffer(command)) gpu_error("SDL_SubmitGPUCommandBuffer DDS skybox");
     for (SDL_GPUTransferBuffer* transfer : transfers) {
@@ -4632,7 +4596,10 @@ void save_geometry_id_buffer_png(
                       ? state.id_pipeline
                       : state.id_double_sided_pipeline));
         std::uint32_t cluster_id_base = 1;
-        for (std::size_t mesh_index = 0; mesh_index < state.meshes.size(); ++mesh_index) {
+        for (std::size_t mesh_index = 0;
+             mesh_index < state.meshes.size() &&
+             mesh_index < render_plan.size();
+             ++mesh_index) {
             const GpuMesh& mesh = state.meshes[mesh_index];
             const ClusterRange cluster =
                 advance_cluster_range(mesh.index_count, cluster_id_base);
@@ -4995,6 +4962,20 @@ void release(GpuState& state) {
         }
     }
     state.shadow_generators.clear();
+#if BBLITE_SHADOWS_ESM
+    // `source` stays: it is the caster target's own colour map, borrowed.
+    for (const GpuState::EsmBlur& blur : state.esm_blurs) {
+        if (blur.blur_h) SDL_ReleaseGPUTexture(state.device, blur.blur_h);
+        if (blur.blur_v) SDL_ReleaseGPUTexture(state.device, blur.blur_v);
+        if (blur.pipeline) {
+            SDL_ReleaseGPUGraphicsPipeline(state.device, blur.pipeline);
+        }
+        if (blur.params_buffer) {
+            SDL_ReleaseGPUBuffer(state.device, blur.params_buffer);
+        }
+    }
+    state.esm_blurs.clear();
+#endif
     if (state.shadow_comparison_sampler) {
         SDL_ReleaseGPUSampler(
             state.device,
@@ -5045,13 +5026,27 @@ void release(GpuState& state) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
         }
     }
-#if BBLITE_STANDARD_VARIANTS > 0
-    for (const auto& [key, pipeline] : state.standard_variant_pipelines) {
-        (void)key;
-        if (pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || \
+    BBLITE_NODE_VARIANTS > 0
+    // The three composed families keep their pipelines in maps of the
+    // same shape, so the release loop lives once.
+    const auto release_pipeline_map = [&](const auto& pipelines) {
+        for (const auto& [key, pipeline] : pipelines) {
+            (void)key;
+            if (pipeline) {
+                SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
+            }
         }
-    }
+    };
+#endif
+#if BBLITE_PBR_VARIANTS > 0
+    release_pipeline_map(state.pinned_pipelines);
+#endif
+#if BBLITE_STANDARD_VARIANTS > 0
+    release_pipeline_map(state.standard_variant_pipelines);
+#endif
+#if BBLITE_NODE_VARIANTS > 0
+    release_pipeline_map(state.node_variant_pipelines);
 #endif
     if (state.grid_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(
@@ -5208,36 +5203,16 @@ void record_post_process_pass(
         state.post_process_tasks[handle.value][index];
     const RenderTargetRecord& output_record =
         engine.render_targets[pass.output_target.value];
-    const std::uint32_t output_width =
-        output_record.swapchain
-            ? width
-            : state
-                  .render_targets[
-                      pass.output_target.value]
-                  .width;
-    const std::uint32_t output_height =
-        output_record.swapchain
-            ? height
-            : state
-                  .render_targets[
-                      pass.output_target.value]
-                  .height;
-    std::uint32_t source_width = output_width;
-    std::uint32_t source_height = output_height;
-    if (
-        pass.source.source ==
-            RenderTextureSource::render_target &&
-        pass.source.target.value <
-            state.render_targets.size()) {
-        source_width =
-            state
-                .render_targets[pass.source.target.value]
-                .width;
-        source_height =
-            state
-                .render_targets[pass.source.target.value]
-                .height;
-    }
+    const PostProcessExtent extent = resolve_post_process_extent(
+        output_record,
+        state.render_targets,
+        pass,
+        width,
+        height);
+    const std::uint32_t output_width = extent.output_width;
+    const std::uint32_t output_height = extent.output_height;
+    const std::uint32_t source_width = extent.source_width;
+    const std::uint32_t source_height = extent.source_height;
     // A swapchain texture cannot be read back, so a pass
     // that presents renders into this readable copy and
     // blits it, which is also what the capture reads.
@@ -5691,19 +5666,7 @@ bool run_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
     const bool cpu_profile =
         environment_variable("BBLITE_CPU_PROFILE") == "1";
-    const double cpu_startup_start = monotonic_milliseconds();
-    double cpu_startup_previous = cpu_startup_start;
-    const auto cpu_startup_mark = [&](const char* phase) {
-        if (!cpu_profile) return;
-        const double now = monotonic_milliseconds();
-        std::fprintf(
-            stderr,
-            "[cpu][sdl-startup] phase=%s phase_ms=%.3f elapsed_ms=%.3f\n",
-            phase,
-            now - cpu_startup_previous,
-            now - cpu_startup_start);
-        cpu_startup_previous = now;
-    };
+    CpuStartupMark cpu_startup_mark(cpu_profile, "sdl");
     reject_unsupported_frame_options(
         frame_options,
         "SDL_GPU",
@@ -6148,6 +6111,10 @@ bool run_gpu_engine(Engine& engine) {
         const auto sync_sprite_gpu_contexts = [&]() {
             sprite_render_textures.resize(
                 engine.sprite_render_textures.size(), nullptr);
+            // The one refusal walk covers every disposed record, so it
+            // runs once per sync -- at the first disposed record, before
+            // any release -- rather than once per record per frame.
+            bool disposed_refused = false;
             for (std::size_t index = 0;
                  index < engine.sprite_render_textures.size();
                  ++index) {
@@ -6156,6 +6123,11 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_GPUTexture*& gpu_texture =
                     sprite_render_textures[index];
                 if (texture.disposed) {
+                    if (!disposed_refused) {
+                        refuse_disposed_sprite_render_texture_in_use(
+                            engine);
+                        disposed_refused = true;
+                    }
                     if (gpu_texture) {
                         SDL_ReleaseGPUTexture(state.device, gpu_texture);
                     }
@@ -7073,7 +7045,11 @@ bool run_gpu_engine(Engine& engine) {
         // The pick pass. Installed once the mesh buffers and the cloud
         // textures exist, because that is what it draws; a pick taken
         // before this point reports a miss, exactly as the pin's own
-        // `pickAsync` does for a scene with no camera.
+        // `pickAsync` does for a scene with no camera. The guard clears
+        // the hook when this scope ends, however it ends: the hook holds
+        // `state`, the scene and the render plan by reference, all of
+        // which die with the scope.
+        PickHookGuard pick_hook_guard(engine);
         engine.pick_hook =
             [&state, &engine, &scene, &render_plan](
                 GpuPickerHandle, double x, double y) -> PickingInfo {
@@ -7158,6 +7134,20 @@ bool run_gpu_engine(Engine& engine) {
             // cleared colour attachment reads back as.
             std::uint32_t next_id = 1;
             std::vector<PickRange> ranges;
+            // The shared collector owns the plan walk, the generated pick
+            // predicate and the id/range assignment; only "does this row
+            // have GPU buffers" is answered here.
+            const std::vector<PickMeshCandidate> candidates =
+                collect_pick_mesh_candidates(
+                    engine,
+                    render_plan,
+                    state.meshes.size(),
+                    [&](std::size_t item_index) {
+                        const GpuMesh& gpu = state.meshes[item_index];
+                        return gpu.vertices && gpu.indices;
+                    },
+                    ranges,
+                    next_id);
 
             SDL_BindGPUGraphicsPipeline(pass, state.pick_mesh_pipeline);
             // Loop-invariant: pushed uniform state persists across draws,
@@ -7172,48 +7162,18 @@ bool run_gpu_engine(Engine& engine) {
                 state.pick_frag_scene_slot,
                 &scene_uniforms,
                 sizeof(scene_uniforms));
-            // The RENDER PLAN, not `scene.meshes`: `state.meshes` is
-            // indexed by plan item, and the plan skips a mesh with no
-            // geometry -- so the two agree only while nothing has been
-            // skipped or removed. Walking the plan is also what makes
-            // this scene's own `removeFromScene` visible to a later pick,
-            // since `rematch_render_meshes` rebuilds both together.
-            for (std::size_t item_index = 0;
-                 item_index < render_plan.items.size() &&
-                 item_index < state.meshes.size();
-                 ++item_index) {
-                const MeshHandle handle =
-                    render_plan.items[item_index].mesh;
-                const GpuMesh& gpu = state.meshes[item_index];
-                if (!gpu.vertices || !gpu.indices) continue;
-                // A mesh the pin's picker would not take never enters the
-                // pass, so it can neither answer a pick nor occlude one
-                // behind it. The predicate is generated, and it reads the
-                // live record rather than the plan's snapshot of it.
-                if (!upstream::pick_candidate(engine.meshes[handle.value])) {
-                    continue;
-                }
-                PickMeshUniforms mesh_uniforms{};
-                const MeshRecord& pick_mesh =
-                    engine.meshes[handle.value];
-                mesh_uniforms.world = pick_mesh.gpu_world_transform
-                    ? shader_draw_world(engine, pick_mesh)
-                    : std::array<float, 16>{
-                          1.0f, 0.0f, 0.0f, 0.0f,
-                          0.0f, 1.0f, 0.0f, 0.0f,
-                          0.0f, 0.0f, 1.0f, 0.0f,
-                          0.0f, 0.0f, 0.0f, 1.0f};
-                mesh_uniforms.pick_id = next_id;
+            for (const PickMeshCandidate& candidate : candidates) {
+                const GpuMesh& gpu = state.meshes[candidate.item_index];
                 SDL_PushGPUVertexUniformData(
                     command,
                     static_cast<Uint32>(state.pick_mesh_uniform_slot),
-                    &mesh_uniforms,
-                    sizeof(mesh_uniforms));
+                    &candidate.uniforms,
+                    sizeof(candidate.uniforms));
                 push_stage_uniform(
                     command,
                     state.pick_frag_mesh_slot,
-                    &mesh_uniforms,
-                    sizeof(mesh_uniforms));
+                    &candidate.uniforms,
+                    sizeof(candidate.uniforms));
                 SDL_GPUBufferBinding vertex_binding{};
                 vertex_binding.buffer = gpu.vertices;
                 SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
@@ -7225,9 +7185,6 @@ bool run_gpu_engine(Engine& engine) {
                     SDL_GPU_INDEXELEMENTSIZE_32BIT);
                 SDL_DrawGPUIndexedPrimitives(
                     pass, gpu.index_count, 1, 0, 0, 0);
-                ranges.push_back(
-                    {next_id, PickedNodeKind::mesh, handle.value});
-                ++next_id;
             }
 #if BBLITE_HAS_SPLATS
             for (const SplatPass& splat : state.splat_passes) {
@@ -7745,29 +7702,32 @@ bool run_gpu_engine(Engine& engine) {
         bool running = true;
         long frame = 0;
         FrameClock frame_clock;
+        // The shared drain owns the per-event contract; the scene loop
+        // only adds its camera-controls dispatch, which rides the hook so
+        // every event the scene receives also reaches the camera -- and
+        // none does in a deterministic test pass.
+        const auto camera_pointer_hook = [&](const SDL_Event& event) {
+            if (hidden_test_pass) return;
+            handle_camera_pointer_event(event, camera, pointer_state);
+        };
         while (captures.keep_running(running, frame)) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) running = false;
-                if (hidden_test_pass && is_platform_input_event(event)) {
-                    continue;
-                }
-                bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-                propagate_to_scene =
-                    handle_ui_rml_event(*ui_runtime, event);
+            poll_platform_events(
+                engine,
+                running,
+                hidden_test_pass,
+                [&](SDL_Event& event) {
+                    return handle_ui_rml_event(*ui_runtime, event);
+                },
+                camera_pointer_hook);
+#else
+            poll_platform_events(
+                engine,
+                running,
+                hidden_test_pass,
+                [](const SDL_Event&) { return true; },
+                camera_pointer_hook);
 #endif
-                if (propagate_to_scene) {
-                    handle_platform_event(event, engine);
-                    apply_canvas_cursor(engine);
-                }
-                if (!hidden_test_pass && propagate_to_scene) {
-                    handle_camera_pointer_event(
-                        event,
-                        camera,
-                        pointer_state);
-                }
-            }
             input_replay.dispatch(frame, state.window, engine);
             // The swapchain is acquired before the scene advances, because
             // SDL only reports an unavailable texture *from*
@@ -11223,17 +11183,15 @@ bool run_gpu_engine(Engine& engine) {
                     draw_commands += lists.opaque.commands.size() +
                         lists.transparent.commands.size();
                 }
-                std::fprintf(
-                    stderr,
-                    "[cpu][frame] frame=%ld total_ms=%.3f acquire_ms=%.3f "
-                    "update_ms=%.3f upload_ms=%.3f encode_submit_ms=%.3f "
-                    "render_items=%zu draw_commands=%zu transformed_meshes=%zu "
-                    "transformed_vertices=%zu\n",
+                // No `write_ms`: per-draw uniform writes are Dawn's own
+                // phase, so this line never carried the field.
+                print_cpu_frame_profile(
                     completed_frame,
                     end - start,
                     acquired - start,
                     updated - acquired,
                     uploaded - updated,
+                    std::nullopt,
                     end - uploaded,
                     render_plan.items.size(),
                     draw_commands,
@@ -11258,12 +11216,9 @@ bool run_gpu_engine(Engine& engine) {
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         release_sprite_passes();
 #endif
-#if BBLITE_HAS_PICKING
-        // The hook holds `state` and the scene by reference, both of which
-        // die here. Clearing it makes that structural rather than relying
-        // on every pick arriving inside the loop.
-        engine.pick_hook = nullptr;
-#endif
+        // `pick_hook_guard` clears the pick hook when the try scope
+        // ends -- after this return, or during unwinding before the
+        // catch below runs -- and no pick can arrive in between.
         release(state);
         return true;
     } catch (...) {
@@ -11273,12 +11228,6 @@ bool run_gpu_engine(Engine& engine) {
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         release_sprite_passes();
-#endif
-#if BBLITE_HAS_PICKING
-        // The hook holds `state` and the scene by reference, both of which
-        // die here. Clearing it makes that structural rather than relying
-        // on every pick arriving inside the loop.
-        engine.pick_hook = nullptr;
 #endif
         release(state);
         throw;

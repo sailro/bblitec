@@ -16,11 +16,135 @@ import {
     pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
 import { gotoScenePage } from "../src/browser-harness.js";
+import { goldenFixedFrame } from "../src/parity-scene.js";
+import type { SceneDefinition } from "../src/scene-registry.js";
 
 test("captures full page UI unless canvas-only attribution is requested", () => {
     assert.equal(captureUiEnabled({}), true);
     assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "1" }), true);
     assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "0" }), false);
+});
+
+// The instrumented capture must compose the page the golden was captured
+// from, and the fixed-frame derivation is the piece that can silently
+// drift: the golden capture (`runParity` in parity-scene.ts) falls back
+// to the native gate's BBLITE_SCREENSHOT_FRAME for a full-page capture
+// of a retained-UI application. The end-to-end proof stays with
+// `scene -- capture <application>`'s byte-identity line; this pins the
+// derivation itself, browser-free.
+function applicationScene(options: {
+    referenceFrame?: number;
+    nativeEnvironment?: Record<string, string>;
+} = {}): SceneDefinition {
+    return {
+        id: "app",
+        name: "App",
+        source: "corpus/app.ts",
+        output: "generated/app",
+        title: "App",
+        buildDirectory: "native/build-app",
+        parity: {
+            reference: {
+                kind: "source",
+                path: "artifacts/app/browser.png",
+            },
+            outputDirectory: "artifacts/app",
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+            ...(options.referenceFrame !== undefined
+                ? { referenceFrame: options.referenceFrame }
+                : {}),
+            ...(options.nativeEnvironment
+                ? { nativeEnvironment: options.nativeEnvironment }
+                : {}),
+        },
+    };
+}
+
+test("derives the instrumented capture's fixed frame exactly as the golden capture", () => {
+    // The parity spec's own referenceFrame wins in every mode.
+    const pinned = applicationScene({ referenceFrame: 7 });
+    assert.equal(goldenFixedFrame(pinned, true), 7);
+    assert.equal(goldenFixedFrame(pinned, false), 7);
+    // A retained-UI application without one takes the native gate's
+    // BBLITE_SCREENSHOT_FRAME — in the full-page mode only, which is
+    // exactly when the golden derives it.
+    const application = applicationScene({
+        nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "181" },
+    });
+    assert.equal(
+        goldenFixedFrame(application, true),
+        181,
+    );
+    assert.equal(
+        goldenFixedFrame(application, false),
+        undefined,
+    );
+    assert.equal(
+        goldenFixedFrame(application, false),
+        undefined,
+    );
+    // A non-positive or non-numeric native frame derives nothing.
+    assert.equal(
+        goldenFixedFrame(
+            applicationScene({
+                nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "0" },
+            }),
+            true,
+        ),
+        undefined,
+    );
+    assert.equal(
+        goldenFixedFrame(
+            applicationScene({
+                nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "soon" },
+            }),
+            true,
+        ),
+        undefined,
+    );
+});
+
+test("serves the host UI bootstrap ahead of the scene module script", async () => {
+    const server = createSuiteSceneServer("export {};\n", {
+        hostUi: {
+            sourcePath: "ui/app-host.json",
+            classStyles: [{ className: "hud", style: "color: red" }],
+            elements: [
+                {
+                    tag: "div",
+                    attributes: { id: "hud" },
+                    text: "HUD",
+                },
+            ],
+        },
+    });
+    try {
+        await new Promise<void>((done) =>
+            server.listen(0, "127.0.0.1", done),
+        );
+        const address = server.address();
+        assert.ok(address && typeof address !== "string");
+        const html = await (
+            await fetch(
+                `http://127.0.0.1:${address.port}/scene.html`,
+            )
+        ).text();
+        const bootstrapIndex = html.indexOf("hostUi.classStyles");
+        const moduleIndex = html.indexOf('<script type="module"');
+        assert.ok(bootstrapIndex >= 0, "host UI bootstrap script missing");
+        assert.ok(moduleIndex >= 0, "scene module script missing");
+        // The bootstrap is inline HTML ahead of the module script: an
+        // instrumented capture's addInitScript hooks run before either,
+        // so injecting the UI cannot disturb hook timing.
+        assert.ok(
+            bootstrapIndex < moduleIndex,
+            "host UI must be served ahead of the scene module",
+        );
+        assert.match(html, /"className":"hud"/);
+    } finally {
+        await new Promise<void>((done) => server.close(() => done()));
+    }
 });
 
 test("preserves the reference query when navigating to the suite scene", async () => {

@@ -1953,4 +1953,33 @@ inline void write_standalone_render_capture(
 }
 #endif // standalone renderers
 
+// Declared on CaptureGate (pal_gpu_shared.hpp); defined here beside the
+// writer it calls — under the same standalone-renderer gate — so a TU
+// including only the shared header carries no undefined inline, and a
+// scene-only build compiles neither half.
+#if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
+    (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
+    (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER)
+inline void CaptureGate::maybe_write_standalone_render_capture(
+    const char* backend,
+    const Engine& engine,
+    std::uint32_t width,
+    std::uint32_t height,
+    long frame) {
+    if (frame < options_->screenshot_frame ||
+        render_capture_saved ||
+        options_->render_capture_path.empty()) {
+        return;
+    }
+    write_standalone_render_capture(
+        options_->render_capture_path,
+        backend,
+        engine,
+        static_cast<int>(width),
+        static_cast<int>(height),
+        frame);
+    render_capture_saved = true;
+}
+#endif // standalone renderers (CaptureGate::maybe_write_standalone_render_capture)
+
 } // namespace bbl::pal

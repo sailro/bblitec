@@ -13,6 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -20,6 +21,8 @@
 #include <SDL3/SDL_gpu.h>
 
 #include "RmlUi_SDL_GPU/ShadersCompiledSPV.h"
+// The backend-neutral scissor clamp all four RmlUi consumers share.
+#include "pal_gpu_shared.hpp"
 #include "pal_sdl_gpu_shared.hpp"
 
 namespace bbl::pal {
@@ -379,20 +382,11 @@ inline void render_sprite_ui_sdl_frame(
     SDL_PushGPUVertexUniformData(
         command, 1, translation.data(), sizeof(translation));
     for (const UiRenderDraw& draw : frame.draws) {
-        const int left = std::clamp(
-            draw.scissor_x, 0, static_cast<int>(frame.width));
-        const int top = std::clamp(
-            draw.scissor_y, 0, static_cast<int>(frame.height));
-        const int right = std::clamp(
-            draw.scissor_x + static_cast<int>(draw.scissor_width),
-            0,
-            static_cast<int>(frame.width));
-        const int bottom = std::clamp(
-            draw.scissor_y + static_cast<int>(draw.scissor_height),
-            0,
-            static_cast<int>(frame.height));
-        if (right <= left || bottom <= top || draw.index_count == 0) continue;
-        const SDL_Rect clip{left, top, right - left, bottom - top};
+        const std::optional<UiScissorRect> scissor =
+            clamped_ui_scissor(draw, frame.width, frame.height);
+        if (!scissor) continue;
+        const SDL_Rect clip{
+            scissor->left, scissor->top, scissor->width, scissor->height};
         SDL_SetGPUScissor(pass, &clip);
         if (draw.texture_id) {
             const auto texture = ui.textures.find(draw.texture_id);

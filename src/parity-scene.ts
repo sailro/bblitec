@@ -91,10 +91,40 @@ export function usesSeededRandom(scene: SceneDefinition): boolean {
     return manifestUsesSeededRandom(readCompiledSceneManifest(scene));
 }
 
-/** Whether the compiled scene actually carries the retained native UI. */
+/** Whether the compiled scene actually carries the retained native UI.
+ *  The instrumented capture reads this to compose the same page the
+ *  golden capture composed (`runParity` derives the same predicate from
+ *  its already-read manifest at its `retainedUiCapture` binding). */
 export function usesRetainedUi(scene: SceneDefinition): boolean {
     const features = readCompiledSceneManifest(scene)?.features;
     return Array.isArray(features) && features.includes("ui:rml");
+}
+
+/**
+ * The fixed browser frame the golden convention pins for a scene: the
+ * parity spec's own `referenceFrame`, else — for a full-page capture of a
+ * retained-UI scene — the positive `BBLITE_SCREENSHOT_FRAME` the registry
+ * derives the native pose from, so the golden and every capture freeze the
+ * page on the same deterministic frame. A canvas-only capture takes no
+ * derived frame. This is the one home for that rule; the golden capture
+ * and the instrumented capture both read it.
+ */
+export function goldenFixedFrame(
+    scene: SceneDefinition,
+    retainedUiCapture: boolean,
+): number | undefined {
+    if (scene.parity?.referenceFrame !== undefined) {
+        return scene.parity.referenceFrame;
+    }
+    if (!retainedUiCapture) return undefined;
+    const configuredNativeFrame = Number.parseInt(
+        scene.parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "",
+        10,
+    );
+    return Number.isInteger(configuredNativeFrame) &&
+        configuredNativeFrame > 0
+        ? configuredNativeFrame
+        : undefined;
 }
 
 interface GltfSpecialization {
@@ -1179,16 +1209,7 @@ export async function runSceneParity(
     const recaptureReference =
         arguments_.recaptureReference ||
         (canvasOnly && !existsSync(reference));
-    const configuredNativeFrame = Number.parseInt(
-        config.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "",
-        10,
-    );
-    const browserReferenceFrame = config.referenceFrame ??
-        (retainedUiCapture &&
-        Number.isInteger(configuredNativeFrame) &&
-        configuredNativeFrame > 0
-            ? configuredNativeFrame
-            : undefined);
+    const browserReferenceFrame = goldenFixedFrame(scene, retainedUiCapture);
     validateReferenceCapture(
         scene,
         reference,
@@ -1351,6 +1372,102 @@ export async function runSceneParity(
     generateDiffMap(actual, reference, diffPath);
     generateHotspotMap(actual, breakdown.hotspots, hotspotPath);
 
+    // The canvas-only lane: a UI-dominated application gates the full
+    // page at the platform font-rasterization floor (docs/ui.md), which
+    // is loose enough for a genuine 3D regression of a few tenths MAD to
+    // hide under. A scene declaring `canvasThresholds` therefore also
+    // measures the `BBLITE_CAPTURE_UI=0` pair — the same references and
+    // artifacts the manual attribution run writes under
+    // `artifacts/parity-canvas/` — and gates it beside the composite
+    // gate. Only the canonical run measures it: a seek, a suppression, a
+    // supplied actual, or a canvas-only invocation is already a
+    // diagnostic, and only declaring scenes pay the extra native run and
+    // reference capture.
+    const canvasThresholds =
+        captureUi &&
+        without === undefined &&
+        seek === undefined &&
+        arguments_.actual === undefined
+            ? config.canvasThresholds
+            : undefined;
+    let canvas:
+        | {
+              full: ReturnType<typeof compareImages>;
+              region: ReturnType<typeof compareRegion>;
+              thresholds: {
+                  maxMad: number;
+                  maxRegionMad: number;
+                  gate: "enforced";
+              };
+              files: { actual: string; reference: string };
+          }
+        | undefined;
+    if (canvasThresholds) {
+        const canvasDirectory = resolve(
+            "artifacts",
+            "parity-canvas",
+            scene.id,
+        );
+        mkdirSync(canvasDirectory, { recursive: true });
+        // The reference reproduces the attribution run exactly — no host
+        // UI (the canvas screenshot excludes the page), at the pose that
+        // run derives (`referenceFrame` when the registry declares one;
+        // tetris settles onto its ad-hoc native frame) — and follows the
+        // committed golden's lifecycle: captured when missing,
+        // recaptured only with --recapture-reference.
+        const canvasReference = resolve(
+            canvasDirectory,
+            "browser-canvas.png",
+        );
+        await withEnvironment("BBLITE_CAPTURE_UI", "0", () =>
+            captureSuiteReference(
+                scene.source,
+                canvasReference,
+                arguments_.recaptureReference,
+                undefined,
+                config.referenceTimeSeconds,
+                config.referenceAnimationGroups,
+                {
+                    seededRandom:
+                        manifestUsesSeededRandom(compiledManifest),
+                    ...(config.referenceFrame !== undefined
+                        ? { fixedAnimationFrame: config.referenceFrame }
+                        : {}),
+                    ...(config.referenceSearch !== undefined
+                        ? { search: config.referenceSearch }
+                        : {}),
+                },
+            ),
+        );
+        const canvasActual = parityNativeImagePath(canvasDirectory, token);
+        runNative(
+            resolveNativeExecutable(
+                arguments_.executable,
+                scene.buildDirectory,
+            ),
+            canvasActual,
+            { ...config.nativeEnvironment, BBLITE_CAPTURE_UI: "0" },
+            undefined,
+            undefined,
+            resolve(scene.output),
+        );
+        canvas = {
+            full: compareImages(canvasActual, canvasReference),
+            region: compareRegion(
+                canvasActual,
+                canvasReference,
+                config.backgroundColor,
+                config.backgroundThreshold,
+            ),
+            thresholds: {
+                maxMad: canvasThresholds.maxFullMad,
+                maxRegionMad: canvasThresholds.maxForegroundMad,
+                gate: "enforced",
+            },
+            files: { actual: canvasActual, reference: canvasReference },
+        };
+    }
+
     const report = {
         scene: scene.name,
         sourceOrigin:
@@ -1379,6 +1496,7 @@ export async function runSceneParity(
             within5: percentage(region.within5, region.regionPixels),
         },
         thresholds,
+        ...(canvas ? { canvas } : {}),
         files: {
             actual,
             reference,
@@ -1428,6 +1546,13 @@ export async function runSceneParity(
             `within1=${(report.ratios.within1 * 100).toFixed(2)}%, ` +
             `within5=${(report.ratios.within5 * 100).toFixed(2)}%`,
     );
+    if (canvas) {
+        console.log(
+            `${scene.name} canvas-only (no UI): MAD=${canvas.full.mad.toFixed(3)}, ` +
+                `region=${canvas.region.mad.toFixed(3)} ` +
+                `(gates ${canvas.thresholds.maxMad}/${canvas.thresholds.maxRegionMad})`,
+        );
+    }
     if (drawAttribution?.length) {
         const worst = drawAttribution[0]!;
         const label =
@@ -1471,11 +1596,42 @@ export async function runSceneParity(
     ) {
         failures.push(`region MAD ${region.mad.toFixed(3)} > ${thresholds.maxRegionMad}`);
     }
+    if (canvas) {
+        if (canvas.full.mad > canvas.thresholds.maxMad) {
+            failures.push(
+                `canvas-only full MAD ${canvas.full.mad.toFixed(3)} > ${canvas.thresholds.maxMad}`,
+            );
+        }
+        if (canvas.region.mad > canvas.thresholds.maxRegionMad) {
+            failures.push(
+                `canvas-only region MAD ${canvas.region.mad.toFixed(3)} > ${canvas.thresholds.maxRegionMad}`,
+            );
+        }
+    }
     if (failures.length > 0) {
         const message = `Parity regression: ${failures.join(", ")}`;
         if (arguments_.noFail) console.warn(message);
         else throw new Error(message);
     }
+}
+
+/**
+ * The reader slices of the two report families this module writes: the
+ * per-backend parity report (`runSceneParity`) and the differential
+ * merge (`runSceneParityDifferential`). The writers are single; these
+ * are the fields every reader consumes — the differential merge itself,
+ * diagnose's verdict line, `verify-status`'s published-table check — so
+ * a renamed field breaks one declaration instead of a scattered cast.
+ */
+export interface ParityReportSummary {
+    full: { mad: number };
+    region: { mad: number };
+}
+
+export interface DifferentialReportSummary {
+    goldenVersusSdlGpu: { fullMad: number; foregroundMad: number };
+    goldenVersusDawn: { fullMad: number; foregroundMad: number };
+    sdlGpuVersusDawn: { mad: number };
 }
 
 // Renders both GPU backends through the standard gates, then diffs
@@ -1508,16 +1664,13 @@ export async function runSceneParityDifferential(
         runSceneParity([sceneTarget]),
     );
     const backendDelta = compareImages(sdlImage, dawnImage);
-    const readBackendReport = (suffix: string): {
-        full: { mad: number };
-        region: { mad: number };
-    } =>
+    const readBackendReport = (suffix: string): ParityReportSummary =>
         JSON.parse(
             readFileSync(
                 parityReportPath(outputDirectory, suffix),
                 "utf8",
             ),
-        ) as { full: { mad: number }; region: { mad: number } };
+        ) as ParityReportSummary;
     const sdlReport = readBackendReport("gpu");
     const dawnReport = readBackendReport("dawn");
     const report = {

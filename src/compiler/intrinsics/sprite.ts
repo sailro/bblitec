@@ -452,13 +452,19 @@ function tupleOption(
     );
 }
 
-/** One billboard instance patch, shared by stable-handle add and update. */
+/**
+ * One billboard instance patch, shared by the index add, the stable-handle
+ * add, and the update. `importedName` discriminates the update the way the
+ * Sprite2D twin does: only the adds require a position, and only the update
+ * narrows to the writer's update-arm fields.
+ */
 function billboardPropsCpp(
     context: SpriteIntrinsicContext,
     props: Value | undefined,
     call: ts.CallExpression,
-    requirePosition: boolean,
+    importedName: string,
 ): string {
+    const update = importedName === "updateBillboardSprite";
     for (const name of Object.keys(props?.recordProperties ?? {})) {
         if (
             ![
@@ -476,7 +482,7 @@ function billboardPropsCpp(
             context.fail(call, `Billboard sprite option '${name}' is not lowered.`);
         }
         if (
-            !requirePosition &&
+            update &&
             !["position", "sizeWorld", "color"].includes(name)
         ) {
             context.fail(
@@ -486,8 +492,8 @@ function billboardPropsCpp(
         }
     }
     const position = tupleOption(context, props, "position", call, 3);
-    if (requirePosition && !position) {
-        context.fail(call, "addBillboardSprite: position required.");
+    if (!update && !position) {
+        context.fail(call, `${importedName}: position required.`);
     }
     const sizeWorld = tupleOption(context, props, "sizeWorld", call, 2);
     const pivot = tupleOption(context, props, "pivot", call, 2);
@@ -1522,45 +1528,6 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "addBillboardSpriteIndex",
             );
-            const position = tupleOption(
-                context,
-                props,
-                "position",
-                call,
-                3,
-            );
-            if (!position) {
-                context.fail(
-                    call,
-                    "addBillboardSpriteIndex: position required.",
-                );
-            }
-            const sizeWorld = tupleOption(
-                context,
-                props,
-                "sizeWorld",
-                call,
-                2,
-            );
-            const pivot = tupleOption(
-                context,
-                props,
-                "pivot",
-                call,
-                2,
-            );
-            const color = tupleOption(
-                context,
-                props,
-                "color",
-                call,
-                4,
-            );
-            const frame = property(props, "frame");
-            const rotation = property(props, "rotation");
-            const flipX = property(props, "flipX");
-            const flipY = property(props, "flipY");
-            const visible = property(props, "visible");
             const engineCpp =
                 system.engineCpp ??
                 context.requireDefaultEngine(call);
@@ -1569,28 +1536,8 @@ export function compileSpriteIntrinsic(
                 kind: "number",
                 cpp:
                     `bbl::add_billboard_sprite_index(${engineCpp}, ` +
-                    `${system.cpp}, bbl::BillboardSpriteProps{` +
-                    `bbl::Vec3{${position.join(", ")}}, ` +
-                    `bbl::Vec2{${
-                        sizeWorld
-                            ? sizeWorld.join(", ")
-                            : "0.0f, 0.0f"
-                    }}, ${sizeWorld ? "true" : "false"}, ` +
-                    `${frame ? `static_cast<float>(${frame.cpp})` : "0.0f"}, ` +
-                    `${frame ? "true" : "false"}, ` +
-                    `${rotation ? `static_cast<float>(${rotation.cpp})` : "0.0f"}, ` +
-                    `${rotation ? "true" : "false"}, ` +
-                    `bbl::Vec2{${
-                        pivot ? pivot.join(", ") : "0.0f, 0.0f"
-                    }}, ${pivot ? "true" : "false"}, ` +
-                    `bbl::Vec4{${
-                        color
-                            ? color.join(", ")
-                            : "1.0f, 1.0f, 1.0f, 1.0f"
-                    }}, ${color ? "true" : "false"}, ` +
-                    `${flipX?.cpp ?? "false"}, ${flipX ? "true" : "false"}, ` +
-                    `${flipY?.cpp ?? "false"}, ${flipY ? "true" : "false"}, ` +
-                    `${visible?.cpp ?? "true"}, ${visible ? "true" : "false"}, true})`,
+                    `${system.cpp}, ` +
+                    `${billboardPropsCpp(context, props, call, "addBillboardSpriteIndex")})`,
                 engineCpp,
             };
         }
@@ -1611,7 +1558,7 @@ export function compileSpriteIntrinsic(
                 kind: "billboard-sprite",
                 cpp:
                     `bbl::add_billboard_sprite(${engineCpp}, ${system.cpp}, ` +
-                    `${billboardPropsCpp(context, props, call, true)})`,
+                    `${billboardPropsCpp(context, props, call, "addBillboardSprite")})`,
                 engineCpp,
             };
         }
@@ -1632,7 +1579,7 @@ export function compileSpriteIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::update_billboard_sprite(${engineCpp}, ${handle.cpp}, ` +
-                    `${billboardPropsCpp(context, props, call, false)})`,
+                    `${billboardPropsCpp(context, props, call, "updateBillboardSprite")})`,
             };
         }
 

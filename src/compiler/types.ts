@@ -32,6 +32,12 @@ export interface NativeHostUiClassStyle {
  * This is deliberately a retained-tree companion, not an HTML/CSS parser.
  */
 export interface NativeHostUi {
+  /**
+   * The audited companion file the elements came from, recorded as
+   * `ui:rml`'s activation site: a companion-only scene has no reaching
+   * call in its own source, so the attribution must name this file.
+   */
+  sourcePath: string;
   classStyles?: NativeHostUiClassStyle[];
   elements: NativeHostUiElement[];
 }
@@ -66,7 +72,9 @@ export interface CompileManifest {
    * in document order, sub-expressions depth-first), so first-reach
    * wins and regeneration is stable. Features that are reached
    * without a source node (the seeded "core") and features the CLI
-   * asset-join adds after compilation carry no entry.
+   * asset-join adds after compilation carry no entry. One site is not
+   * a call site: `ui:rml` reached only by a host-page companion names
+   * the companion JSON file, since no scene line exists to name.
    */
   featureSites: Record<string, string>;
   runtimeSources: string[];
@@ -1271,6 +1279,13 @@ export interface Value {
   uiRoot?: true;
   /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
   uiCanvas?: true;
+  /**
+   * Generation identity of one created canvas element, carried unchanged
+   * into its 2D-context views and const bindings (whose `cpp` spellings
+   * differ): the key that ties statically-assigned backing sizes to the
+   * one canvas a `clearRect` must cover.
+   */
+  uiCanvasId?: number;
   /** The 2D drawing-context view of the canvas handle in `cpp`. */
   uiCanvasContext?: true;
   /**

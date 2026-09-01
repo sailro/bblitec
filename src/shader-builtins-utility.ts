@@ -24,6 +24,34 @@ export function indent(block: string, spaces: string): string {
         .join("\n");
 }
 
+/** Re-indent a lifted statement list, one pinned statement per line. */
+export function formatStatements(body: string): string {
+    return splitWgslStatements(body)
+        .map((statement) => `    ${statement}`)
+        .join("\n");
+}
+
+/**
+ * Applies a documented re-homing map to a lifted body, requiring every
+ * entry to occur so a pinned rename fails generation instead of leaving a
+ * dangling reference. The `missing` sink names the vanished token in the
+ * caller's own pinned-contract voice.
+ */
+export function rehomeText(
+    source: string,
+    replacements: ReadonlyArray<readonly [string, string]>,
+    missing: (from: string) => never,
+): string {
+    let text = source;
+    for (const [from, to] of replacements) {
+        if (!text.includes(from)) {
+            missing(from);
+        }
+        text = text.split(from).join(to);
+    }
+    return text;
+}
+
 export function blitVertexWgsl(): string {
     return `struct VertexOutput {
     @builtin(position) position: vec4<f32>,
@@ -77,30 +105,15 @@ function utilityLiftError(what: string): never {
     throw new Error(`Pinned Babylon Lite ${what} changed.`);
 }
 
-/** Re-indent a lifted statement list, one pinned statement per line. */
-function formatStatements(body: string): string {
-    return splitWgslStatements(body)
-        .map((statement) => `    ${statement}`)
-        .join("\n");
-}
-
-/**
- * Applies a documented re-homing map, requiring every entry to occur so a
- * pinned rename fails generation instead of leaving a dangling reference.
- */
+/** The shared re-homing loop, failing in this module's contract voice. */
 function rehome(
     source: string,
     replacements: ReadonlyArray<readonly [string, string]>,
     what: string,
 ): string {
-    let text = source;
-    for (const [from, to] of replacements) {
-        if (!text.includes(from)) {
-            utilityLiftError(`${what} ('${from}' is gone)`);
-        }
-        text = text.split(from).join(to);
-    }
-    return text;
+    return rehomeText(source, replacements, (from) =>
+        utilityLiftError(`${what} ('${from}' is gone)`),
+    );
 }
 
 interface PinnedImageProcessing {

@@ -16,6 +16,7 @@ import {
     webgpuComputeBrowserArgs,
     withBrowserPage,
 } from "./browser-harness.js";
+import { cachedBake, moduleIdentity } from "./bake-cache.js";
 import {
     findRepositoryRoot,
     readUpstreamPin,
@@ -105,7 +106,36 @@ function loadPinnedBrdfLutShader(): string {
  * differ from the old JS output by float16-rounding ULPs.
  */
 export async function generateIblBrdfLutRgba16f(): Promise<Uint8Array> {
-    const shader = loadPinnedBrdfLutShader();
+    return cachedIblBrdfLut(loadPinnedBrdfLutShader(), runBrdfLutInChromium);
+}
+
+/**
+ * The bake-cache wrapper around the LUT compute. The asset is
+ * deterministic in (pinned shader text, size, format, pin, browser) —
+ * the bake-cache key — so a repeat compile of a reached scene replays
+ * the exact `.rgba16f` bytes instead of launching Chromium. The LUT
+ * takes no per-scene inputs, so after one warm run every compile
+ * replays. The bake is injectable so the replay contract is testable
+ * without a browser launch.
+ */
+export async function cachedIblBrdfLut(
+    shader: string,
+    bake: (shader: string) => Promise<Uint8Array>,
+): Promise<Uint8Array> {
+    return cachedBake(
+        {
+            kind: "ibl-brdf-lut",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: { lutSize, format: "rgba16float" },
+            inputs: [Buffer.from(shader, "utf8")],
+        },
+        async () => bake(shader),
+    );
+}
+
+async function runBrdfLutInChromium(shader: string): Promise<Uint8Array> {
     const server = createServer((_request, response) => {
         response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         response.end("<!doctype html><title>IBL BRDF LUT</title>");

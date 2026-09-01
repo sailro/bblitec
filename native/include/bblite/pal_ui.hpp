@@ -168,6 +168,14 @@ struct UiRenderFrame {
     std::vector<std::uint32_t> indices;
     std::vector<UiRenderTexture> textures;
     std::vector<UiRenderDraw> draws;
+    /**
+     * First index of the trailing full-frame quad the recorder appends after
+     * the RmlUi draws. No entry in `draws` references it: the scene renderers
+     * draw its six indices to composite their resolved transparent UI layer
+     * over the frame, and consumers that blend `draws` straight into their
+     * target (the sprite drivers) carry it inert.
+     */
+    std::uint32_t composite_first_index = 0;
 };
 
 inline bool ui_frame_uses_texture(

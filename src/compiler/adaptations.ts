@@ -25,6 +25,10 @@ export interface AdaptationContext {
     readonly reachedShaderPrograms: readonly CompiledShaderProgram[];
     readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
     readonly defaultRenderTaskAdapted: boolean;
+    /** Style properties this scene reached that render degraded (AP-3). */
+    readonly uiDegradedStyleProperties: ReadonlySet<string>;
+    /** `#id .class` sheet rules this scene projects as global class rules. */
+    readonly uiWidenedSheetSelectors: ReadonlySet<string>;
 }
 
 export function compileAdaptations(
@@ -407,6 +411,52 @@ export function compileAdaptations(
         });
     }
 
+    if (features.includes("ui:rml")) {
+        const degraded = [...context.uiDegradedStyleProperties].sort();
+        const widened = [...context.uiWidenedSheetSelectors].sort();
+        adaptations.push({
+            id: "substituted-ui-runtime",
+            category: "platform",
+            sourceSemantics:
+                "The scene's retained DOM, CSS, and Canvas2D chrome is " +
+                "laid out, styled, animated, and rasterized by the " +
+                "browser -- Blink's DOM, cascade, Web Animations, and " +
+                "font stack for the reference captures.",
+            nativeSemantics:
+                "The compiler lowers the reached UI surface into a typed " +
+                "retained IR that the PAL projects through RmlUi over the " +
+                "scene's own GPU backend. The projection is reviewed but " +
+                "not the browser: platform fonts (DirectWrite, CoreText, " +
+                "fontconfig) rasterize glyphs differently from the " +
+                "browser's font stack; `element.animate()` and " +
+                "`removeEventListener` lower to no-ops (CSS @keyframes " +
+                "animation is projected, and retained records share the " +
+                "engine lifetime); CSS `steps()`/`step-start`/`step-end` " +
+                "easings play as `linear-in-out` and the `ease*` family " +
+                "as `sine*`; canvas overlays composite below the DOM " +
+                "chrome regardless of z-index" +
+                (widened.length > 0
+                    ? `; the reviewed sheet rule(s) ${widened
+                          .map((selector) => `'${selector}'`)
+                          .join(", ")} are projected as global class ` +
+                      "rules (the reached sheets attach those classes " +
+                      "only inside the id's own subtree)"
+                    : "") +
+                (degraded.length > 0
+                    ? `; and the reached style ${
+                          degraded.length === 1
+                              ? `property ${degraded[0]} is`
+                              : `properties ${degraded.join(", ")} are`
+                      } accepted without a native rendering.`
+                    : "."),
+            risk: "high",
+            validation: [
+                "full-page 1280x720 parity captures composite the retained UI over the scene on both backends",
+                "canvas-only attribution runs (BBLITE_CAPTURE_UI=0) separate UI residuals from scene regressions",
+                "compiler UI lowering and refusal tests",
+            ],
+        });
+    }
     if (features.includes("backend:sdl")) {
         adaptations.push({
             id: "sdl-platform-boundary",

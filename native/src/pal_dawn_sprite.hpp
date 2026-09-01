@@ -37,37 +37,6 @@
 #include "pal_gpu_shared.hpp"
 
 namespace bbl::pal {
-struct DawnSpritePipelineState {
-    SpriteBlendDescriptor blend{};
-    SpriteLayerPipelinePlan plan{};
-    std::uint32_t custom_shader = 0;
-    std::size_t custom_texture_count = 0;
-};
-
-inline DawnSpritePipelineState dawn_sprite_pipeline_state(
-    const Sprite2DLayerRecord& layer) {
-    return DawnSpritePipelineState{
-        layer.blend,
-        sprite_layer_pipeline_plan(layer),
-        layer.custom_shader,
-        layer.custom_textures.size()};
-}
-
-inline bool dawn_sprite_pipeline_state_matches(
-    const DawnSpritePipelineState& state,
-    const Sprite2DLayerRecord& layer) {
-    const SpriteLayerPipelinePlan plan =
-        sprite_layer_pipeline_plan(layer);
-    return sprite_blend_equal(state.blend, layer.blend) &&
-        state.plan.scroll == plan.scroll &&
-        state.plan.has_depth == plan.has_depth &&
-        state.plan.depth_write == plan.depth_write &&
-        state.plan.alpha_to_coverage == plan.alpha_to_coverage &&
-        state.plan.instance_stride_bytes == plan.instance_stride_bytes &&
-        state.custom_shader == layer.custom_shader &&
-        state.custom_texture_count == layer.custom_textures.size();
-}
-
 /** One atlas upload/sampler owned once by a sprite pass. */
 struct DawnSpriteAtlasBinding {
     SpriteAtlasHandle handle{};
@@ -111,8 +80,12 @@ struct DawnSpriteLayer {
     // and for the same reason -- the pin keys `sr._layerGpu` by the layer.
     Sprite2DLayerHandle layer{};
     std::uint64_t uploaded_version = 0;
+    // The record's own pipeline clock, bumped by the generated writers that
+    // change fixed-function/layout state; the SDL_GPU sibling keys rebuilds
+    // off the same field so a new pipeline-affecting record field has one
+    // detector to extend, not two.
+    std::uint64_t pipeline_version = 0;
     bool uploaded = false;
-    DawnSpritePipelineState pipeline_state{};
     // The custom shader's own clock: seconds since this layer's first
     // frame, which the pin accumulates inside the layer's fx attachment.
     // JavaScript `number` accumulation stays double precision; only the
@@ -497,17 +470,18 @@ inline DawnSpriteLayer build_dawn_sprite_layer(
     WGPUTextureFormat target_format,
     WGPUTextureFormat depth_format = WGPUTextureFormat_Undefined,
     std::uint32_t sample_count = 1u,
-    const DawnSpriteLayer* shared_pipeline_layer = nullptr) {
+    WGPURenderPipeline shared_pipeline = nullptr,
+    std::array<WGPUBindGroupLayout, 4> shared_group_layouts = {}) {
     const Sprite2DLayerRecord& layer =
         engine.sprite_layers[handle.value];
     DawnSpriteLayer gpu;
     gpu.layer = handle;
-    gpu.pipeline_state = dawn_sprite_pipeline_state(layer);
-    gpu.owns_pipeline = shared_pipeline_layer == nullptr;
-    gpu.owns_group_layouts = shared_pipeline_layer == nullptr;
-    if (shared_pipeline_layer) {
-        gpu.group_layouts = shared_pipeline_layer->group_layouts;
-        gpu.pipeline = shared_pipeline_layer->pipeline;
+    gpu.pipeline_version = layer.pipeline_version;
+    gpu.owns_pipeline = shared_pipeline == nullptr;
+    gpu.owns_group_layouts = shared_pipeline == nullptr;
+    if (shared_pipeline) {
+        gpu.group_layouts = shared_group_layouts;
+        gpu.pipeline = shared_pipeline;
     } else {
         const SpriteLayerPipelinePlan plan =
             sprite_layer_pipeline_plan(layer);
@@ -651,13 +625,12 @@ inline void rebuild_dawn_sprite_pass_layers(
         engine.sprite_renderers[pass.renderer.value];
     std::vector<DawnSpriteLayer> next;
     next.reserve(renderer.layers.size());
+    // Standalone membership is depth-guarded once, by the generated
+    // add/create writers ("SpriteRenderer requires layers with depth ==
+    // none."), so neither backend re-checks it here.
     for (const Sprite2DLayerHandle& handle : renderer.layers) {
         const Sprite2DLayerRecord& layer =
             engine.sprite_layers[handle.value];
-        if (layer.depth_mode != Sprite2DDepthMode::none) {
-            throw std::runtime_error(
-                "A standalone SpriteRenderer layer cannot enable depth.");
-        }
         const auto found = std::find_if(
             pass.layers.begin(),
             pass.layers.end(),
@@ -733,13 +706,8 @@ inline void sync_dawn_sprite_pass_layers(
         const Sprite2DLayerHandle handle = renderer.layers[index];
         const Sprite2DLayerRecord& layer =
             engine.sprite_layers[handle.value];
-        if (layer.depth_mode != Sprite2DDepthMode::none) {
-            throw std::runtime_error(
-                "A standalone SpriteRenderer layer cannot enable depth.");
-        }
         DawnSpriteLayer& gpu = pass.layers[index];
-        if (dawn_sprite_pipeline_state_matches(
-                gpu.pipeline_state, layer)) {
+        if (gpu.pipeline_version == layer.pipeline_version) {
             continue;
         }
         const double elapsed_ms = gpu.elapsed_ms;
@@ -846,17 +814,11 @@ inline void upload_dawn_sprite_layer(
         }
     }
     if (!gpu.uploaded || gpu.uploaded_version != layer.version) {
-        // Another pass may already have consumed the shared current range.
-        // Its reset stamp tells this GPU copy to recover with the active
-        // prefix rather than treating the now-empty range as count-only.
-        const bool needs_full_upload = !gpu.uploaded ||
-            gpu.uploaded_version < layer.dirty_sprite_reset_version;
-        const std::uint32_t dirty_begin = needs_full_upload
-            ? 0u
-            : std::min(layer.dirty_sprite_begin, layer.count);
-        const std::uint32_t dirty_end = needs_full_upload
-            ? layer.count
-            : std::min(layer.dirty_sprite_end, layer.count);
+        // The shared derivation (`resolve_sprite_dirty_range`) answers
+        // which rows this copy uploads; only the write call is Dawn's.
+        const auto [dirty_begin, dirty_end] =
+            resolve_sprite_dirty_range(
+                layer, gpu.uploaded, gpu.uploaded_version);
         if (dirty_begin < dirty_end) {
             const std::size_t stride_bytes =
                 layer.instance_floats_per_sprite * sizeof(float);
@@ -869,9 +831,7 @@ inline void upload_dawn_sprite_layer(
                         layer.instance_floats_per_sprite,
                 static_cast<std::size_t>(dirty_end - dirty_begin) *
                     stride_bytes);
-            layer.dirty_sprite_reset_version = layer.version;
-            layer.dirty_sprite_begin = invalid_handle;
-            layer.dirty_sprite_end = 0u;
+            mark_sprite_dirty_range_consumed(layer);
         }
         gpu.uploaded = true;
         gpu.uploaded_version = layer.version;
@@ -1015,12 +975,14 @@ inline DawnSceneSpritePass create_dawn_scene_sprite_pass(
             throw std::runtime_error(
                 "A scene-attached Sprite2D layer must have depth enabled.");
         }
-        const DawnSpriteLayer* shared_pipeline_layer = nullptr;
+        WGPURenderPipeline shared_pipeline = nullptr;
+        std::array<WGPUBindGroupLayout, 4> shared_group_layouts{};
         for (std::size_t previous = 0; previous < pass.layers.size(); ++previous) {
             if (sprite_scene_pipeline_compatible(
                     engine.sprite_layers[pass.handles[previous].value],
                     engine.sprite_layers[handle.value])) {
-                shared_pipeline_layer = &pass.layers[previous];
+                shared_pipeline = pass.layers[previous].pipeline;
+                shared_group_layouts = pass.layers[previous].group_layouts;
                 break;
             }
         }
@@ -1042,7 +1004,8 @@ inline DawnSceneSpritePass create_dawn_scene_sprite_pass(
             target_format,
             depth_format,
             sample_count,
-            shared_pipeline_layer));
+            shared_pipeline,
+            shared_group_layouts));
     }
     return pass;
 }
@@ -1060,8 +1023,8 @@ inline void sync_dawn_scene_sprite_pass_pipelines(
             throw std::runtime_error(
                 "A scene-attached Sprite2D layer must have depth enabled.");
         }
-        rebuild = rebuild || !dawn_sprite_pipeline_state_matches(
-            pass.layers[index].pipeline_state, layer);
+        rebuild = rebuild ||
+            pass.layers[index].pipeline_version != layer.pipeline_version;
     }
     if (!rebuild) return;
 
@@ -1081,12 +1044,14 @@ inline void sync_dawn_scene_sprite_pass_pipelines(
         const Sprite2DLayerHandle handle = pass.handles[index];
         const Sprite2DLayerRecord& layer =
             engine.sprite_layers[handle.value];
-        const DawnSpriteLayer* shared_pipeline_layer = nullptr;
+        WGPURenderPipeline shared_pipeline = nullptr;
+        std::array<WGPUBindGroupLayout, 4> shared_group_layouts{};
         for (std::size_t previous = 0; previous < pass.layers.size(); ++previous) {
             if (sprite_scene_pipeline_compatible(
                     engine.sprite_layers[pass.handles[previous].value],
                     layer)) {
-                shared_pipeline_layer = &pass.layers[previous];
+                shared_pipeline = pass.layers[previous].pipeline;
+                shared_group_layouts = pass.layers[previous].group_layouts;
                 break;
             }
         }
@@ -1099,7 +1064,8 @@ inline void sync_dawn_scene_sprite_pass_pipelines(
             pass.target_format,
             pass.depth_format,
             pass.sample_count,
-            shared_pipeline_layer));
+            shared_pipeline,
+            shared_group_layouts));
         pass.layers.back().elapsed_ms = elapsed_ms[index];
     }
 }

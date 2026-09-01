@@ -83,6 +83,13 @@ ${morphStorageBindings}`
             input.morphTangent0 * deformation.morphWeights.x +
             input.morphTangent1 * deformation.morphWeights.y;
 `;
+    // The 4-influence sum and the w=1/w=0 application split transcribe
+    // src/shader/fragments/skeleton-fragment.ts makeSkinningCode and the
+    // pbr-template /*VW*/ consumers; the uniform bone palette above is the
+    // documented transport for the pin's bone texture, with the mesh world
+    // baked into each palette entry (`finalWorld = world * influence`
+    // distributes over the weighted sum). assertPinnedShaderFormulas
+    // anchors those pinned lines, so a drifted formula refuses generation.
     const deformationBody = gpuDeformation
         ? `    if (deformation.options.x > 0.5) {
 ${morphAccumulation}        let skin =
@@ -118,6 +125,12 @@ struct InstanceUniforms {
     @location(19) instanceColumn3: vec4<f32>,
 `
         : "";
+    // Transcribes src/shader/fragments/thin-instance-fragment.ts: the mat4
+    // assembled from the four per-instance columns in order, the parent
+    // world composed on the LEFT, and the pinned template's w=0 application
+    // to normal/tangent/bitangent spelled as the equivalent upper-left
+    // 3x3. assertPinnedShaderFormulas anchors the pinned lines, so a
+    // drifted formula refuses generation.
     const instanceBody = gpuInstancing
         ? `    let localInstanceMatrix = mat4x4<f32>(
         input.instanceColumn0,

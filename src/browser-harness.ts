@@ -10,7 +10,12 @@
 // same way each once carried its own copy of the browser list -- and that
 // copy had already drifted once (`browser-path.ts` records it). This
 // module is the one copy of the ceremony; `browser-path.ts` stays the one
-// copy of where the browser lives.
+// copy of where the browser lives. A sixth consumer reaches it across a
+// process boundary: the synchronous compiler walk's Canvas2D data-URL
+// helper (`compiler/browser-generated-string.ts`) spawns a subprocess
+// whose script imports `withBrowserPage` from here, the same
+// shared-module-not-inlined shape `compiler/asset-bytes-sync.ts` uses
+// for the downloader.
 //
 // What the five copies disagreed on, and the verdict for each:
 //
@@ -233,20 +238,20 @@ export async function waitForSceneReady(
 /**
  * Hide everything the demo page draws OUTSIDE its canvas, before the shot.
  *
- * **This port does not reproduce DOM content.** A corpus scene may append
- * its own HTML controls to `document.body` -- scene 4's two toggle buttons
- * are the reached case -- and they are positioned over the canvas, so a
- * canvas-clipped screenshot composites them in. The native runtime has no
- * DOM and draws none of it, so leaving them in the golden would measure a
- * browser widget against a renderer that cannot have one: scene 4's buttons
- * alone are 19,800 pixels at MAD 51, against 0.000 everywhere else.
+ * This is the CANVAS-ONLY attribution mode's tool. Since retained UI
+ * became product support the port DOES reproduce reached DOM/CSS
+ * (through RmlUi -- docs/ui.md), and the canonical goldens are full-page
+ * by default; `BBLITE_CAPTURE_UI=0` requests the canvas-only capture
+ * that subtracts the UI from a residual, and that mode is where this
+ * helper runs. Both screenshot harnesses take it through the same
+ * `captureUiEnabled()` fork, so the golden and the instrumented capture
+ * cannot disagree about what a screenshot contains.
  *
- * What is measured is therefore the CANVAS, and the goldens say so. Every
- * scene keeps its own page otherwise: this hides siblings of the canvas, it
- * does not touch the scene, the canvas, or anything the scene drew into it.
- * A scene whose behaviour depends on that DOM (a control that must be
- * clicked before the frame under test) is out of scope for the same reason
- * -- see docs/fidelity.md.
+ * Every scene keeps its own page otherwise: this hides siblings of the
+ * canvas, it does not touch the scene, the canvas, or anything the scene
+ * drew into it. A scene whose behaviour depends on DOM the port does not
+ * reproduce (a control that must be clicked before the frame under test)
+ * is out of scope -- see docs/fidelity.md.
  */
 export async function hideNonCanvasChrome(page: Page): Promise<void> {
     await page.evaluate(() => {

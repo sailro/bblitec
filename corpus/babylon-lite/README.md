@@ -7,13 +7,16 @@ These files are byte-identical scene inputs from:
 - source commit: `286525f8041dd9adc72b2c9962e8bff4d9aeb764`
 - upstream path: `lab/lite/src`
 
-The snapshot contains all 248 numbered scenes. The 189 registered curated
-scenes and their SHA-256 hashes are recorded in
-`upstream/babylon-lite-corpus.json`. The corpus is immutable evidence; update
-it only as part of an explicit upstream-pin migration.
+The snapshot mirrors upstream's whole numbered-scene directory. Every file
+in the corpus is recorded with its SHA-256 in
+`upstream/babylon-lite-corpus.json` — registered inputs under
+`scenes`/`modules`/`applications`, everything not yet integrated under
+`staged` — and the corpus tests refuse a file the manifest does not list.
+The corpus is immutable evidence; update it only as part of an explicit
+upstream-pin migration.
 
 Shared modules reached by registered scenes are copied byte-identically and
-hash-recorded in the same catalog, along with the five adopted upstream
+hash-recorded in the same catalog, along with the ten adopted upstream
 applications and their complete reached file graphs.
 
 ## External golden applications

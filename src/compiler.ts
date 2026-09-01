@@ -11,6 +11,7 @@ import {
 import {
     emitPropertyAssignment,
     emitStructuralPropertyAssignment,
+    isTrsVectorName,
     type AssignmentContext,
 } from "./compiler/assignments.js";
 import {
@@ -173,8 +174,10 @@ import {
 } from "./compiler/handle-collections.js";
 import {
     parameterIsReadOnly,
+    recursiveStorageEscapes,
     resolveFunctionDeclaration,
     rootIdentifier,
+    type SupportedFunction,
     type UserFunctionContext,
     UserFunctionLowerer,
 } from "./compiler/user-functions.js";
@@ -362,6 +365,8 @@ class Compiler
         | { kind: "inline"; wrapped: boolean }
     > = [];
     public jsDataReached = false;
+    /** Whether the entry body itself decodes an image (drawn-atlas records). */
+    public imageDecodeReached = false;
     public jsRandomReached = false;
     /** Whether a scene threw one of its own preconditions. */
     public throwReached = false;
@@ -558,6 +563,10 @@ class Compiler
         // on is what decides its instanced form and either may come first.
         this.settleShaderThinInstances();
 
+        // After every feature has settled: retained UI must land on a frame
+        // loop that presents it (NA-26).
+        this.refuseUiWithoutPresentation();
+
         const features = featureOrder.filter((feature) => this.features.has(feature));
         // Emitted in `features` order so the parallel record serializes
         // deterministically beside the array it annotates.
@@ -702,6 +711,17 @@ class Compiler
             );
         }
         this.features.add("ui:rml");
+        // The reaching "site" is the audited companion file itself: a
+        // companion-only scene has no call in its own source to name, and
+        // leaving the site empty would attribute the activation to the
+        // compiled scene TypeScript. A scene-source reach recorded during
+        // the walk still wins, matching `reachFeature`'s first-reach rule.
+        if (!this.featureSites.has("ui:rml")) {
+            this.featureSites.set(
+                "ui:rml",
+                `${hostUi.sourcePath} (host UI companion)`,
+            );
+        }
         const indent = "    ".repeat(2);
         const emitted: string[] = [];
         const ids = new Set<string>();
@@ -2039,6 +2059,11 @@ class Compiler
         this.emitNativeCallbackStorage(
             cppName,
             `void(${parameterCpp.join(", ")})`,
+            // The slot exists because a closure handed to the builder
+            // references it, and that closure's whole purpose is to run
+            // when an event fires after the builder returned -- the
+            // forward edge always escapes.
+            true,
         );
         this.defineVariable(declaration.name as ts.Identifier, {
             kind: "callback",
@@ -2227,9 +2252,27 @@ class Compiler
                 : this.dataTypes.cppType(type),
         );
         this.reachJsData();
+        // This binding persists in its scope, so any later statement can
+        // hand the callback to a retainer. The reference surface is
+        // lexically bounded by the enclosing function body; a module-scope
+        // declaration keeps engine ownership unscanned, because the
+        // startEngine continuation split can rehome its storage.
+        const enclosing = ts.findAncestor(name, ts.isFunctionLike);
+        const enclosingBody =
+            enclosing !== undefined && "body" in enclosing
+                ? enclosing.body
+                : undefined;
+        const escapes =
+            enclosingBody === undefined ||
+            recursiveStorageEscapes(
+                this.checker,
+                new Set<SupportedFunction>([callback]),
+                [enclosingBody],
+            );
         this.emitNativeCallbackStorage(
             cppName,
             `${returnCpp}(${parameterTypes.join(", ")})`,
+            escapes,
         );
         this.defineVariable(name, {
             kind: "callback",
@@ -2536,107 +2579,92 @@ class Compiler
         return true;
     }
 
+    /**
+     * Whether an inferred array literal needs actual array storage.
+     *
+     * The alias walk is `aliasedMutationScan`; the clauses here are what
+     * counts as an array mutation: a runtime element index (which needs
+     * storage even when nothing resizes), a mutating array method, the
+     * array escaping into any call argument, and assignment through an
+     * element or to the binding itself. Only a direct rebind
+     * (`const b = arr`) creates an alias.
+     */
     private inferredArrayIsMutated(identifier: ts.Identifier): boolean {
-        const symbol = this.symbols.valueSymbol(identifier);
-        if (!symbol) return false;
-        const aliases = new Set<ts.Symbol>([symbol]);
-        const namesAlias = (node: ts.Node): boolean =>
-            ts.isIdentifier(node) &&
-            aliases.has(this.symbols.valueSymbol(node)!);
-        const containsAlias = (node: ts.Node): boolean => {
-            let found = false;
-            const visit = (candidate: ts.Node): void => {
-                if (found) return;
-                if (namesAlias(candidate)) {
-                    found = true;
-                    return;
-                }
-                ts.forEachChild(candidate, visit);
-            };
-            visit(node);
-            return found;
-        };
-        let changed = true;
-        while (changed) {
-            changed = false;
-            let mutated = false;
-            const visit = (node: ts.Node): void => {
-                if (mutated) return;
-                if (
-                    ts.isElementAccessExpression(node) &&
-                    namesAlias(this.unwrap(node.expression)) &&
-                    node.argumentExpression
-                ) {
-                    const index = this.resolveStaticExpression(
-                        node.argumentExpression,
-                    );
+        return aliasedMutationScan(
+            identifier,
+            (name) => this.symbols.valueSymbol(name),
+            {
+                aliasingInitializer: (initializer, scan) =>
+                    scan.namesAlias(this.unwrap(initializer)),
+                mutates: (node, scan) => {
                     if (
-                        !ts.isNumericLiteral(index) ||
-                        !Number.isInteger(Number(index.text))
+                        ts.isElementAccessExpression(node) &&
+                        scan.namesAlias(this.unwrap(node.expression)) &&
+                        node.argumentExpression
                     ) {
-                        // A runtime index needs actual array storage even
-                        // when the inferred literal is never resized.
-                        mutated = true;
-                        return;
+                        const index = this.resolveStaticExpression(
+                            node.argumentExpression,
+                        );
+                        if (
+                            !ts.isNumericLiteral(index) ||
+                            !Number.isInteger(Number(index.text))
+                        ) {
+                            // A runtime index needs actual array storage
+                            // even when the inferred literal is never
+                            // resized.
+                            return true;
+                        }
                     }
-                }
-                if (
-                    ts.isVariableDeclaration(node) &&
-                    ts.isIdentifier(node.name) &&
-                    node.initializer &&
-                    namesAlias(this.unwrap(node.initializer))
-                ) {
-                    const alias = this.symbols.valueSymbol(
-                        node.name,
-                    );
-                    if (alias && !aliases.has(alias)) {
-                        aliases.add(alias);
-                        changed = true;
-                    }
-                }
-                if (ts.isCallExpression(node)) {
                     if (
-                        ts.isPropertyAccessExpression(
-                            node.expression,
-                        ) &&
-                        namesAlias(
-                            this.unwrap(
-                                node.expression.expression,
-                            ),
-                        ) &&
-                        mutatingArrayMethods.has(
-                            node.expression.name.text,
+                        (ts.isPrefixUnaryExpression(node) ||
+                            ts.isPostfixUnaryExpression(node)) &&
+                        (node.operator ===
+                            ts.SyntaxKind.PlusPlusToken ||
+                            node.operator ===
+                                ts.SyntaxKind.MinusMinusToken) &&
+                        ts.isElementAccessExpression(node.operand) &&
+                        scan.namesAlias(
+                            this.unwrap(node.operand.expression),
                         )
                     ) {
-                        mutated = true;
-                        return;
+                        // `arr[0]++` writes the element without a binary
+                        // assignment node; the runtime-index clause above
+                        // only catches non-static subscripts.
+                        return true;
                     }
-                    if (node.arguments.some(containsAlias)) {
-                        mutated = true;
-                        return;
+                    if (ts.isCallExpression(node)) {
+                        if (
+                            ts.isPropertyAccessExpression(
+                                node.expression,
+                            ) &&
+                            scan.namesAlias(
+                                this.unwrap(node.expression.expression),
+                            ) &&
+                            mutatingArrayMethods.has(
+                                node.expression.name.text,
+                            )
+                        ) {
+                            return true;
+                        }
+                        if (node.arguments.some(scan.containsAlias)) {
+                            return true;
+                        }
                     }
-                }
-                if (
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >=
-                        ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <=
-                        ts.SyntaxKind.LastAssignment &&
-                    ((ts.isElementAccessExpression(node.left) &&
-                        namesAlias(
-                            this.unwrap(node.left.expression),
-                        )) ||
-                        namesAlias(this.unwrap(node.left)))
-                ) {
-                    mutated = true;
-                    return;
-                }
-                ts.forEachChild(node, visit);
-            };
-            ts.forEachChild(identifier.getSourceFile(), visit);
-            if (mutated) return true;
-        }
-        return false;
+                    return (
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind >=
+                            ts.SyntaxKind.FirstAssignment &&
+                        node.operatorToken.kind <=
+                            ts.SyntaxKind.LastAssignment &&
+                        ((ts.isElementAccessExpression(node.left) &&
+                            scan.namesAlias(
+                                this.unwrap(node.left.expression),
+                            )) ||
+                            scan.namesAlias(this.unwrap(node.left)))
+                    );
+                },
+            },
+        );
     }
 
     private openRecordContainerIsMutated(
@@ -2708,149 +2736,120 @@ class Compiler
      * populated `x`. Follow simple aliases and local call parameters so a
      * mutation performed by a reached helper also materializes the caller's
      * object.
+     *
+     * The alias walk is `aliasedMutationScan`; the clauses here are what
+     * counts as an object mutation: a rebind, a write or `++`/`--` through
+     * a member chain rooted at an alias, storing the object into another
+     * container, and a storing data method taking it. Any chain rooted at
+     * an alias creates an alias (`const b = obj.child` shares storage),
+     * and a call argument extends the set into the callee's parameters
+     * rather than mutating.
      */
     private inferredObjectIsMutated(identifier: ts.Identifier): boolean {
-        const initial = this.symbols.valueSymbol(identifier);
-        if (!initial) return false;
-        const aliases = new Set<ts.Symbol>([initial]);
-        const source = identifier.getSourceFile();
-
-        const isAlias = (expression: ts.Expression): boolean => {
+        const isAlias = (
+            scan: AliasedMutationScan,
+            expression: ts.Expression,
+        ): boolean => {
             const root = rootIdentifier(expression, (inner) =>
                 this.unwrap(inner),
             );
-            return (
-                root !== undefined &&
-                aliases.has(this.symbols.valueSymbol(root)!)
-            );
+            return root !== undefined && scan.namesAlias(root);
         };
-        const containsAlias = (node: ts.Node): boolean => {
-            let found = false;
-            const visit = (candidate: ts.Node): void => {
-                if (found) return;
-                if (
-                    ts.isIdentifier(candidate) &&
-                    aliases.has(
-                        this.symbols.valueSymbol(candidate)!,
-                    )
-                ) {
-                    found = true;
-                    return;
-                }
-                ts.forEachChild(candidate, visit);
-            };
-            visit(node);
-            return found;
-        };
-        let changed = true;
-        while (changed) {
-            changed = false;
-            let mutated = false;
-            const visit = (node: ts.Node): void => {
-                if (mutated) return;
-                if (
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
-                    ts.isIdentifier(node.left) &&
-                    aliases.has(this.symbols.valueSymbol(node.left)!)
-                ) {
-                    // Rebinding an inferred object still needs persistent
-                    // reference storage even when no field is written.
-                    mutated = true;
-                    return;
-                }
-                if (
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind >=
-                        ts.SyntaxKind.FirstAssignment &&
-                    node.operatorToken.kind <=
-                        ts.SyntaxKind.LastAssignment &&
-                    (ts.isPropertyAccessExpression(node.left) ||
-                        ts.isElementAccessExpression(node.left)) &&
-                    isAlias(node.left)
-                ) {
-                    mutated = true;
-                    return;
-                }
-                if (
-                    ts.isBinaryExpression(node) &&
-                    node.operatorToken.kind ===
-                        ts.SyntaxKind.EqualsToken &&
-                    (ts.isPropertyAccessExpression(node.left) ||
-                        ts.isElementAccessExpression(node.left)) &&
-                    containsAlias(node.right)
-                ) {
-                    // Storing an object in another object/container makes
-                    // identity observable through the second path.
-                    mutated = true;
-                    return;
-                }
-                if (
-                    (ts.isPrefixUnaryExpression(node) ||
-                        ts.isPostfixUnaryExpression(node)) &&
-                    (node.operator ===
-                        ts.SyntaxKind.PlusPlusToken ||
-                        node.operator ===
-                            ts.SyntaxKind.MinusMinusToken) &&
-                    (ts.isPropertyAccessExpression(node.operand) ||
-                        ts.isElementAccessExpression(node.operand)) &&
-                    isAlias(node.operand)
-                ) {
-                    mutated = true;
-                    return;
-                }
-                if (
-                    ts.isVariableDeclaration(node) &&
-                    ts.isIdentifier(node.name) &&
-                    node.initializer &&
-                    isAlias(node.initializer)
-                ) {
-                    const symbol = this.symbols.valueSymbol(node.name);
-                    if (symbol && !aliases.has(symbol)) {
-                        aliases.add(symbol);
-                        changed = true;
-                    }
-                }
-                if (ts.isCallExpression(node)) {
+        return aliasedMutationScan(
+            identifier,
+            (name) => this.symbols.valueSymbol(name),
+            {
+                aliasingInitializer: (initializer, scan) =>
+                    isAlias(scan, initializer),
+                mutates: (node, scan) => {
                     if (
-                        ts.isPropertyAccessExpression(
-                            node.expression,
-                        ) &&
-                        storingDataMethods.has(
-                            node.expression.name.text,
-                        ) &&
-                        node.arguments.some(containsAlias)
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken &&
+                        ts.isIdentifier(node.left) &&
+                        scan.namesAlias(node.left)
                     ) {
-                        mutated = true;
-                        return;
+                        // Rebinding an inferred object still needs
+                        // persistent reference storage even when no field
+                        // is written.
+                        return true;
                     }
-                    const signature =
-                        this.checker.getResolvedSignature(node);
-                    const parameters =
-                        signature?.declaration?.parameters;
-                    if (parameters) {
-                        node.arguments.forEach((argument, index) => {
-                            if (!containsAlias(argument)) return;
-                            const parameter = parameters[index];
-                            if (!parameter || !ts.isIdentifier(parameter.name)) {
-                                return;
-                            }
-                            const symbol = this.symbols.valueSymbol(
-                                parameter.name,
-                            );
-                            if (symbol && !aliases.has(symbol)) {
-                                aliases.add(symbol);
-                                changed = true;
-                            }
-                        });
+                    if (
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind >=
+                            ts.SyntaxKind.FirstAssignment &&
+                        node.operatorToken.kind <=
+                            ts.SyntaxKind.LastAssignment &&
+                        (ts.isPropertyAccessExpression(node.left) ||
+                            ts.isElementAccessExpression(node.left)) &&
+                        isAlias(scan, node.left)
+                    ) {
+                        return true;
                     }
-                }
-                ts.forEachChild(node, visit);
-            };
-            ts.forEachChild(source, visit);
-            if (mutated) return true;
-        }
-        return false;
+                    if (
+                        ts.isBinaryExpression(node) &&
+                        node.operatorToken.kind ===
+                            ts.SyntaxKind.EqualsToken &&
+                        (ts.isPropertyAccessExpression(node.left) ||
+                            ts.isElementAccessExpression(node.left)) &&
+                        scan.containsAlias(node.right)
+                    ) {
+                        // Storing an object in another object/container
+                        // makes identity observable through the second
+                        // path.
+                        return true;
+                    }
+                    if (
+                        (ts.isPrefixUnaryExpression(node) ||
+                            ts.isPostfixUnaryExpression(node)) &&
+                        (node.operator ===
+                            ts.SyntaxKind.PlusPlusToken ||
+                            node.operator ===
+                                ts.SyntaxKind.MinusMinusToken) &&
+                        (ts.isPropertyAccessExpression(node.operand) ||
+                            ts.isElementAccessExpression(node.operand)) &&
+                        isAlias(scan, node.operand)
+                    ) {
+                        return true;
+                    }
+                    if (ts.isCallExpression(node)) {
+                        if (
+                            ts.isPropertyAccessExpression(
+                                node.expression,
+                            ) &&
+                            storingDataMethods.has(
+                                node.expression.name.text,
+                            ) &&
+                            node.arguments.some(scan.containsAlias)
+                        ) {
+                            return true;
+                        }
+                        const signature =
+                            this.checker.getResolvedSignature(node);
+                        const parameters =
+                            signature?.declaration?.parameters;
+                        if (parameters) {
+                            node.arguments.forEach((argument, index) => {
+                                if (!scan.containsAlias(argument)) return;
+                                const parameter = parameters[index];
+                                if (
+                                    !parameter ||
+                                    !ts.isIdentifier(parameter.name)
+                                ) {
+                                    return;
+                                }
+                                scan.addAlias(
+                                    this.symbols.valueSymbol(
+                                        parameter.name,
+                                    ),
+                                );
+                            });
+                        }
+                    }
+                    return false;
+                },
+            },
+        );
     }
 
     /**
@@ -3472,6 +3471,591 @@ class Compiler
         );
     }
 
+    /**
+     * The reviewed retained-UI style surface (AP-3). Every property here was
+     * reached by the pinned applications, the audited host companions, or the
+     * registered corpus scenes, and lowers with browser-equivalent meaning
+     * (directly or through the compatibility rewrites below). A property in
+     * none of the four sets refuses at generation naming itself, so an
+     * unreviewed declaration can never silently drop into the projection.
+     */
+    private static readonly PROJECTED_UI_STYLE_PROPERTIES = new Set<string>([
+        "align-items",
+        "animation",
+        "background",
+        "background-color",
+        "border",
+        "border-radius",
+        "bottom",
+        "color",
+        "cursor",
+        "display",
+        "flex-direction",
+        "font",
+        "font-family",
+        "font-size",
+        "font-weight",
+        "gap",
+        "height",
+        "inset",
+        "justify-content",
+        "left",
+        "letter-spacing",
+        "line-height",
+        "margin",
+        "margin-bottom",
+        "margin-top",
+        "max-width",
+        "min-width",
+        "opacity",
+        "overflow",
+        "padding",
+        "pointer-events",
+        "position",
+        "right",
+        "text-align",
+        "text-shadow",
+        "top",
+        "transform",
+        "transition",
+        "white-space",
+        "width",
+        "z-index",
+    ]);
+
+    /**
+     * Reached hints with no rendering semantics in the retained projection:
+     * `will-change`/`touch-action`/`user-select` describe browser scrolling,
+     * selection, and compositor behaviour the native input path does not
+     * have, and `image-rendering` is superseded by the sampling intent the
+     * retained canvas commands already carry per blit.
+     */
+    private static readonly INERT_UI_STYLE_PROPERTIES = new Set<string>([
+        "image-rendering",
+        "touch-action",
+        "user-select",
+        "will-change",
+    ]);
+
+    /**
+     * Reached properties the projection accepts WITHOUT a native rendering:
+     * box shadows need render layers the backend-neutral recorder does not
+     * expose (`pal_ui_rml.cpp` filters the dynamic writes for the same
+     * reason), backdrop filters would sample the composited scene, and RmlUi
+     * has no numeral variants. Each acceptance is recorded per scene in the
+     * `substituted-ui-runtime` fidelity adaptation.
+     */
+    private static readonly DEGRADED_UI_STYLE_PROPERTIES = new Set<string>([
+        "-webkit-backdrop-filter",
+        "backdrop-filter",
+        "box-shadow",
+        "font-variant-numeric",
+    ]);
+
+    /**
+     * Properties consumed by the gradient-text projection (the reached
+     * `background-clip:text` shimmer combination). Outside that combination
+     * nothing lowers them, so they refuse rather than silently dropping.
+     */
+    private static readonly GRADIENT_TEXT_UI_STYLE_PROPERTIES = new Set<string>([
+        "-webkit-background-clip",
+        "-webkit-text-stroke",
+        "background-clip",
+        "background-size",
+        "filter",
+    ]);
+
+    /** The one gradient-text `filter` form the projection consumes. */
+    private static readonly GRADIENT_TEXT_SHADOW_PATTERN =
+        /\bfilter\s*:\s*drop-shadow\(\s*([^\s]+)\s+([^\s]+)\s+(?:[^\s]+\s+)?(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s*\)/i;
+
+    /** The one gradient-text stroke form the projection consumes. */
+    private static readonly GRADIENT_TEXT_STROKE_PATTERN =
+        /-webkit-text-stroke\s*:\s*([^\s;]+)\s+([^;]+)/i;
+
+    /** The reached CSS-grid combination the block projection lowers. */
+    private static readonly GRID_TEMPLATE_COLUMNS_PATTERN =
+        /\bgrid-template-columns\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
+
+    /** The gradient-text projection trigger both the audit and the
+     *  projection test on one declaration list. */
+    private static readonly GRADIENT_TEXT_CLIP_PATTERN =
+        /(?:-webkit-)?background-clip\s*:\s*text/i;
+
+    /** The gradient-text background half of the same combination; group 1
+     *  is the gradient's argument list for the projection's colour reads. */
+    private static readonly GRADIENT_TEXT_BACKGROUND_PATTERN =
+        /\bbackground\s*:\s*linear-gradient\(([^;]*)\)/i;
+
+    /** The `display:grid` half of the grid-projection pairing. */
+    private static readonly DISPLAY_GRID_PATTERN =
+        /\bdisplay\s*:\s*grid\b/i;
+
+    /** The grid projection's pairing rule, stated once for the audit and
+     *  the projection: `display:grid` lowers only beside the reached
+     *  `grid-template-columns:repeat(N, px)` form in the same list. */
+    private static projectsUiGrid(declarations: string): boolean {
+        return (
+            Compiler.DISPLAY_GRID_PATTERN.test(declarations) &&
+            Compiler.GRID_TEMPLATE_COLUMNS_PATTERN.test(declarations)
+        );
+    }
+
+    /**
+     * Walks one inline declaration list, calling `visit` for each
+     * declaration split at top-level semicolons only — a `;` inside
+     * parentheses (`url(...)`, a gradient argument) does not end a
+     * declaration. The one segmentation authority for the audit and the
+     * projection.
+     */
+    private static forEachUiStyleDeclaration(
+        value: string,
+        visit: (declaration: string) => void,
+    ): void {
+        let depth = 0;
+        let start = 0;
+        for (let index = 0; index <= value.length; index++) {
+            const character = value[index];
+            if (character === "(") depth++;
+            if (character === ")") depth--;
+            if (
+                index !== value.length &&
+                (character !== ";" || depth > 0)
+            ) {
+                continue;
+            }
+            visit(value.slice(start, index));
+            start = index + 1;
+        }
+    }
+
+    /** Placeholder for a `;` inside parentheses while the projection's
+     *  declaration-scoped rewrites run; restored on the way out. Never
+     *  appears in authored CSS. */
+    private static readonly UI_MASKED_SEMICOLON = "\u0001";
+
+    /**
+     * The projection's rewrites are declaration-scoped regexes whose
+     * `[^;]*` classes must stop exactly where the audited splitter
+     * stops. Masking every parenthesized `;` makes both parsers segment
+     * by the same walk; on a list with none — every reached sheet — the
+     * text is rebuilt unchanged, byte for byte.
+     */
+    private static maskUiParenthesizedSemicolons(
+        value: string,
+    ): string {
+        const declarations: string[] = [];
+        Compiler.forEachUiStyleDeclaration(value, (declaration) =>
+            declarations.push(
+                declaration.replaceAll(
+                    ";",
+                    Compiler.UI_MASKED_SEMICOLON,
+                ),
+            ),
+        );
+        return declarations.join(";");
+    }
+
+    /**
+     * Style properties accepted with a recorded rendering degradation, for
+     * this scene's `substituted-ui-runtime` fidelity adaptation.
+     */
+    public readonly uiDegradedStyleProperties = new Set<string>();
+
+    /**
+     * Reviewed `#id .class` sheet selectors this scene projects as global
+     * class rules, recorded in the `substituted-ui-runtime` adaptation.
+     */
+    public readonly uiWidenedSheetSelectors = new Set<string>();
+
+    /** Sheet rule targets seen so far, for widened-selector collisions. */
+    private readonly uiSheetRuleTargets = new Map<
+        string,
+        { selector: string; style: string; widened: boolean }
+    >();
+
+    /**
+     * Logical sizes that reached `scale()` calls map exactly onto a retained
+     * canvas backing store (`scale(c.width / X, c.height / Y)`), which is
+     * what proves a later statically-sized `clearRect(0, 0, X, Y)` covers
+     * the full surface.
+     */
+    private readonly uiCanvasFullClearSizes = new Set<string>();
+
+    /**
+     * Statically-assigned retained-canvas backing sizes, keyed by the
+     * canvas's generation identity (`uiCanvasId` — the element and its
+     * 2D-context views spell different C++ locals but share the id): the
+     * other statically-provable full-surface `clearRect` shape. `pairs`
+     * holds every (width, height) state the static assignments provably
+     * put THAT canvas through, so a width recorded from one canvas never
+     * combines with a height from another into a surface no canvas ever
+     * had.
+     */
+    private readonly uiCanvasStaticSizes = new Map<
+        number,
+        { width?: number; height?: number; pairs: Set<string> }
+    >();
+
+    /** Mints `uiCanvasId` for each created retained canvas element. */
+    private uiCanvasIds = 0;
+
+    private uiStyleRefusal(
+        site: ts.Node | undefined,
+        property: string,
+        reason: string,
+    ): never {
+        const message =
+            `Retained UI style property '${property}' is not lowered: ` +
+            `${reason}. The projected surface is ` +
+            `${[...Compiler.PROJECTED_UI_STYLE_PROPERTIES].join(", ")}; ` +
+            "accepted with a recorded degradation: " +
+            `${[...Compiler.DEGRADED_UI_STYLE_PROPERTIES].join(", ")}; ` +
+            "accepted inert hints: " +
+            `${[...Compiler.INERT_UI_STYLE_PROPERTIES].join(", ")}.`;
+        if (site) this.fail(site, message);
+        this.failAtFile(message);
+    }
+
+    /**
+     * Enforce the reviewed style surface over one static CSS declaration
+     * list (AP-3): a projected property lowers, a reached degraded property
+     * is accepted and recorded for the scene's `substituted-ui-runtime`
+     * adaptation, an inert hint passes through, and anything else refuses at
+     * generation naming the property. Values may be runtime substitutions;
+     * only the static property names are policed here.
+     */
+    private auditUiStyleDeclarations(
+        value: string,
+        site: ts.Node | undefined,
+    ): void {
+        const clipsGradientToText =
+            Compiler.GRADIENT_TEXT_CLIP_PATTERN.test(value);
+        const hasGradientBackground =
+            Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN.test(value);
+        const projectsGrid = Compiler.projectsUiGrid(value);
+        Compiler.forEachUiStyleDeclaration(value, (declaration) => {
+            const colon = declaration.indexOf(":");
+            if (colon < 0) {
+                // Empty segments between semicolons; a declaration is only
+                // a declaration once it names a property.
+                return;
+            }
+            const property = declaration
+                .slice(0, colon)
+                .trim()
+                .toLowerCase();
+            const literalValue = declaration
+                .slice(colon + 1)
+                .trim()
+                .toLowerCase();
+            if (property.length === 0) return;
+            if (Compiler.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
+                this.uiDegradedStyleProperties.add(property);
+                return;
+            }
+            if (Compiler.INERT_UI_STYLE_PROPERTIES.has(property)) return;
+            if (
+                Compiler.GRADIENT_TEXT_UI_STYLE_PROPERTIES.has(property)
+            ) {
+                if (!clipsGradientToText) {
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "it is consumed only by the gradient-text " +
+                            "projection, which needs background-clip:text " +
+                            "in the same declaration list",
+                    );
+                }
+                if (
+                    (property === "background-clip" ||
+                        property === "-webkit-background-clip") &&
+                    !hasGradientBackground
+                ) {
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "the gradient-text projection needs a " +
+                            "linear-gradient background beside " +
+                            "background-clip:text",
+                    );
+                }
+                if (
+                    property === "filter" &&
+                    !Compiler.GRADIENT_TEXT_SHADOW_PATTERN.test(value)
+                ) {
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only the gradient-text drop-shadow(x y color) " +
+                            "form is consumed",
+                    );
+                }
+                if (
+                    property === "-webkit-text-stroke" &&
+                    !Compiler.GRADIENT_TEXT_STROKE_PATTERN.test(value)
+                ) {
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only the gradient-text 'width color' stroke " +
+                            "form is consumed",
+                    );
+                }
+                return;
+            }
+            if (
+                property === "grid-template-columns" ||
+                property === "grid-template-rows"
+            ) {
+                if (!projectsGrid) {
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "the grid projection lowers only display:grid " +
+                            "with grid-template-columns:repeat(N, px) in " +
+                            "the same declaration list",
+                    );
+                }
+                return;
+            }
+            if (
+                property === "display" &&
+                /\bgrid\b/.test(literalValue) &&
+                !projectsGrid
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "display:grid lowers only with " +
+                        "grid-template-columns:repeat(N, px) in the same " +
+                        "declaration list",
+                );
+            }
+            if (
+                property === "color" &&
+                literalValue === "transparent" &&
+                !clipsGradientToText
+            ) {
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "color:transparent is consumed only by the " +
+                        "gradient-text projection",
+                );
+            }
+            if (Compiler.PROJECTED_UI_STYLE_PROPERTIES.has(property)) {
+                return;
+            }
+            this.uiStyleRefusal(
+                site,
+                property,
+                "it is outside the reviewed retained-UI surface",
+            );
+        });
+    }
+
+    /**
+     * The same reviewed-surface enforcement for one `style.<property>`
+     * write or read, where the CSS name is static and the value may be a
+     * runtime string.
+     */
+    private auditUiStylePropertyName(
+        cssName: string,
+        site: ts.Node,
+    ): void {
+        if (Compiler.DEGRADED_UI_STYLE_PROPERTIES.has(cssName)) {
+            this.uiDegradedStyleProperties.add(cssName);
+            return;
+        }
+        if (
+            Compiler.INERT_UI_STYLE_PROPERTIES.has(cssName) ||
+            Compiler.PROJECTED_UI_STYLE_PROPERTIES.has(cssName)
+        ) {
+            return;
+        }
+        this.uiStyleRefusal(
+            site,
+            cssName,
+            "it is outside the reviewed retained-UI surface",
+        );
+    }
+
+    /**
+     * `ui:rml` presents through the scene and sprite loops only; the
+     * standalone fullscreen-effect and frame-graph drivers have no UI path
+     * on either backend (`pal_sdl_gpu_effect.cpp`/`pal_sdl_gpu_frame_graph
+     * .cpp` and their Dawn twins render no `UiRenderFrame`). Refuse the
+     * combination while nothing reaches it so retained chrome cannot
+     * silently vanish from a task-only program. The driver mirror follows
+     * `pal_sdl.cpp`'s `renderer_kind` priority: a scene wins, then a frame
+     * graph, then an effect renderer, then sprites.
+     */
+    private refuseUiWithoutPresentation(): void {
+        if (
+            !this.features.has("ui:rml") ||
+            this.features.has("renderer:pbr")
+        ) {
+            return;
+        }
+        const driver = this.features.has("renderer:frame-graph")
+            ? "standalone frame-graph"
+            : this.features.has("renderer:effect")
+              ? "standalone fullscreen-effect"
+              : undefined;
+        if (driver === undefined) return;
+        const site = this.featureSites.get("ui:rml");
+        this.failAtFile(
+            `Retained UI is not lowered under the ${driver} driver: the ` +
+                `scene reaches ui:rml${site ? ` (${site})` : ""} but that ` +
+                "frame loop presents no UI on either backend. Retained UI " +
+                "presents through the scene and sprite loops only.",
+        );
+    }
+
+    /**
+     * True when the expression reads a retained canvas's backing size on
+     * the given axis -- directly (`canvas.width`), or through one `const`
+     * alias of such a read (`const w = this._canvas.width`), which are the
+     * reached shapes. The proof is the compiled value itself: a retained
+     * canvas dimension always lowers to `bbl::ui_canvas_<axis>(...)`, so
+     * aliasing of the canvas handle cannot defeat it.
+     */
+    private isUiCanvasSizeRead(
+        expression: ts.Expression,
+        axis: "width" | "height",
+    ): boolean {
+        let target = this.unwrap(expression);
+        if (ts.isIdentifier(target)) {
+            const declaration =
+                this.checker.getSymbolAtLocation(target)?.valueDeclaration;
+            if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                (ts.getCombinedNodeFlags(declaration) &
+                    ts.NodeFlags.Const) !== 0
+            ) {
+                target = this.unwrap(declaration.initializer);
+            }
+        }
+        if (
+            !ts.isPropertyAccessExpression(target) ||
+            target.name.text !== axis
+        ) {
+            return false;
+        }
+        const value = this.compileValue(target);
+        return (
+            value.kind === "number" &&
+            value.cpp.startsWith(`bbl::ui_canvas_${axis}(`)
+        );
+    }
+
+    /**
+     * A reached `scale(c.width / X, c.height / Y)` maps the logical size
+     * (X, Y) exactly onto the canvas backing store; remember it so a later
+     * statically-sized `clearRect(0, 0, X, Y)` is provably a full-surface
+     * clear (the racer minimap's shape). The record is compilation-global
+     * rather than per-canvas because the retained clear is full-surface
+     * regardless; the check exists to catch an authored partial clear, not
+     * to re-derive canvas identity through aliases it cannot track.
+     */
+    private recordUiCanvasLogicalScale(call: ts.CallExpression): void {
+        if (call.arguments.length !== 2) return;
+        const logical = (
+            argument: ts.Expression,
+            axis: "width" | "height",
+        ): number | undefined => {
+            const expression = this.unwrap(argument);
+            if (
+                !ts.isBinaryExpression(expression) ||
+                expression.operatorToken.kind !== ts.SyntaxKind.SlashToken ||
+                !this.isUiCanvasSizeRead(expression.left, axis)
+            ) {
+                return undefined;
+            }
+            const divisor = this.compileValue(expression.right).staticNumber;
+            return divisor !== undefined && divisor > 0
+                ? divisor
+                : undefined;
+        };
+        const width = logical(call.arguments[0]!, "width");
+        const height = logical(call.arguments[1]!, "height");
+        if (width !== undefined && height !== undefined) {
+            this.uiCanvasFullClearSizes.add(`${width}x${height}`);
+        }
+    }
+
+    /**
+     * The retained Canvas2D clear is full-surface: the PAL drops the whole
+     * draw list and ignores the rect (`docs/ui.md` Limits). Accept only
+     * calls provably equal to the full surface -- origin statically (0, 0)
+     * and extents that read the canvas's own width/height (directly or
+     * through a const alias), or a statically-sized rect a reached
+     * `scale()` maps exactly onto the backing store -- and refuse anything
+     * else at generation, so a partial clear can never silently become a
+     * full one (AP-2).
+     */
+    private expectUiCanvasFullSurfaceClear(
+        call: ts.CallExpression,
+        canvasId: number | undefined,
+    ): void {
+        if (call.arguments.length !== 4) return;
+        const refuse = (shape: string): never =>
+            this.fail(
+                call,
+                "Retained Canvas2D clearRect is lowered only as a " +
+                    `full-surface clear, and ${shape}. Clear (0, 0, ` +
+                    "canvas.width, canvas.height) -- or the logical size " +
+                    "a reached scale() maps onto the backing store.",
+            );
+        for (const index of [0, 1]) {
+            const origin = this.compileValue(
+                call.arguments[index]!,
+            ).staticNumber;
+            if (origin !== 0) {
+                refuse(
+                    `argument ${index + 1} is not statically 0, so the ` +
+                        "rect origin is not provably the surface origin",
+                );
+            }
+        }
+        if (
+            this.isUiCanvasSizeRead(call.arguments[2]!, "width") &&
+            this.isUiCanvasSizeRead(call.arguments[3]!, "height")
+        ) {
+            return;
+        }
+        const width = this.compileValue(call.arguments[2]!).staticNumber;
+        const height = this.compileValue(call.arguments[3]!).staticNumber;
+        if (width !== undefined && height !== undefined) {
+            if (this.uiCanvasFullClearSizes.has(`${width}x${height}`)) {
+                return;
+            }
+            // Only a (width, height) pair the static assignments put THIS
+            // canvas through proves the rect covers its surface; matching
+            // one canvas's width with another's height proves nothing.
+            if (
+                canvasId !== undefined &&
+                this.uiCanvasStaticSizes
+                    .get(canvasId)
+                    ?.pairs.has(`${width}x${height}`)
+            ) {
+                return;
+            }
+            refuse(
+                `the static rect ${width}x${height} is neither a ` +
+                    "backing size statically assigned to this canvas " +
+                    "nor a logical size a reached scale() maps onto one",
+            );
+        }
+        refuse(
+            "the extent arguments are not reads of the canvas's own " +
+                "width and height",
+        );
+    }
+
     /** CSSStyleDeclaration camelCase to the CSS spelling consumed by RmlUi. */
     private nativeUiStyleProperty(property: string): string {
         const cssName = property
@@ -3520,14 +4104,24 @@ class Compiler
         return effects.length > 0 ? effects.join(",") : undefined;
     }
 
-    private lowerUiAttributeLiteral(name: string, value: string): string {
+    private lowerUiAttributeLiteral(
+        name: string,
+        value: string,
+        site?: ts.Node,
+    ): string {
         if (name !== "style") return value;
+        this.auditUiStyleDeclarations(value, site);
+        // From here every read and rewrite is declaration-scoped by
+        // regex; masking parenthesized semicolons makes those regexes
+        // segment exactly where the audit's splitter did. The mask is
+        // restored on the single return below.
+        value = Compiler.maskUiParenthesizedSemicolons(value);
         const clipsGradientToText =
-            /(?:-webkit-)?background-clip\s*:\s*text/i.test(value);
+            Compiler.GRADIENT_TEXT_CLIP_PATTERN.test(value);
         const gradientTextColors = clipsGradientToText
             ? (value
                   .match(
-                      /\bbackground\s*:\s*linear-gradient\(([^;]*)\)/i,
+                      Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN,
                   )?.[1]
                   ?.match(/#[0-9a-f]{3,8}/gi) ?? [])
             : [];
@@ -3543,14 +4137,10 @@ class Compiler
               )?.[1]
             : undefined;
         const gradientTextStroke = clipsGradientToText
-            ? value.match(
-                  /-webkit-text-stroke\s*:\s*([^\s;]+)\s+([^;]+)/i,
-              )
+            ? value.match(Compiler.GRADIENT_TEXT_STROKE_PATTERN)
             : undefined;
         const gradientTextShadow = clipsGradientToText
-            ? value.match(
-                  /\bfilter\s*:\s*drop-shadow\(\s*([^\s]+)\s+([^\s]+)\s+(?:[^\s]+\s+)?(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s*\)/i,
-              )
+            ? value.match(Compiler.GRADIENT_TEXT_SHADOW_PATTERN)
             : undefined;
         const gradientFontEffects: string[] = [];
         if (gradientTextStroke) {
@@ -3649,7 +4239,16 @@ class Compiler
             .replace(/\bfilter\s*:[^;]*;?/gi, "")
             .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
                 const effect = this.lowerUiTextShadow(String(shadow));
-                return effect ? `font-effect:${effect};` : "";
+                if (effect === undefined) {
+                    this.uiStyleRefusal(
+                        site,
+                        "text-shadow",
+                        `the shadow list '${String(shadow).trim()}' is ` +
+                            "outside the reviewed '[color] x y [blur] " +
+                            "[color]' form",
+                    );
+                }
+                return `font-effect:${effect};`;
             })
             .replace(
                 /\bcolor\s*:\s*transparent\s*;?/gi,
@@ -3681,10 +4280,10 @@ class Compiler
         // full-width outer box with a centred wrapping-flex inner box. Keeping
         // those boxes separate matters: in the browser the Tetris preview's
         // background spans the panel while only its 4x4 cells are centred.
-        const gridColumns = lowered.match(
-            /\bgrid-template-columns\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i,
-        );
-        if (gridColumns && /\bdisplay\s*:\s*grid\b/i.test(lowered)) {
+        if (Compiler.projectsUiGrid(lowered)) {
+            const gridColumns = lowered.match(
+                Compiler.GRID_TEMPLATE_COLUMNS_PATTERN,
+            )!;
             const count = Number(gridColumns[1]);
             const cell = Number(gridColumns[2]);
             const gap = Number(
@@ -3749,10 +4348,63 @@ class Compiler
                 lowered += `;line-height:${height};text-align:center;`;
             }
         }
-        return lowered;
+        return lowered.replaceAll(
+            Compiler.UI_MASKED_SEMICOLON,
+            ";",
+        );
     }
 
-    private lowerUiStyleSheetLiteral(value: string): Array<{
+    /**
+     * `@keyframes` blocks are not sheet rules: the whole sheet text also
+     * rides `ui_set_text`, and the PAL extracts and projects the keyframes
+     * from there (`pal_ui_rml.cpp` `keyframes_from`), so their interior
+     * percentage blocks must not reach the rule parser. Mirrors the PAL's
+     * brace-depth walk.
+     */
+    private static stripUiKeyframesBlocks(source: string): string {
+        let result = "";
+        let cursor = 0;
+        for (;;) {
+            const at = source.indexOf("@keyframes", cursor);
+            if (at < 0) {
+                result += source.slice(cursor);
+                break;
+            }
+            result += source.slice(cursor, at);
+            const opening = source.indexOf("{", at);
+            if (opening < 0) break;
+            let depth = 0;
+            let end = opening;
+            for (; end < source.length; end++) {
+                if (source[end] === "{") {
+                    depth++;
+                } else if (source[end] === "}" && --depth === 0) {
+                    end++;
+                    break;
+                }
+            }
+            cursor = end;
+            if (depth !== 0) break;
+        }
+        return result;
+    }
+
+    /**
+     * The reviewed `<style>` sheet surface (AP-4): exact `.class` and `#id`
+     * rules, the audited `#id .class` descendant form, and `@keyframes`
+     * blocks. A descendant rule is projected as a global class rule -- the
+     * retained IR carries no scoped rules -- which is sound for the reached
+     * sheets because they attach those classes only inside the id's own
+     * subtree; the projection is recorded per scene in the
+     * `substituted-ui-runtime` adaptation, and a second rule targeting the
+     * same class with a different body refuses because the global merge
+     * could not preserve the browser cascade. Any other selector refuses by
+     * name instead of silently skipping.
+     */
+    private lowerUiStyleSheetLiteral(
+        value: string,
+        site?: ts.Node,
+    ): Array<{
         kind: "class" | "id";
         name: string;
         style: string;
@@ -3762,26 +4414,64 @@ class Compiler
             name: string;
             style: string;
         }> = [];
-        const source = value.replace(/\/\*[\s\S]*?\*\//g, "");
+        const refuseSelector = (selector: string): never => {
+            const message =
+                `Retained stylesheet selector '${selector}' is not ` +
+                "lowered: the reviewed sheet surface is exact '.class' " +
+                "and '#id' rules, the '#id .class' descendant form " +
+                "(projected as a global class rule), and '@keyframes' " +
+                "blocks.";
+            if (site) this.fail(site, message);
+            this.failAtFile(message);
+        };
+        const source = Compiler.stripUiKeyframesBlocks(
+            value.replace(/\/\*[\s\S]*?\*\//g, ""),
+        );
         const blocks = /([^{}]+)\{([^{}]*)\}/g;
         for (let match = blocks.exec(source); match; match = blocks.exec(source)) {
             const style = this.lowerUiAttributeLiteral(
                 "style",
                 match[2]!.trim(),
+                site,
             );
-            if (!style) continue;
             for (const rawSelector of match[1]!.split(",")) {
                 const selector = rawSelector.trim();
-                if (!selector || selector.includes(":")) continue;
-                const target = selector.match(
-                    /(?:^|[\s>+~])([.#])([A-Za-z_][A-Za-z0-9_-]*)$/,
+                const exact = selector.match(
+                    /^([.#])([A-Za-z_][A-Za-z0-9_-]*)$/,
                 );
-                if (!target) continue;
-                rules.push({
-                    kind: target[1] === "." ? "class" : "id",
-                    name: target[2]!,
+                const descendant = selector.match(
+                    /^#[A-Za-z_][A-Za-z0-9_-]*\s+\.([A-Za-z_][A-Za-z0-9_-]*)$/,
+                );
+                if (!exact && !descendant) refuseSelector(selector);
+                const kind =
+                    exact && exact[1] === "#" ? "id" : ("class" as const);
+                const name = exact ? exact[2]! : descendant![1]!;
+                const widened = descendant !== null;
+                const key = `${kind}:${name}`;
+                const previous = this.uiSheetRuleTargets.get(key);
+                if (
+                    previous &&
+                    previous.style !== style &&
+                    (previous.widened || widened)
+                ) {
+                    const message =
+                        `Retained stylesheet selectors '${previous.selector}' ` +
+                        `and '${selector}' both project onto the global ` +
+                        `${kind} rule '${name}' with different bodies; the ` +
+                        "widened projection cannot preserve the browser " +
+                        "cascade between them.";
+                    if (site) this.fail(site, message);
+                    this.failAtFile(message);
+                }
+                this.uiSheetRuleTargets.set(key, {
+                    selector,
                     style,
+                    widened:
+                        widened || (previous?.widened ?? false),
                 });
+                if (widened) this.uiWidenedSheetSelectors.add(selector);
+                if (!style) continue;
+                rules.push({ kind, name, style });
             }
         }
         return rules;
@@ -3791,7 +4481,11 @@ class Compiler
         const staticValue = this.tryUiStaticString(expression);
         if (staticValue !== undefined) {
             return this.cppString(
-                this.lowerUiAttributeLiteral("style", staticValue),
+                this.lowerUiAttributeLiteral(
+                    "style",
+                    staticValue,
+                    expression,
+                ),
             );
         }
         const unwrapped = this.unwrap(expression);
@@ -3836,7 +4530,11 @@ class Compiler
                     substitutions.push(part);
                 }
             }
-            const lowered = this.lowerUiAttributeLiteral("style", source);
+            const lowered = this.lowerUiAttributeLiteral(
+                "style",
+                source,
+                expression,
+            );
             const chunks = lowered.split(/(__BBLITE_UI_STYLE_\d+__)/g);
             const parts = ["std::string()"];
             for (const chunk of chunks) {
@@ -3859,15 +4557,20 @@ class Compiler
         );
     }
 
-    private lowerUiMarkupLiteral(value: string): string {
+    private lowerUiMarkupLiteral(
+        value: string,
+        site?: ts.Node,
+    ): string {
         // Elements parsed by SetInnerRML do not pass through the retained
         // record projector's tiny browser-UA defaults. Preserve HTML div
         // block flow directly in the bounded static markup we accept.
         let lowered = value
             .replace(
-                /<div\s+style=(['"])(.*?)\1\s*>/gi,
-                (_match, quote, style) =>
-                    `<div style=${quote}display:block;${this.lowerUiAttributeLiteral("style", String(style))}${quote}>`,
+                /<(?:div|span)\s+style=(['"])(.*?)\1\s*>/gi,
+                (match, quote, style) =>
+                    match.toLowerCase().startsWith("<div")
+                        ? `<div style=${quote}display:block;${this.lowerUiAttributeLiteral("style", String(style), site)}${quote}>`
+                        : `<span style=${quote}${this.lowerUiAttributeLiteral("style", String(style), site)}${quote}>`,
             )
             .replace(/<div\s*>/gi, '<div style="display:block">');
 
@@ -3877,7 +4580,9 @@ class Compiler
     private compileUiMarkupString(expression: ts.Expression): string {
         const staticValue = this.tryUiStaticString(expression);
         if (staticValue !== undefined) {
-            return this.cppString(this.lowerUiMarkupLiteral(staticValue));
+            return this.cppString(
+                this.lowerUiMarkupLiteral(staticValue, expression),
+            );
         }
         const unwrapped = this.unwrap(expression);
         if (ts.isConditionalExpression(unwrapped)) {
@@ -3946,6 +4651,37 @@ class Compiler
                 !directElement.uiCanvasContext &&
                 (property === "width" || property === "height")
             ) {
+                // The probe and the emission still compile the RHS twice:
+                // collapsing them to one `castNumber(size, "double")` is
+                // semantically clean, but the duplicate resolution burns
+                // anonymous-record counter numbers, and removing it
+                // renumbers quake's record types (Record22 -> Record18).
+                // Byte identity of generated/ wins until a renumbering
+                // window is open.
+                const staticSize = this.compileValue(
+                    expression.right,
+                ).staticNumber;
+                if (
+                    staticSize !== undefined &&
+                    directElement.uiCanvasId !== undefined
+                ) {
+                    const sizes = this.uiCanvasStaticSizes.get(
+                        directElement.uiCanvasId,
+                    ) ?? { pairs: new Set<string>() };
+                    sizes[property] = staticSize;
+                    if (
+                        sizes.width !== undefined &&
+                        sizes.height !== undefined
+                    ) {
+                        sizes.pairs.add(
+                            `${sizes.width}x${sizes.height}`,
+                        );
+                    }
+                    this.uiCanvasStaticSizes.set(
+                        directElement.uiCanvasId,
+                        sizes,
+                    );
+                }
                 this.emit(
                     `bbl::ui_canvas_set_${property}(${engine}, ${directElement.cpp}, ` +
                         `${this.compileNumber(expression.right, "double")});`,
@@ -4015,7 +4751,10 @@ class Compiler
                     ) === "style"
                 ) {
                     const sheet = this.compileStringLiteral(expression.right);
-                    for (const rule of this.lowerUiStyleSheetLiteral(sheet)) {
+                    for (const rule of this.lowerUiStyleSheetLiteral(
+                        sheet,
+                        expression.right,
+                    )) {
                         this.emit(
                             `bbl::ui_add_${rule.kind}_style(${engine}, ` +
                                 `${this.cppString(rule.name)}, ` +
@@ -4079,6 +4818,7 @@ class Compiler
             return true;
         }
         const nativeProperty = this.nativeUiStyleProperty(property);
+        this.auditUiStylePropertyName(nativeProperty, expression.left.name);
         this.emit(
             `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
                 `${this.cppString(nativeProperty)}, ` +
@@ -4163,6 +4903,10 @@ class Compiler
                 const engine = this.requireEngine(element, expression);
                 const property = this.nativeUiStyleProperty(
                     expression.name.text,
+                );
+                this.auditUiStylePropertyName(
+                    property,
+                    expression.name,
                 );
                 return {
                     kind: "string",
@@ -7100,6 +7844,10 @@ class Compiler
         this.jsDataReached = true;
     }
 
+    public reachImageDecode(): void {
+        this.imageDecodeReached = true;
+    }
+
     public snapshotAliasState(): Map<string, string> {
         return this.dataLowerer.snapshotAliasState();
     }
@@ -7459,11 +8207,18 @@ class Compiler
     /**
      * Give a recursive local function JavaScript closure lifetime when an
      * engine exists. A reference to the heap function keeps existing `[&]`
-     * callback lowering correct, while the engine owns the actual object.
+     * callback lowering correct, and the owner local keeps the object
+     * alive for every synchronous call the emitting scope makes. Only a
+     * callback that can outlive that scope -- one some other emission
+     * retains, like a timer registration -- is co-owned by the engine:
+     * `native_callback_owners` is never drained, so pushing every
+     * recursive callback grew it once per execution of the emitting body
+     * (one push per frame from platformer's RAF arm, 52 doom sites).
      */
     public emitNativeCallbackStorage(
         cppName: string,
         signature: string,
+        escapesEmittingScope: boolean,
     ): void {
         const engine = this.defaultEngine();
         if (
@@ -7480,7 +8235,11 @@ class Compiler
         this.emit(
             `auto ${owner} = std::make_shared<std::function<${signature}>>();`,
         );
-        this.emit(`${engine}.native_callback_owners.push_back(${owner});`);
+        if (escapesEmittingScope) {
+            this.emit(
+                `${engine}.native_callback_owners.push_back(${owner});`,
+            );
+        }
         this.emit(`auto& ${cppName} = *${owner};`);
     }
 
@@ -8449,7 +9208,10 @@ class Compiler
                     engineCpp: engine,
                     uiTag: tag.toLowerCase(),
                     ...(tag.toLowerCase() === "canvas"
-                        ? { uiCanvas: true as const }
+                        ? {
+                              uiCanvas: true as const,
+                              uiCanvasId: this.uiCanvasIds++,
+                          }
                         : {}),
                 };
             }
@@ -8493,8 +9255,13 @@ class Compiler
                 };
                 switch (callee.name.text) {
                     case "scale":
+                        this.recordUiCanvasLogicalScale(call);
                         return invocation("scale", 2);
                     case "clearRect":
+                        this.expectUiCanvasFullSurfaceClear(
+                            call,
+                            element.uiCanvasId,
+                        );
                         return invocation("clear_rect", 4);
                     case "beginPath":
                         return invocation("begin_path", 0);
@@ -8678,6 +9445,7 @@ class Compiler
                               this.lowerUiAttributeLiteral(
                                   name,
                                   staticValue,
+                                  call.arguments[1]!,
                               ),
                           )
                         : sourceValue!.cpp;
@@ -9837,9 +10605,7 @@ class Compiler
         }
         if (
             (owner.kind === "mesh" || owner.kind === "transform-node") &&
-            ["position", "rotation", "scaling"].includes(
-                expression.name.text,
-            )
+            isTrsVectorName(expression.name.text)
         ) {
             const engine = this.requireEngine(owner, expression);
             const collection =
@@ -11644,6 +12410,7 @@ class Compiler
         return renderMainCpp({
             features,
             jsDataReached: this.jsDataReached,
+            imageDecodeReached: this.imageDecodeReached,
             jsRandomReached: this.jsRandomReached,
             throwReached: this.throwReached,
             postProcessCompositeCount:
@@ -11683,4 +12450,93 @@ class Compiler
     private failAtFile(message: string): never {
         throw new CompileError(this.options.fileName, 1, 1, message);
     }
+}
+
+/** The tracked-alias queries a mutation walk's per-kind clauses consult. */
+interface AliasedMutationScan {
+    /** Whether `node` is an identifier naming a tracked alias. */
+    readonly namesAlias: (node: ts.Node) => boolean;
+    /** Whether any identifier in the subtree names a tracked alias. */
+    readonly containsAlias: (node: ts.Node) => boolean;
+    /** Track one more alias; a new symbol queues another pass. */
+    readonly addAlias: (symbol: ts.Symbol | undefined) => void;
+}
+
+/**
+ * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
+ *
+ * Seeds the tracked set with the declared identifier's symbol, then rewalks
+ * the whole source file until a pass adds no alias: a variable declaration
+ * whose initializer `aliasingInitializer` accepts extends the set (queueing
+ * another pass), and the first node `mutates` accepts ends the scan. What
+ * counts as an alias-creating initializer and as a mutation site is the
+ * per-kind half the callers keep — arrays and plain objects recognize
+ * writes differently — and `mutates` may itself extend the set through
+ * `addAlias` (the object walk follows call arguments into parameters).
+ */
+function aliasedMutationScan(
+    identifier: ts.Identifier,
+    valueSymbol: (identifier: ts.Identifier) => ts.Symbol | undefined,
+    walk: {
+        readonly aliasingInitializer: (
+            initializer: ts.Expression,
+            scan: AliasedMutationScan,
+        ) => boolean;
+        readonly mutates: (
+            node: ts.Node,
+            scan: AliasedMutationScan,
+        ) => boolean;
+    },
+): boolean {
+    const initial = valueSymbol(identifier);
+    if (!initial) return false;
+    const aliases = new Set<ts.Symbol>([initial]);
+    const source = identifier.getSourceFile();
+    let changed = true;
+    const scan: AliasedMutationScan = {
+        namesAlias: (node) =>
+            ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
+        containsAlias: (node) => {
+            let found = false;
+            const visit = (candidate: ts.Node): void => {
+                if (found) return;
+                if (scan.namesAlias(candidate)) {
+                    found = true;
+                    return;
+                }
+                ts.forEachChild(candidate, visit);
+            };
+            visit(node);
+            return found;
+        },
+        addAlias: (symbol) => {
+            if (symbol && !aliases.has(symbol)) {
+                aliases.add(symbol);
+                changed = true;
+            }
+        },
+    };
+    while (changed) {
+        changed = false;
+        let mutated = false;
+        const visit = (node: ts.Node): void => {
+            if (mutated) return;
+            if (walk.mutates(node, scan)) {
+                mutated = true;
+                return;
+            }
+            if (
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.initializer &&
+                walk.aliasingInitializer(node.initializer, scan)
+            ) {
+                scan.addAlias(valueSymbol(node.name));
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(source, visit);
+        if (mutated) return true;
+    }
+    return false;
 }

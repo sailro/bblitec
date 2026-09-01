@@ -13,17 +13,11 @@
 // as when it keeps the old number.
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { resolve } from "node:path";
+import type {
+    DifferentialReportSummary,
+    ParityReportSummary,
+} from "./parity-scene.js";
 import { isWobblingCell } from "./scene-neutrality.js";
-
-interface ParityReport {
-    full: { mad: number };
-    region: { mad: number };
-}
-
-interface DifferentialReport {
-    goldenVersusSdlGpu: { fullMad: number; foregroundMad: number };
-    goldenVersusDawn: { fullMad: number; foregroundMad: number };
-}
 
 export interface PublishedRow {
     sceneId: string;
@@ -149,7 +143,7 @@ function measured(
     if (existsSync(differentialPath) && !singlesFresh) {
         const report = JSON.parse(
             readFileSync(differentialPath, "utf8"),
-        ) as DifferentialReport;
+        ) as DifferentialReportSummary;
         return {
             source: differentialPath,
             values: [
@@ -178,10 +172,10 @@ function measured(
     }
     const gpu = JSON.parse(
         readFileSync(gpuPath, "utf8"),
-    ) as ParityReport;
+    ) as ParityReportSummary;
     const dawn = JSON.parse(
         readFileSync(dawnPath, "utf8"),
-    ) as ParityReport;
+    ) as ParityReportSummary;
     return {
         source: `${gpuPath} + ${dawnPath}`,
         values: [

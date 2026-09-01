@@ -28,7 +28,7 @@ Recorded adaptations are semantic **divergences** only:
 | Adaptation | What differs |
 | --- | --- |
 | `four-influence-skinning` | for an asset carrying `JOINTS_1`/`WEIGHTS_1` the pinned loader skins eight influences; the generated one keeps the first four and drops the tail weights |
-| `plain-data-value-model` | a const local bound to a container element binds a native reference and is poisoned by a later structural mutation; mutable path-bound locals are copies that reject writes; object parameters pass by reference; sparse arrays zero-initialize |
+| `plain-data-value-model` | a const local bound to a container element binds a native reference and is poisoned by a later structural mutation; mutable path-bound locals are copies that reject writes; object parameters pass by reference; sparse arrays zero-initialize; an index the compiler cannot prove in bounds reads or writes through a checked accessor that refuses by name at the access's source location where JavaScript would yield `undefined` (a proven index — static against a known length, or a canonical `i < arr.length` loop binding — keeps the raw fast path, and Array writes keep JavaScript growth) |
 | `deterministic-seeded-random` | mulberry32 over seed 1, on the native runtime and the browser capture alike |
 
 plus browser-wrapper erasure, immediate AOT `await`, compile-time asset
@@ -65,13 +65,14 @@ transparent opacity.
 
 ### Where a shader comes from
 
-Nothing here transcribes a formula. [status](status.md) carries the numbers.
+One row transcribes; every other family composes, lifts or folds the pin's
+own text. [status](status.md) carries the numbers.
 
 | Family | Origin | Gate |
 | --- | --- | --- |
 | PBR colour and geometry variants | the pin's own composer, one fragment per renderable feature set | the whole corpus |
 | Standard variants | the same composer, `variant-std-*` | 145, 273 |
-| Shared material vertex stage | generated WGSL | — |
+| Shared material vertex stage | the one transcription: WGSL written in this repository (`src/shader-builtins-standard.ts`), its morph arm anchored to upstream markers | — |
 | Ground, skybox | lifted from the pinned modules' string literals | 1, 8 |
 | GridMaterial | the pinned template functions at the reached option set | 213 |
 | Custom material | the entry file's WGSL through the typed shader IR | 159-163 |
@@ -222,8 +223,9 @@ factory creates a depth-texture array, computes one camera-frustum fit per
 cascade, and has receivers choose or blend by view depth. Native's PCF seam has
 one 2D sampled depth texture per generator, so it retains the first
 camera-fitted map. The split formula, float view-projection inversion,
-clone-aware caster Z fit, texel snap and unbiased-receiver/biased-caster matrix
-split remain source-derived. Farther cascades and cross-cascade blending are
+clone-aware caster Z fit, texel snap, nine-tap filter and
+unbiased-receiver/biased-caster matrix split remain source-derived. Farther
+cascades and cross-cascade blending are
 omitted. The scene records `csm-single-map-near-cascade` at high risk rather
 than reporting the resource
 as a texture array it did not create.
@@ -425,16 +427,6 @@ That is what an extension arm depends on — the emissive layer composes on the
 presence of `_emissiveColor` alone, carrying no texture and no capability
 define. Computed channels therefore use a finite witness only while the pin
 derives the arm; the generated runtime setter stores the real values.
-
-**`setParent` preserves world TRS rather than reinterpreting it as local.**
-The child world is captured before graph membership changes; attachment uses
-the pin's `mat4Invert`, `mat4Multiply` and full `mat4Decompose` in that order,
-while detachment decomposes the captured world directly. The decomposition's
-negative determinant remains a negative Y scale, and a singular parent keeps
-the new link but copies only world position, exactly as the pinned fallback
-documents. Public `children` and private dirty registries change only when the
-link changes, and a later parent-only TRS write recursively invalidates every
-world-baked descendant.
 
 **`KHR_materials_variants` folds to the one selection a scene makes.**
 `selectVariant` restores every original material then applies the chosen
@@ -751,13 +743,27 @@ thin-instance-plus-colour masks, never the impossible colour-only word. The
 colour lane is its own instance-stepped buffer, which both backends bind from
 the same predicate used to select either family's composed variant.
 
+**Which of those lanes a scene-local ShaderMaterial takes is the mesh's
+decision, settled after the whole entry is compiled.** The pin's `hasColor`
+is `!!ti.colors && material._tic != 0`, and the material-side `_tic` opt-out
+key is refused, so the mesh decides outright — a fact that cannot be settled
+where the material is created, which precedes both its assignment and its
+instances, so the `world0..3` and `instanceColor` lanes are resolved from
+the material-to-mesh pairs recorded on the way through, in either source
+order. Upstream builds one pipeline per renderable and keys it on exactly
+those lanes, so a material can be instanced on one mesh and plain on
+another; this port bakes one variant into the material record instead,
+which is why meshes that disagree on a lane refuse
+([features](features.md#scene-hierarchy)).
+
 **Where that lane sits is the pin's, and it is taken rather than
 restated** -- for the Standard and PBR families, whose fragment declares it.
 The scene-local ShaderMaterial family is the exception: the pin appends its
 lanes at `material.attributes.length` in a prelude string, and this port
 declares them at the fixed 16-20 the line family already uses. Nothing
 observable rides the numbers, because the port synthesizes the whole
-`VertexInput` there rather than splicing the pin's prelude.
+`VertexInput` there rather than splicing the pin's prelude — it is why the
+device asks for 21 vertex attributes where the pin asks for far fewer.
 `createThinInstanceFragment` declares each attribute's
 `_bufferGroup`, `_arrayStride`, `_stepMode` and `_offset` -- `ti-matrix` at
 stride 64 for the four world columns, `ti-color` at 16 for the RGBA lane --
@@ -839,6 +845,22 @@ version of every mesh beneath it. That is the same version every re-bake
 already keys on, and it is the shape
 `set_asset_root_position_component` was already written in.
 
+**`setParent` preserves world TRS rather than reinterpreting it as local.**
+The child world is captured before graph membership changes; attachment
+derives the new local as `inverse(parentWorld) * childWorld` through the
+pin's `mat4Invert`, `mat4Multiply` and full `mat4Decompose` in that order,
+while detachment decomposes the captured world directly. The decomposition's
+negative determinant remains a negative Y scale, and a singular parent keeps
+the new link but copies only world position, exactly as the pinned fallback
+documents. Reparenting a matrix-declared node clears its captured raw matrix
+so the decomposed TRS takes authority. Public `children` and private dirty
+registries change only when the link changes, and a later parent-only TRS
+write recursively invalidates every world-baked descendant. Flattened asset
+roots apply the same operation to their rendered leaves, and recursive
+imported-node lookup uses each glTF scene-node name while it walks the
+loader-built `children` hierarchy. Scene 269 gates those paths together with
+the procedural PBR winding transition.
+
 **The mirrored-mesh watcher is scene state, not a frame-loop step.**
 `installMirroredMeshSupport` seeds the signs its renderables are about to
 be built with and then pushes its watcher onto `scene._beforeRender`. The
@@ -860,6 +882,8 @@ result as the watcher's authored baseline, so the live determinant does not
 reverse imported winding a second time. A procedural PBR mesh has no loader
 pass; if it crosses the determinant sign boundary at run time, the same
 watcher rebuild selects a back-culled pipeline with the opposite front face.
+A mesh mirrored before its renderable is built simply carries that winding
+from the first frame.
 Scene 269 gates that PBR transition, while scene 270 gates the Standard arms.
 
 **A bare `visible` write takes effect when the draw list is rebuilt, not on
@@ -1437,7 +1461,9 @@ uniform block, draws the same instances again, and restores the primary
 pipeline so a caller caching it stays correct. Both backends do exactly that:
 one instance buffer, one index buffer, two pipelines, and the Add blend built
 where the pin builds it — `createParticleBlend(2)`, resolved by the generated
-builder rather than either PAL. Gated by scene 284.
+builder rather than either PAL. On the pure-2D path the registrar instead
+adds two equal-order layers the renderer's stable sort keeps adjacent. Gated
+by scene 284.
 
 **The Multiply fragment is the pin's own module, not a fragment arm.**
 `particle-billboard-renderable.ts` writes a whole WGSL module so a
@@ -1488,13 +1514,13 @@ drawing is transcribed. The tradeoff is the HDR prefilter's and is the same
 one: the baked bytes depend on the Chrome that compiled them. It is recorded
 per scene as the `drawn-sprite-atlas` adaptation.
 
-The frames are not baked with them. `createGridSpriteAtlas` partitions
-whatever texture the loader was handed, so the generated loader decodes the
-PNG and runs the pinned derivation over its own width and height — a changed
-atlas needs no compiler change. `loadSpriteAtlas` fixes the sampler the pin
-fixes (clamp on both axes, no mip chain, filter from `sampling`), and the
-texture is `rgba8unorm` with `srgb` off, so the atlas texels reach the blend
-stage as the bytes on disk.
+The frames are not baked with them — the grid stays
+`createGridSpriteAtlas`'s load-time derivation over the decoded atlas's own
+extent ([features](features.md#drawn-and-computed-assets) owns that phase
+split). `loadSpriteAtlas` fixes the sampler the pin fixes (clamp on both
+axes, no mip chain, filter from `sampling`), and the texture is `rgba8unorm`
+with `srgb` off, so the atlas texels reach the blend stage as the bytes on
+disk.
 
 **The platformer golden is a frame, not a wall-clock delay.** Its attract
 camera and CRT grain both advance continuously, so a three-second browser
@@ -1804,8 +1830,8 @@ geometry record's `present` flag with each `??` taking the pin's own literal
 fallback, and every component widens from its stored float into the
 JavaScript-number double the pin computes in. Everything else is the pin's
 expression — the four scale terms, the scaled extents, the centre the sphere
-and box cases share, and the segment a capsule and a cylinder span. The last
-A capsule and a cylinder span the mesh's own scaled Y range at
+and box cases share, and the segment a capsule and a cylinder span: the
+mesh's own scaled Y range at
 `extents.x * 0.5`. `physics-lowerer.ts` asserts
 every remaining restated rule against the declaration that states it,
 including the *order* of the four phases, which no single expression would
