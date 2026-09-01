@@ -90,10 +90,8 @@ the multisampled path, and it is not Dawn's alone. Scene 9 wobbles on Dawn
 while bit-stable on SDL_GPU across four runs; scene 14 is the mirror; scenes
 37, 120, 125, 126, 128 and 129 wobble on both (peak run-to-run MAD 0.000059,
 0.000250, 0.000051, 0.000081, 0.000007 and 0.000118 on SDL_GPU). Scenes 128
-and 14 are the narrowest and were found the way an entry should be — a
-neutrality run over a change that could not reach them reported a moved cell
-and the `stability` pair said why (scene 14's is one channel-byte on one
-pixel, 0.000002). Scene 126's Dawn side is the widest: its foreground
+and 14 are the narrowest — scene 14's is one channel-byte on one
+pixel, 0.000002. Scene 126's Dawn side is the widest: its foreground
 alternates between 0.001 and 0.005 across consecutive runs, which its
 threshold has to clear.
 
@@ -113,13 +111,18 @@ permanently — scene 120's Dawn wobble spans 0.002 against a 0.004 foreground,
 so a smaller regression would hide behind it.
 
 **The browser wobbles too**, which is worth knowing before it is mistaken for
-an upstream behaviour change. `scene -- capture` checks its screenshot
-byte-for-byte against the committed golden and reports `DIFFERS` for these
-scenes with nothing changed at all: two consecutive captures of scene 37 or
-120 differ from each other as well as from the golden. A `DIFFERS` verdict on
-a wobble scene is therefore evidence of nothing until a second capture says
-whether the browser reproduced itself. Every other scene's capture is
-byte-identical to its golden, which is what makes the check worth having.
+an upstream behaviour change. `scene -- capture` composes the very page the
+golden was captured from — full page including the host UI and retained DOM,
+frozen on the same fixed frame — and checks its screenshot byte-for-byte
+against the committed golden; with `BBLITE_CAPTURE_UI=0` set on both sides,
+the capture and the check go canvas-only against parity's canvas-only
+reference instead. It reports `DIFFERS` for these scenes with nothing changed
+at all: two consecutive captures of scene 37 or 120 differ from each other as
+well as from the golden. A `DIFFERS` verdict on a wobble scene is therefore
+evidence of nothing until a second capture says whether the browser
+reproduced itself. Every other scene's capture is byte-identical to its
+golden — the proof that the WebGPU hooks perturb nothing — which is what
+makes the check worth having.
 
 That check is a command for any scene:
 
@@ -381,8 +384,8 @@ does not compose with `all`.
 
 A blocker names a capability; it does not size one. The first error a
 scene reports is the first line of its chain, not its length — scenes
-4, 111, 140, 226, 251 and 270 each hide a whole subsystem behind a
-one-line blocker.
+111, 140 and 226 each hide a whole subsystem behind a one-line blocker,
+as scenes 4, 251 and 270 did before they were integrated.
 
 **Compile-probe first.** This works without a registry entry:
 
@@ -512,6 +515,12 @@ These are the diagnostic ones:
 | `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `--gpu-debug`, which `parity`, `diff`, `capture --native` and `probe-variants` all take and which also defuses SDL's assertion handler) |
 | `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
+| `BBLITE_RUNTIME_TRACE=1` | print input dispatch, camera changes and dynamic scene-membership rebuilds |
+| `BBLITE_INPUT_REPLAY=<actions>` | replay one deterministic input action per frame through the ordinary callbacks |
+| `BBLITE_CAPTURE_UI=0` | canvas-only screenshots (retained UI omitted) for attribution |
+| `BBLITE_PHYSICS_TRACE=1` | per-step body trajectories, which are what grade the substituted solver |
+| `BBLITE_CPU_PROFILE=1` | startup/frame phase timings and Bullet work counters |
+| `BBLITE_AUDIO_CAPTURE=<path.wav>` | render the audio graph offline to WAV instead of opening a device |
 
 **A backend error message is rarely the error.** `SDL_GPU` reports a bad
 render pass only when the command list is submitted

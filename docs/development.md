@@ -32,10 +32,10 @@ npm run sweep
 
 `dev:setup` is the idempotent Windows bootstrap: it falls back to Visual
 Studio's CMake and vcpkg when they are not on `PATH`, installs the development
-manifest once, and builds missing pinned Dawn, Tint, DXC and LabSound
+manifest once, and builds missing pinned Dawn, Tint, DXC, LabSound and RmlUi
 artifacts. `doctor` is read-only and prints the resolved path or the missing
 prerequisite for Node.js, CMake, Ninja, the compiler, vcpkg, Dawn, PowerShell,
-DXC, Tint, LabSound and Chromium. `sweep` is the full registered-scene
+DXC, Tint, LabSound, RmlUi and Chromium. `sweep` is the full registered-scene
 validation (`scene -- validate all`) across both backends: compile, shaders,
 native build, differential parity, published status verification.
 
@@ -73,10 +73,12 @@ npm run scene -- neutrality-generated artifacts/generated-baseline.txt --write
 parallel native build in order.
 The compiler CLI underneath (`node dist\src\cli.js <entry.ts> --out <dir>`)
 also takes `--title <text>`, `--width <pixels>` and `--height <pixels>` —
-the generated engine's window title and size, default 1280x720 — and
-`--id-diagnostics` for the attribution buffers. The scene command supplies
-the title and attribution flag from the registry and leaves the size at its
-default, which is what every golden is captured at.
+the generated engine's window title and size, default 1280x720 —
+`--id-diagnostics` for the attribution buffers, and `--host-ui <file>`, a
+validated `ui/*.json` companion naming the static host-page chrome projected
+beside the scene's own retained UI. The scene command supplies the title,
+the attribution flag and the host-UI companion from the registry and leaves
+the size at its default, which is what every golden is captured at.
 `diff`, `compose`, `measure`, `stability`, `geometry`, `probe-variants`,
 `uniforms` and `diagnose` are the diagnosis ladder: which one answers which
 question, and the flags each takes, are in [debugging](debugging.md#the-ladder).
@@ -89,11 +91,11 @@ on-disk outputs still match the completed stage; changed or missing inputs run
 the stage again.
 
 
-Three compilations launch headless Chromium to run pinned code: an HDR scene
-for the 1024-sample GGX compute shader, a node-particle scene for the pin's
-simulation up to the frozen frame, and a `.basis` texture for the pinned
-loader's transcode. Set `CHROME_PATH` when Chrome or Edge is not in a standard
-location. Each replays from a content-addressed cache under
+Several compilations launch headless Chromium to run pinned code — an HDR
+scene for the 1024-sample GGX compute shader, a node-particle scene for the
+pin's simulation up to the frozen frame, a `.basis` texture for the pinned
+loader's transcode, among others. Set `CHROME_PATH` when Chrome or Edge is
+not in a standard location. A bake replays from a content-addressed cache under
 `artifacts\bake-cache` keyed on the pin, input bytes, parameters, packager
 module and browser build, so a warm recompile launches no Chromium and
 produces byte-identical output; the directory is disposable and
@@ -581,7 +583,18 @@ pwsh -File tools\build-tint.ps1
 
 Build only the pinned Dawn library (same source pin, shared checkout) with
 `pwsh -File tools\build-dawn.ps1`. Build only pinned LabSound with
-`pwsh -File tools\build-labsound.ps1`. The normal full development bootstrap is
+`pwsh -File tools\build-labsound.ps1`, and only pinned RmlUi
+(`upstream/rmlui.json`, patch applied, the SDL platform pair installed
+beside the package) with `pwsh -File tools\build-rmlui.ps1` — one install
+every `ui:rml` build tree consumes at `BBLITE_RMLUI_DIR` instead of
+fetching and rebuilding the library per tree at configure. The
+development artifact builds with the same compiler the development scene
+builds select (clang-cl when Visual Studio ships it): RmlUi is a
+header-inlining-heavy C++ static library, and an MSVC-built archive
+linked into clang-cl consumers crashed inside its render path. The
+`-StaticRuntime` shipping artifact stays on MSVC, whose consumers are
+MSVC-built too. The normal
+full development bootstrap is
 `npm run dev:setup`; `build-dawn-min.ps1` belongs only to the trimmed shipping
 flow. The CMake `BBLITE_BACKEND`
 selection (`SDL_GPU`, `DAWN`, or `BOTH`) picks the compiled backend
@@ -639,6 +652,7 @@ combination):
 | `BBLITE_DAWN_DIR` | `artifacts/tools/dawn` | installed Dawn package root; point at `artifacts/tools/dawn-min` for the minimal static FXC-only library |
 | `BBLITE_SDL_DIR` | empty | subsystem-trimmed static SDL3 root (`tools/build-sdl-min.ps1`); empty selects the toolchain (vcpkg) SDL3 |
 | `BBLITE_LABSOUND_DIR` | `artifacts/tools/labsound` | installed pinned LabSound root (`tools/build-labsound.ps1`); required only by a scene reaching `audio:engine` |
+| `BBLITE_RMLUI_DIR` | `artifacts/tools/rmlui` | installed pinned RmlUi root (`tools/build-rmlui.ps1`); required only by a scene reaching `ui:rml`, which points it at `artifacts/tools/rmlui-static` in a mini build |
 | `BBLITE_AUDIO_CAPTURE` | development: `ON`; `BBLITE_MINSIZE`: `OFF` | offline WAV capture capability; the only audio route that links libnyquist/codecs and ships their notices |
 | `BBLITE_MINSIZE` | `OFF` | size-first compilation (MSVC `/O1 /Ob1 /GL`; clang-cl `/clang:-Oz /clang:-flto`; non-MSVC Clang `-Oz -flto`; `-Os` elsewhere), whole-program optimization and dead-stripping plus a `/MAP` linker map for `tools/map-size-report.mjs` on Windows |
 | `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
@@ -711,6 +725,7 @@ pwsh -File tools\build-sdl-min.ps1
 pwsh -File tools\build-dawn-min.ps1
 pwsh -File tools\build-labsound.ps1 -StaticRuntime
 pwsh -File tools\build-labsound.ps1 -StaticRuntime -EnableCodecs
+pwsh -File tools\build-rmlui.ps1 -StaticRuntime
 ```
 
 `build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
@@ -732,6 +747,15 @@ absent. A scene reaching `audio:decoded-buffer` instead uses the separate
 `-StaticRuntime -EnableCodecs`; its package retains libnyquist and its notices.
 `BBLITE_AUDIO_CAPTURE` defaults to `OFF` under `BBLITE_MINSIZE`; explicitly
 enabling it is the opt-in that restores the recorder/codec link and notices.
+A scene reaching `ui:rml` points `BBLITE_RMLUI_DIR` at the separate
+`artifacts\tools\rmlui-static` install, exactly the LabSound shape: the
+ordinary development RmlUi build uses the dynamic CRT and is deliberately
+rejected by a mini build. Only the RmlUi objects come prebuilt — FreeType
+still arrives through the tree's own vcpkg `ui` manifest feature under the
+`x64-windows-static` triplet, because the artifact records
+`Freetype::Freetype` as a link interface rather than embedding it, and
+fonts come from the OS at run time (DirectWrite here), so no font files or
+freetype variant enter `artifacts\tools`.
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with
@@ -794,6 +818,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_DEFORMATION_DUMP=<path>` | append first-frame bone palettes and morph weights as hexfloats (SDL_GPU deformation scenes) |
 | `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
 | `BBLITE_RUNTIME_TRACE=1` | print portable input dispatch, camera changes, and dynamic scene-membership rebuilds to stderr; the trace observes generated applications without modifying their source |
+| `BBLITE_RUNTIME_TRACE_INTERVAL=<frames>` | how far apart `BBLITE_RUNTIME_TRACE`'s periodic state lines print: the first five frames always print, then every Nth (default 60, minimum 1) |
 | `BBLITE_INPUT_REPLAY=<actions>` | dispatch one comma-separated DOM `KeyboardEvent.code`, `WheelUp`, or `WheelDown` action per frame through the application's ordinary callbacks (`-` is an idle frame), for deterministic source-independent interaction diagnostics |
 | `BBLITE_CAPTURE_UI=0` | omit retained UI from browser and native screenshots for canvas-only attribution; canonical parity captures the full page |
 | `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
@@ -1120,7 +1145,9 @@ bundles those three plus parity and `status:verify` behind one summary line
 per stage, runs `--differential` when the pinned Dawn library is installed,
 and stops at the first failure while preserving every artifact the completed
 stages wrote; `validate <id>` does the same for one scene and filters the
-status check to its row. `npm test` stays separate.
+status check to its row. `npm test` stays separate. `npm run lint:exports`
+(ts-prune) lists exported symbols nothing imports; it is advisory and sits
+outside the gate sequence.
 
 `scenes:parity` runs both backends because [status](status.md) publishes an
 SDL_GPU and a Dawn number for every scene. Without the pinned Dawn library,

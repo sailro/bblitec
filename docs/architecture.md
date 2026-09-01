@@ -56,6 +56,7 @@ Primary source ownership:
 | `native/src/pal_ui_rml.cpp` | incremental RmlUi document projection, Canvas path tessellation, SDL input, CSS adaptations, and backend-neutral draw-frame recording |
 | `native/src/pal_sdl_gpu.cpp`, `native/src/pal_dawn.cpp` | consume recorded UI frames through renderer-owned texture caches, transparent multisample layers, resolve, and final composition |
 | `ui/*.json` | audited static host-page chrome projected beside immutable scene-created UI |
+| `native/src/pal_system_fonts.cpp` | retained-UI font resolution through the host's own service — DirectWrite, CoreText or fontconfig — behind `pal_system_fonts.hpp` |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/data-methods.ts` | the shared read/mutate/store classification for plain-data methods |
@@ -64,12 +65,15 @@ Primary source ownership:
 | `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
 | `src/compiler/classes.ts` | reached local class identity, fields, constructors, inlined methods and getters |
+| `src/compiler/handle-collections.ts` | the one value kind for a generation-known collection of engine handles, and every entry-compiler operation over one: iteration frames, pushes, the runtime find, the imported-walk proofs |
 | `src/compiler/sprite-atlas-record.ts` | typed data-record projection into the native sprite-atlas handle model |
 | `src/compiler/promises.ts` | immediate AOT `Promise<T>` lowering |
 | `src/compiler/assignments.ts` | typed property-assignment validation and lowering |
 | `src/compiler/properties.ts` | the declared property reads: which native expression names a handle's property, and which properties are refused |
 | `src/compiler/property-animation.ts` | compile-time clip/track/key lowering and group options |
 | `src/pinned-mesh-defaults.ts` | a pinned factory's own defaults: the `??` a builder resolves an option through, and `createTransformNode`'s parameter initializers |
+| `src/pinned-polyhedra.ts` | the pin's polyhedron table, executed: the preset a scene selects reaches the emitted record alone |
+| `src/pinned-address-modes.ts` | the pin's WebGPU address-mode and filter spellings as native enumerators, shared by every sampler-reading loader — an unlisted mode fails generation by name |
 | `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
 | `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
 | `src/executed-module-assets.ts` | assets a scene module produces rather than fetches — a drawn canvas2D atlas, a computed pixel buffer — run in headless Chromium and baked |
@@ -107,6 +111,8 @@ Primary source ownership:
 | `src/compiler/audio-surface.ts` | the browser half: Web Audio method calls and property writes on the context the engine hands back |
 | `src/lowering/shadow-lowerer.ts` | the shadow family: light-space basis, spot volume, 4x4 multiply, caster bias, the generator's GPU contracts, and the depth-only render task `ensurePcfShadowTaskState` builds |
 | `src/compiler/intrinsics/shadow.ts` | which shadow surface a scene reached: the generator factory, its caster-mesh task input, the registration installing the shadow task |
+| `src/pinned-shadow-slots.ts` | which lights a receiving mesh samples and with which filter: the pin's `ShadowLightSlot` rows both receiver families share |
+| `src/pinned-esm-shadow.ts` | the ESM generator's GPU resources, read by running the pinned factory against a recording device — its four textures, the two-pass blur and the kernel-folded tap table |
 | `src/lowering/line-lowerer.ts` | the line family: the polyline flatten as C++, and the `ShaderMaterial` `createLineMaterial` composes |
 | `src/compiler/line-material.ts` | which line-material permutation a call settled, registered through the one shader-variant registrar |
 | `src/compiler/deterministic-random.ts` | the `Math.random` a scene installs as its simulation seed: recorded for the bake, refused where lowered code would also answer it |
@@ -122,7 +128,9 @@ Primary source ownership:
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
 | `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads, by executing the loader's own extension builders against a recording stub |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
+| `src/pinned-material-plugins.ts` | material plugins composed through the pin's own `pbrPluginExt`/`stdPluginExt` bridges, behind the same `enableMaterialPlugins` opt-in |
 | `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
+| `src/pinned-light-mode.ts` | the pin's light-arm rule — `rebuildSingle`'s none/single/multi resolution — stated once for the runtime's variant key and generation's composed set |
 | `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
 | `src/pinned-pbr-variant-cpp.ts` | C++ mirrors of each variant's UBO layout with offsets cross-checked against the composer, plus the variant-selector and texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
@@ -131,6 +139,8 @@ Primary source ownership:
 | `src/lowering/post-process-lowerer.ts` | the pass's contracts (internal target, viewport, bind-group order, blend table) and each effect's `writeUniforms`, from the pin's AST |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
 | `src/lowering/*-lowerer.ts` | focused Babylon API and formula lowering |
+| `src/lowering/gltf/*` | the generated glTF loader by focused module: assembly over the C++ template, plus cameras, punctual lights, IBL, accessor normalization, animation interpolation, sampler mapping, bone control, and the material/extension/image-processing defaults — each from its own pinned declarations |
+| `src/lowering/factory/*` | the factory families scenes call directly: the grown-array mesh builders, `createTube`'s pinned chain, and the material factories with their no-colour/ESM caster views |
 | `src/lowering/templates/` | the generated `.babylon`/glTF loader C++ templates |
 | `corpus/babylon-lite/` | byte-identical registered scene inputs from the pinned source commit |
 | `upstream/babylon-lite-corpus.json` | immutable scene, support-module, and application paths with SHA-256 evidence |
@@ -162,9 +172,14 @@ Primary source ownership:
 | `native/src/pal_gpu_shared.hpp` | vertex packing, RGBD decode, and deformation uniforms shared byte-identically by both GPU backends |
 | `native/src/pal_render_capture.hpp` | the `BBLITE_RENDER_CAPTURE` writer both backends share, `pinnedMaterialBlocks`/`pinnedMeshBlocks` included |
 | `native/src/pal_camera_controls.hpp` | SDL ArcRotate pointer/wheel and Free-camera key translation into the generated camera inertia math |
+| `native/src/pal_platform_events.hpp` | DOM-compatible application events shared by every SDL-backed frame loop |
 | `native/src/pal_runtime_trace.hpp` | opt-in, source-independent input/camera/dynamic-topology diagnostics shared by the native frame loops |
 | `native/src/pal_sdl_gpu_sprite.hpp` | the SDL_GPU sprite pass mechanics its `.cpp` driver draws through |
 | `native/src/pal_dawn_sprite.hpp` | the Dawn sprite pass mechanics its `.cpp` driver draws through |
+| `native/src/pal_sprite_ui_sdl.hpp`, `native/src/pal_sprite_ui_dawn.hpp` | the recorded RmlUi frame blended directly into the standalone sprite driver's single-sample target, per backend |
+| `native/src/pal_sdl_gpu_billboard.hpp`, `native/src/pal_dawn_billboard.hpp` | the world-space billboard pass each backend composes into the scene's own render pass, after the transparent meshes and against the scene depth |
+| `native/src/pal_sdl_gpu_picking.hpp`, `native/src/pal_dawn_picking.hpp` | GPU picking per backend: the pin's one-pixel sheared-VP candidate render, the id/depth attachments and their readback |
+| `native/src/pal_sdl_gpu_splat.hpp`, `native/src/pal_dawn_splat.hpp` | the Gaussian-splat pass per backend — the cloud's own pipeline, sort resources and draw, composed into a frame another renderer owns |
 
 `generated\` is disposable and never the source of a fix.
 
@@ -267,7 +282,7 @@ also accepts unregistered repository-local TypeScript and derives defaults.
 
 `src/scene-command.ts` provides compile, build, process, parity, compose, and
 validate operations, plus the diagnostic commands (geometry, capture,
-uniforms, diff, stability, probe-variants, measure, neutrality,
+uniforms, diff, diagnose, stability, probe-variants, measure, neutrality,
 neutrality-generated) the debugging ladder is built from.
 `src/parity-scene.ts` is the common comparison runner. Generated output is
 scene-local under `generated\<scene>`.

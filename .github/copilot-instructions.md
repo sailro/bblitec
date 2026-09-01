@@ -68,8 +68,7 @@ work is not started, or not finished, until it has been passed.
    is *itself* a fix for something a review would have caught is the last
    one to skip. Judging a change too small is the rationalisation that
    costs the second sweep — the gate is cheap and the judgement is not
-   trustworthy. Skipped once already, on the PR immediately after this
-   paragraph was written.
+   trustworthy.
 
    **Apply what it finds, including what reaches outside the diff.** A
    mechanism this repository already owns, a re-derivation to delete, a
@@ -233,10 +232,12 @@ complete source map is maintained in `docs/architecture.md`.
 
 ## Proven sound — do not re-audit
 
-A 2026-08-18 six-axis audit verified these with file:line evidence and closed
-every defect it found. They are the areas not worth re-deriving from scratch;
-anything numeric it also concluded has been left out, because counts are what
-went stale first.
+Successive whole-state audits verified these with file:line evidence and
+closed every defect they found; the latest (2026-09-01) re-verified the list.
+While an audit is open, `AUDIT.md`'s own verified-sound section is the living
+copy. These are the areas not worth re-deriving from scratch; anything
+numeric the audits also concluded has been left out, because counts are what
+go stale first.
 
 - **PAL isolation, both directions.** CMake translation-unit selection, the
   backend-type-free shared headers, the stub contract and the `run_engine`

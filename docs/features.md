@@ -285,11 +285,10 @@ payload; generation keeps the URL in-process until the asset is decoded. Only
 the base64 form is read; a percent-encoded body refuses rather than decoding
 through a second path.
 
-**Why compile time:** the native runtime has no network stack and no
-asynchronous scheduler, while every Babylon Lite loader is `fetch`-based. A
-built scene opens only local files, and the awaits that fetched them resolve
-immediately. Recorded per scene as `compile-time-asset-materialization`
-alongside `synchronous-aot-await`.
+**Why compile time:** force 1 in its purest form — every Babylon Lite loader
+is `fetch`-based, and the native runtime has no network stack and no
+asynchronous scheduler. Recorded per scene as
+`compile-time-asset-materialization` alongside `synchronous-aot-await`.
 
 ### Compressed geometry
 
@@ -303,12 +302,11 @@ materializes that placeholder. Packaging preserves that relationship while it
 embeds the compressed source, then the pin's own hook writes the fallback,
 removes the extension, and leaves one ordinary binary buffer for native load.
 
-**Why compile time:** both decoders are WebAssembly modules the browser
-fetches at run time. Decoding during generation keeps the native runtime free
-of a decompression dependency, and because the pinned artifacts are part of
-the upstream pin, the browser reference and this pass run *the same decoder
-build over the same bytes* — the vertices agree by construction rather than by
-argument.
+**Why compile time:** force 3 — both decoders are WebAssembly modules, kept
+out of the executable by decoding at generation. And because the pinned
+artifacts are part of the upstream pin, the browser reference and this pass
+run *the same decoder build over the same bytes* — the vertices agree by
+construction rather than by argument.
 
 Sparse accessors resolve in the same pass, and they are core glTF rather than
 an extension: an accessor's value array is a base — its `bufferView`, or all
@@ -347,29 +345,25 @@ the split is the same one `.env` and `.hdr` already take.
   chain, so there is no browser work to reproduce: the pinned parser is
   lowered to C++ and runs at startup, resolving the file's `glInternalFormat`
   against the pin's own format table.
-- **Which container to fetch is decided at generation.** `loadKtxTexture2D`
-  takes a base URL and a suffix list, keeps the suffixes whose compressed
-  format the *device* reports, and tries them in order — a run-time question
-  a native build cannot ask, so generation answers it once with block
-  compression, the format the validated platform and the browser reference
-  both report ([fidelity](fidelity.md#shader-contract)). A call listing no
+- **Which container to fetch is decided at generation.** `loadKtxTexture2D`'s
+  suffix selection is a device question a native build cannot ask, so
+  generation answers it once with block compression, the format the validated
+  platform and the browser reference both report
+  ([fidelity](fidelity.md#compressed-textures)). A call listing no
   block-compression suffix refuses rather than packaging the pin's
   uncompressed fallback, which is a different texture; a device that cannot
   sample the packaged format refuses it by name at upload, on both backends.
 - **A Basis file is transcoded at generation**, and is the one texture whose
-  bytes the browser produces. Its transcoder is a JavaScript+WebAssembly
-  module the page injects with a `<script>` tag, and the format it transcodes
-  *into* is another device question. So generation runs the pinned loader in
-  headless Chromium and packages what it uploaded, as a KTX1 container — the
-  runtime already reads one, so the transcode needs no second reader.
-  Recorded per scene as `executed-basis-transcode`; the baked bytes depend on
-  the Chrome that compiled them, exactly as the drawn atlas does.
+  bytes the browser produces: its transcoder and its target format are both
+  browser/device questions (force 2), so generation runs the pinned loader in
+  headless Chromium and packages what it uploaded as a KTX1 container the
+  runtime already reads. Recorded per scene as `executed-basis-transcode`;
+  the baked bytes depend on the Chrome that compiled them, exactly as the
+  drawn atlas does.
 
-The texture object's own `invertY` travels with it either way — a UV-block
-flip rather than an upload flip, which is what keeps a compressed texture
-correct where an in-place row swap is impossible. `loadBasisTexture2D` sets
-it and `loadKtxTexture2D` does not ([fidelity](fidelity.md#shader-contract)
-carries the contract).
+The texture object's own `invertY` travels with it either way —
+`loadBasisTexture2D` sets it and `loadKtxTexture2D` does not; the UV-block
+flip contract is in [fidelity](fidelity.md#compressed-textures).
 
 Neither loader's sampler options are lowered, because the reached calls pass
 none. A `loadKtxTexture2D` whose suffixes are not an array literal fails at
@@ -390,10 +384,9 @@ Three environment routes exist and they do not split the same way:
   at startup. Recorded as `compile-time-hdr-cubemap`.
 - **DDS** is compiled to the same package. The file's face-major mip chain is
   transposed to mip-major and the nine irradiance harmonics are projected out
-  of mip 0, each texel weighted by the solid angle it subtends. *Why:* both
-  halves are decided entirely by the asset, so nothing at run time can change
-  them; the projected floats are bit-identical to the ones the browser
-  uploads.
+  of mip 0, each texel weighted by the solid angle it subtends. *Why:*
+  force 5 — both halves are decided entirely by the asset; the projected
+  floats are bit-identical to the ones the browser uploads.
 - **`.env` is deliberately not compiled.** It already carries a prefiltered
   mip chain and its harmonics, so there is no browser work to reproduce: the
   pinned parser is lowered to C++ and runs at load like any other loader.
@@ -439,15 +432,14 @@ result into a camera-facing billboard system. What ships is that frozen
 state.
 
 **The simulation is executed, not lowered** — the strongest case of the
-executed kind in this repository: the graph build is JavaScript closures
-(one dynamically imported evaluator per block class), and the seed each
-scene installs draws through `Math.sin`, which is not bit-portable between
-V8 and a native maths library. So generation runs the pin's own parser,
-builder and simulation in headless Chromium and bakes the particle buffer.
-Recorded per scene as `executed-node-particle-simulation`; the baked state
-depends on the Chrome that ran it, exactly as the drawn atlas and the
-pinned GGX prefilter do. [Fidelity](fidelity.md#shader-contract) carries
-the full rationale and each downstream fold's contract.
+executed kind in this repository (force 2): the graph build is JavaScript
+closures, and the seed each scene installs draws through `Math.sin`, which
+is not bit-portable between V8 and a native maths library. Generation runs
+the pin's own parser, builder and simulation in headless Chromium and bakes
+the particle buffer, recorded per scene as
+`executed-node-particle-simulation` with the drawn atlas's
+Chrome-dependent-bytes tradeoff. [Fidelity](fidelity.md#node-particles)
+carries the full rationale and each downstream fold's contract.
 
 **What stays folded is everything downstream**, on both render targets.
 `createParticleBillboard` and `syncParticleBillboard` are lowered from
@@ -459,21 +451,15 @@ emitter, the texture base URL, and the **camera**, because
 `UpdateFlowMapBlock` derives a view-projection during the build.
 
 **Two render targets, and the exact blends on both.** A frozen set draws
-either as camera-facing billboards or through the pure-2D Sprite2D bridge,
-and each has a plain mapping and an exact one: the plain builders map three
-Babylon blend modes and degrade the rest, while
-`enableNodeParticleBlendModes` and
-`registerNodeParticleSet2DWithBlendModes` resolve all five — mode 4 as two
-passes over one renderable on the billboard path, and as two equal-order
-layers the renderer's stable sort keeps adjacent on the pure-2D one.
-
-**A registered set is folded, and the fold is measured**: the driver steps
-each registered system's state once more and compares every column the sync
-reads, refusing a registration whose system still moves or whose
-`updateSpeed` is not zero. **A particle buffer is generation-time state**: a
-scene that writes a column after the freeze, or checks the live count, is
-editing or asserting about the bake, so both move to the driver and emit
-nothing.
+either as camera-facing billboards or through the pure-2D Sprite2D bridge:
+the plain builders map three Babylon blend modes and degrade the rest, while
+`enableNodeParticleBlendModes` and `registerNodeParticleSet2DWithBlendModes`
+resolve all five, multiply-add included. **A registered set is folded, and
+the fold is measured rather than argued**; **a particle buffer is
+generation-time state**, so a scene that writes a column after the freeze,
+or checks the live count, moves to the driver and emits nothing.
+([Fidelity](fidelity.md#node-particles) carries the blend mappings, the
+mode-4 pass shapes and the fold measurement.)
 
 What refuses at generation, by name: a snippet id (a network read at page
 load), a live set (one whose per-frame step moves particles), a system
@@ -797,56 +783,33 @@ every re-bake already keys on. (The pin's version snapshot is its
 transform node is tagged on both ends and never takes it.)
 
 `enableMirroredMeshes(scene)` is the opt-in that adds winding reversal from
-the live world determinant. The Standard pipeline has none of its own
-upstream, which is why the pin installs a primitive resolver for it, and
-this port composes the family's clockwise arms only under the same opt-in.
-A mesh mirrored before its renderable was built carries the winding from
-the first frame; one mirrored later flips its pipeline through a plan
-rebuild, which is where this port chooses a front face. The opt-in seeds
-every mesh present and then appends its watcher to the scene's own
-before-render list, exactly as `installMirroredMeshSupport` does, so the
-frame position is the pin's rather than a rule spelled in each backend. The
-glTF loader still rewinds a single-sided mirrored primitive's indices at load
-and stamps that authored winding as the watcher's baseline, so an imported
-mesh does not flip twice. A procedural PBR mesh mirrored later has no loader
-pass to do that work; the opt-in selects the corresponding back-culled,
-clockwise PBR pipeline when its live determinant crosses the baseline.
+the live world determinant — it is also what composes the Standard family's
+clockwise pipeline arms at all. The glTF loader's index-rewind stays an
+imported mesh's authored baseline so nothing flips twice, and a procedural
+PBR mesh that crosses the determinant boundary later flips its pipeline
+through a plan rebuild ([fidelity](fidelity.md#scene-hierarchy) carries the
+watcher position and both families' contracts).
 
-`setParent` preserves the child's current world transform while it rewires the
-public traversal list and the world-matrix invalidation registry. It snapshots
-the child world before the link changes, derives the new local as
-`inverse(parentWorld) * childWorld`, and applies the pin's full decomposition,
-including a negative determinant as signed Y scale and the documented
-position-only fallback for a singular parent. Reparenting a matrix-declared
-node clears its captured raw matrix so the decomposed TRS takes authority.
-Flattened asset roots apply the same operation to their rendered leaves, and
-recursive imported-node lookup uses each glTF scene-node name while it walks
-the loader-built `children` hierarchy. Scene 269 gates those paths together
-with the procedural PBR winding transition.
+`setParent` preserves the child's current world transform while it rewires
+the public traversal list and the world-matrix invalidation registry,
+applying the pin's full decomposition — its negative-determinant and
+singular-parent arms included — with the same operation serving flattened
+asset roots and name-resolved imported glTF nodes
+([fidelity](fidelity.md#scene-hierarchy) carries the contract; scene 269
+gates the paths).
 
 A scene-local shader material draws through a mesh's thin instances. Both
-lanes are the **mesh's** decision: the pin's `hasColor` is
-`!!ti.colors && material._tic != 0`, and the material-side `_tic` opt-out is a
-key this port refuses, so the mesh decides outright. That cannot be settled
-where the material is created — which precedes both its assignment and its
-instances — so the four `world0..3` lanes and the `instanceColor` lane are
-settled after the whole entry is compiled, from the material-to-mesh pairs
-recorded on the way through, in either source order.
-
-Upstream builds one pipeline per renderable and keys it on exactly those
-lanes, so a material can be instanced on one mesh and plain on another. This
-port bakes one variant into the material record instead, so meshes that
-disagree on either lane refuse rather than one of them drawing through the
-wrong prelude; a mesh that can only *possibly* acquire instances, from a
-frame callback, refuses for the same reason. The line family shows the shape
-a generalization would take, naming each permutation (`-ti`, `-tic`) as its
-own variant.
-
-The lanes sit at fixed locations 16-20 where the pin puts them at
-`material.attributes.length`. Nothing observable rides the numbers — this
-port synthesizes the whole `VertexInput` and the scene's WGSL names the lanes,
-not their slots — but it is why the device asks for 21 vertex attributes
-where the pin asks for far fewer.
+lanes — the four `world0..3` matrix columns and the `instanceColor` lane —
+are the **mesh's** decision, and the material-side `_tic` opt-out is a key
+this port refuses. One variant is baked into the material record, so meshes
+that disagree on either lane refuse rather than one of them drawing through
+the wrong prelude, and a mesh that can only *possibly* acquire instances,
+from a frame callback, refuses for the same reason. The line family shows
+the shape a generalization would take, naming each permutation (`-ti`,
+`-tic`) as its own variant.
+([fidelity](fidelity.md#deformation-and-instancing) carries the pin's
+`hasColor` rule, the after-compilation lane settlement, and where the lanes
+sit.)
 
 The material's `name` is optional, as it is upstream, where it is carried onto
 the material and composed from by nothing; an unnamed one takes the identity
@@ -1153,14 +1116,11 @@ per-signature index that keys the compose and pipeline caches. What deploys
 is the composed fragment, byte-identical to the one the browser compiles.
 
 **Where the index rides differs by family, because the two variant selectors
-do.** A PBR draw resolves its variant by material index, so its composed row
-already carries the plugin and nothing travels at run time; the bridge's own
-`detect` puts the index into `features2` while generation derives the
-material. A Standard draw resolves by the feature word the material record
-derives, so the record carries the index and the generated derivation shifts
-it back in — which is exactly the pre-bake `registerStdPlugins` performs
-upstream, and for the same reason: Standard's feature computation is not
-extension-extensible.
+do**: a PBR draw resolves its variant by material index, so its composed row
+already carries the plugin and nothing travels at run time, while a Standard
+record carries the index for the generated feature-word derivation to shift
+back in — the pre-bake `registerStdPlugins` performs upstream
+([fidelity](fidelity.md#material-plugins) carries the routing contract).
 
 The reached slice is a plugin declaring a name and custom code. Everything
 past that refuses at generation naming the member: `getUniforms`/`writeUbo`
@@ -1644,14 +1604,12 @@ needs no define of its own — every resource it wants some sibling already
 builds — so what the port adds for it is the factory, its defaults read off
 the pinned module, and the third arm of the per-frame refresh.
 
-**The CSM directional generator is an explicit single-map adaptation.** The
-pin allocates a depth-texture array, fits one map per camera-frustum cascade,
-and selects or blends them by view depth. The native resource seam retains the
-first camera-fitted cascade in one 2D PCF map. Its split formula, float
-view-projection inversion, clone-aware caster Z fit, texel snap, bias and
-nine-tap filter are still derived from the pinned CSM declarations. Farther
-coverage and cross-cascade blending are omitted and recorded as
-`csm-single-map-near-cascade` at high risk.
+**The CSM directional generator is an explicit single-map adaptation**: the
+pin's depth-texture cascade array becomes the first camera-fitted cascade in
+one 2D PCF map, every formula still derived from the pinned CSM
+declarations. Farther coverage and cross-cascade blending are omitted and
+recorded as `csm-single-map-near-cascade` at high risk
+([fidelity](fidelity.md#shadows) carries the adaptation).
 
 **A composed row names a LIGHT, not a generator.** The pin numbers a
 receiver's group-2 rows `shadowTex_<lightIndex>`, where the index is "the
@@ -1673,14 +1631,12 @@ than the material one.
 
 **Run time: two passes and one exception.** The caster pass is a depth-only
 render task over the generator's map (an ESM one stores a colour beside that
-depth), rendered from the light: standard-Z
-(`less-equal`, cleared to the far value 1), which is the pin's own one
-exception to this port's reverse-Z convention, and the pin's clip-space bias
-baked into the *caster's* view-projection alone — the receiver samples with
-the unbiased matrix, and biasing both would shift the comparison twice. The
-The Standard/PBR receiver then binds the map, comparison sampler and receiver
-block as the pin's group 2, and `shadowFactors[lightIndex]` scales that light's
-diffuse and specular contribution.
+depth), rendered from the light under the pin's one standard-Z exception to
+this port's reverse-Z convention, with the pin's clip-space bias in the
+caster's matrix alone ([fidelity](fidelity.md#shadows) carries both
+contracts). The Standard/PBR receiver then binds the map, comparison sampler
+and receiver block as the pin's group 2, and `shadowFactors[lightIndex]`
+scales that light's diffuse and specular contribution.
 
 Imported meshes and runtime handle collections may cast or receive. A dynamic
 receiver keeps both composed receiver states and writes the live mesh-record
@@ -1689,7 +1645,10 @@ lane; a dynamic caster list is evaluated when the shadow task runs.
 What refuses at generation, by name: a `receiveShadows` written to anything
 but a statically known boolean (the Standard/PBR variant is selected at
 generation), and generator controls outside the reached factory sets.
-`normalBias` and `forceRefreshEveryFrame` remain refused; CSM controls whose
+`normalBias` remains refused everywhere, `forceRefreshEveryFrame` on the two
+PCF factories — the ESM and CSM factories validate it as generation-known and
+carry nothing across the seam, since native refreshes every reached shadow
+task per frame; CSM controls whose
 only effect belongs to omitted farther cascades are accepted, validated, and
 named by the fidelity adaptation rather than silently approximated.
 
@@ -1900,8 +1859,9 @@ What refuses at generation, by name: a custom `vertexWGSL`, a `blend` state,
 the `EffectRenderer`'s per-frame `update` callback, the per-binding record
 form of `setEffectUniforms`, an effect texture from anything but
 `createSolidTexture2D`, and every `EffectBindingLayout` field past the five
-the corpus writes (`visibility`, `textureSampleType`, `viewDimension`,
-`samplerType`). The uniform-only family likewise refuses a custom
+the corpus writes — `name`, `binding`, `kind`, `uniformByteLength` and
+`textureBinding`; `visibility`, `textureSampleType`, `viewDimension` and
+`samplerType` refuse. The uniform-only family likewise refuses a custom
 `vertexWGSL`; its contract is deliberately the pinned default fullscreen
 stage plus the caller's fragment.
 
