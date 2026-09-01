@@ -1,6 +1,7 @@
 import ts from "typescript";
 import type { CompileAsset, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { enclosingLoopControl } from "../statements.js";
 import type { CompiledAnisotropyOptions } from "./material-options.js";
 import {
     requiredStaticColor3,
@@ -10,15 +11,19 @@ import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
 import {
+    compileOptionalStaticBoolean,
+    compileStaticNumber,
     staticNumberValue,
     validateObjectProperties,
     type ObjectValidationContext,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
 import type {
+    SceneMeshNamePredicate,
     ScenePbrClearCoatManifest,
     ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
+    ScenePbrLightmapManifest,
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
     ScenePbrSubsurfaceManifest,
@@ -59,6 +64,29 @@ export interface MaterialIntrinsicContext
         iridescence: ScenePbrIridescenceManifest,
         index: number | undefined,
     ): void;
+    recordScenePbrLightmap(
+        lightmap: ScenePbrLightmapManifest,
+        index: number | undefined,
+    ): void;
+    /**
+     * The lightmap a walk over `scene.meshes` stamped on a loaded
+     * container's materials, with the walk's own mesh-name filter. The
+     * document evaluates the filter at composition; nothing here reads a
+     * name.
+     */
+    recordAssetSceneLightmap(
+        meshNamePredicate: SceneMeshNamePredicate,
+        lightmap: ScenePbrLightmapManifest,
+        node: ts.Node,
+    ): void;
+    /** Whether `enablePbrLightmap()` has registered the extension yet. */
+    pbrLightmapEnabled(): boolean;
+    /**
+     * Textures a material slot has already copied. Upstream binds one
+     * object, so a `Texture2D` property written after the copy would reach
+     * the material there and not here; the write site refuses on this.
+     */
+    readonly boundPixelsTextures: Set<string>;
     recordScenePbrAnisotropy(
         anisotropy: ScenePbrAnisotropyManifest,
         index: number | undefined,
@@ -161,6 +189,229 @@ export interface MaterialIntrinsicContext
     ): string[];
     cppString(value: string): string;
     fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * The mesh-name test a scene's own walk wrote, as the closed predicate
+ * generation can evaluate against a document.
+ *
+ * Nothing here interprets a name: the grammar is equality, `startsWith`
+ * and the three boolean operators, which is what the reached filter is
+ * written in, and every other shape refuses naming itself. That is the
+ * point — the selection decides which materials compose the lightmap arm,
+ * and a filter this cannot represent has to fail rather than be
+ * approximated into stamping the wrong set.
+ */
+function compileMeshNamePredicate(
+    context: MaterialIntrinsicContext,
+    binding: string,
+    expression: ts.Expression,
+): SceneMeshNamePredicate {
+    const node = context.resolveStaticExpression(expression);
+    if (ts.isParenthesizedExpression(node)) {
+        return compileMeshNamePredicate(context, binding, node.expression);
+    }
+    if (
+        ts.isPrefixUnaryExpression(node) &&
+        node.operator === ts.SyntaxKind.ExclamationToken
+    ) {
+        return {
+            kind: "not",
+            operand: compileMeshNamePredicate(context, binding, node.operand),
+        };
+    }
+    // `<binding>.name`, the only value the grammar reads.
+    const readsName = (candidate: ts.Expression): boolean => {
+        const inner = context.resolveStaticExpression(candidate);
+        return (
+            ts.isPropertyAccessExpression(inner) &&
+            inner.name.text === "name" &&
+            ts.isIdentifier(inner.expression) &&
+            inner.expression.text === binding
+        );
+    };
+    const literal = (candidate: ts.Expression): string | undefined => {
+        const inner = context.resolveStaticExpression(candidate);
+        return ts.isStringLiteralLike(inner) ? inner.text : undefined;
+    };
+    if (ts.isBinaryExpression(node)) {
+        const operator = node.operatorToken.kind;
+        if (operator === ts.SyntaxKind.AmpersandAmpersandToken) {
+            return {
+                kind: "and",
+                operands: [
+                    compileMeshNamePredicate(context, binding, node.left),
+                    compileMeshNamePredicate(context, binding, node.right),
+                ],
+            };
+        }
+        if (operator === ts.SyntaxKind.BarBarToken) {
+            return {
+                kind: "or",
+                operands: [
+                    compileMeshNamePredicate(context, binding, node.left),
+                    compileMeshNamePredicate(context, binding, node.right),
+                ],
+            };
+        }
+        if (
+            operator === ts.SyntaxKind.EqualsEqualsEqualsToken ||
+            operator === ts.SyntaxKind.ExclamationEqualsEqualsToken
+        ) {
+            const value = readsName(node.left)
+                ? literal(node.right)
+                : readsName(node.right)
+                  ? literal(node.left)
+                  : undefined;
+            if (value !== undefined) {
+                const equals: SceneMeshNamePredicate = { kind: "equals", value };
+                return operator === ts.SyntaxKind.EqualsEqualsEqualsToken
+                    ? equals
+                    : { kind: "not", operand: equals };
+            }
+        }
+    }
+    if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "startsWith" &&
+        node.arguments.length === 1 &&
+        readsName(node.expression.expression)
+    ) {
+        const value = literal(node.arguments[0]!);
+        if (value !== undefined) return { kind: "startsWith", value };
+    }
+    context.fail(
+        expression,
+        "A lightmap walk's mesh filter is folded into a compile-time " +
+            "material selection, so it is read in a closed grammar: " +
+            "`mesh.name === \"...\"`, `mesh.name.startsWith(\"...\")`, and " +
+            "`!`/`&&`/`||` over those. This test is outside it, and " +
+            "approximating it would stamp the wrong materials.",
+    );
+}
+
+/**
+ * The statements a folded walk's body may hold after its filter.
+ *
+ * The filter is the only selector the fold represents, so a second one —
+ * a `continue` further down, a `break`, an early `return` — would make the
+ * runtime loop visit a set the fold cannot see. Each refuses by name.
+ */
+function assertNoSecondSelector(
+    context: MaterialIntrinsicContext,
+    statement: ts.Statement,
+): void {
+    // One traversal with the container walk's own guard: it stops at a
+    // nested loop, at a function-like and — for an unqualified `break` — at
+    // a nested `switch`, so a loop or switch inside the body is not
+    // mistaken for a second exit from this one.
+    const second = enclosingLoopControl(statement, { returns: true });
+    if (second) {
+        context.fail(
+            second,
+            "A lightmap walk's body selects with its leading mesh-name " +
+                "filter alone: generation folds that filter into the " +
+                "materials it composes, and a second exit would leave " +
+                "the run-time loop visiting a different set.",
+        );
+    }
+}
+
+/**
+ * The walk a `setPbrLightmap` on a LOADED material sits inside, folded.
+ *
+ * A loaded material has no scene-side record a setter could name, so the
+ * only compile-time identity is the document its container composes — the
+ * same position `setPbrUnlit` is in. What differs is the selection: this
+ * walk stamps by mesh name, and PBR composition is settled per material at
+ * generation, so the filter has to reach generation with it. Hence the
+ * licence is minted by the loop itself: `for (const m of scene.meshes)`
+ * demonstrably visits every renderable in the scene, and its own leading
+ * filter is what narrows that to the materials this returns.
+ */
+function foldedLightmapMeshWalk(
+    context: MaterialIntrinsicContext,
+    call: ts.CallExpression,
+): SceneMeshNamePredicate {
+    let node: ts.Node = call;
+    while (node.parent && !ts.isForOfStatement(node.parent)) {
+        node = node.parent;
+        // A function boundary ends the climb: a `setPbrLightmap` factored
+        // into a helper is not lexically inside the walk, so the walk's
+        // own proof does not reach it.
+        if (ts.isFunctionLike(node)) break;
+    }
+    const walk = node.parent;
+    if (!walk || !ts.isForOfStatement(walk)) {
+        context.fail(
+            call,
+            "setPbrLightmap on a loaded material is lowered only inside a " +
+                "`for (const mesh of scene.meshes)` walk: a loaded material " +
+                "has no compile-time identity of its own, and the walk is " +
+                "the proof that the materials generation stamps are the " +
+                "ones the run-time loop reaches.",
+        );
+    }
+    const subject = walk.expression;
+    if (
+        !ts.isPropertyAccessExpression(subject) ||
+        subject.name.text !== "meshes" ||
+        !ts.isIdentifier(subject.expression) ||
+        context.lookupOptional(subject.expression)?.kind !== "scene"
+    ) {
+        context.fail(
+            walk.expression,
+            "A lightmap walk iterates `scene.meshes`, which is what reaches " +
+                "every renderable the scene holds; another collection " +
+                "carries no such proof.",
+        );
+    }
+    const declarations = ts.isVariableDeclarationList(walk.initializer)
+        ? walk.initializer.declarations
+        : [];
+    const binding = declarations.length === 1 &&
+            ts.isIdentifier(declarations[0]!.name)
+        ? declarations[0]!.name.text
+        : undefined;
+    if (binding === undefined) {
+        context.fail(
+            walk.initializer,
+            "A lightmap walk binds each mesh to one identifier.",
+        );
+    }
+    const statements = ts.isBlock(walk.statement)
+        ? [...walk.statement.statements]
+        : [walk.statement];
+    // The filter: a leading `if (<test>) continue;` and nothing else that
+    // decides membership. A walk without one stamps every renderable,
+    // which is the same shape `setPbrUnlit` over a container takes.
+    const head = statements[0];
+    const guard = head !== undefined && ts.isIfStatement(head) &&
+            !head.elseStatement
+        ? head
+        : undefined;
+    const thenBody = guard === undefined
+        ? []
+        : ts.isBlock(guard.thenStatement)
+        ? [...guard.thenStatement.statements]
+        : [guard.thenStatement];
+    const filter = thenBody.length === 1 &&
+            ts.isContinueStatement(thenBody[0]!)
+        ? guard
+        : undefined;
+    for (const statement of statements.slice(filter ? 1 : 0)) {
+        assertNoSecondSelector(context, statement);
+    }
+    if (!filter) return { kind: "always" };
+    return {
+        kind: "not",
+        operand: compileMeshNamePredicate(
+            context,
+            binding,
+            filter.expression,
+        ),
+    };
 }
 
 /**
@@ -1039,6 +1290,141 @@ export function compileMaterialIntrinsic(
                     `${iridescence.indexOfRefraction}, ` +
                     `${iridescence.minimumThickness}, ` +
                     `${iridescence.maximumThickness})`,
+            };
+        }
+
+        case "enablePbrLightmap": {
+            // src/material/pbr/enable-pbr-lightmap.ts: the opt-in that
+            // imports the lightmap fragment and registers its extension.
+            // Upstream the always-loaded PBR core scans for no
+            // `lightmapTexture` at all, so this call IS the reach — which
+            // is why the feature is recorded here and not at
+            // `setPbrLightmap`, exactly as `enableMaterialPlugins` records
+            // its bridges rather than the `plugins` write.
+            //
+            // Generation performs the same registration before it composes
+            // (`src/pinned-pbr-variants.ts`), so nothing is emitted; what
+            // the feature selects natively is the material record's
+            // lightmap lanes, its texture slot and the composed arm.
+            context.expectArgumentCount(call, 0, 0);
+            context.reachFeature("material:pbr", call);
+            context.reachFeature("material:lightmap", call);
+            context.reachFeature("renderer:scene", call);
+            return { kind: "void", cpp: "" };
+        }
+
+        case "setPbrLightmap": {
+            // src/material/pbr/enable-pbr-lightmap.ts#setPbrLightmap: the
+            // props land on the material and the `_uv2Mask` bit records the
+            // TEXCOORD_1 claim. Every one of them is composition input --
+            // the extension's own `detect` reads the blend, the UV set, the
+            // gamma decode and the texture's `invertY`/`uAng` pair to pick
+            // which of the fragment's arms composes -- so they are settled
+            // at generation; only the level stays a record lane, because
+            // the pin's `writeLightmapUBO` reads it live.
+            context.expectArgumentCount(call, 2, 3);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const texture = context.compileValue(call.arguments[1]!);
+            context.expectKind(texture, "texture", call.arguments[1]!);
+            if (texture.textureStorage !== "file") {
+                context.fail(
+                    call.arguments[1]!,
+                    "A reached lightmap is a `loadTexture2D` image: the " +
+                        "extension binds the texture's own view and sampler, " +
+                        "and its V-flip arm folds the texture-object " +
+                        "`invertY` this port only records for a loaded one.",
+                );
+            }
+            context.expectSameEngine(material, texture, call);
+            if (!context.pbrLightmapEnabled()) {
+                context.fail(
+                    call,
+                    "setPbrLightmap is reached before `enablePbrLightmap()`. " +
+                        "Upstream that setter stamps a material no registered " +
+                        "extension detects, so nothing composes and nothing " +
+                        "renders; composition is settled where the call sits " +
+                        "here, so the opt-in has to precede it.",
+                );
+            }
+            const options = call.arguments[2]
+                ? context.expectObjectLiteral(call.arguments[2])
+                : undefined;
+            if (options) {
+                validateObjectProperties(
+                    context,
+                    options,
+                    ["level", "coordIndex", "useAsShadowmap", "gamma"],
+                    "Reached lightmap options support level, coordIndex, useAsShadowmap, and gamma.",
+                );
+            }
+            const coordIndexExpression = options &&
+                context.objectProperty(options, "coordIndex");
+            // The pin's own `options?.coordIndex ?? 1`.
+            const coordIndex = coordIndexExpression
+                ? compileStaticNumber(
+                    context,
+                    coordIndexExpression,
+                    "A lightmap coordIndex",
+                )
+                : 1;
+            if (coordIndex !== 0 && coordIndex !== 1) {
+                context.fail(
+                    coordIndexExpression ?? call,
+                    "A lightmap samples TEXCOORD_0 or TEXCOORD_1; the pinned " +
+                        "extension declares no other UV set.",
+                );
+            }
+            const useAsShadowmap = compileOptionalStaticBoolean(
+                context,
+                options && context.objectProperty(options, "useAsShadowmap"),
+                false,
+                "A lightmap's useAsShadowmap",
+            );
+            const gamma = compileOptionalStaticBoolean(
+                context,
+                options && context.objectProperty(options, "gamma"),
+                false,
+                "A lightmap's gamma",
+            );
+            // `material.lightmapLevel = options?.level ?? 1` — the one
+            // runtime lane, so the expression need not settle here.
+            const levelExpression = options &&
+                context.objectProperty(options, "level");
+            const level = levelExpression
+                ? context.compileNumber(levelExpression, "float")
+                : "1.0f";
+            const lightmap: ScenePbrLightmapManifest = {
+                coordIndex,
+                useAsShadowmap,
+                gamma,
+                textureInvertY: texture.textureObjectInvertY === true,
+                textureUAng: texture.textureUvAng ?? 0,
+            };
+            context.reachFeature("material:pbr", call);
+            // The material record takes a copy of the texture, so a later
+            // `uAng`/`invertY` write would move the local where upstream
+            // would have moved the bound object — and with it the arm this
+            // call just composed.
+            context.boundPixelsTextures.add(texture.cpp);
+            if (material.assetPbrMaterial) {
+                context.recordAssetSceneLightmap(
+                    foldedLightmapMeshWalk(context, call),
+                    lightmap,
+                    call,
+                );
+            } else {
+                context.recordScenePbrLightmap(
+                    lightmap,
+                    material.scenePbrMaterialIndex,
+                );
+            }
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_pbr_lightmap(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${texture.cpp}, ${level})`,
             };
         }
 

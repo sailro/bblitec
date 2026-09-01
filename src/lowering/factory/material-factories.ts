@@ -834,6 +834,16 @@ SolidTexture create_solid_texture(
                 "setPbrIridescence",
                 "mat._iridescence = iridescence",
             ],
+            // The lightmap's own stamp is a public field rather than a
+            // `_x`, and it is the one the extension's `detect` reads first
+            // (`if (!m.lightmapTexture) return { f: 0, f2: 0 }`), so a
+            // rename there would compose every lightmapped material as an
+            // ordinary one rather than failing.
+            [
+                "enable-pbr-lightmap.ts",
+                "setPbrLightmap",
+                "material.lightmapTexture = texture",
+            ],
         ] as const) {
             const { declaration } = this.context.functionDeclaration(
                 `src/material/pbr/${module}`,
@@ -900,7 +910,7 @@ SolidTexture create_solid_texture(
         }
         return {
             modulePath: pbrModule,
-            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrMetallicReflectance,setPbrSubsurface",
+            symbolName: "createPbrMaterial,setPbrUnlit,setPbrSkybox,setPbrEmissive,setPbrIridescence,setPbrLightmap,setPbrMetallicReflectance,setPbrSubsurface",
             header: "",
             source: `// ${this.context.provenance(pbrModule, "createPbrMaterial")}
 #include <bblite/runtime.hpp>
@@ -1103,6 +1113,22 @@ void set_pbr_iridescence(
     record.iridescence_index_of_refraction = index_of_refraction;
     record.iridescence_minimum_thickness = minimum_thickness;
     record.iridescence_maximum_thickness = maximum_thickness;
+}
+
+// src/material/pbr/enable-pbr-lightmap.ts#setPbrLightmap. The setter's other
+// four stamps -- the coord index, the shadowmap blend, the gamma decode and
+// the _uv2Mask claim -- are composition input, already spent on the variant
+// this material draws through; what survives to run time is the texture the
+// extension's own bind hook binds and the level writeLightmapUBO reads,
+// whose nullish 1 the record's own default carries.
+void set_pbr_lightmap(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture,
+    float level) {
+    MaterialRecord& record = engine.materials[material.value];
+    record.lightmap_texture = std::move(texture.data);
+    record.lightmap_level = level;
 }
 
 // src/material/pbr/fragments/anisotropy-fragment.ts#pbrExt.writeUbo: the

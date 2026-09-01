@@ -490,10 +490,22 @@ export interface AssignmentContext extends DeterministicRandomContext {
   /** `mesh.receiveShadows = true`, by scene-mesh index. */
   recordShadowReceiver(sceneMeshIndex: number): void;
   recordDynamicShadowReceivers(): void;
+  /** `mesh.id = "..."`, by the handle spelling the write named. */
+  recordSceneMeshId(meshCpp: string, id: string, node: ts.Node): void;
+  /** The meshes an `includedOnlyMeshIds` set names, as handle spellings. */
+  resolveSceneMeshIds(ids: readonly string[], node: ts.Node): string[];
   propertyName(name: ts.PropertyName): string | undefined;
   probeStaticArrayLiteral(
     expression: ts.Expression,
   ): ts.ArrayLiteralExpression | undefined;
+  /**
+   * The strings a generation-known array expression holds, spreads and a
+   * `const` binding nothing writes through included — a pure probe that
+   * emits nothing, so it is the first question to ask.
+   */
+  staticStringElements(
+    expression: ts.Expression,
+  ): readonly string[] | undefined;
   compileStaticString(expression: ts.Expression): string;
   /** `material.plugins = [...]` on the scene PBR material the write names. */
   recordScenePbrPlugins(
@@ -1391,6 +1403,26 @@ export function emitPropertyAssignment(
       return;
     }
 
+    // `Mesh.id` is not `SceneNode.name`. The pin declares it separately --
+    // "Unique ID from source file (e.g. .babylon). Used for light
+    // include/exclude filtering" -- and `src/render/lights-ubo.ts`
+    // `affectsMesh` is its only reader, which is why an unset id is
+    // `undefined` where an unset name is the factory's own literal. That
+    // join folds here, so the write records which mesh the id names and
+    // emits nothing: `LightRecord` keys index vectors where the pin keys
+    // Sets of strings, exactly as the `.babylon` loader already resolves
+    // its own `mesh_records_by_id`, and no run-time reader is left to
+    // store the string for.
+    if (target.kind === "mesh" && property === "id") {
+      requireSimpleAssignment(context, expression, "mesh id");
+      context.recordSceneMeshId(
+        target.cpp,
+        context.compileStaticString(expression.right),
+        expression,
+      );
+      return;
+    }
+
     // `mesh.receiveShadows` is a composition key and nothing else:
     // `_computeMeshFeatures` turns it into `MSH_RECEIVE_SHADOWS`, which
     // selects the fragment carrying the per-light sampling, and every
@@ -1513,6 +1545,29 @@ export function emitPropertyAssignment(
       return;
     }
 
+    // `light.includedOnlyMeshIds = new Set(ids)`: the pin's per-mesh light
+    // set. `src/render/lights-ubo.ts` `writeMeshLightSelection` asks
+    // `affectsMesh` per light per mesh and packs the survivors' slots into
+    // the mesh block, so the selection is UBO data and nothing composes
+    // from it. What generation owns is the JOIN: the ids are static
+    // strings and the meshes are generation-known, so the id list folds to
+    // the index list `light_affects_mesh` already searches, and the record
+    // keeps exactly what the `.babylon` loader's own resolution keeps.
+    if (target.kind === "light" && property === "includedOnlyMeshIds") {
+      requireSimpleAssignment(context, expression, "light includedOnlyMeshIds");
+      const meshes = context.resolveSceneMeshIds(
+        staticMeshIdSet(context, expression.right),
+        expression.right,
+      );
+      context.reachFeature("light:included-meshes", expression);
+      context.emit(
+        `${context.requireEngine(target, expression)}.lights[` +
+          `${target.cpp}.value].included_meshes = {` +
+          `${meshes.map((mesh) => `${mesh}.value`).join(", ")}};`,
+      );
+      return;
+    }
+
     if (target.kind === "mesh" && property === "material") {
       requireSimpleAssignment(context, expression, "mesh material");
       const material = context.compileValue(expression.right);
@@ -1611,12 +1666,24 @@ export function emitPropertyAssignment(
     if (target.kind === "texture" && property in textureRecordFields) {
       const field = textureRecordFields[property]!;
       requireSimpleAssignment(context, expression, `texture ${property}`);
-      if (!target.pixelsTexture) {
+      // A `loadTexture2D` image takes these writes too: upstream one
+      // `Texture2D` carries them whatever built it, and the PBR lightmap
+      // extension reads `uAng` back off a loaded texture to pick its V-flip
+      // arm. The record member is one level down there (`FileTexture::data`
+      // is the `TextureData` a pixels texture IS), which is the only
+      // difference the write sees.
+      const owner = target.pixelsTexture
+        ? target.cpp
+        : target.textureStorage === "file"
+          ? `${target.cpp}.data`
+          : undefined;
+      if (owner === undefined) {
         context.fail(
           left,
           `Reached '${property}' writes land on a ` +
-            "createTexture2DFromPixels texture; the loaders' " +
-            "own textures are not written from scene code.",
+            "createTexture2DFromPixels or loadTexture2D texture; a solid " +
+            "colour and a render attachment carry no transform this port " +
+            "reads back.",
         );
       }
       if (context.boundPixelsTextures.has(target.cpp)) {
@@ -1628,13 +1695,32 @@ export function emitPropertyAssignment(
             "would reach the material there and not here.",
         );
       }
-      context.emit(
-        `${target.cpp}.${field.record} = ${
-          field.value === "boolean"
-            ? context.compileBoolean(expression.right)
-            : context.compileNumber(expression.right, "double")
-        };`,
-      );
+      // Compiled once and reused by the record store below: asking a
+      // second time would emit the value's own lowering twice.
+      const rendered = field.value === "boolean"
+        ? context.compileBoolean(expression.right)
+        : context.compileNumber(expression.right, "double");
+      if (property === "invertY") {
+        // The one boolean in `TEXTURE_UV_PROPERTIES`, which is why the
+        // refusal below can name it.
+        if (rendered !== "true" && rendered !== "false") {
+          context.fail(
+            expression.right,
+            "A texture's `invertY` is composition input — the lightmap " +
+              "extension folds it against `uAng` — so it settles at " +
+              "generation.",
+          );
+        }
+        target.textureObjectInvertY = rendered === "true";
+      } else if (property === "uAng") {
+        // The value reaches composition as well as the record: the pinned
+        // lightmap `detect` compares it against `Math.PI`. A write that
+        // does not settle still emits, and the consumer that needs it
+        // refuses by name rather than reading a stale zero here.
+        const folded = staticNumberValue(context, expression.right);
+        if (folded !== undefined) target.textureUvAng = folded;
+      }
+      context.emit(`${owner}.${field.record} = ${rendered};`);
       return;
     }
 
@@ -2139,6 +2225,55 @@ function gltfGroupWriteTarget(
   requireSimpleAssignment(context, expression, field);
   context.reachFeature("animation:gltf-groups", left);
   return group;
+}
+
+/**
+ * The mesh ids one `new Set(...)` names, in the Set's own order.
+ *
+ * The pin's field is a `ReadonlySet<string>` and both writers upstream
+ * build it the same way — `new Set(io)` in `load-babylon.ts` — so the
+ * constructor is where the ids are, and reading them here is the whole
+ * fold. A set built any other way keeps its refusal.
+ */
+function staticMeshIdSet(
+  context: AssignmentContext,
+  expression: ts.Expression,
+): readonly string[] {
+  const unwrapped = context.unwrap(
+    context.resolveStaticExpression(expression),
+  );
+  if (
+    !ts.isNewExpression(unwrapped) ||
+    !ts.isIdentifier(unwrapped.expression) ||
+    unwrapped.expression.text !== "Set" ||
+    unwrapped.arguments?.length !== 1
+  ) {
+    context.fail(
+      expression,
+      "A light's includedOnlyMeshIds must be `new Set(<mesh ids>)`.",
+    );
+  }
+  return staticStringList(context, unwrapped.arguments[0]!);
+}
+
+/** A generation-known list of strings, spreads of such lists included. */
+function staticStringList(
+  context: AssignmentContext,
+  expression: ts.Expression,
+): readonly string[] {
+  // The pure probe first. It owns the array walk and the spread recursion,
+  // and it also answers for a `const` array binding nothing writes through
+  // — a shape a literal-only walk cannot see.
+  const probed = context.staticStringElements(expression);
+  if (probed) return probed;
+  // The list a scene's own helper was handed: an inlined call keeps the
+  // argument's value and drops its expression, so the ids ride the value.
+  const carried = context.compileValue(expression).staticStrings;
+  if (carried) return carried;
+  context.fail(
+    expression,
+    "Expected a generation-known array of mesh id strings.",
+  );
 }
 
 function requireSimpleAssignment(

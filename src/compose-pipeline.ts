@@ -23,6 +23,7 @@ import { executeModuleGraph } from "./executed-module-graph.js";
 import { enablePinnedMaterialPlugins } from "./pinned-material-plugins.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
+import { glbDocument } from "./gltf-document.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
 import {
@@ -33,6 +34,7 @@ import {
     gltfHasImageBasedLight,
     gltfMaterialCount,
     gltfLightNodeCount,
+    gltfLightmapMaterials,
     gltfRenderableFeatures,
     proceduralRenderableFeatures,
     type PinnedMaterialArms,
@@ -243,6 +245,14 @@ export async function composeScenePipeline({
     const lightKinds = pinnedSingleLightTypes.filter((kind) =>
         result.manifest.features.includes(`light:${kind}`)
     );
+    // Whether any light in this scene names the meshes it applies to, which
+    // is what lets `light_affects_mesh` answer false and therefore what
+    // lets a receiver reach the no-light arm. Two producers fill the pin's
+    // one field: a `.babylon` document's own per-light mesh lists, and
+    // scene code writing `light.includedOnlyMeshIds`.
+    const perMeshLightLists =
+        result.manifest.assets.some((entry) => entry.kind === "babylon") ||
+        result.manifest.features.includes("light:included-meshes");
     // Runtime material/mesh handles advance on every load, including a
     // second load of the same compiled asset. Compose one row set per
     // container so the static selector order remains the runtime order.
@@ -603,6 +613,23 @@ export async function composeScenePipeline({
             ...(asset.sceneUnlit
                 ? { sceneUnlit: asset.sceneUnlit }
                 : {}),
+            // The lightmap walk's own filter, folded here against the
+            // document: which renderables it reaches is the document's
+            // answer, not the scene's, and PBR composition is settled per
+            // material — so what the scene carried is the predicate and
+            // what composition sees is the material set it selects.
+            ...(asset.sceneLightmap
+                ? {
+                    sceneLightmap: {
+                        materials: await gltfLightmapMaterials(
+                            glbDocument(path) ?? {},
+                            asset.sceneLightmap.meshNamePredicate,
+                            asset.selectedVariant,
+                        ),
+                        options: asset.sceneLightmap.options,
+                    },
+                }
+                : {}),
         };
         // The variant composer additionally takes the asset's selected
         // `KHR_materials_variants` name, which the material composer's own
@@ -643,9 +670,7 @@ export async function composeScenePipeline({
                               dynamicReceiverBits,
                           ),
                           shadowLights,
-                          perMeshLightLists: result.manifest.assets.some(
-                              (entry) => entry.kind === "babylon",
-                          ),
+                          perMeshLightLists,
                       }
                     : {}),
             },
@@ -743,9 +768,18 @@ export async function composeScenePipeline({
                 ...view,
                 meshFeatureSets: expandRuntimeMeshFeatureSets(
                     [
-                        renderableMeshFeatures[
+                        // Without the receive bit, whatever the caster's
+                        // own row says. `rebuildSingle` derives
+                        // `receiveShadows` as `!shadowOutput && ...`, so a
+                        // caster pass composes no shadow fragment even for
+                        // a mesh that receives one in the colour pass --
+                        // which is exactly what both PALs strip from the
+                        // key before the lookup. A mesh that both casts
+                        // and receives is where the two halves have to
+                        // agree.
+                        (renderableMeshFeatures[
                             sceneMeshRows[caster.meshIndex]!
-                        ] ?? 0,
+                        ] ?? 0) & ~receiveShadowsBit,
                     ],
                     runtimePbrMeshBits,
                 ),
@@ -815,17 +849,7 @@ export async function composeScenePipeline({
                     ...(shadowLights.length > 0
                         ? {
                             shadowLights,
-                            // `light_affects_mesh` can answer false only for
-                            // a light naming the meshes it applies to, and
-                            // only the `.babylon` loader fills those lists --
-                            // so without such an asset every light in
-                            // `scene.lights` affects every mesh, and a scene
-                            // with a generator has at least one. The
-                            // no-light arm is then unreachable for a
-                            // receiver, exactly as the single-light one is.
-                            perMeshLightLists: result.manifest.assets.some(
-                                (asset) => asset.kind === "babylon",
-                            ),
+                            perMeshLightLists,
                         }
                         : {}),
                 },

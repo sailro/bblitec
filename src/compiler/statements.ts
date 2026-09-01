@@ -192,15 +192,27 @@ export interface StatementLoweringContext {
 }
 
 /**
- * Whether a frame yield sits inside a loop, walking out to the enclosing
- * function.
+ * Whether a frame yield sits inside a loop this lowering did not write out,
+ * walking out to the enclosing function.
  *
  * One yield means "the work queued before this has landed", which this
- * runtime satisfies by construction. N of them in a loop mean "let N frames
- * elapse", which it does not — so the shape has to be told apart from the
- * single one rather than erased per iteration.
+ * runtime satisfies by construction. N of them in a RUNTIME loop mean "let N
+ * frames elapse", which it does not — so the shape has to be told apart from
+ * the single one rather than erased per iteration.
+ *
+ * A loop whose trip count is generation-known is not that shape. Unrolling
+ * writes its body out once per iteration, FLAT into the scope the loop stood
+ * in (`emitUnrolledIteration`), so the yields become a run of sequential
+ * yields — exactly the shape the continuation re-queue already lowers, one
+ * nested `defer_start_continuation` per marker. `unrolled` is the set of
+ * loops currently being emitted that way, so this asks the question the
+ * emission answers rather than the one the source AST shows: every enclosing
+ * loop written out is no loop at all by the time the marker lands.
  */
-function frameYieldInsideLoop(node: ts.Node): boolean {
+function frameYieldInsideLoop(
+    node: ts.Node,
+    unrolled: readonly ts.IterationStatement[],
+): boolean {
     for (
         let parent: ts.Node | undefined = node.parent;
         parent && !ts.isFunctionLike(parent);
@@ -213,10 +225,47 @@ function frameYieldInsideLoop(node: ts.Node): boolean {
             ts.isForInStatement(parent) ||
             ts.isDoStatement(parent)
         ) {
-            return true;
+            if (!unrolled.includes(parent)) return true;
         }
     }
     return false;
+}
+
+/**
+ * Whether a statement subtree reaches a frame yield the lowering would emit
+ * a continuation cut for.
+ *
+ * A loop body that does forces the loop to be iterated statically, for the
+ * same reason a body reaching pinned scene construction does: the yield is
+ * generation-owned state — one frame boundary in the emitted continuation —
+ * and emitting the body once inside a native loop would record ONE boundary
+ * for many run-time iterations, which is the multi-frame wait this runtime
+ * refuses to fake.
+ */
+function containsFrameYield(
+    context: StatementLoweringContext,
+    statement: ts.Statement,
+): boolean {
+    let found = false;
+    const visit = (node: ts.Node): void => {
+        if (found) return;
+        if (
+            ts.isExpressionStatement(node) &&
+            ts.isAwaitExpression(node.expression)
+        ) {
+            const awaited = context.unwrap(node.expression.expression);
+            if (
+                context.isFrameYield(awaited) ||
+                context.isBoundedNestedFrameYield(awaited)
+            ) {
+                found = true;
+                return;
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(statement);
+    return found;
 }
 
 /** A loop body's statements, whether or not it was written as a block. */
@@ -311,6 +360,52 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
     [ts.SyntaxKind.GreaterThanGreaterThanEqualsToken, ">>="],
     [ts.SyntaxKind.GreaterThanGreaterThanGreaterThanEqualsToken, ">>>="],
 ]);
+
+/**
+ * The control statement that would leave the enclosing loop, or undefined.
+ *
+ * Descent stops at a nested loop and at a function-like, because a control
+ * statement there binds to that one; an unqualified `break` additionally
+ * binds to a nested `switch`, so descent tracks that too. `returns` adds an
+ * early `return`, which leaves the loop the same way for a caller folding
+ * the loop away — the statement itself comes back so such a caller can
+ * refuse at it by name.
+ */
+export function enclosingLoopControl(
+    statement: ts.Statement,
+    options: { returns?: boolean } = {},
+): ts.Statement | undefined {
+    let found: ts.Statement | undefined;
+    const visit = (node: ts.Node, insideSwitch: boolean): void => {
+        if (found) return;
+        if (
+            ts.isForStatement(node) ||
+            ts.isWhileStatement(node) ||
+            ts.isForOfStatement(node) ||
+            ts.isForInStatement(node) ||
+            ts.isDoStatement(node) ||
+            ts.isFunctionLike(node)
+        ) {
+            return;
+        }
+        if (ts.isBreakStatement(node)) {
+            if (!insideSwitch) found = node;
+            return;
+        }
+        if (ts.isContinueStatement(node)) {
+            found = node;
+            return;
+        }
+        if (options.returns && ts.isReturnStatement(node)) {
+            found = node;
+            return;
+        }
+        const nestedSwitch = insideSwitch || ts.isSwitchStatement(node);
+        ts.forEachChild(node, (child) => visit(child, nestedSwitch));
+    };
+    visit(statement, false);
+    return found;
+}
 
 export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
@@ -629,42 +724,7 @@ export class StatementLowerer {
     private bindsEnclosingLoop(
         statement: ts.Statement,
     ): boolean {
-        let found = false;
-        const visit = (
-            node: ts.Node,
-            insideSwitch: boolean,
-        ): void => {
-            if (found) {
-                return;
-            }
-            if (
-                ts.isForStatement(node) ||
-                ts.isWhileStatement(node) ||
-                ts.isForOfStatement(node) ||
-                ts.isForInStatement(node) ||
-                ts.isDoStatement(node) ||
-                ts.isFunctionLike(node)
-            ) {
-                return;
-            }
-            if (ts.isBreakStatement(node)) {
-                if (!insideSwitch) {
-                    found = true;
-                }
-                return;
-            }
-            if (ts.isContinueStatement(node)) {
-                found = true;
-                return;
-            }
-            const nestedSwitch =
-                insideSwitch || ts.isSwitchStatement(node);
-            ts.forEachChild(node, (child) =>
-                visit(child, nestedSwitch),
-            );
-        };
-        visit(statement, false);
-        return found;
+        return enclosingLoopControl(statement) !== undefined;
     }
 
     /** Whether the enclosing-loop control includes a break, not only continue. */
@@ -1635,7 +1695,8 @@ export class StatementLowerer {
             return false;
         }
         const requiresStaticIteration =
-            context.requiresStaticIteration(statement.statement);
+            context.requiresStaticIteration(statement.statement) ||
+            containsFrameYield(context, statement.statement);
         if (
             length.staticNumber > MAX_STATIC_INDEX_ITERATIONS &&
             !requiresStaticIteration
@@ -2860,7 +2921,12 @@ export class StatementLowerer {
             // A zero-argument helper can carry the same one-frame Promise.
             // Recognize it before ordinary call inlining reaches the
             // browser-only constructor in the helper's return expression.
-            if (frameYieldInsideLoop(unwrapped)) {
+            if (
+                frameYieldInsideLoop(
+                    unwrapped,
+                    this.staticUnrolledIterations,
+                )
+            ) {
                 context.fail(
                     unwrapped,
                     "A frame yield inside a loop is a multi-frame wait, " +
@@ -2905,10 +2971,16 @@ export class StatementLowerer {
             // Before the frame loop exists, one frame's work has already
             // happened by the time this runtime reaches the statement after
             // it, so the yield erases; inside the hoisted continuation the
-            // re-queue below keeps that claim true. A LOOP of these is a
-            // different claim -- "let N frames elapse" -- and erasing each
-            // iteration would silently turn it into none, so it refuses.
-            if (frameYieldInsideLoop(unwrapped)) {
+            // re-queue below keeps that claim true. A RUNTIME loop of these
+            // is a different claim -- "let N frames elapse" -- and erasing
+            // each iteration would silently turn it into none, so it
+            // refuses; a written-out one is N sequential yields.
+            if (
+                frameYieldInsideLoop(
+                    unwrapped,
+                    this.staticUnrolledIterations,
+                )
+            ) {
                 context.fail(
                     unwrapped,
                     "A frame yield inside a loop is a multi-frame wait, " +

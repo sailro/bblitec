@@ -12,6 +12,37 @@
 import ts from "typescript";
 import type { Value } from "./types.js";
 
+/**
+ * The global `parseFloat`, in either of the two spellings a scene writes.
+ *
+ * ES2015 put the SAME function object on `Number` -- `Number.parseFloat ===
+ * parseFloat` is true by specification -- so a scene naming the qualified
+ * form is naming this function, not a second one, and the two must lower
+ * identically. Both spellings are proved against the default library, so a
+ * scene's own local `parseFloat`, or its own `Number`, still lowers as
+ * itself.
+ */
+export function isParseFloatCallee(
+    callee: ts.Expression,
+    context: {
+        isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
+    },
+): boolean {
+    if (ts.isIdentifier(callee)) {
+        return (
+            callee.text === "parseFloat" &&
+            context.isDefaultLibraryIdentifier(callee)
+        );
+    }
+    return (
+        ts.isPropertyAccessExpression(callee) &&
+        callee.name.text === "parseFloat" &&
+        ts.isIdentifier(callee.expression) &&
+        callee.expression.text === "Number" &&
+        context.isDefaultLibraryIdentifier(callee.expression)
+    );
+}
+
 const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
     "audio-engine",
     "audio-buffer",
@@ -330,12 +361,20 @@ export class BrowserErasure {
             // reads the step its capture is pinned at
             // (`Number(params.get("captureFrame"))`).
             if (
-                ts.isIdentifier(unwrapped.expression) &&
-                ["isNaN", "Number", "parseFloat"].includes(
-                    unwrapped.expression.text,
-                ) &&
-                this.context.isDefaultLibraryIdentifier(
+                (ts.isIdentifier(unwrapped.expression) &&
+                    ["isNaN", "Number"].includes(
+                        unwrapped.expression.text,
+                    ) &&
+                    this.context.isDefaultLibraryIdentifier(
+                        unwrapped.expression,
+                    )) ||
+                // `Number.parseFloat` is the same function object as the
+                // bare global, so which spelling a scene wrote cannot
+                // decide whether the query value it reads stays browser
+                // state.
+                isParseFloatCallee(
                     unwrapped.expression,
+                    this.context,
                 )
             ) {
                 return browserArgument;
@@ -836,11 +875,11 @@ export class BrowserErasure {
                 }
             }
             if (
-                ts.isIdentifier(unwrapped.expression) &&
-                unwrapped.expression.text === "parseFloat" &&
-                this.context.isDefaultLibraryIdentifier(
+                isParseFloatCallee(
                     unwrapped.expression,
-                )
+                    this.context,
+                ) &&
+                unwrapped.arguments.length === 1
             ) {
                 const argument =
                     this.evaluateBrowserValue(

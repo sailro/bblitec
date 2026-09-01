@@ -1481,6 +1481,74 @@ export function compileMeshIntrinsic(
             };
         }
 
+        case "createTorusKnot": {
+            // The whole pinned option set: the curve's radius and tube, its
+            // two segment counts, and the (p, q) winding pair. Each default
+            // is the factory's own `??` value folded at generation, the way
+            // the rest of the grown-array family resolves one, so an
+            // omitted option is the pin's answer rather than one restated
+            // here. The mesh arrives through `create_mesh_from_data`, so it
+            // carries no primitive of its own.
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 1, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const fields = [
+                "radius",
+                "tube",
+                "radialSegments",
+                "tubularSegments",
+                "p",
+                "q",
+            ] as const;
+            const resolved: Record<string, string> = Object.fromEntries(
+                fields.map((name) => [
+                    name,
+                    doubleLiteral(
+                        pinnedMeshOptionDefault(
+                            "src/mesh/create-torus-knot.ts",
+                            "createTorusKnotData",
+                            name,
+                        ),
+                    ),
+                ]),
+            );
+            if (call.arguments[1]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[1],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    fields,
+                    "Reached torus knots name their radius, tube, " +
+                        "segment counts and (p, q) winding.",
+                );
+                for (const name of fields) {
+                    const expression = context.objectProperty(options, name);
+                    if (!expression) continue;
+                    resolved[name] = context.compileNumber(
+                        expression,
+                        "double",
+                    );
+                }
+            }
+            context.reachFeature("mesh:torus-knot", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_torus_knot(${engine.cpp}, ` +
+                    `bbl::TorusKnotOptions{` +
+                    `${fields.map((name) => resolved[name]).join(", ")}})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
         case "createTorus": {
             const sceneMeshIndex = context.recordSceneMesh("torus");
             context.expectArgumentCount(call, 1, 2);

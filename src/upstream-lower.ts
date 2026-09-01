@@ -697,6 +697,13 @@ class GeneratedSourceWriter {
 #define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
+// The opt-in baked lightmap. Derived from the composed variants' own
+// bindings rather than from a reached feature, exactly as the two
+// reflectance maps below are: enablePbrLightmap registers the extension and
+// setPbrLightmap stamps a material, but which materials end up composing
+// the arm is the composer's answer -- and the slot exists exactly where the
+// pin's own lmTexture binding does.
+#define BBLITE_MATERIAL_LIGHTMAP ${pbrBindingNames.has("lmTexture") ? 1 : 0}
 ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 #define BBLITE_MATERIAL_DISPERSION ${options.dispersion ? 1 : 0}
 #define BBLITE_MATERIAL_SPEC_GLOSS ${options.specularGlossiness ? 1 : 0}
@@ -820,6 +827,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     clearcoat: options.clearcoat,
                     sheen: options.sheen,
                     iridescence: options.iridescence,
+                    lightmap: pbrBindingNames.has("lmTexture"),
                     metallicReflectanceMap:
                         pbrBindingNames.has("metallicReflectanceMap"),
                     reflectanceMap:
@@ -1985,6 +1993,7 @@ ${composed.wgsl}`,
             features.includes("mesh:thin-instances") ||
             features.includes("mesh:thin-instances-dynamic") ||
             features.includes("mesh:torus") ||
+            features.includes("mesh:torus-knot") ||
             features.includes("mesh:disc") ||
             features.includes("mesh:cylinder") ||
             features.includes("mesh:polyhedron") ||

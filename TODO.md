@@ -44,6 +44,31 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   its call site fails explicitly unless a reached API owns a specialized
   retained form; scene 300's `renderer._beforeUpdate.push` and the
   `EffectRenderer` per-frame `update` are tracked by their own entries.
+- [ ] Collapse a run of adjacent EMPTY continuation parts into one counted
+  re-queue. A constant-trip frame-yield loop now unrolls into one
+  `defer_start_continuation` per iteration, and a body whose only statement
+  is the yield leaves every one of those lambdas empty — scene 261's
+  `for (let i = 0; i < 160; i++) await nextFrame()` would emit 161 nested
+  shells. Two costs, and only the first is closed. The emitted whitespace
+  was quadratic (115 KB at 160 boundaries, 92% of it leading spaces); the
+  nesting now stops adding columns past eight levels, which is linear and
+  moves no byte for any registered scene (the deepest is six). What remains
+  is the DEPTH: MSVC refuses at 43 nested lambdas with
+  `C1061: compiler limit: blocks nested too deeply` — bisected, 42 compiles
+  — and shipping builds use MSVC, where the development default clang-cl
+  accepts 320. No registered scene comes near it (scenes 113/114/115/118
+  emit nine), so this is a ceiling to close before one does, not a defect
+  today. The shape: a `defer_start_continuation_after(engine, k, cb)` beside
+  the counted `defer_capture_until` the drain already uses, which turns 160
+  shells into one call at depth two. It re-pins the module digest of scenes
+  129 and 271, whose continuations already carry adjacent empty parts, so it
+  is its own change with its own recapture.
+  One asymmetry to settle in the same pass: `containsFrameYield` is OR-ed
+  into `requiresStaticIteration` at one of that predicate's call sites, so
+  the budgeted-uniform arm and the `for-of` arm still answer the pre-change
+  question. That is narrow rather than wrong — a yield in a loop those two
+  lower still refuses by name — but extending it widens what they accept,
+  which needs the scene that first wants it to measure against.
 - [ ] Lower general render/update callbacks.
 - [ ] Define ownership for escaping captures.
 - [ ] Generalize immediate AOT promises and dynamic-import dispatch.
@@ -151,7 +176,7 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ## P1 — Full Babylon Lite corpus audit
 
-59 corpus scenes remain unregistered; measured scenes
+57 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -178,9 +203,6 @@ unresolved identifier the import would have bound, not the import.
 **Rank by contracts-to-clean, not by first blocker.** A strip probe of the
 leading candidates at this pin:
 
-| Scenes | Contracts | What they are |
-| --- | ---: | --- |
-| 167 | 4 | the same truthiness; `uAng` on a `loadTexture2D` texture; `enablePbrLightmap`/`setPbrLightmap`; folding a runtime `scene.meshes` walk into a compile-time material selection |
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
@@ -198,11 +220,10 @@ families that arrived with the release. Read it as a capability list.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
-| 167 | `enablePbrLightmap` | the opt-in PBR lightmap extension |
 | 186 | `corners.flat` | opt-in PBR local cubemap blending |
 | 187 | a non-literal string argument | SMAA |
-| 302 | `Number.parseFloat` | node particles with a moving emitter |
-| 303 | the public `createGridSpriteAtlas`, which this port reaches only as the fold inside `loadSpriteAtlas` | renderer-native Sprite2D Y-sort |
+| 302 | an unresolved `SCENE302_CLEAR_COLOR` from the shared module the corpus does not carry | node particles with a moving emitter |
+| 303 | `enableSprite2DYSort` | renderer-native Sprite2D Y-sort |
 | 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
 
 `186-debug` and `187-debug` are helper modules rather than scenes: they have no
@@ -223,8 +244,8 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (27 scenes):**
-73, 86, 90, 91, 111-115, 118, 121-124,
+**Integrate first (26 scenes):**
+73, 86, 90, 91, 112-115, 118, 121-124,
 140, 149, 214, 215, 218, 219,
 223, 226, 231, 241, 261, 275, 300.
 Includes static CSG/CSG2, compressed assets
@@ -355,14 +376,12 @@ integrated.
     reindexing (scenes 58, 59) — so the handle-object form is what remains
     unreached.
   - `createSpriteAtlasFromFrames`, which doom's status bar builds its atlas
-    with. **Its blocker is the data model, not the sprite path**: a
-    `SpriteAtlasFrameSource` carries `pixels: Uint8Array`, and
-    `src/compiler/data-types.ts` maps only `Float32Array` and `Uint32Array`
-    (40 references across seven files carry the `f32array`/`u32array` pair;
-    a `u8array` kind would join them). Even closed it lands no demo on its
-    own: doom's call also needs `Array.map` with an inlined arrow returning a
-    struct, a `Map<string, T>`, and the runtime IWAD read none of this
-    repository has. `appendSpriteAtlasFrames` sits behind the same gap.
+    with. It lands no demo on its own: doom's call also needs `Array.map`
+    with an inlined arrow returning a struct, a `Map<string, T>`, and the
+    runtime IWAD read none of this repository has.
+    `appendSpriteAtlasFrames` sits behind the same gap. (The data model is
+    no longer the blocker — `src/compiler/data-types.ts` carries `u8array`
+    beside the `f32array`/`u32array` pair.)
   - the billboard arms past the two orientations, two depth paths and the
     custom shader that scenes 54-57, 59, 94 and 98 measure. Scene 118
     needs `marker.name`.
@@ -442,9 +461,52 @@ integrated.
     near-duplicate branch for a task with its own camera. Single-map
     generators keep that proportionate; a cascaded generator rendering
     several light-space passes per light is where it stops being.
-- [ ] Scenes 214 and 215: `createTorusKnot` (their mulberry32 closures
-  lower), then whatever their farther cascades need past the single-map
-  CSM adaptation.
+- [ ] Scenes 214 and 215: replace the `csm-single-map-near-cascade`
+  adaptation with the pin's real cascade array. `createTorusKnot` shipped and
+  is byte-exact — `regression-torus-knot` is scene 214 with only the generator
+  removed and measures 0.000 on both backends, while 214 measures 9.670 and
+  215 measures 3.365, identically on both. The whole residual is the
+  adaptation: the browser's own splits at that camera are
+  `[1255.375, 2550.25, 4250.125, 10000]`, `update_csm_single_map_shadow`
+  reproduces them exactly, and every ground point sits at view depth
+  1334-3066, so cascade 0 holds no ground and native draws no ground shadow at
+  all. Sized against the capture, five pieces:
+  - **the split loop.** The body computes `p = 1/N` only; it needs the
+    `prevSplit` slice and four transform/view/near-far sets. Everything else
+    there (invert, corners, centroid, light-space AABB, eye, caster-Z
+    tighten, ortho, texel snap, bias split) is already the pin's.
+  - **a `depth32float` `texture_2d_array` map, one caster pass per cascade.**
+    `ShadowGeneratorRecord` holds one `TaskHandle` and one caster matrix pair,
+    and `RenderTargetOptions` carries neither a layered depth nor the pin's
+    `_ownsDepthTexture: false` borrow — which both PALs must honour in
+    creation *and* release, or a borrowed depth is freed twice. SDL_GPU needs
+    no workaround: `SDL_GPUDepthStencilTargetInfo` carries a `layer`.
+  - **the group-2 reflection.** `shadowBindingSlotOrNull` matches
+    `^shadow(Tex|Samp|Comp|Info)_(\d+)$` and the composed rows are
+    `csmTex_0`/`csmComp_0`/`csmInfo_0`, so every CSM row drops out and both
+    PALs would build an empty layout against a shader declaring three
+    bindings. `texture_depth_2d_array` also needs a fourth
+    `PinnedBindingKind` (today every `texture_depth*` maps to
+    `textureDepth2d`), and the info row's size is hardcoded to
+    `sizeof(ShadowInfoUniforms)` — 96 bytes against the CSM block's 320 — so
+    the row has to carry its own.
+  - **the receiver factories.** The fragment text is the pin's, but
+    `createShadowFragment` has no CSM arm: `createStdShadowFragment` and
+    `createPbrShadowFragment` filter for `"csm"` slots and call
+    `getCsmStdReceiverFactory()!` / `getCsmPbrReceiverFactory()!`, a non-null
+    assertion on a registry the pinned generator factory populates — so an
+    unpopulated one is a TypeError at compose time rather than a refusal.
+    `src/compiler/intrinsics/shadow.ts` declares CSM as
+    `kind: "pcf-directional"` today and flips with the same change.
+  - **cross-cascade blending**, which is not deferrable here: both scenes pass
+    `cascadeBlendPercentage: 0.1`.
+  Still refusing by name afterwards, none reached by these two: node-material
+  CSM receivers (`node-shadow.ts` has no CSM arm), `setShadowCasterMaxCascade`,
+  `enableCsmStaticCache`, `getCsmReceiverTexture`/`onCsmReceiverUpdate`,
+  `stabilizeCascades`, and the `worldSpaceBias` clip-offset arm.
+  `docs/lite/architecture/17-cascaded-shadow.md` says PBR renderables ignore
+  CSM in v1; the pin disagrees (`pbr-csm-shadow-fragment`) and scene 215 is a
+  PBR receiver, so the source decides.
 - [ ] Scenes 47, 164: what each still wants now that the shadow generators,
   the heightmap ground and the PBR receiver ship — 47 `createCapsule` and
   the physics family, and 164 the ESM generator's remaining options.
@@ -456,7 +518,6 @@ integrated.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.
 - [ ] Scene 91: support `initializeCsg2Async`.
-- [ ] Scene 111: support mesh IDs.
 - [ ] Scene 112: `addDdsEnvironmentBackground`, then `KHR_texture_basisu`.
   Each KTX2 image transcodes at generation as a `.basis` file already does,
   packaged as the KTX1 container the runtime reads, so the generated glTF
@@ -465,9 +526,16 @@ integrated.
   `index:sRGB`, so an image feeding both a base-colour and a linear slot
   transcodes twice. Its six materials share one packed `OcclusionRoughMetal`
   image, so the loader's `OffscreenCanvas` ORM composite is not reached.
-- [ ] Scene 113: support mesh names.
-- [ ] Scene 114: resolve `createMeshFromData` through its local re-export.
-- [ ] Scene 149: support the reached constructor expression.
+- [ ] Scenes 113 and 114: past the frame-yield contract, which now unrolls
+  their `waitFrames(4)`, each wants one thing already sized above — 113
+  `enableDetailedPicking`/`getPickedNormal` plus the N-ary `Math.hypot` the
+  hypot-spelling entry blocks, and 114 `setPbrUnlit`'s static-tint
+  requirement. Both are arms of the GPU-picking entry below rather than
+  scenes of their own.
+- [ ] Scene 149: `break`/`continue` in the consuming loop over a container's
+  mesh walk (the walk itself lowers), then the node family's
+  `GeometryTextureOutputBlock`. Needs `shared/scene149-nme.ts` copied out of
+  the pinned tree and pinned.
 - [ ] Scene 140: the PCF directional generator's refused
   `forceRefreshEveryFrame` option (scene140.ts:73), then a node material.
 - [ ] Extend the line slice past what scenes 278 and 279 measure. The
@@ -606,8 +674,11 @@ integrated.
     `createParticleSprite2DBridge` / `syncParticleSprite2DBridge` /
     `disposeNodeParticleSet2DBinding` entry points, none of which a corpus
     scene reaches: the two that do go through the managed registrars.
-- [ ] Scene 261: support the reached `box.material` assignment; temporal
-  anti-aliasing sits behind it.
+- [ ] Scene 261: `createTaaPostProcessTask`. Its 160-frame accumulation loop
+  now unrolls, and the `: Mesh` annotation on a handle-valued declaration is
+  the other half — generalizing the `handle:"texture"` exemption broke
+  freeciv and platformer, so it wants the annotation carried rather than the
+  exemption widened.
 - [ ] Scene 275: support `loadFont`.
 
 ### Integration-first native runtime and loader gaps

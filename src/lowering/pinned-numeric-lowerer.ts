@@ -252,6 +252,29 @@ export interface PinnedNumericScope {
     } | undefined;
 }
 
+/**
+ * The `new <ctor>(list)` spellings that end a grown `number[]`, and the
+ * conversion each one performs.
+ *
+ * Two names reach one constructor. `src/engine/typed-arrays.ts` declares
+ * `export const F32 = Float32Array` and `export const U32 = Uint32Array`
+ * purely so the minifier can shrink the token, and states that the aliases
+ * have "identical runtime semantics" — so a pinned module spells whichever
+ * it happened to import (`create-disc.ts` the alias, `create-torus-knot.ts`
+ * the global) and both mean the same store width. A spelling this table
+ * does not carry converts nothing, which leaves the `new` unrecognised and
+ * fails generation rather than silently dropping the rounding.
+ */
+const TYPED_ARRAY_CONVERSIONS: ReadonlyMap<
+    string,
+    { conversion: string; type: PinnedBinding["type"] }
+> = new Map([
+    ["F32", { conversion: "f32_array_from", type: "f32" as const }],
+    ["Float32Array", { conversion: "f32_array_from", type: "f32" as const }],
+    ["U32", { conversion: "u32_array_from", type: "u32" as const }],
+    ["Uint32Array", { conversion: "u32_array_from", type: "u32" as const }],
+]);
+
 // The shared arithmetic set plus the comparisons these bodies guard with.
 // `pinned-operators.ts` owns the arithmetic so an operator one lowerer learns
 // is an operator all of them know.
@@ -877,10 +900,14 @@ export class PinnedNumericLowerer {
         // visible at exactly the position the pin performs it.
         if (source && isListShape(source.type)) {
             const conversion = this.listConversion(initializer);
-            return conversion === undefined
+            // Which width the conversion produced comes from the same table
+            // that chose it, so the two spellings of one constructor cannot
+            // disagree about the store width they mean.
+            const width = TYPED_ARRAY_CONVERSIONS.get(constructor)?.type;
+            return conversion === undefined || width === undefined
                 ? undefined
                 : {
-                      type: constructor === "U32" ? "u32" : "f32",
+                      type: width,
                       declare: (name) =>
                           `auto ${name} = ${conversion};`,
                   };
@@ -1028,15 +1055,12 @@ export class PinnedNumericLowerer {
         // conversions rather than a C++ cast: the u32 one applies
         // ECMAScript ToUint32, which WRAPS a negative where a
         // `static_cast` would be undefined behaviour.
-        const conversion =
-            node.expression.text === "F32"
-                ? "f32_array_from"
-                : node.expression.text === "U32"
-                  ? "u32_array_from"
-                  : undefined;
-        return conversion === undefined
+        const spelling = TYPED_ARRAY_CONVERSIONS.get(
+            node.expression.text,
+        );
+        return spelling === undefined
             ? undefined
-            : `bbl::js::${conversion}(${source.cpp})`;
+            : `bbl::js::${spelling.conversion}(${source.cpp})`;
     }
 
     /** `const f = (a, b) => { ... }` — a void helper the body calls. */

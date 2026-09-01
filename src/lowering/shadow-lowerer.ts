@@ -2245,14 +2245,27 @@ export function shadowFactorySource(
         const noColor = family === "node"
             ? `create_node_no_color_material_view(engine, material)`
             : `create_${family}_no_color_material_view(engine, material)`;
-        return esmShadows
-            ? `(esm
-                    ? create_${family}_esm_shadow_material_view(
+        if (!esmShadows) return noColor;
+        // The ESM view is defined per FAMILY, and the node family's exists
+        // only where a composed node graph carries an ESM caster module --
+        // so the cell for a scene that reaches an ESM generator whose
+        // casters are all Standard or PBR has nothing to call. It is also
+        // unreachable: with no such module a node material cannot be that
+        // generator's caster at all. Say so by name rather than falling
+        // back to the no-colour view, which writes the wrong depth
+        // encoding into an ESM map.
+        const esmView = family !== "node" || nodeEsmCasters
+            ? `create_${family}_esm_shadow_material_view(
                         engine,
                         material,
-                        handle)
-                    : ${noColor})`
-            : noColor;
+                        handle)`
+            : `throw std::runtime_error(
+                        "This scene composed no node ESM caster module, "
+                        "so a node material cannot cast into an ESM "
+                        "shadow generator.")`;
+        return `(esm
+                    ? ${esmView}
+                    : ${noColor})`;
     };
     // The two contracts the emitted registration mirrors, read so a pin that
     // moves either fails here rather than leaving the emission stale.

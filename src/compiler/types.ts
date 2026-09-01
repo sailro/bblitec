@@ -418,6 +418,53 @@ export interface ScenePbrIridescenceManifest {
   maximumThickness?: number;
 }
 
+/**
+ * A mesh-name filter a scene's own walk wrote, in the closed form
+ * generation can evaluate.
+ *
+ * The reached shape is a leading `if (<test>) { continue; }` over
+ * `mesh.name`, so this is that test's negation: the predicate that says
+ * whether the loop body runs for a mesh of a given name. The grammar is
+ * deliberately tiny — equality, `startsWith`, and the three boolean
+ * operators — and anything outside it refuses at generation rather than
+ * being approximated, because the selection decides which materials
+ * compose which fragment.
+ */
+export type SceneMeshNamePredicate =
+  | { kind: "always" }
+  | { kind: "equals"; value: string }
+  | { kind: "startsWith"; value: string }
+  | { kind: "not"; operand: SceneMeshNamePredicate }
+  | { kind: "and"; operands: readonly SceneMeshNamePredicate[] }
+  | { kind: "or"; operands: readonly SceneMeshNamePredicate[] };
+
+/**
+ * The `setPbrLightmap` call a scene stamped on a material.
+ *
+ * Every field here is composition input: the pinned extension's `detect`
+ * reads `lightmapCoordIndex`, `useLightmapAsShadowmap`, `gammaLightmap` and
+ * the texture's own `invertY`/`uAng` pair to pick which of the fragment's
+ * eight arms composes. Only the level stays runtime data — the pin's own
+ * `writeLightmapUBO` reads it out of the material every time it runs — so
+ * it rides the record rather than this manifest.
+ */
+export interface ScenePbrLightmapManifest {
+  /** 0 = TEXCOORD_0, 1 = TEXCOORD_1; the pin's own `?? 1` already applied. */
+  coordIndex: 0 | 1;
+  /** `useLightmapAsShadowmap`: multiply the shaded colour instead of adding. */
+  useAsShadowmap: boolean;
+  /** `gammaLightmap`: decode the sample from sRGB before composition. */
+  gamma: boolean;
+  /**
+   * The `Texture2D` halves the extension's own V-flip test reads:
+   * `!!tex.invertY !== (tex.uAng === Math.PI)`. Both are folded at the
+   * write sites rather than at the setter, because a scene writes `uAng`
+   * on the texture object and the pin reads it back here.
+   */
+  textureInvertY: boolean;
+  textureUAng: number;
+}
+
 /** The reached `setPbrSubsurface` translucency slice. Texture presence is
  *  enough for composition; the static values feed the pin's own UBO writer. */
 export interface ScenePbrSubsurfaceManifest {
@@ -501,6 +548,8 @@ export interface ScenePbrMaterialManifest {
   clearCoat?: ScenePbrClearCoatManifest;
   /** Stamped by the pin's own setter shape: `mat._iridescence = iridescence`. */
   iridescence?: ScenePbrIridescenceManifest;
+  /** Stamped by `setPbrLightmap`: the texture, its blend and its UV set. */
+  lightmap?: ScenePbrLightmapManifest;
   /** Stamped by `setPbrSubsurface`: `mat._subsurface = subsurface`. */
   subsurface?: ScenePbrSubsurfaceManifest;
   /** Stamped by the pin's own setter shape: `mat._anisotropy = anisotropy`. */
@@ -843,6 +892,23 @@ export interface CompileAsset {
    * what makes the fact the container's rather than one material's.
    */
   sceneUnlit?: { tint?: readonly [number, number, number] };
+  /**
+   * The `setPbrLightmap` a scene applied to this container's loaded
+   * materials from inside a mesh walk.
+   *
+   * Unlike `sceneUnlit` this is not container-wide: the reached walk
+   * selects its meshes by name, and a loaded material composes per glTF
+   * material index, so what travels is the walk's own predicate. The
+   * document is what evaluates it — generation knows every renderable's
+   * pinned mesh name and the material it draws with — so the selection is
+   * folded from the loop rather than guessed from the names.
+   */
+  sceneLightmap?: {
+    /** The walk's mesh-name filter, evaluated against the document. */
+    meshNamePredicate: SceneMeshNamePredicate;
+    /** Everything the pinned extension's `detect` reads. */
+    options: ScenePbrLightmapManifest;
+  };
   /**
    * How many `loadGltf` calls this record backs.
    *
@@ -1359,6 +1425,23 @@ export interface Value {
   textureWidth?: number;
   textureHeight?: number;
   /**
+   * The pin's texture-OBJECT `invertY`, which is not `loadTexture2D`'s
+   * upload flip: `uploadCompressed` leaves it unset and `basis-loader.ts`
+   * sets it (texture-2d.ts / basis-loader.ts). Composition reads it —
+   * `lightmap-fragment.ts`'s `detect` folds it against `uAng` — so the
+   * producer states it rather than a consumer assuming a default.
+   */
+  textureObjectInvertY?: boolean;
+  /**
+   * The `Texture2D.uAng` a scene wrote on this texture before binding it.
+   *
+   * Upstream this is one number on one object, read at composition by the
+   * lightmap extension and at upload by the Standard UV transform. The
+   * write emits the record store either way; this is the same value at
+   * generation, for the composition half.
+   */
+  textureUvAng?: number;
+  /**
    * Which `scenePbrMaterials` entry this value names. The pin's opt-in
    * setters mutate the material object they are handed, so a setter has
    * to reach the same record the creation did; the index is that object
@@ -1629,6 +1712,18 @@ export interface Value {
   /** A value bound by a native runtime iteration, not a static unroll. */
   runtimeIteration?: true;
   staticString?: string;
+  /**
+   * The generation-known contents of a `string[]`, carried on the value the
+   * way `staticString` carries one string.
+   *
+   * A native string vector's elements are not recoverable from its
+   * spelling, and an inlined call's parameter binding keeps the value while
+   * dropping the argument expression — so a list of ids reaching a handle
+   * property through a scene's own helper has nowhere else to travel. Set
+   * only where the whole list resolves statically, so a present field is a
+   * complete list rather than a partial one.
+   */
+  staticStrings?: readonly string[];
   /** Runtime path selected from a compiler-packaged closed asset directory. */
   dynamicAssetPathCpp?: string;
   /** Parsed payload carried only by a generation-time fetch response. */
@@ -1736,6 +1831,12 @@ export type Feature =
   | "light:spot"
   // The clustered point/spot field: its own PAL translation unit, the
   // three data textures and the params block the composed fragment reads.
+  // `light.includedOnlyMeshIds`: the per-mesh light set the pin keys by
+  // `Mesh.id`. It composes nothing and selects no translation unit — the
+  // pin's own selection is UBO data — so it exists to record that a scene
+  // reached the surface at all, and to tell composition that a mesh here
+  // can have no affecting light.
+  | "light:included-meshes"
   | "light:clustered"
   | "loader:babylon"
   | "loader:gltf"
@@ -1751,6 +1852,7 @@ export type Feature =
   | "material:clearcoat-f0-remap"
   | "material:pbr-gamma-albedo"
   | "material:iridescence"
+  | "material:lightmap"
   | "material:anisotropy"
   | "material:metallic-reflectance"
   | "material:tracking"
@@ -1781,6 +1883,7 @@ export type Feature =
   | "mesh:ribbon"
   | "mesh:disc"
   | "mesh:torus"
+  | "mesh:torus-knot"
   | "mesh:tube"
   | "mesh:parenting"
   | "mesh:geometry-access"

@@ -6,7 +6,56 @@ import {
     type PinnedBinding,
 } from "../pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "../pinned-operators.js";
-import { lowerObjectComponents } from "../pinned-function-lowerer.js";
+import {
+    lowerObjectComponents,
+    lowerTupleComponents,
+} from "../pinned-function-lowerer.js";
+import { pinnedMeshOptionLocals } from "../../pinned-mesh-defaults.js";
+
+/**
+ * The names one pinned closure reads from OUTSIDE itself.
+ *
+ * A JavaScript closure captures by name, and a free C++ function cannot —
+ * so what a closure reads has to become parameters, and reading that list
+ * off the arrow is what keeps it the pin's rather than one typed beside the
+ * emitter. Only value positions count: `Math.cos`'s `cos` is a member, not
+ * a name being read, so a property access contributes its receiver alone.
+ *
+ * `Math` is subtracted because the translator answers it from the shared
+ * `calls` table rather than from a binding; every other free name is the
+ * caller's to recognise, and one it does not recognise is a contract error
+ * there rather than a silently-dropped read here.
+ */
+function freeIdentifiers(
+    arrow: ts.ArrowFunction,
+    parameters: ReadonlySet<string>,
+): ReadonlySet<string> {
+    const declared = new Set<string>(parameters);
+    const read = new Set<string>();
+    const visit = (node: ts.Node): void => {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+            declared.add(node.name.text);
+        }
+        if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+            declared.add(node.name.text);
+        }
+        if (ts.isPropertyAccessExpression(node)) {
+            visit(node.expression);
+            return;
+        }
+        if (ts.isIdentifier(node)) {
+            read.add(node.text);
+            return;
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(arrow.body);
+    const free = new Set<string>();
+    for (const name of read) {
+        if (!declared.has(name) && name !== "Math") free.add(name);
+    }
+    return free;
+}
 
 /**
  * The mesh-builder half of the factory unit: the pinned CreateBox /
@@ -44,6 +93,7 @@ export class MeshBuilderLowerer {
             features.includes("mesh:ribbon") ||
             features.includes("mesh:extrude") ||
             features.includes("mesh:tube");
+        const torusKnot = features.includes("mesh:torus-knot");
         const boxModule = "src/mesh/create-box.ts";
         const groundModule = "src/mesh/create-ground.ts";
         const planeModule = "src/mesh/create-plane.ts";
@@ -53,6 +103,7 @@ export class MeshBuilderLowerer {
         const cylinderModule = "src/mesh/create-cylinder.ts";
         const polyhedronModule = "src/mesh/create-polyhedron.ts";
         const ribbonModule = "src/mesh/create-ribbon.ts";
+        const torusKnotModule = "src/mesh/create-torus-knot.ts";
         const boxFile = this.context.sourceFile(boxModule);
         const { declaration: box } =
             this.context.functionDeclaration(
@@ -135,6 +186,18 @@ export class MeshBuilderLowerer {
             // would flatten to the constant 1 and stop normalizing a seam
             // normal -- the exact rewrite this translator exists to refuse.
             booleanOr = true,
+            // A builder that declares a helper of its own beside the family
+            // maths: `calls` spells it, and `fixedTupleCalls` states the
+            // arity of a result the body binds whole and then indexes.
+            // Per-builder rather than shared, so one builder's `getPos`
+            // cannot answer for another builder's.
+            extra: {
+                calls?: ReadonlyMap<
+                    string,
+                    (args: readonly string[]) => string
+                >;
+                fixedTupleCalls?: ReadonlyMap<string, number>;
+            } = {},
         ): string => {
             if (!declaration.body) {
                 this.context.contractError(
@@ -233,8 +296,14 @@ export class MeshBuilderLowerer {
             };
             lowerer = new PinnedNumericLowerer(file, {
                 bindings,
-                calls: meshMathCalls,
+                calls: new Map([
+                    ...meshMathCalls,
+                    ...(extra.calls ?? new Map()),
+                ]),
                 listCalls: new Set(["computeNormals"]),
+                ...(extra.fixedTupleCalls
+                    ? { fixedTupleCalls: extra.fixedTupleCalls }
+                    : {}),
                 returnValue,
                 booleanOr,
                 // Every `&&` in the pinned builder family joins a CONDITION
@@ -422,12 +491,12 @@ MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
         {});
 }
 `;
-        // `computeNormals`, the accumulation three of the pinned builders
+        // `computeNormals`, the accumulation four of the pinned builders
         // hand their grown positions and indices to. Emitted once, from the
-        // pin's own body, because the three call it rather than each
+        // pin's own body, because the four call it rather than each
         // carrying a copy.
         const normalsModule = "src/mesh/compute-normals.ts";
-        const computeNormals = !polyhedron && !ribbon
+        const computeNormals = !polyhedron && !ribbon && !torusKnot
             ? ""
             : (() => {
                   const { file, declaration } =
@@ -685,6 +754,217 @@ MeshHandle create_ribbon(Engine& engine, RibbonOptions options) {
         engine,
         std::move(options),
         "${this.context.pinnedFactoryMeshName("createRibbon")}");
+}
+`;
+        // The torus knot. It grows its `number[]`s like the four above and
+        // finishes through the same `computeNormals`, but it is the first
+        // builder whose local closure RETURNS a value: `getPos(angle)`
+        // hands back the curve point as a `[number, number, number]`, and
+        // the body binds two of them and reads their components. So the
+        // closure is lowered into a function of its own -- the shape
+        // `createRibbonData`'s `len` and `sub` already take -- and the
+        // three builder locals it closes over travel as parameters.
+        const torusKnotHelper: {
+            source: string;
+            call: string;
+            arity: number;
+        } = !torusKnot
+            ? { source: "", call: "", arity: 0 }
+            : (() => {
+                  const file = this.context.sourceFile(torusKnotModule);
+                  const { declaration } =
+                      this.context.functionDeclaration(
+                          torusKnotModule,
+                          "createTorusKnotData",
+                      );
+                  const initializer = this.context.unwrapExpression(
+                      this.context.variableInitializer(
+                          declaration,
+                          "getPos",
+                      ),
+                  );
+                  if (
+                      !ts.isArrowFunction(initializer) ||
+                      !ts.isBlock(initializer.body)
+                  ) {
+                      return this.context.contractError(
+                          initializer,
+                          "Expected createTorusKnotData's getPos to be a " +
+                              "block-bodied arrow function.",
+                      );
+                  }
+                  // The arity comes from the pin's own return annotation,
+                  // so a curve point that gains a component fails here
+                  // rather than reading past a three-element array.
+                  const annotation = initializer.type;
+                  if (
+                      !annotation ||
+                      !ts.isTupleTypeNode(annotation) ||
+                      annotation.elements.some(
+                          (element) =>
+                              element.kind !==
+                              ts.SyntaxKind.NumberKeyword,
+                      )
+                  ) {
+                      return this.context.contractError(
+                          annotation ?? initializer,
+                          "Expected getPos to return a tuple of numbers.",
+                      );
+                  }
+                  const arity = annotation.elements.length;
+                  const parameters = initializer.parameters.map(
+                      (parameter) => {
+                          if (
+                              !ts.isIdentifier(parameter.name) ||
+                              parameter.type?.kind !==
+                                  ts.SyntaxKind.NumberKeyword
+                          ) {
+                              return this.context.contractError(
+                                  parameter,
+                                  "Expected a numeric getPos parameter.",
+                              );
+                          }
+                          return parameter.name.text;
+                      },
+                  );
+                  const captured = freeIdentifiers(
+                      initializer,
+                      new Set(parameters),
+                  );
+                  // Which of the builder's own locals the closure reads,
+                  // in the pin's declaration order. Derived rather than
+                  // listed: a pin that starts reading `tube` in the curve
+                  // grows a parameter here instead of compiling against a
+                  // name this function does not have.
+                  const options = pinnedMeshOptionLocals(
+                      torusKnotModule,
+                      "createTorusKnotData",
+                  );
+                  for (const name of captured) {
+                      if (!options.includes(name)) {
+                          this.context.contractError(
+                              initializer,
+                              `getPos closes over '${name}', which is not ` +
+                                  "one of createTorusKnotData's options.",
+                          );
+                      }
+                  }
+                  // Every captured name is an option, asserted above, so
+                  // this is the capture list in the pin's own option order.
+                  const closes = options.filter((name) =>
+                      captured.has(name),
+                  );
+                  const signature = [
+                      ...parameters,
+                      ...closes,
+                  ].map((name) => `double ${name}`);
+                  const bindings = new Map<string, PinnedBinding>([
+                      ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                      ...[...parameters, ...closes].map(
+                          (name) =>
+                              [name, { cpp: name, type: "scalar" }] as [
+                                  string,
+                                  PinnedBinding,
+                              ],
+                      ),
+                  ]);
+                  const lowerer: PinnedNumericLowerer =
+                      new PinnedNumericLowerer(file, {
+                          bindings,
+                          calls: meshMathCalls,
+                          // The tuple return is the shared shape the
+                          // splat lowerer's writers already take; only the
+                          // `std::array` wrapper is this caller's.
+                          returnValue: (expression) =>
+                              `std::array<double, ${arity}>{` +
+                              `${lowerTupleComponents(
+                                  this.context,
+                                  lowerer,
+                                  expression,
+                                  { arity, at: initializer },
+                              ).join(", ")}}`,
+                          booleanOr: true,
+                          booleanAnd: true,
+                          maybeUnusedConst: true,
+                      });
+                  const body = initializer.body.statements
+                      .flatMap((statement) =>
+                          lowerer.statement(statement, "    "),
+                      )
+                      .join("\n");
+                  return {
+                      source: `// ${this.context.provenance(
+                          torusKnotModule,
+                          "createTorusKnotData#getPos",
+                      )}
+static std::array<double, ${arity}> pinned_torus_knot_pos(
+    ${signature.join(",\n    ")}) {
+${body}
+}
+
+`,
+                      call: closes.join(", "),
+                      arity,
+                  };
+              })();
+        const torusKnotBuilderBody = !torusKnot
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(torusKnotModule),
+                  this.context.functionDeclaration(
+                      torusKnotModule,
+                      "createTorusKnotData",
+                  ).declaration,
+                  new Map([
+                      ["opts.radius", "options.radius"],
+                      ["opts.tube", "options.tube"],
+                      ["opts.radialSegments", "options.radial_segments"],
+                      ["opts.tubularSegments", "options.tubular_segments"],
+                      ["opts.p", "options.p"],
+                      ["opts.q", "options.q"],
+                      // The pin's own return names neither count, so both
+                      // come from the grown arrays, as the disc's do.
+                      ["vertexCount", "positions.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map(),
+                  true,
+                  {
+                      calls: new Map([
+                          [
+                              "getPos",
+                              (args: readonly string[]): string =>
+                                  "pinned_torus_knot_pos(" +
+                                  [...args, torusKnotHelper.call]
+                                      .filter((part) => part.length > 0)
+                                      .join(", ") +
+                                  ")",
+                          ],
+                      ]),
+                      fixedTupleCalls: new Map([
+                          ["getPos", torusKnotHelper.arity],
+                      ]),
+                  },
+              );
+        const torusKnotFactory = !torusKnot
+            ? ""
+            : `${torusKnotHelper.source}static PinnedMeshData pinned_create_torus_knot_data(
+    TorusKnotOptions options) {
+${torusKnotBuilderBody}
+}
+
+MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options) {
+    PinnedMeshData data = pinned_create_torus_knot_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.context.pinnedFactoryMeshName("createTorusKnot")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
 }
 `;
         const torusBuilderBody = lowerPinnedMeshBuilder(
@@ -2013,6 +2293,21 @@ void set_thin_instance_colors(
 
 `
             : "";
+        // `bbl::js::` reaches this unit through the grown-array builders'
+        // own `new F32(list)` rounding and through the heightmap pass's
+        // value-selecting `||`. Read off what was emitted rather than off a
+        // second copy of the predicates behind it: a builder that starts
+        // converting a list arrives with its include, and one that stops
+        // does not leave a dead one behind.
+        const usesJsData = [
+            heightmapBody,
+            discFactory,
+            cylinderFactory,
+            polyhedronFactory,
+            ribbonFactory,
+            torusKnotFactory,
+            computeNormals,
+        ].some((emitted) => emitted.includes("bbl::js::"));
         const value = (input: number): string => this.context.floatLiteral(input);
         // The emitted fragments the decoded tables above compose. Each is
         // plain text interpolation: the byte-for-byte C++ is unchanged as
@@ -2048,6 +2343,7 @@ void set_thin_instance_colors(
                 ...(cylinder ? ["createCylinder"] : []),
                 ...(polyhedron ? ["createPolyhedron"] : []),
                 ...(ribbon ? ["createRibbon"] : []),
+                ...(torusKnot ? ["createTorusKnot"] : []),
             ].join(","),
             header: "",
             source: `// ${this.context.provenance(
@@ -2060,6 +2356,7 @@ void set_thin_instance_colors(
                     ...(cylinder ? ["createCylinder"] : []),
                     ...(polyhedron ? ["createPolyhedron"] : []),
                     ...(ribbon ? ["createRibbon"] : []),
+                    ...(torusKnot ? ["createTorusKnot"] : []),
                 ].join(", "),
                 [
                     "src/mesh/create-box.ts, src/mesh/create-ground.ts",
@@ -2071,16 +2368,20 @@ void set_thin_instance_colors(
                     ...(polyhedron
                         ? ["src/mesh/create-polyhedron.ts"]
                         : []),
-                    ...(ribbon
-                        ? [
-                              "src/mesh/create-ribbon.ts",
-                              "src/mesh/compute-normals.ts",
-                          ]
+                    ...(ribbon ? ["src/mesh/create-ribbon.ts"] : []),
+                    ...(torusKnot
+                        ? ["src/mesh/create-torus-knot.ts"]
+                        : []),
+                    // The shared accumulator, listed exactly when it is
+                    // emitted -- read off the emission itself rather than
+                    // off a second copy of the predicate behind it.
+                    ...(computeNormals
+                        ? ["src/mesh/compute-normals.ts"]
                         : []),
                 ].join(", ") +
                     " defaults, and src/math/compute-aabb.ts bounds folding",
             )}
-${ribbon || heightMapGround ? "#include <bblite/js_data.hpp>\n" : ""}\
+${usesJsData ? "#include <bblite/js_data.hpp>\n" : ""}\
 #include <bblite/runtime.hpp>
 ${heightMapGround ? `\
 #include <bblite/pal.hpp>
@@ -2507,7 +2808,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}${ribbonFactory}
+${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}${ribbonFactory}${torusKnotFactory}
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,

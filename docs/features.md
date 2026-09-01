@@ -726,7 +726,8 @@ name, and the pinned defaults making the dropped arms unreachable (cap
 
 **The rest of the builder family** — `createCylinder` (cylinders, cones,
 truncated cones), `createDisc` (discs and pie slices), `createPolyhedron`,
-`createRibbon` and `createExtrudeShape` — is lowered from each pinned body by
+`createRibbon`, `createExtrudeShape` and `createTorusKnot` — is lowered from
+each pinned body by
 the same translator, all byte-exact against the browser on scene 38. What
 separates them from the five that shipped earlier is storage: those
 preallocate a typed array and store into it, while these GROW a `number[]`
@@ -820,9 +821,18 @@ its reach order gives it.
 ### Lights
 
 Directional, hemispheric, point, and spot lights with diffuse and specular
-colours. Light count, kind dispatch and the per-mesh light sets an asset names
-are run-time UBO data rather than composition keys; the pin's own loop over its
-own entries is in [fidelity](fidelity.md#lights). Spot cones shade under the
+colours. Light count, kind dispatch and the per-mesh light sets are run-time
+UBO data rather than composition keys; the pin's own loop over its
+own entries is in [fidelity](fidelity.md#lights). Two things name such a set:
+a `.babylon` asset's own include/exclude lists, and scene code writing
+`light.includedOnlyMeshIds`. The pin joins both by `mesh.id` — the one
+quantity that field is read for — so a generation-known set of ids over
+generation-known meshes folds to the index vector the loader already resolves
+to, and both PALs are untouched. What the fold cannot represent is an id no
+mesh carries: upstream the light then illuminates *nothing*, because its gate
+is the set's size rather than the resolved list, while an empty index vector
+here means "every mesh" — so an id must be assigned before a light is
+restricted by it, and every other shape refuses by name. Spot cones shade under the
 cosine-and-exponent falloff on Standard surfaces and the physical falloff in
 the PBR extra lights. PBR carries two analytic slots in single-light mode;
 under multi-light the second is deliberately empty and every light past the
@@ -960,6 +970,39 @@ refuse by name with a source location: a depth-only render target (wrong
 *aspect* — that arm takes the opposite flip and a different sampler), a
 geometry task's attachment (wrong *source*, owned by a pass), and an image
 setting its own `srgb` option (wrong *encoding*, which is the family's).
+
+**A PBR lightmap is an opt-in extension, and the opt-in is the reach.**
+`enablePbrLightmap()` registers the pinned extension and `setPbrLightmap`
+stamps a material with a baked map, its UV set, level, and the two
+composition keys — `useAsShadowmap` (multiply against the lit result rather
+than adding to it) and `gamma` (the fragment's own sRGB decode, which is why
+the texture loads linear: the encoding travels with the texture, not the
+slot). A scene that never calls the opt-in composes byte-identically to a
+build without the extension, which is measured rather than argued.
+The novelty is on the loaded-material side: the reached scene stamps a
+*subset* of a glTF document's materials, selected by a `scene.meshes` walk
+filtering on `mesh.name`. Composition is settled per material at generation,
+so that walk is folded there — over the document's own mesh names and the
+materials the loader gives them — and every shape the fold cannot prove
+refuses by name: a filter outside the `===`/`!==`/`startsWith` grammar with
+`!`, `&&` and `||`, a walk with a second exit, a walk over any other
+collection, a scene that also creates a mesh of its own (generation carries
+no name for one), and a scene loading more than one container. Scene 167
+gates all three arms — uv2 shadowmap-multiply, uv1 additive, and a
+material the walk skips — with every composed fragment byte-identical to the
+browser's.
+
+The two loaded-material stamps reach their walks differently, and neither
+accepts the other's: `setPbrUnlit` reads the whole-renderable licence
+`createContainerMeshes`' own lowering mints on the loop BINDING, while the
+lightmap's filter is read off the enclosing `for-of` itself, which is what
+lets it carry a per-mesh predicate at all. So a `setPbrLightmap` inside a
+`getContainerMeshes` walk refuses, and a `setPbrUnlit` inside a
+`scene.meshes` walk finds no scene material to stamp. Unifying them means
+minting one licence — the container plus the loop's own accumulated
+predicate — at the shared collection-walk lowering and moving both setters
+onto it, which widens what each accepts and therefore belongs to the first
+scene that stamps both facts from one walk.
 
 `enableMaterialUvTransform(material)` marks a hand-built Standard material
 for independent per-texture transforms — the pin's opt-in for its ninth

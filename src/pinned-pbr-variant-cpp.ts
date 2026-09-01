@@ -114,6 +114,18 @@ const extensionWriters: ReadonlyArray<{
         nestedWriters: { writeUvTransform: uvTransformSources() },
     },
     {
+        // One lane and no transform: the lightmap's blend, UV set, gamma
+        // decode and V flip are all composed into the fragment, so the
+        // level is the only thing the block carries.
+        modulePath: "src/material/pbr/fragments/lightmap-fragment.ts",
+        symbolName: "writeLightmapUBO",
+        sourceLocal: "",
+        baseField: "lmLvl",
+        propertySources: {
+            lightmapLevel: "material.lightmap_level",
+        },
+    },
+    {
         modulePath: "src/material/pbr/fragments/sheen-fragment.ts",
         symbolName: "writeSheenUBO",
         sourceLocal: "sh",
@@ -1940,6 +1952,8 @@ export interface MaterialTextureSlotFeatures {
     clearcoat: boolean;
     sheen: boolean;
     iridescence: boolean;
+    /** A composed variant binds the opt-in lightmap pair (`lmTexture`). */
+    lightmap: boolean;
     metallicReflectanceMap: boolean;
     reflectanceMap: boolean;
     /** A composed variant samples the spec-gloss pair, which replaces the
@@ -2145,6 +2159,20 @@ function materialTextureSlotRows(
             fallback: "white",
             textureName: "occlusionTexture",
             samplerName: "occlusionSampler_",
+        });
+    }
+    if (features.lightmap) {
+        // A baked lightmap is a `loadTexture2D` image the scene hands the
+        // setter, so its encoding is the texture's: the reached call loads
+        // it linear and the composed fragment does the sRGB decode itself
+        // (the pin's `gamma` arm). Uploading through an sRGB view would
+        // decode it twice.
+        mesh.push({
+            source: "lightmap",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "lmTexture",
+            samplerName: "lmSampler",
         });
     }
     if (features.standardBump) {
@@ -2353,6 +2381,8 @@ enum class MaterialTextureSource {
     sheen_roughness,
     iridescence,
     iridescence_thickness,
+    /** The opt-in baked lightmap (PBR only). */
+    lightmap,
     metallic_reflectance,
     reflectance,
     /** The dedicated uv2 occlusion map, when the record flags it. */

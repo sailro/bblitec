@@ -1019,6 +1019,101 @@ test("generates engine API wrappers over the PAL", () => {
     assert.match(lowered.source, /pal::executable_directory\(\)/);
 });
 
+test("lowers the torus knot through its own closure and one rounding", () => {
+    // The fifth grown-array builder, and the first whose local closure
+    // RETURNS a value: `getPos(angle)` hands back the curve point as a
+    // `[number, number, number]` the body binds whole and then indexes.
+    // Each assertion below is a fact the PIN states, so a pin that moves the
+    // curve, the frame or the rounding boundary fails here rather than at a
+    // parity number.
+    const lowered = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories(["mesh:torus-knot"]);
+
+    // The closure lands as a function of its own, taking the three builder
+    // locals it closes over -- and only those three.
+    assert.match(
+        lowered.source,
+        /static std::array<double, 3> pinned_torus_knot_pos\(\s*double angle,\s*double radius,\s*double p,\s*double q\)/,
+    );
+    // Its whole chain is the pin's JavaScript-number width; nothing in the
+    // curve or the frame narrows.
+    const helperStart = lowered.source.indexOf(
+        "static std::array<double, 3> pinned_torus_knot_pos",
+    );
+    const helper = lowered.source.slice(
+        helperStart,
+        lowered.source.indexOf("\n}", helperStart),
+    );
+    assert.ok(helperStart >= 0);
+    assert.doesNotMatch(helper, /static_cast<float>/);
+
+    // The builder binds each returned point whole rather than recomputing it.
+    assert.match(
+        lowered.source,
+        /const std::array<double, 3> p1 = pinned_torus_knot_pos\(u, radius, p, q\);/,
+    );
+    assert.match(
+        lowered.source,
+        /const std::array<double, 3> p2 = pinned_torus_knot_pos\(\(u \+ 0\.01\), radius, p, q\);/,
+    );
+
+    // The curve's `(q / p) * angle` and the tube's `-tube * cos(v)`, from
+    // the pin rather than restated.
+    assert.match(lowered.source, /const double quOverP = \(\(q \/ p\) \* angle\);/);
+    assert.match(lowered.source, /const double cx = \(\(-tube\) \* std::cos\(v\)\);/);
+
+    // The wraps are JavaScript `%` on numbers, which is `fmod` and not `%`.
+    assert.match(lowered.source, /std::fmod\(i, radialSegments\)/);
+    assert.match(lowered.source, /std::fmod\(\(j \+ 1\.0\), tubularSegments\)/);
+
+    // Normals come from the SHARED accumulator, not a copy of its body.
+    assert.match(
+        lowered.source,
+        /std::vector<double> normals = pinned_compute_normals\(positions, indices\);/,
+    );
+    assert.equal(
+        lowered.source.match(
+            /static std::vector<double> pinned_compute_normals/g,
+        )?.length,
+        1,
+    );
+
+    // One rounding boundary, and it is the pin's own typed-array store --
+    // spelled `new Float32Array(...)` here where the disc spells `new F32`.
+    const builderStart = lowered.source.indexOf(
+        "static PinnedMeshData pinned_create_torus_knot_data",
+    );
+    const builder = lowered.source.slice(
+        builderStart,
+        lowered.source.indexOf("\n}", builderStart),
+    );
+    assert.ok(builderStart >= 0);
+    assert.doesNotMatch(builder, /static_cast<float>/);
+    assert.match(builder, /bbl::js::f32_array_from\(positions\)/);
+    assert.match(builder, /bbl::js::u32_array_from\(indices\)/);
+
+    // The mesh finishes through the shared `create_mesh_from_data` under the
+    // pinned factory's own name, and the conversion helper it needs arrives
+    // with it.
+    assert.match(lowered.source, /#include <bblite\/js_data\.hpp>/);
+    assert.match(
+        lowered.source,
+        /MeshHandle create_torus_knot\(Engine& engine, TorusKnotOptions options\)/,
+    );
+    assert.match(lowered.source, /"torusKnot"/);
+});
+
+test("emits the torus knot only where a scene reached it", () => {
+    // The family rule: a builder costs nothing to a scene that never calls
+    // it, and the shared accumulator follows whoever needs it.
+    const bare = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories([]);
+    assert.doesNotMatch(bare.source, /pinned_create_torus_knot_data/);
+    assert.doesNotMatch(bare.source, /pinned_torus_knot_pos/);
+    assert.doesNotMatch(bare.source, /pinned_compute_normals/);
+    assert.doesNotMatch(bare.source, /#include <bblite\/js_data\.hpp>/);
+});
+
 test("generates mesh and standard-material factories from upstream defaults", () => {
     const lowerer = new FactoryLowerer(new LoweringContext());
     const mesh = lowerer.lowerMeshFactories();
@@ -2054,4 +2149,162 @@ test("records every pinned origin consolidated into sprite_2d.cpp", () => {
             symbolName: "setAlphaToCoverage",
         },
     ]);
+});
+
+/**
+ * The PBR lightmap composed through the pin, and the walk fold that decides
+ * which materials reach it.
+ *
+ * Every arm of `createLightmapFragment` is selected by `detect` from the
+ * material's own props, so what these check is that this port's stamp
+ * reaches those props: the blend, the UV set, the gamma decode and the
+ * V flip each move the composed text, and the fragment is the pin's own.
+ */
+test("composes the pinned lightmap arms the setter's props select", async () => {
+    const { composePinnedPbrVariant } = await import(
+        "../src/pinned-pbr-variants.js"
+    );
+    const { importPinnedModule } = await import(
+        "../src/pinned-shader-composer.js"
+    );
+    const { setPbrLightmap } = await importPinnedModule<{
+        setPbrLightmap: (
+            material: Record<string, unknown>,
+            texture: Record<string, unknown>,
+            options: Record<string, unknown>,
+        ) => void;
+    }>("material/pbr/enable-pbr-lightmap.js");
+    const { pinnedMeshFeaturesFromPrimitive } = await import(
+        "../src/pinned-mesh-features.js"
+    );
+    const meshFeatures = await pinnedMeshFeaturesFromPrimitive({
+        attributes: { POSITION: 0, NORMAL: 0, TEXCOORD_0: 0, TEXCOORD_1: 0 },
+    });
+    const compose = async (
+        texture: Record<string, unknown>,
+        options: Record<string, unknown>,
+    ) => {
+        const input: Record<string, unknown> = {};
+        setPbrLightmap(input, texture, options);
+        return composePinnedPbrVariant(input, { meshFeatures });
+    };
+
+    // Scene 167's own two arms: the glTF level multiplies a gamma-decoded
+    // UV2 sample and flips V; the boxes add a gamma-decoded UV1 one.
+    const shadowmap = await compose(
+        { uAng: Math.PI },
+        { coordIndex: 1, useAsShadowmap: true, gamma: true },
+    );
+    assert.match(shadowmap.fragmentKey, /(^|\|)lightmap(\||$)/);
+    assert.match(
+        shadowmap.fragmentWgsl,
+        /color=\(color-emissive\)\*\(pow\(textureSample\(lmTexture,lmSampler,vec2<f32>\(input\.uv2\.x,1\.0-input\.uv2\.y\)\)\.rgb,vec3<f32>\(2\.2\)\)\*material\.lmLvl\)\+emissive;/,
+    );
+    assert.match(shadowmap.fragmentWgsl, /var lmTexture:texture_2d<f32>/);
+    assert.match(shadowmap.fragmentWgsl, /lmLvl: f32,/);
+
+    const additive = await compose(
+        { uAng: Math.PI },
+        { coordIndex: 0, gamma: true },
+    );
+    assert.match(
+        additive.fragmentWgsl,
+        /color\+=pow\(textureSample\(lmTexture,lmSampler,vec2<f32>\(input\.uv\.x,1\.0-input\.uv\.y\)\)\.rgb,vec3<f32>\(2\.2\)\)\*material\.lmLvl;/,
+    );
+
+    // The V flip is `!!invertY !== (uAng === Math.PI)`, so an unrotated
+    // texture samples the raw UV and a rotated-and-inverted one does too.
+    const plain = await compose({}, { coordIndex: 0 });
+    assert.match(
+        plain.fragmentWgsl,
+        /color\+=textureSample\(lmTexture,lmSampler,input\.uv\)\.rgb\*material\.lmLvl;/,
+    );
+    const bothFlips = await compose(
+        { invertY: true, uAng: Math.PI },
+        { coordIndex: 0 },
+    );
+    assert.match(
+        bothFlips.fragmentWgsl,
+        /color\+=textureSample\(lmTexture,lmSampler,input\.uv\)\.rgb\*material\.lmLvl;/,
+    );
+
+    // A material nothing stamps composes no lightmap at all, which is what
+    // makes registering the extension unconditionally inert.
+    const none = await composePinnedPbrVariant({}, { meshFeatures });
+    assert.doesNotMatch(none.fragmentWgsl, /lmTexture/);
+    assert.doesNotMatch(none.fragmentKey, /lightmap/);
+});
+
+test("selects the lightmap's materials from the document's own mesh names", async () => {
+    const { gltfLightmapMaterials, meshNameSelected } = await import(
+        "../src/pinned-material-arms.js"
+    );
+    // Scene 167's filter: `name !== "level" && !name.startsWith("level_p")`
+    // guards a `continue`, so the body runs for its negation.
+    const predicate = {
+        kind: "not" as const,
+        operand: {
+            kind: "and" as const,
+            operands: [
+                {
+                    kind: "not" as const,
+                    operand: { kind: "equals" as const, value: "level" },
+                },
+                {
+                    kind: "not" as const,
+                    operand: {
+                        kind: "startsWith" as const,
+                        value: "level_p",
+                    },
+                },
+            ],
+        },
+    };
+    assert.equal(meshNameSelected(predicate, "level"), true);
+    assert.equal(meshNameSelected(predicate, "level_primitive1"), true);
+    assert.equal(meshNameSelected(predicate, "Cube.001"), false);
+    assert.equal(meshNameSelected({ kind: "always" }, "Cube.001"), true);
+
+    // Scene 167's own document shape: the `level` mesh's three primitives
+    // carry materials 0, 0 and 1, and every `Cube*` node draws material 2.
+    // The renderable walk is node-major, primitive-minor -- the loader's own
+    // order -- and each renderable takes its glTF MESH's name.
+    const document = {
+        nodes: [
+            { name: "level", mesh: 0 },
+            { name: "Cube", mesh: 1 },
+            { name: "jointSpaceA" },
+        ],
+        meshes: [
+            {
+                name: "level",
+                primitives: [
+                    { material: 0 },
+                    { material: 0 },
+                    { material: 1 },
+                ],
+            },
+            { name: "Cube.001", primitives: [{ material: 2 }] },
+        ],
+        materials: [{}, {}, {}],
+    };
+    assert.deepEqual(
+        [...(await gltfLightmapMaterials(document, predicate))].sort(),
+        [0, 1],
+    );
+    // An unnamed mesh takes the pin's own fallback name, which is what the
+    // generated loader writes into the record the walk compares against.
+    assert.deepEqual(
+        [
+            ...(await gltfLightmapMaterials(
+                {
+                    nodes: [{ mesh: 0 }],
+                    meshes: [{ primitives: [{ material: 7 }] }],
+                    materials: [],
+                },
+                { kind: "startsWith", value: "gltf_mesh_" },
+            )),
+        ],
+        [7],
+    );
 });

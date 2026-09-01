@@ -88,6 +88,83 @@ export function pinnedMeshOptionDefault(
     );
 }
 
+/**
+ * Which options one pinned builder resolves, as its own local names in its
+ * own declaration order.
+ *
+ * The same `const <name> = <options>.<name> ?? <default>` head the two
+ * readers above take a VALUE out of, read here for the list and the order
+ * instead. A builder that declares a closure needs it: a JavaScript closure
+ * captures by name and a free C++ function cannot, so what the closure reads
+ * becomes parameters — and taking their order from the pin means a builder
+ * that adds or reorders an option moves the emitted signature with it rather
+ * than compiling against a list typed beside the emitter.
+ *
+ * Only a fallback keyed to the options record counts, so a local the builder
+ * computes for itself is not mistaken for one the caller can name.
+ */
+export function pinnedMeshOptionLocals(
+    modulePath: string,
+    factory: string,
+): readonly string[] {
+    const context = reader();
+    const { declaration } = context.functionDeclaration(
+        modulePath,
+        factory,
+    );
+    const options = declaration.parameters[0];
+    if (!options || !ts.isIdentifier(options.name)) {
+        return context.contractError(
+            declaration,
+            `Expected ${factory} to take an options object.`,
+        );
+    }
+    const record = options.name.text;
+    const names: string[] = [];
+    for (const statement of declaration.body?.statements ?? []) {
+        if (!ts.isVariableStatement(statement)) continue;
+        for (const declared of statement.declarationList.declarations) {
+            const initializer = declared.initializer;
+            if (
+                !ts.isIdentifier(declared.name) ||
+                !initializer ||
+                !ts.isBinaryExpression(initializer) ||
+                initializer.operatorToken.kind !==
+                    ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                continue;
+            }
+            // `a ?? b ?? c` parses as `(a ?? b) ?? c`, so the option's
+            // own read sits at the BOTTOM of the left spine — the same
+            // model `pinnedDefaultExpression` states for finding the
+            // default at the top of it. Walking down keeps the two
+            // readers agreeing about what counts as an option.
+            let left = context.unwrapExpression(initializer.left);
+            while (
+                ts.isBinaryExpression(left) &&
+                left.operatorToken.kind ===
+                    ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                left = context.unwrapExpression(left.left);
+            }
+            if (
+                ts.isPropertyAccessExpression(left) &&
+                ts.isIdentifier(left.expression) &&
+                left.expression.text === record
+            ) {
+                names.push(declared.name.text);
+            }
+        }
+    }
+    if (names.length === 0) {
+        context.contractError(
+            declaration,
+            `Expected ${factory} to resolve its options through '??'.`,
+        );
+    }
+    return names;
+}
+
 /** The same, where the pin's own default is a flag rather than a number. */
 export function pinnedMeshOptionFlag(
     modulePath: string,

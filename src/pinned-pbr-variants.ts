@@ -70,6 +70,19 @@ export interface PinnedPbrVariant {
  * listed in that same sequence rather than alphabetically.
  */
 const materialExtensionModules = [
+    // The baked lightmap, whose opt-in a scene awaits before it creates a
+    // material (`enablePbrLightmap()` imports the fragment and registers
+    // this ext), so it is listed ahead of the setter-registered ones. It is
+    // registered unconditionally here for the same reason the environment
+    // extension below is: its own `detect` answers `{f: 0, f2: 0}` for a
+    // material carrying no `lightmapTexture`, and only `setPbrLightmap`
+    // writes one -- so a scene that never opts in composes exactly what it
+    // composed before. Registration order does not decide composition
+    // either: `composeShader` runs the fragments through `topoSort`, whose
+    // ready queue is sorted by `_id`, so the UBO field order, the binding
+    // order and the fragment key are alphabetical-by-id under the pin's own
+    // dependency edges rather than insertion-ordered.
+    "material/pbr/fragments/lightmap-fragment.js",
     "material/pbr/fragments/clearcoat-fragment.js",
     "material/pbr/fragments/sheen-fragment.js",
     "material/pbr/fragments/iridescence-fragment.js",
