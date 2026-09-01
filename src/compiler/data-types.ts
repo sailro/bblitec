@@ -18,6 +18,7 @@ export type HandleKind =
   | "animation-group"
   | "audio-buffer"
   | "camera"
+  | "ui-element"
   | "material"
   | "physics-body"
   | "physics-shape"
@@ -34,6 +35,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   "animation-group": "bbl::AnimationGroupHandle",
   "audio-buffer": "bbl::pal::AudioBufferHandle",
   camera: "bbl::CameraHandle",
+  "ui-element": "bbl::UiElementHandle",
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
   "physics-shape": "bbl::upstream::PhysicsShape",
@@ -156,6 +158,24 @@ function declaredInBabylonLite(symbol: ts.Symbol): boolean {
       .getSourceFile()
       .fileName.replace(/\\/g, "/")
       .includes("@babylonjs/lite/"),
+  );
+}
+
+function declaredInDomLibrary(symbol: ts.Symbol): boolean {
+  return (symbol.declarations ?? []).some((declaration) =>
+    declaration
+      .getSourceFile()
+      .fileName.replace(/\\/g, "/")
+      .endsWith("/lib.dom.d.ts"),
+  );
+}
+
+function isDomElementType(symbol: ts.Symbol): boolean {
+  return (
+    declaredInDomLibrary(symbol) &&
+    (symbol.name === "Element" ||
+      symbol.name === "HTMLElement" ||
+      /^HTML[A-Za-z0-9]*Element$/.test(symbol.name))
   );
 }
 
@@ -464,12 +484,12 @@ export class DataTypeRegistry {
       if (!inner) {
         return undefined;
       }
-      // An optional callback stays a compile-time specialization. Native
-      // stored callbacks are deliberately non-null function values; mapping
-      // `fn | undefined` would require optional-call and presence semantics
-      // throughout the data path that no reached stored-function use needs.
+      // std::function already has the nullable state JavaScript callbacks
+      // need: an empty function represents null/undefined and converts to
+      // false in a presence guard. Avoid wrapping it in Nullable so calls,
+      // assignments and truthiness all use that single native state.
       if (inner.kind === "function") {
-        return undefined;
+        return inner;
       }
       if (inner.kind === "struct" && this.isReferenceStruct(inner.name)) {
         // Shared object handles carry null directly; wrapping one
@@ -547,6 +567,9 @@ export class DataTypeRegistry {
     // case), but their PCM storage stays behind the audio PAL.
     if (type.symbol?.name === "AudioBuffer") {
       return { kind: "handle", handle: "audio-buffer" };
+    }
+    if (type.symbol && isDomElementType(type.symbol)) {
+      return { kind: "handle", handle: "ui-element" };
     }
     if ((type.symbol?.declarations ?? []).some(ts.isClassDeclaration)) {
       // Reached local classes keep their methods and identity in the
@@ -669,7 +692,8 @@ export class DataTypeRegistry {
       while (owner && !ts.isSourceFile(owner)) {
         if (
           ts.isPropertyDeclaration(owner) &&
-          ts.isClassLike(owner.parent)
+          ts.isClassLike(owner.parent) &&
+          this.checker.getTypeAtLocation(owner).getCallSignatures().length > 0
         ) {
           // Class callback fields use the class lowerer's method-like binding,
           // including `this`; they are not ordinary stored struct slots.

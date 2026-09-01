@@ -9,7 +9,10 @@ import {
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { PNG } from "pngjs";
-import { captureSuiteReference } from "./capture-suite-reference.js";
+import {
+    captureSuiteReference,
+    captureUiEnabled,
+} from "./capture-suite-reference.js";
 import type { RenderItemSpecialization } from "./asset-specializer.js";
 import {
     comparePayload,
@@ -41,13 +44,20 @@ import {
  * the instrumented capture and the geometry diagnostics — so a seeded
  * scene renders the same particle set on all of them.
  */
-export function usesSeededRandom(scene: SceneDefinition): boolean {
+interface CompiledSceneManifest {
+    adaptations?: Array<{ id?: string }>;
+    features?: unknown;
+}
+
+function readCompiledSceneManifest(
+    scene: SceneDefinition,
+): CompiledSceneManifest | undefined {
     const manifestPath = resolve(
         scene.output,
         "manifest.json",
     );
     if (!existsSync(manifestPath)) {
-        return false;
+        return undefined;
     }
     try {
         const manifest: unknown = JSON.parse(
@@ -57,26 +67,35 @@ export function usesSeededRandom(scene: SceneDefinition): boolean {
             typeof manifest !== "object" ||
             manifest === null
         ) {
-            return false;
+            return undefined;
         }
-        const adaptations = (
-            manifest as {
-                adaptations?: Array<{ id?: string }>;
-            }
-        ).adaptations;
-        return (
-            Array.isArray(adaptations) &&
-            adaptations.some(
-                (adaptation) =>
-                    adaptation.id ===
-                    "deterministic-seeded-random",
-            )
-        );
+        return manifest as CompiledSceneManifest;
     } catch {
-        return false;
+        return undefined;
     }
 }
 
+function manifestUsesSeededRandom(
+    manifest: CompiledSceneManifest | undefined,
+): boolean {
+    return (
+        Array.isArray(manifest?.adaptations) &&
+        manifest.adaptations.some(
+            (adaptation) =>
+                adaptation.id === "deterministic-seeded-random",
+        )
+    );
+}
+
+export function usesSeededRandom(scene: SceneDefinition): boolean {
+    return manifestUsesSeededRandom(readCompiledSceneManifest(scene));
+}
+
+/** Whether the compiled scene actually carries the retained native UI. */
+export function usesRetainedUi(scene: SceneDefinition): boolean {
+    const features = readCompiledSceneManifest(scene)?.features;
+    return Array.isArray(features) && features.includes("ui:rml");
+}
 
 interface GltfSpecialization {
     renderItems: RenderItemSpecialization[];
@@ -1085,8 +1104,19 @@ export async function runSceneParity(
     // resolved selection is applied there once; the thresholds and the
     // report labels take the value directly.
     applyGpuBackendEnvironment(backend);
-    const reference = resolve(config.reference.path);
-    const outputDirectory = resolve(config.outputDirectory);
+    const captureUi = captureUiEnabled();
+    const canvasOnly = !captureUi;
+    const outputDirectory = canvasOnly
+        ? resolve("artifacts", "parity-canvas", scene.id)
+        : resolve(config.outputDirectory);
+    const compiledManifest = readCompiledSceneManifest(scene);
+    const retainedUiCapture =
+        captureUi &&
+        Array.isArray(compiledManifest?.features) &&
+        compiledManifest.features.includes("ui:rml");
+    const reference = canvasOnly
+        ? resolve(outputDirectory, "browser-canvas.png")
+        : resolve(config.reference.path);
     mkdirSync(outputDirectory, { recursive: true });
     const without = arguments_.without;
     // Backend-suffixed artifacts keep every backend's outputs side by
@@ -1113,9 +1143,9 @@ export async function runSceneParity(
     }
     // A run with an element suppressed is an attribution measurement:
     // its numbers are meant to move, so gating them against the registry
-    // thresholds would fail the experiment for working.
+    // thresholds would fail the attribution run for working.
     const thresholds =
-        without !== undefined
+        canvasOnly || without !== undefined
             ? {
                   maxMad: undefined,
                   maxRegionMad: undefined,
@@ -1146,22 +1176,42 @@ export async function runSceneParity(
         ? resolve(outputDirectory, `triangle-clusters-visual-${token}.png`)
         : undefined;
 
+    const recaptureReference =
+        arguments_.recaptureReference ||
+        (canvasOnly && !existsSync(reference));
+    const configuredNativeFrame = Number.parseInt(
+        config.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME ?? "",
+        10,
+    );
+    const browserReferenceFrame = config.referenceFrame ??
+        (retainedUiCapture &&
+        Number.isInteger(configuredNativeFrame) &&
+        configuredNativeFrame > 0
+            ? configuredNativeFrame
+            : undefined);
     validateReferenceCapture(
         scene,
         reference,
-        arguments_.recaptureReference,
+        recaptureReference,
     );
     await captureSuiteReference(
         scene.source,
         reference,
-        arguments_.recaptureReference,
+        recaptureReference,
         undefined,
         seek ?? config.referenceTimeSeconds,
         config.referenceAnimationGroups,
         {
-            seededRandom: usesSeededRandom(scene),
-            ...(config.referenceFrame !== undefined
-                ? { fixedAnimationFrame: config.referenceFrame }
+            seededRandom: manifestUsesSeededRandom(compiledManifest),
+            ...(captureUi && scene.nativeHostUi
+                ? {
+                      hostUi: JSON.parse(
+                          readFileSync(resolve(scene.nativeHostUi), "utf8"),
+                      ),
+                  }
+                : {}),
+            ...(browserReferenceFrame !== undefined
+                ? { fixedAnimationFrame: browserReferenceFrame }
                 : {}),
             ...(config.referenceSearch !== undefined
                 ? { search: config.referenceSearch }
@@ -1441,7 +1491,9 @@ export async function runSceneParityDifferential(
     if (!config) {
         throw new Error(`Scene '${scene.id}' has no parity definition.`);
     }
-    const outputDirectory = resolve(config.outputDirectory);
+    const outputDirectory = captureUiEnabled()
+        ? resolve(config.outputDirectory)
+        : resolve("artifacts", "parity-canvas", scene.id);
     mkdirSync(outputDirectory, { recursive: true });
     // Each backend run writes its own suffixed actual, so the two images
     // sit side by side without a copy step and neither run can overwrite

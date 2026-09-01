@@ -532,9 +532,12 @@ bool run_frame_graph_gpu_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                if (options.test_pass && is_platform_input_event(event)) {
+                    continue;
+                }
                 handle_platform_event(event, engine);
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, state.gpu.window, engine);
             (void)advance_frame(
                 engine,
                 context,

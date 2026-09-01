@@ -802,12 +802,15 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
 
     for (const backend of [sdl, dawn]) {
         assert.match(backend, /handle_platform_event\(event, engine\);/);
-        assert.match(backend, /input_replay\.dispatch\(frame, engine\);/);
+        assert.match(
+            backend,
+            /input_replay\.dispatch\(frame, [^,]+, engine\);/,
+        );
         assert.match(backend, /const auto sync_render_textures = \[&\]\(\)/);
         assert.match(backend, /const auto sync_renderer_passes = \[&\]\(\)/);
         assert.match(
             backend,
-            /advance_frame\([\s\S]{0,220}sync_render_textures\(\);\s*sync_renderer_passes\(\);/,
+            /advance_frame\([\s\S]{0,420}sync_render_textures\(\);\s*sync_renderer_passes\(\);/,
         );
         assert.match(
             backend,
@@ -928,7 +931,10 @@ test("forwards DOM-compatible application input through every native loop", () =
     ]) {
         const loop = source(path);
         assert.match(loop, /handle_platform_event\(event, engine\);/);
-        assert.match(loop, /input_replay\.dispatch\(frame, engine\);/);
+        assert.match(
+            loop,
+            /input_replay\.dispatch\(frame, [^,]+, engine\);/,
+        );
     }
 });
 
@@ -1000,10 +1006,15 @@ test("runs post-start RAF callbacks only after the engine render", () => {
         runtime,
         /std::vector<std::function<void\(double\)>> animation_frame_callbacks/,
     );
+    assert.match(runtime, /animation_frame_once_callbacks/);
     assert.match(runtime, /double animation_frame_timestamp_ms = 0\.0;/);
     assert.match(
         shared,
         /inline void run_animation_frame_callbacks\(Engine& engine\)/,
+    );
+    assert.match(
+        shared,
+        /std::move\(engine\.animation_frame_once_callbacks\)/,
     );
     assert.equal(
         (shared.match(/run_animation_frame_callbacks\(engine\);/g) ?? [])

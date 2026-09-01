@@ -794,7 +794,7 @@ generated from the reached Babylon Lite APIs.
 Direct `createMorphTargets` accepts one position target, nullable normal
 deltas, one initial weight, and one mesh attachment. It rides the same
 pinned storage-buffer morph path as glTF. `createSphereData` and the rendered
-sphere now consume the same arrays produced by an AST lowering of the pinned
+sphere consume the same arrays produced by an AST lowering of the pinned
 `createSphereData` body, so procedural delta functions consume exactly the
 base positions the renderer draws. The ground and torus builders use that
 same translation path for their pinned typed-array bodies. JavaScript-number
@@ -815,12 +815,9 @@ light-count boundary is in [features](features.md#lights).
 **A mesh's world is the pin's own composition, and its parent is a matrix
 product.** `composeTrsLocalMatrix` builds a node's local matrix and
 `createWorldMatrixState` resolves its world as `parent.worldMatrix * local`;
-both are lowered from their own declarations, so the PAL rotates nothing
-itself. It used to: `rotate_mesh` turned the record's quaternion or Euler
-triple into three rotated basis vectors, which is `mat4ComposeInto`
-re-derived in float and agreed only while a mesh's transform was its own —
-a negative scale above a rotation is not expressible as the child's own
-scale-rotate pair.
+both are lowered from their own declarations. The PAL does not re-derive
+rotation or compose a child transform independently; negative scale above a
+rotation remains part of the parent matrix product.
 
 **The pin transforms a normal by the plain world basis.** `pbr-template.ts`
 writes `(finalWorld * vec4<f32>(normalize(normal), 0.0)).xyz` and
@@ -1175,7 +1172,7 @@ every uploaded lane bit-identical, and every pixel exact. Its one differing
 pixel of 921600 sat 4.0e-6 from a texel boundary, where nearest filtering
 took the neighbouring checker row — and that 4e-6 was the transform's own
 `uScale` reaching this double lane as a float literal, which the lane rule
-above now writes at the sink's width.
+writes at the sink's width.
 
 ### Compressed textures
 
@@ -1337,8 +1334,8 @@ offset the pin's layout gave it, and the `inputs` handles that would change one
 are not lowered, so generation bakes what the pin's own writer would have
 written. And the **mesh block rides the identity world** where the pin passes
 `mesh.worldMatrix`, because a scene-code mesh bakes its node transform into its
-vertices here — the same argument the Standard family's draws already make, and
-the node mesh block now writes the live `receiveShadows` value into
+vertices here — the same argument the Standard family's draws make, and
+the node mesh block writes the live `receiveShadows` value into
 `receivesShadow`, where the pin mixes each composed light's factor rather than
 selecting a second graph variant.
 
@@ -1662,16 +1659,11 @@ native reader serves both. One difference from the HDR loader is the pin's own
 and is carried through: a DDS environment writes no image-processing state at
 all, where the HDR loader sets exposure, contrast, and tone mapping.
 
-**All three environment routes now share one LOD generation scale, and it is
-read rather than restated.** `.env` and DDS have always passed `0.8` to
-`assembleEnvironmentTextures`; the HDR loader passed `1.0` until 1.25.0 named
-the value `HDR_LOD_GENERATION_SCALE` in `hdr-ibl-pipeline.ts` and set it to
-Babylon.js's own `0.8`, calling the old value a mismatch with the
-roughness-to-prefiltered-mip mapping. The scale is a *value* the loader hands
-over, so the emitted `lod_generation_scale` comes from the argument's own
-expression — a named constant is followed to the module that declares it,
-which is what turned that move into a generation failure rather than a
-silently different reflection blur.
+**All three environment routes share the source-derived LOD generation
+scale.** `.env`, DDS, and HDR pass `0.8` to
+`assembleEnvironmentTextures`; HDR reads `HDR_LOD_GENERATION_SCALE` from
+`hdr-ibl-pipeline.ts`. The emitted `lod_generation_scale` follows the loader
+argument and resolves named constants through their declaring modules.
 
 Scene 8 is the one reached HDR environment and it measures byte-identical
 either way, which is a fact about the scene rather than about the scale: its
@@ -1963,7 +1955,7 @@ Bullet's contact jitter otherwise leaves pieces moving until roughly step
 contact manifold and remains inside the measured late-motion envelope for a
 quarter second; free bodies are never touched, and ordinary Bullet island
 activation wakes a stabilized body on a later collision or impulse. The
-native trace now has two movers at step 150, one at 210 and zero at 243. This
+native trace has two movers at step 150, one at 210 and zero at 243. This
 is an explicit solver-equivalence shim, not a changed demo impulse or global
 damping knob.
 
@@ -2087,33 +2079,25 @@ the per-100 ms RMS rising monotonically as its own
 for exactly this reason, so the browser half of a PCM comparison already
 exists; that comparison is the gate this slice still lacks.
 
-## What is measured: the canvas, not the page
+## What is measured: the full page
 
-**DOM content is out of scope.** A parity measurement compares the native
-frame against the browser's `#renderCanvas` and nothing else. Before every
-golden screenshot the capture hides the canvas's siblings
-(`hideNonCanvasChrome`, `src/browser-harness.ts`), so anything a demo page
-draws in HTML is absent from both sides of the comparison.
+Parity compares the complete 1280×720 browser page with the native frame. The
+golden includes the Babylon canvas and reached DOM/CSS UI. The bounded
+[native page UI](ui.md) surface lowers supported controls, Canvas2D overlays,
+events, and host-page companions into retained RmlUi records.
 
-This is a real limitation, not a formatting choice:
+Browser and native UI use different layout and font rasterization stacks, so a
+composite residual can be larger than the canvas residual. Status rows above
+MAD 0.5 identify UI as the dominant residual and publish both backend values
+from a canvas-only attribution run.
 
-- **The native runtime has no DOM and never will at this seam.** It draws a
-  frame; it does not lay out or paint HTML. A page widget left in the golden
-  would measure a browser control against a renderer that cannot have one.
-- **Scenes do append their own controls.** Scene 4 is the reached case — two
-  toggle buttons positioned over the canvas. They are 19,800 pixels at
-  MAD 51 against 0.000 everywhere else in that scene, so they would have
-  been the whole of its residual.
-- **A scene whose rendered output DEPENDS on that DOM is not integrable
-  as-is.** The controls are hidden, not clicked: whatever the page shows on
-  load is what is measured. A scene needing a button pressed first would
-  need its pose expressed in scene source, the way every other reached
-  scene's is.
+`BBLITE_CAPTURE_UI=0` hides browser page chrome and captures the native scene
+before UI composition. Those references and reports live under
+`artifacts/parity-canvas/`; they are diagnostics, not canonical gates.
 
-Hiding is done at capture time and touches nothing else — not the scene, not
-the canvas, not anything the scene drew into it. For a page with no such
-elements it is a no-op, which is why re-capturing an already-shipped scene
-reproduces its committed golden byte for byte.
+Parity poses are deterministic source states and do not depend on clicking UI.
+The browser and native harnesses use the same configured frame, clock, timers,
+and CSS animation time.
 
 ## Parity reports
 

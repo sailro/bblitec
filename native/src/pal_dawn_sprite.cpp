@@ -11,9 +11,13 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/pal_ui.hpp>
+#endif
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,6 +28,9 @@
 
 #if BBLITE_HAS_DAWN && BBLITE_HAS_SPRITE_RENDERER
 #include "pal_dawn_sprite.hpp"
+#endif
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include "pal_sprite_ui_dawn.hpp"
 #endif
 
 namespace bbl::pal {
@@ -46,7 +53,16 @@ bool run_sprite_dawn_engine(Engine& engine) {
     std::vector<DawnSpritePass> passes;
     std::vector<WGPUTexture> render_textures;
     std::vector<WGPUTextureView> render_texture_views;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    UiRmlRuntime* ui_runtime = nullptr;
+    SpriteUiDawnResources ui_resources;
+#endif
     const auto release = [&]() {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        release_sprite_ui_dawn_resources(ui_resources);
+        destroy_ui_rml_runtime(ui_runtime);
+        ui_runtime = nullptr;
+#endif
         for (DawnSpritePass& pass : passes) {
             release_dawn_sprite_pass(pass);
         }
@@ -71,6 +87,15 @@ bool run_sprite_dawn_engine(Engine& engine) {
         device_options.immediate_present =
             frame_options.benchmark_requested;
         create_dawn_device(engine.options, device_options, state);
+        sync_engine_canvas_size(state.window, engine);
+        resize_dawn_surface(state, engine.options);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        ui_runtime = create_ui_rml_runtime(
+            engine,
+            state.window,
+            static_cast<std::uint32_t>(engine.options.width),
+            static_cast<std::uint32_t>(engine.options.height));
+#endif
 
         const auto sync_render_textures = [&]() {
             render_textures.resize(
@@ -155,6 +180,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         }
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
+        const bool capture_ui = frame_options.capture_ui;
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples;
@@ -166,17 +192,34 @@ bool run_sprite_dawn_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
-                handle_platform_event(event, engine);
+                if (frame_options.test_pass && is_platform_input_event(event)) {
+                    continue;
+                }
+                bool propagate_to_scene = true;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+                propagate_to_scene =
+                    handle_ui_rml_event(*ui_runtime, event);
+#endif
+                if (propagate_to_scene) {
+                    handle_platform_event(event, engine);
+                    apply_canvas_cursor(engine);
+                }
             }
+            sync_engine_canvas_size(state.window, engine);
             if (resize_dawn_surface(state, engine.options)) {
                 width = state.surface_width;
                 height = state.surface_height;
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, state.window, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            // Browser layout observes DOM changes made by this turn's RAF
+            // callbacks before painting the frame.
+            update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
             const double frame_start = monotonic_milliseconds();
 
             sync_render_textures();
@@ -297,7 +340,27 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 captures.render_capture_saved = true;
             }
             DawnSurfaceCapture capture{};
-            if (capture_frame) {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            const UiRenderFrame& ui_frame =
+                record_ui_rml_frame(*ui_runtime, width, height);
+#endif
+            if (capture_frame && !capture_ui) {
+                capture = begin_dawn_surface_capture(
+                    state.device,
+                    encoder,
+                    surface_texture.texture,
+                    width,
+                    height);
+            }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            render_sprite_ui_dawn_frame(
+                state,
+                encoder,
+                surface_view,
+                ui_resources,
+                ui_frame);
+#endif
+            if (capture_frame && capture_ui) {
                 capture = begin_dawn_surface_capture(
                     state.device,
                     encoder,

@@ -95,6 +95,19 @@ the build snapshot while SDL_GPU reads offline DXIL, so a snapshot that
 mixes generations skews only the Dawn side and reads as a Dawn-only
 residual.
 
+## Retained UI
+
+RmlUi projects the supported DOM/CSS and Canvas2D surface into one
+backend-neutral draw frame. SDL_GPU and Dawn each own the corresponding
+texture cache, upload path, multisample UI layer, resolve, and
+premultiplied-alpha composition. Scene, frame-graph, sprite-only, and
+standalone-effect loops use the same recorded frame.
+
+Canonical screenshots include the UI layer. `BBLITE_CAPTURE_UI=0` copies the
+scene before UI composition for canvas-only attribution while leaving the
+presented interactive frame unchanged. The [native page UI](ui.md) page
+defines the supported browser surface and layout adaptations.
+
 The scene 1 attribution captures (draw-id buffer and triangle-cluster
 buffer) render on either backend under the same environment switch;
 their filenames carry the backend token like every other artifact. Dawn draws them through the shared
@@ -144,7 +157,7 @@ selection, the DXC DLL deployment, and the per-OS library build. Its shader
 story needs **zero per-platform work**: generated WGSL feeds Dawn directly and
 Dawn's internal Tint emits HLSL, SPIR-V or MSL. SDL_GPU inverts that — a
 portable API layer, but each target needs the offline shader pipeline (DXIL
-today; SPIR-V still recompiles normalized Tint HLSL through DXC as a stopgap;
+on Windows; SPIR-V recompiles normalized Tint HLSL through DXC as a stopgap;
 MSL untested). Neither backend is validated off Windows, and the goldens are
 Chrome on D3D12, so structural bit-parity on Vulkan or Metal would need
 same-platform references. `scene -- process` defaults to D3D12 on Windows,

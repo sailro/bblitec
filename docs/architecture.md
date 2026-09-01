@@ -52,6 +52,10 @@ Primary source ownership:
 | `src/compiler/static-evaluator.ts` | typed static scalar/vector/color expression evaluation |
 | `src/compiler/expressions.ts` | the value switch and call dispatch every expression position goes through |
 | `src/compiler/browser-erasure.ts` | browser-only expressions, their compile-time values (the reference pose's query string included), erased instrumentation |
+| `native/include/bblite/pal_ui.hpp` | browser-neutral retained UI and bounded Canvas2D IR operations, plus the opaque PAL projection seam |
+| `native/src/pal_ui_rml.cpp` | incremental RmlUi document projection, Canvas path tessellation, SDL input, CSS adaptations, and backend-neutral draw-frame recording |
+| `native/src/pal_sdl_gpu.cpp`, `native/src/pal_dawn.cpp` | consume recorded UI frames through renderer-owned texture caches, transparent multisample layers, resolve, and final composition |
+| `ui/*.json` | audited static host-page chrome projected beside immutable scene-created UI |
 | `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/data-methods.ts` | the shared read/mutate/store classification for plain-data methods |

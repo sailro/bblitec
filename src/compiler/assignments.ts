@@ -449,6 +449,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
     expression: ts.BinaryExpression,
     target: Value,
   ): boolean;
+  /** Scene-created DOM property writes owned by the retained UI IR. */
+  emitUiPropertyAssignment(expression: ts.BinaryExpression): boolean;
   compileNumber(
     expression: ts.Expression,
     precision?: "float" | "double",
@@ -472,6 +474,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
   assertAssetRootWritable(root: Value, node: ts.Node): void;
   eraseBrowserInstrumentation(position: number): void;
   isBrowserOnlyExpression(expression: ts.Expression): boolean;
+  isNativeUiValueExpression(expression: ts.Expression): boolean;
   isBrowserDomValue(expression: ts.Expression): boolean;
   emit(line: string): void;
   /** The dirty entry appropriate to startup code or a live callback. */
@@ -974,6 +977,9 @@ export function emitPropertyAssignment(
   if (emitAudioPropertyAssignment(context, expression, left)) {
     return;
   }
+  if (context.emitUiPropertyAssignment(expression)) {
+    return;
+  }
   // The same distinction applies to a nullable Web Audio handle stored in
   // a lowered class. Its declaration already created optional native
   // storage, so an assignment to `this.context` or `this.node` must fill
@@ -986,6 +992,24 @@ export function emitPropertyAssignment(
     ) {
       return;
     }
+  }
+  if (
+    operator === "=" &&
+    left.expression.kind === ts.SyntaxKind.ThisKeyword &&
+    ts.isIdentifier(left.name) &&
+    context.isNativeUiValueExpression(expression.right)
+  ) {
+    const instance = context.compileValue(left.expression);
+    const fields = instance.recordProperties;
+    if (!fields || fields[left.name.text]) {
+      context.fail(
+        left,
+        `Native UI field '${left.name.text}' must be wired exactly once.`,
+      );
+    }
+    context.bindClassField(left.name, expression.right);
+    fields[left.name.text] = context.compileValue(left.name);
+    return;
   }
   if (
     context.isBrowserOnlyExpression(left) ||

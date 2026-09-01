@@ -1322,6 +1322,10 @@ void on_pointer_lock_change(
     engine.pointer_lock_change_callbacks.push_back(std::move(callback));
 }
 
+void set_canvas_cursor(Engine& engine, std::string cursor) {
+    engine.canvas_cursor = std::move(cursor);
+}
+
 void request_pointer_lock(Engine& engine) {
     engine.pointer_lock_requested = true;
 }

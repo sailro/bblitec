@@ -3266,14 +3266,7 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
         : 0;
 }
 
-// How a measured run is driven, parsed once for whichever backend runs
-// it.
-//
-// Both frame loops used to read this matrix themselves, and the copies
-// drifted: BBLITE_MSAA and BBLITE_COPY_TASK were honored by SDL_GPU and
-// silently ignored by Dawn. A divergence in these decisions surfaces as a
-// backend delta, which the differential attributes to the GPU side, so
-// the flags a run is given have to reach both backends the same way.
+// How a measured run is driven, parsed once for whichever backend runs it.
 struct FrameOptions {
     std::string screenshot_path;
     std::string id_buffer_path;
@@ -3294,6 +3287,7 @@ struct FrameOptions {
     bool gpu_debug = false;
     bool test_pass = false;
     bool single_sample = false;
+    bool capture_ui = true;
     long screenshot_frame = 0;
     long max_frames = 0;
     long benchmark_frames = 0;
@@ -3371,6 +3365,7 @@ inline FrameOptions read_frame_options() {
     options.gpu_debug = environment_variable("BBLITE_GPU_DEBUG") == "1";
     options.test_pass = environment_variable("BBLITE_TEST_PASS") == "1";
     options.single_sample = environment_variable("BBLITE_MSAA") == "1";
+    options.capture_ui = environment_variable("BBLITE_CAPTURE_UI") != "0";
     options.background_flag = environment_variable("BBLITE_BACKGROUND");
     options.ground_flag = environment_variable("BBLITE_GROUND");
     options.screenshot_frame =
@@ -4509,7 +4504,13 @@ inline std::vector<float> shader_stage_block_floats(
 /** Give every pre-render application RAF callback this turn's one timestamp. */
 inline void run_animation_frame_callbacks(Engine& engine) {
     engine.animation_frame_timestamp_ms = performance_milliseconds();
+    auto once_callbacks =
+        std::move(engine.animation_frame_once_callbacks);
+    engine.animation_frame_once_callbacks.clear();
     for (const auto& callback : engine.animation_frame_callbacks) {
+        callback(engine.animation_frame_timestamp_ms);
+    }
+    for (const auto& callback : once_callbacks) {
         callback(engine.animation_frame_timestamp_ms);
     }
 }

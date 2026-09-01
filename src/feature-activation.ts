@@ -860,6 +860,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/large-world/floating-origin.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "ui:rml": {
+        provenance:
+            "scene-created document elements lowered to the retained native UI IR",
+        consumers: ["features.cmake"],
+    },
 };
 
 /** The runtime features the inventory maps, in emission order. */

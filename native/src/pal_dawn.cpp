@@ -11,6 +11,9 @@
 #include <bblite/pal_gpu.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/pal_ui.hpp>
+#endif
 
 // The scene renderer needs a scene: its camera math and render plan are
 // generated only for a scene that registers one. A sprite-only scene
@@ -68,6 +71,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -472,6 +476,79 @@ struct DawnPostProcessTask {
 };
 #endif
 
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+struct DawnUiTexture {
+    WGPUTexture texture = nullptr;
+    WGPUTextureView view = nullptr;
+    WGPUBindGroup group = nullptr;
+    WGPUBindGroup nearest_group = nullptr;
+
+    void release() {
+        if (nearest_group) wgpuBindGroupRelease(nearest_group);
+        if (group) wgpuBindGroupRelease(group);
+        if (view) wgpuTextureViewRelease(view);
+        if (texture) wgpuTextureRelease(texture);
+        *this = {};
+    }
+};
+
+/** Dawn-owned realization of the backend-neutral RmlUi frame. */
+struct DawnUiResources {
+    WGPUBindGroupLayout screen_layout = nullptr;
+    WGPUBindGroupLayout texture_layout = nullptr;
+    WGPUPipelineLayout pipeline_layout = nullptr;
+    WGPURenderPipeline color_pipeline = nullptr;
+    WGPURenderPipeline texture_pipeline = nullptr;
+    WGPURenderPipeline composite_pipeline = nullptr;
+    WGPUSampler sampler = nullptr;
+    WGPUSampler nearest_sampler = nullptr;
+    WGPUBuffer screen = nullptr;
+    WGPUBindGroup screen_group = nullptr;
+    WGPUTexture layer = nullptr;
+    WGPUTextureView layer_view = nullptr;
+    WGPUTexture multisample_layer = nullptr;
+    WGPUTextureView multisample_layer_view = nullptr;
+    WGPUBindGroup layer_group = nullptr;
+    WGPUBuffer vertices = nullptr;
+    WGPUBuffer indices = nullptr;
+    std::unordered_map<std::uint64_t, DawnUiTexture> textures;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint64_t vertex_capacity = 0;
+    std::uint64_t index_capacity = 0;
+
+    void release() {
+        for (auto& [id, source] : textures) {
+            static_cast<void>(id);
+            source.release();
+        }
+        textures.clear();
+        if (indices) wgpuBufferRelease(indices);
+        if (vertices) wgpuBufferRelease(vertices);
+        if (layer_group) wgpuBindGroupRelease(layer_group);
+        if (multisample_layer_view) {
+            wgpuTextureViewRelease(multisample_layer_view);
+        }
+        if (multisample_layer) wgpuTextureRelease(multisample_layer);
+        if (layer_view) wgpuTextureViewRelease(layer_view);
+        if (layer) wgpuTextureRelease(layer);
+        if (screen_group) wgpuBindGroupRelease(screen_group);
+        if (screen) wgpuBufferRelease(screen);
+        if (sampler) wgpuSamplerRelease(sampler);
+        if (nearest_sampler) wgpuSamplerRelease(nearest_sampler);
+        if (composite_pipeline) {
+            wgpuRenderPipelineRelease(composite_pipeline);
+        }
+        if (texture_pipeline) wgpuRenderPipelineRelease(texture_pipeline);
+        if (color_pipeline) wgpuRenderPipelineRelease(color_pipeline);
+        if (pipeline_layout) wgpuPipelineLayoutRelease(pipeline_layout);
+        if (texture_layout) wgpuBindGroupLayoutRelease(texture_layout);
+        if (screen_layout) wgpuBindGroupLayoutRelease(screen_layout);
+        *this = {};
+    }
+};
+#endif
+
 struct DawnState : DawnDevice {
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
     /** The clustered light field's params buffer and three data textures. */
@@ -495,6 +572,9 @@ struct DawnState : DawnDevice {
      * multisampled one.
      */
     std::uint32_t sample_count = 4;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    DawnUiResources ui;
+#endif
 #if BBLITE_HAS_BILLBOARDS
     std::vector<DawnBillboardPass> billboard_passes;
 #endif
@@ -1179,6 +1259,9 @@ WGPUBuffer esm_caster_params_buffer(
     }
 
     ~DawnState() {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        ui.release();
+#endif
 #if BBLITE_HAS_PICKING
         release_dawn_pick_targets(pick_targets);
         if (pick_mesh_pipeline) wgpuRenderPipelineRelease(pick_mesh_pipeline);
@@ -1584,6 +1667,529 @@ WGPUBuffer create_buffer(
     }
     return buffer;
 }
+
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+WGPUShaderModule create_ui_dawn_module(DawnState& state) {
+    static constexpr char source[] = R"wgsl(
+struct Screen {
+    size: vec2<f32>,
+    padding: vec2<f32>,
+};
+
+@group(0) @binding(0) var<uniform> screen: Screen;
+@group(1) @binding(0) var ui_texture: texture_2d<f32>;
+@group(1) @binding(1) var ui_sampler: sampler;
+
+struct VertexInput {
+    @location(0) position: vec2<f32>,
+    @location(1) color: vec4<f32>,
+    @location(2) uv: vec2<f32>,
+};
+
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+    @location(0) color: vec4<f32>,
+    @location(1) uv: vec2<f32>,
+};
+
+@vertex
+fn vs(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.position = vec4<f32>(
+        input.position.x * 2.0 / screen.size.x - 1.0,
+        1.0 - input.position.y * 2.0 / screen.size.y,
+        0.0,
+        1.0);
+    output.color = input.color;
+    output.uv = input.uv;
+    return output;
+}
+
+@fragment
+fn fs_color(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color;
+}
+
+@fragment
+fn fs_texture(input: VertexOutput) -> @location(0) vec4<f32> {
+    return input.color * textureSample(ui_texture, ui_sampler, input.uv);
+}
+)wgsl";
+    WGPUShaderSourceWGSL wgsl = WGPU_SHADER_SOURCE_WGSL_INIT;
+    wgsl.code = WGPUStringView{source, sizeof(source) - 1};
+    WGPUShaderModuleDescriptor descriptor{};
+    descriptor.nextInChain = &wgsl.chain;
+    descriptor.label = string_view("bblite-ui");
+    WGPUShaderModule module =
+        wgpuDeviceCreateShaderModule(state.device, &descriptor);
+    if (!module) dawn_error("wgpuDeviceCreateShaderModule UI");
+    return module;
+}
+
+WGPURenderPipeline create_ui_dawn_pipeline(
+    DawnState& state,
+    WGPUShaderModule module,
+    const char* fragment_entry,
+    WGPUTextureFormat format,
+    std::uint32_t samples,
+    WGPUPipelineLayout layout) {
+    std::array<WGPUVertexAttribute, 3> attributes{};
+    attributes[0] = WGPU_VERTEX_ATTRIBUTE_INIT;
+    attributes[0].format = WGPUVertexFormat_Float32x2;
+    attributes[0].offset = offsetof(UiRenderVertex, x);
+    attributes[0].shaderLocation = 0;
+    attributes[1] = WGPU_VERTEX_ATTRIBUTE_INIT;
+    attributes[1].format = WGPUVertexFormat_Unorm8x4;
+    attributes[1].offset = offsetof(UiRenderVertex, red);
+    attributes[1].shaderLocation = 1;
+    attributes[2] = WGPU_VERTEX_ATTRIBUTE_INIT;
+    attributes[2].format = WGPUVertexFormat_Float32x2;
+    attributes[2].offset = offsetof(UiRenderVertex, u);
+    attributes[2].shaderLocation = 2;
+    WGPUVertexBufferLayout vertex_layout{};
+    vertex_layout.arrayStride = sizeof(UiRenderVertex);
+    vertex_layout.stepMode = WGPUVertexStepMode_Vertex;
+    vertex_layout.attributeCount = attributes.size();
+    vertex_layout.attributes = attributes.data();
+
+    WGPUBlendState blend{};
+    blend.color.operation = WGPUBlendOperation_Add;
+    blend.color.srcFactor = WGPUBlendFactor_One;
+    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.alpha.operation = WGPUBlendOperation_Add;
+    blend.alpha.srcFactor = WGPUBlendFactor_One;
+    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+    target.format = format;
+    target.blend = &blend;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = module;
+    fragment.entryPoint = string_view(fragment_entry);
+    fragment.targetCount = 1;
+    fragment.targets = &target;
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = layout;
+    descriptor.vertex.module = module;
+    descriptor.vertex.entryPoint = string_view("vs");
+    descriptor.vertex.bufferCount = 1;
+    descriptor.vertex.buffers = &vertex_layout;
+    descriptor.fragment = &fragment;
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    descriptor.multisample.count = samples;
+    descriptor.multisample.mask = ~0u;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!pipeline) dawn_error("wgpuDeviceCreateRenderPipeline UI");
+    return pipeline;
+}
+
+WGPUBindGroup create_ui_dawn_texture_group(
+    DawnState& state,
+    WGPUTextureView view,
+    WGPUSampler sampler) {
+    std::array<WGPUBindGroupEntry, 2> entries{};
+    entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[0].binding = 0;
+    entries[0].textureView = view;
+    entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+    entries[1].binding = 1;
+    entries[1].sampler = sampler;
+    WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    descriptor.layout = state.ui.texture_layout;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    WGPUBindGroup group =
+        wgpuDeviceCreateBindGroup(state.device, &descriptor);
+    if (!group) dawn_error("wgpuDeviceCreateBindGroup UI texture");
+    return group;
+}
+
+void create_ui_dawn_resources(DawnState& state) {
+    DawnUiResources& ui = state.ui;
+    if (ui.color_pipeline) return;
+
+    WGPUBindGroupLayoutEntry screen_entry =
+        WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    screen_entry.binding = 0;
+    screen_entry.visibility = WGPUShaderStage_Vertex;
+    screen_entry.buffer.type = WGPUBufferBindingType_Uniform;
+    screen_entry.buffer.minBindingSize = 16;
+    WGPUBindGroupLayoutDescriptor screen_descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    screen_descriptor.entryCount = 1;
+    screen_descriptor.entries = &screen_entry;
+    ui.screen_layout =
+        wgpuDeviceCreateBindGroupLayout(state.device, &screen_descriptor);
+    if (!ui.screen_layout) dawn_error("UI screen bind group layout");
+
+    std::array<WGPUBindGroupLayoutEntry, 2> texture_entries{};
+    texture_entries[0] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    texture_entries[0].binding = 0;
+    texture_entries[0].visibility = WGPUShaderStage_Fragment;
+    texture_entries[0].texture.sampleType = WGPUTextureSampleType_Float;
+    texture_entries[0].texture.viewDimension = WGPUTextureViewDimension_2D;
+    texture_entries[1] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    texture_entries[1].binding = 1;
+    texture_entries[1].visibility = WGPUShaderStage_Fragment;
+    texture_entries[1].sampler.type = WGPUSamplerBindingType_Filtering;
+    WGPUBindGroupLayoutDescriptor texture_descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    texture_descriptor.entryCount = texture_entries.size();
+    texture_descriptor.entries = texture_entries.data();
+    ui.texture_layout =
+        wgpuDeviceCreateBindGroupLayout(state.device, &texture_descriptor);
+    if (!ui.texture_layout) dawn_error("UI texture bind group layout");
+
+    const std::array<WGPUBindGroupLayout, 2> layouts{
+        ui.screen_layout,
+        ui.texture_layout};
+    WGPUPipelineLayoutDescriptor pipeline_layout =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pipeline_layout.bindGroupLayoutCount = layouts.size();
+    pipeline_layout.bindGroupLayouts = layouts.data();
+    ui.pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout);
+    if (!ui.pipeline_layout) dawn_error("UI pipeline layout");
+
+    WGPUShaderModule module = create_ui_dawn_module(state);
+    WGPUPipelineLayoutDescriptor color_layout_descriptor =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    color_layout_descriptor.bindGroupLayoutCount = 1;
+    color_layout_descriptor.bindGroupLayouts = &ui.screen_layout;
+    WGPUPipelineLayout color_layout =
+        wgpuDeviceCreatePipelineLayout(state.device, &color_layout_descriptor);
+    if (!color_layout) dawn_error("UI color pipeline layout");
+    ui.color_pipeline = create_ui_dawn_pipeline(
+        state,
+        module,
+        "fs_color",
+        WGPUTextureFormat_RGBA8Unorm,
+        state.sample_count,
+        color_layout);
+    wgpuPipelineLayoutRelease(color_layout);
+    ui.texture_pipeline = create_ui_dawn_pipeline(
+        state,
+        module,
+        "fs_texture",
+        WGPUTextureFormat_RGBA8Unorm,
+        state.sample_count,
+        ui.pipeline_layout);
+    ui.composite_pipeline = create_ui_dawn_pipeline(
+        state,
+        module,
+        "fs_texture",
+        state.surface_format,
+        1,
+        ui.pipeline_layout);
+    wgpuShaderModuleRelease(module);
+
+    WGPUSamplerDescriptor sampler = WGPU_SAMPLER_DESCRIPTOR_INIT;
+    sampler.minFilter = WGPUFilterMode_Linear;
+    sampler.magFilter = WGPUFilterMode_Linear;
+    sampler.mipmapFilter = WGPUMipmapFilterMode_Nearest;
+    sampler.addressModeU = WGPUAddressMode_ClampToEdge;
+    sampler.addressModeV = WGPUAddressMode_ClampToEdge;
+    sampler.addressModeW = WGPUAddressMode_ClampToEdge;
+    ui.sampler = wgpuDeviceCreateSampler(state.device, &sampler);
+    if (!ui.sampler) dawn_error("wgpuDeviceCreateSampler UI");
+    sampler.minFilter = WGPUFilterMode_Nearest;
+    sampler.magFilter = WGPUFilterMode_Nearest;
+    ui.nearest_sampler = wgpuDeviceCreateSampler(state.device, &sampler);
+    if (!ui.nearest_sampler) {
+        dawn_error("wgpuDeviceCreateSampler UI nearest");
+    }
+
+    ui.screen = create_buffer(state, WGPUBufferUsage_Uniform, nullptr, 16);
+    WGPUBindGroupEntry screen_binding = WGPU_BIND_GROUP_ENTRY_INIT;
+    screen_binding.binding = 0;
+    screen_binding.buffer = ui.screen;
+    screen_binding.size = 16;
+    WGPUBindGroupDescriptor screen_group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+    screen_group.layout = ui.screen_layout;
+    screen_group.entryCount = 1;
+    screen_group.entries = &screen_binding;
+    ui.screen_group =
+        wgpuDeviceCreateBindGroup(state.device, &screen_group);
+    if (!ui.screen_group) dawn_error("wgpuDeviceCreateBindGroup UI screen");
+}
+
+void ensure_ui_dawn_layers(
+    DawnState& state,
+    std::uint32_t width,
+    std::uint32_t height) {
+    DawnUiResources& ui = state.ui;
+    if (ui.width == width && ui.height == height && ui.layer) return;
+    if (ui.layer_group) wgpuBindGroupRelease(ui.layer_group);
+    if (ui.multisample_layer_view) {
+        wgpuTextureViewRelease(ui.multisample_layer_view);
+    }
+    if (ui.multisample_layer) wgpuTextureRelease(ui.multisample_layer);
+    if (ui.layer_view) wgpuTextureViewRelease(ui.layer_view);
+    if (ui.layer) wgpuTextureRelease(ui.layer);
+    ui.layer_group = nullptr;
+    ui.multisample_layer_view = nullptr;
+    ui.multisample_layer = nullptr;
+    ui.layer_view = nullptr;
+    ui.layer = nullptr;
+
+    WGPUTextureDescriptor layer = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    layer.dimension = WGPUTextureDimension_2D;
+    layer.format = WGPUTextureFormat_RGBA8Unorm;
+    layer.usage = WGPUTextureUsage_RenderAttachment |
+        WGPUTextureUsage_TextureBinding;
+    layer.size = WGPUExtent3D{width, height, 1};
+    layer.sampleCount = 1;
+    ui.layer = wgpuDeviceCreateTexture(state.device, &layer);
+    if (!ui.layer) dawn_error("wgpuDeviceCreateTexture UI layer");
+    ui.layer_view = wgpuTextureCreateView(ui.layer, nullptr);
+    if (!ui.layer_view) dawn_error("wgpuTextureCreateView UI layer");
+    if (state.multisampled()) {
+        layer.usage = WGPUTextureUsage_RenderAttachment;
+        layer.sampleCount = state.sample_count;
+        ui.multisample_layer =
+            wgpuDeviceCreateTexture(state.device, &layer);
+        if (!ui.multisample_layer) {
+            dawn_error("wgpuDeviceCreateTexture UI multisample layer");
+        }
+        ui.multisample_layer_view =
+            wgpuTextureCreateView(ui.multisample_layer, nullptr);
+        if (!ui.multisample_layer_view) {
+            dawn_error("wgpuTextureCreateView UI multisample layer");
+        }
+    }
+    ui.layer_group = create_ui_dawn_texture_group(
+        state,
+        ui.layer_view,
+        ui.sampler);
+    ui.width = width;
+    ui.height = height;
+}
+
+void ensure_ui_dawn_buffer(
+    DawnState& state,
+    WGPUBuffer& buffer,
+    std::uint64_t& capacity,
+    std::uint64_t required,
+    WGPUBufferUsage usage) {
+    if (buffer && capacity >= required) return;
+    if (buffer) wgpuBufferRelease(buffer);
+    capacity = std::max<std::uint64_t>(4096, capacity);
+    while (capacity < required) capacity *= 2;
+    WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+    descriptor.usage = usage | WGPUBufferUsage_CopyDst;
+    descriptor.size = capacity;
+    buffer = wgpuDeviceCreateBuffer(state.device, &descriptor);
+    if (!buffer) dawn_error("wgpuDeviceCreateBuffer UI");
+}
+
+void render_ui_dawn_frame(
+    DawnState& state,
+    WGPUCommandEncoder encoder,
+    WGPUTextureView target,
+    const UiRenderFrame& frame) {
+    if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
+    create_ui_dawn_resources(state);
+    ensure_ui_dawn_layers(state, frame.width, frame.height);
+    DawnUiResources& ui = state.ui;
+
+    std::vector<UiRenderVertex> vertices = frame.vertices;
+    std::vector<std::uint32_t> indices = frame.indices;
+    const std::uint32_t composite_first_index =
+        static_cast<std::uint32_t>(indices.size());
+    const std::uint32_t composite_first_vertex =
+        static_cast<std::uint32_t>(vertices.size());
+    vertices.insert(
+        vertices.end(),
+        {
+            UiRenderVertex{0, 0, 255, 255, 255, 255, 0, 0},
+            UiRenderVertex{static_cast<float>(frame.width), 0, 255, 255, 255, 255, 1, 0},
+            UiRenderVertex{static_cast<float>(frame.width), static_cast<float>(frame.height), 255, 255, 255, 255, 1, 1},
+            UiRenderVertex{0, static_cast<float>(frame.height), 255, 255, 255, 255, 0, 1},
+        });
+    indices.insert(
+        indices.end(),
+        {
+            composite_first_vertex,
+            composite_first_vertex + 1,
+            composite_first_vertex + 2,
+            composite_first_vertex,
+            composite_first_vertex + 2,
+            composite_first_vertex + 3,
+        });
+
+    const std::uint64_t vertex_bytes =
+        vertices.size() * sizeof(UiRenderVertex);
+    const std::uint64_t index_bytes =
+        indices.size() * sizeof(std::uint32_t);
+    ensure_ui_dawn_buffer(
+        state,
+        ui.vertices,
+        ui.vertex_capacity,
+        vertex_bytes,
+        WGPUBufferUsage_Vertex);
+    ensure_ui_dawn_buffer(
+        state,
+        ui.indices,
+        ui.index_capacity,
+        index_bytes,
+        WGPUBufferUsage_Index);
+    wgpuQueueWriteBuffer(
+        state.queue, ui.vertices, 0, vertices.data(), vertex_bytes);
+    wgpuQueueWriteBuffer(
+        state.queue, ui.indices, 0, indices.data(), index_bytes);
+    const std::array<float, 4> screen{
+        static_cast<float>(frame.width),
+        static_cast<float>(frame.height),
+        0,
+        0};
+    wgpuQueueWriteBuffer(
+        state.queue, ui.screen, 0, screen.data(), sizeof(screen));
+
+    for (auto texture = ui.textures.begin(); texture != ui.textures.end();) {
+        if (ui_frame_uses_texture(frame, texture->first)) {
+            ++texture;
+            continue;
+        }
+        texture->second.release();
+        texture = ui.textures.erase(texture);
+    }
+    for (const UiRenderTexture& source : frame.textures) {
+        if (ui.textures.contains(source.id) || !source.rgba) continue;
+        DawnUiTexture texture;
+        texture.texture = upload_dawn_rgba_texture(
+            state.device,
+            state.queue,
+            source.rgba->data(),
+            source.rgba->size(),
+            source.width,
+            source.height);
+        texture.view = wgpuTextureCreateView(texture.texture, nullptr);
+        if (!texture.view) dawn_error("wgpuTextureCreateView UI source");
+        texture.group = create_ui_dawn_texture_group(
+            state,
+            texture.view,
+            ui.sampler);
+        texture.nearest_group = create_ui_dawn_texture_group(
+            state,
+            texture.view,
+            ui.nearest_sampler);
+        ui.textures.emplace(source.id, texture);
+    }
+
+    WGPURenderPassColorAttachment layer_attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    layer_attachment.view = ui.multisample_layer_view
+        ? ui.multisample_layer_view
+        : ui.layer_view;
+    layer_attachment.resolveTarget = ui.multisample_layer_view
+        ? ui.layer_view
+        : nullptr;
+    layer_attachment.loadOp = WGPULoadOp_Clear;
+    layer_attachment.storeOp = ui.multisample_layer_view
+        ? WGPUStoreOp_Discard
+        : WGPUStoreOp_Store;
+    layer_attachment.clearValue = WGPUColor{0, 0, 0, 0};
+    WGPURenderPassDescriptor layer_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    layer_descriptor.colorAttachmentCount = 1;
+    layer_descriptor.colorAttachments = &layer_attachment;
+    WGPURenderPassEncoder layer_pass =
+        wgpuCommandEncoderBeginRenderPass(encoder, &layer_descriptor);
+    wgpuRenderPassEncoderSetBindGroup(
+        layer_pass, 0, ui.screen_group, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(
+        layer_pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetIndexBuffer(
+        layer_pass,
+        ui.indices,
+        WGPUIndexFormat_Uint32,
+        0,
+        WGPU_WHOLE_SIZE);
+    for (const UiRenderDraw& draw : frame.draws) {
+        const int left = std::clamp(draw.scissor_x, 0, static_cast<int>(frame.width));
+        const int top = std::clamp(draw.scissor_y, 0, static_cast<int>(frame.height));
+        const int right = std::clamp(
+            draw.scissor_x + static_cast<int>(draw.scissor_width),
+            0,
+            static_cast<int>(frame.width));
+        const int bottom = std::clamp(
+            draw.scissor_y + static_cast<int>(draw.scissor_height),
+            0,
+            static_cast<int>(frame.height));
+        if (right <= left || bottom <= top || draw.index_count == 0) continue;
+        wgpuRenderPassEncoderSetScissorRect(
+            layer_pass,
+            static_cast<std::uint32_t>(left),
+            static_cast<std::uint32_t>(top),
+            static_cast<std::uint32_t>(right - left),
+            static_cast<std::uint32_t>(bottom - top));
+        if (draw.texture_id) {
+            const auto texture = ui.textures.find(draw.texture_id);
+            if (texture == ui.textures.end()) continue;
+            wgpuRenderPassEncoderSetPipeline(
+                layer_pass, ui.texture_pipeline);
+            wgpuRenderPassEncoderSetBindGroup(
+                layer_pass,
+                1,
+                draw.nearest_sampling
+                    ? texture->second.nearest_group
+                    : texture->second.group,
+                0,
+                nullptr);
+        } else {
+            wgpuRenderPassEncoderSetPipeline(layer_pass, ui.color_pipeline);
+        }
+        wgpuRenderPassEncoderDrawIndexed(
+            layer_pass,
+            draw.index_count,
+            1,
+            draw.first_index,
+            0,
+            0);
+    }
+    wgpuRenderPassEncoderEnd(layer_pass);
+    wgpuRenderPassEncoderRelease(layer_pass);
+
+    WGPURenderPassColorAttachment composite_attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    composite_attachment.view = target;
+    composite_attachment.loadOp = WGPULoadOp_Load;
+    composite_attachment.storeOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor composite_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    composite_descriptor.colorAttachmentCount = 1;
+    composite_descriptor.colorAttachments = &composite_attachment;
+    WGPURenderPassEncoder composite_pass =
+        wgpuCommandEncoderBeginRenderPass(encoder, &composite_descriptor);
+    wgpuRenderPassEncoderSetPipeline(
+        composite_pass, ui.composite_pipeline);
+    wgpuRenderPassEncoderSetBindGroup(
+        composite_pass, 0, ui.screen_group, 0, nullptr);
+    wgpuRenderPassEncoderSetBindGroup(
+        composite_pass, 1, ui.layer_group, 0, nullptr);
+    wgpuRenderPassEncoderSetVertexBuffer(
+        composite_pass, 0, ui.vertices, 0, WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetIndexBuffer(
+        composite_pass,
+        ui.indices,
+        WGPUIndexFormat_Uint32,
+        0,
+        WGPU_WHOLE_SIZE);
+    wgpuRenderPassEncoderSetScissorRect(
+        composite_pass, 0, 0, frame.width, frame.height);
+    wgpuRenderPassEncoderDrawIndexed(
+        composite_pass,
+        6,
+        1,
+        composite_first_index,
+        0,
+        0);
+    wgpuRenderPassEncoderEnd(composite_pass);
+    wgpuRenderPassEncoderRelease(composite_pass);
+}
+#endif
 
 #if BBLITE_GPU_DEFORMATION
 void ensure_background_deformation_uniforms(DawnState& state) {
@@ -6200,6 +6806,8 @@ void encode_image_processing(
             WGPUBufferUsage_Uniform,
             nullptr,
             16);
+    }
+    if (!state.image_processing_group) {
         WGPUBindGroupLayout layout =
             wgpuRenderPipelineGetBindGroupLayout(
                 state.image_processing_pipeline,
@@ -7574,11 +8182,17 @@ bool run_dawn_engine(Engine& engine) {
         }
     }
     create_dawn_device(engine.options, device_options, state);
+    sync_engine_canvas_size(state.window, engine);
+    resize_dawn_surface(state, engine.options);
 
-    const std::uint32_t width =
-        static_cast<std::uint32_t>(engine.options.width);
-    const std::uint32_t height =
-        static_cast<std::uint32_t>(engine.options.height);
+    std::uint32_t width = state.surface_width;
+    std::uint32_t height = state.surface_height;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)>
+        ui_runtime(
+            create_ui_rml_runtime(engine, state.window, width, height),
+            &destroy_ui_rml_runtime);
+#endif
 
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
     // Sprite rendering contexts and their render targets may be created by a
@@ -7647,7 +8261,22 @@ bool run_dawn_engine(Engine& engine) {
     state.frame_color_format = scene.transmission_enabled
         ? WGPUTextureFormat_RGBA16Float
         : state.surface_format;
-    {
+    const auto recreate_frame_targets = [&]() {
+        if (state.image_processing_group) {
+            wgpuBindGroupRelease(state.image_processing_group);
+            state.image_processing_group = nullptr;
+        }
+        if (state.depth_view) wgpuTextureViewRelease(state.depth_view);
+        if (state.depth) wgpuTextureRelease(state.depth);
+        if (state.msaa_color_view) {
+            wgpuTextureViewRelease(state.msaa_color_view);
+        }
+        if (state.msaa_color) wgpuTextureRelease(state.msaa_color);
+        state.depth_view = nullptr;
+        state.depth = nullptr;
+        state.msaa_color_view = nullptr;
+        state.msaa_color = nullptr;
+
         WGPUTextureDescriptor color_descriptor =
             WGPU_TEXTURE_DESCRIPTOR_INIT;
         color_descriptor.usage = scene.transmission_enabled
@@ -7661,35 +8290,6 @@ bool run_dawn_engine(Engine& engine) {
             wgpuDeviceCreateTexture(state.device, &color_descriptor);
         state.msaa_color_view =
             wgpuTextureCreateView(state.msaa_color, nullptr);
-        if (scene.transmission_enabled) {
-            // The pinned refraction target: the shared fixed-extent,
-            // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
-            state.transmission_mip_count = transmission_grab_mip_count();
-            WGPUTextureDescriptor transmission_descriptor =
-                WGPU_TEXTURE_DESCRIPTOR_INIT;
-            transmission_descriptor.usage =
-                WGPUTextureUsage_RenderAttachment |
-                WGPUTextureUsage_TextureBinding;
-            transmission_descriptor.size = {
-                transmission_grab_size,
-                transmission_grab_size,
-                1,
-            };
-            transmission_descriptor.format =
-                WGPUTextureFormat_RGBA16Float;
-            transmission_descriptor.mipLevelCount =
-                state.transmission_mip_count;
-            state.transmission_color = wgpuDeviceCreateTexture(
-                state.device,
-                &transmission_descriptor);
-            if (!state.transmission_color) {
-                dawn_error(
-                    "wgpuDeviceCreateTexture transmission color");
-            }
-            state.transmission_color_view = wgpuTextureCreateView(
-                state.transmission_color,
-                nullptr);
-        }
         WGPUTextureDescriptor depth_descriptor =
             WGPU_TEXTURE_DESCRIPTOR_INIT;
         depth_descriptor.usage = WGPUTextureUsage_RenderAttachment;
@@ -7700,6 +8300,43 @@ bool run_dawn_engine(Engine& engine) {
         state.depth =
             wgpuDeviceCreateTexture(state.device, &depth_descriptor);
         state.depth_view = wgpuTextureCreateView(state.depth, nullptr);
+        if (
+            !state.msaa_color ||
+            !state.msaa_color_view ||
+            !state.depth ||
+            !state.depth_view) {
+            dawn_error("resizable frame target creation failed.");
+        }
+    };
+    recreate_frame_targets();
+    if (scene.transmission_enabled) {
+        // The pinned refraction target: the shared fixed-extent,
+        // shortened-chain contract (pal_gpu_shared.hpp), rgba16float.
+        state.transmission_mip_count = transmission_grab_mip_count();
+        WGPUTextureDescriptor transmission_descriptor =
+            WGPU_TEXTURE_DESCRIPTOR_INIT;
+        transmission_descriptor.usage =
+            WGPUTextureUsage_RenderAttachment |
+            WGPUTextureUsage_TextureBinding;
+        transmission_descriptor.size = {
+            transmission_grab_size,
+            transmission_grab_size,
+            1,
+        };
+        transmission_descriptor.format =
+            WGPUTextureFormat_RGBA16Float;
+        transmission_descriptor.mipLevelCount =
+            state.transmission_mip_count;
+        state.transmission_color = wgpuDeviceCreateTexture(
+            state.device,
+            &transmission_descriptor);
+        if (!state.transmission_color) {
+            dawn_error(
+                "wgpuDeviceCreateTexture transmission color");
+        }
+        state.transmission_color_view = wgpuTextureCreateView(
+            state.transmission_color,
+            nullptr);
     }
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
     if (!scene.depth_hosted_sprite_layers.empty()) {
@@ -9090,6 +9727,9 @@ bool run_dawn_engine(Engine& engine) {
 
     const std::string screenshot_path =
         frame_options.screenshot_path;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    const bool capture_ui = frame_options.capture_ui;
+#endif
     const std::string id_buffer_path =
         frame_options.id_buffer_path;
     const std::string cluster_buffer_path =
@@ -9535,15 +10175,32 @@ bool run_dawn_engine(Engine& engine) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
-            handle_platform_event(event, engine);
-            if (!hidden_test_pass) {
+            if (hidden_test_pass && is_platform_input_event(event)) {
+                continue;
+            }
+            bool propagate_to_scene = true;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            propagate_to_scene =
+                handle_ui_rml_event(*ui_runtime, event);
+#endif
+            if (propagate_to_scene) {
+                handle_platform_event(event, engine);
+                apply_canvas_cursor(engine);
+            }
+            if (!hidden_test_pass && propagate_to_scene) {
                 handle_camera_pointer_event(
                     event,
                     camera,
                     pointer_state);
             }
         }
-        input_replay.dispatch(frame, engine);
+        input_replay.dispatch(frame, state.window, engine);
+        sync_engine_canvas_size(state.window, engine);
+        if (resize_dawn_surface(state, engine.options)) {
+            width = state.surface_width;
+            height = state.surface_height;
+            recreate_frame_targets();
+        }
         // The benchmark bracket mirrors the SDL backend: frame CPU time
         // across the whole loop body -- scene callbacks and uploads, surface
         // acquire, submit and present -- under the immediate present mode
@@ -9561,6 +10218,11 @@ bool run_dawn_engine(Engine& engine) {
                 scene,
                 frame_clock,
                 frame_options.frame_delta_ms);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        // Browser layout observes DOM changes made by this turn's RAF
+        // callbacks before painting the frame.
+        update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
         trace_dynamic_frame(engine, delta_ms, frame);
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         // Upstream updates every rendering context before recording any of
@@ -12495,6 +13157,21 @@ bool run_dawn_engine(Engine& engine) {
             capture_ready &&
             !captures.screenshot_saved &&
             !screenshot_path.empty();
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        const UiRenderFrame& ui_frame =
+            record_ui_rml_frame(*ui_runtime, width, height);
+        const bool ui_after_capture_copy = capture_frame && !capture_ui;
+        if (!ui_after_capture_copy) {
+            render_ui_dawn_frame(
+                state,
+                encoder,
+                surface_view,
+                ui_frame);
+            if (capture_frame && capture_ui) {
+                capture_source = surface_texture.texture;
+            }
+        }
+#endif
         WGPUBuffer readback = nullptr;
         const std::uint32_t bytes_per_row = (width * 4 + 255) & ~255u;
         if (capture_frame) {
@@ -12521,6 +13198,17 @@ bool run_dawn_engine(Engine& engine) {
                 &copy_destination,
                 &copy_size);
         }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        if (ui_after_capture_copy) {
+            // Canvas-only attribution reads the surface before the native UI
+            // is composited, then presents the UI normally.
+            render_ui_dawn_frame(
+                state,
+                encoder,
+                surface_view,
+                ui_frame);
+        }
+#endif
 
         WGPUCommandBuffer command =
             wgpuCommandEncoderFinish(encoder, nullptr);
@@ -12614,6 +13302,9 @@ bool run_dawn_engine(Engine& engine) {
         ++frame;
     }
     report_benchmark(benchmark_samples, "Dawn", "D3D12");
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    ui_runtime.reset();
+#endif
     SDL_DestroyWindow(state.window);
     state.window = nullptr;
     return true;

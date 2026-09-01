@@ -22,6 +22,7 @@ const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
     "static-fetch-response",
     "platform-keyboard-event",
     "platform-mouse-event",
+    "ui-element",
 ]);
 
 export interface BrowserErasureContext {
@@ -38,9 +39,12 @@ export interface BrowserErasureContext {
     ): boolean;
     isBrowserDomValue(expression: ts.Expression): boolean;
     isBrowserOnlyLocalCall(call: ts.CallExpression): boolean;
+    isNativeUiHelperCall(call: ts.CallExpression): boolean;
+    isNativeHostUiLookup(call: ts.CallExpression): boolean;
     isBrowserOnlyNullableClassFactoryCall(
         call: ts.CallExpression,
     ): boolean;
+    isNativeUiValueExpression(expression: ts.Expression): boolean;
     /** Runtime visibility callback parameter, while compiling its body. */
     platformDocumentHidden(): string | undefined;
     /** The query string the reference pose is captured at. */
@@ -132,6 +136,17 @@ export class BrowserErasure {
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
+        // Scene-created DOM is not a browser object in the native program: it
+        // is the input syntax for the retained UI IR. Keep this deliberately
+        // narrower than general DOM support. Host-page lookups and arbitrary
+        // document calls continue down the browser-erasure path.
+        if (
+            ts.isCallExpression(unwrapped) &&
+            (this.isNativeUiCall(unwrapped) ||
+                this.context.isNativeUiHelperCall(unwrapped))
+        ) {
+            return false;
+        }
         // `import.meta.url` is the browser module's deployment URL. Native
         // asset sinks fold the reached `new URL(path, import.meta.url)`
         // helper before this erasure gate; every remaining use is browser
@@ -185,14 +200,37 @@ export class BrowserErasure {
         }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
+            (unwrapped.name.text === "innerWidth" ||
+                unwrapped.name.text === "innerHeight") &&
+            ts.isIdentifier(unwrapped.expression) &&
+            unwrapped.expression.text === "window" &&
+            this.context.isDefaultLibraryIdentifier(unwrapped.expression)
+        ) {
+            return false;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            this.context.lookupOptional(unwrapped.expression)
+                ?.recordProperties?.[unwrapped.name.text]
+        ) {
+            // A native record may retain a DOM-declared structural type at
+            // the TypeScript site. Its lowered fields win over that source
+            // declaration, including the UiClientRect projected by RmlUi.
+            return false;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) &&
             (unwrapped.name.text === "left" ||
-                unwrapped.name.text === "top") &&
+                unwrapped.name.text === "top" ||
+                unwrapped.name.text === "width" ||
+                unwrapped.name.text === "height") &&
             this.evaluateBrowserValue(unwrapped.expression)?.kind ===
                 "dom-rect"
         ) {
-            // Native has no CSS offset around its render surface. The
-            // property lowerer maps these two DOMRect coordinates to zero,
-            // so arithmetic using them remains native pointer math.
+            // Native has no CSS offset around its render surface; its size is
+            // the live engine surface. All four reached DOMRect coordinates
+            // therefore have platform-backed numeric representations.
             return false;
         }
         if (ts.isIdentifier(unwrapped)) {
@@ -248,13 +286,16 @@ export class BrowserErasure {
             );
         }
         if (ts.isBinaryExpression(unwrapped)) {
+            const unresolvedBrowserOperand = (operand: ts.Expression) =>
+                this.isBrowserOnlyExpression(operand) &&
+                !(
+                    ts.isIdentifier(operand) &&
+                    operand.text === "devicePixelRatio" &&
+                    this.isDefaultBrowserGlobal(operand)
+                );
             return (
-                this.isBrowserOnlyExpression(
-                    unwrapped.left,
-                ) ||
-                this.isBrowserOnlyExpression(
-                    unwrapped.right,
-                )
+                unresolvedBrowserOperand(unwrapped.left) ||
+                unresolvedBrowserOperand(unwrapped.right)
             );
         }
         if (ts.isPrefixUnaryExpression(unwrapped)) {
@@ -348,11 +389,47 @@ export class BrowserErasure {
         return false;
     }
 
+    private isNativeUiCall(call: ts.CallExpression): boolean {
+        if (this.context.isNativeHostUiLookup(call)) return true;
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee)) return false;
+
+        if (
+            callee.name.text === "createElement" &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "document" &&
+            this.context.isDefaultLibraryIdentifier(callee.expression)
+        ) {
+            return true;
+        }
+
+        if (this.isNativeDomBridge(callee.expression)) return true;
+
+        return (
+            callee.name.text === "appendChild" &&
+            call.arguments.length === 1 &&
+            this.isNativeDomBridge(call.arguments[0]!) &&
+            ts.isPropertyAccessExpression(callee.expression) &&
+            callee.expression.name.text === "body" &&
+            ts.isIdentifier(callee.expression.expression) &&
+            callee.expression.expression.text === "document" &&
+            this.context.isDefaultLibraryIdentifier(
+                callee.expression.expression,
+            )
+        );
+    }
+
     private isNativeDomBridge(
         expression: ts.Expression,
     ): boolean {
         const owner = (node: ts.Expression): Value | undefined => {
             const unwrapped = this.context.unwrap(node);
+            if (
+                ts.isElementAccessExpression(unwrapped) &&
+                this.context.isNativeUiValueExpression(unwrapped)
+            ) {
+                return { kind: "ui-element", cpp: "" };
+            }
             if (ts.isIdentifier(unwrapped)) {
                 return this.context.lookupOptional(unwrapped);
             }

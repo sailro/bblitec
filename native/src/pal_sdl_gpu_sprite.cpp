@@ -11,9 +11,13 @@
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/pal_ui.hpp>
+#endif
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -24,6 +28,9 @@
 
 #if BBLITE_HAS_SPRITE_RENDERER
 #include "pal_sdl_gpu_sprite.hpp"
+#endif
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include "pal_sprite_ui_sdl.hpp"
 #endif
 
 namespace bbl::pal {
@@ -49,7 +56,18 @@ bool run_sprite_gpu_engine(Engine& engine) {
     std::uint32_t color_height = 0;
     std::vector<SpritePass> passes;
     std::vector<SDL_GPUTexture*> render_textures;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    UiRmlRuntime* ui_runtime = nullptr;
+    SpriteUiSdlResources ui_resources;
+#endif
     const auto release = [&]() {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        if (device) {
+            release_sprite_ui_sdl_resources(device, ui_resources);
+        }
+        destroy_ui_rml_runtime(ui_runtime);
+        ui_runtime = nullptr;
+#endif
         for (SpritePass& pass : passes) {
             release_sprite_pass(device, pass);
         }
@@ -71,6 +89,13 @@ bool run_sprite_gpu_engine(Engine& engine) {
         device_options.gpu_debug = frame_options.gpu_debug;
         create_sdl_gpu_device(engine.options, device_options, gpu);
         const SDL_GPUTextureFormat swapchain_format = gpu.swapchain_format;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        ui_runtime = create_ui_rml_runtime(
+            engine,
+            window,
+            static_cast<std::uint32_t>(engine.options.width),
+            static_cast<std::uint32_t>(engine.options.height));
+#endif
 
         const auto sync_render_textures = [&]() {
             render_textures.resize(
@@ -137,6 +162,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
 
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        const bool capture_ui = frame_options.capture_ui;
+#endif
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples;
@@ -148,9 +176,19 @@ bool run_sprite_gpu_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
-                handle_platform_event(event, engine);
+                if (frame_options.test_pass && is_platform_input_event(event)) {
+                    continue;
+                }
+                bool propagate_to_scene = true;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+                propagate_to_scene =
+                    handle_ui_rml_event(*ui_runtime, event);
+#endif
+                if (propagate_to_scene) {
+                    handle_platform_event(event, engine);
+                }
             }
-            input_replay.dispatch(frame, engine);
+            input_replay.dispatch(frame, window, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,
@@ -188,6 +226,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 }
                 continue;
             }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
             const bool capture_frame =
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
@@ -288,6 +329,21 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 first_index = end_index;
             }
 
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            const UiRenderFrame& ui_frame =
+                record_ui_rml_frame(*ui_runtime, width, height);
+            const bool ui_in_capture = capture_frame && capture_ui;
+            if (ui_in_capture) {
+                render_sprite_ui_sdl_frame(
+                    device,
+                    command,
+                    color,
+                    swapchain_format,
+                    ui_resources,
+                    ui_frame);
+            }
+#endif
+
             SDL_GPUBlitInfo blit{};
             blit.source =
                 SDL_GPUBlitRegion{color, 0, 0, 0, 0, width, height};
@@ -297,6 +353,18 @@ bool run_sprite_gpu_engine(Engine& engine) {
             blit.flip_mode = SDL_FLIP_NONE;
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(command, &blit);
+
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            if (!ui_in_capture) {
+                render_sprite_ui_sdl_frame(
+                    device,
+                    command,
+                    swapchain,
+                    swapchain_format,
+                    ui_resources,
+                    ui_frame);
+            }
+#endif
 
             if (capture_frame) {
                 save_texture_png(

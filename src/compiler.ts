@@ -196,6 +196,7 @@ import type {
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
     ResolvedCompileOptions,
+    NativeHostUiElement,
     SceneMeshManifest,
     ShadowCasterManifest,
     ShadowGeneratorManifest,
@@ -251,18 +252,21 @@ import { SceneMaterialRecorder } from "./compiler/scene-materials.js";
 /**
  * A canvas size read, and which of the engine's two dimensions answers it.
  *
- * `clientWidth`/`clientHeight` are the CSS box rather than the backing
- * store, and the pin reads both: `pickAsync` scales a pick coordinate by
- * `backingWidth / clientWidth`. Native has no CSS layer -- the surface is
- * the only size there is -- so the two fold to one value and that ratio is
- * 1, which is what a capture at devicePixelRatio 1 measures on the browser
- * side too.
+ * `clientWidth`/`clientHeight` are the logical window box rather than the
+ * backing store, and the pin reads both: pointer mapping scales a client
+ * coordinate by `backingWidth / clientWidth`. The PAL retains both sizes so
+ * Windows display scaling and interactive resize keep that ratio faithful.
  */
-const CANVAS_SIZE_AXES = new Map<string, "width" | "height">([
-    ["width", "width"],
-    ["height", "height"],
-    ["clientWidth", "width"],
-    ["clientHeight", "height"],
+interface CanvasSizeProperty {
+    axis: "width" | "height";
+    client: boolean;
+}
+
+const CANVAS_SIZE_AXES = new Map<string, CanvasSizeProperty>([
+    ["width", { axis: "width", client: false }],
+    ["height", { axis: "height", client: false }],
+    ["clientWidth", { axis: "width", client: true }],
+    ["clientHeight", { axis: "height", client: true }],
 ]);
 
 export class CompileError extends Error {
@@ -292,6 +296,9 @@ export function compileSource(source: string, options: CompileOptions = {}): Com
         width: options.width ?? 1280,
         height: options.height ?? 720,
         search: options.search ?? "",
+        ...(options.nativeHostUi
+            ? { nativeHostUi: options.nativeHostUi }
+            : {}),
         },
     );
     return compiler.compile();
@@ -466,6 +473,9 @@ class Compiler
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
+    /** First statement after the one engine is created. */
+    private engineCreationInsertion: number | undefined;
+    private nativeHostUiIdsCache: ReadonlySet<string> | undefined;
     /** Explicit static surface sample count; absence means the pinned default. */
     private engineMsaaSamples: 1 | 4 | undefined;
     /** Bound only while lowering a platform visibility callback body. */
@@ -538,6 +548,7 @@ class Compiler
             this.emitStatement(statement);
         }
         this.emitDeferredPhysicsCallbacks();
+        this.emitNativeHostUi();
         assertDeterministicRandomUnreached(
             this,
             this.jsRandomReached,
@@ -673,6 +684,137 @@ class Compiler
                 plainBillboardSystem: this.reachedPlainBillboardSystem,
             },
         };
+    }
+
+    /**
+     * Materialize an audited host-page companion into the same retained UI IR
+     * as scene-created DOM. The registered scene supplies this data because
+     * the immutable TypeScript module cannot observe elements owned by its
+     * browser HTML host in a native process.
+     */
+    private emitNativeHostUi(): void {
+        const hostUi = this.options.nativeHostUi;
+        if (!hostUi) return;
+        const engine = this.defaultEngineCpp;
+        if (!engine) {
+            this.failAtFile(
+                "A native host UI companion requires a scene engine.",
+            );
+        }
+        this.features.add("ui:rml");
+        const indent = "    ".repeat(2);
+        const emitted: string[] = [];
+        const ids = new Set<string>();
+        for (const rule of hostUi.classStyles ?? []) {
+            if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(rule.className)) {
+                this.failAtFile(
+                    `Native host UI class '${rule.className}' is not valid.`,
+                );
+            }
+            emitted.push(
+                `${indent}bbl::ui_add_class_style(${engine}, ` +
+                    `${this.cppString(rule.className)}, ` +
+                    `${this.cppString(this.lowerUiAttributeLiteral("style", rule.style))});`,
+            );
+        }
+
+        const appendElement = (
+            element: NativeHostUiElement,
+            parent?: string,
+        ): string => {
+            if (!/^[a-z][a-z0-9-]*$/i.test(element.tag)) {
+                this.failAtFile(
+                    `Native host UI element tag '${element.tag}' is not valid.`,
+                );
+            }
+            const handle = this.allocateTemporaryCppName(
+                "host_ui_element",
+            );
+            emitted.push(
+                `${indent}const auto ${handle} = ` +
+                    `bbl::ui_create_element(${engine}, ${this.cppString(element.tag)});`,
+            );
+            if (element.text !== undefined) {
+                emitted.push(
+                    `${indent}bbl::ui_set_text(${engine}, ${handle}, ` +
+                        `${this.cppString(element.text)});`,
+                );
+            }
+            for (const [name, sourceValue] of Object.entries(
+                element.attributes ?? {},
+            )) {
+                if (name === "id") {
+                    if (ids.has(sourceValue)) {
+                        this.failAtFile(
+                            `Native host UI element id '${sourceValue}' is duplicated.`,
+                        );
+                    }
+                    ids.add(sourceValue);
+                }
+                const value = this.lowerUiAttributeLiteral(
+                    name,
+                    sourceValue,
+                );
+                emitted.push(
+                    `${indent}bbl::ui_set_attribute(${engine}, ${handle}, ` +
+                        `${this.cppString(name)}, ${this.cppString(value)});`,
+                );
+            }
+            for (const child of element.children ?? []) {
+                appendElement(child, handle);
+            }
+            emitted.push(
+                parent
+                    ? `${indent}bbl::ui_append_child(${engine}, ${parent}, ${handle});`
+                    : `${indent}bbl::ui_append_to_root(${engine}, ${handle});`,
+            );
+            return handle;
+        };
+        for (const element of hostUi.elements) {
+            appendElement(element);
+        }
+        const insertion = this.engineCreationInsertion ?? this.body.length;
+        this.body.splice(insertion, 0, ...emitted);
+    }
+
+    private nativeHostUiIds(): ReadonlySet<string> {
+        if (this.nativeHostUiIdsCache) return this.nativeHostUiIdsCache;
+        const ids = new Set<string>();
+        const visit = (element: NativeHostUiElement): void => {
+            const id = element.attributes?.id;
+            if (id !== undefined) ids.add(id);
+            for (const child of element.children ?? []) visit(child);
+        };
+        for (const element of this.options.nativeHostUi?.elements ?? []) {
+            visit(element);
+        }
+        this.nativeHostUiIdsCache = ids;
+        return ids;
+    }
+
+    /**
+     * A host lookup becomes native only when its literal id is present in the
+     * audited companion. This deliberately excludes renderCanvas and any
+     * arbitrary page traversal from the retained UI surface.
+     */
+    public isNativeHostUiLookup(call: ts.CallExpression): boolean {
+        const callee = this.unwrap(call.expression);
+        if (
+            !ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "getElementById" ||
+            !ts.isIdentifier(callee.expression) ||
+            callee.expression.text !== "document" ||
+            !this.isDefaultLibraryIdentifier(callee.expression) ||
+            call.arguments.length !== 1
+        ) {
+            return false;
+        }
+        const id = this.unwrap(call.arguments[0]!);
+        return (
+            (ts.isStringLiteral(id) ||
+                ts.isNoSubstitutionTemplateLiteral(id)) &&
+            this.nativeHostUiIds().has(id.text)
+        );
     }
 
     /**
@@ -1121,6 +1263,17 @@ class Compiler
                 cppType: "bbl::Sprite2DLayerHandle",
             };
         }
+        if (
+            name === "Element" ||
+            name === "HTMLElement" ||
+            name === "HTMLDivElement" ||
+            name === "HTMLCanvasElement"
+        ) {
+            return {
+                kind: "ui-element",
+                cppType: "bbl::UiElementHandle",
+            };
+        }
         if (name === "ObstacleHandle") {
             return {
                 kind: "navigation-obstacle",
@@ -1221,10 +1374,59 @@ class Compiler
         owner: ts.Node,
     ): ReadonlySet<ts.Symbol> {
         const captured = new Set<ts.Symbol>();
+        const storedLocalFunctions = new Set<ts.Symbol>();
+        const storedLocalFunctionNames = new Set<string>();
+        const collectStoredFunctions = (node: ts.Node): void => {
+            if (ts.isShorthandPropertyAssignment(node)) {
+                storedLocalFunctionNames.add(node.name.text);
+                const symbol = this.symbols.valueSymbol(node.name);
+                if (symbol) storedLocalFunctions.add(symbol);
+            } else if (
+                ts.isPropertyAssignment(node) &&
+                ts.isIdentifier(this.unwrap(node.initializer))
+            ) {
+                storedLocalFunctionNames.add(
+                    (this.unwrap(node.initializer) as ts.Identifier).text,
+                );
+                const symbol = this.symbols.valueSymbol(
+                    this.unwrap(node.initializer) as ts.Identifier,
+                );
+                if (symbol) storedLocalFunctions.add(symbol);
+            }
+            ts.forEachChild(node, collectStoredFunctions);
+        };
+        collectStoredFunctions(owner);
+
         const visit = (
             node: ts.Node,
             insideStoredRecordCallback: boolean,
         ): void => {
+            // Local functions returned through a record are compiled into
+            // independent native callbacks just like inline object-literal
+            // methods. JavaScript still closes every one of them over the
+            // same binding. Limit this to functions actually stored in such
+            // a record: ordinary recurring frame callbacks keep the existing
+            // static-lifetime lowering they require.
+            let storedLocalCallback = false;
+            if (
+                ts.isFunctionDeclaration(node) &&
+                node.name
+            ) {
+                const symbol = this.symbols.valueSymbol(node.name);
+                storedLocalCallback =
+                    storedLocalFunctionNames.has(node.name.text) ||
+                    (!!symbol && storedLocalFunctions.has(symbol));
+            } else if (
+                (ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node)) &&
+                ts.isVariableDeclaration(node.parent) &&
+                ts.isIdentifier(node.parent.name)
+            ) {
+                const symbol = this.symbols.valueSymbol(node.parent.name);
+                storedLocalCallback =
+                    storedLocalFunctionNames.has(node.parent.name.text) ||
+                    (!!symbol && storedLocalFunctions.has(symbol));
+            }
             const storedRecordCallback =
                 (ts.isMethodDeclaration(node) &&
                     ts.isObjectLiteralExpression(node.parent)) ||
@@ -1233,7 +1435,9 @@ class Compiler
                     ts.isPropertyAssignment(node.parent) &&
                     ts.isObjectLiteralExpression(node.parent.parent));
             const inside =
-                insideStoredRecordCallback || storedRecordCallback;
+                insideStoredRecordCallback ||
+                storedRecordCallback ||
+                storedLocalCallback;
             if (
                 inside &&
                 ts.isIdentifier(node)
@@ -1252,7 +1456,8 @@ class Compiler
         return (
             kind === "number" ||
             kind === "boolean" ||
-            kind === "string"
+            kind === "string" ||
+            kind === "enum"
         );
     }
 
@@ -1412,6 +1617,10 @@ class Compiler
                 cpp: sharedClosureStorage
                     ? `(**${cppName})`
                     : `(*${cppName})`,
+                ...(nullableResource.kind === "ui-element" &&
+                this.defaultEngineCpp
+                    ? { engineCpp: this.defaultEngineCpp }
+                    : {}),
                 optionalFoundCpp: sharedClosureStorage
                     ? `${cppName}->has_value()`
                     : `${cppName}.has_value()`,
@@ -1462,7 +1671,21 @@ class Compiler
             return;
         }
 
+        const forwardCallback =
+            this.prepareForwardFunctionResult(
+                declaration,
+                cppName,
+            );
         const value = this.compileValue(declaration.initializer);
+        if (forwardCallback) {
+            this.completeForwardFunctionResult(
+                declaration,
+                cppName,
+                forwardCallback,
+                value,
+            );
+            return;
+        }
         if (
             nullableResource &&
             value.kind === nullableResource.kind
@@ -1691,6 +1914,8 @@ class Compiler
                   ? "bool"
                   : value.kind === "string"
                     ? "std::string"
+                    : value.dataType?.kind === "enum"
+                      ? this.dataTypes.cppType(value.dataType)
                   : "auto";
         // compileValue already emits a JS number at double precision.
         // Compiling the initializer again is observably wrong for calls and
@@ -1700,7 +1925,11 @@ class Compiler
             value.kind === "boolean" ? "[[maybe_unused]] " : "";
         const sharedPrimitive =
             sharedClosureStorage &&
-            this.isSharedClosureScalar(value.kind);
+            this.isSharedClosureScalar(
+                value.dataType?.kind === "enum"
+                    ? "enum"
+                    : value.kind,
+            );
         this.emit(sharedPrimitive
             ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
             : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`);
@@ -1734,6 +1963,144 @@ class Compiler
             }
             this.defaultEngineCpp = cppName;
         }
+    }
+
+    /**
+     * Materializes a function returned by a call before compiling that call.
+     *
+     * JavaScript can pass a closure into a builder which calls a function
+     * declaration that, in turn, closes over the builder's returned function:
+     *
+     *     const update = build(value => apply(value, update));
+     *
+     * The returned binding exists by the time an event can invoke the closure,
+     * but eager specialization reaches `update` while its initializer is still
+     * being lowered. A native function slot gives that forward edge a concrete
+     * identity; after the builder returns, the slot is filled with the normal
+     * specialized callback body.
+     */
+    private prepareForwardFunctionResult(
+        declaration: ts.VariableDeclaration,
+        cppName: string,
+    ):
+        | {
+              parameterTypes: readonly DataType[];
+              parameterNames: readonly string[];
+          }
+        | undefined {
+        if (!declaration.initializer) return undefined;
+        const initializer = this.unwrap(declaration.initializer);
+        if (!ts.isCallExpression(initializer)) return undefined;
+        const signatures = this.checker
+            .getTypeAtLocation(declaration.name)
+            .getCallSignatures();
+        if (signatures.length !== 1) return undefined;
+        const signature = signatures[0]!;
+        const returnType = this.checker.getReturnTypeOfSignature(signature);
+        if ((returnType.flags & ts.TypeFlags.Void) === 0) return undefined;
+        const parameterTypes: DataType[] = [];
+        const parameterNames: string[] = [];
+        for (const [index, parameter] of signature
+            .getParameters()
+            .entries()) {
+            const site = parameter.valueDeclaration ?? declaration.name;
+            if (
+                parameter.valueDeclaration &&
+                ts.isParameter(parameter.valueDeclaration) &&
+                parameter.valueDeclaration.dotDotDotToken
+            ) {
+                return undefined;
+            }
+            const type = this.dataTypes.fromTsType(
+                this.checker.getTypeOfSymbolAtLocation(
+                    parameter,
+                    site,
+                ),
+                site,
+            );
+            if (
+                !type ||
+                type.kind === "function" ||
+                this.dataTypes.carriesHandle(type)
+            ) {
+                return undefined;
+            }
+            parameterTypes.push(type);
+            parameterNames.push(
+                this.allocateTemporaryCppName(
+                    `forward_callback_arg_${index}`,
+                ),
+            );
+        }
+        this.reachJsData();
+        const parameterCpp = parameterTypes.map((type) =>
+            this.dataTypes.cppType(type),
+        );
+        this.emitNativeCallbackStorage(
+            cppName,
+            `void(${parameterCpp.join(", ")})`,
+        );
+        this.defineVariable(declaration.name as ts.Identifier, {
+            kind: "callback",
+            cpp: cppName,
+            nativeCallbackParameterTypes: parameterTypes,
+        });
+        return { parameterTypes, parameterNames };
+    }
+
+    /** Fills the native slot opened by prepareForwardFunctionResult. */
+    private completeForwardFunctionResult(
+        declaration: ts.VariableDeclaration,
+        cppName: string,
+        forward: {
+            parameterTypes: readonly DataType[];
+            parameterNames: readonly string[];
+        },
+        value: Value,
+    ): void {
+        if (
+            value.kind !== "callback" ||
+            !value.callbackDeclaration
+        ) {
+            this.fail(
+                declaration.initializer!,
+                "Function-valued call initializer did not return a supported callback.",
+            );
+        }
+        const arguments_ = forward.parameterTypes.map(
+            (type, index) =>
+                this.dataValue(forward.parameterNames[index]!, type),
+        );
+        const lines = this.captureEmittedLines(() => {
+            const compile = () =>
+                this.compileCallbackWithValues(
+                    value.callbackDeclaration!,
+                    arguments_,
+                    declaration.initializer!,
+                );
+            const result = value.callbackRecordOwner
+                ? this.withRecordScopes(
+                      value.callbackRecordOwner,
+                      compile,
+                  )
+                : compile();
+            if (result.cpp.length > 0) {
+                this.emit(
+                    result.requiresExplicitDiscard
+                        ? `static_cast<void>(${result.cpp});`
+                        : `${result.cpp};`,
+                );
+            }
+        });
+        const parameters = forward.parameterTypes.map(
+            (type, index) =>
+                `${this.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
+        );
+        this.emit(`${cppName} = [&](${parameters.join(", ")}) {`);
+        this.increaseIndent();
+        for (const line of lines) this.emit(line);
+        this.decreaseIndent();
+        this.emit("};");
     }
 
     /**
@@ -1932,6 +2299,28 @@ class Compiler
             // structs already encode both identity and null in their shared
             // pointer, so use that representation for this declaration.
             annotated = this.dataTypes.markStoredObjectReferences(annotated);
+        }
+        if (
+            annotated?.kind === "enum" &&
+            this.needsSharedClosureStorage(declaration)
+        ) {
+            const initializer = this.compileValue(declaration.initializer);
+            const cppType = this.dataTypes.cppType(annotated);
+            const initializerCpp =
+                this.dataLowerer.compileKnownValueForSink(
+                    initializer,
+                    annotated,
+                    declaration.initializer,
+                );
+            this.emit(
+                `auto ${cppName} = std::make_shared<${cppType}>(${initializerCpp});`,
+            );
+            this.defineVariable(declaration.name as ts.Identifier, {
+                kind: "data",
+                cpp: `(*${cppName})`,
+                dataType: annotated,
+            });
+            return true;
         }
         const inferredMutableArray =
             !declaration.type &&
@@ -2854,6 +3243,850 @@ class Compiler
         emitPropertyAssignment(this, expression);
     }
 
+    private uiElementValue(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const owner = this.unwrap(expression);
+        if (ts.isIdentifier(owner)) {
+            const value = this.lookupOptional(owner);
+            return value?.kind === "ui-element" ? value : undefined;
+        }
+        if (
+            ts.isPropertyAccessExpression(owner) &&
+            owner.expression.kind === ts.SyntaxKind.ThisKeyword
+        ) {
+            const value = this.resolveThisField(owner.name.text);
+            return value?.kind === "ui-element" ? value : undefined;
+        }
+        if (ts.isPropertyAccessExpression(owner)) {
+            const value =
+                this.resolveRecordMember(owner) ??
+                this.dataLowerer.compileDataPath(owner, "read");
+            return value?.kind === "ui-element" ? value : undefined;
+        }
+        if (ts.isCallExpression(owner)) {
+            const callee = this.unwrap(owner.expression);
+            if (
+                ts.isPropertyAccessExpression(callee) &&
+                callee.name.text === "getContext"
+            ) {
+                const canvas = this.uiElementValue(callee.expression);
+                if (canvas?.uiCanvas) {
+                    return { ...canvas, uiCanvasContext: true };
+                }
+            }
+        }
+        return undefined;
+    }
+
+    private uiCreatedElementTag(
+        expression: ts.Expression,
+    ): string | undefined {
+        const direct = this.uiElementValue(expression)?.uiTag;
+        if (direct) return direct;
+        const owner = this.unwrap(expression);
+        if (!ts.isIdentifier(owner)) return undefined;
+        const declaration = this.symbols.valueSymbol(owner)?.valueDeclaration;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !declaration.initializer
+        ) {
+            return undefined;
+        }
+        const initializer = this.unwrap(declaration.initializer);
+        if (
+            !ts.isCallExpression(initializer) ||
+            !ts.isPropertyAccessExpression(initializer.expression) ||
+            initializer.expression.name.text !== "createElement" ||
+            initializer.arguments.length !== 1
+        ) {
+            return undefined;
+        }
+        const tag = this.tryUiStaticString(initializer.arguments[0]!);
+        return tag?.toLowerCase();
+    }
+
+    /** Whether an expression is already known to produce retained UI state. */
+    public isNativeUiValueExpression(expression: ts.Expression): boolean {
+        const value = this.unwrap(expression);
+        if (ts.isElementAccessExpression(value)) {
+            const dataType = this.dataLowerer.dataTypeAt(value);
+            return (
+                dataType?.kind === "handle" &&
+                dataType.handle === "ui-element"
+            );
+        }
+        if (ts.isIdentifier(value)) {
+            return this.lookupOptional(value)?.kind === "ui-element";
+        }
+        if (ts.isPropertyAccessExpression(value)) {
+            return (
+                this.uiElementValue(value)?.kind === "ui-element" ||
+                this.resolveRecordMember(value)?.kind === "ui-element"
+            );
+        }
+        if (!ts.isCallExpression(value)) return false;
+        if (this.uiElementValue(value)?.kind === "ui-element") {
+            return true;
+        }
+        const callee = this.unwrap(value.expression);
+        const createsElement =
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "createElement" &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "document" &&
+            this.isDefaultLibraryIdentifier(callee.expression) &&
+            value.arguments[0] !== undefined &&
+            (ts.isStringLiteral(value.arguments[0]) ||
+                ts.isNoSubstitutionTemplateLiteral(value.arguments[0]));
+        return (
+            createsElement ||
+            this.isNativeHostUiLookup(value) ||
+            this.isNativeUiHelperCall(value)
+        );
+    }
+
+    private uiStringCpp(
+        expression: ts.Expression,
+        purpose: string,
+    ): string {
+        const staticValue = this.tryUiStaticString(expression);
+        if (staticValue !== undefined) {
+            return this.cppString(staticValue);
+        }
+        const value = this.compileValue(expression);
+        if (
+            value.kind === "string" ||
+            (value.kind === "data" && value.dataType?.kind === "string")
+        ) {
+            return value.cpp;
+        }
+        this.fail(
+            expression,
+            `${purpose} requires a string, received ${value.kind}.`,
+        );
+    }
+
+    private tryUiStaticString(
+        expression: ts.Expression,
+    ): string | undefined {
+        try {
+            return this.evaluator.compileStringLiteral(
+                expression,
+            );
+        } catch (error) {
+            if (error instanceof CompileError) return undefined;
+            throw error;
+        }
+    }
+
+    private collectUiStringParts(
+        expression: ts.Expression,
+    ): Array<string | ts.Expression> | undefined {
+        const parts: Array<string | ts.Expression> = [];
+        const collect = (node: ts.Expression): boolean => {
+            const value = this.tryUiStaticString(node);
+            if (value !== undefined) {
+                parts.push(value);
+                return true;
+            }
+            const current = this.unwrap(node);
+            if (ts.isTemplateExpression(current)) {
+                parts.push(current.head.text);
+                for (const span of current.templateSpans) {
+                    parts.push(span.expression, span.literal.text);
+                }
+                return true;
+            }
+            return (
+                ts.isBinaryExpression(current) &&
+                current.operatorToken.kind === ts.SyntaxKind.PlusToken &&
+                collect(current.left) &&
+                collect(current.right)
+            );
+        };
+        return collect(expression) ? parts : undefined;
+    }
+
+    private uiTemplateSubstitutionCpp(
+        expression: ts.Expression,
+        purpose: string,
+        allowStringFallback = false,
+    ): string {
+        const logical = this.unwrap(expression);
+        if (
+            allowStringFallback &&
+            ts.isBinaryExpression(logical) &&
+            logical.operatorToken.kind === ts.SyntaxKind.BarBarToken
+        ) {
+            const left = this.compileValue(logical.left);
+            const right = this.compileValue(logical.right);
+            const isString = (value: Value): boolean =>
+                value.kind === "string" ||
+                (value.kind === "data" && value.dataType?.kind === "string");
+            if (isString(left) && isString(right)) {
+                return (
+                    `(!std::string(${left.cpp}).empty()` +
+                    ` ? std::string(${left.cpp})` +
+                    ` : std::string(${right.cpp}))`
+                );
+            }
+        }
+        const value = this.compileValue(expression);
+        if (value.staticString !== undefined) {
+            return this.cppString(value.staticString);
+        }
+        if (value.staticNumber !== undefined) {
+            return this.cppString(String(value.staticNumber));
+        }
+        if (value.kind === "number") {
+            return `bbl::js::number_to_string(${value.cpp})`;
+        }
+        if (
+            value.kind === "string" ||
+            (value.kind === "data" && value.dataType?.kind === "string")
+        ) {
+            return value.cpp;
+        }
+        this.fail(
+            expression,
+            `${purpose} template substitutions must be strings or numbers.`,
+        );
+    }
+
+    private uiBooleanCpp(
+        expression: ts.Expression,
+        purpose: string,
+    ): string {
+        const value = this.compileValue(expression);
+        if (
+            value.kind === "boolean" ||
+            (value.kind === "data" && value.dataType?.kind === "boolean")
+        ) {
+            return value.cpp;
+        }
+        this.fail(
+            expression,
+            `${purpose} requires a boolean, received ${value.kind}.`,
+        );
+    }
+
+    /** CSSStyleDeclaration camelCase to the CSS spelling consumed by RmlUi. */
+    private nativeUiStyleProperty(property: string): string {
+        const cssName = property
+            .replace(/([a-z0-9])([A-Z])/g, "$1-$2")
+            .toLowerCase();
+        return cssName === "background"
+            ? "background-color"
+            : cssName;
+    }
+
+    private lowerUiTextShadow(value: string): string | undefined {
+        const shadows: string[] = [];
+        let start = 0;
+        let depth = 0;
+        for (let index = 0; index <= value.length; index++) {
+            const character = value[index];
+            if (character === "(") depth++;
+            if (character === ")") depth--;
+            if (index !== value.length && (character !== "," || depth > 0)) {
+                continue;
+            }
+            shadows.push(value.slice(start, index).trim());
+            start = index + 1;
+        }
+
+        const length = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|rem)?`;
+        const color = String.raw`(?:#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)`;
+        const pattern = new RegExp(
+            String.raw`^(?:(${color})\s+)?(${length})\s+(${length})(?:\s+(${length}))?(?:\s+(${color}))?$`,
+            "i",
+        );
+        const effects: string[] = [];
+        for (const shadow of shadows) {
+            const match = shadow.match(pattern);
+            if (!match) return undefined;
+            const shadowColor = match[1] ?? match[5] ?? "currentcolor";
+            const offsetX = match[2]!;
+            const offsetY = match[3]!;
+            const blur = match[4];
+            effects.push(
+                blur && Number.parseFloat(blur) > 0
+                    ? `glow(0px ${blur} ${offsetX} ${offsetY} ${shadowColor})`
+                    : `shadow(${offsetX} ${offsetY} ${shadowColor})`,
+            );
+        }
+        return effects.length > 0 ? effects.join(",") : undefined;
+    }
+
+    private lowerUiAttributeLiteral(name: string, value: string): string {
+        if (name !== "style") return value;
+        const clipsGradientToText =
+            /(?:-webkit-)?background-clip\s*:\s*text/i.test(value);
+        const gradientTextColors = clipsGradientToText
+            ? (value
+                  .match(
+                      /\bbackground\s*:\s*linear-gradient\(([^;]*)\)/i,
+                  )?.[1]
+                  ?.match(/#[0-9a-f]{3,8}/gi) ?? [])
+            : [];
+        const gradientTextColor = gradientTextColors[0];
+        const gradientTextDuration = clipsGradientToText
+            ? value.match(
+                  /\banimation\s*:[^;]*?\b([0-9]+(?:\.[0-9]*)?)s\b/i,
+              )?.[1]
+            : undefined;
+        const gradientTextBackgroundScale = clipsGradientToText
+            ? value.match(
+                  /\bbackground-size\s*:\s*([0-9]+(?:\.[0-9]*)?)%/i,
+              )?.[1]
+            : undefined;
+        const gradientTextStroke = clipsGradientToText
+            ? value.match(
+                  /-webkit-text-stroke\s*:\s*([^\s;]+)\s+([^;]+)/i,
+              )
+            : undefined;
+        const gradientTextShadow = clipsGradientToText
+            ? value.match(
+                  /\bfilter\s*:\s*drop-shadow\(\s*([^\s]+)\s+([^\s]+)\s+(?:[^\s]+\s+)?(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s*\)/i,
+              )
+            : undefined;
+        const gradientFontEffects: string[] = [];
+        if (gradientTextStroke) {
+            gradientFontEffects.push(
+                `outline(${gradientTextStroke[1]!} ${gradientTextStroke[2]!.trim()})`,
+            );
+        }
+        if (gradientTextShadow) {
+            gradientFontEffects.push(
+                `shadow(${gradientTextShadow[1]!} ${gradientTextShadow[2]!} ${gradientTextShadow[3]!})`,
+            );
+        }
+        const sourceValue = gradientTextColor
+            ? value.replace(
+                  /\bbackground\s*:\s*linear-gradient\([^;]*;?/gi,
+                  "",
+              )
+            : value;
+        // RmlUi 6.4 does not accept calc() for positioned offsets. For the
+        // static inline CSS surface supported here, preserve the browser
+        // equation as a percentage offset plus a same-side pixel margin.
+        let lowered = sourceValue
+            .replace(/\bposition\s*:\s*fixed\b/gi, "position:absolute")
+            .replace(
+                /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?clamp\(\s*[0-9.]+px\s*,\s*[0-9.]+vw\s*,\s*([0-9.]+)px\s*\)\s+([^;]+)\s*;?/gi,
+                (_match, weight, maximum, family) =>
+                    `${weight ? `font-weight:${weight};` : ""}` +
+                    `font-size:${maximum}px;font-family:${String(family)};`,
+            )
+            .replace(
+                /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?([0-9]+(?:\.[0-9]*)?)(px|rem)(?:\s*\/\s*([0-9]+(?:\.[0-9]*)?(?:px|rem)?))?\s+([^;]+)\s*;?/gi,
+                (_match, weight, size, unit, lineHeight, family) =>
+                    `${weight ? `font-weight:${weight};` : ""}` +
+                    `font-size:${size}${unit};` +
+                    `${lineHeight ? `line-height:${lineHeight};` : ""}` +
+                    `font-family:${String(family)};`,
+            )
+            .replace(
+                /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?clamp\(\s*[^,]+,\s*[^,]+,\s*([0-9]+(?:\.[0-9]*)?)(px|rem)\s*\)\s+([^;]+)\s*;?/gi,
+                (_match, weight, maximum, unit, family) =>
+                    `${weight ? `font-weight:${weight};` : ""}` +
+                    `font-size:${maximum}${unit};` +
+                    `font-family:${String(family)};`,
+            )
+            // RmlUi resolves one family name here rather than a browser-style
+            // fallback list. Route generic UI stacks to the system face that
+            // the PAL loads, otherwise retain the first requested family.
+            .replace(/\bfont-family\s*:\s*([^;]+)\s*;?/gi, (_match, family) => {
+                const families = String(family)
+                    .split(",")
+                    .map((candidate) => candidate.trim())
+                    .filter(Boolean);
+                const first = families[0] ?? "sans-serif";
+                if (/^system-ui$/i.test(first)) {
+                    return "font-family:system-ui;";
+                }
+                if (/^sans-serif$/i.test(first)) {
+                    return "font-family:sans-serif;";
+                }
+                if (/^monospace$/i.test(first)) {
+                    return "font-family:monospace;";
+                }
+                return `font-family:${first};`;
+            })
+            .replace(
+                /\binset\s*:\s*0(?:px)?\s*;?/gi,
+                "top:0;right:0;bottom:0;left:0;",
+            )
+            // RmlUi exposes CSS image gradients through its decorator
+            // property. The shared render recorder implements the resulting
+            // shader callback once for every PAL graphics backend.
+            .replace(
+                /\bbackground\s*:\s*((?:repeating-)?(?:linear|radial|conic)-gradient\([^;]*\))\s*;?/gi,
+                "decorator:$1;",
+            )
+            // RmlUi exposes the colour property explicitly rather than the
+            // browser background shorthand used by the reached HUDs.
+            .replace(/\bbackground\s*:/gi, "background-color:")
+            .replace(/\bbackdrop-filter\s*:[^;]*;?/gi, "")
+            .replace(/\bbox-shadow\s*:[^;]*;?/gi, "")
+            // RmlUi's border shorthand is `width color`; it deliberately
+            // omits CSS border-style because every non-zero border is solid.
+            // Translate the ordinary browser spelling instead of letting the
+            // entire declaration be rejected by its shorthand parser.
+            .replace(
+                /\bborder\s*:\s*([^;\s]+)\s+solid\s+([^;]+)\s*;?/gi,
+                "border:$1 $2;",
+            )
+            .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
+            .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
+            .replace(
+                /(^|;)\s*(?:-webkit-)?background-clip\s*:[^;]*(?=;|$)/gi,
+                "$1",
+            )
+            .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
+            .replace(/\bfilter\s*:[^;]*;?/gi, "")
+            .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
+                const effect = this.lowerUiTextShadow(String(shadow));
+                return effect ? `font-effect:${effect};` : "";
+            })
+            .replace(
+                /\bcolor\s*:\s*transparent\s*;?/gi,
+                `color:${gradientTextColor ?? "#fff"};`,
+            )
+            .replace(
+                /\b(left|top|right|bottom)\s*:\s*calc\(\s*([+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+))%\s*([+-])\s*([0-9]+(?:\.[0-9]*)?|\.[0-9]+)px\s*\)\s*;?/gi,
+                (_match, property, percent, sign, pixels) =>
+                    `${String(property).toLowerCase()}:${percent}%;` +
+                    `margin-${String(property).toLowerCase()}:` +
+                    `${sign === "-" ? "-" : ""}${pixels}px;`,
+            );
+
+        if (gradientTextColors.length > 1) {
+            // RmlUi has no background-clip:text. Preserve the declarative
+            // intent as private PAL metadata so native UI can materialize a
+            // per-glyph gradient and advance the reached shimmer animation.
+            lowered +=
+                `;--bbl-text-gradient:${gradientTextColors.join("|")};` +
+                `--bbl-text-gradient-duration:${gradientTextDuration ?? "0"}s;` +
+                `--bbl-text-gradient-scale:${gradientTextBackgroundScale ?? "100"}%;`;
+            if (gradientFontEffects.length > 0) {
+                lowered += `font-effect:${gradientFontEffects.join(",")};`;
+            }
+        }
+
+        // RmlUi 6.4 has no CSS Grid formatting context. Mark the reached
+        // regular `repeat(N, px)` surface for the PAL to project as a
+        // full-width outer box with a centred wrapping-flex inner box. Keeping
+        // those boxes separate matters: in the browser the Tetris preview's
+        // background spans the panel while only its 4x4 cells are centred.
+        const gridColumns = lowered.match(
+            /\bgrid-template-columns\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i,
+        );
+        if (gridColumns && /\bdisplay\s*:\s*grid\b/i.test(lowered)) {
+            const count = Number(gridColumns[1]);
+            const cell = Number(gridColumns[2]);
+            const gap = Number(
+                lowered.match(/\bgap\s*:\s*([0-9]+(?:\.[0-9]*)?)px/i)?.[1] ??
+                    "0",
+            );
+            const width = count * cell + Math.max(0, count - 1) * gap;
+            lowered = lowered
+                .replace(/\bdisplay\s*:\s*grid\b/gi, "display:block")
+                .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "")
+                .replace(/\bgrid-template-rows\s*:[^;]+;?/gi, "")
+                .replace(/\bgap\s*:[^;]+;?/gi, "")
+                .replace(/\bjustify-content\s*:\s*center\s*;?/gi, "") +
+                `;--bbl-grid-width:${width}px;--bbl-grid-gap:${gap}px;`;
+        }
+
+        if (/\bposition\s*:\s*absolute\b/i.test(lowered)) {
+            const hasWidth = /(?:^|;)\s*width\s*:/i.test(lowered);
+            const minimum = lowered.match(
+                /(?:^|;)\s*min-width\s*:\s*([^;]+)/i,
+            )?.[1]?.trim();
+            if (!hasWidth && minimum) {
+                // RmlUi cannot complete CSS shrink-to-fit when percentage-
+                // width inline children contribute to an absolute block's
+                // max-content size. Start from the authored minimum and leave
+                // generic measurement metadata for the retained PAL pass.
+                lowered +=
+                    `;width:${minimum};` +
+                    `--bbl-intrinsic-min-width:${minimum};`;
+            } else if (
+                !hasWidth &&
+                !minimum &&
+                !/\bdisplay\s*:/i.test(lowered) &&
+                (/\bleft\s*:/i.test(lowered) !== /\bright\s*:/i.test(lowered))
+            ) {
+                lowered += ";display:inline-block;";
+            }
+        }
+        if (
+            /\bdisplay\s*:\s*(?:inline-)?flex\b/i.test(lowered) &&
+            /\balign-items\s*:\s*center\b/i.test(lowered) &&
+            /\bjustify-content\s*:\s*center\b/i.test(lowered) &&
+            !/\bline-height\s*:/i.test(lowered)
+        ) {
+            const height = lowered.match(
+                /(?:^|;)\s*height\s*:\s*([0-9]+(?:\.[0-9]*)?px)/i,
+            )?.[1];
+            if (height) {
+                if (/\bdisplay\s*:\s*inline-flex\b/i.test(lowered)) {
+                    // RmlUi does not synthesize the browser's anonymous flex
+                    // item for direct text. An inline centred badge needs no
+                    // flex distribution beyond that text, so an inline block
+                    // with the equivalent line box preserves its layout.
+                    lowered = lowered.replace(
+                        /\bdisplay\s*:\s*inline-flex\b/gi,
+                        "display:inline-block",
+                    );
+                }
+                // RmlUi does not construct an anonymous flex item for a
+                // direct text node. A centred fixed-height browser button
+                // therefore needs the equivalent line box explicitly.
+                lowered += `;line-height:${height};text-align:center;`;
+            }
+        }
+        return lowered;
+    }
+
+    private lowerUiStyleSheetLiteral(value: string): Array<{
+        kind: "class" | "id";
+        name: string;
+        style: string;
+    }> {
+        const rules: Array<{
+            kind: "class" | "id";
+            name: string;
+            style: string;
+        }> = [];
+        const source = value.replace(/\/\*[\s\S]*?\*\//g, "");
+        const blocks = /([^{}]+)\{([^{}]*)\}/g;
+        for (let match = blocks.exec(source); match; match = blocks.exec(source)) {
+            const style = this.lowerUiAttributeLiteral(
+                "style",
+                match[2]!.trim(),
+            );
+            if (!style) continue;
+            for (const rawSelector of match[1]!.split(",")) {
+                const selector = rawSelector.trim();
+                if (!selector || selector.includes(":")) continue;
+                const target = selector.match(
+                    /(?:^|[\s>+~])([.#])([A-Za-z_][A-Za-z0-9_-]*)$/,
+                );
+                if (!target) continue;
+                rules.push({
+                    kind: target[1] === "." ? "class" : "id",
+                    name: target[2]!,
+                    style,
+                });
+            }
+        }
+        return rules;
+    }
+
+    private compileUiStyleString(expression: ts.Expression): string {
+        const staticValue = this.tryUiStaticString(expression);
+        if (staticValue !== undefined) {
+            return this.cppString(
+                this.lowerUiAttributeLiteral("style", staticValue),
+            );
+        }
+        const unwrapped = this.unwrap(expression);
+        if (ts.isConditionalExpression(unwrapped)) {
+            return (
+                `(${this.compileCondition(unwrapped.condition)} ? ` +
+                `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
+                `${this.compileUiStyleString(unwrapped.whenFalse)})`
+            );
+        }
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.PlusToken
+        ) {
+            const containsConditional = (node: ts.Expression): boolean => {
+                const current = this.unwrap(node);
+                return (
+                    ts.isConditionalExpression(current) ||
+                    (ts.isBinaryExpression(current) &&
+                        current.operatorToken.kind ===
+                            ts.SyntaxKind.PlusToken &&
+                        (containsConditional(current.left) ||
+                            containsConditional(current.right)))
+                );
+            };
+            if (containsConditional(unwrapped)) {
+                return (
+                    `std::string(${this.compileUiStyleString(unwrapped.left)}) + ` +
+                    this.compileUiStyleString(unwrapped.right)
+                );
+            }
+        }
+        const sourceParts = this.collectUiStringParts(unwrapped);
+        if (sourceParts) {
+            const substitutions: ts.Expression[] = [];
+            let source = "";
+            for (const part of sourceParts) {
+                if (typeof part === "string") {
+                    source += part;
+                } else {
+                    source += `__BBLITE_UI_STYLE_${substitutions.length}__`;
+                    substitutions.push(part);
+                }
+            }
+            const lowered = this.lowerUiAttributeLiteral("style", source);
+            const chunks = lowered.split(/(__BBLITE_UI_STYLE_\d+__)/g);
+            const parts = ["std::string()"];
+            for (const chunk of chunks) {
+                if (!chunk) continue;
+                const marker = chunk.match(/^__BBLITE_UI_STYLE_(\d+)__$/);
+                if (!marker) {
+                    parts.push(this.cppString(chunk));
+                    continue;
+                }
+                parts.push(this.uiTemplateSubstitutionCpp(
+                    substitutions[Number(marker[1])]!,
+                    "Native UI cssText",
+                ));
+            }
+            return parts.join(" + ");
+        }
+        this.fail(
+            expression,
+            "Native UI cssText must be a template or static fragments joined by string concatenation or a conditional.",
+        );
+    }
+
+    private lowerUiMarkupLiteral(value: string): string {
+        // Elements parsed by SetInnerRML do not pass through the retained
+        // record projector's tiny browser-UA defaults. Preserve HTML div
+        // block flow directly in the bounded static markup we accept.
+        let lowered = value
+            .replace(
+                /<div\s+style=(['"])(.*?)\1\s*>/gi,
+                (_match, quote, style) =>
+                    `<div style=${quote}display:block;${this.lowerUiAttributeLiteral("style", String(style))}${quote}>`,
+            )
+            .replace(/<div\s*>/gi, '<div style="display:block">');
+
+        return lowered;
+    }
+
+    private compileUiMarkupString(expression: ts.Expression): string {
+        const staticValue = this.tryUiStaticString(expression);
+        if (staticValue !== undefined) {
+            return this.cppString(this.lowerUiMarkupLiteral(staticValue));
+        }
+        const unwrapped = this.unwrap(expression);
+        if (ts.isConditionalExpression(unwrapped)) {
+            return (
+                `(${this.compileCondition(unwrapped.condition)} ? ` +
+                `${this.compileUiMarkupString(unwrapped.whenTrue)} : ` +
+                `${this.compileUiMarkupString(unwrapped.whenFalse)})`
+            );
+        }
+        const sourceParts = this.collectUiStringParts(unwrapped);
+        if (!sourceParts) {
+            this.fail(
+                expression,
+                "Native UI innerHTML must be a template or static fragments joined by string concatenation or a conditional.",
+            );
+        }
+        const substitutions: ts.Expression[] = [];
+        let source = "";
+        for (const part of sourceParts) {
+            if (typeof part === "string") {
+                source += part;
+            } else {
+                source += `__BBLITE_UI_MARKUP_${substitutions.length}__`;
+                substitutions.push(part);
+            }
+        }
+        const lowered = this.lowerUiMarkupLiteral(source);
+        const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
+        const parts = ["std::string()"];
+        for (const chunk of chunks) {
+            if (!chunk) continue;
+            const marker = chunk.match(/^__BBLITE_UI_MARKUP_(\d+)__$/);
+            if (!marker) {
+                parts.push(this.cppString(chunk));
+                continue;
+            }
+            parts.push(this.uiTemplateSubstitutionCpp(
+                substitutions[Number(marker[1])]!,
+                "Native UI innerHTML",
+                true,
+            ));
+        }
+        return parts.join(" + ");
+    }
+
+    public emitUiPropertyAssignment(
+        expression: ts.BinaryExpression,
+    ): boolean {
+        if (
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !ts.isPropertyAccessExpression(expression.left)
+        ) {
+            return false;
+        }
+        const property = expression.left.name.text;
+        const directElement = this.uiElementValue(
+            expression.left.expression,
+        );
+        if (directElement) {
+            const engine = this.requireEngine(
+                directElement,
+                expression.left,
+            );
+            if (
+                directElement.uiCanvas &&
+                !directElement.uiCanvasContext &&
+                (property === "width" || property === "height")
+            ) {
+                this.emit(
+                    `bbl::ui_canvas_set_${property}(${engine}, ${directElement.cpp}, ` +
+                        `${this.compileNumber(expression.right, "double")});`,
+                );
+                return true;
+            }
+            if (directElement.uiCanvasContext) {
+                if (property === "fillStyle" || property === "strokeStyle") {
+                    this.emit(
+                        `bbl::ui_canvas_set_${property === "fillStyle" ? "fill_style" : "stroke_style"}(` +
+                            `${engine}, ${directElement.cpp}, ` +
+                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
+                    );
+                    return true;
+                }
+                if (property === "lineWidth") {
+                    this.emit(
+                        `bbl::ui_canvas_set_line_width(${engine}, ${directElement.cpp}, ` +
+                            `${this.compileNumber(expression.right, "double")});`,
+                    );
+                    return true;
+                }
+                if (property === "lineJoin" || property === "lineCap") {
+                    this.emit(
+                        `bbl::ui_canvas_set_${property === "lineJoin" ? "line_join" : "line_cap"}(` +
+                            `${engine}, ${directElement.cpp}, ` +
+                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
+                    );
+                    return true;
+                }
+                if (property === "imageSmoothingEnabled") {
+                    this.emit(
+                        `bbl::ui_canvas_set_image_smoothing(${engine}, ${directElement.cpp}, ` +
+                            `${this.compileBoolean(expression.right)});`,
+                    );
+                    return true;
+                }
+                if (
+                    property === "font" ||
+                    property === "textBaseline" ||
+                    property === "shadowColor"
+                ) {
+                    const runtimeProperty =
+                        property === "textBaseline"
+                            ? "text_baseline"
+                            : property === "shadowColor"
+                              ? "shadow_color"
+                              : "font";
+                    this.emit(
+                        `bbl::ui_canvas_set_${runtimeProperty}(${engine}, ${directElement.cpp}, ` +
+                            `${this.uiStringCpp(expression.right, `Canvas2D ${property}`)});`,
+                    );
+                    return true;
+                }
+                if (property === "shadowBlur") {
+                    this.emit(
+                        `bbl::ui_canvas_set_shadow_blur(${engine}, ${directElement.cpp}, ` +
+                            `${this.compileNumber(expression.right, "double")});`,
+                    );
+                    return true;
+                }
+            }
+            if (property === "textContent" || property === "innerText") {
+                if (
+                    this.uiCreatedElementTag(
+                        expression.left.expression,
+                    ) === "style"
+                ) {
+                    const sheet = this.compileStringLiteral(expression.right);
+                    for (const rule of this.lowerUiStyleSheetLiteral(sheet)) {
+                        this.emit(
+                            `bbl::ui_add_${rule.kind}_style(${engine}, ` +
+                                `${this.cppString(rule.name)}, ` +
+                                `${this.cppString(rule.style)});`,
+                        );
+                    }
+                }
+                this.emit(
+                    `bbl::ui_set_text(${engine}, ${directElement.cpp}, ` +
+                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
+                );
+                return true;
+            }
+            if (property === "innerHTML") {
+                this.emit(
+                    `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
+                        `${this.compileUiMarkupString(expression.right)});`,
+                );
+                return true;
+            }
+            const attribute =
+                property === "className"
+                    ? "class"
+                    : property === "id" || property === "type"
+                      ? property
+                      : undefined;
+            if (attribute) {
+                this.emit(
+                    `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ` +
+                        `${this.cppString(attribute)}, ` +
+                        `${this.uiStringCpp(expression.right, `UI ${property}`)});`,
+                );
+                return true;
+            }
+        }
+        const style = this.unwrap(expression.left.expression);
+        if (
+            !ts.isPropertyAccessExpression(style) ||
+            style.name.text !== "style"
+        ) {
+            return false;
+        }
+        if (
+            property === "cursor" &&
+            this.isCanvasElement(style.expression)
+        ) {
+            this.emit(
+                `bbl::set_canvas_cursor(${this.requireDefaultEngine(expression)}, ` +
+                    `${this.uiStringCpp(expression.right, "canvas style.cursor")});`,
+            );
+            return true;
+        }
+        const styleElement = this.uiElementValue(style.expression);
+        if (!styleElement) return false;
+        const engine = this.requireEngine(styleElement, expression.left);
+        if (property === "cssText") {
+            this.emit(
+                `bbl::ui_set_attribute(${engine}, ${styleElement.cpp}, ` +
+                    `${this.cppString("style")}, ${this.compileUiStyleString(expression.right)});`,
+            );
+            return true;
+        }
+        const nativeProperty = this.nativeUiStyleProperty(property);
+        this.emit(
+            `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
+                `${this.cppString(nativeProperty)}, ` +
+                `${this.uiStringCpp(expression.right, `UI style.${property}`)});`,
+        );
+        return true;
+    }
+
     public compileValue(expression: ts.Expression): Value {
         return this.expressions.compileValue(expression);
     }
@@ -2922,6 +4155,22 @@ class Compiler
             return this.compileValue(staticField.initializer);
         }
         if (
+            ts.isPropertyAccessExpression(ownerExpression) &&
+            ownerExpression.name.text === "style"
+        ) {
+            const element = this.uiElementValue(ownerExpression.expression);
+            if (element) {
+                const engine = this.requireEngine(element, expression);
+                const property = this.nativeUiStyleProperty(
+                    expression.name.text,
+                );
+                return {
+                    kind: "string",
+                    cpp: `bbl::ui_get_style_property(${engine}, ${element.cpp}, ${this.cppString(property)})`,
+                };
+            }
+        }
+        if (
             expression.name.text === "hidden" &&
             ts.isIdentifier(ownerExpression) &&
             ownerExpression.text === "document" &&
@@ -2931,6 +4180,24 @@ class Compiler
             return {
                 kind: "boolean",
                 cpp: this.platformDocumentHiddenCpp,
+            };
+        }
+        if (
+            ts.isIdentifier(ownerExpression) &&
+            ownerExpression.text === "window" &&
+            this.isDefaultLibraryIdentifier(ownerExpression) &&
+            (expression.name.text === "innerWidth" ||
+                expression.name.text === "innerHeight")
+        ) {
+            const property = expression.name.text === "innerWidth"
+                ? "width"
+                : "height";
+            return {
+                kind: "number",
+                cpp:
+                    `static_cast<double>(${this.requireDefaultEngine(expression)}` +
+                    `.options.${property})`,
+                dataType: { kind: "number" },
             };
         }
         if (
@@ -2984,6 +4251,29 @@ class Compiler
         // itself unsupported fails naming the sub-path that failed.
         const owner = this.compileValue(ownerExpression);
         const property = expression.name.text;
+        const ownerTsType = this.checker.getTypeAtLocation(ownerExpression);
+        const ownerTsMembers =
+            (ownerTsType.flags & ts.TypeFlags.Union) !== 0
+                ? (ownerTsType as ts.UnionType).types
+                : [ownerTsType];
+        const sourceIsCanvas = ownerTsMembers.some(
+            (member) =>
+                member.getSymbol()?.getName() === "HTMLCanvasElement" ||
+                member.getSymbol()?.getName() === "OffscreenCanvas",
+        );
+        if (
+            owner.kind === "ui-element" &&
+            (owner.uiCanvas || sourceIsCanvas) &&
+            !owner.uiCanvasContext &&
+            (property === "width" || property === "height")
+        ) {
+            const engine = this.requireEngine(owner, expression);
+            return {
+                kind: "number",
+                cpp: `bbl::ui_canvas_${property}(${engine}, ${owner.cpp})`,
+                dataType: { kind: "number" },
+            };
+        }
         if (owner.kind === "picking-info" && property === "ray") {
             // Basic GPU picks publish a null ray; only the detailed pipeline
             // carries one. Keeping that null in the value model lets the
@@ -3028,12 +4318,15 @@ class Compiler
                 property === "offsetY" ||
                 property === "movementX" ||
                 property === "movementY" ||
-                property === "deltaY"
+                property === "deltaY" ||
+                property === "pointerId"
             ) {
                 return {
                     kind: "number",
                     cpp:
-                        property === "button"
+                        property === "pointerId"
+                            ? "0.0"
+                            : property === "button"
                             ? `${owner.cpp}.button`
                             : property === "buttons"
                               ? `${owner.cpp}.buttons`
@@ -3057,12 +4350,20 @@ class Compiler
         if (
             owner.kind === "browser" &&
             owner.browserValue?.kind === "dom-rect" &&
-            (property === "left" || property === "top")
+            (property === "left" ||
+                property === "top" ||
+                property === "width" ||
+                property === "height")
         ) {
+            const axis = property === "width" || property === "height"
+                ? property
+                : undefined;
             return {
                 kind: "number",
-                cpp: "0.0",
-                staticNumber: 0,
+                cpp: axis
+                    ? `static_cast<double>(${this.requireDefaultEngine(expression)}.options.${axis})`
+                    : "0.0",
+                ...(axis ? {} : { staticNumber: 0 }),
                 dataType: { kind: "number" },
             };
         }
@@ -3337,12 +4638,17 @@ class Compiler
             callee.name.text !== "writeTexture" ||
             !ts.isPropertyAccessExpression(callee.expression) ||
             callee.expression.name.text !== "queue" ||
-            !ts.isIdentifier(callee.expression.expression) ||
-            this.lookupOptional(callee.expression.expression)?.kind !==
-                "gpu-device"
+            !ts.isIdentifier(callee.expression.expression)
         ) {
             return undefined;
         }
+        // A reached upload commonly captures `const device = engine._device`
+        // in a later callback. Resolve the identifier through ordinary value
+        // compilation so the outer lexical binding remains visible here;
+        // lookupOptional only describes bindings installed in this immediate
+        // compiler scope.
+        const device = this.compileValue(callee.expression.expression);
+        if (device.kind !== "gpu-device") return undefined;
         this.expectArgumentCount(call, 4, 4);
         const destination = this.unwrap(call.arguments[0]!);
         if (!ts.isObjectLiteralExpression(destination)) {
@@ -3919,6 +5225,55 @@ class Compiler
     }
 
     /**
+     * A local helper returning a scene-created retained element must be
+     * inlined before DOM erasure gets to classify its result type. Canvas
+     * helpers deliberately do not qualify: live Canvas2D belongs to its own
+     * bounded IR rather than the retained element tree.
+     */
+    public isNativeUiHelperCall(call: ts.CallExpression): boolean {
+        const declaration = this.checker.getResolvedSignature(call)
+            ?.declaration;
+        if (
+            !declaration ||
+            (!ts.isFunctionDeclaration(declaration) &&
+                !ts.isMethodDeclaration(declaration) &&
+                !ts.isFunctionExpression(declaration) &&
+                !ts.isArrowFunction(declaration)) ||
+            !declaration.body
+        ) {
+            return false;
+        }
+        let reached = false;
+        const visit = (node: ts.Node): void => {
+            if (reached) return;
+            if (ts.isCallExpression(node)) {
+                const callee = this.unwrap(node.expression);
+                if (
+                    ts.isPropertyAccessExpression(callee) &&
+                    callee.name.text === "createElement" &&
+                    ts.isIdentifier(callee.expression) &&
+                    callee.expression.text === "document" &&
+                    this.isDefaultLibraryIdentifier(callee.expression)
+                ) {
+                    const tag = node.arguments[0];
+                    if (
+                        tag &&
+                        (ts.isStringLiteral(tag) ||
+                            ts.isNoSubstitutionTemplateLiteral(tag)) &&
+                        tag.text.toLowerCase() !== "canvas"
+                    ) {
+                        reached = true;
+                        return;
+                    }
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration.body);
+        return reached;
+    }
+
+    /**
      * A static factory for a nullable DOM-only class has no native object to
      * construct. This recognizes the deliberately narrow shape used by
      * optional browser overlays: the class lives in a module with no Babylon
@@ -3998,6 +5353,29 @@ class Compiler
                 ),
         );
         if (!domOwned) return false;
+
+        // Retained canvases are part of the native UI surface. Do not classify
+        // a helper which owns one as a browser-only decoration merely because
+        // its public API happens to be write-only. Such helpers (for example a
+        // decoded pixel-art HUD) must pass through ordinary class lowering so
+        // their bounded Canvas2D calls can be rewritten onto the PAL.
+        const ownsRetainedCanvas = declaration.members.some((member) => {
+            if (!ts.isPropertyDeclaration(member)) return false;
+            const type = this.checker.getTypeAtLocation(member);
+            const members =
+                (type.flags & ts.TypeFlags.Union) !== 0
+                    ? (type as ts.UnionType).types
+                    : [type];
+            return members.some((candidate) => {
+                const name = candidate.getSymbol()?.getName();
+                return (
+                    name === "HTMLCanvasElement" ||
+                    name === "OffscreenCanvas" ||
+                    name === "CanvasRenderingContext2D"
+                );
+            });
+        });
+        if (ownsRetainedCanvas) return false;
 
         const publicSurfaceIsWriteOnly = declaration.members.every(
             (member) => {
@@ -4527,6 +5905,9 @@ class Compiler
             if (value.kind === "boolean") {
                 return value.cpp;
             }
+            if (value.truthinessCpp !== undefined) {
+                return value.truthinessCpp;
+            }
             if (value.optionalFoundCpp !== undefined) {
                 return value.optionalFoundCpp;
             }
@@ -4554,6 +5935,9 @@ class Compiler
                 }
                 if (value?.kind === "json-null") {
                     return "false";
+                }
+                if (value?.kind === "ui-element") {
+                    return value.truthinessCpp ?? "true";
                 }
             }
             return this.compileBoolean(unwrapped);
@@ -5365,6 +6749,7 @@ class Compiler
         this.emit(
             `auto ${cppName} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
         );
+        this.engineCreationInsertion = this.body.length;
         this.defaultEngineCpp = cppName;
         // The policy travels as reached features, which is what every other
         // emission decision reads: `useHighPrecisionMatrix` is what the
@@ -5909,6 +7294,10 @@ class Compiler
             this.defineVariable(name, {
                 kind: nullableResource.kind,
                 cpp: `(*${cppName})`,
+                ...(nullableResource.kind === "ui-element" &&
+                this.defaultEngineCpp
+                    ? { engineCpp: this.defaultEngineCpp }
+                    : {}),
                 optionalFoundCpp: `${cppName}.has_value()`,
                 optionalStorageCpp: cppName,
             });
@@ -5942,6 +7331,9 @@ class Compiler
         const value: Value = {
             kind: resource.kind,
             cpp: `(*${cppName})`,
+            ...(resource.kind === "ui-element" && this.defaultEngineCpp
+                ? { engineCpp: this.defaultEngineCpp }
+                : {}),
             optionalFoundCpp: `${cppName}.has_value()`,
             optionalStorageCpp: cppName,
         };
@@ -5982,6 +7374,9 @@ class Compiler
         const value: Value = {
             kind: resource.kind,
             cpp: `(*${cppName})`,
+            ...(resource.kind === "ui-element" && this.defaultEngineCpp
+                ? { engineCpp: this.defaultEngineCpp }
+                : {}),
             optionalFoundCpp: `${cppName}.has_value()`,
             optionalStorageCpp: cppName,
         };
@@ -6729,15 +8124,21 @@ class Compiler
      * pixels (the pinned sprite grid centres itself in it), so the read
      * has to produce a number rather than being erased with its owner.
      */
-    public canvasSizeProperty(
+    private canvasSizeInfo(
         expression: ts.Expression,
-    ): "width" | "height" | undefined {
+    ): CanvasSizeProperty | undefined {
         const unwrapped = this.unwrap(expression);
         if (!ts.isPropertyAccessExpression(unwrapped)) {
             return undefined;
         }
         const axis = CANVAS_SIZE_AXES.get(unwrapped.name.text);
         if (!axis) {
+            return undefined;
+        }
+        // A scene-created overlay canvas is retained by the UI IR and owns
+        // its own backing extent. Only the browser entry canvas maps to the
+        // engine drawing surface below.
+        if (this.uiElementValue(unwrapped.expression)?.uiCanvas) {
             return undefined;
         }
         const ownerType = this.checker.getTypeAtLocation(
@@ -6761,12 +8162,18 @@ class Compiler
             : undefined;
     }
 
+    public canvasSizeProperty(
+        expression: ts.Expression,
+    ): "width" | "height" | undefined {
+        return this.canvasSizeInfo(expression)?.axis;
+    }
+
     public staticCanvasSize(
         expression: ts.Expression,
     ): number | undefined {
-        const property = this.canvasSizeProperty(expression);
+        const property = this.canvasSizeInfo(expression);
         if (!property) return undefined;
-        return property === "width"
+        return property.axis === "width"
             ? this.options.width
             : this.options.height;
     }
@@ -6775,13 +8182,15 @@ class Compiler
         expression: ts.Expression,
     ): Value | undefined {
         const property =
-            this.canvasSizeProperty(expression);
+            this.canvasSizeInfo(expression);
         return property
             ? {
                   kind: "number",
-                  cpp: `static_cast<double>(${this.requireDefaultEngine(
-                      expression,
-                  )}.options.${property})`,
+                  cpp: property.client
+                      ? `${this.requireDefaultEngine(expression)}.canvas_client_${property.axis}`
+                      : `static_cast<double>(${this.requireDefaultEngine(
+                            expression,
+                        )}.options.${property.axis})`,
                   dataType: { kind: "number" },
               }
             : undefined;
@@ -7004,6 +8413,437 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         const callee = this.unwrap(call.expression);
+        if (ts.isPropertyAccessExpression(callee)) {
+            if (this.isNativeHostUiLookup(call)) {
+                const id = this.compileStringLiteral(call.arguments[0]!);
+                const engine = this.requireDefaultEngine(call);
+                this.reachFeature("ui:rml", call);
+                return {
+                    kind: "ui-element",
+                    cpp:
+                        `bbl::ui_get_element_by_id(${engine}, ` +
+                        `${this.cppString(id)})`,
+                    engineCpp: engine,
+                    truthinessCpp: "true",
+                };
+            }
+            if (
+                callee.name.text === "createElement" &&
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "document" &&
+                this.isDefaultLibraryIdentifier(callee.expression)
+            ) {
+                this.expectArgumentCount(call, 1, 1);
+                const tag = this.compileStringLiteral(call.arguments[0]!);
+                if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
+                    this.fail(
+                        call.arguments[0]!,
+                        `Native UI element tag '${tag}' is not valid.`,
+                    );
+                }
+                const engine = this.requireDefaultEngine(call);
+                this.reachFeature("ui:rml", call);
+                return {
+                    kind: "ui-element",
+                    cpp: `bbl::ui_create_element(${engine}, ${this.cppString(tag)})`,
+                    engineCpp: engine,
+                    uiTag: tag.toLowerCase(),
+                    ...(tag.toLowerCase() === "canvas"
+                        ? { uiCanvas: true as const }
+                        : {}),
+                };
+            }
+
+            const element = this.uiElementValue(callee.expression);
+            if (
+                element?.uiCanvas &&
+                !element.uiCanvasContext &&
+                callee.name.text === "getContext"
+            ) {
+                this.expectArgumentCount(call, 1, 1);
+                const context = this.compileStringLiteral(call.arguments[0]!);
+                if (context !== "2d") {
+                    this.fail(
+                        call.arguments[0]!,
+                        "Retained native canvas only supports the '2d' context.",
+                    );
+                }
+                return {
+                    ...element,
+                    uiCanvasContext: true,
+                };
+            }
+            if (element?.uiCanvasContext) {
+                const engine = this.requireEngine(element, call);
+                const number = (index: number): string =>
+                    this.compileNumber(call.arguments[index]!, "double");
+                const invocation = (
+                    name: string,
+                    minimum: number,
+                    maximum = minimum,
+                ): Value => {
+                    this.expectArgumentCount(call, minimum, maximum);
+                    return {
+                        kind: "void",
+                        cpp:
+                            `bbl::ui_canvas_${name}(${engine}, ${element.cpp}` +
+                            `${call.arguments.length > 0 ? ", " : ""}` +
+                            `${call.arguments.map((_argument, index) => number(index)).join(", ")})`,
+                    };
+                };
+                switch (callee.name.text) {
+                    case "scale":
+                        return invocation("scale", 2);
+                    case "clearRect":
+                        return invocation("clear_rect", 4);
+                    case "beginPath":
+                        return invocation("begin_path", 0);
+                    case "moveTo":
+                        return invocation("move_to", 2);
+                    case "lineTo":
+                        return invocation("line_to", 2);
+                    case "closePath":
+                        return invocation("close_path", 0);
+                    case "arcTo":
+                        return invocation("arc_to", 5);
+                    case "arc":
+                        this.expectArgumentCount(call, 5, 6);
+                        return {
+                            kind: "void",
+                            cpp:
+                                `bbl::ui_canvas_arc(${engine}, ${element.cpp}, ` +
+                                `${call.arguments.slice(0, 5).map((_argument, index) => number(index)).join(", ")}, ` +
+                                `${call.arguments[5] ? this.compileBoolean(call.arguments[5]) : "false"})`,
+                        };
+                    case "fill":
+                        return invocation("fill", 0);
+                    case "stroke":
+                        return invocation("stroke", 0);
+                    case "putImageData": {
+                        this.expectArgumentCount(call, 3, 3);
+                        const imageData = this.unwrap(call.arguments[0]!);
+                        if (
+                            !ts.isNewExpression(imageData) ||
+                            !ts.isIdentifier(imageData.expression) ||
+                            imageData.expression.text !== "ImageData" ||
+                            (imageData.arguments?.length ?? 0) !== 3
+                        ) {
+                            this.fail(
+                                call.arguments[0]!,
+                                "Retained Canvas2D putImageData requires new ImageData(rgba, width, height).",
+                            );
+                        }
+                        let pixelsExpression = imageData.arguments![0]!;
+                        const pixelsConstructor = this.unwrap(pixelsExpression);
+                        if (
+                            ts.isNewExpression(pixelsConstructor) &&
+                            ts.isIdentifier(pixelsConstructor.expression) &&
+                            (pixelsConstructor.expression.text ===
+                                "Uint8ClampedArray" ||
+                                pixelsConstructor.expression.text ===
+                                    "Uint8Array") &&
+                            pixelsConstructor.arguments?.length === 1
+                        ) {
+                            pixelsExpression = pixelsConstructor.arguments[0]!;
+                        }
+                        const pixels = this.compileValue(pixelsExpression);
+                        if (
+                            pixels.kind !== "data" ||
+                            pixels.dataType?.kind !== "u8array"
+                        ) {
+                            this.fail(
+                                pixelsExpression,
+                                "Retained Canvas2D ImageData pixels must lower to a Uint8Array.",
+                            );
+                        }
+                        return {
+                            kind: "void",
+                            cpp:
+                                `bbl::ui_canvas_put_image_data(${engine}, ${element.cpp}, ` +
+                                `${pixels.cpp}, ` +
+                                `${this.compileNumber(imageData.arguments![1]!, "double")}, ` +
+                                `${this.compileNumber(imageData.arguments![2]!, "double")}, ` +
+                                `${number(1)}, ${number(2)})`,
+                        };
+                    }
+                    case "drawImage": {
+                        this.expectArgumentCount(call, 5, 5);
+                        const source = this.compileValue(call.arguments[0]!);
+                        if (source.kind !== "ui-element") {
+                            this.fail(
+                                call.arguments[0]!,
+                                "Retained Canvas2D drawImage source must be a retained UI element; " +
+                                    `received ${source.kind}.`,
+                            );
+                        }
+                        this.expectSameEngine(element, source, call);
+                        const sourceText = this.unwrap(
+                            call.arguments[0]!,
+                        ).getText();
+                        const extent = (
+                            argumentIndex: number,
+                            axis: "width" | "height",
+                        ): string => {
+                            const argument = this.unwrap(
+                                call.arguments[argumentIndex]!,
+                            );
+                            let dimension: ts.Expression = argument;
+                            let multiplier = "1.0";
+                            if (
+                                ts.isBinaryExpression(argument) &&
+                                argument.operatorToken.kind ===
+                                    ts.SyntaxKind.AsteriskToken
+                            ) {
+                                const left = this.unwrap(argument.left);
+                                const right = this.unwrap(argument.right);
+                                const leftIsDimension =
+                                    ts.isPropertyAccessExpression(left) &&
+                                    left.name.text === axis;
+                                const rightIsDimension =
+                                    ts.isPropertyAccessExpression(right) &&
+                                    right.name.text === axis;
+                                if (leftIsDimension) {
+                                    dimension = left;
+                                    multiplier = this.compileNumber(
+                                        argument.right,
+                                        "double",
+                                    );
+                                } else if (rightIsDimension) {
+                                    dimension = right;
+                                    multiplier = this.compileNumber(
+                                        argument.left,
+                                        "double",
+                                    );
+                                }
+                            }
+                            if (
+                                !ts.isPropertyAccessExpression(dimension) ||
+                                dimension.name.text !== axis ||
+                                this.unwrap(dimension.expression).getText() !==
+                                    sourceText
+                            ) {
+                                this.fail(
+                                    call.arguments[argumentIndex]!,
+                                    `Retained Canvas2D drawImage ${axis} must be source.${axis}, optionally multiplied by a scale.`,
+                                );
+                            }
+                            return (
+                                `(bbl::ui_canvas_${axis}(${engine}, ${source.cpp}) * ` +
+                                `(${multiplier}))`
+                            );
+                        };
+                        return {
+                            kind: "void",
+                            cpp:
+                                `bbl::ui_canvas_draw_image(${engine}, ${element.cpp}, ${source.cpp}, ` +
+                                `${number(1)}, ${number(2)}, ${extent(3, "width")}, ${extent(4, "height")})`,
+                        };
+                    }
+                    case "fillText":
+                        this.expectArgumentCount(call, 3, 3);
+                        return {
+                            kind: "void",
+                            cpp:
+                                `bbl::ui_canvas_fill_text(${engine}, ${element.cpp}, ` +
+                                `${this.uiStringCpp(call.arguments[0]!, "Canvas2D fillText")}, ` +
+                                `${number(1)}, ${number(2)})`,
+                        };
+                }
+            }
+            if (element && callee.name.text === "setAttribute") {
+                this.expectArgumentCount(call, 2, 2);
+                const name = this.compileStringLiteral(call.arguments[0]!);
+                const staticValue = this.tryUiStaticString(
+                    call.arguments[1]!,
+                );
+                const sourceValue = staticValue === undefined
+                    ? this.compileValue(call.arguments[1]!)
+                    : undefined;
+                if (
+                    sourceValue !== undefined &&
+                    sourceValue.kind !== "string" &&
+                    !(
+                        sourceValue.kind === "data" &&
+                        sourceValue.dataType?.kind === "string"
+                    )
+                ) {
+                    this.fail(
+                        call.arguments[1]!,
+                        `UI setAttribute value requires a string, received ${sourceValue?.kind}.`,
+                    );
+                }
+                const value =
+                    staticValue !== undefined
+                        ? this.cppString(
+                              this.lowerUiAttributeLiteral(
+                                  name,
+                                  staticValue,
+                              ),
+                          )
+                        : sourceValue!.cpp;
+                const engine = this.requireEngine(element, call);
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::ui_set_attribute(${engine}, ${element.cpp}, ` +
+                        `${this.cppString(name)}, ` +
+                        `${value})`,
+                };
+            }
+            if (element && callee.name.text === "appendChild") {
+                this.expectArgumentCount(call, 1, 1);
+                const child = this.compileValue(call.arguments[0]!);
+                this.expectKind(child, "ui-element", call.arguments[0]!);
+                if (!element.uiRoot) {
+                    this.expectSameEngine(element, child, call);
+                }
+                const engine = this.requireEngine(
+                    element.uiRoot ? child : element,
+                    call,
+                );
+                return {
+                    kind: "ui-element",
+                    cpp: element.uiRoot
+                        ? `bbl::ui_append_to_root(${engine}, ${child.cpp})`
+                        : `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`,
+                    engineCpp: engine,
+                };
+            }
+            if (element && callee.name.text === "append") {
+                const children = call.arguments.map((argument) => {
+                    const child = this.compileValue(argument);
+                    this.expectKind(child, "ui-element", argument);
+                    return child;
+                });
+                if (children.length === 0) {
+                    return { kind: "void", cpp: "" };
+                }
+                const engine = this.requireEngine(
+                    element.uiRoot ? children[0]! : element,
+                    call,
+                );
+                const appends = children.map((child) => {
+                    if (element.uiRoot) {
+                        this.expectSameEngine(children[0]!, child, call);
+                        return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
+                    }
+                    this.expectSameEngine(element, child, call);
+                    return `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`;
+                });
+                return { kind: "void", cpp: appends.join(", ") };
+            }
+            if (element && callee.name.text === "replaceChildren") {
+                this.expectArgumentCount(call, 0, 0);
+                const engine = this.requireEngine(element, call);
+                return {
+                    kind: "void",
+                    cpp: `bbl::ui_replace_children(${engine}, ${element.cpp})`,
+                };
+            }
+            if (element && callee.name.text === "remove") {
+                this.expectArgumentCount(call, 0, 0);
+                const engine = this.requireEngine(element, call);
+                return {
+                    kind: "void",
+                    cpp: `bbl::ui_remove(${engine}, ${element.cpp})`,
+                };
+            }
+            if (element && callee.name.text === "getBoundingClientRect") {
+                this.expectArgumentCount(call, 0, 0);
+                const engine = this.requireEngine(element, call);
+                const rect =
+                    `bbl::ui_get_client_rect(${engine}, ${element.cpp})`;
+                const component = (name: string): Value => ({
+                    kind: "number",
+                    cpp: `${rect}.${name}`,
+                    dataType: { kind: "number" },
+                    engineCpp: engine,
+                });
+                return {
+                    kind: "record",
+                    cpp: "",
+                    recordProperties: {
+                        left: component("left"),
+                        top: component("top"),
+                        width: component("width"),
+                        height: component("height"),
+                    },
+                };
+            }
+            if (
+                element &&
+                (callee.name.text === "setPointerCapture" ||
+                    callee.name.text === "releasePointerCapture")
+            ) {
+                this.expectArgumentCount(call, 1, 1);
+                // RmlUi owns pointer capture while dispatching a pressed
+                // control. The DOM call has no additional native action.
+                return { kind: "void", cpp: "" };
+            }
+            if (element && callee.name.text === "hasPointerCapture") {
+                this.expectArgumentCount(call, 1, 1);
+                // RmlUi dispatches captured pointer motion back to the pressed
+                // element. Reaching this callback is therefore the native
+                // equivalent of the DOM capture predicate used by the demos.
+                return { kind: "boolean", cpp: "true" };
+            }
+            if (element && callee.name.text === "animate") {
+                this.expectArgumentCount(call, 2, 2);
+                // Web Animations remains outside this retained UI slice. The
+                // state mutation around it (text/style/removal) is preserved.
+                return { kind: "void", cpp: "" };
+            }
+            if (element && callee.name.text === "removeEventListener") {
+                this.expectArgumentCount(call, 2, 2);
+                // Retained UI records share the engine lifetime.
+                // Listener identity/removal is deferred with DOM lifecycle.
+                return { kind: "void", cpp: "" };
+            }
+            if (
+                callee.name.text === "toggle" &&
+                ts.isPropertyAccessExpression(callee.expression) &&
+                callee.expression.name.text === "classList"
+            ) {
+                const classElement = this.uiElementValue(
+                    callee.expression.expression,
+                );
+                if (classElement) {
+                    this.expectArgumentCount(call, 2, 2);
+                    const name = this.compileStringLiteral(call.arguments[0]!);
+                    const enabled = this.uiBooleanCpp(
+                        call.arguments[1]!,
+                        "UI classList.toggle",
+                    );
+                    const engine = this.requireEngine(classElement, call);
+                    return {
+                        kind: "void",
+                        cpp:
+                            `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
+                            `${this.cppString(name)}, ${enabled})`,
+                    };
+                }
+            }
+            if (
+                callee.name.text === "appendChild" &&
+                ts.isPropertyAccessExpression(callee.expression) &&
+                callee.expression.name.text === "body" &&
+                ts.isIdentifier(callee.expression.expression) &&
+                callee.expression.expression.text === "document" &&
+                this.isDefaultLibraryIdentifier(
+                    callee.expression.expression,
+                )
+            ) {
+                this.expectArgumentCount(call, 1, 1);
+                const child = this.compileValue(call.arguments[0]!);
+                this.expectKind(child, "ui-element", call.arguments[0]!);
+                const engine = this.requireEngine(child, call);
+                return {
+                    kind: "ui-element",
+                    cpp: `bbl::ui_append_to_root(${engine}, ${child.cpp})`,
+                    engineCpp: engine,
+                };
+            }
+        }
         // `Number.isFinite(x)` is the same predicate as the global, and a
         // shared module writes whichever spelling reads better beside its
         // own guard. Both settle where generation knows the number and
@@ -7155,6 +8995,59 @@ class Compiler
         return undefined;
     }
 
+    /** Whether a named RAF callback explicitly schedules itself again. */
+    private animationFrameCallbackRearmsItself(
+        expression: ts.Expression,
+    ): boolean {
+        const callback = this.unwrap(expression);
+        if (!ts.isIdentifier(callback)) return false;
+        const symbol = this.symbols.valueSymbol(callback);
+        if (!symbol) return false;
+        const declaration = symbol.valueDeclaration;
+        let functionNode: ts.FunctionLikeDeclaration | undefined;
+        if (
+            declaration &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.initializer
+        ) {
+            const initializer = this.unwrap(declaration.initializer);
+            if (
+                ts.isArrowFunction(initializer) ||
+                ts.isFunctionExpression(initializer)
+            ) {
+                functionNode = initializer;
+            }
+        } else if (declaration && ts.isFunctionDeclaration(declaration)) {
+            functionNode = declaration;
+        }
+        if (!functionNode?.body) return false;
+
+        let rearmed = false;
+        const visit = (node: ts.Node): void => {
+            if (rearmed) return;
+            if (node !== functionNode && ts.isFunctionLike(node)) return;
+            if (ts.isCallExpression(node)) {
+                const callee = this.unwrap(node.expression);
+                const argument = node.arguments[0]
+                    ? this.unwrap(node.arguments[0])
+                    : undefined;
+                if (
+                    ts.isIdentifier(callee) &&
+                    callee.text === "requestAnimationFrame" &&
+                    argument &&
+                    ts.isIdentifier(argument) &&
+                    this.symbols.valueSymbol(argument) === symbol
+                ) {
+                    rearmed = true;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(functionNode.body);
+        return rearmed;
+    }
+
     /**
      * Registers an application-owned browser animation loop on the native
      * frame conductor. Browser RAF callbacks run in registration order. A
@@ -7174,7 +9067,11 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         this.expectArgumentCount(call, 1, 1);
-        if (this.frameCallbackDepth > 0) {
+        const recurring = this.animationFrameCallbackRearmsItself(
+            call.arguments[0]!,
+        );
+        const nested = this.frameCallbackDepth > 0;
+        if (nested && recurring) {
             return { kind: "void", cpp: "" };
         }
         const engine = this.requireDefaultEngine(call);
@@ -7182,9 +9079,11 @@ class Compiler
             call.arguments[0]!,
             "timestamp",
         );
-        const callbacks = this.engineStartMark
-            ? "post_render_animation_frame_callbacks"
-            : "animation_frame_callbacks";
+        const callbacks = !recurring
+            ? "animation_frame_once_callbacks"
+            : this.engineStartMark
+              ? "post_render_animation_frame_callbacks"
+              : "animation_frame_callbacks";
         return {
             kind: "void",
             cpp: `${engine}.${callbacks}.push_back(${callback})`,
@@ -7201,11 +9100,72 @@ class Compiler
         const callee = this.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "addEventListener" ||
-            !ts.isIdentifier(callee.expression)
+            callee.name.text !== "addEventListener"
         ) {
             return false;
         }
+        const uiElement = this.uiElementValue(callee.expression);
+        if (uiElement) {
+            this.expectArgumentCount(call, 2, 2);
+            const event = this.compileStringLiteral(call.arguments[0]!);
+            const mappedEvent =
+                event === "pointerdown"
+                    ? "mousedown"
+                    : event === "pointerup"
+                      ? "mouseup"
+                      : event === "pointermove"
+                        ? "mousemove"
+                      : event === "pointercancel" ||
+                          event === "lostpointercapture"
+                        ? "mouseout"
+                        : event;
+            if (
+                event !== "click" &&
+                event !== "pointerdown" &&
+                event !== "pointerup" &&
+                event !== "pointermove" &&
+                event !== "pointercancel" &&
+                event !== "lostpointercapture" &&
+                event !== "contextmenu"
+            ) {
+                this.fail(
+                    call.arguments[0]!,
+                    `Native UI elements do not support the '${event}' event.`,
+                );
+            }
+            const callback = call.arguments[1]!;
+            this.hoistForwardCallbackBindings(callback, call.pos);
+            const engine = this.requireEngine(uiElement, call);
+            if (event === "contextmenu") {
+                // Native has no browser context menu to suppress.
+                return true;
+            }
+            const parameter =
+                this.allocateTemporaryCppName("ui_pointer_event");
+            const pointerValue: Value = {
+                kind: "platform-mouse-event",
+                cpp: parameter,
+                readOnly: true,
+            };
+            const lambda = this.compilePlatformCallback(
+                callback,
+                event === "click"
+                    ? undefined
+                    : {
+                          cppType: "const bbl::PlatformMouseEvent&",
+                          name: parameter,
+                      },
+                event === "click" ? [] : [pointerValue],
+            );
+            this.emit(
+                `bbl::${event === "click" ? "ui_on_click" : "ui_on_event"}(` +
+                    `${engine}, ${uiElement.cpp}, ` +
+                    `${event === "click" ? "" : `${this.cppString(mappedEvent)}, `}` +
+                    `${lambda});`,
+            );
+            return true;
+        }
+        if (!ts.isIdentifier(callee.expression)) return false;
         const target = this.isDefaultLibraryIdentifier(callee.expression)
             ? callee.expression.text
             : this.isCanvasElement(callee.expression)
@@ -8613,6 +10573,13 @@ class Compiler
             );
         }
         if (value.kind === "browser") {
+            this.defineVariable(identifier, value);
+            return;
+        }
+        if (value.uiRoot) {
+            // document.body is a compile-time mount sentinel. Its inlined
+            // parameter must retain that identity rather than materializing
+            // a nonexistent native DOM handle.
             this.defineVariable(identifier, value);
             return;
         }

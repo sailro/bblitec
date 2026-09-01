@@ -9,12 +9,19 @@ import { resolve } from "node:path";
 import test from "node:test";
 import {
     bundledDemoAssetPath,
+    captureUiEnabled,
     createSuiteSceneServer,
     flattenedBundledDemoAssetPath,
     fixedAnimationFrameScript,
     pinnedLabPublicAssetPath,
 } from "../src/capture-suite-reference.js";
 import { gotoScenePage } from "../src/browser-harness.js";
+
+test("captures full page UI unless canvas-only attribution is requested", () => {
+    assert.equal(captureUiEnabled({}), true);
+    assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "1" }), true);
+    assert.equal(captureUiEnabled({ BBLITE_CAPTURE_UI: "0" }), false);
+});
 
 test("preserves the reference query when navigating to the suite scene", async () => {
     const navigations: Array<{

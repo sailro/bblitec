@@ -13,6 +13,29 @@ import type {
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 
+/** A static host-page element projected beside scene-created retained UI. */
+export interface NativeHostUiElement {
+  tag: string;
+  text?: string;
+  attributes?: Record<string, string>;
+  children?: NativeHostUiElement[];
+}
+
+/** A bounded class rule imported from the browser host page. */
+export interface NativeHostUiClassStyle {
+  className: string;
+  style: string;
+}
+
+/**
+ * Browser host-page chrome that is not present in the immutable scene module.
+ * This is deliberately a retained-tree companion, not an HTML/CSS parser.
+ */
+export interface NativeHostUi {
+  classStyles?: NativeHostUiClassStyle[];
+  elements: NativeHostUiElement[];
+}
+
 export interface CompileOptions {
   fileName?: string;
   title?: string;
@@ -26,6 +49,8 @@ export interface CompileOptions {
    * bare, which is every scene that does not read the query.
    */
   search?: string;
+  /** Optional audited host-page UI companion for a registered native scene. */
+  nativeHostUi?: NativeHostUi;
 }
 
 export interface CompileManifest {
@@ -971,6 +996,8 @@ export type ValueKind =
   | "asset"
   | "boolean"
   | "browser"
+  /** A DOM element created by reached scene code and owned by the native UI IR. */
+  | "ui-element"
   | "callback"
   | "camera"
   /**
@@ -1238,6 +1265,14 @@ export interface LightIdentity {
 export interface Value {
   kind: ValueKind;
   cpp: string;
+  /** Generation-known tag for scene-created retained DOM elements. */
+  uiTag?: string;
+  /** Browser document.body carried through an inlined UI helper parameter. */
+  uiRoot?: true;
+  /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
+  uiCanvas?: true;
+  /** The 2D drawing-context view of the canvas handle in `cpp`. */
+  uiCanvasContext?: true;
   /**
    * Exact members held by a native array at this point in the source walk.
    * Runtime storage preserves JavaScript array semantics while this complete
@@ -1797,6 +1832,8 @@ export type Feature =
   | "renderer:post-process"
   | "renderer:high-precision-matrix"
   | "renderer:floating-origin"
+  // Scene-created DOM lowered to the retained UI IR and rendered by RmlUi.
+  | "ui:rml"
   | "background:image-skybox"
   | "background:solid-skybox";
 
@@ -1806,4 +1843,5 @@ export interface ResolvedCompileOptions {
   width: number;
   height: number;
   search: string;
+  nativeHostUi?: NativeHostUi;
 }

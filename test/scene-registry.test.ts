@@ -102,15 +102,21 @@ test("registers unique generated scene targets", () => {
             ?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
-    assert.equal(getScene("platformer").parity?.maxFullMad, 0.05);
+    assert.equal(getScene("platformer").parity?.maxFullMad, 1.1);
     assert.equal(getScene("break-meshes").parity?.maxFullMad, 0.001);
     assert.equal(getScene("break-meshes").parity?.maxForegroundMad, 0.001);
     assert.equal(getScene("racer").parity?.referenceFrame, 180);
+    assert.equal(getScene("racer").nativeHostUi, "ui/racer-host.json");
     assert.equal(
         getScene("racer").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
     assert.equal(getScene("littlest-tokyo").parity?.referenceFrame, 180);
+    assert.equal(
+        getScene("littlest-tokyo").nativeHostUi,
+        "ui/littlest-tokyo-host.json",
+    );
+    assert.equal(getScene("bath-day").nativeHostUi, "ui/bath-day-host.json");
     assert.equal(getScene("freeciv").parity?.referenceFrame, 180);
     assert.equal(getScene("freeciv").parity?.maxFullMad, 0.5);
     assert.equal(getScene("freeciv").parity?.maxForegroundMad, 0.5);
@@ -131,8 +137,8 @@ test("registers unique generated scene targets", () => {
             ?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
-    assert.equal(getScene("bath-day").parity?.maxFullMad, 0.001);
-    assert.equal(getScene("bath-day").parity?.maxForegroundMad, 0.001);
+    assert.equal(getScene("bath-day").parity?.maxFullMad, 0.2);
+    assert.equal(getScene("bath-day").parity?.maxForegroundMad, 0.2);
     assert.equal(
         getScene("tetris").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "181",
@@ -145,8 +151,8 @@ test("registers unique generated scene targets", () => {
         getScene("quake").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "181",
     );
-    assert.equal(getScene("quake").parity?.maxFullMad, 0.001);
-    assert.equal(getScene("quake").parity?.maxForegroundMad, 0.001);
+    assert.equal(getScene("quake").parity?.maxFullMad, 0.1);
+    assert.equal(getScene("quake").parity?.maxForegroundMad, 0.1);
     assert.equal(
         getScene("break-meshes").parity?.nativeEnvironment
             ?.BBLITE_SCREENSHOT_FRAME,

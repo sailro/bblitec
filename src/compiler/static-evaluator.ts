@@ -1059,6 +1059,33 @@ export class StaticEvaluator {
             }
             return result;
         }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            unwrapped.expression.name.text === "join" &&
+            unwrapped.arguments.length <= 1
+        ) {
+            const owner = this.resolveStaticExpression(
+                unwrapped.expression.expression,
+            );
+            if (ts.isArrayLiteralExpression(owner)) {
+                const separator = unwrapped.arguments[0]
+                    ? this.compileStringLiteral(unwrapped.arguments[0])
+                    : ",";
+                return owner.elements
+                    .map((element) => {
+                        if (ts.isOmittedExpression(element)) return "";
+                        if (ts.isSpreadElement(element)) {
+                            this.fail(
+                                element,
+                                "A static string array join does not support spread elements.",
+                            );
+                        }
+                        return this.compileStringLiteral(element);
+                    })
+                    .join(separator);
+            }
+        }
         this.fail(unwrapped, "Expected a string literal.");
     }
 

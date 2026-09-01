@@ -8,6 +8,7 @@ import {
     resolve,
     sep,
 } from "node:path";
+import type { NativeHostUi } from "./compiler/types.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -143,6 +144,19 @@ export function flattenedBundledDemoAssetPath(
 
 export type SuiteSourceTransform = (source: string) => string;
 
+const fixedEngineStartMarker =
+    'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);';
+
+/**
+ * Arm the deterministic RAF clock in whichever module actually starts the
+ * engine. Application entry points may delegate startup to a source-relative
+ * helper, so this projection is applied both to the entry module and to every
+ * TypeScript module the suite server transpiles on demand.
+ */
+function markFixedEngineStart(source: string): string {
+    return source.replace("await startEngine(engine);", fixedEngineStartMarker);
+}
+
 /**
  * The served URL of the pinned package's index module — what every page
  * the suite server hosts imports the pin as. `pinnedPackageSpecifiers`
@@ -218,18 +232,7 @@ export function suiteBrowserModule(
           );
     const fixedFrameSource = fixedAnimationFrame === undefined
         ? readySource
-        : readySource.replace(
-              "await startEngine(engine);",
-              'document.getElementById("renderCanvas")?.setAttribute("data-fixed-engine-starting", "true");\n    await startEngine(engine);',
-          );
-    if (
-        fixedAnimationFrame !== undefined &&
-        fixedFrameSource === readySource
-    ) {
-        throw new Error(
-            `Fixed-frame capture could not mark startEngine in '${sourcePath}'.`,
-        );
-    }
+        : markFixedEngineStart(readySource);
     return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
 }
 
@@ -347,6 +350,42 @@ export interface SuiteCaptureOptions {
      * so the native scene takes the branch the reference page takes.
      */
     search?: string;
+    /** Audited host-page elements that surround the immutable scene module. */
+    hostUi?: NativeHostUi;
+}
+
+/** Full-page capture is the product default; zero requests a canvas-only
+ * attribution capture. */
+export function captureUiEnabled(
+    environment: NodeJS.ProcessEnv = process.env,
+): boolean {
+    return environment.BBLITE_CAPTURE_UI !== "0";
+}
+
+function hostUiBootstrapScript(
+    hostUi: NonNullable<SuiteCaptureOptions["hostUi"]>,
+): string {
+    const payload = JSON.stringify(hostUi).replaceAll("</script", "<\\/script");
+    return `<script>(() => {
+const hostUi = ${payload};
+if (hostUi.classStyles?.length) {
+    const style = document.createElement("style");
+    style.textContent = hostUi.classStyles
+        .map((rule) => "." + rule.className + "{" + rule.style + "}")
+        .join("\\n");
+    document.head.appendChild(style);
+}
+const create = (record) => {
+    const element = document.createElement(record.tag);
+    for (const [name, value] of Object.entries(record.attributes ?? {})) {
+        element.setAttribute(name, value);
+    }
+    if (record.text !== undefined) element.textContent = record.text;
+    for (const child of record.children ?? []) element.appendChild(create(child));
+    return element;
+};
+for (const element of hostUi.elements) document.body.appendChild(create(element));
+})();</script>\n`;
 }
 
 export function createSuiteSceneServer(
@@ -366,11 +405,17 @@ export function createSuiteSceneServer(
     const fixedFrameScript = options.fixedAnimationFrame === undefined
         ? ""
         : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
+    const hostUiScript = options.hostUi
+        ? hostUiBootstrapScript(options.hostUi)
+        : "";
+    const hideNonCanvasAtFixedFrame =
+        options.fixedAnimationFrame !== undefined &&
+        !captureUiEnabled();
     const html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
-${options.fixedAnimationFrame === undefined ? "" : "body>:not(#renderCanvas){visibility:hidden!important}"}
+${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!important}" : ""}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
-${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></script></body></html>`;
+${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
     const pinnedAssets = new Map<
         string,
         { bytes: Uint8Array; contentType: string }
@@ -430,9 +475,12 @@ ${seedScript}${fixedFrameScript}<script type="module" src="${entryPath}"></scrip
                 existsSync(typescriptPath) &&
                 statSync(typescriptPath).isFile()
             ) {
-                const moduleText = pinnedPackageSpecifiers(
-                    readFileSync(typescriptPath, "utf8"),
-                );
+                const sourceText = readFileSync(typescriptPath, "utf8");
+                const fixedFrameSource =
+                    options.fixedAnimationFrame === undefined
+                        ? sourceText
+                        : markFixedEngineStart(sourceText);
+                const moduleText = pinnedPackageSpecifiers(fixedFrameSource);
                 response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
                 response.end(
                     browserHarness().transpileForBrowser(
@@ -559,6 +607,10 @@ export function fixedAnimationFrameScript(targetFrame: number): string {
     return `(() => {
 const nativeRaf = window.requestAnimationFrame.bind(window);
 const nativeCancelRaf = window.cancelAnimationFrame.bind(window);
+const nativeSetTimeout = window.setTimeout.bind(window);
+const nativeClearTimeout = window.clearTimeout.bind(window);
+const nativeSetInterval = window.setInterval.bind(window);
+const nativeClearInterval = window.clearInterval.bind(window);
 const step = 1000 / 60;
 const target = ${targetFrame};
 let frame = -1;
@@ -570,8 +622,14 @@ let flushing = false;
 let nativeId = 0;
 let done = false;
 const callbacks = new Map();
+const timeouts = new Map();
+const intervals = new Map();
+let nextTimerId = 1000000000;
 const schedule = () => {
-    if (scheduled || flushing || done || callbacks.size === 0) return;
+    if (
+        scheduled || flushing || done ||
+        (callbacks.size === 0 && timeouts.size === 0 && intervals.size === 0)
+    ) return;
     scheduled = true;
     nativeId = nativeRaf(() => {
         scheduled = false;
@@ -594,6 +652,24 @@ const schedule = () => {
         callbacks.clear();
         for (const [id, callback] of due) {
             if (id > 0) callback(now);
+        }
+        // Native drains browser timers after the frame's render callbacks,
+        // against this same deterministic clock. Virtualize timers once the
+        // engine epoch is known so UI state and CSS-adjacent application
+        // state do not continue on wall time while rendering runs at 60 Hz.
+        const dueTimeouts = Array.from(timeouts.entries()).filter(
+            ([, timer]) => timer.due <= now
+        );
+        for (const [id, timer] of dueTimeouts) {
+            timeouts.delete(id);
+            timer.callback(...timer.args);
+        }
+        const dueIntervals = Array.from(intervals.entries()).filter(
+            ([, timer]) => timer.due <= now
+        );
+        for (const [, timer] of dueIntervals) {
+            timer.due += timer.period;
+            timer.callback(...timer.args);
         }
         if (canvas) {
             const captureFrame = engineStartFrame < 0
@@ -633,6 +709,40 @@ window.cancelAnimationFrame = (id) => {
         nativeCancelRaf(nativeId);
         scheduled = false;
     }
+};
+window.setTimeout = (callback, delay = 0, ...args) => {
+    if (engineStartFrame < 0) {
+        return nativeSetTimeout(callback, delay, ...args);
+    }
+    const id = nextTimerId++;
+    timeouts.set(id, {
+        callback: typeof callback === "function" ? callback : () => eval(callback),
+        args,
+        due: now + Math.max(0, Number(delay) || 0),
+    });
+    schedule();
+    return id;
+};
+window.clearTimeout = (id) => {
+    if (!timeouts.delete(id)) nativeClearTimeout(id);
+};
+window.setInterval = (callback, delay = 0, ...args) => {
+    if (engineStartFrame < 0) {
+        return nativeSetInterval(callback, delay, ...args);
+    }
+    const id = nextTimerId++;
+    const period = Math.max(1, Number(delay) || 0);
+    intervals.set(id, {
+        callback: typeof callback === "function" ? callback : () => eval(callback),
+        args,
+        due: now + period,
+        period,
+    });
+    schedule();
+    return id;
+};
+window.clearInterval = (id) => {
+    if (!intervals.delete(id)) nativeClearInterval(id);
 };
 Object.defineProperty(window.performance, "now", {
     configurable: true,
@@ -689,10 +799,27 @@ export async function captureSuiteReference(
                 options.fixedAnimationFrame,
             );
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
-            await hideNonCanvasChrome(page);
-            await page
-                .locator("#renderCanvas")
-                .screenshot({ path: referencePath });
+            if (captureUiEnabled()) {
+                if (options.fixedAnimationFrame !== undefined) {
+                    // requestAnimationFrame and performance.now() are pinned
+                    // by the deterministic harness above, but CSS animations
+                    // use the document timeline directly. Freeze them at the
+                    // same requested frame so animated DOM UI has a stable,
+                    // backend-comparable reference phase.
+                    await page.evaluate((elapsedMilliseconds) => {
+                        for (const animation of document.getAnimations()) {
+                            animation.pause();
+                            animation.currentTime = elapsedMilliseconds;
+                        }
+                    }, options.fixedAnimationFrame * (1000 / 60));
+                }
+                await page.screenshot({ path: referencePath });
+            } else {
+                await hideNonCanvasChrome(page);
+                await page
+                    .locator("#renderCanvas")
+                    .screenshot({ path: referencePath });
+            }
         },
     );
 }
