@@ -1097,6 +1097,71 @@ test("native method field writes alias every reference to the instance", () => {
     );
 });
 
+test("keeps structurally narrowed mutable arguments on the inline path", () => {
+    // Doom's lift stepper: the parameter is a structural narrowing of the
+    // caller's wider stored object, and the method writes through it. A
+    // once-emitted function would have to materialize the narrow record
+    // from the wide one — a copy — and the write would never reach the
+    // caller's sector. Such calls must stay inline, where the parameter
+    // aliases the caller's object by construction.
+    const result = compileSource(`
+        interface Sector { floorHeight: number; tag: number; }
+        class Manager {
+            private dirty = false;
+            step(target: { floorHeight: number }): void {
+                target.floorHeight -= 1;
+                this.dirty = true;
+            }
+            consume(): boolean {
+                const was = this.dirty;
+                this.dirty = false;
+                return was;
+            }
+        }
+        const manager = new Manager();
+        const sectors: Sector[] = [{ floorHeight: 8, tag: 1 }];
+        manager.step(sectors[0]!);
+        const moved = manager.consume() && sectors[0]!.floorHeight < 8;
+    `);
+
+    // The narrowing call did not become a namespace function, and no
+    // narrow-record copy of the sector was materialized for it.
+    assert.doesNotMatch(result.cpp, /bblscene::Manager_step\(/);
+    assert.doesNotMatch(
+        result.cpp,
+        /Manager_step\([^)]*make_shared/,
+    );
+    // The write lands on the stored sector itself, through its reference.
+    assert.match(result.cpp, /->floorHeight -= 1\.0;/);
+    // The identity rule is per-call: the sibling method with exact-typed
+    // arguments still qualifies for the once-emitted arm.
+    assert.match(result.cpp, /bblscene::Manager_consume\(/);
+});
+
+test("extracts methods whose stored-object arguments match exactly", () => {
+    const result = compileSource(`
+        interface Entry { amount: number; }
+        class Registry {
+            total = 0;
+            absorb(entry: Entry): void {
+                this.total += entry.amount;
+            }
+        }
+        const registry = new Registry();
+        const entries: Entry[] = [{ amount: 3 }, { amount: 4 }];
+        registry.absorb(entries[0]!);
+        registry.absorb(entries[1]!);
+    `);
+
+    // Same declared type on both sides: the shared pointer passes
+    // through, identity is preserved, and the method is emitted once.
+    assert.match(result.cpp, /bblscene::Registry_absorb\(/);
+    assert.equal(
+        (result.cpp.match(/total \+= /g) ?? []).length,
+        1,
+    );
+});
+
 test("keeps handle-touching methods on the inline path beside native siblings", () => {
     const result = compileSource(`
         import {

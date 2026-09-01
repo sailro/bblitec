@@ -458,6 +458,19 @@ export class NativeFunctionLowerer {
         ) {
             return undefined;
         }
+        if (
+            signature.parameters.some((parameter, index) => {
+                const argument = argumentExpressions[index];
+                return argument
+                    ? !this.argumentPreservesObjectIdentity(
+                          argument,
+                          parameter,
+                      )
+                    : false;
+            })
+        ) {
+            return undefined;
+        }
         const fieldArguments = this.instanceFieldArguments(
             signature,
             instance,
@@ -529,6 +542,42 @@ export class NativeFunctionLowerer {
             fieldArguments.push(bound.cpp);
         }
         return fieldArguments;
+    }
+
+    /**
+     * Whether passing this argument keeps the caller's JavaScript object
+     * identity through the call boundary.
+     *
+     * A reference-struct parameter aliases by value only because the
+     * shared pointer itself passes through; that holds exactly when the
+     * argument's own checker type maps to the parameter's data type. A
+     * structurally wider argument — a `Sector` for a
+     * `{ floorHeight: number }` parameter — would instead be materialized
+     * into a fresh copy by the sink conversion, and a callee write or
+     * store would then act on the copy while the caller's object never
+     * moves. Such calls do not qualify; the inline path aliases by
+     * construction, so it stays the lowering for them.
+     */
+    private argumentPreservesObjectIdentity(
+        argument: ts.Expression,
+        parameter: DataFunctionParameter,
+    ): boolean {
+        if (
+            parameter.type.kind !== "struct" ||
+            !this.context.dataTypes.isReferenceStruct(
+                parameter.type.name,
+            )
+        ) {
+            return true;
+        }
+        const argumentType = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(argument),
+            argument,
+        );
+        return (
+            argumentType !== undefined &&
+            dataTypesEqual(argumentType, parameter.type)
+        );
     }
 
     private isAddressableArgument(
