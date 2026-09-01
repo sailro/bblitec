@@ -8345,6 +8345,13 @@ bool run_gpu_engine(Engine& engine) {
                         if (draw.item.mesh.value >= engine.meshes.size()) {
                             continue;
                         }
+                        // The lists keep hidden meshes; visibility is the
+                        // pin's per-draw test, so a hidden skin streams no
+                        // palette.
+                        if (!upstream::mesh_draws(
+                                engine.meshes[draw.item.mesh.value])) {
+                            continue;
+                        }
                         const std::size_t palette_variant =
                             pinned_variant_for_draw(scene, engine, draw);
                         if (
@@ -9100,6 +9107,16 @@ bool run_gpu_engine(Engine& engine) {
                             if (
                                 draw.item_index >=
                                 state.meshes.size()) {
+                                continue;
+                            }
+                            // The pin tests visibility per draw; the
+                            // cached lists keep hidden meshes so a toggle
+                            // needs no plan rebuild.
+                            if (
+                                draw.item.mesh.value >=
+                                    engine.meshes.size() ||
+                                !upstream::mesh_draws(
+                                    engine.meshes[draw.item.mesh.value])) {
                                 continue;
                             }
                             const GpuMesh& mesh =
@@ -10676,6 +10693,14 @@ bool run_gpu_engine(Engine& engine) {
                     if (
                         draw.item_index >=
                         state.meshes.size()) {
+                        continue;
+                    }
+                    // The pin tests visibility per draw; the cached lists
+                    // keep hidden meshes so a toggle needs no plan rebuild.
+                    if (
+                        draw.item.mesh.value >= engine.meshes.size() ||
+                        !upstream::mesh_draws(
+                            engine.meshes[draw.item.mesh.value])) {
                         continue;
                     }
                     const upstream::RenderItem& item = draw.item;

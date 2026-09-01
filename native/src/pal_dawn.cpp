@@ -10421,12 +10421,11 @@ bool run_dawn_engine(Engine& engine) {
             // per DRAW and so pays nothing for one; this loop was hoisted
             // to once per plan item, which widened it. The plan keeps a
             // hidden mesh so the pick pass can see it, so the sync asks
-            // the same predicate the draw lists ask.
+            // the same per-draw predicate the renderers ask.
             //
-            // Sound because visibility can only reach the draw lists
-            // through a render_topology_version bump, and the rebuild that
-            // bump triggers runs earlier in this same frame -- so the
-            // frame a mesh starts drawing is a frame this loop writes it.
+            // Sound because both run each frame: the frame a visibility
+            // flip lets a mesh start drawing is a frame this loop already
+            // wrote it.
             const bool mesh_uniform_item =
                 upstream::mesh_draws(mesh) &&
                 item.material_kind !=
@@ -10809,6 +10808,15 @@ bool run_dawn_engine(Engine& engine) {
                 const ShaderPassMatrices& pass_matrices) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
+                    // The pin tests visibility per draw; the cached lists
+                    // keep hidden meshes so a toggle needs no plan
+                    // rebuild, and a hidden mesh gets no uniform writes.
+                    if (
+                        draw.item.mesh.value >= engine.meshes.size() ||
+                        !upstream::mesh_draws(
+                            engine.meshes[draw.item.mesh.value])) {
+                        continue;
+                    }
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
                     const bool grid_draw =
                         draw.item.material_kind ==
@@ -11392,6 +11400,14 @@ bool run_dawn_engine(Engine& engine) {
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
                 if (draw.item_index >= state.meshes.size()) continue;
+                // The pin tests visibility per draw; the cached lists keep
+                // hidden meshes so a toggle needs no plan rebuild.
+                if (
+                    draw.item.mesh.value >= engine.meshes.size() ||
+                    !upstream::mesh_draws(
+                        engine.meshes[draw.item.mesh.value])) {
+                    continue;
+                }
                 DawnMesh& mesh = state.meshes[draw.item_index];
 #if BBLITE_PBR_VARIANTS > 0
                 // Babylon's own composed stages for this draw. Everything
@@ -11764,6 +11780,15 @@ bool run_dawn_engine(Engine& engine) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
                     if (draw.item_index >= state.meshes.size()) {
+                        continue;
+                    }
+                    // The pin tests visibility per draw; the cached lists
+                    // keep hidden meshes so a toggle needs no plan
+                    // rebuild.
+                    if (
+                        draw.item.mesh.value >= engine.meshes.size() ||
+                        !upstream::mesh_draws(
+                            engine.meshes[draw.item.mesh.value])) {
                         continue;
                     }
                     const MaterialRecord* material =
@@ -12825,6 +12850,16 @@ bool run_dawn_engine(Engine& engine) {
                             if (
                                 draw.item_index >=
                                 state.meshes.size()) {
+                                continue;
+                            }
+                            // The pin tests visibility per draw; the
+                            // cached lists keep hidden meshes so a toggle
+                            // needs no plan rebuild.
+                            if (
+                                draw.item.mesh.value >=
+                                    engine.meshes.size() ||
+                                !upstream::mesh_draws(
+                                    engine.meshes[draw.item.mesh.value])) {
                                 continue;
                             }
                             [[maybe_unused]] DawnMesh& mesh =

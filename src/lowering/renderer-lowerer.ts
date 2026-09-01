@@ -1668,13 +1668,15 @@ void append_draw(
     std::uint32_t item_index,
     const RenderItem& item,
     const Engine& engine) {
-    // Tested HERE rather than where the plan is built, because the pin tests
-    // it per draw and never when choosing pick candidates: see pick_candidate
-    // above. Dropping a hidden mesh from the plan would hide it from the pick
-    // pass, which walks the plan.
-    if (!mesh_draws(engine.meshes[item.mesh.value])) {
-        return;
-    }
+    // Hidden meshes stay in the lists. The pin tests visibility per DRAW
+    // (and never when choosing pick candidates: see pick_candidate above),
+    // while these lists are cached until the next render_topology_version
+    // bump -- and setMeshVisible bumps nothing, exactly as the pin's
+    // per-frame test needs no bump. Filtering here therefore froze every
+    // later toggle: a mesh hidden at build time could never start drawing,
+    // and one hidden afterwards kept replaying its cached draw. The
+    // renderers ask mesh_draws at each upload and draw instead.
+    static_cast<void>(engine);
     RenderDrawCommand command;
     command.item_index = item_index;
     command.item = item;
