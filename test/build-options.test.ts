@@ -53,6 +53,14 @@ test("the repository manifest automatically feeds the full dev set", () => {
 test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite renderers", () => {
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     const projection = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    const systemFonts = readFileSync(
+        "native/src/pal_system_fonts.cpp",
+        "utf8",
+    );
+    const systemFontsHeader = readFileSync(
+        "native/include/bblite/pal_system_fonts.hpp",
+        "utf8",
+    );
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
     const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
     const spriteSdl = readFileSync(
@@ -74,6 +82,20 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
 
     assert.doesNotMatch(cmake, /RmlUi_Renderer_SDL_GPU\.cpp/);
     assert.doesNotMatch(projection, /RenderInterface_SDL_GPU|SDL_GPUDevice/);
+    assert.match(cmake, /src\/pal_system_fonts\.cpp/);
+    assert.match(systemFonts, /DWriteCreateFactory/);
+    assert.match(systemFonts, /CTFontDescriptorCreateWithAttributes/);
+    assert.match(systemFonts, /FcFontMatch/);
+    const fontArchitecture =
+        cmake + projection + systemFonts + systemFontsHeader;
+    assert.doesNotMatch(
+        fontArchitecture,
+        /FontChoice|std::filesystem::exists/,
+    );
+    assert.doesNotMatch(
+        fontArchitecture,
+        /["'][^"'\r\n]*(?:[\\/]fonts[\\/]|\.tt[fc]\b|\.otf\b)[^"'\r\n]*["']/i,
+    );
     assert.match(projection, /class UiRenderRecorder/);
     assert.match(projection, /record_ui_rml_frame/);
     assert.match(sdl, /render_ui_sdl_frame/);

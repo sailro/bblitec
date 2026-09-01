@@ -13,6 +13,19 @@
 
 namespace bbl::pal {
 
+/** True for live user input that must not leak into deterministic test runs. */
+inline bool is_platform_input_event(const SDL_Event& event) {
+    return
+        event.type == SDL_EVENT_KEY_DOWN ||
+        event.type == SDL_EVENT_KEY_UP ||
+        event.type == SDL_EVENT_TEXT_EDITING ||
+        event.type == SDL_EVENT_TEXT_INPUT ||
+        event.type == SDL_EVENT_MOUSE_MOTION ||
+        event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+        event.type == SDL_EVENT_MOUSE_BUTTON_UP ||
+        event.type == SDL_EVENT_MOUSE_WHEEL;
+}
+
 inline std::string keyboard_event_key(std::string_view code) {
     if (code.size() == 4u && code.substr(0u, 3u) == "Key") {
         const char letter = code[3];

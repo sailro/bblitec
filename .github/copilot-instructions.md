@@ -2,7 +2,7 @@
 
 ## Project purpose
 
-`bblitec` is an experimental compiler that lowers a reachable, statically
+`bblitec` is a compiler that lowers a reachable, statically
 analyzable subset of `@babylonjs/lite` TypeScript to C++20. The native runtime
 uses SDL3 for platform services, and renders through either SDL_GPU or Dawn —
 a scene is not integrated until it renders correctly on both.

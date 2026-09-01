@@ -5763,8 +5763,8 @@ test("lowers retained UI properties, append, removal, and dynamic attributes", (
     assert.match(result.cpp, /ui_set_attribute/);
     assert.match(result.cpp, /position:absolute/);
     assert.match(result.cpp, /left:50%;margin-left:-20px;/);
-    assert.match(result.cpp, /font-weight:600;font-size:13px;font-family:sans-serif/);
-    assert.doesNotMatch(result.cpp, /backdrop-filter|system-ui|sans-serif,sans-serif/);
+    assert.match(result.cpp, /font-weight:600;font-size:13px;font-family:system-ui/);
+    assert.doesNotMatch(result.cpp, /backdrop-filter|sans-serif,sans-serif/);
     assert.match(result.cpp, /ui_set_style_property/);
     assert.match(result.cpp, /ui_append_child/);
     assert.match(result.cpp, /ui_remove/);
@@ -5812,7 +5812,7 @@ test("preserves retained UI animations and lowers responsive font shorthands", (
 
     assert.match(
         result.cpp,
-        /font-weight:900;font-size:82px;font-family:sans-serif/,
+        /font-weight:900;font-size:82px;font-family:system-ui/,
     );
     assert.match(result.cpp, /animation:bob 3s ease-in-out infinite/);
     assert.doesNotMatch(result.cpp, /clamp\(/);
@@ -5832,6 +5832,12 @@ test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
                 "display:grid;grid-template-columns:repeat(4,18px);" +
                 "grid-template-rows:repeat(4,18px);gap:2px";
             panel.appendChild(grid);
+            for (const label of ["LONG INLINE CONTROL", "SECOND CONTROL"]) {
+                const button = document.createElement("button");
+                button.textContent = label;
+                button.style.width = "100%";
+                panel.appendChild(button);
+            }
             document.body.appendChild(panel);
         }
 
@@ -5839,7 +5845,9 @@ test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
     `);
 
     assert.match(result.cpp, /min-width:180px/);
-    assert.match(result.cpp, /;width:232\.5px/);
+    assert.match(result.cpp, /;width:180px/);
+    assert.match(result.cpp, /--bbl-intrinsic-min-width:180px/);
+    assert.doesNotMatch(result.cpp, /232\.5/);
     assert.match(result.cpp, /display:block/);
     assert.match(
         result.cpp,
@@ -6050,7 +6058,7 @@ test("lowers retained UI replaceChildren clearing", () => {
     assert.match(result.cpp, /ui_replace_children/);
 });
 
-test("lowers conditional retained UI cssText fragments", () => {
+test("lowers conditional retained UI gradients to RmlUi decorators", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
 
@@ -6069,9 +6077,11 @@ test("lowers conditional retained UI cssText fragments", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /v_lit \? "background-color:#ff8a5d;"/);
+    assert.match(
+        result.cpp,
+        /v_lit \? "decorator:linear-gradient\(#ff8a5d,#ff4d4d\);"/,
+    );
     assert.match(result.cpp, /background-color:rgba\(40,40,48,.7\)/);
-    assert.doesNotMatch(result.cpp, /linear-gradient/);
 });
 
 test("lowers numeric template substitutions in retained UI cssText", () => {
@@ -6172,6 +6182,29 @@ test("uses the first gradient colour for retained gradient text", () => {
         result.cpp,
         /linear-gradient|-webkit-color|background-clip/,
     );
+});
+
+test("lowers CSS text shadows to RmlUi glyph effects", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const label = document.createElement("div");
+            label.textContent = "GAME OVER";
+            label.style.cssText =
+                "text-shadow:3px 3px 0 #000,0 0 16px rgba(210,29,18,.8);";
+            document.body.appendChild(label);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /font-effect:shadow\(3px 3px #000\),glow\(0px 16px 0 0 rgba\(210,29,18,\.8\)\)/,
+    );
+    assert.doesNotMatch(result.cpp, /text-shadow/);
 });
 
 test("stores nullable retained UI callbacks as empty native functions", () => {

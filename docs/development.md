@@ -795,7 +795,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
 | `BBLITE_RUNTIME_TRACE=1` | print portable input dispatch, camera changes, and dynamic scene-membership rebuilds to stderr; the trace observes generated applications without modifying their source |
 | `BBLITE_INPUT_REPLAY=<actions>` | dispatch one comma-separated DOM `KeyboardEvent.code`, `WheelUp`, or `WheelDown` action per frame through the application's ordinary callbacks (`-` is an idle frame), for deterministic source-independent interaction diagnostics |
-| `BBLITE_CAPTURE_UI=1` | for a reached experimental `ui:rml` SDL_GPU or Dawn scene, include the retained native UI overlay in `BBLITE_SCREENSHOT`; ordinary parity captures remain canvas-only |
+| `BBLITE_CAPTURE_UI=0` | omit retained UI from browser and native screenshots for canvas-only attribution; canonical parity captures the full page |
 | `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
 | `BBLITE_CPU_PROFILE=1` | print SDL startup/frame phase timings and Bullet work counters without changing the scene: body/dynamic/active/moving counts, speed envelope, manifolds, cumulative contact stabilizations, pending re-adds, solver time, convex mass tuples, and applied-impulse data |
 | `BBLITE_AUDIO_CAPTURE=<path.wav>` | in a build configured with `BBLITE_AUDIO_CAPTURE=ON`, render the scene's audio graph offline instead of opening a device and write 32-bit float WAV; a build without that capability refuses the variable rather than silently ignoring it |
@@ -808,8 +808,9 @@ right/middle-drag pan, and wheel zoom. Free cameras additionally take
 
 ## Parity
 
-Corpus reference capture serves a minimal local page containing only the
-render canvas; it does not include Babylon Lite's showcase loading overlay.
+Corpus reference capture serves a deterministic 1280×720 page containing the
+render canvas and reached DOM/CSS UI; it does not include Babylon Lite's
+showcase loading overlay.
 A physics scene additionally resolves `@babylonjs/havok` to the published
 ESM module and its WASM to the pinned `lab/public` copy, so the reference
 runs the real solver; the devDependency exists for that page alone and
@@ -821,8 +822,8 @@ sources. When the generated manifest records the
 mulberry32 (seed 1) `Math.random` before the scene module loads, matching
 `bbl::js::random_js` in the native runtime.
 The gate waits for `canvas.dataset.ready`, which is set only after awaited
-asset loads, scene registration, and `startEngine`, then captures the canvas
-alone. A slow or failed load therefore times out instead of recording the
+asset loads, scene registration, and `startEngine`, then captures the full
+page. A slow or failed load therefore times out instead of recording the
 progress bar.
 For a registry scene with `referenceFrame`, the deterministic browser clock
 is zero during async initialization, starts at the engine's first render, and

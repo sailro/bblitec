@@ -11,220 +11,216 @@ Thresholds live in `src/scene-registry.ts`; run one scene with
 `npm run scene -- parity scene<ID>` or all registered parity scenes with
 `npm run scenes:parity`.
 
-Both native GPU backends are measured against the same goldens; the
-Dawn backend renders through the browser reference's own compiler and
-rasterization stack (see [backends](backends.md)). Each backend column is full-image / foreground MAD. Severity:
+Both native GPU backends are measured against the same full-page goldens,
+including reached DOM/CSS UI. Dawn renders through the browser reference's own
+compiler and rasterization stack (see [backends](backends.md)). Each backend
+column is full-image / foreground MAD. Severity:
 green below 0.500,
 $\color{#9a6700}{\textsf{yellow from 0.500 to below 1.000}}$, and
 $\color{#cf222e}{\textsf{red above 1.000}}$.
-A value in the green band prints plain; colour marks only the values
-that need attention. (GitHub stops rendering math expressions after a
-few hundred per page, so a table this size cannot colour its default
-state — the tail rows were failing to render.)
+A value in the green band prints plain; colour marks only values that need
+attention. This keeps the table within GitHub's math-rendering limit.
 
 A scene that does not reach zero carries a recorded adaptation: every
 generated scene writes a `fidelity.json` giving the source and native
 semantics side by side, with its risk and validation.
 
-**Two rows measure something else.** Scenes 40 and 100 link a different
-rigid-body solver than the golden ran, so their number is the distance between
-two solvers at a moving pose, not the distance between this port and Babylon
-Lite, and no threshold on them can be driven to zero
-([fidelity](fidelity.md#physics-contract)). They are the same pose, and the
-two goldens are byte-identical, which is what makes 100's row a measurement of
-its collision event rather than a second copy of 40's.
+Scenes 40 and 100 compare Bullet with Havok at the same moving pose, not two
+renderers over one simulation. Their byte-identical goldens make scene 100 the
+collision-event variant of scene 40
+([fidelity](fidelity.md#physics-contract)).
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
-| 1 | <img src="images/scenes/scene1.png" alt="Scene 1 BoomBox rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.007 | BoomBox glTF, IBL environment, generated PBR diagnostics |
-| 2 | <img src="images/scenes/scene2.png" alt="Scene 2 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | directional diffuse/specular on a generated Standard sphere |
-| 3 | <img src="images/scenes/scene3.png" alt="Scene 3 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | exponential `setFog`, `loadSkybox` six-face image skybox |
-| 4 | <img src="images/scenes/scene4.png" alt="Scene 4 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | an ESM directional light and a PCF spot over one Standard receiver, which declares both filters in one group. The ground is displaced from a greyscale heightmap |
-| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | GPU morph targets plus recursive GPU skeleton skinning |
-| 6 | <img src="images/scenes/scene6.png" alt="Scene 6 rendering" width="160"> | 0.001 / 0.013 | 0.001 / 0.013 | specular-glossiness sphere, solid textures, ground, DDS skybox |
-| 7 | <img src="images/scenes/scene7.png" alt="Scene 7 ChibiRex rendering" width="160"> | 0.001 / 0.010 | 0.001 / 0.010 | ChibiRex glTF, LINEAR transform tracks, IBL, ground, the pinned solid-colour skybox |
-| 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 1024-sample HDR GGX, cubemap skybox, glass alpha |
-| 9 | <img src="images/scenes/scene9.png" alt="Scene 9 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sponza `.babylon`: 24 Standard materials over six texture slots, cotangent-frame normal maps, three point lights with per-mesh light lists |
-| 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | generated sphere, no-IBL PBR, geometric normals |
-| 11 | <img src="images/scenes/scene11.png" alt="Scene 11 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | KHR_materials_pbrSpecularGlossiness: the shark's specular/glossiness pair replacing the metallic-roughness workflow, on a skinned swim cycle pinned to one second |
-| 12 | <img src="images/scenes/scene12.png" alt="Scene 12 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | three cloned skinned shader-ball rows comparing metallic-reflectance, reflectance-colour, and combined alpha-only metallic maps under rotated IBL, frozen by the pin's `?seekTime=0.5` query |
-| 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | material grid, ground, explicit occlusion |
-| 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="160"> | 0.012 / 0.006 | 0.012 / 0.006 | Flight Helmet glTF, default framing, IBL, ground, DDS skybox |
-| 15 | <img src="images/scenes/scene15.png" alt="Scene 15 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | two scene-code spot lights over a Standard ground, cone cosine and exponent falloff |
-| 16 | <img src="images/scenes/scene16.png" alt="Scene 16 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 64K thin-instanced cubes, one draw. Served bare: the scene gates GPU culling behind its own `?culling` query, which reads the bare `location` global |
-| 17 | <img src="images/scenes/scene17.png" alt="Scene 17 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | mixed PBR and Standard thin instances with per-instance colour: DDS IBL plus a file-loaded linear ORM map on the gold pair, and mirrored Standard instances under clockwise-equivalent culling. Upstream PR #518 corrected the tree-shaken BJS oracle's missing spherical-polynomial registration |
-| 18 | <img src="images/scenes/scene18.png" alt="Scene 18 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PCF spot shadows: a depth-only caster pass under the pin's standard-Z exception, and a Standard receiver sampling its map with the pin's nine-tap comparison filter |
-| 19 | <img src="images/scenes/scene19.png" alt="Scene 19 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | DDS cubemap environment compiled to harmonics and mip chain, scene-code clearcoat over IBL with the coat's base-F0 remap |
-| 20 | <img src="images/scenes/scene20.png" alt="Scene 20 rendering" width="160"> | 0.002 / 0.007 | 0.002 / 0.007 | 2,500 PBR spheres sharing 150 seeded float-emissive materials in five-node parent chains, frozen before rotation by `?seekTime=0`; F0=1 and roughness zero expose last-bit cubemap-decode differences across the mirror-like field |
-| 21 | <img src="images/scenes/scene21.png" alt="Scene 21 rendering" width="160"> | 0.330 / 0.330 | 0.330 / 0.330 | scene-code sheen under the pinned legacy model, `.env` cubemap reused as its own skybox, destructured parallel loads |
-| 22 | <img src="images/scenes/scene22.png" alt="Scene 22 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a PBR receiver over scene 4's two filters, its albedo decoded under `setPbrGammaAlbedo` and its punctual falloff the Standard-style range and spot exponent |
-| 23 | <img src="images/scenes/scene23.png" alt="Scene 23 rendering" width="160"> | 0.002 / 0.017 | 0.002 / 0.017 | scene-code PBR anisotropy over an `.env` environment, frozen at the query pose its pinned spec serves |
-| 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="160"> | 0.004 / 0.004 | 0.000 / 0.000 | Hill Valley `.babylon` geometry, textures, baked lighting; the file camera reads at the pin's JavaScript-number width |
-| 25 | <img src="images/scenes/scene25.png" alt="Scene 25 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a BC2 KTX container parsed at load by the pin's own parser and uploaded as the blocks it carries, over a tiled `uvScale` on a scene-code Standard material. Generation resolves which suffix to fetch, because the pin picks it from the device's compressed-format features |
-| 26 | <img src="images/scenes/scene26.png" alt="Scene 26 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | scene-code PBR translucency with a thickness map and specular AA, an orbiting point light frozen by the pin's `?seekTime=3` query, and mesh-bound overrides participating in default-camera framing |
-| 27 | <img src="images/scenes/scene27.png" alt="Scene 27 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `KHR_materials_variants` with a statically selected variant, `KHR_materials_specular` and IOR on both candidate materials |
-| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.007 | `KHR_materials_clearcoat` intensity, roughness, coat normals |
-| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | `KHR_materials_sheen` with `KHR_texture_transform` scaling |
-| 30 | <img src="images/scenes/scene30.png" alt="Scene 30 rendering" width="160"> | 0.007 / 0.010 | 0.003 / 0.005 | Draco-compressed geometry decoded at generation time, transmission and volume with a UV-offset transform |
-| 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | `KHR_materials_emissive_strength`, factor-only emissive |
-| 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `KHR_materials_unlit` |
-| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | 0.000 / 0.009 | 0.000 / 0.006 | `KHR_lights_punctual` falloff across opaque, transmission, BLEND |
-| 34 | <img src="images/scenes/scene34.png" alt="Scene 34 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `KHR_node_visibility` subtree cascade, `KHR_animation_pointer` visibility target |
-| 35 | <img src="images/scenes/scene35.png" alt="Scene 35 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `EXT_mesh_gpu_instancing`, default framing, camera-target destructuring |
-| 36 | <img src="images/scenes/scene36.png" alt="Scene 36 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a Basis Universal texture transcoded to BC7 by the pin's own loader at generation and packaged as KTX1, bound as both the diffuse and the emissive slot of one Standard material; its texture-object `invertY` is what flips the material's UV block |
-| 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | `EXT_texture_webp` images, per-slot texture transforms, `KHR_materials_sheen` with `KHR_materials_specular`, occlusion UV set chosen per material |
-| 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the mesh-builder gallery: cylinder, cone, plane, disc, pie slice, polyhedron, ribbon, tube and two extrusions in one frame. Each builder is the pin's own body lowered rather than transcribed, including the half of the family that GROWS a `number[]` and converts at the end -- which is where its float rounding is |
-| 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | `KHR_animation_pointer` driving node rotation and `KHR_texture_transform` offset and scale across two scrolling water surfaces |
-| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | **Not a fidelity number.** Havok sphere drop at `?captureFrame=120`. The port links Bullet, so this measures two solvers against each other, and its threshold is a regression gate on this port's own solver — [fidelity](fidelity.md#physics-contract) carries the decomposition |
-| 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a ball orbiting a 480-frame circle over a thin-instanced field, frozen at the quarter turn by the scene's own `?captureFrame=` branch on both sides. It writes `mesh.pickable` and toggles `mesh.visible` from a frame callback -- the two optional booleans a node carries for "skip me" |
-| 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 250 pure-2D sprites over a compile-time-drawn canvas2D atlas: grid frames, per-sprite tint, rotation and flip, straight-alpha blending through a SpriteRenderer with no scene |
-| 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same 250-sprite grid over soft radial-gradient edges, with decoded RGB premultiplied by alpha, the atlas record carrying that convention, and source-one premultiplied blending; its bare query folds the engine surface to the pin's explicit one-sample arm |
-| 52 | <img src="images/scenes/scene52.png" alt="Scene 52 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a pure-2D HUD renderer registered after a 3D SceneContext, loading and overlaying its icon strip, action bar and crosshair over a lit Standard sphere; `onSceneDispose` retains the renderer cleanup callback on the scene |
-| 53 | <img src="images/scenes/scene53.png" alt="Scene 53 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | depth-hosted opaque sprites in the scene pass: per-instance z at slot 13, depth test-write against two Standard boxes, and multisample alpha-to-coverage |
-| 54 | <img src="images/scenes/scene54.png" alt="Scene 54 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | camera-facing world-space billboards drawn inside the scene pass, depth-tested against Standard-material boxes, with per-sprite pivot and flip |
-| 55 | <img src="images/scenes/scene55.png" alt="Scene 55 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | three overlapping billboards under a free camera and no meshes: the back-to-front sort is the whole image, since a transparent billboard writes no depth |
-| 56 | <img src="images/scenes/scene56.png" alt="Scene 56 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | axis-locked billboards: the quad rotates only around the system's lock axis, normalised where the pin normalises it, with the basis reading that axis out of the system block |
-| 57 | <img src="images/scenes/scene57.png" alt="Scene 57 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `billboardBlendCutout` under `setAlphaToCoverage`: replacement colour with depth writes, drawn among the opaque meshes rather than after them, so the GPU resolves overlap and no sort runs |
-| 58 | <img src="images/scenes/scene58.png" alt="Scene 58 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite2D frame animation at the scene's own `?seekTime=0.72` pose: two runners looping in opposite directions and a third that finished its range and removed itself. The stepper is the pin's own timing rule, so all three land on the frame the browser landed on |
-| 59 | <img src="images/scenes/scene59.png" alt="Scene 59 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same three animations over billboard sprites in a 3D scene, which is the other family the one animation core drives -- upstream through a closure triple, here through a tagged target |
-| 60 | <img src="images/scenes/scene60.png" alt="Scene 60 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the smallest Babylon NME graph, compiled by the pin's own emitter at generation: a uniform colour block into the fragment output over the canonical world-view-projection vertex path |
-| 61 | <img src="images/scenes/scene61.png" alt="Scene 61 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a node graph carrying the transformed world normal to the fragment as colour, so the emitted stages share a varying |
-| 62 | <img src="images/scenes/scene62.png" alt="Scene 62 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `TextureBlock` sampling the image the scene's `textures` record supplies, at the group-1 pair the pin's own pipeline builder allocated for it |
-| 63 | <img src="images/scenes/scene63.png" alt="Scene 63 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a node graph shading through the scene's lights: the pin's own lights array at the group-0 slot every composed family shares, walked by the per-mesh selection the graph's mesh block carries |
-| 64 | <img src="images/scenes/scene64.png" alt="Scene 64 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a node `MorphTargetsBlock` reading the pin's uncapped delta and weight storage buffers, frozen at full influence so the sphere's vertices move one unit upward before the graph projects them |
-| 65 | <img src="images/scenes/scene65.png" alt="Scene 65 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a node graph receiving an ESM directional shadow: `emitShadow` continues the graph's OWN group-1 binding run rather than opening the composed families' group 2, mixes the factor by the `receivesShadow` uniform lane, and casts through a second module the pin re-compiles from the same bodies |
-| 66 | <img src="images/scenes/scene66.png" alt="Scene 66 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the gzip/base64-compressed 136-block full NME playground graph over eight pinned textures, frozen storage-buffer morph targets, texture-combined node alpha, and directional PCF shadow caster/receiver paths compiled from the same graph |
-| 67 | <img src="images/scenes/scene67.png" alt="Scene 67 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | the node metallic-roughness block over four lights and an `.env` environment, sampling the specular cube and BRDF LUT the material families already bind |
-| 68 | <img src="images/scenes/scene68.png" alt="Scene 68 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | the same graph with a clearcoat layer, which changes the composed arithmetic and declares no resource of its own |
-| 69 | <img src="images/scenes/scene69.png" alt="Scene 69 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | clearcoat and sheen composed together over the node PBR core |
-| 70 | <img src="images/scenes/scene70.png" alt="Scene 70 rendering" width="160"> | 0.001 / 0.021 | 0.001 / 0.021 | the anisotropy layer over the node PBR core, with a uv-carrying vertex stage |
-| 71 | <img src="images/scenes/scene71.png" alt="Scene 71 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | the subsurface layer over the node PBR core |
-| 72 | <img src="images/scenes/scene72.png" alt="Scene 72 rendering" width="160"> | 0.001 / 0.011 | 0.001 / 0.011 | the compressed 63-block full PBR-MR node graph: reflection, clearcoat with bump and tint, sheen, anisotropy, subsurface and opacity alpha-combine; eleven logical texture bindings backed by six pinned files, over four lights and a directional PCF caster |
-| 74 | <img src="images/scenes/scene74.png" alt="Scene 74 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a procedural fullscreen effect drawn straight to the swapchain: an `EffectRenderer` registered on the engine with no scene at all, over the pin's own fullscreen-triangle vertex stage |
-| 75 | <img src="images/scenes/scene75.png" alt="Scene 75 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same effect as a frame-graph task into a render target, its uniform block set once, and that target read back as a Standard diffuse texture |
-| 76 | <img src="images/scenes/scene76.png" alt="Scene 76 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | an effect sampling a texture through the descriptor's own texture/sampler pair, bound by `setEffectTexture` |
-| 77 | <img src="images/scenes/scene77.png" alt="Scene 77 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the pass-through node blocks — elbow, teleport in and out, debug — which the emitter resolves to their own input |
-| 78 | <img src="images/scenes/scene78.png" alt="Scene 78 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the scalar and vector math blocks, over a graph the module assembles at load rather than exports as a literal |
-| 79 | <img src="images/scenes/scene79.png" alt="Scene 79 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | conditions, curves, waves, spherical interpolation and the pin's own deterministic random block |
-| 80 | <img src="images/scenes/scene80.png" alt="Scene 80 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the colour blocks: converter, desaturate, gradient, posterize and replace-colour |
-| 81 | <img src="images/scenes/scene81.png" alt="Scene 81 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the UV and projection blocks -- panner, 2D rotate, tri-planar and bi-planar -- over an atlas carried as a `data:` URL and materialized by decode |
-| 82 | <img src="images/scenes/scene82.png" alt="Scene 82 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the procedural noise blocks — simplex, Voronoi, Worley and cloud — each a helper the emitter installs once at module scope |
-| 83 | <img src="images/scenes/scene83.png" alt="Scene 83 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the normal-construction graph — derivatives, height-to-normal, tangent basis, normal blend, perturb normal and ambient occlusion — composed from the scene's statically closed emitter switch, with its solid AO texture normalized into the node texture slot |
-| 84 | <img src="images/scenes/scene84.png" alt="Scene 84 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the fragment-coordinate blocks -- screen position, screen-space projection and twirl -- and `FragDepthBlock`, whose written depth is the pin's own convention and so occludes the plane behind it by that convention |
-| 85 | <img src="images/scenes/scene85.png" alt="Scene 85 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the matrix blocks: builder, transpose, splitter and determinant, with the vertex position transformed through them |
-| 87 | <img src="images/scenes/scene87.png" alt="Scene 87 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | `IridescenceBlock` and `ImageProcessingBlock` over a graph composed from another module's, with the scene's selected tone-mapping record |
-| 88 | <img src="images/scenes/scene88.png" alt="Scene 88 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a loop block accumulating colour bands, its body reading and writing the mutable storage variable the emitter routes the loop id to |
-| 89 | <img src="images/scenes/scene89.png" alt="Scene 89 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | storage read and write feeding a vec4 back through the graph outside a loop |
-| 92 | <img src="images/scenes/scene92.png" alt="Scene 92 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a per-layer custom fragment shader: the pin's own composer around the caller's WGSL body, with the `fx` block bound beside the layer's and `setSprite2DShaderParams` tinting every sprite |
-| 93 | <img src="images/scenes/scene93.png" alt="Scene 93 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same custom-shader path with an extra texture: a 256x1 colormap the scene computes, baked at generation and sampled by the caller's WGSL through the binding pair the pin splices in |
-| 94 | <img src="images/scenes/scene94.png" alt="Scene 94 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the billboard mirror of scene 92: the custom composer keeps the world-space vertex stage and adds the view distance and world position a custom body may read |
-| 95 | <img src="images/scenes/scene95.png" alt="Scene 95 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the billboard mirror of scene 93, where the palette lookup runs in the world-space stage the custom composer brings with it |
-| 96 | <img src="images/scenes/scene96.png" alt="Scene 96 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | per-sprite UV scroll: the first `setSprite2DUvOffset` widens the layer's instance layout in place, and a repeat-wrapped tile scrolls by band |
-| 97 | <img src="images/scenes/scene97.png" alt="Scene 97 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the opt-in `spriteBlendMultiply` descriptor over a non-black clear, where the sprites darken and tint the background rather than covering it |
-| 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the opt-in `billboardBlendAdditive` descriptor: overlapping billboards stack and brighten instead of occluding, over depth-tested boxes |
-| 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | opt-in bone control over a skinned glTF added entity by entity: `setBoneVisible` collapses a joint sub-tree to zero scale, and the eager bake recomposes the skin from the file's rest hierarchy with no animation running |
-| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | **Not a fidelity number,** for the reason above scene 40's row. Scene 40 plus a registered collision event: `setPhysicsBodyCollisionEventsEnabled` on the falling body and an `onPhysicsCollision` handler whose whole body erases. It is the same drop at the same pose, against a golden byte-identical to 40's, so what this row gates is the collision surface compiling and running -- the numbers beside it are 40's |
-| 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | render-target colour as a Standard diffuse texture, per-pass material override |
-| 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | no-color material views, depth targets |
-| 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | synchronous CPU picking over pure-2D sprites: reverse draw-order hit testing inverts each sprite's pivot and rotation, retains the nullable `layer` / `spriteIndex` / `u` / `v` result, and the centre hit tints index 7 gold |
-| 120 | <img src="images/scenes/scene120.png" alt="Scene 120 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | 345,217 Gaussian splats from a `.ply`: the pin's parser executed at generation, its covariance build and back-to-front counting sort folded from their own AST, and its EWA projection extracted from the bundled WGSL |
-| 125 | <img src="images/scenes/scene125.png" alt="Scene 125 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the pin's own transform bake: a cloud scaled, rotated and translated in scene code, then rewritten splat by splat so it renders identically under an identity transform. The row rewrite, the rotation decomposition it needs and the TRS reset are each folded from their own pinned declarations |
-| 126 | <img src="images/scenes/scene126.png" alt="Scene 126 rendering" width="160"> | 0.000 / 0.001 | 0.002 / 0.005 | a `GsShaderFragment` the scene declares, spliced into the splat module by the pin's own `applyGsFragments` at generation: a replacement colour at `GS_FRAGMENT_MAIN_END`, over the same cloud scene 120 draws. Its Dawn column is the upper side of a run-to-run band — the widest of the four multisampled scenes that do not render bit-identically twice |
-| 127 | <img src="images/scenes/scene127.png" alt="Scene 127 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the pinned `gsLinearDepthFragment` plugin beside `createLinearDepthMaterial`: the splat fragment recovers view depth from the projection in the pin's own UBO, and the meshes shade through a folded ShaderMaterial reading the `view` and `projection` system uniforms |
-| 128 | <img src="images/scenes/scene128.png" alt="Scene 128 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same pair with `gsAlphaBlendedDepthFragment`, whose splats keep the Gaussian alpha so the pin's alpha-combine blend accumulates a soft-edged depth image |
-| 129 | <img src="images/scenes/scene129.png" alt="Scene 129 rendering" width="160"> | 0.001 / 0.004 | 0.001 / 0.004 | GPU picking over a Gaussian cloud: the pin renders every candidate into a one-pixel target through a sheared view projection, reads the id back, and the scene keeps its ground only because the pick resolved to the cloud |
-| 141 | <img src="images/scenes/scene141.png" alt="Scene 141 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | one ESM directional map written by all three material families at once: the node graph's re-compiled caster, the Standard ESM view, and the PBR one, whose variant the caster's own material handle composes |
-| 142 | <img src="images/scenes/scene142.png" alt="Scene 142 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | four post-process passes into one target through normalized viewports: black-and-white, red/cyan anaglyph over a second camera's render task, a 128-pixel diagonal blur, and chromatic aberration |
-| 143 | <img src="images/scenes/scene143.png" alt="Scene 143 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a chained post-process graph over Sponza: two separable Gaussian blurs into chromatic aberration, each pass the pin's own composed stage |
-| 144 | <img src="images/scenes/scene144.png" alt="Scene 144 rendering" width="160"> | 0.003 / 0.018 | 0.004 / 0.020 | the bloom composite over a skinned dragon: extract-highlights, two separable blurs at half the source extent, and a merge whose `_shader` the pin writes inline in the composite's own body. The residual is the extract pass's own `step(threshold, luma)` cutoff amplifying a sub-LSB shading difference at the brightest scales |
-| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="160"> | 0.022 / 0.021 | 0.010 / 0.009 | `.babylon`, Standard geometry outputs, default anisotropy |
-| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="160"> | 0.003 / 0.003 | 0.003 / 0.003 | FreeCamera Sponza, PBR geometry outputs, 7+4 MRT composition |
-| 147 | <img src="images/scenes/scene147.png" alt="Scene 147 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the circle-of-confusion map over PowerPlant: a geometry task's normalized view depth read by the lens model, with the colour pass borrowing that task's depth attachment |
-| 148 | <img src="images/scenes/scene148.png" alt="Scene 148 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | the depth-of-field composite over PowerPlant: eight passes and seven intermediate targets built by the pin's own factory, over a 4x MSAA render resolved into the source |
-| 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | property `position.x` animation, track-derived frame rate |
-| 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | grouped position, scaling, and quaternion property animation |
-| 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | a scene-owned animation manager driving a loaded file's clips beside a camera property clip; the residual is scene 11's skinned shark pose |
-| 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | LINEAR versus STEP property interpolation |
-| 155 | <img src="images/scenes/scene155.png" alt="Scene 155 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | two clips over one `position.x` at weights 0.25 and 0.75, resolved by the pin's weighted property mixer instead of last-write-wins |
-| 156 | <img src="images/scenes/scene156.png" alt="Scene 156 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the manager's mixer-neutral cross-fade at its scene-owned `?seekTime=1.25` pose: the positive and negative property groups carry weights 0.75 and 0.25 before the weighted property mixer evaluates them |
-| 157 | <img src="images/scenes/scene157.png" alt="Scene 157 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Xbot's walk and run blended at half weight each by the pin's weighted skeleton mixer, over a 67-joint skin on the pinned palette texture |
-| 158 | <img src="images/scenes/scene158.png" alt="Scene 158 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | the additive pose mixer: an additive clip blended over a playing one by the pin's own accumulation, frozen through the scene's `?seekTime=` branch |
-| 159 | <img src="images/scenes/scene159.png" alt="Scene 159 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | scene-local WGSL shader variant, flat-color fragment |
-| 160 | <img src="images/scenes/scene160.png" alt="Scene 160 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | shader-material sampler pair bound by `setShaderTexture` |
-| 161 | <img src="images/scenes/scene161.png" alt="Scene 161 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | scene-local WGSL variant with typed custom uniforms |
-| 162 | <img src="images/scenes/scene162.png" alt="Scene 162 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | shader-material `defines` as the pin's own prelude consts |
-| 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | custom shader blend, alpha test, discard |
-| 165 | <img src="images/scenes/scene165.png" alt="Scene 165 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 512 boxes drawn as thin instances of one scene-local shader material, each at its own matrix and its own ramp colour: the pin decides a ShaderMaterial's instanced prelude from the MESH, so the lanes are settled after the entry rather than at the material |
-| 166 | <img src="images/scenes/scene166.png" alt="Scene 166 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the spot arm of the clustered field: a thousand cone lights over Sponza, culled as spheres and shaded with the pin's glTF-style smooth cone. Its container widens the light stride from two texels to three, which is what makes it a different composed fragment from 179's |
-| 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | double-sided winding through a clockwise front-face pipeline |
-| 170 | <img src="images/scenes/scene170.png" alt="Scene 170 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a Detour crowd over a navmesh built from scene primitives: the merge composes each caster's own world matrix, and the agent draws where `addAgent` snapped it |
-| 171 | <img src="images/scenes/scene171.png" alt="Scene 171 rendering" width="160"> | 0.013 / 0.028 | 0.013 / 0.028 | a crowd agent and a computed path over a glTF navmesh, at the scene's own `?freeze=1` pose: its crowd steps on the frame delta, which no two engines share, so the agent's drift is not a parity question -- the path and the debug overlay are |
-| 172 | <img src="images/scenes/scene172.png" alt="Scene 172 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a tile-cache navmesh with a cylinder and a box obstacle, at the scene's own `?freeze=1` pose: the cache re-meshes only the tiles an obstacle covers, and the path bends around both. Byte-identical, so the cache's own tiles agree with the browser's down to the polygon |
-| 173 | <img src="images/scenes/scene173.png" alt="Scene 173 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same field with the box obstacle held in a name the scene can clear. Frozen, the toggle a second later never fires, so what this measures is 172's pre-toggle state reached through a nullable obstacle handle and a re-pointed mesh name |
-| 174 | <img src="images/scenes/scene174.png" alt="Scene 174 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | three off-mesh connections baked into the navmesh, and a path that has to take one: the route jumps between platforms no walkable polygon joins. Same floor and same reason as 175 -- the recast build is the same pinned commit on both sides, so what is left is the blended overlay's rounding |
-| 175 | <img src="images/scenes/scene175.png" alt="Scene 175 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | Recast navigation raycast: the navmesh built natively by the pinned recastnavigation commit, its debug overlay, and a tube tracing the Detour hit |
-| 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | linear transmission, alpha state, IOR, volume, scene-color copy |
-| 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | scene-code `setPbrIridescence` over an `.env` environment, two scene materials under independent setters |
-| 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | `KHR_materials_iridescence`, camera-following skybox |
-| 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a thousand clustered point lights over Sponza, binned into 64x64 screen tiles and 16 depth slices every frame. The binning is the pin's own `addLightToClusters` folded from its AST, over three data textures the container owns rather than the material |
-| 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same 5e6-unit world with high-precision matrices and floating origin BOTH off -- the case where a float32 translation column loses its low bits and cube edges stair-step. Its pair is 201, and what the two prove together is the flag: the difference between them is MAD 2.335 in the browser and MAD 2.335 here |
-| 201 | <img src="images/scenes/scene201.png" alt="Scene 201 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the same scene with both on, which is the pose 202-207 already render at. Byte-exact against its own reference like 200, so the pair is two measurements of one flag rather than one measurement twice |
-| 202 | <img src="images/scenes/scene202.png" alt="Scene 202 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | large-world rendering five million units from the origin: this port bakes a mesh's TRS into its vertices, which quantizes them there, so a floating-origin scene keeps local vertices and reaches the vertex stage through an eye-relative world instead -- with the view translation zeroed, the point light rebuilt against the eye, and `vEyePosition` at the origin of that same frame |
-| 203 | <img src="images/scenes/scene203.png" alt="Scene 203 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a spot light five million units from the origin, over boxes whose own offsets are irrational: the mesh translation is kept at the pin's width, because the float32 ULP there is half a unit and a quarter-unit shift moves a silhouette |
-| 204 | <img src="images/scenes/scene204.png" alt="Scene 204 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a 5x5 thin-instance grid five million units out, with per-instance colours: the pin uploads the instance stream unoffset, so the whole eye-relative bake stays on `mesh.world` and the pool's colour lane composes the Standard family's own final-colour slot |
-| 205 | <img src="images/scenes/scene205.png" alt="Scene 205 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | facing billboards at the same scale: a sprite's anchor is a world position uploaded per instance, so it takes the eye-relative bake the mesh worlds do |
-| 206 | <img src="images/scenes/scene206.png" alt="Scene 206 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | alpha-tested cutout billboards at the same scale: the opaque upload path takes the same eye-relative anchor bake, and the mesh translations behind them stay at the pin's own double width |
-| 207 | <img src="images/scenes/scene207.png" alt="Scene 207 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PCF directional shadows at the same scale: the generator builds its light view and its caster fit against the active camera's world position, so the shadow matrix lands in the eye-relative frame the mesh worlds are packed into. It is also the first scene whose shadow-casting light is not its first light, which is what separated a composed row's light slot from a count of generators |
-| 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `KHR_xmp_json_ld` metadata on a rounded cube |
-| 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | BrainStem's skinned animation after the pin's meshopt decoder materializes its URI-less fallback buffers and the following quantization hook rewrites the decoded accessors; both backends are byte-identical, with the remaining residual confined to antialiased silhouette pixels |
-| 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="160"> | 0.014 / 0.016 | 0.010 / 0.011 | `KHR_materials_dispersion` per-RGB refraction, IOR, volume |
-| 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | GridMaterial opaque/transparent families, ordered draw lists |
-| 216 | <img src="images/scenes/scene216.png" alt="Scene 216 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | linear `setFog` mixed before tone mapping |
-| 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the public material-plugin opt-in: one scene-declared WGSL snippet spliced at the pin's own `BC` slot into a PBR sphere and a Standard box, by the pin's own bridges. The signature index rides each family's feature bits, so a plugin material composes its own variant |
-| 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | `KHR_mesh_quantization`, resolved by the pinned feature's own `preParse` at generation. The residual is one LSB over the `.env` IBL band |
-| 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a non-indexed glTF primitive, drawn unlit at a tint the scene passes: the loaded material carries no index the pin's own vertex path could reorder, and the walk that reaches it is the container flatten lowered to the loader's own mesh list |
-| 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | deterministic glTF node rotation animation |
-| 242 | <img src="images/scenes/scene242.png" alt="Scene 242 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | `KHR_animation_pointer` base color, emissive factor and emissive strength on LINEAR samplers |
-| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="160"> | 0.000 / 0.005 | 0.000 / 0.005 | MorphStressTest glTF, overlapping clips, storage-buffer morphing, uv2 occlusion |
-| 244 | <img src="images/scenes/scene244.png" alt="Scene 244 rendering" width="160"> | 0.001 / 0.011 | 0.001 / 0.011 | `KHR_animation_pointer` texture-transform rotations on two slots of one material that disagree, `KHR_materials_specular`, transmission reached from the asset |
-| 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | recursive skeleton, inverse bind matrices, GPU skinning |
-| 246 | <img src="images/scenes/scene246.png" alt="Scene 246 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | deterministic SimpleSkin glTF animation |
-| 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="160"> | 0.001 / 0.009 | 0.001 / 0.009 | `EXT_mesh_gpu_instancing` T/R/S, one native instanced draw |
-| 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | external glTF and sampler modes |
-| 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | vertex-color alpha and mask cutoff |
-| 250 | <img src="images/scenes/scene250.png" alt="Scene 250 rendering" width="160"> | 0.004 / 0.004 | 0.003 / 0.003 | VirtualCity through an imported glTF camera: the `_camera` feature's parented FreeCamera on an animated vehicle node, found by name, frozen at `?seekTime=5` |
-| 251 | <img src="images/scenes/scene251.png" alt="Scene 251 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | an `AnimationGroupMask` in Exclude mode over Xbot's walk: ten lower-body bones hold their bind pose while the hips, spine and arms swing, and `goToFrame`'s engine argument poses the group the scene had stopped |
-| 252 | <img src="images/scenes/scene252.png" alt="Scene 252 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | direct single-target morph deformation on a generated Standard sphere |
-| 253 | <img src="images/scenes/scene253.png" alt="Scene 253 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | `KHR_animation_pointer` across node transforms, punctual lights and material extensions, spot lights, 69 channels |
-| 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | signed animation sampler accessors, quaternion slerp |
-| 255 | <img src="images/scenes/scene255.png" alt="Scene 255 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | normalized integer skin-weight accessors |
-| 256 | <img src="images/scenes/scene256.png" alt="Scene 256 rendering" width="160"> | 0.000 / 0.005 | 0.000 / 0.005 | cotangent-frame normal mapping on a mesh with no TANGENT accessor |
-| 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="160"> | 0.001 / 0.005 | 0.001 / 0.005 | negative-scale hierarchy, generated normals |
-| 258 | <img src="images/scenes/scene258.png" alt="Scene 258 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | interleaved glTF vertex buffers |
-| 259 | <img src="images/scenes/scene259.png" alt="Scene 259 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | factor-only emissive material with neutral texture fallback |
-| 260 | <img src="images/scenes/scene260.png" alt="Scene 260 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | TRIANGLE_STRIP primitive mode with uint32 indices |
-| 262 | <img src="images/scenes/scene262.png" alt="Scene 262 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node-particle graph, frozen simulation baked at generation, camera-facing billboards |
-| 263 | <img src="images/scenes/scene263.png" alt="Scene 263 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node particles with gravity and colour-over-life gradients |
-| 264 | <img src="images/scenes/scene264.png" alt="Scene 264 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node particles from a sphere shape emitter |
-| 265 | <img src="images/scenes/scene265.png" alt="Scene 265 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | `EXT_lights_image_based` RGBD cubemap, BRDF LUT, SH irradiance, rotation |
-| 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="160"> | 0.009 / 0.017 | 0.009 / 0.017 | mirrored spheres, source-derived clockwise front face |
-| 267 | <img src="images/scenes/scene267.png" alt="Scene 267 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard RGBA vertex colors on a raw typed-array quad, unlit and double-sided |
-| 268 | <img src="images/scenes/scene268.png" alt="Scene 268 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | opt-in orthographic projection, aspect-derived view volume |
-| 269 | <img src="images/scenes/scene269.png" alt="Scene 269 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | world-preserving `setParent` on a mirrored glTF asset root and a matrix-declared node, recursive imported-node lookup, signed decomposition with raw-matrix handoff, and runtime winding re-resolution on a mirrored procedural PBR box |
-| 270 | <img src="images/scenes/scene270.png" alt="Scene 270 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | mirrored Standard meshes: a box mirrored before its renderable was built, one mirrored at run time, and one mirrored by an ANCESTOR transform node whose own scaling flips at frame 1. The Standard family has no winding reversal of its own, so `enableMirroredMeshes` is what installs it, and the child follows its parent because a moved node bumps the transform version its vertices were baked at |
-| 271 | <img src="images/scenes/scene271.png" alt="Scene 271 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | live spotlight and PCF-shadow topology rebuild: create a generator before adding its light, render light A, unregister and re-register with light B, rebuild receivers and shadow tasks in place, and drain the post-`startEngine` continuation before capture |
-| 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | post-registration material-family addition |
-| 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 4x-MSAA alpha-to-coverage |
-| 276 | <img src="images/scenes/scene276.png" alt="Scene 276 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node particles through a 66-cell sprite sheet |
-| 277 | <img src="images/scenes/scene277.png" alt="Scene 277 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node particles under an attractor update |
-| 278 | <img src="images/scenes/scene278.png" alt="Scene 278 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | polyline systems on the pin's line-list topology, uniform and per-point colours |
-| 279 | <img src="images/scenes/scene279.png" alt="Scene 279 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a fixed-topology line update drawn through thin instances with per-instance colours |
-| 280 | <img src="images/scenes/scene280.png" alt="Scene 280 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node particles under a flow map, whose build reads the scene camera |
-| 281 | <img src="images/scenes/scene281.png" alt="Scene 281 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | node particles under a noise-texture update |
-| 282 | <img src="images/scenes/scene282.png" alt="Scene 282 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | per-texture Standard UV transforms through `enableMaterialUvTransform` |
-| 283 | <img src="images/scenes/scene283.png" alt="Scene 283 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the exact Multiply particle blend: the pin's own private fragment, which interpolates toward white by source alpha so a transparent texel leaves the warm destination unchanged |
-| 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | MultiplyAdd: that pass followed by a stock Add pass over the same instances, two pipelines and one renderable |
-| 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the pure-2D particle bridge: NPE world XY packed into Sprite2D layers with no scene at all, one Multiply layer beside a Multiply-then-Add pair the renderer's stable order keeps adjacent |
+| 1 | <img src="images/scenes/scene1.png" alt="Scene 1 BoomBox rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.007 | BoomBox PBR |
+| 2 | <img src="images/scenes/scene2.png" alt="Scene 2 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Directional Light Sphere |
+| 3 | <img src="images/scenes/scene3.png" alt="Scene 3 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Fog Boxes |
+| 4 | <img src="images/scenes/scene4.png" alt="Scene 4 rendering" width="160"> | 0.262 / 0.262 | 0.262 / 0.262 | ESM Directional and PCF Spot Shadows |
+| 5 | <img src="images/scenes/scene5.png" alt="Scene 5 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Alien Morph and Skeleton |
+| 6 | <img src="images/scenes/scene6.png" alt="Scene 6 rendering" width="160"> | 0.001 / 0.013 | 0.001 / 0.013 | PBR Gold Sphere |
+| 7 | <img src="images/scenes/scene7.png" alt="Scene 7 ChibiRex rendering" width="160"> | 0.001 / 0.010 | 0.001 / 0.010 | ChibiRex Default Camera |
+| 8 | <img src="images/scenes/scene8.png" alt="Scene 8 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HDR Glass Sphere |
+| 9 | <img src="images/scenes/scene9.png" alt="Scene 9 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sponza |
+| 10 | <img src="images/scenes/scene10.png" alt="Scene 10 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Rough Sphere |
+| 11 | <img src="images/scenes/scene11.png" alt="Scene 11 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | Spec-Gloss Shark |
+| 12 | <img src="images/scenes/scene12.png" alt="Scene 12 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | PBR Shader Balls |
+| 13 | <img src="images/scenes/scene13.png" alt="Scene 13 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | PBR Spheres Grid |
+| 14 | <img src="images/scenes/scene14.png" alt="Scene 14 rendering" width="160"> | 0.012 / 0.006 | 0.012 / 0.006 | Flight Helmet |
+| 15 | <img src="images/scenes/scene15.png" alt="Scene 15 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Two Spot Lights |
+| 16 | <img src="images/scenes/scene16.png" alt="Scene 16 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Thin Instances |
+| 17 | <img src="images/scenes/scene17.png" alt="Scene 17 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR and Standard Thin Instances |
+| 18 | <img src="images/scenes/scene18.png" alt="Scene 18 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PCF Spotlight Shadows |
+| 19 | <img src="images/scenes/scene19.png" alt="Scene 19 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Clearcoat |
+| 20 | <img src="images/scenes/scene20.png" alt="Scene 20 rendering" width="160"> | 0.002 / 0.007 | 0.002 / 0.007 | PBR Emissive Sphere Grid |
+| 21 | <img src="images/scenes/scene21.png" alt="Scene 21 rendering" width="160"> | 0.330 / 0.330 | 0.330 / 0.330 | PBR Sheen Cloth |
+| 22 | <img src="images/scenes/scene22.png" alt="Scene 22 rendering" width="160"> | 0.232 / 0.232 | 0.232 / 0.232 | PBR Shadow Receiver |
+| 23 | <img src="images/scenes/scene23.png" alt="Scene 23 rendering" width="160"> | 0.002 / 0.017 | 0.002 / 0.017 | PBR Anisotropy |
+| 24 | <img src="images/scenes/scene24.png" alt="Scene 24 rendering" width="160"> | 0.004 / 0.004 | 0.000 / 0.000 | Hill Valley |
+| 25 | <img src="images/scenes/scene25.png" alt="Scene 25 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | KTX Compressed Texture |
+| 26 | <img src="images/scenes/scene26.png" alt="Scene 26 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Subsurface |
+| 27 | <img src="images/scenes/scene27.png" alt="Scene 27 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Variants |
+| 28 | <img src="images/scenes/scene28.png" alt="Scene 28 rendering" width="160"> | 0.001 / 0.007 | 0.001 / 0.007 | Clearcoat glTF |
+| 29 | <img src="images/scenes/scene29.png" alt="Scene 29 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | Sheen Cloth glTF |
+| 30 | <img src="images/scenes/scene30.png" alt="Scene 30 rendering" width="160"> | 0.007 / 0.010 | 0.003 / 0.005 | Volume Testing |
+| 31 | <img src="images/scenes/scene31.png" alt="Scene 31 rendering" width="160"> | 0.000 / 0.003 | 0.000 / 0.003 | Emissive Strength |
+| 32 | <img src="images/scenes/scene32.png" alt="Scene 32 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Unlit glTF |
+| 33 | <img src="images/scenes/scene33.png" alt="Scene 33 rendering" width="160"> | 0.000 / 0.009 | 0.000 / 0.006 | Punctual Lights |
+| 34 | <img src="images/scenes/scene34.png" alt="Scene 34 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Visibility |
+| 35 | <img src="images/scenes/scene35.png" alt="Scene 35 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Simple Instancing |
+| 36 | <img src="images/scenes/scene36.png" alt="Scene 36 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Basis Universal Texture |
+| 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Sheen Wood Leather Sofa |
+| 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
+| 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
+| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok sphere-drop solver delta; not a renderer-fidelity value. |
+| 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
+| 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
+| 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Soft-Edged Sprite Grid |
+| 52 | <img src="images/scenes/scene52.png" alt="Scene 52 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HUD on 3D |
+| 53 | <img src="images/scenes/scene53.png" alt="Scene 53 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Depth-Hosted Sprites |
+| 54 | <img src="images/scenes/scene54.png" alt="Scene 54 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Facing Billboards |
+| 55 | <img src="images/scenes/scene55.png" alt="Scene 55 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Field |
+| 56 | <img src="images/scenes/scene56.png" alt="Scene 56 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Axis-Locked Billboards |
+| 57 | <img src="images/scenes/scene57.png" alt="Scene 57 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cutout Billboards |
+| 58 | <img src="images/scenes/scene58.png" alt="Scene 58 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite2D Frame Animation |
+| 59 | <img src="images/scenes/scene59.png" alt="Scene 59 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprite Frame Animation |
+| 60 | <img src="images/scenes/scene60.png" alt="Scene 60 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Flat Colour |
+| 61 | <img src="images/scenes/scene61.png" alt="Scene 61 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Normal Colour |
+| 62 | <img src="images/scenes/scene62.png" alt="Scene 62 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Diffuse Texture |
+| 63 | <img src="images/scenes/scene63.png" alt="Scene 63 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Directional Light |
+| 64 | <img src="images/scenes/scene64.png" alt="Scene 64 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Morph Targets |
+| 65 | <img src="images/scenes/scene65.png" alt="Scene 65 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Material Shadow Receiver |
+| 66 | <img src="images/scenes/scene66.png" alt="Scene 66 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Full Playground |
+| 67 | <img src="images/scenes/scene67.png" alt="Scene 67 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | NME PBR Core |
+| 68 | <img src="images/scenes/scene68.png" alt="Scene 68 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | NME PBR Clearcoat |
+| 69 | <img src="images/scenes/scene69.png" alt="Scene 69 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | NME PBR Sheen |
+| 70 | <img src="images/scenes/scene70.png" alt="Scene 70 rendering" width="160"> | 0.001 / 0.021 | 0.001 / 0.021 | NME PBR Anisotropy |
+| 71 | <img src="images/scenes/scene71.png" alt="Scene 71 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | NME PBR Subsurface |
+| 72 | <img src="images/scenes/scene72.png" alt="Scene 72 rendering" width="160"> | 0.001 / 0.011 | 0.001 / 0.011 | NME PBR Full |
+| 74 | <img src="images/scenes/scene74.png" alt="Scene 74 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Effect Renderer |
+| 75 | <img src="images/scenes/scene75.png" alt="Scene 75 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Effect Render Target |
+| 76 | <img src="images/scenes/scene76.png" alt="Scene 76 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Effect Texture |
+| 77 | <img src="images/scenes/scene77.png" alt="Scene 77 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Pass-Through Blocks |
+| 78 | <img src="images/scenes/scene78.png" alt="Scene 78 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Math Blocks |
+| 79 | <img src="images/scenes/scene79.png" alt="Scene 79 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Curves and Waves |
+| 80 | <img src="images/scenes/scene80.png" alt="Scene 80 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Colour Blocks |
+| 81 | <img src="images/scenes/scene81.png" alt="Scene 81 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME UV Projection |
+| 82 | <img src="images/scenes/scene82.png" alt="Scene 82 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Procedural Noise |
+| 83 | <img src="images/scenes/scene83.png" alt="Scene 83 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Normals |
+| 84 | <img src="images/scenes/scene84.png" alt="Scene 84 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Fragment Depth |
+| 85 | <img src="images/scenes/scene85.png" alt="Scene 85 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Matrix Blocks |
+| 87 | <img src="images/scenes/scene87.png" alt="Scene 87 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | NME Iridescence and Image Processing |
+| 88 | <img src="images/scenes/scene88.png" alt="Scene 88 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Loop Block |
+| 89 | <img src="images/scenes/scene89.png" alt="Scene 89 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Storage Blocks |
+| 92 | <img src="images/scenes/scene92.png" alt="Scene 92 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Custom Shader |
+| 93 | <img src="images/scenes/scene93.png" alt="Scene 93 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Palette Shader |
+| 94 | <img src="images/scenes/scene94.png" alt="Scene 94 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Custom Shader |
+| 95 | <img src="images/scenes/scene95.png" alt="Scene 95 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Palette Shader |
+| 96 | <img src="images/scenes/scene96.png" alt="Scene 96 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite UV Scroll |
+| 97 | <img src="images/scenes/scene97.png" alt="Scene 97 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Multiply Blend |
+| 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprites |
+| 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bone Control |
+| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok collision-event solver delta; not a renderer-fidelity value. |
+| 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
+| 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | No-Color Depth Views |
+| 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 2D Sprite Picking |
+| 120 | <img src="images/scenes/scene120.png" alt="Scene 120 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting |
+| 125 | <img src="images/scenes/scene125.png" alt="Scene 125 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Transform Bake |
+| 126 | <img src="images/scenes/scene126.png" alt="Scene 126 rendering" width="160"> | 0.000 / 0.001 | 0.002 / 0.005 | Gaussian Splat Shader Plugin |
+| 127 | <img src="images/scenes/scene127.png" alt="Scene 127 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Linear Depth |
+| 128 | <img src="images/scenes/scene128.png" alt="Scene 128 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Alpha-Blended Depth |
+| 129 | <img src="images/scenes/scene129.png" alt="Scene 129 rendering" width="160"> | 0.001 / 0.004 | 0.001 / 0.004 | Gaussian Splat GPU Picking |
+| 141 | <img src="images/scenes/scene141.png" alt="Scene 141 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node, Standard and PBR ESM Casters |
+| 142 | <img src="images/scenes/scene142.png" alt="Scene 142 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Viewports |
+| 143 | <img src="images/scenes/scene143.png" alt="Scene 143 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Chain |
+| 144 | <img src="images/scenes/scene144.png" alt="Scene 144 rendering" width="160"> | 0.003 / 0.018 | 0.004 / 0.020 | Bloom |
+| 145 | <img src="images/scenes/scene145.png" alt="Scene 145 rendering" width="160"> | 0.022 / 0.021 | 0.010 / 0.009 | Standard Geometry Outputs |
+| 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="160"> | 0.003 / 0.003 | 0.003 / 0.003 | PBR Geometry Outputs |
+| 147 | <img src="images/scenes/scene147.png" alt="Scene 147 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Circle of Confusion |
+| 148 | <img src="images/scenes/scene148.png" alt="Scene 148 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | Depth of Field |
+| 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Position Animation |
+| 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Transform Animation |
+| 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | Managed Animation Groups |
+| 154 | <img src="images/scenes/scene154.png" alt="Scene 154 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | STEP Time Animation |
+| 155 | <img src="images/scenes/scene155.png" alt="Scene 155 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Weighted Property Blending |
+| 156 | <img src="images/scenes/scene156.png" alt="Scene 156 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Manual Cross-Fade Animation |
+| 157 | <img src="images/scenes/scene157.png" alt="Scene 157 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Weighted Skeleton Blending |
+| 158 | <img src="images/scenes/scene158.png" alt="Scene 158 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Additive Pose Blending |
+| 159 | <img src="images/scenes/scene159.png" alt="Scene 159 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Flat Color |
+| 160 | <img src="images/scenes/scene160.png" alt="Scene 160 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Texture Sampler |
+| 161 | <img src="images/scenes/scene161.png" alt="Scene 161 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Custom Uniforms |
+| 162 | <img src="images/scenes/scene162.png" alt="Scene 162 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Defines |
+| 163 | <img src="images/scenes/scene163.png" alt="Scene 163 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Alpha Cutout |
+| 165 | <img src="images/scenes/scene165.png" alt="Scene 165 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Material Thin Instances |
+| 166 | <img src="images/scenes/scene166.png" alt="Scene 166 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Spot Lights |
+| 168 | <img src="images/scenes/scene168.png" alt="Scene 168 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | Mirrored Double-Sided Winding |
+| 170 | <img src="images/scenes/scene170.png" alt="Scene 170 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd |
+| 171 | <img src="images/scenes/scene171.png" alt="Scene 171 rendering" width="160"> | 0.013 / 0.028 | 0.013 / 0.028 | Navigation Crowd Path |
+| 172 | <img src="images/scenes/scene172.png" alt="Scene 172 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Tile Cache Obstacles |
+| 173 | <img src="images/scenes/scene173.png" alt="Scene 173 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Toggle |
+| 174 | <img src="images/scenes/scene174.png" alt="Scene 174 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | Navigation Off-Mesh Connections |
+| 175 | <img src="images/scenes/scene175.png" alt="Scene 175 rendering" width="160"> | 0.006 / 0.023 | 0.006 / 0.023 | Navigation Raycast |
+| 176 | <img src="images/scenes/scene176.png" alt="Mosquito in Amber" width="160"> | 0.016 / 0.016 | 0.014 / 0.014 | Mosquito In Amber |
+| 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
+| 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
+| 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Lights |
+| 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |
+| 201 | <img src="images/scenes/scene201.png" alt="Scene 201 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix On |
+| 202 | <img src="images/scenes/scene202.png" alt="Scene 202 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Point Light |
+| 203 | <img src="images/scenes/scene203.png" alt="Scene 203 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Spot Light |
+| 204 | <img src="images/scenes/scene204.png" alt="Scene 204 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Thin Instances |
+| 205 | <img src="images/scenes/scene205.png" alt="Scene 205 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Facing Billboards |
+| 206 | <img src="images/scenes/scene206.png" alt="Scene 206 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Cutout Billboards |
+| 207 | <img src="images/scenes/scene207.png" alt="Scene 207 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Directional Shadows |
+| 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | XMP Metadata Rounded Cube |
+| 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | BrainStem Meshopt |
+| 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="160"> | 0.014 / 0.016 | 0.010 / 0.011 | Dispersion Test |
+| 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Grid Material Ordering |
+| 216 | <img src="images/scenes/scene216.png" alt="Scene 216 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Fog |
+| 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Plugins |
+| 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Quantized Duck |
+| 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
+| 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animated Triangle |
+| 242 | <img src="images/scenes/scene242.png" alt="Scene 242 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | Emissive Fireflies |
+| 243 | <img src="images/scenes/scene243.png" alt="Scene 243 rendering" width="160"> | 0.000 / 0.005 | 0.000 / 0.005 | Morph Stress Test |
+| 244 | <img src="images/scenes/scene244.png" alt="Scene 244 rendering" width="160"> | 0.001 / 0.011 | 0.001 / 0.011 | Pot of Coals |
+| 245 | <img src="images/scenes/scene245.png" alt="Scene 245 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Recursive Skeletons |
+| 246 | <img src="images/scenes/scene246.png" alt="Scene 246 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Simple Skin |
+| 247 | <img src="images/scenes/scene247.png" alt="Scene 247 rendering" width="160"> | 0.001 / 0.009 | 0.001 / 0.009 | Teapots Galore |
+| 248 | <img src="images/scenes/scene248.png" alt="Scene 248 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Texture Settings |
+| 249 | <img src="images/scenes/scene249.png" alt="Scene 249 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | Vertex Alpha Clip |
+| 250 | <img src="images/scenes/scene250.png" alt="Scene 250 rendering" width="160"> | 0.004 / 0.004 | 0.003 / 0.003 | VirtualCity Cameras |
+| 251 | <img src="images/scenes/scene251.png" alt="Scene 251 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animation Group Mask |
+| 252 | <img src="images/scenes/scene252.png" alt="Scene 252 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard Morph Target |
+| 253 | <img src="images/scenes/scene253.png" alt="Scene 253 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Animate All The Things |
+| 254 | <img src="images/scenes/scene254.png" alt="Scene 254 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Animation Sampler Type |
+| 255 | <img src="images/scenes/scene255.png" alt="Scene 255 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animation Skin Type |
+| 256 | <img src="images/scenes/scene256.png" alt="Scene 256 rendering" width="160"> | 0.000 / 0.005 | 0.000 / 0.005 | Normal Tangent Test |
+| 257 | <img src="images/scenes/scene257.png" alt="Scene 257 rendering" width="160"> | 0.001 / 0.005 | 0.001 / 0.005 | Node Negative Scale |
+| 258 | <img src="images/scenes/scene258.png" alt="Scene 258 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Interleaved Buffer |
+| 259 | <img src="images/scenes/scene259.png" alt="Scene 259 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Texture |
+| 260 | <img src="images/scenes/scene260.png" alt="Scene 260 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Strip Primitive |
+| 262 | <img src="images/scenes/scene262.png" alt="Scene 262 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Size |
+| 263 | <img src="images/scenes/scene263.png" alt="Scene 263 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Gravity |
+| 264 | <img src="images/scenes/scene264.png" alt="Scene 264 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Sphere Emitter |
+| 265 | <img src="images/scenes/scene265.png" alt="Scene 265 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | Environment Test |
+| 266 | <img src="images/scenes/scene266.png" alt="Scene 266 rendering" width="160"> | 0.009 / 0.017 | 0.009 / 0.017 | Negative Scale Spheres |
+| 267 | <img src="images/scenes/scene267.png" alt="Scene 267 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard Vertex Colors |
+| 268 | <img src="images/scenes/scene268.png" alt="Scene 268 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Orthographic Camera |
+| 269 | <img src="images/scenes/scene269.png" alt="Scene 269 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Mirrored Transform Reparenting |
+| 270 | <img src="images/scenes/scene270.png" alt="Scene 270 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mirrored Standard Meshes |
+| 271 | <img src="images/scenes/scene271.png" alt="Scene 271 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shadow Light Rebuild |
+| 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Material Family |
+| 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Alpha to Coverage |
+| 276 | <img src="images/scenes/scene276.png" alt="Scene 276 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite Sheet Particles |
+| 277 | <img src="images/scenes/scene277.png" alt="Scene 277 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Attractor Update |
+| 278 | <img src="images/scenes/scene278.png" alt="Scene 278 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Line System |
+| 279 | <img src="images/scenes/scene279.png" alt="Scene 279 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Line System Update |
+| 280 | <img src="images/scenes/scene280.png" alt="Scene 280 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Flow Map Update |
+| 281 | <img src="images/scenes/scene281.png" alt="Scene 281 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Noise Update |
+| 282 | <img src="images/scenes/scene282.png" alt="Scene 282 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard UV Transform |
+| 283 | <img src="images/scenes/scene283.png" alt="Scene 283 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Multiply Blend |
+| 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE MultiplyAdd Blend |
+| 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Blend Modes |
 
 ## Upstream application gates
 
@@ -236,16 +232,16 @@ parity scene intentionally does not.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | 0.093 / 0.101 | 0.093 / 0.101 | complete game loop, dynamic thin instances, custom materials, particles, keyboard and pointer input, and synthesized audio |
-| Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | multi-module game, WAD parsing, dynamic world geometry, billboard and 2D sprite systems, input, collision, animation, and buffered audio |
-| LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | playable E1M1 over 20 exact demo modules and 74 BSD-3-Clause assets: BSP/WAD2/MDL parsing, indexed textures and lightmaps, custom animated sky and lit-world shaders, live alias-model vertex updates, doors/lifts/triggers, collision, enemies, weapons, particles, pickups, keyboard/pointer input, and decoded positional audio. Ordinary parity remains canvas-only; the experimental retained-UI capture additionally lowers the unchanged WAD-backed HTML canvas HUD through RmlUi |
-| Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.078 / 0.149 | 0.078 / 0.149 | scene-less frame graph, mutable timed state, uniform effect rendering, an offscreen target, and bloom without the scene/PBR renderer |
-| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | 0.013 / 0.013 | 0.010 / 0.010 | multi-module game loop, mutable sprite pools, XML atlases, UV-scrolled parallax, custom sprite shaders, dynamic offscreen render targets, CRT composition, keyboard input, synthesized SFX, recurring look-ahead music scheduling, and live resize/maximize projection. Browser and native run the same registration-ordered 60 Hz frame 180, including the engine-render/application-RAF phase boundary; interactive RAF timestamps retain JavaScript-number precision |
-| Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | deterministic seeded boombox placement, glTF/PBR/IBL, GPU picking, runtime Voronoi fracture meshes and parenting, ESM directional shadows, convex-hull physics, mass and motion transitions, and impulses |
-| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#1a7f37}{\textsf{0.455}} / \color{#1a7f37}{\textsf{0.455}}$ | $\color{#1a7f37}{\textsf{0.455}} / \color{#1a7f37}{\textsf{0.455}}$ | multi-module driving game with 13 imported modules, cloned glTF vehicles and track pieces with external GLB textures, camera-fitted CSM shadows, collision-filtered physics with raycasts, forces, velocity and collision callbacks, decoded engine/skid/impact audio, dynamic thin-instance skid marks and colours, billboard smoke, timers, HUD/minimap, input, and vehicle swapping |
-| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.002 / 0.002 | 0.002 / 0.002 | animated 10 MB glTF diorama, PBR/IBL with a camera-following environment skybox, all imported animation groups, material lookup by glTF name, pre-start occlusion-texture replacement, deterministic auto-orbit, and interactive orbit/zoom controls |
-| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | animated skinned glTF character and bath over 22 Draco-compressed primitives, legal unsigned-short joint repacking, GPU-instanced props, WebP textures, PBR/IBL with DDS skybox and ACES image processing, scene-colour transmission/IOR, deterministic idle auto-orbit, and interactive orbit/zoom controls |
-| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.044 / 0.045 | 0.027 / 0.028 | scene-less, multi-module isometric strategy map over the exact GPLv2 Amplio2 tileset: parsed Freeciv spec atlases, deterministic CPU world generation, fifteen live sprite layers, picking and input, dynamic fog/minimap pixel textures, procedural atmosphere/water/glints/dust shaders, and a supersampled offscreen present pass. Both backends use the same hard MAD < 0.5 fidelity gate |
+| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.333}} / \color{#cf222e}{\textsf{1.004}}$ | $\color{#cf222e}{\textsf{1.333}} / \color{#cf222e}{\textsf{1.004}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
+| Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
+| LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.058 / 0.058 | 0.058 / 0.058 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
+| Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.078 / 0.150 | 0.078 / 0.150 | Frame graph; offscreen effects; bloom. |
+| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#cf222e}{\textsf{1.046}} / \color{#cf222e}{\textsf{1.046}}$ | $\color{#cf222e}{\textsf{1.044}} / \color{#cf222e}{\textsf{1.044}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.013 / 0.013, Dawn 0.010 / 0.010. |
+| Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Voronoi fracture; PBR; physics. |
+| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#cf222e}{\textsf{1.106}} / \color{#cf222e}{\textsf{1.106}}$ | $\color{#cf222e}{\textsf{1.106}} / \color{#cf222e}{\textsf{1.106}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.455 / 0.455, Dawn 0.455 / 0.455. |
+| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.161 / 0.121 | 0.161 / 0.121 | Animated glTF; PBR/IBL; retained chrome. |
+| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.134 / 0.185 | 0.134 / 0.185 | Skinned Draco/WebP glTF; transmission; retained chrome. |
+| Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.175 / 0.172 | 0.158 / 0.155 | Strategy map; sprites; picking; retained cursor/tooltips. |
 
 ## Project-owned differential gates
 
@@ -253,28 +249,26 @@ These scenes are authored in `bblitec`, but their browser reference still runs
 the same TypeScript against the pinned Babylon Lite package. Their MAD measures
 native differential fidelity; it does not represent upstream corpus coverage.
 
-They are scaffolding for contracts no measured corpus scene reaches yet — a
-feature combination the corpus does not exercise, or a slice being built up
-ahead of the scene that will use it. A gate is deleted once corpus scenes cover
-its contract.
+They cover contracts absent from the measured corpus. A corpus scene supersedes
+a project-owned gate when it reaches the same contract.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
-| light-setters | <img src="images/scenes/regression-light-setters.png" alt="Light setters rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the post-creation spot writes the corpus still does not render: `direction.set` moves the cone, `angle` recomputes its cosine, and `exponent` sharpens its falloff. Position and range writes now have corpus coverage |
-| property-animation-paths | <img src="images/scenes/regression-property-animation-paths.png" alt="Property animation paths rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the component paths a property clip can name beside the whole-lane ones the corpus measures: `position.y`/`.z`, `scaling.x`/`.z`, and a `rotationQuaternion` written one component at a time -- which the pin lerps rather than slerps, so the quaternion it composes is not unit length and the matrix carries its squared norm |
-| nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a crowd agent driven to a target and stepped 90 times at a FIXED 1/60 s, which is deterministic where a frame-delta step is not: the agent ends mid-path rather than at its spawn. Corpus 171 and 174 reach the same calls but register frozen, which folds them away |
-| nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | an obstacle removed from a tile cache and the route recomputed: the red path bends around the box, the green one takes the ground the removal gave back, and the overlay is the re-meshed tiles. Corpus 173 reaches the same calls but only inside the branch its own frozen pose folds away |
-| mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `visible` and `pickable`, each measured where ignoring it paints a different picture: a box hidden before the draw lists are built shows the one behind it; a box hidden two frames after the last membership change stays drawn, because neither the pin's bundle nor this port's plan re-reads the flag on its own; a pick through a non-pickable blocker answers the mesh behind it; and a pick through a HIDDEN box answers the hidden box, because `gpu-picker.ts` filters on `pickable` alone and never on visibility |
-| material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a PBR material read back off a mesh and written after creation: the walk guards on `mesh.material` being present, which the native handle answers with `invalid_handle`, then turns `usePhysicalLightFalloff` off -- the UBO lane every composed punctual arm selects on |
-| compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | flat-entry mutable state, pre-registration compound assignment |
-| glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | track endpoint clamping against a longer global duration |
-| shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | shader materials through a frame-graph render task |
-| runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | fixed-capacity thin-instance pools published through `flushThinInstances` and resized through `setThinInstanceCount`, the two residual mutations no registered scene or demo reaches. Scene 267 covers typed-array meshes, Scenes 16 and 279 cover `setThinInstances`, and Doom/Tetris cover `removeFromScene` |
-| instanced-ground | <img src="images/scenes/regression-instanced-ground.png" alt="Instanced ground rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | `EXT_mesh_gpu_instancing` with the requested environment ground |
-| sprite-layer-arms | <img src="images/scenes/regression-sprite-layer-arms.png" alt="Sprite layer arms rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | the full `updateSprite2DIndex` preservation matrix plus renderer-layer additions and removal after GPU records exist. Registered demos exercise ordinary updates, clears and disposal, but not those preservation cases or the live layer-list rebuild |
-| glTF-sparse | <img src="images/scenes/regression-gltf-sparse.png" alt="glTF sparse accessors rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF's core sparse accessors, materialized at packaging by the pin's own `preParse`: a quad whose positions, vertex colours and indices are all substitutions, over a degenerate base, an absent base and a run of zeros |
-| glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | texture-coordinate selection on every slot the pin's uv2 mask carries — base colour, metallic-roughness, normal, emissive — plus `KHR_texture_transform.texCoord` overriding the textureInfo's, the orm-unpack occlusion split, and the dedicated uv2 occlusion pair beside a metallic-roughness texture |
-| glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | POINTS, LINES and LINE_STRIP primitives through the pin's own `buildPrimitiveState`, beside the triangle list they draw next to — with vertex colours on each, which is the one COLOR_0 combination the corpus's six vertex-coloured assets never reach |
-| glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | STEP samplers on all four glTF channels — translation, rotation, scale and morph weights — seeked inside a span where a LINEAR reading would be halfway to the next key, with a group `speedRatio` beside them |
-| morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | storage-buffer morphing with the requested environment ground |
-| shadow-pbr-only | <img src="images/scenes/regression-shadow-pbr-only.png" alt="PBR shadows without Standard rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | a PBR receiver casting from a PBR mesh, with no Standard material anywhere: the shadow pass's standard-Z depth state reached only the Standard family |
+| light-setters | <img src="images/scenes/regression-light-setters.png" alt="Light setters rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Light Vector Setters |
+| property-animation-paths | <img src="images/scenes/regression-property-animation-paths.png" alt="Property animation paths rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Animation Paths |
+| nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Step |
+| nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
+| mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
+| material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
+| compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |
+| glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Track Clamp |
+| shader-frame-graph | <img src="images/scenes/audit-shader-frame-graph.png" alt="Shader frame graph rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shader Frame Graph |
+| runtime-sweep | <img src="images/scenes/regression-runtime-sweep.png" alt="Runtime sweep rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Sweep |
+| instanced-ground | <img src="images/scenes/regression-instanced-ground.png" alt="Instanced ground rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Instanced Ground |
+| sprite-layer-arms | <img src="images/scenes/regression-sprite-layer-arms.png" alt="Sprite layer arms rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Layer Arms |
+| glTF-sparse | <img src="images/scenes/regression-gltf-sparse.png" alt="glTF sparse accessors rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Sparse Accessors |
+| glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF UV Sets |
+| glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Primitive Topology |
+| glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
+| morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |
+| shadow-pbr-only | <img src="images/scenes/regression-shadow-pbr-only.png" alt="PBR shadows without Standard rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Shadow Receiver Without Standard |

@@ -163,8 +163,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        const bool capture_ui =
-            environment_variable("BBLITE_CAPTURE_UI") == "1";
+        const bool capture_ui = frame_options.capture_ui;
 #endif
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
@@ -177,6 +176,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                if (frame_options.test_pass && is_platform_input_event(event)) {
+                    continue;
+                }
                 bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
                 propagate_to_scene =

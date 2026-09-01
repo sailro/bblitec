@@ -1,5 +1,7 @@
 #include <bblite/pal_ui.hpp>
 #include <bblite/js_data.hpp>
+#include <bblite/pal.hpp>
+#include <bblite/pal_system_fonts.hpp>
 
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Event.h>
@@ -22,7 +24,6 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
-#include <filesystem>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -816,107 +817,97 @@ private:
     std::string event_type;
 };
 
-struct FontChoice {
-    std::filesystem::path path;
-    std::filesystem::path bold_path;
-    std::string css_family;
+/** Keep RmlUi animations on the same clock as browser-facing scene time. */
+class UiSystemInterface final : public SystemInterface_SDL {
+public:
+    explicit UiSystemInterface(SDL_Window* window)
+        : SystemInterface_SDL(window) {}
+
+    double GetElapsedTime() override {
+        return ::bbl::pal::performance_milliseconds() / 1000.0;
+    }
 };
 
-FontChoice system_ui_font() {
-#if defined(_WIN32)
-    const FontChoice candidates[] = {
-        {
-            "C:/Windows/Fonts/segoeui.ttf",
-            "C:/Windows/Fonts/segoeuib.ttf",
-            "'Segoe UI'"},
-        {
-            "C:/Windows/Fonts/arial.ttf",
-            "C:/Windows/Fonts/arialbd.ttf",
-            "Arial"},
-    };
-#elif defined(__APPLE__)
-    const FontChoice candidates[] = {
-        {
-            "/System/Library/Fonts/Supplemental/Arial.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-            "Arial"},
-        {
-            "/System/Library/Fonts/Helvetica.ttc",
-            "/System/Library/Fonts/Helvetica.ttc",
-            "Helvetica"},
-    };
-#else
-    const FontChoice candidates[] = {
-        {
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
-            "'DejaVu Sans'"},
-        {
-            "/usr/share/fonts/TTF/DejaVuSans.ttf",
-            "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf",
-            "'DejaVu Sans'"},
-    };
-#endif
-    for (const FontChoice& candidate : candidates) {
-        if (std::filesystem::exists(candidate.path)) return candidate;
+std::optional<SystemFontFace> first_system_font(
+    std::initializer_list<std::string_view> families,
+    int weight) {
+    for (const std::string_view family : families) {
+        if (auto face = find_system_font(family, weight)) return face;
     }
-    throw std::runtime_error(
-        "RmlUi could not find a supported system sans-serif font.");
+    return std::nullopt;
 }
 
-FontChoice system_monospace_font() {
+std::optional<SystemFontFace> system_ui_font(int weight) {
 #if defined(_WIN32)
-    const FontChoice candidates[] = {
-        {
-            "C:/Windows/Fonts/consola.ttf",
-            "C:/Windows/Fonts/consolab.ttf",
-            "Consolas"},
-        {
-            "C:/Windows/Fonts/cour.ttf",
-            "C:/Windows/Fonts/courbd.ttf",
-            "'Courier New'"},
-    };
+    return first_system_font({"Segoe UI", "Arial"}, weight);
 #elif defined(__APPLE__)
-    const FontChoice candidates[] = {
-        {
-            "/System/Library/Fonts/Menlo.ttc",
-            "/System/Library/Fonts/Menlo.ttc",
-            "Menlo"},
-        {
-            "/System/Library/Fonts/Supplemental/Courier New.ttf",
-            "/System/Library/Fonts/Supplemental/Courier New Bold.ttf",
-            "'Courier New'"},
-    };
+    return first_system_font(
+        {"SF Pro Text", "Helvetica Neue", "Arial"},
+        weight);
 #else
-    const FontChoice candidates[] = {
-        {
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-            "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf",
-            "'DejaVu Sans Mono'"},
-        {
-            "/usr/share/fonts/TTF/DejaVuSansMono.ttf",
-            "/usr/share/fonts/TTF/DejaVuSansMono-Bold.ttf",
-            "'DejaVu Sans Mono'"},
-    };
+    return find_system_font("sans-serif", weight);
 #endif
-    for (const FontChoice& candidate : candidates) {
-        if (std::filesystem::exists(candidate.path)) return candidate;
-    }
-    return {};
 }
 
-std::vector<std::filesystem::path> system_ui_fallback_fonts() {
+std::optional<SystemFontFace> generic_sans_font(int weight) {
 #if defined(_WIN32)
-    return {"C:/Windows/Fonts/seguisym.ttf"};
+    return first_system_font({"Arial", "Segoe UI"}, weight);
 #elif defined(__APPLE__)
-    return {
-        "/System/Library/Fonts/Apple Symbols.ttf",
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf"};
+    return first_system_font({"Arial", "Helvetica Neue"}, weight);
 #else
-    return {
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/TTF/DejaVuSans.ttf"};
+    return find_system_font("sans-serif", weight);
 #endif
+}
+
+std::optional<SystemFontFace> system_monospace_font(int weight) {
+#if defined(_WIN32)
+    return first_system_font({"Consolas", "Courier New"}, weight);
+#elif defined(__APPLE__)
+    return first_system_font({"Menlo", "Courier New"}, weight);
+#else
+    return find_system_font("monospace", weight);
+#endif
+}
+
+std::optional<SystemFontFace> system_ui_fallback_font() {
+#if defined(_WIN32)
+    return find_system_font("Segoe UI Symbol", 400);
+#elif defined(__APPLE__)
+    return first_system_font({"Apple Symbols", "Arial Unicode MS"}, 400);
+#else
+    return first_system_font(
+        {"Noto Sans Symbols 2", "Noto Sans Symbols", "sans-serif"},
+        400);
+#endif
+}
+
+std::string quote_css_font_family(std::string family) {
+    if (family.find_first_of(" \t'\"\\") == std::string::npos) return family;
+    std::string quoted = "\"";
+    quoted.reserve(family.size() + 2);
+    for (const char character : family) {
+        if (character == '\\' || character == '\"') quoted += '\\';
+        quoted += character;
+    }
+    return quoted + "\"";
+}
+
+void load_rml_font(
+    const SystemFontFace& face,
+    std::string_view registered_family,
+    int weight,
+    bool fallback = false) {
+    if (!Rml::LoadFontFace(
+            face.path.string(),
+            std::string(registered_family),
+            Rml::Style::FontStyle::Normal,
+            static_cast<Rml::Style::FontWeight>(weight),
+            fallback,
+            face.face_index)) {
+        throw std::runtime_error(
+            "RmlUi failed to load discovered font face: " +
+            face.path.string());
+    }
 }
 
 void replace_all(
@@ -1083,11 +1074,17 @@ std::string take_grid_children_style(std::string& style) {
         ";margin-left:auto;margin-right:auto;";
 }
 
-struct TextShadow {
-    std::string offset_x;
-    std::string offset_y;
-    std::string color;
-};
+std::string take_intrinsic_min_width(std::string& style) {
+    return take_css_declaration(style, "--bbl-intrinsic-min-width");
+}
+
+bool is_inline_level(Rml::Style::Display display) {
+    return
+        display == Rml::Style::Display::Inline ||
+        display == Rml::Style::Display::InlineBlock ||
+        display == Rml::Style::Display::InlineFlex ||
+        display == Rml::Style::Display::InlineTable;
+}
 
 struct GradientTextColor {
     double red = 0.0;
@@ -1098,8 +1095,7 @@ struct GradientTextColor {
 struct GradientTextStyle {
     std::string palette;
     std::string duration;
-    std::string stroke_width;
-    std::string stroke_color;
+    std::string scale;
 
     bool operator==(const GradientTextStyle&) const = default;
 };
@@ -1108,8 +1104,7 @@ GradientTextStyle take_gradient_text_style(std::string& style) {
     return {
         take_css_declaration(style, "--bbl-text-gradient"),
         take_css_declaration(style, "--bbl-text-gradient-duration"),
-        take_css_declaration(style, "--bbl-text-stroke-width"),
-        take_css_declaration(style, "--bbl-text-stroke-color")};
+        take_css_declaration(style, "--bbl-text-gradient-scale")};
 }
 
 std::vector<GradientTextColor> gradient_text_colors(
@@ -1142,70 +1137,6 @@ std::vector<GradientTextColor> gradient_text_colors(
         if (end == std::string_view::npos) break;
         start = end + 1;
     }
-    return result;
-}
-
-std::optional<TextShadow> first_text_shadow(std::string_view style) {
-    const std::size_t property = style.find("text-shadow:");
-    if (property == std::string_view::npos) return std::nullopt;
-    const std::size_t value_begin = property + 12;
-    const std::size_t value_end = style.find(';', value_begin);
-    std::istringstream tokens{std::string(
-        style.substr(value_begin, value_end - value_begin))};
-    std::string offset_x;
-    std::string offset_y;
-    std::string third;
-    std::string fourth;
-    tokens >> offset_x >> offset_y >> third >> fourth;
-    if (offset_x.empty() || offset_y.empty() || third.empty()) {
-        return std::nullopt;
-    }
-    std::string color =
-        third.starts_with('#') || third.starts_with("rgb")
-        ? third
-        : fourth;
-    if (color.empty()) return std::nullopt;
-    if (color.starts_with("rgb")) {
-        const std::size_t close = color.find(')');
-        if (close != std::string::npos) color.resize(close + 1);
-    } else if (const std::size_t comma = color.find(',');
-               comma != std::string::npos) {
-        color.resize(comma);
-    }
-    return TextShadow{
-        std::move(offset_x),
-        std::move(offset_y),
-        std::move(color)};
-}
-
-std::string scaled_css_alpha(std::string_view color, double scale) {
-    int red = 0;
-    int green = 0;
-    int blue = 0;
-    int alpha = 0;
-    const std::string source(color);
-    if (
-        std::sscanf(
-            source.c_str(),
-            "rgba(%d,%d,%d,%d)",
-            &red,
-            &green,
-            &blue,
-            &alpha) != 4) {
-        return source;
-    }
-    char result[64]{};
-    std::snprintf(
-        result,
-        sizeof(result),
-        "rgba(%d,%d,%d,%d)",
-        red,
-        green,
-        blue,
-        static_cast<int>(std::clamp(
-            std::lround(alpha * scale),
-            0l,
-            255l)));
     return result;
 }
 
@@ -1512,6 +1443,7 @@ struct ProjectedUiElement {
     std::unordered_map<std::string, std::string> style_properties;
     std::string resolved_style;
     std::string grid_children_style;
+    std::string intrinsic_min_width;
     bool text_wrapped = false;
     bool click_listener_attached = false;
     std::unordered_map<std::string, bool> event_listeners_attached;
@@ -1767,6 +1699,156 @@ public:
         delete reinterpret_cast<Texture*>(handle);
     }
 
+    Rml::CompiledShaderHandle CompileShader(
+        const Rml::String& name,
+        const Rml::Dictionary& parameters) override {
+        auto shader = std::make_unique<GradientShader>();
+        const bool repeating = Rml::Get(parameters, "repeating", false);
+
+        if (name == "linear-gradient") {
+            shader->function = repeating
+                ? GradientFunction::repeating_linear
+                : GradientFunction::linear;
+            shader->p = Rml::Get(parameters, "p0", Rml::Vector2f{0.0f});
+            shader->v =
+                Rml::Get(parameters, "p1", Rml::Vector2f{0.0f}) - shader->p;
+        } else if (name == "radial-gradient") {
+            shader->function = repeating
+                ? GradientFunction::repeating_radial
+                : GradientFunction::radial;
+            shader->p = Rml::Get(
+                parameters,
+                "center",
+                Rml::Vector2f{0.0f});
+            const Rml::Vector2f radius = Rml::Get(
+                parameters,
+                "radius",
+                Rml::Vector2f{1.0f});
+            shader->v = {
+                std::abs(radius.x) > 1e-7f ? 1.0f / radius.x : 0.0f,
+                std::abs(radius.y) > 1e-7f ? 1.0f / radius.y : 0.0f};
+        } else if (name == "conic-gradient") {
+            shader->function = repeating
+                ? GradientFunction::repeating_conic
+                : GradientFunction::conic;
+            shader->p = Rml::Get(
+                parameters,
+                "center",
+                Rml::Vector2f{0.0f});
+            const float angle = Rml::Get(parameters, "angle", 0.0f);
+            shader->v = {std::cos(angle), std::sin(angle)};
+        } else {
+            return {};
+        }
+
+        const auto stops = parameters.find("color_stop_list");
+        if (
+            stops == parameters.end() ||
+            stops->second.GetType() != Rml::Variant::COLORSTOPLIST) {
+            return {};
+        }
+        const Rml::ColorStopList& stop_list =
+            stops->second.GetReference<Rml::ColorStopList>();
+        shader->stop_positions.reserve(stop_list.size());
+        shader->stop_colors.reserve(stop_list.size());
+        for (const Rml::ColorStop& stop : stop_list) {
+            if (stop.position.unit != Rml::Unit::NUMBER) return {};
+            shader->stop_positions.push_back(stop.position.number);
+            shader->stop_colors.push_back(stop.color);
+        }
+        if (shader->stop_positions.empty()) return {};
+        return reinterpret_cast<Rml::CompiledShaderHandle>(shader.release());
+    }
+
+    void RenderShader(
+        Rml::CompiledShaderHandle shader_handle,
+        Rml::CompiledGeometryHandle geometry_handle,
+        Rml::Vector2f translation,
+        Rml::TextureHandle) override {
+        if (!shader_handle || !geometry_handle) return;
+        auto& shader = *reinterpret_cast<GradientShader*>(shader_handle);
+        const Geometry& source =
+            *reinterpret_cast<const Geometry*>(geometry_handle);
+        if (source.vertices.empty() || source.indices.empty()) return;
+
+        Rml::Vector2f minimum = source.vertices.front().tex_coord;
+        Rml::Vector2f maximum = minimum;
+        for (const Rml::Vertex& vertex : source.vertices) {
+            minimum.x = std::min(minimum.x, vertex.tex_coord.x);
+            minimum.y = std::min(minimum.y, vertex.tex_coord.y);
+            maximum.x = std::max(maximum.x, vertex.tex_coord.x);
+            maximum.y = std::max(maximum.y, vertex.tex_coord.y);
+        }
+        const Rml::Vector2f extent = maximum - minimum;
+        const std::uint32_t width = static_cast<std::uint32_t>(std::clamp(
+            std::ceil(std::abs(extent.x)),
+            1.0f,
+            4096.0f));
+        const std::uint32_t height = static_cast<std::uint32_t>(std::clamp(
+            std::ceil(std::abs(extent.y)),
+            1.0f,
+            4096.0f));
+
+        if (
+            !shader.texture || shader.minimum != minimum ||
+            shader.maximum != maximum || shader.width != width ||
+            shader.height != height) {
+            if (shader.texture) ReleaseTexture(shader.texture);
+            std::vector<Rml::byte> pixels(
+                static_cast<std::size_t>(width) * height * 4);
+            for (std::uint32_t y = 0; y < height; ++y) {
+                for (std::uint32_t x = 0; x < width; ++x) {
+                    const Rml::Vector2f coordinate{
+                        minimum.x +
+                            (static_cast<float>(x) + 0.5f) * extent.x /
+                                static_cast<float>(width),
+                        minimum.y +
+                            (static_cast<float>(y) + 0.5f) * extent.y /
+                                static_cast<float>(height)};
+                    const Rml::ColourbPremultiplied color =
+                        sample_gradient(shader, coordinate);
+                    const std::size_t offset =
+                        (static_cast<std::size_t>(y) * width + x) * 4;
+                    pixels[offset] = color.red;
+                    pixels[offset + 1] = color.green;
+                    pixels[offset + 2] = color.blue;
+                    pixels[offset + 3] = color.alpha;
+                }
+            }
+            shader.texture = GenerateTexture(
+                pixels,
+                Rml::Vector2i{
+                    static_cast<int>(width),
+                    static_cast<int>(height)});
+            shader.minimum = minimum;
+            shader.maximum = maximum;
+            shader.width = width;
+            shader.height = height;
+        }
+
+        Geometry geometry = source;
+        for (Rml::Vertex& vertex : geometry.vertices) {
+            vertex.tex_coord = {
+                std::abs(extent.x) > 1e-7f
+                    ? (vertex.tex_coord.x - minimum.x) / extent.x
+                    : 0.5f,
+                std::abs(extent.y) > 1e-7f
+                    ? (vertex.tex_coord.y - minimum.y) / extent.y
+                    : 0.5f};
+        }
+        RenderGeometry(
+            reinterpret_cast<Rml::CompiledGeometryHandle>(&geometry),
+            translation,
+            shader.texture);
+    }
+
+    void ReleaseShader(Rml::CompiledShaderHandle shader_handle) override {
+        auto* shader = reinterpret_cast<GradientShader*>(shader_handle);
+        if (!shader) return;
+        if (shader->texture) ReleaseTexture(shader->texture);
+        delete shader;
+    }
+
     void EnableScissorRegion(bool enable) override {
         scissor_enabled = enable;
     }
@@ -1801,6 +1883,89 @@ private:
         std::uint32_t height = 0;
     };
 
+    enum class GradientFunction {
+        linear,
+        radial,
+        conic,
+        repeating_linear,
+        repeating_radial,
+        repeating_conic,
+    };
+
+    struct GradientShader {
+        GradientFunction function = GradientFunction::linear;
+        Rml::Vector2f p{};
+        Rml::Vector2f v{};
+        std::vector<float> stop_positions;
+        std::vector<Rml::ColourbPremultiplied> stop_colors;
+        Rml::TextureHandle texture{};
+        Rml::Vector2f minimum{};
+        Rml::Vector2f maximum{};
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
+    };
+
+    static Rml::ColourbPremultiplied sample_gradient(
+        const GradientShader& shader,
+        Rml::Vector2f coordinate) {
+        float amount = 0.0f;
+        const Rml::Vector2f offset = coordinate - shader.p;
+        switch (shader.function) {
+            case GradientFunction::linear:
+            case GradientFunction::repeating_linear: {
+                const float squared_length =
+                    shader.v.x * shader.v.x + shader.v.y * shader.v.y;
+                if (squared_length > 1e-7f) {
+                    amount =
+                        (shader.v.x * offset.x + shader.v.y * offset.y) /
+                        squared_length;
+                }
+                break;
+            }
+            case GradientFunction::radial:
+            case GradientFunction::repeating_radial:
+                amount = std::sqrt(
+                    shader.v.x * offset.x * shader.v.x * offset.x +
+                    shader.v.y * offset.y * shader.v.y * offset.y);
+                break;
+            case GradientFunction::conic:
+            case GradientFunction::repeating_conic: {
+                const float x =
+                    shader.v.x * offset.x + shader.v.y * offset.y;
+                const float y =
+                    -shader.v.y * offset.x + shader.v.x * offset.y;
+                amount = 0.5f +
+                    std::atan2(-x, y) /
+                        (2.0f * std::numbers::pi_v<float>);
+                break;
+            }
+        }
+
+        if (
+            shader.function == GradientFunction::repeating_linear ||
+            shader.function == GradientFunction::repeating_radial ||
+            shader.function == GradientFunction::repeating_conic) {
+            const float begin = shader.stop_positions.front();
+            const float period = shader.stop_positions.back() - begin;
+            if (std::abs(period) > 1e-7f) {
+                amount = begin + std::fmod(std::fmod(amount - begin, period) + period, period);
+            }
+        }
+
+        Rml::ColourbPremultiplied color = shader.stop_colors.front();
+        for (std::size_t index = 1; index < shader.stop_colors.size(); ++index) {
+            const float begin = shader.stop_positions[index - 1];
+            const float end = shader.stop_positions[index];
+            float factor = amount >= end ? 1.0f : 0.0f;
+            if (std::abs(end - begin) > 1e-7f) {
+                factor = std::clamp((amount - begin) / (end - begin), 0.0f, 1.0f);
+            }
+            color = Rml::Math::RoundedLerp(
+                factor, color, shader.stop_colors[index]);
+        }
+        return color;
+    }
+
     Rml::Rectanglei scissor{};
     Rml::Matrix4f transform = Rml::Matrix4f::Identity();
     std::uint64_t next_texture_id = 1;
@@ -1827,66 +1992,102 @@ struct UiRmlRuntime {
             }
             initialized = true;
 
-            const FontChoice font = system_ui_font();
-            if (!Rml::LoadFontFace(font.path.string())) {
+            const std::optional<SystemFontFace> system_regular =
+                system_ui_font(400);
+            if (!system_regular) {
                 throw std::runtime_error(
-                    "RmlUi failed to load UI font: " + font.path.string());
+                    "The platform font service could not resolve system-ui.");
             }
-            if (
-                !font.bold_path.empty() &&
-                std::filesystem::exists(font.bold_path) &&
-                !Rml::LoadFontFace(font.bold_path.string())) {
-                throw std::runtime_error(
-                    "RmlUi failed to load bold UI font: " +
-                    font.bold_path.string());
+            const std::string system_family = system_regular->family;
+            const auto load_system_weight = [
+                &system_family](int resolved_weight, int registered_weight) {
+                const std::optional<SystemFontFace> face =
+                    find_system_font(system_family, resolved_weight);
+                if (!face) {
+                    throw std::runtime_error(
+                        "The platform font service could not resolve '" +
+                        system_family + "' at weight " +
+                        std::to_string(resolved_weight) + ".");
+                }
+                load_rml_font(
+                    *face,
+                    system_family,
+                    registered_weight);
+            };
+            load_rml_font(*system_regular, system_family, 400);
+            load_system_weight(700, 700);
+            // Chromium's Windows system-ui mapping selects Segoe UI
+            // Semibold for weights 500/600 and Segoe UI Black for 800/900.
+            // RmlUi otherwise picks the nearest face by numeric distance.
+            load_system_weight(600, 500);
+            load_system_weight(600, 600);
+            load_system_weight(900, 800);
+            load_system_weight(900, 900);
+            if (const auto fallback = system_ui_fallback_font();
+                fallback &&
+                (fallback->path != system_regular->path ||
+                 fallback->face_index != system_regular->face_index)) {
+                load_rml_font(*fallback, fallback->family, 400, true);
             }
-            for (const std::filesystem::path& fallback :
-                 system_ui_fallback_fonts()) {
-                if (
-                    std::filesystem::exists(fallback) &&
-                    !Rml::LoadFontFace(fallback.string(), true)) {
+            css_font_family = quote_css_font_family(system_family);
+
+            const std::optional<SystemFontFace> sans_regular =
+                generic_sans_font(400);
+            if (!sans_regular || sans_regular->family == system_family) {
+                css_sans_family = css_font_family;
+            } else {
+                load_rml_font(
+                    *sans_regular,
+                    sans_regular->family,
+                    400);
+                const auto sans_bold =
+                    find_system_font(sans_regular->family, 700);
+                if (!sans_bold) {
                     throw std::runtime_error(
-                        "RmlUi failed to load fallback UI font: " +
-                        fallback.string());
+                        "The platform font service could not resolve bold '" +
+                        sans_regular->family + "'.");
                 }
+                load_rml_font(*sans_bold, sans_regular->family, 700);
+                css_sans_family =
+                    quote_css_font_family(sans_regular->family);
             }
-            css_font_family = font.css_family;
-            const FontChoice monospace_font = system_monospace_font();
-            if (!monospace_font.path.empty()) {
-                if (!Rml::LoadFontFace(monospace_font.path.string())) {
+
+            const std::optional<SystemFontFace> monospace_regular =
+                system_monospace_font(400);
+            if (monospace_regular) {
+                load_rml_font(
+                    *monospace_regular,
+                    monospace_regular->family,
+                    400);
+                const auto monospace_bold =
+                    find_system_font(monospace_regular->family, 700);
+                if (!monospace_bold) {
                     throw std::runtime_error(
-                        "RmlUi failed to load monospace UI font: " +
-                        monospace_font.path.string());
+                        "The platform font service could not resolve bold '" +
+                        monospace_regular->family + "'.");
                 }
-                if (
-                    !monospace_font.bold_path.empty() &&
-                    std::filesystem::exists(monospace_font.bold_path) &&
-                    !Rml::LoadFontFace(
-                        monospace_font.bold_path.string())) {
-                    throw std::runtime_error(
-                        "RmlUi failed to load bold monospace UI font: " +
-                        monospace_font.bold_path.string());
-                }
-                css_monospace_family = monospace_font.css_family;
+                load_rml_font(
+                    *monospace_bold,
+                    monospace_regular->family,
+                    700);
+                css_monospace_family =
+                    quote_css_font_family(monospace_regular->family);
             } else {
                 css_monospace_family = css_font_family;
             }
-#if defined(_WIN32)
+
             // Doom names Courier New explicitly rather than relying on the
-            // generic monospace face. Load that browser-visible family even
-            // when the generic system choice above is Consolas.
-            for (const std::filesystem::path& courier : {
-                     std::filesystem::path("C:/Windows/Fonts/cour.ttf"),
-                     std::filesystem::path("C:/Windows/Fonts/courbd.ttf")}) {
-                if (
-                    std::filesystem::exists(courier) &&
-                    !Rml::LoadFontFace(courier.string())) {
-                    throw std::runtime_error(
-                        "RmlUi failed to load Courier New UI font: " +
-                        courier.string());
+            // generic monospace face. Load it when the platform exposes it.
+            if (const auto courier = find_system_font("Courier New", 400);
+                courier &&
+                (!monospace_regular ||
+                 courier->family != monospace_regular->family)) {
+                load_rml_font(*courier, "Courier New", 400);
+                if (const auto courier_bold =
+                        find_system_font("Courier New", 700)) {
+                    load_rml_font(*courier_bold, "Courier New", 700);
                 }
             }
-#endif
             context = Rml::CreateContext(
                 "bblite-ui",
                 Rml::Vector2i{
@@ -1912,6 +2113,7 @@ struct UiRmlRuntime {
             sync_tree();
             update_gradient_text();
             context->Update();
+            update_intrinsic_widths();
         } catch (...) {
             if (initialized) {
                 Rml::Shutdown();
@@ -1933,15 +2135,19 @@ struct UiRmlRuntime {
         }
     }
 
-    void update_density_ratio() {
+    bool update_density_ratio() {
         const float display_scale = SDL_GetWindowDisplayScale(window);
-        context->SetDensityIndependentPixelRatio(
-            display_scale > 0.0f ? display_scale : 1.0f);
+        const float next_density_ratio =
+            display_scale > 0.0f ? display_scale : 1.0f;
+        if (density_ratio == next_density_ratio) return false;
+        density_ratio = next_density_ratio;
+        context->SetDensityIndependentPixelRatio(density_ratio);
+        return true;
     }
 
     std::string project_css(std::string value) const {
         replace_all(value, "system-ui", css_font_family);
-        replace_all(value, "sans-serif", css_font_family);
+        replace_all(value, "sans-serif", css_sans_family);
         replace_all(value, "ui-monospace", css_monospace_family);
         replace_all(value, "monospace", css_monospace_family);
         value = rml_css_animation_easing(std::move(value));
@@ -2064,8 +2270,7 @@ struct UiRmlRuntime {
         }
         if (
             !record.text.empty() &&
-            (first_text_shadow(style) ||
-             style.find("--bbl-text-gradient:") != std::string::npos) &&
+            style.find("--bbl-text-gradient:") != std::string::npos &&
             style.find("position:") == std::string::npos) {
             append("position:relative;");
         }
@@ -2090,65 +2295,19 @@ struct UiRmlRuntime {
         ProjectedUiElement& projected,
         Rml::Element& parent,
         const std::string& text,
-        bool wrapped,
-        const std::string& resolved_style) {
-        const std::optional<TextShadow> shadow =
-            first_text_shadow(resolved_style);
+        bool wrapped) {
         projected.gradient_text_elements.clear();
         projected.gradient_text_colors = ::bbl::pal::gradient_text_colors(
             projected.gradient_text_style.palette);
         const bool gradient_text =
             projected.gradient_text_colors.size() > 1;
-        if (!wrapped && !shadow && !gradient_text) {
+        if (!wrapped && !gradient_text) {
             parent.AppendChild(document->CreateTextNode(text));
             return;
         }
 
-        const auto append_duplicate = [this, &parent, &text](
-                                          const std::string& left,
-                                          const std::string& top,
-                                          const std::string& color) {
-            Rml::ElementPtr duplicate = document->CreateElement("span");
-            duplicate->SetAttribute(
-                "style",
-                "position:absolute;left:" + left + ";top:" + top +
-                    ";color:" + color +
-                    ";white-space:nowrap;pointer-events:none;");
-            duplicate->AppendChild(document->CreateTextNode(text));
-            parent.AppendChild(std::move(duplicate));
-        };
-        if (shadow) {
-            append_duplicate(
-                shadow->offset_x,
-                shadow->offset_y,
-                shadow->color);
-        }
-        if (
-            gradient_text &&
-            !projected.gradient_text_style.stroke_width.empty() &&
-            !projected.gradient_text_style.stroke_color.empty()) {
-            const std::string& width =
-                projected.gradient_text_style.stroke_width;
-            const std::string negative_width = width.starts_with('-')
-                ? width.substr(1)
-                : "-" + width;
-            // Eight displaced copies approximate the browser's continuous
-            // outline. Attenuate each copy so their overlapping alpha does
-            // not turn a 50%-black stroke into an opaque, overly punchy one.
-            const std::string color = scaled_css_alpha(
-                projected.gradient_text_style.stroke_color,
-                0.35);
-            append_duplicate(negative_width, "0", color);
-            append_duplicate(width, "0", color);
-            append_duplicate("0", negative_width, color);
-            append_duplicate("0", width, color);
-            append_duplicate(negative_width, negative_width, color);
-            append_duplicate(width, negative_width, color);
-            append_duplicate(negative_width, width, color);
-            append_duplicate(width, width, color);
-        }
         Rml::ElementPtr wrapper = document->CreateElement("span");
-        if (shadow || gradient_text) {
+        if (gradient_text) {
             wrapper->SetAttribute(
                 "style",
                 "position:relative;white-space:nowrap;");
@@ -2225,6 +2384,8 @@ struct UiRmlRuntime {
                 projected_attribute_value(name, source_value));
         }
         projected.resolved_style = resolved_style_attribute(record);
+        projected.intrinsic_min_width =
+            take_intrinsic_min_width(projected.resolved_style);
         projected.grid_children_style =
             take_grid_children_style(projected.resolved_style);
         projected.gradient_text_style =
@@ -2245,8 +2406,7 @@ struct UiRmlRuntime {
                 projected,
                 *raw,
                 record.text,
-                projected.text_wrapped,
-                projected.resolved_style);
+                projected.text_wrapped);
         }
         projected.text = record.text;
         projected.inner_rml = record.inner_rml;
@@ -2317,6 +2477,8 @@ struct UiRmlRuntime {
             }
         }
         std::string resolved_style = resolved_style_attribute(record);
+        const std::string intrinsic_min_width =
+            take_intrinsic_min_width(resolved_style);
         const std::string grid_children_style =
             take_grid_children_style(resolved_style);
         const GradientTextStyle gradient_text_style =
@@ -2325,6 +2487,11 @@ struct UiRmlRuntime {
             projected.gradient_text_style != gradient_text_style;
         const bool resolved_style_changed =
             projected.resolved_style != resolved_style;
+        if (
+            !projected.intrinsic_min_width.empty() &&
+            intrinsic_min_width.empty()) {
+            raw.RemoveProperty("width");
+        }
         if (resolved_style_changed) {
             if (resolved_style.empty()) {
                 raw.RemoveAttribute("style");
@@ -2340,6 +2507,7 @@ struct UiRmlRuntime {
                 "style", grid_children_style);
         }
         projected.grid_children_style = grid_children_style;
+        projected.intrinsic_min_width = intrinsic_min_width;
         projected.attributes = record.attributes;
 
         for (const auto& [name, old_value] : projected.style_properties) {
@@ -2394,8 +2562,7 @@ struct UiRmlRuntime {
                     projected,
                     raw,
                     record.text,
-                    text_wrapped,
-                    projected.resolved_style);
+                    text_wrapped);
             }
             projected.text = record.text;
             projected.inner_rml = record.inner_rml;
@@ -2468,6 +2635,151 @@ struct UiRmlRuntime {
             }
         }
         projected_revision = engine.ui_revision;
+    }
+
+    void update_intrinsic_widths() {
+        struct IntrinsicChild {
+            Rml::Element* element = nullptr;
+            std::string width;
+        };
+        struct IntrinsicParent {
+            Rml::Element* element = nullptr;
+            UiElementHandle handle{};
+            std::string minimum;
+            std::vector<IntrinsicChild> children;
+        };
+
+        std::vector<IntrinsicParent> parents;
+        for (
+            std::uint32_t index = 0;
+            index < projected_elements.size();
+            ++index) {
+            ProjectedUiElement& projected = projected_elements[index];
+            if (!projected.element || projected.intrinsic_min_width.empty()) {
+                continue;
+            }
+
+            IntrinsicParent parent{
+                projected.element,
+                UiElementHandle{index},
+                projected.intrinsic_min_width,
+                {}};
+            for (const UiElementHandle child_handle :
+                 engine.ui_elements[index].children) {
+                if (
+                    child_handle.value >= projected_elements.size() ||
+                    !projected_elements[child_handle.value].element) {
+                    continue;
+                }
+                Rml::Element* child =
+                    projected_elements[child_handle.value].element;
+                const Rml::Style::ComputedValues& computed =
+                    child->GetComputedValues();
+                if (
+                    is_inline_level(computed.display()) &&
+                    computed.width().type == Rml::Style::Width::Percentage &&
+                    computed.position() != Rml::Style::Position::Absolute &&
+                    computed.position() != Rml::Style::Position::Fixed) {
+                    std::string child_style =
+                        projected_elements[child_handle.value].resolved_style;
+                    std::string width =
+                        take_css_declaration(child_style, "width");
+                    const UiElementRecord& child_record =
+                        engine.ui_elements[child_handle.value];
+                    if (const auto dynamic_width =
+                            child_record.style_properties.find("width");
+                        dynamic_width != child_record.style_properties.end()) {
+                        width = project_css(dynamic_width->second);
+                    }
+                    parent.children.push_back({child, std::move(width)});
+                }
+            }
+            if (!parent.children.empty()) {
+                parents.push_back(std::move(parent));
+            }
+        }
+        if (parents.empty()) return;
+
+        // CSS max-content sizing treats percentage widths as auto when the
+        // containing block is itself shrink-to-fit. RmlUi exposes no intrinsic
+        // measurement API, so perform the equivalent bounded layout pass.
+        for (IntrinsicParent& parent : parents) {
+            parent.element->SetProperty("width", parent.minimum);
+            for (const IntrinsicChild& child : parent.children) {
+                child.element->SetProperty("width", "auto");
+            }
+        }
+        context->Update();
+
+        for (IntrinsicParent& parent : parents) {
+            float max_content_width =
+                parent.element->GetBox().GetSize(Rml::BoxArea::Content).x;
+            float inline_run_width = 0.0f;
+
+            for (const UiElementHandle child_handle :
+                 engine.ui_elements[parent.handle.value].children) {
+                if (
+                    child_handle.value >= projected_elements.size() ||
+                    !projected_elements[child_handle.value].element) {
+                    continue;
+                }
+                Rml::Element* child =
+                    projected_elements[child_handle.value].element;
+                const Rml::Style::ComputedValues& computed =
+                    child->GetComputedValues();
+                if (
+                    computed.display() == Rml::Style::Display::None ||
+                    computed.position() == Rml::Style::Position::Absolute ||
+                    computed.position() == Rml::Style::Position::Fixed) {
+                    continue;
+                }
+                const Rml::Box& box = child->GetBox();
+                float content_width =
+                    box.GetSize(Rml::BoxArea::Content).x;
+                const UiElementRecord& child_record =
+                    engine.ui_elements[child_handle.value];
+                if (
+                    !child_record.text.empty() &&
+                    child_record.children.empty()) {
+                    // RmlUi's default font engine selects integer-sized font
+                    // handles. Compensate its max-content measurement for a
+                    // fractional CSS font size while retaining the actual box
+                    // frame and margins measured by RmlUi.
+                    const float integer_font_size =
+                        std::floor(computed.font_size());
+                    if (integer_font_size > 0.0f) {
+                        content_width *=
+                            computed.font_size() / integer_font_size;
+                    }
+                }
+                const float outer_width =
+                    content_width +
+                    box.GetSize(Rml::BoxArea::Border).x -
+                    box.GetSize(Rml::BoxArea::Content).x +
+                    box.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Left) +
+                    box.GetEdge(Rml::BoxArea::Margin, Rml::BoxEdge::Right);
+                if (is_inline_level(computed.display())) {
+                    inline_run_width += outer_width;
+                } else {
+                    max_content_width = std::max(
+                        max_content_width,
+                        std::max(inline_run_width, outer_width));
+                    inline_run_width = 0.0f;
+                }
+            }
+            max_content_width = std::max(max_content_width, inline_run_width);
+            parent.element->SetProperty(
+                "width", std::to_string(max_content_width) + "px");
+
+            for (const IntrinsicChild& child : parent.children) {
+                if (child.width.empty()) {
+                    child.element->RemoveProperty("width");
+                } else {
+                    child.element->SetProperty("width", child.width);
+                }
+            }
+        }
+        context->Update();
     }
 
     void render_canvases() {
@@ -2637,6 +2949,15 @@ struct UiRmlRuntime {
                     duration > 0.0
                 ? std::fmod((now / duration) * 2.0, 1.0)
                 : 0.0;
+            char* scale_end = nullptr;
+            const double parsed_scale = std::strtod(
+                projected.gradient_text_style.scale.c_str(),
+                &scale_end);
+            const double scale =
+                scale_end != projected.gradient_text_style.scale.c_str() &&
+                    parsed_scale > 0.0
+                ? parsed_scale / 100.0
+                : 1.0;
             const auto sample_palette = [color_count, &projected](
                                             double position) {
                 position = std::fmod(position, 1.0);
@@ -2659,7 +2980,7 @@ struct UiRmlRuntime {
             for (std::size_t index = 0; index < glyph_count; ++index) {
                 const double glyph_position = glyph_count > 1
                     ? static_cast<double>(index) /
-                        static_cast<double>(glyph_count - 1)
+                        static_cast<double>(glyph_count - 1) / scale
                     : 0.0;
                 // One Rml glyph cannot carry a clipped gradient. Average a
                 // few samples across its visual interval rather than taking
@@ -2667,7 +2988,8 @@ struct UiRmlRuntime {
                 GradientTextColor average{};
                 constexpr int sample_count = 5;
                 const double half_extent = glyph_count > 1
-                    ? 0.45 / static_cast<double>(glyph_count - 1)
+                    ? 0.45 /
+                        (static_cast<double>(glyph_count - 1) * scale)
                     : 0.0;
                 for (int sample = 0; sample < sample_count; ++sample) {
                     const double across =
@@ -2725,7 +3047,7 @@ struct UiRmlRuntime {
 
     Engine& engine;
     SDL_Window* window = nullptr;
-    SystemInterface_SDL system_interface;
+    UiSystemInterface system_interface;
     UiRenderRecorder render_interface;
     Rml::Context* context = nullptr;
     Rml::ElementDocument* document = nullptr;
@@ -2733,8 +3055,10 @@ struct UiRmlRuntime {
     std::vector<ProjectedUiElement> projected_elements;
     std::uint64_t projected_revision = invalid_handle;
     std::string css_font_family;
+    std::string css_sans_family;
     std::string css_monospace_family;
     std::string projected_style_sheet_source;
+    float density_ratio = 0.0f;
     bool initialized = false;
 };
 
@@ -2773,13 +3097,18 @@ void update_ui_rml_runtime(
     runtime.context->SetDimensions(Rml::Vector2i{
         static_cast<int>(width),
         static_cast<int>(height)});
-    runtime.update_density_ratio();
-    if (runtime.projected_revision != runtime.engine.ui_revision) {
+    const bool density_changed = runtime.update_density_ratio();
+    const bool tree_changed =
+        runtime.projected_revision != runtime.engine.ui_revision;
+    if (tree_changed) {
         runtime.sync_style_sheet();
         runtime.sync_tree();
     }
     runtime.update_gradient_text();
     runtime.context->Update();
+    if (tree_changed || density_changed) {
+        runtime.update_intrinsic_widths();
+    }
     runtime.sync_client_rects();
 }
 

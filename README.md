@@ -1,6 +1,6 @@
 # Babylon Lite Native
 
-> Experimental Babylon Lite TypeScript-to-C++ compiler with an SDL3 native
+> Babylon Lite TypeScript-to-C++ compiler with an SDL3 native
 > runtime and dual SDL_GPU / Dawn (WebGPU) render backends.
 
 `bblitec` compiles a statically analyzable subset of `@babylonjs/lite` scene
@@ -8,7 +8,7 @@ code into C++20. It reconstructs the pinned upstream TypeScript from source
 maps, emits only reached features, materializes remote assets at compile time,
 and keeps handwritten C++ at the platform abstraction layer.
 
-**Status:** working research prototype, not a general JavaScript runtime.
+**Scope:** the documented reachable subset, not a general JavaScript runtime.
 Unsupported syntax and APIs fail at compile time with source locations.
 
 | [<img src="docs/images/scenes/scene1.png" alt="Scene 1" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene5.png" alt="Scene 5" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene7.png" alt="Scene 7" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Scene 14" width="170">](docs/status.md#curated-parity-scenes) |
@@ -93,7 +93,7 @@ Build trees are disposable and generator-specific.
 | [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
 | [Status](docs/status.md) | Measured baselines, parity scenes, diagnostics |
 | [Backends](docs/backends.md) | The two GPU render backends: architecture, comparison, porting contracts |
-| [Experimental native page UI](docs/experimental-ui.md) | Scene-created DOM/CSS lowering to retained RmlUi controls |
+| [Native page UI](docs/ui.md) | Scene-created DOM/CSS lowering to retained RmlUi controls |
 | [TODO](TODO.md) | Prioritized future work only |
 
 ## Design constraints
@@ -113,6 +113,6 @@ Build trees are disposable and generator-specific.
 
 ## Acknowledgements
 
-This prototype is not affiliated with or endorsed by Babylon.js. Babylon.js
+This project is not affiliated with or endorsed by Babylon.js. Babylon.js
 and Babylon Lite are Apache-2.0 projects. DAWN, SDL, and downloaded assets
 retain their respective licenses.

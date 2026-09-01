@@ -180,8 +180,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         }
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
-        const bool capture_ui =
-            environment_variable("BBLITE_CAPTURE_UI") == "1";
+        const bool capture_ui = frame_options.capture_ui;
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples;
@@ -193,6 +192,9 @@ bool run_sprite_dawn_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                if (frame_options.test_pass && is_platform_input_event(event)) {
+                    continue;
+                }
                 bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
                 propagate_to_scene =
@@ -208,14 +210,16 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 width = state.surface_width;
                 height = state.surface_height;
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            update_ui_rml_runtime(*ui_runtime, width, height);
-#endif
             input_replay.dispatch(frame, state.window, engine);
             const float delta_ms = advance_frame(
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            // Browser layout observes DOM changes made by this turn's RAF
+            // callbacks before painting the frame.
+            update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
             const double frame_start = monotonic_milliseconds();
 
             sync_render_textures();

@@ -232,6 +232,8 @@ namespace {
 struct PerformanceClockState {
     bool initialized = false;
     bool fixed = false;
+    double fixed_delta_ms = 0.0;
+    std::uint64_t fixed_steps = 0;
     double milliseconds = 0.0;
 };
 
@@ -240,8 +242,10 @@ PerformanceClockState& performance_clock_state() {
     if (!state.initialized) {
         const std::string fixed_delta =
             environment_variable("BBLITE_FRAME_DELTA_MS");
-        state.fixed = !fixed_delta.empty() &&
-            std::strtod(fixed_delta.c_str(), nullptr) > 0.0;
+        state.fixed_delta_ms = fixed_delta.empty()
+            ? 0.0
+            : std::strtod(fixed_delta.c_str(), nullptr);
+        state.fixed = state.fixed_delta_ms > 0.0;
         state.milliseconds = state.fixed ? 0.0 : monotonic_milliseconds();
         state.initialized = true;
     }
@@ -258,7 +262,13 @@ double performance_milliseconds() {
 void advance_performance_milliseconds(float delta_ms) {
     auto& state = performance_clock_state();
     if (state.fixed && delta_ms > 0.0f) {
-        state.milliseconds += static_cast<double>(delta_ms);
+        // The scene's update delta is deliberately a float, matching the
+        // engine API. Browser-facing time is a DOMHighResTimeStamp, however,
+        // so retain the configured decimal as a double instead of accumulating
+        // the narrowed float and missing exact timer boundaries such as 700ms.
+        ++state.fixed_steps;
+        state.milliseconds =
+            static_cast<double>(state.fixed_steps) * state.fixed_delta_ms;
     }
 }
 

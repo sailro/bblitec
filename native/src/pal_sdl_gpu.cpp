@@ -7735,8 +7735,7 @@ bool run_gpu_engine(Engine& engine) {
         const std::string screenshot_path = frame_options.screenshot_path;
         const long screenshot_frame = frame_options.screenshot_frame;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        const bool capture_ui =
-            environment_variable("BBLITE_CAPTURE_UI") == "1";
+        const bool capture_ui = frame_options.capture_ui;
 #endif
         const bool benchmark = frame_options.benchmarking();
         const long warmup = frame_options.benchmark_warmup();
@@ -7750,6 +7749,9 @@ bool run_gpu_engine(Engine& engine) {
             SDL_Event event;
             while (SDL_PollEvent(&event)) {
                 if (event.type == SDL_EVENT_QUIT) running = false;
+                if (hidden_test_pass && is_platform_input_event(event)) {
+                    continue;
+                }
                 bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
                 propagate_to_scene =
@@ -7798,9 +7800,6 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_CancelGPUCommandBuffer(command);
                 continue;
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-            update_ui_rml_runtime(*ui_runtime, width, height);
-#endif
             const double acquired = monotonic_milliseconds();
             // Only an animated billboard pass reads it, so the frame's own
             // delta is unused in a build that reaches no billboards.
@@ -7810,6 +7809,11 @@ bool run_gpu_engine(Engine& engine) {
                     scene,
                     frame_clock,
                     frame_options.frame_delta_ms);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            // Browser layout observes DOM changes made by this turn's RAF
+            // callbacks before painting the frame.
+            update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
             const double updated = monotonic_milliseconds();
             std::size_t profile_transformed_meshes = 0;
             std::size_t profile_transformed_vertices = 0;
@@ -11130,8 +11134,8 @@ bool run_gpu_engine(Engine& engine) {
 #endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             if (capture_frame && capture_ui) {
-                // Composite-capture experiment: render into the ordinary
-                // readback texture, then present that exact result below.
+                // Render the UI into the readback texture, then present that
+                // exact result below.
                 render_ui_sdl_frame(
                     state,
                     command,
@@ -11158,11 +11162,9 @@ bool run_gpu_engine(Engine& engine) {
             }
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             if (!(capture_frame && capture_ui)) {
-                // UI is a sibling of the browser canvas, not part of its
-                // bitmap. Draw it over the presented swapchain after the
-                // scene blit so existing canvas-only parity captures keep
-                // saving `visible_color`. BBLITE_CAPTURE_UI=1 takes the
-                // explicit composite arm immediately above instead.
+                // A canvas-only attribution capture omits the UI from
+                // `visible_color` but still draws it over the presented
+                // swapchain.
                 render_ui_sdl_frame(
                     state,
                     command,

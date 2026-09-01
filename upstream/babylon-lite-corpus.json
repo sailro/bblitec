@@ -1382,7 +1382,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",
       "reference": {
         "source": "reference/tetris/babylon-lite-golden.png",
-        "sha256": "01a9e411d69ac43dbcd1c34fb3f7b35b453a01bedae73bcb1d4e3c09bc4eba6f"
+        "sha256": "477f62d6f06e2ce4ebb7ac7f9caef2476d8aee03b9f33cb9dcb64201b63773a8"
       },
       "files": [
         {
@@ -1482,7 +1482,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/doom.ts",
       "reference": {
         "source": "reference/doom/babylon-lite-golden.png",
-        "sha256": "64f82c7228a00bab99c927e3b3c2d67235550f9738e1107eb99e2f44a0a72602"
+        "sha256": "2b5335eca493ddc492a4297fbe63b7394b3d422ff69934bb1f54ce83e9ad61c4"
       },
       "files": [
         {
@@ -1670,7 +1670,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/quake.ts",
       "reference": {
         "source": "reference/quake/babylon-lite-golden.png",
-        "sha256": "922572421ddc72247ab075c9a3cfc4d98c6e1ef2426256054dbef398ea50e415"
+        "sha256": "6db4e8a73cbdcdd7cef028ef84bf2893b2afa3abd018e3d4ed5fc85e9fdeb0cb"
       },
       "files": [
         {
@@ -2249,7 +2249,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/platformer.ts",
       "reference": {
         "source": "reference/platformer/babylon-lite-golden.png",
-        "sha256": "42dc4657c0bcf89d7deb4a8bc10f052eaa281b722d1be20d5752ca1cd92163e8"
+        "sha256": "031fbeb32baa42e6a977bd95a0b6644e043727761130e573add601d8dcce7fc6"
       },
       "files": [
         {
@@ -2474,7 +2474,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/racer.ts",
       "reference": {
         "source": "reference/racer/babylon-lite-golden.png",
-        "sha256": "363e8134fde4ecd03e54621567d8596229da7110da49a2436022538a21058d72"
+        "sha256": "c21a5ec7bd83a8a2dc0b52d1c6fcb6c231ab4139bf3e9b5b879bf8eb3cf2d6b0"
       },
       "files": [
         {
@@ -2685,7 +2685,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
       "reference": {
         "source": "reference/littlest-tokyo/babylon-lite-golden.png",
-        "sha256": "a25ce9e3681f01650ec4d40fccc336616a35272ac95638bde3b1a6d25b1fc3e2"
+        "sha256": "cb6bb7303c287397dfe5d21c668c7ca42a8f272b0803aad8e0ccd437b1c93f33"
       },
       "files": [
         {
@@ -2725,7 +2725,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/bath-day.ts",
       "reference": {
         "source": "reference/bath-day/babylon-lite-golden.png",
-        "sha256": "60cc48484cfb252beb2f61d3391ce69a12b0b36f6f781e3d6c98743b526fe9e6"
+        "sha256": "42ad2471948725c582a55d73a0b6409e853d98a6f026d5f0a83f7c709a2a53f8"
       },
       "files": [
         {
@@ -2770,7 +2770,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/freeciv.ts",
       "reference": {
         "source": "reference/freeciv/babylon-lite-golden.png",
-        "sha256": "fbcbb5bd06358004b287aceb7cc79d162b088ed93009c0a6ee3a5a34dab5e970"
+        "sha256": "fe0e69c2e6fe4aedad8a9a28375209847c00a039b5b572cf433093c4bcea7dff"
       },
       "files": [
         {

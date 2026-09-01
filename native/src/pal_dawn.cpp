@@ -9728,8 +9728,7 @@ bool run_dawn_engine(Engine& engine) {
     const std::string screenshot_path =
         frame_options.screenshot_path;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    const bool capture_ui =
-        environment_variable("BBLITE_CAPTURE_UI") == "1";
+    const bool capture_ui = frame_options.capture_ui;
 #endif
     const std::string id_buffer_path =
         frame_options.id_buffer_path;
@@ -10176,6 +10175,9 @@ bool run_dawn_engine(Engine& engine) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             if (event.type == SDL_EVENT_QUIT) running = false;
+            if (hidden_test_pass && is_platform_input_event(event)) {
+                continue;
+            }
             bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             propagate_to_scene =
@@ -10199,9 +10201,6 @@ bool run_dawn_engine(Engine& engine) {
             height = state.surface_height;
             recreate_frame_targets();
         }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        update_ui_rml_runtime(*ui_runtime, width, height);
-#endif
         // The benchmark bracket mirrors the SDL backend: frame CPU time
         // across the whole loop body -- scene callbacks and uploads, surface
         // acquire, submit and present -- under the immediate present mode
@@ -10219,6 +10218,11 @@ bool run_dawn_engine(Engine& engine) {
                 scene,
                 frame_clock,
                 frame_options.frame_delta_ms);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        // Browser layout observes DOM changes made by this turn's RAF
+        // callbacks before painting the frame.
+        update_ui_rml_runtime(*ui_runtime, width, height);
+#endif
         trace_dynamic_frame(engine, delta_ms, frame);
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
         // Upstream updates every rendering context before recording any of
@@ -13196,9 +13200,8 @@ bool run_dawn_engine(Engine& engine) {
         }
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         if (ui_after_capture_copy) {
-            // Ordinary parity reads the scene/canvas before the native DOM
-            // sibling is composited. BBLITE_CAPTURE_UI takes the arm above
-            // and copies the completed surface instead.
+            // Canvas-only attribution reads the surface before the native UI
+            // is composited, then presents the UI normally.
             render_ui_dawn_frame(
                 state,
                 encoder,

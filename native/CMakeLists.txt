@@ -491,7 +491,7 @@ else()
 endif()
 
 if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # Pin the experiment to the exact RmlUi revision projected by our
+    # Pin the exact RmlUi revision projected by our
     # backend-neutral recorder. The generated application still links only
     # against our UI IR entry points; this dependency remains behind the PAL.
     include(FetchContent)
@@ -520,6 +520,12 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         GIT_REPOSITORY https://github.com/mikke89/RmlUi.git
         GIT_TAG b7b4a0688262832eacf3b9abb41f8bbe73868af8
         GIT_PROGRESS TRUE
+        PATCH_COMMAND
+            "${CMAKE_COMMAND}"
+            "-DRMLUI_SOURCE_DIR=<SOURCE_DIR>"
+            "-DRMLUI_PATCH=${CMAKE_CURRENT_SOURCE_DIR}/patches/rmlui-premultiplied-rounding.patch"
+            -P
+            "${CMAKE_CURRENT_SOURCE_DIR}/apply-rmlui-patch.cmake"
         EXCLUDE_FROM_ALL
     )
     FetchContent_MakeAvailable(rmlui)
@@ -528,6 +534,7 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_sources(
         bblite_native
         PRIVATE
+        "${BBLITE_NATIVE_ROOT}/src/pal_system_fonts.cpp"
         "${rmlui_SOURCE_DIR}/Backends/RmlUi_Platform_SDL.cpp"
     )
     target_include_directories(
@@ -542,6 +549,22 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         RmlUi::Core
         $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
     )
+    if(WIN32)
+        target_link_libraries(bblite_native PRIVATE dwrite)
+    elseif(APPLE)
+        find_library(BBLITE_CORE_FOUNDATION CoreFoundation REQUIRED)
+        find_library(BBLITE_CORE_TEXT CoreText REQUIRED)
+        target_link_libraries(
+            bblite_native
+            PRIVATE
+            "${BBLITE_CORE_FOUNDATION}"
+            "${BBLITE_CORE_TEXT}"
+        )
+    else()
+        find_package(PkgConfig REQUIRED)
+        pkg_check_modules(FONTCONFIG REQUIRED IMPORTED_TARGET fontconfig)
+        target_link_libraries(bblite_native PRIVATE PkgConfig::FONTCONFIG)
+    endif()
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_UI=0)
 endif()

@@ -3482,6 +3482,44 @@ class Compiler
             : cssName;
     }
 
+    private lowerUiTextShadow(value: string): string | undefined {
+        const shadows: string[] = [];
+        let start = 0;
+        let depth = 0;
+        for (let index = 0; index <= value.length; index++) {
+            const character = value[index];
+            if (character === "(") depth++;
+            if (character === ")") depth--;
+            if (index !== value.length && (character !== "," || depth > 0)) {
+                continue;
+            }
+            shadows.push(value.slice(start, index).trim());
+            start = index + 1;
+        }
+
+        const length = String.raw`[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px|rem)?`;
+        const color = String.raw`(?:#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)`;
+        const pattern = new RegExp(
+            String.raw`^(?:(${color})\s+)?(${length})\s+(${length})(?:\s+(${length}))?(?:\s+(${color}))?$`,
+            "i",
+        );
+        const effects: string[] = [];
+        for (const shadow of shadows) {
+            const match = shadow.match(pattern);
+            if (!match) return undefined;
+            const shadowColor = match[1] ?? match[5] ?? "currentcolor";
+            const offsetX = match[2]!;
+            const offsetY = match[3]!;
+            const blur = match[4];
+            effects.push(
+                blur && Number.parseFloat(blur) > 0
+                    ? `glow(0px ${blur} ${offsetX} ${offsetY} ${shadowColor})`
+                    : `shadow(${offsetX} ${offsetY} ${shadowColor})`,
+            );
+        }
+        return effects.length > 0 ? effects.join(",") : undefined;
+    }
+
     private lowerUiAttributeLiteral(name: string, value: string): string {
         if (name !== "style") return value;
         const clipsGradientToText =
@@ -3499,6 +3537,11 @@ class Compiler
                   /\banimation\s*:[^;]*?\b([0-9]+(?:\.[0-9]*)?)s\b/i,
               )?.[1]
             : undefined;
+        const gradientTextBackgroundScale = clipsGradientToText
+            ? value.match(
+                  /\bbackground-size\s*:\s*([0-9]+(?:\.[0-9]*)?)%/i,
+              )?.[1]
+            : undefined;
         const gradientTextStroke = clipsGradientToText
             ? value.match(
                   /-webkit-text-stroke\s*:\s*([^\s;]+)\s+([^;]+)/i,
@@ -3509,6 +3552,17 @@ class Compiler
                   /\bfilter\s*:\s*drop-shadow\(\s*([^\s]+)\s+([^\s]+)\s+(?:[^\s]+\s+)?(rgba?\([^)]*\)|#[0-9a-f]{3,8})\s*\)/i,
               )
             : undefined;
+        const gradientFontEffects: string[] = [];
+        if (gradientTextStroke) {
+            gradientFontEffects.push(
+                `outline(${gradientTextStroke[1]!} ${gradientTextStroke[2]!.trim()})`,
+            );
+        }
+        if (gradientTextShadow) {
+            gradientFontEffects.push(
+                `shadow(${gradientTextShadow[1]!} ${gradientTextShadow[2]!} ${gradientTextShadow[3]!})`,
+            );
+        }
         const sourceValue = gradientTextColor
             ? value.replace(
                   /\bbackground\s*:\s*linear-gradient\([^;]*;?/gi,
@@ -3524,7 +3578,7 @@ class Compiler
                 /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?clamp\(\s*[0-9.]+px\s*,\s*[0-9.]+vw\s*,\s*([0-9.]+)px\s*\)\s+([^;]+)\s*;?/gi,
                 (_match, weight, maximum, family) =>
                     `${weight ? `font-weight:${weight};` : ""}` +
-                    `font-size:${maximum}px;font-family:${String(family).replace(/system-ui/gi, "sans-serif")};`,
+                    `font-size:${maximum}px;font-family:${String(family)};`,
             )
             .replace(
                 /\bfont\s*:\s*(?:(\d+|normal|bold)\s+)?([0-9]+(?:\.[0-9]*)?)(px|rem)(?:\s*\/\s*([0-9]+(?:\.[0-9]*)?(?:px|rem)?))?\s+([^;]+)\s*;?/gi,
@@ -3550,7 +3604,10 @@ class Compiler
                     .map((candidate) => candidate.trim())
                     .filter(Boolean);
                 const first = families[0] ?? "sans-serif";
-                if (/^(?:system-ui|sans-serif)$/i.test(first)) {
+                if (/^system-ui$/i.test(first)) {
+                    return "font-family:system-ui;";
+                }
+                if (/^sans-serif$/i.test(first)) {
                     return "font-family:sans-serif;";
                 }
                 if (/^monospace$/i.test(first)) {
@@ -3562,16 +3619,27 @@ class Compiler
                 /\binset\s*:\s*0(?:px)?\s*;?/gi,
                 "top:0;right:0;bottom:0;left:0;",
             )
+            // RmlUi exposes CSS image gradients through its decorator
+            // property. The shared render recorder implements the resulting
+            // shader callback once for every PAL graphics backend.
+            .replace(
+                /\bbackground\s*:\s*((?:repeating-)?(?:linear|radial|conic)-gradient\([^;]*\))\s*;?/gi,
+                "decorator:$1;",
+            )
             // RmlUi exposes the colour property explicitly rather than the
             // browser background shorthand used by the reached HUDs.
-            .replace(
-                /\bbackground\s*:\s*linear-gradient\([^;]*?(#[0-9a-f]{3,8}|rgba?\([^)]*\))[^;]*;?/gi,
-                "background-color:$1;",
-            )
-            .replace(/\bbackground\s*:\s*radial-gradient\([^;]*;?/gi, "")
             .replace(/\bbackground\s*:/gi, "background-color:")
             .replace(/\bbackdrop-filter\s*:[^;]*;?/gi, "")
             .replace(/\bbox-shadow\s*:[^;]*;?/gi, "")
+            // RmlUi's border shorthand is `width color`; it deliberately
+            // omits CSS border-style because every non-zero border is solid.
+            // Translate the ordinary browser spelling instead of letting the
+            // entire declaration be rejected by its shorthand parser.
+            .replace(
+                /\bborder\s*:\s*([^;\s]+)\s+solid\s+([^;]+)\s*;?/gi,
+                "border:$1 $2;",
+            )
+            .replace(/\bborder\s*:\s*none\s*;?/gi, "border:0 transparent;")
             .replace(/\bbackground-size\s*:[^;]*;?/gi, "")
             .replace(
                 /(^|;)\s*(?:-webkit-)?background-clip\s*:[^;]*(?=;|$)/gi,
@@ -3579,6 +3647,10 @@ class Compiler
             )
             .replace(/-webkit-text-stroke\s*:[^;]*;?/gi, "")
             .replace(/\bfilter\s*:[^;]*;?/gi, "")
+            .replace(/\btext-shadow\s*:\s*([^;]+)\s*;?/gi, (_match, shadow) => {
+                const effect = this.lowerUiTextShadow(String(shadow));
+                return effect ? `font-effect:${effect};` : "";
+            })
             .replace(
                 /\bcolor\s*:\s*transparent\s*;?/gi,
                 `color:${gradientTextColor ?? "#fff"};`,
@@ -3597,16 +3669,10 @@ class Compiler
             // per-glyph gradient and advance the reached shimmer animation.
             lowered +=
                 `;--bbl-text-gradient:${gradientTextColors.join("|")};` +
-                `--bbl-text-gradient-duration:${gradientTextDuration ?? "0"}s;`;
-            if (gradientTextStroke) {
-                lowered +=
-                    `--bbl-text-stroke-width:${gradientTextStroke[1]!};` +
-                    `--bbl-text-stroke-color:${gradientTextStroke[2]!.trim()};`;
-            }
-            if (gradientTextShadow) {
-                lowered +=
-                    `text-shadow:${gradientTextShadow[1]!} ` +
-                    `${gradientTextShadow[2]!} ${gradientTextShadow[3]!};`;
+                `--bbl-text-gradient-duration:${gradientTextDuration ?? "0"}s;` +
+                `--bbl-text-gradient-scale:${gradientTextBackgroundScale ?? "100"}%;`;
+            if (gradientFontEffects.length > 0) {
+                lowered += `font-effect:${gradientFontEffects.join(",")};`;
             }
         }
 
@@ -3641,16 +3707,13 @@ class Compiler
                 /(?:^|;)\s*min-width\s*:\s*([^;]+)/i,
             )?.[1]?.trim();
             if (!hasWidth && minimum) {
-                // RmlUi cannot resolve percentage-width inline children while
-                // measuring an absolute block's intrinsic width. The reached
-                // Tetris panel has two adjacent 100%-width buttons: Chromium's
-                // stable max-content result is 232.5px (their two intrinsic
-                // widths), rather than the 180px minimum.
-                const shrinkToFitWidth =
-                    minimum.toLowerCase() === "180px"
-                        ? "232.5px"
-                        : minimum;
-                lowered += `;width:${shrinkToFitWidth};`;
+                // RmlUi cannot complete CSS shrink-to-fit when percentage-
+                // width inline children contribute to an absolute block's
+                // max-content size. Start from the authored minimum and leave
+                // generic measurement metadata for the retained PAL pass.
+                lowered +=
+                    `;width:${minimum};` +
+                    `--bbl-intrinsic-min-width:${minimum};`;
             } else if (
                 !hasWidth &&
                 !minimum &&
@@ -3808,31 +3871,6 @@ class Compiler
             )
             .replace(/<div\s*>/gi, '<div style="display:block">');
 
-        // RmlUi has no text-shadow property. The reached innerHTML surface
-        // uses crisp offset shadows around plain text, so preserve the first
-        // shadow as an absolutely-positioned duplicate behind the real text.
-        // Blur-only secondary glows remain outside this bounded projection.
-        lowered = lowered.replace(
-            /<([a-z][a-z0-9-]*)\s+style=(['"])([^'"]*\btext-shadow\s*:\s*[^'"]*)\2>([^<]*)<\/\1>/gi,
-            (_match, tag, quote, style, text) => {
-                const shadow = String(style).match(
-                    /\btext-shadow\s*:\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?)\s+([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?)\s+(?:(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:px)?)\s+)?(#[0-9a-f]{3,8}|rgba?\([^)]*\))/i,
-                );
-                if (!shadow) return _match;
-                const positioned = /\bposition\s*:/i.test(String(style))
-                    ? String(style)
-                    : `${String(style)};position:relative`;
-                const shadowStyle =
-                    `position:absolute;left:${shadow[1]};top:${shadow[2]};` +
-                    `color:${shadow[3]};pointer-events:none`;
-                return (
-                    `<${tag} style=${quote}${positioned}${quote}>` +
-                    `<span style=${quote}${shadowStyle}${quote}>${text}</span>` +
-                    `<span style=${quote}position:relative${quote}>${text}</span>` +
-                    `</${tag}>`
-                );
-            },
-        );
         return lowered;
     }
 
@@ -8757,7 +8795,7 @@ class Compiler
             }
             if (element && callee.name.text === "removeEventListener") {
                 this.expectArgumentCount(call, 2, 2);
-                // UI records share the engine lifetime in this prototype.
+                // Retained UI records share the engine lifetime.
                 // Listener identity/removal is deferred with DOM lifecycle.
                 return { kind: "void", cpp: "" };
             }

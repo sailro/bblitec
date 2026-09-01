@@ -60,7 +60,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | Feature family | Phase | Summary |
 | --- | --- | --- |
 | [Program compilation](#program-compilation) | Compile | the TypeScript subset, the plain-data model, browser erasure, AOT promises |
-| [Experimental native page UI](experimental-ui.md) | Compile → Run | a narrow scene-created DOM/CSS/event surface lowered to retained RmlUi controls on SDL_GPU and Dawn |
+| [Native page UI](ui.md) | Compile → Run | a bounded scene-created DOM/CSS/event surface lowered to retained RmlUi controls on SDL_GPU and Dawn |
 | [Feature and capability selection](#feature-and-capability-selection) | Compile | which generated modules, shader variants, codecs, and capability defines exist at all |
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
 | [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, sparse accessors materialized, to ordinary geometry |
@@ -148,7 +148,7 @@ analyzable entry file against one engine.
   no reached scene writes one. A number lane inside a tuple or a static
   record is written at each sink's own width rather than at the width its
   first sink asked for ([fidelity](fidelity.md#shader-contract)).
-- **Browser erasure and AOT promises.** The browser `main` wrapper, DOM,
+- **Browser erasure and AOT promises.** The browser `main` wrapper, unsupported DOM,
   timing, and dataset instrumentation are erased, and every `await` on a
   materialized asset resolves immediately. `window.location.search` reads as
   the query the scene's reference pose is captured at, so a scene that
@@ -163,15 +163,15 @@ analyzable entry file against one engine.
   its WebGPU surface to it before acquisition. Generation-only size decisions
   still use the configured startup dimensions because they cannot vary at
   runtime.
-- **Experimental scene-created UI.** A handle returned by the recognized
+- **Scene-created UI.** A handle returned by the recognized
   `document.createElement` call is not erased: its static tag,
   runtime text/attribute/style state, tree attachment, removal, and reached
   click/pointer callbacks lower into a retained native UI IR. The `ui:rml`
   feature projects that IR through RmlUi for reached SDL_GPU and Dawn scenes.
-  Scene-created canvases use a separate bounded live Canvas2D command IR for
-  the racer path/fill/stroke subset. This is a substitution surface, not a DOM
+  Scene-created canvases use a separate bounded live Canvas2D command IR.
+  This is a substitution surface, not a DOM
   or HTML canvas implementation; host-page lookups still erase. See
-  [experimental native page UI](experimental-ui.md).
+  [native page UI](ui.md).
 - **`??` over the data model.** A nullish coalesce lowers by the left
   operand's own type: a static record property still settles at compile
   time, an asset-derived handle collection resolves through its concept,
@@ -1320,7 +1320,7 @@ at fixed order 100, explicitly after cached opaque meshes and before the
 transparent bucket, which is the native hard slot used here. A future scene
 that mixes `depth: "test"` sprites with other transparent renderable families
 would need their common order/depth-sort bucket rather than a family hard
-slot; no curated scene currently reaches that mixed case.
+slot; no curated scene reaches that mixed case.
 Compatible layers attached to the same scene pass share one backend pipeline
 (and Dawn bind-group layouts) by the same depth/blend/program/layout identity;
 the first layer owns those objects and later insertion-ordered layers borrow
@@ -2056,7 +2056,7 @@ generated code refuses them explicitly instead of shading something plausible:
 D3D12 is validated locally. Vulkan has one recorded device run (Windows NVIDIA
 through SDL_GPU: the Standard family correct, the PBR family mis-shading —
 [TODO](../TODO.md)'s Vulkan section carries the findings); Metal artifacts are
-generated but untested, and the Dawn integration is Windows-only today by
+generated but untested, and the Dawn integration is Windows-only by
 configuration rather than architecture
 ([backends](backends.md#backend-comparison)).
 
