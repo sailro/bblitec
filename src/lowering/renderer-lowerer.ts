@@ -1375,7 +1375,9 @@ bool pick_candidate(const MeshRecord& mesh);
     : ""}// scene-node.ts visible: undefined or true draws, false skips. One
 // definition, because the draw-list seam and both backends' depth-only task
 // path ask it -- that path consumes no draw list, so it cannot inherit the
-// seam's answer.
+// seam's answer. The seam re-runs on the visibility epoch (setMeshVisible's
+// bump), which is what makes an epoch write land the same frame while a
+// bare field write waits for the next rebuild.
 bool mesh_draws(const MeshRecord& mesh);
 // src/render/lights-ubo.ts affectsMesh: a light applies to the meshes its
 // includedOnlyMeshesIds names, or to every mesh its excludedMeshesIds does
@@ -1668,10 +1670,16 @@ void append_draw(
     std::uint32_t item_index,
     const RenderItem& item,
     const Engine& engine) {
-    // Tested HERE rather than where the plan is built, because the pin tests
-    // it per draw and never when choosing pick candidates: see pick_candidate
-    // above. Dropping a hidden mesh from the plan would hide it from the pick
-    // pass, which walks the plan.
+    // Tested HERE, at list build, because these lists are the pin's cached
+    // opaque render bundles: the renderable reads visible when a bundle
+    // is RECORDED, and the two writers differ by design. setMeshVisible
+    // bumps the visibility epoch, which the backends answer by re-running
+    // this build -- a hide or show lands that frame. A bare visible
+    // field write bumps nothing and waits for the next rebuild, the pin's
+    // documented deferral, measured by the regression-mesh-flags gate.
+    // Never filtered when choosing pick candidates (see pick_candidate
+    // above): a hidden mesh stays a pick candidate, so it stays in the
+    // plan and drops only from the lists.
     if (!mesh_draws(engine.meshes[item.mesh.value])) {
         return;
     }

@@ -903,7 +903,11 @@ mesh hidden before the draw lists are built shows the one behind it, and a
 mesh hidden two frames after the scene's last membership change stays drawn
 on both sides.
 `setMeshVisible` is the pin's entry point for a write that must take effect
-at once, and it is not reached yet.
+at once: it bumps the visibility epoch, and only when the cascade actually
+changed a flag, so a per-frame re-assertion stays a no-op. The demos reach
+it (a weapon switch, a consumed pickup), and both backends answer the epoch
+by re-running the draw-list build alone — the analogue of upstream
+re-recording its bundles — leaving mesh GPU state untouched.
 
 The deferral is the opaque bucket's alone, and this port applies it wider.
 `drawList` tests `mesh.visible === false` too, and `render-task.ts` calls it

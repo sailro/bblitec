@@ -18,7 +18,13 @@
  * misses rather than serving stale bytes.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -83,8 +89,38 @@ export async function downloadCachedResource(
     const bytes = new Uint8Array(await response.arrayBuffer());
     const contentType = response.headers.get("content-type")
         ?.split(";", 1)[0];
-    mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, bytes);
-    if (contentType) writeFileSync(`${path}.type`, contentType);
+    try {
+        mkdirSync(dirname(path), { recursive: true });
+        storeAtomically(path, bytes);
+        if (contentType) storeAtomically(`${path}.type`, contentType);
+    } catch (error) {
+        // The downloaded bytes in hand are the result; a failed store-back
+        // (a full disk, a permission) costs only the next build's refetch
+        // -- the same non-fatal shape the bake cache takes.
+        console.warn(
+            `asset cache: could not store ${url}: ${
+                error instanceof Error ? error.message : String(error)
+            }`,
+        );
+    }
     return { bytes, ...(contentType ? { contentType } : {}) };
+}
+
+/**
+ * Temp-file-plus-rename, the same rename-race discipline as the bake
+ * cache: the directory is shared between checkouts (worktree junctions)
+ * and between concurrently running builds, so a reader must never observe
+ * a half-written entry. Both writers of one URL carry the same pinned
+ * bytes, so whichever rename lands is correct.
+ */
+function storeAtomically(path: string, content: Uint8Array | string): void {
+    const temporary = `${path}.${process.pid}-${Date.now()}.tmp`;
+    writeFileSync(temporary, content);
+    try {
+        renameSync(temporary, path);
+    } catch {
+        // A concurrent writer won the rename on Windows; its bytes are
+        // this URL's bytes, so keep them and drop the temporary.
+        rmSync(temporary, { force: true });
+    }
 }

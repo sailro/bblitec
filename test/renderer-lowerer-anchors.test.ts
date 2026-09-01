@@ -314,6 +314,32 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
     );
 });
 
+test("filters the draw lists at build, the pin's bundle-record rule", () => {
+    // The lists are the pin's cached opaque render bundles: `visible` is
+    // read when a bundle is RECORDED, so the filter sits at list build and
+    // a visibility change lands by re-running the build. setMeshVisible
+    // bumps the visibility epoch to force that re-run the same frame; a
+    // bare field write bumps nothing and defers to the next rebuild -- the
+    // deferral the regression-mesh-flags gate measures. Moving this test
+    // per draw would break that gate; dropping it while the epoch rebuild
+    // exists would freeze every toggle (the quake weapon-switch defect).
+    const plan = new RendererLowerer(
+        new LoweringContext(),
+    ).lowerRenderPlan({});
+    const appendDraw = plan.source.slice(
+        plan.source.indexOf("void append_draw("),
+        plan.source.indexOf("void order_draw_lists("),
+    );
+    assert.ok(
+        appendDraw.length > 0,
+        "append_draw not found before order_draw_lists",
+    );
+    assert.match(
+        appendDraw,
+        /if \(!mesh_draws\(engine\.meshes\[item\.mesh\.value\]\)\) \{\s*\r?\n\s*return;/,
+    );
+});
+
 test("anchors the draw-list rules to the pinned bucket fork", () => {
     // The pinned fork the anchors inside lowerRenderPlan pair with: a
     // failed pairing throws there, so this test both re-states the pin's

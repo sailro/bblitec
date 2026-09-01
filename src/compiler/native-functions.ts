@@ -355,6 +355,27 @@ export class NativeFunctionLowerer {
             // the expression is evaluated into the callee's local binding.
             return undefined;
         }
+        if (
+            signature.parameters.some((parameter, index) => {
+                const argument =
+                    call.arguments[index] ??
+                    (ts.isParameter(parameter.name.parent)
+                        ? parameter.name.parent.initializer
+                        : undefined);
+                return argument
+                    ? !this.argumentPreservesObjectIdentity(
+                          argument,
+                          parameter,
+                      )
+                    : false;
+            })
+        ) {
+            // A structurally narrowed stored-object argument would be
+            // materialized into a fresh copy by the sink conversion, so a
+            // callee write or store would act on the copy. Same rule as
+            // the method arm; the inline path aliases by construction.
+            return undefined;
+        }
         this.ensureEmitted(signature.declaration, () =>
             this.emitDefinition(signature),
         );
@@ -450,11 +471,21 @@ export class NativeFunctionLowerer {
                 ) {
                     return false;
                 }
-                const argument = argumentExpressions[index];
-                return argument
-                    ? !this.isAddressableArgument(argument)
-                    : false;
+                return !this.isAddressableArgument(
+                    argumentExpressions[index]!,
+                );
             })
+        ) {
+            return undefined;
+        }
+        if (
+            signature.parameters.some(
+                (parameter, index) =>
+                    !this.argumentPreservesObjectIdentity(
+                        argumentExpressions[index]!,
+                        parameter,
+                    ),
+            )
         ) {
             return undefined;
         }
@@ -529,6 +560,58 @@ export class NativeFunctionLowerer {
             fieldArguments.push(bound.cpp);
         }
         return fieldArguments;
+    }
+
+    /**
+     * Whether passing this argument keeps the caller's JavaScript object
+     * identity through the call boundary.
+     *
+     * A reference-struct parameter aliases by value only because the
+     * shared pointer itself passes through, and a mutable by-reference
+     * struct parameter binds only an argument of exactly its type; both
+     * hold exactly when the argument's own checker type maps to the
+     * parameter's data type. A structurally wider argument — a `Sector`
+     * for a `{ floorHeight: number }` parameter — would instead be
+     * materialized into a fresh copy by the sink conversion (or refused
+     * outright on the mutable reference path), and a callee write or
+     * store would then act on the copy while the caller's object never
+     * moves. Such calls do not qualify; the inline path aliases by
+     * construction, so it stays the lowering for them. A null or
+     * undefined argument carries no object, so it always qualifies.
+     */
+    private argumentPreservesObjectIdentity(
+        argument: ts.Expression,
+        parameter: DataFunctionParameter,
+    ): boolean {
+        if (parameter.type.kind !== "struct") {
+            return true;
+        }
+        const mutableReference =
+            parameter.byReference && !parameter.readOnly;
+        if (
+            !mutableReference &&
+            !this.context.dataTypes.isReferenceStruct(
+                parameter.type.name,
+            )
+        ) {
+            return true;
+        }
+        const unwrapped = this.context.unwrap(argument);
+        if (
+            unwrapped.kind === ts.SyntaxKind.NullKeyword ||
+            (ts.isIdentifier(unwrapped) &&
+                unwrapped.text === "undefined")
+        ) {
+            return true;
+        }
+        const argumentType = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(argument),
+            argument,
+        );
+        return (
+            argumentType !== undefined &&
+            dataTypesEqual(argumentType, parameter.type)
+        );
     }
 
     private isAddressableArgument(
@@ -618,6 +701,10 @@ export class NativeFunctionLowerer {
             }
             return value.cpp;
         }
+        // The sink materializes when the argument's type is not exactly
+        // the parameter's -- correct for values, identity-severing for a
+        // narrowed stored object. Both arms decline such calls before
+        // reaching here (argumentPreservesObjectIdentity).
         return this.context.dataLowerer.compileForSink(
             expression,
             dataType,

@@ -8598,6 +8598,8 @@ bool run_dawn_engine(Engine& engine) {
     upstream::RenderPlan render_plan;
     std::uint64_t synced_render_topology_version =
         scene.render_topology_version;
+    std::uint64_t synced_visibility_epoch =
+        engine.visibility_epoch;
     // For the post-registration family guard the topology update runs,
     // exactly as the SDL backend tracks it.
     std::uint32_t synced_material_family_mask =
@@ -10390,7 +10392,18 @@ bool run_dawn_engine(Engine& engine) {
                 state.shared_shader_material_textures.size(),
                 frame);
             topology_updated = true;
+        } else if (engine.visibility_epoch != synced_visibility_epoch) {
+            // The pin's visibility epoch re-records the cached opaque
+            // render bundles; the draw lists are this port's bundles, so
+            // only they and the task lists rebuild -- mesh GPU state is
+            // untouched. (A full topology rebuild above rebuilds them
+            // anyway.)
+            render_plan.draw_lists = upstream::build_render_draw_lists(
+                render_plan.items,
+                engine);
+            rebuild_task_draw_lists();
         }
+        synced_visibility_epoch = engine.visibility_epoch;
         // One mesh-sync pass per frame over the plan's items, the same
         // walk and skip logic as the SDL_GPU backend's loop: the
         // thin-instance pool re-upload, the GPU-deformation skip (the
@@ -10423,10 +10436,11 @@ bool run_dawn_engine(Engine& engine) {
             // hidden mesh so the pick pass can see it, so the sync asks
             // the same predicate the draw lists ask.
             //
-            // Sound because visibility can only reach the draw lists
-            // through a render_topology_version bump, and the rebuild that
-            // bump triggers runs earlier in this same frame -- so the
-            // frame a mesh starts drawing is a frame this loop writes it.
+            // Sound because visibility reaches the draw lists only through
+            // a version bump -- render_topology_version or the visibility
+            // epoch -- and the rebuild either triggers runs earlier in
+            // this same frame, so the frame a mesh starts drawing is a
+            // frame this loop writes it.
             const bool mesh_uniform_item =
                 upstream::mesh_draws(mesh) &&
                 item.material_kind !=
