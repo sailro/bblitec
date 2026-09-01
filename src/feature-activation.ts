@@ -331,6 +331,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(src/loader-gltf/gltf-feature-lights-punctual.ts)",
         consumers: ["features.cmake", "variant table"],
     },
+    "light:included-meshes": {
+        provenance:
+            "src/light/types.ts LightBase.includedOnlyMeshIds, read by " +
+            "src/render/lights-ubo.ts affectsMesh; the id it joins on is " +
+            "src/mesh/mesh.ts Mesh.id",
+        consumers: ["features.cmake", "variant table"],
+    },
     "light:clustered": {
         provenance:
             "src/light/clustered.ts, with the spot arm behind " +
@@ -415,6 +422,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "material:iridescence": {
         provenance: "src/material/pbr/set-iridescence.ts",
         consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
+    },
+    "material:lightmap": {
+        provenance:
+            "src/material/pbr/enable-pbr-lightmap.ts (the opt-in that " +
+            "imports and registers the fragment; the always-loaded PBR " +
+            "core scans for no lightmapTexture at all)",
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "material_texture_slots.hpp",
+            "variant table",
+        ],
     },
     "material:anisotropy": {
         provenance: "src/material/pbr/set-anisotropy.ts",
@@ -543,6 +562,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "mesh:torus": {
         provenance: "src/mesh/create-torus.ts",
+        consumers: CMAKE,
+    },
+    "mesh:torus-knot": {
+        provenance: "src/mesh/create-torus-knot.ts",
         consumers: CMAKE,
     },
     "mesh:parenting": {
@@ -1045,6 +1068,7 @@ function capabilityRows(
         "metallicReflectanceMap",
     );
     const reflectanceMap = pbrBindingNames.has("reflectanceMap");
+    const lightmap = pbrBindingNames.has("lmTexture");
     return [
         checkedRow(
             "BBLITE_RENDERER_TRANSMISSION",
@@ -1235,6 +1259,27 @@ function capabilityRows(
                 "KHR_materials_iridescence); scene half " +
                 "src/material/pbr/set-iridescence.ts; fragment " +
                 "src/material/pbr/fragments/iridescence-fragment.ts",
+            [
+                "render_capabilities.hpp",
+                "material_texture_slots.hpp",
+                "variant table",
+            ],
+        ),
+        checkedRow(
+            "BBLITE_MATERIAL_LIGHTMAP",
+            "capability",
+            lightmap,
+            [
+                [
+                    has("material:lightmap") && lightmap,
+                    "scene source reached material:lightmap and a composed " +
+                        "variant binds lmTexture",
+                ],
+            ],
+            "no composed PBR variant binds lmTexture",
+            "src/material/pbr/enable-pbr-lightmap.ts is the opt-in that " +
+                "registers the extension; fragments/lightmap-fragment.ts " +
+                "declares the lmTexture/lmSampler pair and the lmLvl field",
             [
                 "render_capabilities.hpp",
                 "material_texture_slots.hpp",

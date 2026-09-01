@@ -29,6 +29,11 @@ test("registers every PBR extension the pin owns", async () => {
         "gamma-albedo",
         "ibl",
         "iridescence",
+        // The baked lightmap, whose opt-in registers it upstream. Its own
+        // `detect` answers zero for a material with no `lightmapTexture`,
+        // so registering it here is inert for every scene that never calls
+        // `enablePbrLightmap()`.
+        "lightmap",
         // Mesh extensions: `pbr-renderable.ts` drains these from its own scan
         // over the scene's meshes, after the environment and the scene hooks.
         "morph",

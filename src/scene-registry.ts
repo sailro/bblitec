@@ -3157,6 +3157,60 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "regression-torus-knot",
+        name: "Regression - Torus Knot Builder",
+        source: "examples/regression-torus-knot.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Torus Knot Builder",
+        parity: {
+            // Corpus scene 214's knot field with the shadow generator
+            // removed, so a non-zero number here is the builder, the
+            // curve's Frenet frame or `computeNormals` — never the
+            // `csm-single-map-near-cascade` adaptation 214 measures.
+            // Delete this gate once a corpus scene reaches
+            // `createTorusKnot` under a shadow path this port composes.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene111",
+        name: "Scene 111 - Scene-Wide Light UBO Stress",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene111.ts",
+        title: "Babylon Lite Native - Light UBO Stress",
+        parity: {
+            // Sixteen lights of four kinds over three material families,
+            // each light restricted to a mesh-id set, with the ESM
+            // directional, PCF spot and PCF directional generators all
+            // casting at once. 185 pixels differ from the golden, none by
+            // more than five counts, and three differ between the backends
+            // by one — but the background mask narrows the region to
+            // 120384 px, so the same absolute error normalises to 0.0014.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [6, 8, 11],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene167",
+        name: "Scene 167 - PBR Lightmap",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene167.ts",
+        title: "Babylon Lite Native - PBR Lightmap",
+        parity: {
+            // Every branch of the pin's lightmap fragment at once: the
+            // glTF level's uv2 shadowmap-multiply with the sRGB decode and
+            // the `uAng` V-flip, and the procedural boxes' additive uv1
+            // arm. One pixel differs from the golden on either backend.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [29, 30, 45],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "tetris",
         name: "Tetris",
         source: "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",

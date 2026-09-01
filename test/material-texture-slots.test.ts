@@ -21,6 +21,7 @@ const noFeatures: MaterialTextureSlotFeatures = {
     clearcoat: false,
     sheen: false,
     iridescence: false,
+    lightmap: false,
     metallicReflectanceMap: false,
     reflectanceMap: false,
     specularGlossiness: false,
@@ -114,6 +115,7 @@ test("extension rows append in the pinned registration order", () => {
             clearcoat: true,
             sheen: true,
             iridescence: true,
+            lightmap: true,
             metallicReflectanceMap: true,
             reflectanceMap: true,
             specularGlossiness: true,
@@ -127,7 +129,7 @@ test("extension rows append in the pinned registration order", () => {
     );
     assert.ok(
         header.includes(
-            "inline constexpr std::size_t material_texture_mesh_slots = 20;",
+            "inline constexpr std::size_t material_texture_mesh_slots = 21;",
         ),
     );
     rowOrder(header, [
@@ -173,14 +175,19 @@ test("extension rows append in the pinned registration order", () => {
         `    {17, MaterialTextureSource::occlusion_uv2, ` +
         `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
         `"occlusionTexture", "occlusionSampler_"},`,
+        // ...the opt-in baked lightmap, uploaded linear because its own
+        // fragment does the sRGB decode...
+        `    {18, MaterialTextureSource::lightmap, ` +
+        `MaterialTextureSrgb::linear, MaterialTextureFallback::white, ` +
+        `"lmTexture", "lmSampler"},`,
         // ...then the Standard bump pair, so no index above moves...
-        `    {18, MaterialTextureSource::standard_bump, ` +
+        `    {19, MaterialTextureSource::standard_bump, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::flat_normal, ` +
         `"", ""},`,
         // ...and the Standard 2D reflection pair after bump, the same
         // append-only contract.
-        `    {19, MaterialTextureSource::standard_reflection, ` +
+        `    {20, MaterialTextureSource::standard_reflection, ` +
         `MaterialTextureSrgb::linear, ` +
         `MaterialTextureFallback::white, ` +
         `"", ""},`,

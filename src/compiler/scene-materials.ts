@@ -2,6 +2,7 @@ import type {
     ScenePbrAnisotropyManifest,
     ScenePbrClearCoatManifest,
     ScenePbrIridescenceManifest,
+    ScenePbrLightmapManifest,
     ScenePbrMaterialManifest,
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
@@ -218,6 +219,16 @@ export class SceneMaterialRecorder {
             "setPbrIridescence",
             index,
         ).iridescence = iridescence;
+    }
+
+    public recordScenePbrLightmap(
+        lightmap: ScenePbrLightmapManifest,
+        index: number | undefined,
+    ): void {
+        this.sceneMaterialForSetter(
+            "setPbrLightmap",
+            index,
+        ).lightmap = lightmap;
     }
 
     public recordScenePbrSubsurface(

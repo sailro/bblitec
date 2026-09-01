@@ -71,16 +71,26 @@ export function rootIdentifier(
 
 /**
  * The three shapes that write through a target this walk is tracking: an
- * assignment, an increment, and a method call that is not read-only.
+ * assignment, an increment, and a method call that mutates.
  *
  * `parameterIsReadOnly` and `returnedValueCanMove` ask different questions of
  * the root — "is it this parameter" and "does it outlive the call" — but they
- * recognize a write the same way, and both consult `readOnlyDataMethods` to do
- * it, so a family added there has to reach one place rather than two.
+ * recognize a write the same way, so a family added here has to reach one
+ * place rather than several.
+ *
+ * `mutatesVia` is the third caller's axis. Asked of a value that may be any
+ * data kind, the safe answer is "anything not proven read-only"
+ * (`readOnlyDataMethods`, the default); asked of a value the caller already
+ * knows is an array, whose method set is closed, the exact answer is
+ * `mutatingArrayMethods`. Both are legitimate and neither is the other's
+ * default, so the predicate is a parameter rather than a second copy of the
+ * three clauses.
  */
 function writesThroughRoot(
     node: ts.Node,
     isTarget: (expression: ts.Expression) => boolean,
+    mutatesVia: (method: string) => boolean = (method) =>
+        !readOnlyDataMethods.has(method),
 ): boolean {
     if (
         ts.isBinaryExpression(node) &&
@@ -100,8 +110,40 @@ function writesThroughRoot(
     return (
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
-        !readOnlyDataMethods.has(node.expression.name.text) &&
+        mutatesVia(node.expression.name.text) &&
         isTarget(node.expression.expression)
+    );
+}
+
+/** `writesThroughRoot`, for a caller outside this module. */
+export const writesThroughTrackedRoot = writesThroughRoot;
+
+/**
+ * Whether one call provably leaves the argument at `index` unchanged.
+ *
+ * Resolved through the checker's own signature rather than through
+ * `resolveFunctionDeclaration`, which refuses a generator, a generic or a
+ * rest parameter by throwing: right where a call is being LOWERED, wrong
+ * for a question asked speculatively over a whole file including calls the
+ * scene never reaches. `parameterIsReadOnly` asks it of its own nested
+ * calls and `constArrayIsWritten` of every call in a file, so the
+ * resolution lives here rather than in each.
+ */
+export function callArgumentIsReadOnly(
+    checker: ts.TypeChecker,
+    call: ts.CallExpression,
+    index: number,
+    active?: Set<ts.Symbol>,
+): boolean {
+    const called = checker.getResolvedSignature(call)?.declaration;
+    const parameter = called?.parameters[index]?.name;
+    return (
+        isSupportedFunction(called) &&
+        parameter !== undefined &&
+        ts.isIdentifier(parameter) &&
+        (active === undefined
+            ? parameterIsReadOnly(checker, called, parameter)
+            : parameterIsReadOnly(checker, called, parameter, active))
     );
 }
 
@@ -236,8 +278,6 @@ export function parameterIsReadOnly(
             return;
         }
         if (ts.isCallExpression(node)) {
-            const signature = checker.getResolvedSignature(node);
-            const called = signature?.declaration;
             for (const [index, argument] of node.arguments.entries()) {
                 if (!containsParameter(argument)) continue;
                 if (
@@ -253,18 +293,7 @@ export function parameterIsReadOnly(
                 ) {
                     continue;
                 }
-                const calledParameter = called?.parameters[index];
-                if (
-                    !isSupportedFunction(called) ||
-                    !calledParameter ||
-                    !ts.isIdentifier(calledParameter.name) ||
-                    !parameterIsReadOnly(
-                        checker,
-                        called,
-                        calledParameter.name,
-                        active,
-                    )
-                ) {
+                if (!callArgumentIsReadOnly(checker, node, index, active)) {
                     readOnly = false;
                     return;
                 }

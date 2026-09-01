@@ -1605,11 +1605,22 @@ export class NativeFunctionLowerer {
             if (found) return;
             if (ts.isCallExpression(node)) {
                 const callee = this.context.unwrap(node.expression);
+                // `requestAnimationFrame` joins `setTimeout` for the same
+                // reason and one more: a frame yield built on it is not a
+                // call at all in the lowered program, it is a CUT in the
+                // entry body's continuation. A once-emitted namespace
+                // function has no continuation to cut and no engine
+                // binding to queue against, and a counted wait through one
+                // would lose the count -- its body is emitted once for
+                // every call and every iteration.
+                const name = ts.isIdentifier(callee)
+                    ? callee.text
+                    : ts.isPropertyAccessExpression(callee)
+                    ? callee.name.text
+                    : undefined;
                 if (
-                    (ts.isIdentifier(callee) &&
-                        callee.text === "setTimeout") ||
-                    (ts.isPropertyAccessExpression(callee) &&
-                        callee.name.text === "setTimeout")
+                    name === "setTimeout" ||
+                    name === "requestAnimationFrame"
                 ) {
                     found = true;
                     return;

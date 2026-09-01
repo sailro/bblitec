@@ -175,6 +175,9 @@ struct GpuMesh {
     SDL_GPUTexture* iridescence = nullptr;
     SDL_GPUTexture* iridescence_thickness = nullptr;
 #endif
+#if BBLITE_MATERIAL_LIGHTMAP
+    SDL_GPUTexture* lightmap = nullptr;
+#endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
     SDL_GPUTexture* metallic_reflectance = nullptr;
 #endif
@@ -215,6 +218,9 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_IRIDESCENCE
     SDL_GPUSampler* iridescence_sampler = nullptr;
     SDL_GPUSampler* iridescence_thickness_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_LIGHTMAP
+    SDL_GPUSampler* lightmap_sampler = nullptr;
 #endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
     SDL_GPUSampler* metallic_reflectance_sampler = nullptr;
@@ -478,6 +484,10 @@ GpuMeshSlotMembers mesh_slot_members(
             return {
                 &GpuMesh::iridescence_thickness,
                 &GpuMesh::iridescence_thickness_sampler};
+#endif
+#if BBLITE_MATERIAL_LIGHTMAP
+        case Source::lightmap:
+            return {&GpuMesh::lightmap, &GpuMesh::lightmap_sampler};
 #endif
 #if BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP
         case Source::metallic_reflectance:

@@ -45,7 +45,13 @@ import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
 import { pinnedPlugins } from "./pinned-material-plugins.js";
-import type { ScenePbrMaterialManifest } from "./compiler/types.js";
+import type {
+    SceneMeshNamePredicate,
+    ScenePbrLightmapManifest,
+    ScenePbrMaterialManifest,
+} from "./compiler/types.js";
+import { pinnedGltfMeshNamePrefix } from "./lowering/gltf/loader.js";
+import { LoweringContext } from "./lowering/context.js";
 import {
     pinnedMeshFeaturesFromPrimitive,
     skinnedMeshIndices,
@@ -323,6 +329,113 @@ function stampSceneUnlit(
 }
 
 /**
+ * Stamps what `setPbrLightmap` stamps, through the pin's own setter.
+ *
+ * The setter is the port: it writes the five props the extension's `detect`
+ * reads and ORs the TEXCOORD_1 claim into `_uv2Mask`, so a field this port
+ * never names cannot be forgotten and a renamed one fails instead of
+ * composing a fragment missing the arm. The texture arrives as the two
+ * properties `detect` asks of it — its object `invertY` and the `uAng` a
+ * scene wrote — because the view and the sampler beside them belong to the
+ * bind hook, which composition never runs. The level is deliberately absent:
+ * `writeLightmapUBO` reads it off the material every time it runs, so it is
+ * a record lane rather than composition input, and the setter's own `?? 1`
+ * fills the value nothing here reads.
+ */
+function stampSceneLightmap(
+    setters: ScenePbrSetters,
+    input: PinnedMaterialInput,
+    lightmap: ScenePbrLightmapManifest | undefined,
+): void {
+    if (!lightmap) return;
+    setters.setPbrLightmap(
+        input,
+        { invertY: lightmap.textureInvertY, uAng: lightmap.textureUAng },
+        {
+            coordIndex: lightmap.coordIndex,
+            useAsShadowmap: lightmap.useAsShadowmap,
+            gamma: lightmap.gamma,
+        },
+    );
+}
+
+/**
+ * Evaluates a walk's mesh-name filter against one name.
+ *
+ * The grammar is the compiler's own closed form, so this is a fold and not
+ * an interpretation: every shape it cannot represent was refused where the
+ * scene wrote it.
+ */
+export function meshNameSelected(
+    predicate: SceneMeshNamePredicate,
+    name: string,
+): boolean {
+    switch (predicate.kind) {
+        case "always":
+            return true;
+        case "equals":
+            return name === predicate.value;
+        case "startsWith":
+            return name.startsWith(predicate.value);
+        case "not":
+            return !meshNameSelected(predicate.operand, name);
+        case "and":
+            return predicate.operands.every((operand) =>
+                meshNameSelected(operand, name)
+            );
+        case "or":
+            return predicate.operands.some((operand) =>
+                meshNameSelected(operand, name)
+            );
+    }
+}
+
+/**
+ * The glTF material indices a scene's lightmap walk stamps.
+ *
+ * The walk is over `scene.meshes`, which after `addToScene` is this
+ * container's renderables — one per node primitive, in the loader's own
+ * node-major, primitive-minor order — and each carries the name
+ * `load-gltf.ts` gives it: its glTF MESH's name, or the pinned fallback
+ * prefix plus that walk counter. So the selection is read off the document
+ * rather than guessed, and a material drawn by any selected renderable
+ * composes the lightmap arm.
+ */
+/**
+ * Which of a document's materials a scene stamped with a lightmap, and the
+ * options it stamped them with.
+ *
+ * The set is the fold of the scene's own walk against this document; the
+ * options are what the setter carried. The three composer entry points read
+ * one shape so a widening reaches all of them.
+ */
+export interface SceneLightmapSelection {
+    materials: ReadonlySet<number>;
+    options: ScenePbrLightmapManifest;
+}
+
+export async function gltfLightmapMaterials(
+    document: JsonObject,
+    predicate: SceneMeshNamePredicate,
+    /** The `KHR_materials_variants` the same scene selected, by name. */
+    selectedVariantName?: string,
+): Promise<ReadonlySet<number>> {
+    const selected = new Set<number>();
+    // One traversal, so a selected variant's material remap reaches the
+    // stamp exactly as it reaches every other composer reading this walk.
+    for (
+        const renderable of await gltfRenderables(
+            document as unknown as GltfDocument,
+            selectedVariantName,
+        )
+    ) {
+        if (!meshNameSelected(predicate, renderable.name)) continue;
+        selected.add(renderable.material);
+    }
+    return selected;
+}
+
+/**
  * The composer's material-shaped input for every material in a document.
  *
  * Shared by the arms scan, the variant space and the compose gate so all
@@ -341,6 +454,14 @@ export async function materialSubjects(
         /** The `setPbrUnlit` this scene applied to the container's own
          *  materials, with the tint it passed. */
         sceneUnlit?: { tint?: readonly [number, number, number] };
+        /**
+         * The `setPbrLightmap` a scene's own mesh walk applied, with the
+         * walk's filter already folded to the material indices it reaches.
+         * Unlike the unlit fact this is per material, because the reached
+         * walk selects by mesh name and PBR composition is settled per
+         * material at generation.
+         */
+        sceneLightmap?: SceneLightmapSelection;
     } = {},
 ): Promise<readonly MaterialSubject[]> {
     // The executed pinned loader behind every reader below, run on first
@@ -348,6 +469,11 @@ export async function materialSubjects(
     // reaches `pinnedMaterialInputFromGltf`/`gltfAnimatedExtensionTargets`,
     // so a scene with no glTF material never pays the ~15 pinned imports.
     await ensurePinnedLoaderExecution();
+    // Deferred for the same reason, one level in: the setters resolve eight
+    // more pinned modules, and both stamp sites below are guarded on this
+    // scene having named a lightmap at all.
+    const lightmap = scene.sceneLightmap;
+    const setters = lightmap ? await scenePbrSetters() : undefined;
     const view = document as GltfDocument;
     const materials = view.materials ?? [];
     const imageOf = gltfImageResolver(document);
@@ -403,6 +529,9 @@ export async function materialSubjects(
         });
         stampClusteredLightState(input, scene.clusteredLights);
         stampSceneUnlit(input, scene.sceneUnlit);
+        if (setters && lightmap?.materials.has(index)) {
+            stampSceneLightmap(setters, input, lightmap.options);
+        }
         const drawn = primitiveOf.get(index);
         subjects.push({
             index,
@@ -432,11 +561,16 @@ export async function materialSubjects(
         });
         stampClusteredLightState(input, scene.clusteredLights);
         stampSceneUnlit(input, scene.sceneUnlit);
+        if (setters && lightmap?.materials.has(materials.length)) {
+            stampSceneLightmap(setters, input, lightmap.options);
+        }
         subjects.push({
             index: materials.length,
             name: "default material",
             input,
-            uv2Mask: 0,
+            // The pin's default material carries no textures, so this is
+            // zero unless a lightmap stamped its TEXCOORD_1 claim.
+            uv2Mask: (input["_uv2Mask"] as number | undefined) ?? 0,
             meshFeatures: 0,
             metallicReflectanceRegistered: false,
         });
@@ -458,6 +592,7 @@ export async function composeGltfMaterials(
         linearImageProcessing?: boolean;
         clusteredLights?: { hasSpots: boolean };
         sceneUnlit?: { tint?: readonly [number, number, number] };
+        sceneLightmap?: SceneLightmapSelection;
     } = {},
 ): Promise<readonly PinnedComposedMaterial[]> {
     const document = glbView(path);
@@ -647,6 +782,9 @@ export async function composeRenderableVariants(
         /** The `setPbrUnlit` this scene applied to the container's own
          *  materials, with the tint it passed. */
         sceneUnlit?: { tint?: readonly [number, number, number] };
+        /** The `setPbrLightmap` a scene's own mesh walk applied, folded to
+         *  the material indices its filter reaches. */
+        sceneLightmap?: SceneLightmapSelection;
         /** The `KHR_materials_variants` this scene selected on the asset. */
         selectedVariant?: string;
         /** Compose a caster view keyed by the source material handle. */
@@ -838,6 +976,12 @@ interface ScenePbrSetters {
     setPbrSheen: PinnedLayerSetter<Record<string, unknown>>;
     setPbrClearCoat: PinnedLayerSetter<Record<string, unknown>>;
     setPbrIridescence: PinnedLayerSetter<Record<string, unknown>>;
+    /** The one setter taking a texture between the material and its options. */
+    setPbrLightmap: (
+        material: PinnedMaterialInput,
+        texture: Record<string, unknown>,
+        options: Record<string, unknown>,
+    ) => void;
     setPbrAnisotropy: PinnedLayerSetter<Record<string, unknown>>;
     setPbrSubsurface: PinnedLayerSetter<Record<string, unknown>>;
     setPbrEmissive: PinnedLayerSetter<readonly number[]>;
@@ -859,6 +1003,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             emissive,
             reflectance,
             gammaAlbedo,
+            lightmap,
         ] =
             await Promise.all([
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrSheen">>(
@@ -885,6 +1030,12 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
                 importPinnedModule<Pick<ScenePbrSetters, "setPbrGammaAlbedo">>(
                     "material/pbr/set-gamma-albedo.js",
                 ),
+                // The lightmap's setter shares its module with the opt-in
+                // that registers the extension, which `pinned-pbr-variants`
+                // already performs.
+                importPinnedModule<Pick<ScenePbrSetters, "setPbrLightmap">>(
+                    "material/pbr/enable-pbr-lightmap.js",
+                ),
             ]);
         return {
             setPbrSheen: sheen.setPbrSheen,
@@ -896,6 +1047,7 @@ function scenePbrSetters(): Promise<ScenePbrSetters> {
             setPbrMetallicReflectance:
                 reflectance.setPbrMetallicReflectance,
             setPbrGammaAlbedo: gammaAlbedo.setPbrGammaAlbedo,
+            setPbrLightmap: lightmap.setPbrLightmap,
         };
     })();
     return scenePbrSettersPromise;
@@ -1111,6 +1263,7 @@ export async function composeScenePbrVariants(
                     : {}),
             });
         }
+        stampSceneLightmap(setters, input, material.lightmap);
         if (material.anisotropy) {
             setters.setPbrAnisotropy(input, {
                 isEnabled: material.anisotropy.isEnabled,
@@ -1235,12 +1388,20 @@ export async function composeScenePbrVariants(
  * nodes by index, a meshed node's primitives in order. This is the walk
  * that keys the runtime's mesh handles, and composition groups the same
  * entries by material, so both sides read one traversal.
+ *
+ * The `name` is the one `load-gltf.ts` gives each renderable —
+ * `json.meshes[json.nodes[m._nodeIndex].mesh].name || prefix + i`, whose
+ * `||` also covers an authored empty string — carried here so a scene walk
+ * that selects renderables by name reads this traversal rather than
+ * growing a second one. It is the counter this loop already keeps.
  */
 export async function gltfRenderables(
     document: GltfDocument,
     /** The `KHR_materials_variants` a scene selected, by name. */
     selectedVariantName?: string,
-): Promise<ReadonlyArray<{ material: number; features: number }>> {
+): Promise<
+    ReadonlyArray<{ material: number; features: number; name: string }>
+> {
     const record = document as unknown as Record<string, unknown>;
     const nodes = Array.isArray(record["nodes"])
         ? (record["nodes"] as Record<string, unknown>[])
@@ -1255,12 +1416,21 @@ export async function gltfRenderables(
         selectedVariantName,
         "composition",
     );
-    const renderables: { material: number; features: number }[] = [];
+    const prefix = pinnedGltfMeshNamePrefix(
+        new LoweringContext(sharedUpstreamStore()),
+    );
+    const renderables: {
+        material: number;
+        features: number;
+        name: string;
+    }[] = [];
     for (const node of nodes) {
         const meshIndex = node["mesh"];
         if (typeof meshIndex !== "number") continue;
-        const primitives = meshes[meshIndex]?.["primitives"];
+        const mesh = meshes[meshIndex];
+        const primitives = mesh?.["primitives"];
         if (!Array.isArray(primitives)) continue;
+        const authored = mesh?.["name"];
         for (const primitive of primitives as Record<string, unknown>[]) {
             const material = variantMaterialIndex(
                 primitive,
@@ -1268,6 +1438,9 @@ export async function gltfRenderables(
             );
             renderables.push({
                 material: material ?? (document.materials?.length ?? 0),
+                name: typeof authored === "string" && authored !== ""
+                    ? authored
+                    : `${prefix}${renderables.length}`,
                 features: await pinnedMeshFeaturesFromPrimitive(primitive, {
                     skinned: node["skin"] !== undefined,
                     instanced:

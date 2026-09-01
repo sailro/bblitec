@@ -33,9 +33,10 @@ export function pinnedPbrLightMode(
  * The light count is a run-time quantity, so what generation can answer is
  * "does SOME count give this arm". `canHaveNoAffectingLight` is the port's
  * own half: `light_affects_mesh` answers false only for a light naming the
- * meshes it applies to, and only the `.babylon` loader fills those lists, so
- * without such an asset every light in `scene.lights` affects every mesh --
- * and a scene with a shadow generator has at least one.
+ * meshes it applies to, which two producers fill -- a `.babylon` document's
+ * own per-light mesh lists, and scene code writing
+ * `light.includedOnlyMeshIds`. With neither, every light in `scene.lights`
+ * affects every mesh, and a scene with a shadow generator has at least one.
  */
 export function pinnedReceiverReachesArm(
     lightMode: PinnedLightMode,

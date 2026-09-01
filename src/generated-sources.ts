@@ -247,6 +247,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:thin-instances",
             "mesh:thin-instances-dynamic",
             "mesh:torus",
+            "mesh:torus-knot",
         ],
     },
     {

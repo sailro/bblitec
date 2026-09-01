@@ -5460,6 +5460,78 @@ test("rebinds JavaScript arrays through their shared native identity", () => {
     assert.match(result.cpp, /v_alias\.push_back\(3\.0\)/);
 });
 
+test("folds the torus knot's own defaults and takes each named arm", () => {
+    // The builder resolves six options through its own `??`, and generation
+    // takes the present arm of each -- so an omitted option reaches the
+    // record as the PIN's value (radius 2, tube 0.5, 32 and 32 segments,
+    // the (2, 3) winding) and a named one as the scene's.
+    const defaults = compileSource(`
+        import { createTorusKnot, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createTorusKnot(engine);
+        }
+        void main();
+    `);
+    assert.match(
+        defaults.cpp,
+        /bbl::TorusKnotOptions\{2\.0, 0\.5, 32\.0, 32\.0, 2\.0, 3\.0\}/,
+    );
+
+    const named = compileSource(`
+        import { createTorusKnot, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createTorusKnot(engine, {
+                radius: 20,
+                tube: 5,
+                radialSegments: 48,
+                tubularSegments: 24,
+                p: 3,
+                q: 5,
+            });
+        }
+        void main();
+    `);
+    assert.match(
+        named.cpp,
+        /bbl::TorusKnotOptions\{20\.0, 5\.0, 48\.0, 24\.0, 3\.0, 5\.0\}/,
+    );
+
+    // A partially-named call keeps the pin's answer for what it left out.
+    const partial = compileSource(`
+        import { createTorusKnot, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createTorusKnot(engine, { radius: 20, tube: 5 });
+        }
+        void main();
+    `);
+    assert.match(
+        partial.cpp,
+        /bbl::TorusKnotOptions\{20\.0, 5\.0, 32\.0, 32\.0, 2\.0, 3\.0\}/,
+    );
+
+    // An option the pinned factory does not have refuses at the call site
+    // rather than being dropped into a record that has no field for it.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createTorusKnot, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createTorusKnot(engine, { radius: 20, sideOrientation: 1 });
+        }
+        void main();
+    `),
+        /Reached torus knots name their radius, tube, segment counts/,
+    );
+});
+
 test("asks the pin's cone-tip question of the option the scene named", () => {
     // `createCylinderData` clamps a zero diameter for its ring maths and
     // asks `options.diameterTop === 0` separately, of the NAMED option. So
@@ -7811,6 +7883,37 @@ test("does not browser-fold ordinary parseFloat calls", () => {
     );
 });
 
+test("folds Number.parseFloat exactly as the bare global", () => {
+    // ES2015 put the same function object on `Number`, so which spelling a
+    // scene wrote cannot decide whether its query value stays browser
+    // state or what it folds to. Scene 302 writes the qualified one.
+    const qualified = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = Number.parseFloat(params.get("seekTime") || "");
+            if (isNaN(seek)) {
+                box.position.x = 3;
+            } else {
+                box.position.x = seek;
+            }
+        }
+    `;
+    // No query: the parse is NaN, so the guard's own arm is the one kept.
+    const bare = compileSource(qualified);
+    assert.match(bare.cpp, /\.position\.x = 3\.0/);
+    // With the pose's own query it folds to the number generation knows.
+    const queried = compileSource(qualified, { search: "?seekTime=0.5" });
+    assert.match(queried.cpp, /\.position\.x = 0\.5/);
+    assert.doesNotMatch(queried.cpp, /parseFloat/);
+});
+
 test("materializes direct browser primitive call arms", () => {
     const result = compileSource(`
         import {
@@ -8310,6 +8413,88 @@ test("stores mesh visibility in the live mesh record", () => {
 
     assert.match(result.cpp, /\.meshes\[v_anchor\.value\]\.visible = false;/);
     assert.ok(result.manifest.features.includes("mesh:visible"));
+});
+
+test("folds a light include set to the meshes its ids name", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            createPointLight,
+            createSphere,
+            type LightBase,
+        } from "@babylonjs/lite";
+        function restrict(light: LightBase, ids: readonly string[]): void {
+            light.includedOnlyMeshIds = new Set(ids);
+        }
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine, 1);
+            box.id = "lit-box";
+            const ball = createSphere(engine, { diameter: 1 });
+            ball.id = "lit-ball";
+            const boxSet = ["lit-box"];
+            const ballSet = ["lit-ball"];
+            const light = createPointLight([0, 2, 0], 1);
+            restrict(light, [...boxSet, ...ballSet]);
+            const other = createPointLight([2, 2, 0], 1);
+            restrict(other, ballSet);
+        }
+        void main();
+    `);
+
+    // The write lands inside the inlined helper, so the light is that
+    // frame's alias of the caller's handle.
+    assert.match(
+        result.cpp,
+        /v_fn1_light = v_light;[\s\S]*?\.lights\[v_fn1_light\.value\]\.included_meshes = \{v_box\.value, v_ball\.value\};/,
+    );
+    assert.match(
+        result.cpp,
+        /v_fn2_light = v_other;[\s\S]*?\.lights\[v_fn2_light\.value\]\.included_meshes = \{v_ball\.value\};/,
+    );
+    // `Mesh.id` has one reader upstream and the join folds here, so no
+    // record lane carries the string; the scene's own id arrays are its
+    // own plain data and stay.
+    assert.doesNotMatch(result.cpp, /\.meshes\[[^\]]*\]\.id/);
+    assert.ok(result.manifest.features.includes("light:included-meshes"));
+});
+
+test("refuses a light include set naming an id no mesh carries", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createBox, createEngine, createPointLight } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    const box = createBox(engine, 1);
+                    box.id = "lit-box";
+                    const light = createPointLight([0, 2, 0], 1);
+                    light.includedOnlyMeshIds = new Set(["absent"]);
+                }
+                void main();
+            `),
+        /No mesh carries the id "absent"/,
+    );
+});
+
+test("refuses a mesh id write that would stale an emitted include set", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createBox, createEngine, createPointLight } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    const box = createBox(engine, 1);
+                    box.id = "lit-box";
+                    const light = createPointLight([0, 2, 0], 1);
+                    light.includedOnlyMeshIds = new Set(["lit-box"]);
+                    box.id = "renamed";
+                }
+                void main();
+            `),
+        /already resolved a light's includedOnlyMeshIds/,
+    );
 });
 
 test("erases a proven write-only optional numeric mesh expando", () => {
@@ -9914,21 +10099,26 @@ test("compiles pinned scene 213 GridMaterial options", () => {
 });
 
 test("reports unsupported Babylon Lite APIs with source locations", () => {
+    // `createCapsule` stands in for the whole unreached surface: a pinned
+    // mesh factory this port has not lowered, named by the refusal rather
+    // than swallowed. It replaced `createTorusKnot` when that one shipped,
+    // so if it ever ships too, pick another unreached export instead of
+    // relaxing what the refusal has to say.
     assert.throws(
         () =>
             compileSource(
-                `import { createTorusKnot, createEngine } from "@babylonjs/lite";
+                `import { createCapsule, createEngine } from "@babylonjs/lite";
 async function main() {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    createTorusKnot(engine);
+    createCapsule(engine);
 }`,
                 { fileName: "unsupported.ts" },
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /createTorusKnot/);
+            assert.match(error.message, /createCapsule/);
             return true;
         },
     );
@@ -12103,30 +12293,105 @@ test("refuses a frame yield nested in a block after startEngine", () => {
                 ),
                 frameYieldFile,
             ),
-        /needs the yield to be a statement of the entry body/,
+        /needs the yield to lower at the entry body's own level/,
     );
 });
 
-test("refuses a frame yield inside a helper body inlined after startEngine", () => {
-    // A helper's body lowers per call site, so a yield in one inlined
-    // after startEngine sits inside the hoisted continuation exactly as
-    // an entry-block yield does -- and erasing it there would run the
-    // statements after it a frame early. Same refusal as the block case;
-    // this used to erase silently.
-    assert.throws(
-        () =>
-            compileSource(
-                frameYieldScene("    await settle(scene);").replace(
-                    "async function main(): Promise<void> {",
-                    `async function settle(target: SceneContext): Promise<void> {
+test("re-queues a frame yield inside a helper body inlined after startEngine", () => {
+    // A helper's body lowers per call site, and an inlined body with no
+    // early return is written out FLAT at the caller's own level -- so the
+    // marker lands exactly where an entry-block yield's would, and cutting
+    // there parks the statements after the call one frame out. The
+    // helper's own locals are declared at that level too, which is what
+    // gives them the static storage the nested continuation reads.
+    const result = compileSource(
+        frameYieldScene("    await settle(scene);").replace(
+            "async function main(): Promise<void> {",
+            `async function settle(target: SceneContext): Promise<void> {
     target.clearColor = { r: 0, g: 1, b: 0, a: 1 };
     await new Promise<void>((r) => requestAnimationFrame(() => r()));
 }
 async function main(): Promise<void> {`,
+        ),
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
+    assert.match(
+        result.cpp,
+        /bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{[^]*?clear_color[^]*?bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{/,
+    );
+});
+
+test("unrolls a constant-trip frame-yield loop into one re-queue per frame", () => {
+    // Scenes 113/114/115/118's `waitFrames(4)`: the trip count is a
+    // generation-known argument, so the loop is written out and the yields
+    // become a RUN of sequential ones -- four nested boundaries, plus the
+    // outer hoist, and the statement after the call lands in the innermost.
+    const result = compileSource(
+        frameYieldScene(
+            `    await waitFrames(4);
+    scene.clearColor = { r: 1, g: 0, b: 0, a: 1 };`,
+        ).replace(
+            "async function main(): Promise<void> {",
+            `async function waitFrames(frameCount: number): Promise<void> {
+    for (let i = 0; i < frameCount; i++) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }
+}
+async function main(): Promise<void> {`,
+        ),
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame|for \(/);
+    assert.equal(
+        (result.cpp.match(/bbl::defer_start_continuation\(/g) ?? [])
+            .length,
+        5,
+    );
+    // The scene mutation is behind all four boundaries, not beside them.
+    assert.match(
+        result.cpp,
+        /(?:defer_start_continuation[^]*?){5}[^]*?clear_color/,
+    );
+});
+
+test("unrolls a constant-trip frame-yield loop past the ordinary unroll cap", () => {
+    // Scene 261's shape: 160 accumulation frames, well past the 32-body
+    // static-index cap. A frame yield forces static iteration for the same
+    // reason pinned scene construction does -- emitting the body once
+    // inside a native loop would record ONE frame boundary for 160
+    // iterations, which is the multi-frame wait this runtime refuses.
+    const result = compileSource(
+        frameYieldScene(
+            `    for (let i = 0; i < 160; i++) {
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    }`,
+        ),
+        frameYieldFile,
+    );
+    assert.equal(
+        (result.cpp.match(/bbl::defer_start_continuation\(/g) ?? [])
+            .length,
+        161,
+    );
+});
+
+test("still refuses a frame yield in a loop whose trip count is not known", () => {
+    // The refusal is about a RUNTIME loop: nothing writes it out, so one
+    // emitted yield would stand in for however many the loop runs.
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    `    let frames = 0;
+    while (frames < 4) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+        frames += 1;
+    }`,
                 ),
                 frameYieldFile,
             ),
-        /needs the yield to be a statement of the entry body/,
+        /A frame yield inside a loop is a multi-frame wait/,
     );
 });
 
@@ -12336,18 +12601,25 @@ test("refuses recurring timers that capture an outer frame local", () => {
     );
 });
 
-test("refuses a frame yield inside a loop as the multi-frame wait it is", () => {
-    assert.throws(
-        () =>
-            compileSource(
-                frameYieldScene(
-                    `    for (let i = 0; i < 5; i++) {
+test("writes out a constant-trip frame-yield loop as one boundary per frame", () => {
+    // A multi-frame wait is still not a thing this runtime fakes; a loop
+    // whose trip count is generation-known is not one. Unrolling writes the
+    // body out FLAT once per iteration, so five yields become five
+    // sequential ones -- the shape the continuation re-queue already
+    // lowers -- rather than one emitted yield standing in for five.
+    const result = compileSource(
+        frameYieldScene(
+            `    for (let i = 0; i < 5; i++) {
         await new Promise<void>((r) => requestAnimationFrame(() => r()));
     }`,
-                ),
-                frameYieldFile,
-            ),
-        /frame yield inside a loop is a multi-frame wait/,
+        ),
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
+    assert.equal(
+        (result.cpp.match(/bbl::defer_start_continuation\(/g) ?? [])
+            .length,
+        6,
     );
 });
 
@@ -13164,5 +13436,228 @@ test("refuses rebuildMaterial after native startup has begun", () => {
                 void main();
             `),
         /live GPU material resource replacement/,
+    );
+});
+
+/**
+ * The PBR lightmap's compile-time half.
+ *
+ * Every option the setter takes except the level is composition input —
+ * `lightmap-fragment.ts`'s own `detect` reads the blend, the UV set, the
+ * gamma decode and the texture's `invertY`/`uAng` pair — so what these
+ * assert is that each one settles at generation and that the shapes which
+ * cannot settle refuse by name rather than composing a plausible arm.
+ */
+const lightmapScene = (body: string): string => `
+    import {
+        createEngine,
+        createPbrMaterial,
+        enablePbrLightmap,
+        loadTexture2D,
+        setPbrLightmap,
+    } from "@babylonjs/lite";
+
+    async function main() {
+        const engine = await createEngine({});
+        ${body}
+    }
+`;
+
+test("stamps a scene-code PBR lightmap with the arms composition reads", () => {
+    const result = compileSource(lightmapScene(`
+        await enablePbrLightmap();
+        const lightmap = await loadTexture2D(engine, "/textures/lm.png");
+        lightmap.uAng = Math.PI;
+        const material = createPbrMaterial({});
+        setPbrLightmap(material, lightmap, {
+            coordIndex: 0,
+            level: 0.8,
+            gamma: true,
+        });
+    `));
+
+    assert.ok(result.manifest.features.includes("material:lightmap"));
+    assert.deepEqual(result.manifest.scenePbrMaterials[0]?.lightmap, {
+        coordIndex: 0,
+        useAsShadowmap: false,
+        gamma: true,
+        // `loadTexture2D` never sets the texture-OBJECT invertY, so the
+        // pin's own V-flip test is decided by the `uAng` write alone.
+        textureInvertY: false,
+        textureUAng: Math.PI,
+    });
+    // The one runtime lane: `writeLightmapUBO` reads the level live.
+    assert.match(result.cpp, /bbl::set_pbr_lightmap\([^\n]*, 0\.8f\)/);
+    assert.match(result.cpp, /\.data\.uv_transform\.u_ang = 3\.14159/);
+});
+
+test("defaults a lightmap to the pin's own TEXCOORD_1 and additive blend", () => {
+    const result = compileSource(lightmapScene(`
+        await enablePbrLightmap();
+        const lightmap = await loadTexture2D(engine, "/textures/lm.png");
+        const material = createPbrMaterial({});
+        setPbrLightmap(material, lightmap);
+    `));
+
+    assert.deepEqual(result.manifest.scenePbrMaterials[0]?.lightmap, {
+        coordIndex: 1,
+        useAsShadowmap: false,
+        gamma: false,
+        textureInvertY: false,
+        textureUAng: 0,
+    });
+    assert.match(result.cpp, /bbl::set_pbr_lightmap\([^\n]*, 1\.0f\)/);
+});
+
+test("refuses setPbrLightmap before the opt-in registers the extension", () => {
+    assert.throws(
+        () =>
+            compileSource(lightmapScene(`
+                const lightmap = await loadTexture2D(engine, "/t/lm.png");
+                const material = createPbrMaterial({});
+                setPbrLightmap(material, lightmap, { coordIndex: 0 });
+            `)),
+        /reached before `enablePbrLightmap\(\)`/,
+    );
+});
+
+test("refuses a lightmap blend generation cannot settle", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSceneContext,
+                    enablePbrLightmap,
+                    loadTexture2D,
+                    setPbrLightmap,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    await enablePbrLightmap();
+                    const lightmap = await loadTexture2D(engine, "/t/lm.png");
+                    const material = createPbrMaterial({});
+                    for (const mesh of scene.meshes) {
+                        setPbrLightmap(material, lightmap, {
+                            useAsShadowmap: mesh.name === "level",
+                        });
+                    }
+                }
+            `),
+        // The static evaluator refuses the non-literal read first, which is
+        // the same answer one rung earlier: the blend decides which of the
+        // pinned fragment's arms composes, so it cannot be per draw.
+        /Expected a boolean literal/,
+    );
+});
+
+test("refuses a lightmap UV set the pinned extension does not declare", () => {
+    assert.throws(
+        () =>
+            compileSource(lightmapScene(`
+                await enablePbrLightmap();
+                const lightmap = await loadTexture2D(engine, "/t/lm.png");
+                const material = createPbrMaterial({});
+                setPbrLightmap(material, lightmap, { coordIndex: 2 });
+            `)),
+        /TEXCOORD_0 or TEXCOORD_1/,
+    );
+});
+
+test("folds a loaded container's lightmap walk to its mesh-name filter", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createEngine,
+            createSceneContext,
+            enablePbrLightmap,
+            loadGltf,
+            loadTexture2D,
+            setPbrLightmap,
+            type PbrMaterialProps,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            await enablePbrLightmap();
+            const lightmap = await loadTexture2D(engine, "/textures/lm.png");
+            lightmap.uAng = Math.PI;
+            const container = await loadGltf(engine, "/models/level.glb");
+            addToScene(scene, container);
+            for (const mesh of scene.meshes) {
+                if (mesh.name !== "level" && !mesh.name.startsWith("level_")) {
+                    continue;
+                }
+                const mat = mesh.material as PbrMaterialProps | undefined;
+                if (mat) {
+                    setPbrLightmap(mat, lightmap, { level: 3.2, gamma: true });
+                }
+            }
+        }
+    `);
+
+    const asset = result.manifest.assets.find(
+        (entry) => entry.kind === "gltf",
+    );
+    // The filter travels as the predicate the loop wrote, negated: the body
+    // runs for exactly the names the `continue` does not skip. The document
+    // is what evaluates it, at composition.
+    assert.deepEqual(asset?.sceneLightmap?.meshNamePredicate, {
+        kind: "not",
+        operand: {
+            kind: "and",
+            operands: [
+                { kind: "not", operand: { kind: "equals", value: "level" } },
+                {
+                    kind: "not",
+                    operand: { kind: "startsWith", value: "level_" },
+                },
+            ],
+        },
+    });
+    assert.equal(asset?.sceneLightmap?.options.coordIndex, 1);
+    assert.equal(asset?.sceneLightmap?.options.gamma, true);
+    assert.equal(asset?.sceneLightmap?.options.textureUAng, Math.PI);
+    assert.match(result.cpp, /bbl::set_pbr_lightmap\([^\n]*, 3\.2f\)/);
+});
+
+test("refuses a lightmap walk filter outside the folded grammar", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    addToScene,
+                    createEngine,
+                    createSceneContext,
+                    enablePbrLightmap,
+                    loadGltf,
+                    loadTexture2D,
+                    setPbrLightmap,
+                    type PbrMaterialProps,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    await enablePbrLightmap();
+                    const lightmap = await loadTexture2D(engine, "/t/lm.png");
+                    const container = await loadGltf(engine, "/m/level.glb");
+                    addToScene(scene, container);
+                    for (const mesh of scene.meshes) {
+                        if (mesh.name.length > 4) {
+                            continue;
+                        }
+                        const mat = mesh.material as PbrMaterialProps | undefined;
+                        if (mat) {
+                            setPbrLightmap(mat, lightmap, { coordIndex: 0 });
+                        }
+                    }
+                }
+            `),
+        /closed grammar/,
     );
 });

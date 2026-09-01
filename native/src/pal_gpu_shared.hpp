@@ -764,6 +764,8 @@ inline const TextureData* material_slot_texture(
             return standard_material
                 ? nullptr
                 : &material.iridescence_thickness_texture;
+        case Source::lightmap:
+            return standard_material ? nullptr : &material.lightmap_texture;
         case Source::metallic_reflectance:
             return standard_material
                 ? nullptr

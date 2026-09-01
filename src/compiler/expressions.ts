@@ -17,6 +17,7 @@ import {
     compileAudioMethodCall,
     isSupportedAudioMethodProperty,
 } from "./audio-surface.js";
+import { isParseFloatCallee } from "./browser-erasure.js";
 import type { ClassLowerer } from "./classes.js";
 import {
     compileCompressedJsonCall,
@@ -2712,6 +2713,34 @@ export class ExpressionLowerer {
                 callee,
             );
         }
+        // `parseFloat(<query text>)`: the same value browser-erasure already
+        // settles for a guard beside it. It travels through the one path
+        // that turns a settled browser primitive into a value, so what a
+        // scene reads through its own pose is the number generation KNOWS
+        // -- which is what lets a helper's guard on it fold. Above the
+        // identifier gate because `Number.parseFloat` is the same function
+        // under a property access, and the two spellings must not diverge.
+        if (
+            isParseFloatCallee(callee, this.context) &&
+            call.arguments.length === 1
+        ) {
+            const settled = this.context.evaluateBrowserValue(call);
+            if (
+                settled?.kind === "number" &&
+                Number.isFinite(settled.value)
+            ) {
+                // The value is returned already settled rather than through
+                // `materializeBrowserPrimitive`: that helper renders its cpp
+                // with `compileNumber(expression)`, which for THIS
+                // expression re-enters the arm it was reached from.
+                return {
+                    kind: "number",
+                    cpp: doubleLiteral(settled.value),
+                    staticNumber: settled.value,
+                };
+            }
+        }
+
         if (!ts.isIdentifier(callee)) {
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
@@ -2770,33 +2799,6 @@ export class ExpressionLowerer {
                 call.arguments[0]!,
                 `String() supports number, boolean, and string values, received ${value.kind}.`,
             );
-        }
-
-        // `parseFloat(<query text>)`: the same value browser-erasure already
-        // settles for a guard beside it. It travels through the one path
-        // that turns a settled browser primitive into a value, so what a
-        // scene reads through its own pose is the number generation KNOWS
-        // -- which is what lets a helper's guard on it fold.
-        if (
-            callee.text === "parseFloat" &&
-            call.arguments.length === 1 &&
-            this.context.isDefaultLibraryIdentifier(callee)
-        ) {
-            const settled = this.context.evaluateBrowserValue(call);
-            if (
-                settled?.kind === "number" &&
-                Number.isFinite(settled.value)
-            ) {
-                // The value is returned already settled rather than through
-                // `materializeBrowserPrimitive`: that helper renders its cpp
-                // with `compileNumber(expression)`, which for THIS
-                // expression re-enters the arm it was reached from.
-                return {
-                    kind: "number",
-                    cpp: doubleLiteral(settled.value),
-                    staticNumber: settled.value,
-                };
-            }
         }
 
         if (

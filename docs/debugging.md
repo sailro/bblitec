@@ -374,7 +374,14 @@ assumption about it.
 
 Its one blind spot is a material the *scene* built rather than the asset —
 `createPbrMaterial` plus a `setPbr*` call — which it flags rather than
-reporting as a bare gap.
+reporting as a bare gap. The same limit reaches an asset material a scene
+*stamps*: `compose` derives each material from the document alone, so a
+`setPbrUnlit` or `setPbrLightmap` applied over a container walk is invisible
+to it and the material matches the unstamped fragment. A green `compose` on
+such a scene is therefore weaker than it looks; the stronger check is the one
+that needs no derivation at all — hash each generated `variant-*.native.wgsl`
+against the browser's captured modules, which is what `scene -- diff`'s
+shader-arm section already does.
 
 `--capture <dir>` compares against a capture written somewhere other than
 `artifacts/capture/<scene>`; it names one scene's capture directory, so it
@@ -384,8 +391,12 @@ does not compose with `all`.
 
 A blocker names a capability; it does not size one. The first error a
 scene reports is the first line of its chain, not its length — scenes
-111, 140 and 226 each hide a whole subsystem behind a one-line blocker,
-as scenes 4, 251 and 270 did before they were integrated.
+214, 215 and 231 each hide a whole subsystem behind a one-line blocker,
+as scenes 4, 251 and 270 did before they were integrated. It cuts the
+other way just as often, so the probe is what decides either claim: 111
+and 167 read as subsystems and were two contracts each, while 214's
+`createTorusKnot` turned out to be the cheap half of a scene whose real
+cost is the cascade array behind it.
 
 **Compile-probe first.** This works without a registry entry:
 

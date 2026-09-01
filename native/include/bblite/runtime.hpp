@@ -2063,6 +2063,13 @@ struct MaterialRecord {
     float anisotropy_intensity = 1.0f;
     Vec2 anisotropy_direction{1.0f, 0.0f};
     bool has_anisotropy = false;
+    // `setPbrLightmap`'s intensity multiplier, the one lightmap quantity
+    // that is not composed into the fragment: the pin's own
+    // `writeLightmapUBO` reads `material.lightmapLevel ?? 1` every time it
+    // runs, so the default here is that fallback. The blend, the UV set,
+    // the gamma decode and the V flip are all composition input and carry
+    // no lane at all.
+    float lightmap_level = 1.0f;
     float iridescence_intensity = 0.0f;
     // Pinned defaults: KHR_materials_iridescence ior 1.3, thickness
     // 100..400 nm (gltf-ext-iridescence.ts).
@@ -2180,6 +2187,8 @@ struct MaterialRecord {
     TextureData sheen_roughness_texture;
     TextureData iridescence_texture;
     TextureData iridescence_thickness_texture;
+    /** The baked lightmap `setPbrLightmap` bound (enable-pbr-lightmap.ts). */
+    TextureData lightmap_texture;
     TextureData emissive_texture;
     TextureData opacity_texture;
     TextureData specular_texture;
@@ -3220,6 +3229,22 @@ struct TorusOptions {
     std::uint32_t tessellation;
 };
 
+/**
+ * `TorusKnotOptions`, as the reached slice resolves it.
+ *
+ * Every field is written by generation from the pinned factory's own `??`
+ * chain, so none carries a default here -- the disc's contract, for the
+ * other builder whose whole option set is scalars.
+ */
+struct TorusKnotOptions {
+    double radius;
+    double tube;
+    double radial_segments;
+    double tubular_segments;
+    double p;
+    double q;
+};
+
 struct EnvironmentOptions {
     std::string environment_url;
     std::string ground_texture_url;
@@ -3291,6 +3316,7 @@ void set_morph_target_weights(
     MeshHandle mesh,
     const std::vector<float>& weights);
 MeshHandle create_torus(Engine& engine, TorusOptions options);
+MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options);
 MeshHandle create_disc(Engine& engine, DiscOptions options);
 MeshHandle create_cylinder(Engine& engine, CylinderOptions options);
 MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options);
@@ -3576,6 +3602,14 @@ void set_pbr_metallic_reflectance(
     Color3 color,
     FileTexture metallic_texture,
     FileTexture reflectance_texture);
+// `enable-pbr-lightmap.ts#setPbrLightmap`, past everything the composer
+// already settled: what reaches the record is the texture the extension's
+// own `bind` hook binds and the level its `writeUbo` reads.
+void set_pbr_lightmap(
+    Engine& engine,
+    MaterialHandle material,
+    FileTexture texture,
+    float level);
 void set_pbr_subsurface(
     Engine& engine,
     MaterialHandle material,

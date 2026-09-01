@@ -176,8 +176,10 @@ import {
 import {
     aliasedMutationScan,
     type AliasedMutationScan,
+    callArgumentIsReadOnly,
     parameterIsReadOnly,
     recursiveStorageEscapes,
+    writesThroughTrackedRoot,
     resolveFunctionDeclaration,
     rootIdentifier,
     type SupportedFunction,
@@ -204,11 +206,13 @@ import type {
     ResolvedCompileOptions,
     NativeHostUiElement,
     SceneMeshManifest,
+    SceneMeshNamePredicate,
     ShadowCasterManifest,
     ShadowGeneratorManifest,
     ScenePbrClearCoatManifest,
     ScenePbrAnisotropyManifest,
     ScenePbrIridescenceManifest,
+    ScenePbrLightmapManifest,
     ScenePbrMaterialManifest,
     ScenePbrMetallicReflectanceManifest,
     ScenePbrSheenManifest,
@@ -441,6 +445,24 @@ class Compiler
     private readonly shadowGenerators: ShadowGeneratorManifest[] = [];
     private readonly shadowReceiverMeshes = new Set<number>();
     private dynamicShadowReceivers = false;
+    /**
+     * `mesh.id`, by the handle spelling the write named, and the meshes each
+     * id names.
+     *
+     * `Mesh.id` is not `SceneNode.name`: the pin declares it separately as
+     * the unique id a source file carries, and `src/render/lights-ubo.ts`
+     * `affectsMesh` is its only reader. So the string is a join key rather
+     * than record state, and the join folds here exactly as the `.babylon`
+     * loader folds its own `mesh_records_by_id` — an id names a LIST,
+     * because nothing upstream enforces uniqueness.
+     */
+    private readonly sceneMeshesById = new Map<string, string[]>();
+    /** The id each mesh handle currently carries, so a rewrite is visible. */
+    private readonly sceneMeshIdByHandle = new Map<string, string>();
+    /** Every id an emitted light include set has already resolved against. */
+    private readonly resolvedLightMeshIds = new Set<string>();
+    /** `constArrayIsWritten` answers, by binding: the scan walks a file. */
+    private readonly writtenConstArrays = new Map<ts.Symbol, boolean>();
     /** The active lights and kinds, kept in one receiver-binding order. */
     private readonly sceneLights: Array<{
         identity: NonNullable<Value["lightIdentity"]>;
@@ -4831,7 +4853,169 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
-        return this.expressions.compileValue(expression);
+        const value = this.expressions.compileValue(expression);
+        // A generation-known list of strings travels on the value, exactly
+        // as one string travels on `staticString`. It has to: an inlined
+        // call binds its parameter to the argument's VALUE and drops the
+        // expression, so a scene passing mesh ids through its own helper
+        // leaves nothing for `resolveStaticExpression` to fold. Only a
+        // fully static list is carried, so a present field is complete.
+        if (
+            value.kind === "data" &&
+            value.staticStrings === undefined &&
+            value.dataType?.kind === "vector" &&
+            value.dataType.element.kind === "string"
+        ) {
+            const strings = this.staticStringElements(expression);
+            if (strings) return { ...value, staticStrings: strings };
+        }
+        return value;
+    }
+
+    /**
+     * The strings a generation-known array expression holds, spreads of
+     * such arrays included, or undefined where any element is computed.
+     *
+     * Pure by construction: it resolves literals rather than compiling
+     * them, so asking the question emits nothing.
+     */
+    public staticStringElements(
+        expression: ts.Expression,
+    ): readonly string[] | undefined {
+        const literal =
+            this.probeStaticArrayLiteral(expression) ??
+            this.constArrayLiteral(expression);
+        if (!literal) {
+            const unwrapped = this.unwrap(expression);
+            return ts.isIdentifier(unwrapped)
+                ? this.lookupOptional(unwrapped)?.staticStrings
+                : undefined;
+        }
+        const strings: string[] = [];
+        for (const element of literal.elements) {
+            if (ts.isSpreadElement(element)) {
+                const nested = this.staticStringElements(
+                    element.expression,
+                );
+                if (!nested) return undefined;
+                strings.push(...nested);
+                continue;
+            }
+            const resolved = this.resolveStaticExpression(element);
+            if (!ts.isStringLiteralLike(resolved)) return undefined;
+            strings.push(resolved.text);
+        }
+        return strings;
+    }
+
+    /**
+     * The array literal a `const` local was initialized from, when nothing
+     * writes through the binding.
+     *
+     * `resolveStaticExpression`'s own const fallback answers for object
+     * literals only, and widening it would move every consumer of static
+     * resolution at once — so the array case stays here, behind its own
+     * write scan: a list a scene mutates answers nothing.
+     */
+    private constArrayLiteral(
+        expression: ts.Expression,
+    ): ts.ArrayLiteralExpression | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (!ts.isIdentifier(unwrapped)) return undefined;
+        const declarations =
+            this.symbols.valueSymbol(unwrapped)?.declarations ?? [];
+        const declaration = declarations.length === 1
+            ? declarations[0]!
+            : undefined;
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isIdentifier(declaration.name) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) === 0 ||
+            !declaration.initializer
+        ) {
+            return undefined;
+        }
+        const initializer = this.unwrap(declaration.initializer);
+        return ts.isArrayLiteralExpression(initializer) &&
+            !this.constArrayIsWritten(declaration.name)
+            ? initializer
+            : undefined;
+    }
+
+    /**
+     * Whether anything writes THROUGH a `const` array binding.
+     *
+     * `inferredArrayIsMutated` answers a neighbouring but different
+     * question — does this local need runtime array storage — and every
+     * call the array is passed to counts, because the callee has to read a
+     * real container. A generation-time fold of the contents needs only
+     * the writes, so the call clause asks this repository's own
+     * `parameterIsReadOnly` instead, and a callee it cannot resolve stays
+     * a write. Memoized per binding: the scan walks the whole entry file,
+     * and one array is asked about once per use.
+     */
+    private constArrayIsWritten(identifier: ts.Identifier): boolean {
+        const symbol = this.symbols.valueSymbol(identifier);
+        if (!symbol) return true;
+        const cached = this.writtenConstArrays.get(symbol);
+        if (cached !== undefined) return cached;
+        const written = aliasedMutationScan(
+            identifier,
+            (name) => this.symbols.valueSymbol(name),
+            {
+                aliasingInitializer: (initializer, scan) =>
+                    scan.namesAlias(this.unwrap(initializer)),
+                mutates: (node, scan) =>
+                    this.writesThroughArray(node, scan),
+            },
+        );
+        this.writtenConstArrays.set(symbol, written);
+        return written;
+    }
+
+    /**
+     * One node's verdict for `constArrayIsWritten`'s scan.
+     *
+     * The three write shapes come from `writesThroughTrackedRoot`, the one
+     * recognizer `parameterIsReadOnly` and `returnedValueCanMove` also
+     * read; this caller supplies the two things that are its own. The
+     * target is the alias OR an element of it, because writing one slot
+     * writes the array. And the mutating-method set is the exact one:
+     * the tracked value is known to be an array here, so its method set
+     * is closed, where the shared default has to treat anything not
+     * proven read-only as a write.
+     */
+    private writesThroughArray(
+        node: ts.Node,
+        scan: AliasedMutationScan,
+    ): boolean {
+        const isTarget = (expression: ts.Expression): boolean => {
+            const target = this.unwrap(expression);
+            return (
+                scan.namesAlias(target) ||
+                (ts.isElementAccessExpression(target) &&
+                    scan.namesAlias(this.unwrap(target.expression)))
+            );
+        };
+        if (
+            writesThroughTrackedRoot(node, isTarget, (method) =>
+                mutatingArrayMethods.has(method),
+            )
+        ) {
+            return true;
+        }
+        // The fourth shape, which is this caller's alone: an alias handed
+        // to a call that does not promise to leave it alone escapes there.
+        return (
+            ts.isCallExpression(node) &&
+            node.arguments.some(
+                (argument, index) =>
+                    scan.containsAlias(argument) &&
+                    !callArgumentIsReadOnly(this.checker, node, index),
+            )
+        );
     }
 
     public compileBrowserGeneratedString(
@@ -10350,43 +10534,26 @@ class Compiler
         if (!mark) {
             return;
         }
-        const enclosingFunction = (
-            node: ts.Node,
-        ): ts.Node | undefined => {
-            let current: ts.Node | undefined = node.parent;
-            while (current && !ts.isFunctionLike(current)) {
-                current = current.parent;
-            }
-            return current;
-        };
-        const boundaryRefusal =
-            "A frame yield after startEngine re-queues the rest of " +
-            "the continuation to the next frame boundary, which " +
-            "needs the yield to be a statement of the entry body " +
-            "itself; inside a block there is no statement " +
-            "boundary to cut at.";
-        const entry = enclosingFunction(mark.node);
-        if (!entry || enclosingFunction(expression) !== entry) {
-            // A helper's body lowers per call site, so a yield reaching
-            // here after the mark is landing inside the hoisted
-            // continuation exactly as an entry-block one does -- and the
-            // erasure this branch used to keep would run the statements
-            // after it at the SAME frame boundary as the ones before it.
-            // Refused like the block case: there is no entry-body
-            // statement the rest of the continuation could be parked
-            // behind.
-            this.fail(expression, boundaryRefusal);
-        }
-        // The re-queue is a cut between statements, so the yield must BE a
-        // statement of the entry body -- inside a block there is no line
-        // the rest of the continuation could be parked behind.
-        const body = (entry as ts.FunctionLikeDeclaration).body;
-        let statement: ts.Node | undefined = expression;
-        while (statement && statement.parent !== body) {
-            statement = statement.parent;
-        }
-        if (!statement || !ts.isExpressionStatement(statement)) {
-            this.fail(expression, boundaryRefusal);
+        // The re-queue is a cut between EMITTED LINES: `hoistEngineContinuation`
+        // splits the tail at each marker and wraps the parts, so a marker at
+        // any other depth would cut a C++ block in half. The proof is
+        // therefore over the emission rather than over the source AST --
+        // where lowering stands when the marker lands, which is exactly
+        // where `startEngine` itself landed. That accepts the shapes whose
+        // statements are written out FLAT at that level (an inlined helper's
+        // body, a statically unrolled loop's iterations) without asking this
+        // to re-derive which of them applied, and still refuses a yield
+        // inside an emitted block, a value lambda, a callback body, or any
+        // other captured region, because none of those is at this depth.
+        if (this.indentLevel !== mark.indentLevel) {
+            this.fail(
+                expression,
+                "A frame yield after startEngine re-queues the rest of " +
+                    "the continuation to the next frame boundary, which " +
+                    "needs the yield to lower at the entry body's own " +
+                    "level; inside a block there is no statement " +
+                    "boundary to cut at.",
+            );
         }
         this.emit(Compiler.frameYieldRequeueMarker);
     }
@@ -11736,6 +11903,79 @@ class Compiler
         );
     }
 
+    public recordScenePbrLightmap(
+        lightmap: ScenePbrLightmapManifest,
+        index: number | undefined,
+    ): void {
+        this.sceneMaterials.recordScenePbrLightmap(lightmap, index);
+    }
+
+    /** Whether `enablePbrLightmap()` has registered the extension yet. */
+    public pbrLightmapEnabled(): boolean {
+        return this.features.has("material:lightmap");
+    }
+
+    /**
+     * Records the `setPbrLightmap` a scene applied to a loaded container's
+     * materials, with the mesh-name filter the walk selected them by.
+     *
+     * `sceneUnlit` beside this is container-wide; a lightmap is not. PBR
+     * composition is settled per material at generation, and the reached
+     * walk stamps only the meshes whose name passes its own filter — so
+     * what is kept is that filter, for the DOCUMENT to evaluate against
+     * its own renderables. Nothing here reads a name.
+     */
+    public recordAssetSceneLightmap(
+        meshNamePredicate: SceneMeshNamePredicate,
+        lightmap: ScenePbrLightmapManifest,
+        node: ts.Node,
+    ): void {
+        // `scene.meshes` is walked live, so what generation folds is the
+        // scene's mesh membership at this point in the program. A
+        // scene-code mesh already created could be in that list under a
+        // name generation does not carry, and a second container could be
+        // in or out of it depending on where its `addToScene` sits —
+        // neither is represented, so both refuse rather than stamping a
+        // set the run-time loop will not reproduce.
+        const containers = [...this.assets.values()].filter(
+            (candidate) => candidate.kind === "gltf",
+        );
+        if (containers.length !== 1 || (containers[0]!.containerCount ?? 0) > 1) {
+            this.fail(
+                node,
+                "A lightmap walk over `scene.meshes` folds against exactly " +
+                    "one loaded glTF container: with several, which of them " +
+                    "the walk has reached depends on where each " +
+                    "`addToScene` sits, which generation does not model.",
+            );
+        }
+        if (this.sceneMeshes.length > 0) {
+            this.fail(
+                node,
+                "A lightmap walk over `scene.meshes` runs before the scene " +
+                    "creates any mesh of its own: generation carries no name " +
+                    "for a scene-code mesh, so it could not tell whether the " +
+                    "filter selects one.",
+            );
+        }
+        const asset = containers[0]!;
+        const existing = asset.sceneLightmap;
+        if (
+            existing &&
+            JSON.stringify(existing) !==
+                JSON.stringify({ meshNamePredicate, options: lightmap })
+        ) {
+            this.fail(
+                node,
+                "setPbrLightmap already stamped this container's materials " +
+                    "differently; each material composes one lightmap arm, " +
+                    "so a second selection would need the blend and the UV " +
+                    "set to be per-material record reads.",
+            );
+        }
+        asset.sceneLightmap = { meshNamePredicate, options: lightmap };
+    }
+
     public recordScenePbrSubsurface(
         subsurface: ScenePbrSubsurfaceManifest,
         index: number | undefined,
@@ -11984,6 +12224,85 @@ class Compiler
 
     public recordDynamicShadowReceivers(): void {
         this.dynamicShadowReceivers = true;
+    }
+
+    /**
+     * `mesh.id = "..."`, by the handle spelling the write named.
+     *
+     * Nothing is emitted: the pin's only reader of `Mesh.id` is
+     * `affectsMesh`, whose join `resolveSceneMeshIds` folds, so the string
+     * has no run-time reader to store it for. A write that would make an
+     * ALREADY-emitted include set stale refuses instead, because the fold
+     * cannot revisit a statement it has written.
+     */
+    public recordSceneMeshId(
+        meshCpp: string,
+        id: string,
+        node: ts.Node,
+    ): void {
+        const previous = this.sceneMeshIdByHandle.get(meshCpp);
+        if (previous === id) return;
+        const stale = this.resolvedLightMeshIds.has(id)
+            ? id
+            : previous !== undefined &&
+                this.resolvedLightMeshIds.has(previous)
+              ? previous
+              : undefined;
+        if (stale !== undefined) {
+            this.fail(
+                node,
+                `Mesh id "${stale}" already resolved a light's ` +
+                    "includedOnlyMeshIds, so this write would change a " +
+                    "selection generation has emitted. Assign every " +
+                    "mesh id before restricting a light by it.",
+            );
+        }
+        if (previous !== undefined) {
+            const bound = this.sceneMeshesById.get(previous);
+            const at = bound?.indexOf(meshCpp) ?? -1;
+            if (bound && at >= 0) bound.splice(at, 1);
+        }
+        this.sceneMeshIdByHandle.set(meshCpp, id);
+        const meshes = this.sceneMeshesById.get(id);
+        if (meshes) {
+            if (!meshes.includes(meshCpp)) meshes.push(meshCpp);
+        } else {
+            this.sceneMeshesById.set(id, [meshCpp]);
+        }
+    }
+
+    /**
+     * The meshes a light's `includedOnlyMeshIds` set names, as handle
+     * spellings, in the Set's own insertion order.
+     *
+     * The pin gates on the SET being non-empty (`included?.size`), not on
+     * what it resolves to, so an id no mesh carries would light nothing at
+     * all — a state an index vector cannot express, since an empty one is
+     * how the record says "every mesh". That id refuses here rather than
+     * silently taking the other arm.
+     */
+    public resolveSceneMeshIds(
+        ids: readonly string[],
+        node: ts.Node,
+    ): string[] {
+        const meshes: string[] = [];
+        for (const id of new Set(ids)) {
+            const bound = this.sceneMeshesById.get(id);
+            if (!bound || bound.length === 0) {
+                this.fail(
+                    node,
+                    `No mesh carries the id "${id}". A light include ` +
+                        "set naming an id no mesh has lights nothing " +
+                        "upstream, which the folded per-mesh index list " +
+                        "cannot express.",
+                );
+            }
+            this.resolvedLightMeshIds.add(id);
+            for (const mesh of bound) {
+                if (!meshes.includes(mesh)) meshes.push(mesh);
+            }
+        }
+        return meshes;
     }
 
     /** Place a light in the current scene topology and bind its generators. */
@@ -12468,12 +12787,21 @@ class Compiler
             }
         }
         let nested: string[] = [];
+        // Each part re-indents everything already nested inside it, so
+        // indenting unconditionally makes the emitted whitespace quadratic
+        // in the number of frame boundaries: a 160-yield continuation
+        // reaches 115 KB, 92% of it leading spaces. Past a depth no
+        // reached scene comes near, the nesting stops adding columns and
+        // the text stays linear. The deepest continuation any registered
+        // scene emits is six levels, so this moves no emitted byte today.
+        const maxIndentedDepth = 8;
         for (let part = parts.length - 1; part >= 0; part -= 1) {
+            const step = parts.length - part <= maxIndentedDepth ? "    " : "";
             nested = [
                 `${indent}bbl::defer_start_continuation(` +
                     `${mark.engine}, [&]() {`,
                 ...[...parts[part]!, ...nested].map(
-                    (line) => `    ${line}`,
+                    (line) => `${step}${line}`,
                 ),
                 `${indent}});`,
             ];

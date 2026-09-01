@@ -566,7 +566,10 @@ regression appears:
   binding names, translated by both backends (clearcoat/roughness
   white, coat normal 128/128/255, sheen color sRGB white, sheen
   roughness white, iridescence pairs sRGB white, dedicated uv2
-  occlusion linear white). The Standard bump and 2D reflection pairs
+  occlusion linear white, lightmap linear white — the lightmap's own
+  sRGB decode is the fragment's `gamma` arm rather than the format,
+  because the pin loads it through `loadTexture2D` and lets the shader
+  decode). The Standard bump and 2D reflection pairs
   append last, reached only through the composed Standard variants'
   generated slot indices.
 - **`.babylon` reflection cubes** (pinned `loadCubeTexture`): rgba8unorm

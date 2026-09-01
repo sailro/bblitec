@@ -629,6 +629,12 @@ export function compileAssetIntrinsic(
             return {
                 kind: "texture",
                 textureStorage: "file",
+                // The texture-OBJECT `invertY`, which `loadTexture2D` never
+                // sets: its own option drives the flipped upload copy
+                // instead (texture-2d.ts). Stated rather than left absent
+                // because composition reads it -- the PBR lightmap arm
+                // folds it against `uAng`.
+                textureObjectInvertY: false,
                 cpp:
                     `bbl::load_file_texture(${engine.cpp}, ` +
                     `${texturePathCpp}, ` +
@@ -678,6 +684,10 @@ export function compileAssetIntrinsic(
             return {
                 kind: "texture",
                 textureStorage: "file",
+                // The same texture-OBJECT property, which is exactly what
+                // separates these two loaders (`uploadCompressed` leaves it
+                // unset, `basis-loader.ts` sets it).
+                textureObjectInvertY: basis,
                 cpp:
                     `bbl::load_compressed_texture(${engine.cpp}, ` +
                     `bbl::asset_path(${context.cppString(asset.output)}), ` +

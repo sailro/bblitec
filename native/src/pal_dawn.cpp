@@ -132,7 +132,8 @@ constexpr std::size_t material_extension_slots =
     (BBLITE_MATERIAL_METALLIC_REFLECTANCE_MAP ? 1 : 0) +
     (BBLITE_MATERIAL_REFLECTANCE_MAP ? 1 : 0) +
     (BBLITE_MATERIAL_SPEC_GLOSS ? 1 : 0) +
-    (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0);
+    (BBLITE_MATERIAL_OCCLUSION_UV2 ? 1 : 0) +
+    (BBLITE_MATERIAL_LIGHTMAP ? 1 : 0);
 constexpr std::size_t material_extension_slot_base =
     5 + transmission_texture_slots;
 // The Standard bump pair appends after everything the PBR path owns, so a

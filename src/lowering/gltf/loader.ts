@@ -747,10 +747,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 "src/loader-gltf/gltf-animation.ts",
             ),
         );
-        const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(
-            this.context.sourceFile("src/loader-gltf/load-gltf.ts"),
-            this.context.sourceFile("src/loader-gltf/gltf-share.ts"),
-        );
+        const gltfMeshNamePrefix = pinnedGltfMeshNamePrefix(this.context);
         return {
             modulePath,
             symbolName,
@@ -873,10 +870,11 @@ function assertRestPoseSeed(
  * (load-gltf.ts) and the shared-primitive path (gltf-share.ts) spell the
  * rule; they must agree for the emitted prefix to serve either.
  */
-function pinnedGltfMeshNamePrefix(
-    loadGltfFile: ts.SourceFile,
-    shareFile: ts.SourceFile,
+export function pinnedGltfMeshNamePrefix(
+    context: LoweringContext,
 ): string {
+    const loadGltfFile = context.sourceFile("src/loader-gltf/load-gltf.ts");
+    const shareFile = context.sourceFile("src/loader-gltf/gltf-share.ts");
     const prefixIn = (file: ts.SourceFile): string | undefined => {
         const fallback = collectNodes(
             file,

@@ -2312,6 +2312,20 @@ records the loader creates. The per-mesh count and index selection uploaded
 with each draw therefore hold the set the pinned `min(mesh.lc, MAX_LIGHTS)`
 loop walks.
 
+**Scene code names the same set through `light.includedOnlyMeshIds`, and it
+folds.** The pin reads that field in exactly one place — `affectsMesh`, called
+from `writeMeshLightSelection`, which packs the surviving slots into the mesh
+block's `lc`/`li` — and joins it by `mesh.id`, which is the only thing that
+field is read for at run time. Both sides of the join are generation-known in
+the reached shape, so the set resolves to the same `LightRecord` index vector
+the `.babylon` loader produces and no native code distinguishes the two
+producers. Scene 111 gates it with sixteen lights over six meshes. One shape
+the fold cannot represent, and refuses: an id no mesh carries. Upstream gates
+on the set's own size rather than on the resolved list, so such a light
+illuminates nothing, where an empty index vector here means every mesh — the
+same hole the `.babylon` path has had, and closing either needs a
+`has_included_meshes` lane on the record.
+
 ### glTF animation targets
 
 `KHR_node_visibility` is materialized per mesh rather than tested per draw: the
