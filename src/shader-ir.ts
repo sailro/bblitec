@@ -390,13 +390,20 @@ class WgslSubsetParser {
             return expression;
         }
         const name = this.expectIdentifier();
-        if (this.accept("<")) {
+        const genericType =
+            this.peek().text === "<" &&
+            this.tokens[this.index + 1]?.kind === "identifier" &&
+            this.tokens[this.index + 2]?.text === ">"
+                ? `${name}<${this.tokens[this.index + 1]!.text}>`
+                : undefined;
+        if (
+            genericType &&
+            shaderTypes.has(genericType as ShaderType)
+        ) {
+            this.expect("<");
             const component = this.expectIdentifier();
             this.expect(">");
             const type = `${name}<${component}>`;
-            if (!shaderTypes.has(type as ShaderType)) {
-                throw new Error(`Unsupported WGSL constructor '${type}'.`);
-            }
             return {
                 kind: "construct",
                 type: type as ShaderType,
@@ -911,6 +918,23 @@ function typeComponents(type: ShaderType): number {
     }
 }
 
+function uniformTypeAlignment(type: ShaderType): number {
+    switch (type) {
+        case "f32":
+            return 4;
+        case "vec2<f32>":
+            return 8;
+        case "vec3<f32>":
+        case "vec4<f32>":
+        case "mat4x4<f32>":
+            return 16;
+    }
+}
+
+function alignTo(value: number, alignment: number): number {
+    return Math.ceil(value / alignment) * alignment;
+}
+
 function componentSwizzle(start: number, count: number): string {
     return "xyzw".slice(start, start + count);
 }
@@ -921,8 +945,9 @@ function reflectUniformBlock(
     uniforms: Array<{ name: string; type: ShaderType }>,
 ): ShaderUniformBlockReflection | undefined {
     // Declaration order is the layout: each matrix the stage reads takes
-    // four vec4 slots at the head of the block, and the custom floats pack
-    // after them.
+    // four vec4 slots at the head of the block. Custom members then follow
+    // WGSL host-shareable alignment (not merely component packing): notably,
+    // a vec3 starts on a 16-byte boundary even after a scalar.
     const systemMatrices = uniforms
         .filter(
             ({ name }) =>
@@ -937,22 +962,23 @@ function reflectUniformBlock(
     );
     if (systemMatrices.length === 0 && custom.length === 0) return undefined;
 
-    let slot = systemMatrices.reduce(
+    let byteOffset = systemMatrices.reduce(
         (sum, name) =>
-            sum + shaderSystemUniformFloatSize(name) / 4,
+            sum + shaderSystemUniformFloatSize(name) * 4,
         0,
     );
-    let component = 0;
     const members: ShaderUniformMemberReflection[] = [];
     for (const uniform of custom) {
         const count = typeComponents(uniform.type);
         if (count > 4) {
             throw new Error(`Custom matrix uniform '${uniform.name}' is not supported.`);
         }
-        if (component + count > 4) {
-            slot += 1;
-            component = 0;
-        }
+        byteOffset = alignTo(
+            byteOffset,
+            uniformTypeAlignment(uniform.type),
+        );
+        const slot = Math.floor(byteOffset / 16);
+        const component = (byteOffset % 16) / 4;
         members.push({
             name: uniform.name,
             type: uniform.type,
@@ -961,18 +987,13 @@ function reflectUniformBlock(
             slot,
             components: componentSwizzle(component, count),
         });
-        component += count;
-        if (component === 4) {
-            slot += 1;
-            component = 0;
-        }
+        byteOffset += count * 4;
     }
-    const slotCount = slot + (component > 0 ? 1 : 0);
     return {
         stage,
         binding: 0,
         space: stage === "vertex" ? 1 : 3,
-        size: slotCount * 16,
+        size: alignTo(byteOffset, 16),
         systemMatrices,
         members,
     };

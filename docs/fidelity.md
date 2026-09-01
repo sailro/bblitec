@@ -44,6 +44,14 @@ closed at generation, so a run-time material change needing an uncomposed
 variant refuses; and an asset carrying more punctual lights than `MAX_LIGHTS`
 refuses where upstream grows the constant.
 
+Voxel Sandbox adds two explicit boundaries. Its 43 source-owned tile PNGs are
+drawn into one Canvas2D atlas by the browser path at load time; generation runs
+that same bounded path and packages its exact RGBA result, recorded as
+`fetched-canvas-atlas`. Its browser save/open pickers cross through the native
+PAL: on Windows, Ctrl+S and Ctrl+O use the regular host dialogs with
+`world.voxelsave.json` as the suggested name and preserve the same JSON
+payload, recorded as `native-voxel-file-dialog`.
+
 Curated inputs, thresholds and goldens are SHA-256-checked evidence, not
 tuning knobs. Adding a scene or recapturing a reference is an explicit
 operation.
@@ -2121,6 +2129,9 @@ Parity compares the complete 1280×720 browser page with the native frame. The
 golden includes the Babylon canvas and reached DOM/CSS UI. The bounded
 [native page UI](ui.md) surface lowers supported controls, Canvas2D overlays,
 events, and host-page companions into retained RmlUi records.
+Runtime-selected root-relative background images are retained as RmlUi image
+decorators and resolved through the packaged asset directory; Voxel Sandbox's
+ten hotbar icons gate that path.
 
 Browser and native UI use different layout and font rasterization stacks, so a
 composite residual can be larger than the canvas residual. Status rows above

@@ -22,6 +22,7 @@ export interface ShaderMaterialProgramSource {
     /** Reached `defines`, already in the pin's sorted `ShaderDefine` order. */
     defines?: Array<{ name: string; value: boolean | number }>;
     needAlphaBlending: boolean;
+    blendMode?: "alpha" | "additive";
     needAlphaTesting: boolean;
     backFaceCulling: boolean;
     depthWrite: boolean;
@@ -113,6 +114,7 @@ fn mainFragment() -> @location(0) vec4<f32> {
             { name: "opacity", values: [1] },
         ],
         needAlphaBlending: false,
+        blendMode: "alpha",
         needAlphaTesting: false,
         backFaceCulling: false,
         depthWrite: true,
@@ -147,6 +149,7 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
         attributes: ["position", "uv"],
         uniforms: ["worldViewProjection"],
         needAlphaBlending: true,
+        blendMode: "alpha",
         needAlphaTesting: true,
         backFaceCulling: false,
         depthWrite: false,
@@ -180,6 +183,7 @@ export function predeclaredShaderProgram(
 ): CompiledShaderProgram {
     return {
         ...program,
+        blendMode: program.blendMode ?? "alpha",
         uniformDefaults: program.uniformDefaults ?? [],
         samplers: program.samplers ?? [],
         defines: program.defines ?? [],

@@ -2017,7 +2017,8 @@ export class UserFunctionLowerer {
         // shape, preserving the constructed class value instead of forcing it
         // through the plain-data early-return lambda model.
         const retainedCanvasFactory =
-            this.retainedCanvasFactorySuccessPath(declaration);
+            this.retainedCanvasFactorySuccessPath(declaration) ??
+            this.packagedImageBitmapSuccessPath(declaration);
         if (retainedCanvasFactory) {
             const ir: UserFunctionIr = {
                 declaration,
@@ -2274,6 +2275,62 @@ export class UserFunctionLowerer {
             statements,
             returnExpression: constructed,
         };
+    }
+
+    /**
+     * A fetched ImageBitmap helper has the same browser-only nullable fallback
+     * shape as the retained-canvas factory above. Native atlas packaging closes
+     * over every referenced PNG, so only the successful createImageBitmap arm is
+     * reachable and the fetch ceremony itself emits no native statements.
+     */
+    private packagedImageBitmapSuccessPath(
+        declaration: SupportedFunction,
+    ):
+        | {
+              statements: readonly ts.Statement[];
+              returnExpression: ts.Expression;
+          }
+        | undefined {
+        if (
+            !ts.isFunctionDeclaration(declaration) ||
+            !declaration.body ||
+            declaration.body.statements.length !== 1
+        ) {
+            return undefined;
+        }
+        const statement = declaration.body.statements[0];
+        if (
+            !statement ||
+            !ts.isTryStatement(statement) ||
+            statement.finallyBlock ||
+            !statement.catchClause
+        ) {
+            return undefined;
+        }
+        const catchReturn = statement.catchClause.block.statements[0];
+        if (
+            statement.catchClause.block.statements.length !== 1 ||
+            !catchReturn ||
+            !ts.isReturnStatement(catchReturn) ||
+            catchReturn.expression?.kind !== ts.SyntaxKind.NullKeyword
+        ) {
+            return undefined;
+        }
+        const returned = statement.tryBlock.statements.at(-1);
+        if (!returned || !ts.isReturnStatement(returned) || !returned.expression) {
+            return undefined;
+        }
+        let expression = returned.expression;
+        while (ts.isAwaitExpression(expression)) expression = expression.expression;
+        if (
+            !ts.isCallExpression(expression) ||
+            !ts.isIdentifier(expression.expression) ||
+            expression.expression.text !== "createImageBitmap"
+        ) {
+            return undefined;
+        }
+        if (!statement.tryBlock.getText().includes("fetch(")) return undefined;
+        return { statements: [], returnExpression: returned.expression };
     }
 
     private containsValueReturn(

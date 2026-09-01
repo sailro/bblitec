@@ -426,6 +426,11 @@ export interface AssignmentContext extends DeterministicRandomContext {
   lookupOptional(identifier: ts.Identifier): Value | undefined;
   resolveThisField(name: string): Value | undefined;
   resolveRecordValue(expression: ts.Expression): Value | undefined;
+  compileRecordSetter(
+    owner: Value,
+    setter: ts.SetAccessorDeclaration,
+    value: ts.Expression,
+  ): void;
   /**
    * Records the tone-mapping curve the scene selected, refusing a second
    * differing selection: the composed arms are closed at generation, so a
@@ -1056,6 +1061,11 @@ export function emitPropertyAssignment(
   if (operator === "=") {
     const owner = context.resolveRecordValue(left.expression);
     if (owner) {
+      const setter = owner.recordSetters?.[left.name.text];
+      if (setter) {
+        context.compileRecordSetter(owner, setter, expression.right);
+        return;
+      }
       // Probe record wiring without evaluating an arbitrary RHS.
       // Calls and data expressions may emit substantial native work;
       // compiling one merely to discover it is not a record would run
@@ -1228,25 +1238,26 @@ export function emitPropertyAssignment(
   }
   if (
     ts.isPropertyAccessExpression(left.expression) &&
-    ts.isIdentifier(left.expression.expression) &&
-    context.lookup(left.expression.expression).kind === "camera" &&
     left.expression.name.text === "target"
   ) {
-    // Component writes into the camera target record (the demo
-    // renderer's camera shake). The record's properties already
-    // carry their native lvalues for reads.
-    const record = context.compileValue(left.expression);
-    const component = record.recordProperties?.[left.name.text];
-    if (!component || component.kind !== "number") {
-      context.fail(
-        left.name,
-        `Unsupported camera target component '${left.name.text}'.`,
+    const camera = context.compileValue(left.expression.expression);
+    if (camera.kind === "camera") {
+      // Component writes into the camera target record (including a camera
+      // stored on `this`). The synthesized record properties carry the native
+      // lvalues used by reads and writes alike.
+      const record = context.compileValue(left.expression);
+      const component = record.recordProperties?.[left.name.text];
+      if (!component || component.kind !== "number") {
+        context.fail(
+          left.name,
+          `Unsupported camera target component '${left.name.text}'.`,
+        );
+      }
+      context.emit(
+        `${component.cpp} ${operator} ${context.compileNumber(expression.right, "double")};`,
       );
+      return;
     }
-    context.emit(
-      `${component.cpp} ${operator} ${context.compileNumber(expression.right, "double")};`,
-    );
-    return;
   }
   // An imported TransformNode root is represented by an AssetHandle rather
   // than a data record. Intercept its nested TRS component before the broad

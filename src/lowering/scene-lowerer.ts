@@ -396,6 +396,20 @@ void set_transform_node_scaling(
     mark_transform_node_dirty(engine, node);
 }
 
+void set_transform_node_rotation(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 rotation) {
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    record.rotation = rotation;
+    // The pinned Euler proxy writes its quaternion source of truth. The
+    // record expresses that same selection by composing the Euler lane when
+    // this flag is false; pinnedTrsComposition performs eulerToQuat from the
+    // upstream function before the matrix write.
+    record.has_rotation_quaternion = false;
+    mark_transform_node_dirty(engine, node);
+}
+
 void set_transform_node_rotation_quaternion(
     Engine& engine,
     TransformNodeHandle node,
@@ -978,6 +992,20 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
         material_family_bit(*scene.engine, mesh);
 }
 
+// The pin stores no TransformNode list on SceneContext: adding one walks its
+// public children and registers the meshes beneath it. The reached voxel mob
+// roots contain mesh children directly, already parented by the source.
+void add_to_scene(Scene& scene, TransformNodeHandle node) {
+    require_scene_engine(scene);
+    if (node.value >= scene.engine->transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    for (const MeshHandle child :
+         scene.engine->transform_nodes[node.value].children) {
+        add_to_scene(scene, child);
+    }
+}
+
 // A static glTF mesh normally bakes its node world into each vertex. Once
 // scene code replaces that node's quaternion, those baked vertices would
 // rotate around the flattened asset origin. Recover the node translation and
@@ -1299,6 +1327,12 @@ void on_pointer_down(
     Engine& engine,
     std::function<void()> callback) {
     engine.pointer_down_callbacks.push_back(std::move(callback));
+}
+
+void on_canvas_click(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.canvas_click_callbacks.push_back(std::move(callback));
 }
 
 void on_mouse_down(

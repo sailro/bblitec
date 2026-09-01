@@ -80,3 +80,22 @@ test("raw shader reflection ignores comments and normalizes their identity", () 
     });
     assert.equal(program.fragment.rawSource, reformatted.fragment.rawSource);
 });
+
+test("parses a direct identifier comparison as an expression", () => {
+    const program = lowerWgslShaderProgram({
+        name: "identifier-comparison",
+        vertexSource,
+        fragmentSource: `
+            @fragment fn mainFragment() -> @location(0) vec4<f32> {
+                let intensity = 1.0;
+                if (intensity < 0.01) { discard; }
+                return vec4<f32>(intensity);
+            }
+        `,
+        attributes: ["position"],
+        uniforms: [],
+        ...renderState,
+    });
+
+    assert.equal(program.fragment.entryPoint.statements[1]?.kind, "if");
+});

@@ -66,11 +66,12 @@ export function compileSceneIntrinsic(
                 ) &&
                 resource.kind !== "mesh" &&
                 resource.kind !== "light" &&
-                resource.kind !== "camera"
+                resource.kind !== "camera" &&
+                resource.kind !== "transform-node"
             ) {
                 context.fail(
                     call.arguments[1]!,
-                    `addToScene supports asset, entity, mesh, light, and camera values, received ${resource.kind}.`,
+                    `addToScene supports asset, entity, mesh, light, camera, and transform-node values, received ${resource.kind}.`,
                 );
             }
             context.expectSameEngine(scene, resource, call);

@@ -229,6 +229,10 @@ export interface ExpressionContext
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined;
+    compileVoxelFileCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
     compileStaticFetchMethod(
         call: ts.CallExpression,
         owner: Value,
@@ -561,10 +565,19 @@ export class ExpressionLowerer {
         }
         if (ts.isElementAccessExpression(unwrapped)) {
             if (!assertedNonNull) {
-                const guardable =
-                    this.context.dataLowerer.compileGuardableElementAccess(
-                        unwrapped,
-                    );
+                // Determining whether an unchecked element read can carry an
+                // existence predicate resolves its owner. A call-shaped owner
+                // emits while it resolves, so a declined probe must discard
+                // those lines before the ordinary element path compiles the
+                // owner for real. Otherwise `makeRow().values[i]` evaluates
+                // `makeRow()` twice even though JavaScript evaluates it once.
+                const guardable = this.context.probeEmission(
+                    () =>
+                        this.context.dataLowerer.compileGuardableElementAccess(
+                            unwrapped,
+                        ),
+                    (result) => result !== undefined,
+                );
                 if (guardable) return guardable;
             }
             const ownerExpression = this.context.unwrap(
@@ -2175,6 +2188,17 @@ export class ExpressionLowerer {
             cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
         };
         if (
+            whenTrue.nativeLvalue &&
+            whenFalse.nativeLvalue
+        ) {
+            // The C++ conditional operator preserves lvalue category when
+            // both branches are lvalues of the same type. Class selection
+            // relies on that to pass the selected field by reference.
+            conditional.nativeLvalue = true;
+        } else {
+            delete conditional.nativeLvalue;
+        }
+        if (
             whenTrue.optionalFoundCpp !== undefined ||
             whenFalse.optionalFoundCpp !== undefined
         ) {
@@ -2253,6 +2277,23 @@ export class ExpressionLowerer {
         const callee = this.context.unwrap(call.expression);
         if (
             ts.isIdentifier(callee) &&
+            callee.text === "createImageBitmap" &&
+            !this.context.lookupOptional(callee)
+        ) {
+            this.context.expectArgumentCount(call, 1, 2);
+            return {
+                kind: "ui-element",
+                // The bitmap's pixels have already been baked into the
+                // packaged atlas. Keep a typed, truthy placeholder so the
+                // source success arm retains its ordinary local binding;
+                // drawImage/close themselves are browser-erased.
+                cpp: "bbl::UiElementHandle{}",
+                uiTag: "image-bitmap",
+                truthinessCpp: "true",
+            };
+        }
+        if (
+            ts.isIdentifier(callee) &&
             callee.text === "requestAnimationFrame" &&
             !this.context.lookupOptional(callee)
         ) {
@@ -2261,6 +2302,43 @@ export class ExpressionLowerer {
             if (animationFrame) return animationFrame;
         }
         if (ts.isPropertyAccessExpression(callee)) {
+            if (
+                ts.isIdentifier(callee.expression) &&
+                callee.expression.text === "Object" &&
+                callee.name.text === "keys" &&
+                !this.context.lookupOptional(callee.expression)
+            ) {
+                this.context.expectArgumentCount(call, 1, 1);
+                const object = this.compileValue(call.arguments[0]!);
+                const resultType = this.context.dataLowerer.dataTypeAt(call);
+                if (object.kind !== "record") {
+                    this.context.fail(
+                        call.arguments[0]!,
+                        "Object.keys currently expects a compile-time record.",
+                    );
+                }
+                const keys = Object.keys(object.recordProperties ?? {});
+                if (resultType?.kind === "vector") {
+                    this.context.reachJsData();
+                    return {
+                        kind: "data",
+                        cpp:
+                            `bbl::js::Array<${this.context.dataTypes.cppType(resultType.element)}>{` +
+                            keys.map((key) => this.context.cppString(key)).join(", ") +
+                            `}`,
+                        dataType: resultType,
+                    };
+                }
+                return {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: keys.map((key) => ({
+                        kind: "string" as const,
+                        cpp: this.context.cppString(key),
+                        staticString: key,
+                    })),
+                };
+            }
             if (
                 ts.isIdentifier(callee.expression) &&
                 callee.expression.text === "Object" &&
@@ -2537,10 +2615,13 @@ export class ExpressionLowerer {
             if (found) {
                 return found;
             }
-            const method =
-                this.context.dataLowerer.compileDataMethodCall(
-                    call,
-                );
+            const method = this.context.probeEmission(
+                () =>
+                    this.context.dataLowerer.compileDataMethodCall(
+                        call,
+                    ),
+                (result) => result !== undefined,
+            );
             if (method) {
                 return method;
             }
@@ -2597,7 +2678,8 @@ export class ExpressionLowerer {
                 ts.isIdentifier(receiver) ||
                 receiver.kind === ts.SyntaxKind.ThisKeyword ||
                 ts.isPropertyAccessExpression(receiver) ||
-                ts.isConditionalExpression(receiver)
+                ts.isConditionalExpression(receiver) ||
+                ts.isCallExpression(receiver)
             ) {
                 const instance = ts.isIdentifier(receiver)
                     ? this.context.lookupOptional(receiver)
@@ -2802,6 +2884,44 @@ export class ExpressionLowerer {
         }
 
         if (
+            callee.text === "parseInt" &&
+            this.context.isDefaultLibraryIdentifier(callee)
+        ) {
+            this.context.expectArgumentCount(call, 1, 2);
+            if (call.arguments[1]) {
+                const radix = this.compileValue(call.arguments[1]);
+                if (
+                    radix.kind !== "number" ||
+                    radix.staticNumber !== 10 ||
+                    radix.parameterBinding
+                ) {
+                    this.context.fail(
+                        call.arguments[1],
+                        "Reached parseInt currently requires the literal radix 10.",
+                    );
+                }
+            }
+            const value = this.compileValue(call.arguments[0]!);
+            if (
+                value.kind !== "string" &&
+                !(
+                    value.kind === "data" &&
+                    value.dataType?.kind === "string"
+                )
+            ) {
+                this.context.fail(
+                    call.arguments[0]!,
+                    "Reached parseInt currently requires a string value.",
+                );
+            }
+            this.context.reachJsData();
+            return {
+                kind: "number",
+                cpp: `bbl::js::parse_int_decimal(${value.cpp})`,
+                dataType: { kind: "number" },
+            };
+        }
+        if (
             callee.text === "Number" &&
             !this.context.lookupOptional(callee)
         ) {
@@ -2913,6 +3033,13 @@ export class ExpressionLowerer {
         );
         if (compressedJson) {
             return compressedJson;
+        }
+        const voxelFile = this.context.compileVoxelFileCall(
+            call,
+            callee,
+        );
+        if (voxelFile) {
+            return voxelFile;
         }
         const nativeFunction =
             this.context.nativeFunctions.tryCompileCall(

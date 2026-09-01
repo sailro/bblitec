@@ -6626,7 +6626,10 @@ bool run_gpu_engine(Engine& engine) {
                     color_target;
                 if (info.alpha_blending) {
                     shader_target.blend_state =
-                        blend_state_from(transparent_blend);
+                        blend_state_from(
+                            info.additive_blending
+                                ? shader_additive_blend
+                                : transparent_blend);
                 }
                 SDL_GPUGraphicsPipelineCreateInfo shader_pipeline_info =
                     pipeline_info;

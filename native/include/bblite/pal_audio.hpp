@@ -208,6 +208,9 @@ void audio_set_loop(AudioNodeHandle source, bool enabled);
  */
 void audio_connect(AudioNodeHandle source, AudioNodeHandle destination);
 
+/** `source.connect(destinationParam)` -- an audio-rate modulation edge. */
+void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination);
+
 /** `node.disconnect()` -- every outgoing edge. */
 void audio_disconnect(AudioNodeHandle node);
 

@@ -26,6 +26,7 @@ export type HandleKind =
   | "sprite-layer"
   | "sprite-atlas"
   | "texture"
+  | "transform-node"
   | "skeleton"
   | "bone"
   | "navigation-obstacle";
@@ -43,6 +44,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   "sprite-layer": "bbl::Sprite2DLayerHandle",
   "sprite-atlas": "bbl::SpriteAtlasHandle",
   texture: "bbl::StoredTexture",
+  "transform-node": "bbl::TransformNodeHandle",
   skeleton: "bbl::SkeletonHandle",
   bone: "bbl::BoneHandle",
   "navigation-obstacle": "bbl::pal::NavObstacleHandle",
@@ -66,6 +68,9 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Sprite2DLayer: "sprite-layer",
   SpriteAtlas: "sprite-atlas",
   Texture2D: "texture",
+  // TransformNode is a pure alias for the pin's SceneNode interface.
+  SceneNode: "transform-node",
+  TransformNode: "transform-node",
   Skeleton: "skeleton",
   Bone: "bone",
   ObstacleHandle: "navigation-obstacle",
@@ -1105,8 +1110,9 @@ export class DataTypeRegistry {
       if (!mappedValue) {
         return undefined;
       }
+      const optional = (property.flags & ts.SymbolFlags.Optional) !== 0;
       const mapped: DataType = this.markStoredObjectReferences(
-        (property.flags & ts.SymbolFlags.Optional) !== 0 &&
+        optional &&
           mappedValue.kind !== "optional"
           ? { kind: "optional", inner: mappedValue }
           : mappedValue,
@@ -1114,10 +1120,16 @@ export class DataTypeRegistry {
       fields.push({
         name: sanitizeIdentifier(property.name),
         type: mapped,
+        ...(optional && mapped.kind !== "optional"
+          ? { defaultWhenMissing: true }
+          : {}),
       });
     }
     const key = `${fields
-      .map((field) => `${field.name}:${this.typeKey(field.type)}`)
+      .map(
+        (field) =>
+          `${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}`,
+      )
       .join(",")}`;
     const existing = this.structsByKey.get(key);
     if (existing && !this.referenceStructNames.has(provisionalName)) {

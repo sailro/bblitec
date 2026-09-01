@@ -3331,6 +3331,415 @@
           "sha256": "3624c4fb75b2256271204565dfa251b56df38413c1ac6e658adc01bc85d0ef94"
         }
       ]
+    },
+    {
+      "id": "minecraft",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/minecraft.ts",
+      "reference": {
+        "source": "reference/minecraft/babylon-lite-golden.png",
+        "sha256": "55f1df964fa3592e30aec37c749f4059989fb637cbb470b355238dc04b2d0729"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft.ts",
+          "sha256": "bf748c444121412cb47ae43906dece8bdc3d857887b875240d9f829b07d114ff"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/atlas.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/atlas.ts",
+          "sha256": "c8337b7cd57acf108b1ce2a77e922c129034e042b69c98b008b4857ab4c2acb2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/audio.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/audio.ts",
+          "sha256": "5562d262162d713b5cca23a3de6a209acb9cda6151c69ac128a72fe4a7e9f0c8"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/blocks.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/blocks.ts",
+          "sha256": "9e2eeb137425ea6a8e31633c780e19a04e28a559ab79b6c59ccdcfdd9ed62ac6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/chunk-renderer.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/chunk-renderer.ts",
+          "sha256": "3244e551093aefc9d5406e980db1a1b2a17bf5ab7ef67d088a808d6551125daf"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/clouds.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/clouds.ts",
+          "sha256": "47f89aad92e76e0bcfeac816f4e0dedc481b26e87717c033f53b23ce5d5ac0d0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/constants.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/constants.ts",
+          "sha256": "2e319a88945eae4feecc493a8d30e7de6143578f2a0aacd1dedc8dd80b74e0a0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/controls.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/controls.ts",
+          "sha256": "a7f1a5bf68a31de0cfe2a320473fb4a8946a661607e8ee28207dc9bb5d7069c7"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/falling-blocks.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/falling-blocks.ts",
+          "sha256": "bc8b451d95c4ad9116b339883ab0a5b24a8486422d4e7b6ed9753a35569a649f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/highlight.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/highlight.ts",
+          "sha256": "143ba9c53a1d5a8a5158b3398974cb2aa7f17ffd4d1ae5ff9b6473171de60f77"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/hud.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/hud.ts",
+          "sha256": "cdac79bfc49f836169a2d655e5fbd512ad193f21c97dcbddc102a3c02a01018c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/lighting.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/lighting.ts",
+          "sha256": "5f75ce63d358c91183d75c5821d63d1b96a27711eae44cfeaa54cd1e6f118b47"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/mesher.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/mesher.ts",
+          "sha256": "9066fb656caaf4d87eb110c9b5b5549d8a44d90f3e81c2fd74a8e9d39089da35"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/mob-material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/mob-material.ts",
+          "sha256": "998b404d203f503a46c643bc02134b92df98a58d49f799848f8c9c3a84ada1bf"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/mobs.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/mobs.ts",
+          "sha256": "569f648d5951488c5e2206391d5f3ce9637f15706cc5048e69252c1e67c3bc61"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/noise.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/noise.ts",
+          "sha256": "091b248a69a37801f6b88ddfe6483d9faacc9f9b916a7192de54102edb51b4bb"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/particles.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/particles.ts",
+          "sha256": "e18886957e223da9f0f977be7f67c540e5d18b7982fd9ea67f8110a017bca814"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/raycast.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/raycast.ts",
+          "sha256": "a519536d400b7ff9801e9272f98774f51507be9a0f3012658b4e5b38e8b5b5f0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/save-load.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/save-load.ts",
+          "sha256": "724afd04eabe8814eadefe36e7604b8d7b038ec0b5d9527c05d719478bc882df"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/sky.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/sky.ts",
+          "sha256": "f2266ec20b622104eca0d1abc939cccc16cbc4f393fd9ebcfe933d59335c6900"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/voxel-material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxel-material.ts",
+          "sha256": "9688367a6ff68fa806ba5b9c88f022be561a88d2c99947fe4852a49a39ca2bd3"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/water-sim.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/water-sim.ts",
+          "sha256": "f94238185d5d403ef752780a1d989071c86004ee796f8fc6a3ad534ec7486a0f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/world-light.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/world-light.ts",
+          "sha256": "2063ee9540426bbaa2f08c1268902629b0f0cca222c61b4be202c56128c20535"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/world.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/world.ts",
+          "sha256": "46dc792e56d36c62818f051fb62b6959115f946bbfe3acb1f29855426ee55ffd"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/minecraft/worldgen.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/worldgen.ts",
+          "sha256": "40c28f9f9969543a3992ba6d8775a12267bc77dbf26afda36a2703b94ec6ecc1"
+        },
+        {
+          "upstreamPath": "License.txt",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/License.txt",
+          "sha256": "b095efc2547e48565fe5d084473c9c8e7f40a881032e1f37e0032120c6204fe5"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/brick_grey.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/brick_grey.png",
+          "sha256": "4b9a3d9e1f2fe7341520bb2ce81ad978d8c40fc34ead45fdc7605127a3acb32c"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/brick_red.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/brick_red.png",
+          "sha256": "12ea2e07af0fb20b6b4890738ccf9e45334f804f1896be7a4a77000eab5208d3"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cactus_inside.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cactus_inside.png",
+          "sha256": "08a9a04884da2943a3090e3e8752db348eeb79b7b2ed6534c416f34cbcdfb162"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cactus_side.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cactus_side.png",
+          "sha256": "7f92ab8032a4fbaa3085852543535b38317474d108d27066553cc6245dbda12e"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cactus_top.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cactus_top.png",
+          "sha256": "3962920fc8a25e39931e3e27b1c55676c7e3d4a8fc81ad25350972a6d6ff9706"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cotton_blue.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cotton_blue.png",
+          "sha256": "78eeb1faa9ca28706f68641cbc2812ff456e852447354e640027df9369ad843c"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cotton_green.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cotton_green.png",
+          "sha256": "8cd6535c8ebc0b4de89804e3da2652a913df6fe809b309d1b26d9e02c1694025"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cotton_red.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cotton_red.png",
+          "sha256": "c6e5cf8c8867f32a4f32bf1a0ce01ec390c9cb38531f1528d985335c7a9714d2"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/cotton_tan.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/cotton_tan.png",
+          "sha256": "b01823007f43136e812f95d4acae32a465f282583a9ffa7488577f94c0771c61"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/dirt.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/dirt.png",
+          "sha256": "fff7cf42c901e597cc8e212e070daf9e691032b49466d2e51ade930ad433fca1"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/dirt_grass.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/dirt_grass.png",
+          "sha256": "4aff6bc1ec36f93de3702b75e67dc1b77fc74400087fbc8d03f4aec869a6171e"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/dirt_sand.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/dirt_sand.png",
+          "sha256": "3fe9e47132a5db26b9ddddf0c55f4dd9c106e8980b9a5d80fda958615a8b1634"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/dirt_snow.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/dirt_snow.png",
+          "sha256": "533d5fadff70274f93761eef9622a151d03ac1987b5fbe69e84fa9dfdf6108f2"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/glass.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/glass.png",
+          "sha256": "0d3a0dcacf34ea76985edac878537310eda164599c8715c3e8daf6647f9b22d7"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/grass_top.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/grass_top.png",
+          "sha256": "6e91371f300c74179fb164d1c731b174f58ce68670b63b4925734b13053bf01d"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/gravel_stone.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/gravel_stone.png",
+          "sha256": "7fd0fb9a67c5a460b6e4cee2e4082179b541457c154a65156de7d40297b862cd"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/greysand.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/greysand.png",
+          "sha256": "60b8a772f76d0770e6e36e95ac6eec193a1dca91c7303f01b1eb3a7fba5a6267"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/greystone.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/greystone.png",
+          "sha256": "af60d1ce96647777280f803321019431950543b7fffbf3c010b129b767d0825b"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/greystone_ruby.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/greystone_ruby.png",
+          "sha256": "dd38341f74f4c5baaf37d416aff07f5bebbcc4f4d860970b3e17495a2a86067a"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/ice.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/ice.png",
+          "sha256": "6b276bff1230d6131dd49bc013b01c4b2fe247c27577b1121b6e04e633f7c358"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/lava.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/lava.png",
+          "sha256": "eb7a7a5d9e0448cf2f6aa00b6db145ed36d20d7d57ace1d50c9cd84bf9ce9cb0"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/leaves.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/leaves.png",
+          "sha256": "530f638a226195b0e3bb85220ced73436bb4ec8b6d477d8070b678abef38692b"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/leaves_orange_transparent.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/leaves_orange_transparent.png",
+          "sha256": "c73458ff3a5eb37d66e85e3c93f26514ecf56a2289da98294b81bab1ba934a32"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/leaves_transparent.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/leaves_transparent.png",
+          "sha256": "8419d19e37ff752837e36cb4f41429726921e30056d03e1ac5ff4bbdf9fac80d"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/redsand.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/redsand.png",
+          "sha256": "f8f0c3b28b24107b0c5eaf4baf858b51a5ecc80da1b06bf8b4853a45c43f0f9a"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/redstone_emerald.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/redstone_emerald.png",
+          "sha256": "bdaf4be1234a6ea3dad61bd5747bf1057aa9689642e4379fea709d6bb56ac645"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/rock.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/rock.png",
+          "sha256": "785db4b0e41fd306e9ea8f8f66eb0cba542f0981e6c23a5edebfd14309e139be"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/rock_moss.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/rock_moss.png",
+          "sha256": "ff2f29672ad62d85c16d51a580d66edec404b66c4882a2cb5997f906e202f8d5"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/sand.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/sand.png",
+          "sha256": "0aee535d03a084d00fd6b80aaa7f09b644e677106caef65c227c4664a15ea14b"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/snow.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/snow.png",
+          "sha256": "9b863378ecc4f807a72120fcbbacdc26fbf9dcf11573769a0d2e3aff4d014200"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/stone.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/stone.png",
+          "sha256": "e53319b547c6172c72c299e21631fecf5434dc75c013b22538146badaf768d1f"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/stone_coal.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/stone_coal.png",
+          "sha256": "ff9ad0efeb029df8567f7e388b5a8b8649eae27a5bc36142468c768fc07a028c"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/stone_diamond.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/stone_diamond.png",
+          "sha256": "150ce3e47cd87dceec1803218847b40b90c87d1d7f8d9335fa9478914c40de8c"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/stone_gold.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/stone_gold.png",
+          "sha256": "f91e5b4d3200d98a280b6cae50d98b464b106759143f5e37c4467a3dd7f5fc63"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/stone_iron.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/stone_iron.png",
+          "sha256": "6534e3ee65ca55e4cec274cd2d676e8f888ad4b44ed183ecda087a0358f927ee"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/stone_silver.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/stone_silver.png",
+          "sha256": "4e53966ec9f15cf66a949d9e81451772136abdae8431ecef55c0f90140f2494a"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/trunk_side.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/trunk_side.png",
+          "sha256": "3456fc479616c151cfd89cb1a3573aaf3f776ed8734ad52c3b9efdce1622be4f"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/trunk_top.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/trunk_top.png",
+          "sha256": "e846c2b2f1c404f155264a1a50b8a9cfbeb8d6b3815afa01a43bb97b548a0323"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/trunk_white_side.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/trunk_white_side.png",
+          "sha256": "85d63cd8f93dffd660e84d7a7a702a9412fbe18581ff3501343ce34910613237"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/trunk_white_top.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/trunk_white_top.png",
+          "sha256": "f9cfff863c4bcfb2927bfb6bdc8f0da463bfbcd9939ecaec2aafbef285c2f17e"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/water.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/water.png",
+          "sha256": "8bf6b51ea13652f1937c83fd0649dcd45a91dd246814886236ac0458f256eb4b"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/wood.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/wood.png",
+          "sha256": "034f0c8cf6ea6d42cae74eaf0665f10c9331baa79cc9d305190ee90880c4849e"
+        },
+        {
+          "upstreamPath": "PNG/Tiles/wood_red.png",
+          "origin": "https://kenney.nl/media/pages/assets/voxel-pack/a3a73d0ff7-1677662501/kenney_voxel-pack.zip",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/wood_red.png",
+          "sha256": "1c9473f822776cf0fc25332326d0d10a246b7e6608176db419fd294bd12ac533"
+        }
+      ]
     }
   ]
 }

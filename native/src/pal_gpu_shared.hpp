@@ -4316,7 +4316,7 @@ inline float geometry_clear_component(GeometryTextureType type) {
 }
 
 /**
- * The two blend-factor tuples the corpus reaches, stated once. A
+ * The three blend-factor tuples the corpus reaches, stated once. A
  * transparent draw blends colour src-alpha over one-minus-src-alpha and
  * accumulates alpha at one; the pinned background ground rides one over
  * one-minus-src-alpha on both lanes. The operation is always add. Every
@@ -4329,6 +4329,15 @@ inline constexpr BlendFactors transparent_blend{
     BlendFactor::one_minus_src_alpha,
     BlendFactor::one,
     BlendFactor::one_minus_src_alpha,
+};
+
+// ShaderMaterial blendMode "additive": color src-alpha + destination,
+// alpha source + destination, exactly as the pin's shader pipeline states it.
+inline constexpr BlendFactors shader_additive_blend{
+    BlendFactor::src_alpha,
+    BlendFactor::one,
+    BlendFactor::one,
+    BlendFactor::one,
 };
 
 inline constexpr BlendFactors ground_blend{

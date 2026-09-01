@@ -848,6 +848,7 @@ export class RendererLowerer {
                     instanceColors:
                         program.useThinInstanceColors === true,
                     alphaBlending: program.needAlphaBlending,
+                    additiveBlending: program.blendMode === "additive",
                     alphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
                     depthWrite: program.depthWrite,
@@ -888,6 +889,7 @@ export class RendererLowerer {
         ShaderTopology::${info.topology === "line-list" ? "line_list" : "triangle_list"},
         ${info.instanceColors},
         ${info.alphaBlending},
+        ${info.additiveBlending},
         ${info.alphaTesting},
         ${info.backFaceCulling},
         ${info.depthWrite},
@@ -1127,6 +1129,7 @@ struct ShaderVariantInfo {
     // appends and its draws bind that buffer.
     bool instance_colors = false;
     bool alpha_blending = false;
+    bool additive_blending = false;
     bool alpha_testing = false;
     bool back_face_culling = true;
     bool depth_write = true;

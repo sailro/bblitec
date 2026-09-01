@@ -123,6 +123,7 @@ export class LinearDepthLowerer {
             samplers: [],
             defines: [],
             needAlphaBlending: false,
+            blendMode: "alpha",
             needAlphaTesting: false,
             backFaceCulling: true,
             depthWrite: true,

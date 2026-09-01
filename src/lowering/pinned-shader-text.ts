@@ -1,5 +1,22 @@
 import ts from "typescript";
-import type { LoweringContext } from "./context.js";
+
+/** The source-navigation surface shared by pinned and application builders. */
+export interface ShaderTextContext {
+    sourceFile(modulePath: string): ts.SourceFile;
+    contractError(node: ts.Node, message: string): never;
+    hasNode(root: ts.Node, predicate: (node: ts.Node) => boolean): boolean;
+    functionDeclaration(modulePath: string, symbolName: string): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionDeclaration;
+    };
+    propertyPath(expression: ts.Expression): string[] | undefined;
+    moduleOfImport(modulePath: string, importedName: string): string | undefined;
+    moduleScopeConstant(
+        file: ts.SourceFile,
+        name: string,
+    ): ts.Expression | undefined;
+    unwrapExpression(expression: ts.Expression): ts.Expression;
+}
 
 /**
  * A bounded evaluator for the pin's shader-text builders.
@@ -108,7 +125,7 @@ function truthy(value: ShaderTextBinding): boolean {
 
 export class PinnedShaderText {
     public constructor(
-        private readonly context: LoweringContext,
+        private readonly context: ShaderTextContext,
         /** Module-scope names the pin's builders read but do not declare. */
         private readonly constants: ReadonlyMap<string, string> = new Map(),
     ) {}
@@ -127,6 +144,20 @@ export class PinnedShaderText {
             modulePath,
             symbolName,
         );
+        return this.evaluateDeclaration(
+            modulePath,
+            declaration,
+            parameters,
+        );
+    }
+
+    /** Evaluate a builder declaration already resolved by an application compiler. */
+    public evaluateDeclaration(
+        modulePath: string,
+        declaration: ts.FunctionDeclaration,
+        parameters: ReadonlyMap<string, ShaderTextBinding>,
+    ): string {
+        const symbolName = declaration.name?.text ?? "shader builder";
         const scope = new Map(parameters);
         this.bindDefaults(declaration, scope, modulePath);
         const returned = this.evaluateStatements(
@@ -192,22 +223,34 @@ export class PinnedShaderText {
                 for (const binding of statement.declarationList
                     .declarations) {
                     if (
-                        !ts.isIdentifier(binding.name) ||
-                        !binding.initializer
+                        !ts.isIdentifier(binding.name)
                     ) {
                         this.context.contractError(
                             binding,
                             `Unsupported binding in pinned ${symbolName}.`,
                         );
                     }
-                    scope.set(
-                        binding.name.text,
-                        this.evaluateValue(
-                            binding.initializer,
-                            scope,
-                            modulePath,
-                        ),
-                    );
+                    if (!binding.initializer) {
+                        if (
+                            binding.type?.kind !==
+                            ts.SyntaxKind.StringKeyword
+                        ) {
+                            this.context.contractError(
+                                binding,
+                                `Unsupported uninitialized binding in pinned ${symbolName}.`,
+                            );
+                        }
+                        scope.set(binding.name.text, "");
+                    } else {
+                        scope.set(
+                            binding.name.text,
+                            this.evaluateValue(
+                                binding.initializer,
+                                scope,
+                                modulePath,
+                            ),
+                        );
+                    }
                 }
                 continue;
             }
@@ -288,13 +331,15 @@ export class PinnedShaderText {
                 }
                 continue;
             }
-            // `out += ...`, which is how a builder accumulates one line per
-            // element of a bound list.
+            // `out += ...` accumulates one line per bound list element;
+            // `out = ...` selects a whole stage fragment in one branch.
             if (
                 ts.isExpressionStatement(statement) &&
                 ts.isBinaryExpression(statement.expression) &&
-                statement.expression.operatorToken.kind ===
-                    ts.SyntaxKind.PlusEqualsToken &&
+                (statement.expression.operatorToken.kind ===
+                    ts.SyntaxKind.PlusEqualsToken ||
+                    statement.expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken) &&
                 ts.isIdentifier(statement.expression.left)
             ) {
                 const name = statement.expression.left.text;
@@ -305,14 +350,17 @@ export class PinnedShaderText {
                         `Pinned ${symbolName} appends to '${name}', which is not accumulated text.`,
                     );
                 }
+                const assigned = this.evaluateString(
+                    statement.expression.right,
+                    scope,
+                    modulePath,
+                );
                 scope.set(
                     name,
-                    current +
-                        this.evaluateString(
-                            statement.expression.right,
-                            scope,
-                            modulePath,
-                        ),
+                    statement.expression.operatorToken.kind ===
+                        ts.SyntaxKind.PlusEqualsToken
+                        ? current + assigned
+                        : assigned,
                 );
                 continue;
             }

@@ -234,7 +234,8 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
-        case "setMeshVisible": {
+        case "setMeshVisible":
+        case "setSubtreeVisible": {
             context.expectArgumentCount(call, 2, 2);
             const mesh = context.compileValue(call.arguments[0]!);
             context.expectKind(mesh, "mesh", call.arguments[0]!);
@@ -647,6 +648,19 @@ export function compileMeshIntrinsic(
             // engine the way every light factory does.
             context.expectArgumentCount(call, 1, 11);
             const engine = context.requireDefaultEngine(call);
+            const name = context.compileValue(call.arguments[0]!);
+            if (
+                name.kind !== "string" &&
+                !(
+                    name.kind === "data" &&
+                    name.dataType?.kind === "string"
+                )
+            ) {
+                context.fail(
+                    call.arguments[0]!,
+                    `TransformNode names must be strings, received ${name.kind}.`,
+                );
+            }
             const defaults = transformNodeDefaults();
             const argument = (
                 index: number,
@@ -681,11 +695,7 @@ export function compileMeshIntrinsic(
                 kind: "transform-node",
                 cpp:
                     `bbl::create_transform_node(${engine}, ` +
-                    `${context.cppString(
-                        context.compileStringLiteral(
-                            call.arguments[0]!,
-                        ),
-                    )}, ${position}, ${rotation}, ${scaling})`,
+                    `${name.cpp}, ${position}, ${rotation}, ${scaling})`,
                 engineCpp: engine,
             };
         }

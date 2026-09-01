@@ -158,6 +158,10 @@ export interface DataLoweringContext {
     ): ts.Expression;
     unwrap(expression: ts.Expression): ts.Expression;
     emit(line: string): void;
+    probeEmission<T>(
+        probe: () => T,
+        answered: (result: T) => boolean,
+    ): T;
     captureEmittedLines(emitBody: () => void): string[];
     allocateTemporaryCppName(label: string): string;
     increaseIndent(): void;
@@ -655,6 +659,13 @@ export class DataLowerer {
                     unwrapped.expression,
                     mode,
                 ) ??
+                (ts.isCallExpression(
+                    this.context.unwrap(unwrapped.expression),
+                )
+                    ? this.context.compileValue(
+                          unwrapped.expression,
+                      )
+                    : undefined) ??
                 (ts.isElementAccessExpression(
                     this.context.unwrap(unwrapped.expression),
                 )
@@ -790,8 +801,36 @@ export class DataLowerer {
                 dataType: owner.dataType.inner,
             };
         } else if (optionalFoundCpp !== undefined) {
-            present = optionalFoundCpp;
-            presentOwner = plainOwner;
+            if (
+                owner.dataType?.kind === "struct" &&
+                this.context.dataTypes.isReferenceStruct(
+                    owner.dataType.name,
+                )
+            ) {
+                // A nullable object lookup can spell the same call in both
+                // its pointer and presence expressions. Optional chaining
+                // evaluates that owner once, so bind the safe shared pointer
+                // before reading either part.
+                const temporary =
+                    this.context.allocateTemporaryCppName(
+                        "optional_chain",
+                    );
+                this.context.emit(
+                    `const auto ${temporary} = ${owner.cpp};`,
+                );
+                present = optionalFoundCpp.replaceAll(
+                    owner.cpp,
+                    temporary,
+                );
+                presentOwner = {
+                    ...plainOwner,
+                    cpp: temporary,
+                    objectIdentityCpp: `${temporary}.get()`,
+                };
+            } else {
+                present = optionalFoundCpp;
+                presentOwner = plainOwner;
+            }
         } else if (
             owner.dataType?.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(
@@ -1311,6 +1350,20 @@ export class DataLowerer {
                 // resource. Keep its presence flag so a later real fallback
                 // can select without dereferencing empty storage.
                 return left;
+            }
+            if (
+                left.kind === "data" &&
+                left.dataType?.kind === "struct" &&
+                fallback.kind === "record"
+            ) {
+                return {
+                    ...this.leafValue(
+                        `(${left.optionalFoundCpp} ? ${left.cpp} : ` +
+                            `${this.compileKnownValueForSink(fallback, left.dataType, expression.right)})`,
+                        left.dataType,
+                    ),
+                    freshData: true,
+                };
             }
             if (
                 left.kind === "data" &&
@@ -2353,11 +2406,13 @@ export class DataLowerer {
      * root (falling back to the base name for a source outside it, and
      * to a fixed label for a synthesized access with no position).
      */
-    private indexSiteLabel(
-        access: ts.ElementAccessExpression,
-    ): string {
+    private indexSiteLabel(access: ts.Node): string {
         const node =
-            access.pos >= 0 ? access : access.argumentExpression;
+            access.pos >= 0
+                ? access
+                : ts.isElementAccessExpression(access)
+                  ? access.argumentExpression
+                  : access;
         if (node.pos < 0) {
             return "generated";
         }
@@ -2415,6 +2470,34 @@ export class DataLowerer {
         return owner
             ? this.guardableElementRead(owner, access)
             : undefined;
+    }
+
+    /**
+     * Reads one binding from a native vector for an array destructuring
+     * declaration. A concrete reached binding cannot represent JavaScript's
+     * out-of-range `undefined`, so use the ordinary checked index path.
+     */
+    public readVectorBindingElement(
+        vector: Value,
+        index: number,
+        node: ts.Node,
+    ): Value {
+        if (
+            vector.kind !== "data" ||
+            vector.dataType?.kind !== "vector"
+        ) {
+            this.context.fail(
+                node,
+                "Array vector destructuring requires a native vector value.",
+            );
+        }
+        this.context.reachJsData();
+        return this.leafValue(
+            `bbl::js::array_index_checked(` +
+                `${vector.cpp}, ${index}.0, ` +
+                `${this.context.cppString(this.indexSiteLabel(node))})`,
+            vector.dataType.element,
+        );
     }
 
     private guardableElementRead(
@@ -3808,6 +3891,7 @@ export class DataLowerer {
 
     private compileMapOrSetNew(
         expression: ts.NewExpression,
+        expectedType?: DataType,
     ): Value | undefined {
         if (
             !ts.isIdentifier(expression.expression) ||
@@ -3830,7 +3914,10 @@ export class DataLowerer {
                 ? direct
                 : contextual?.kind === "map" || contextual?.kind === "set"
                   ? contextual
-                  : undefined;
+                  : expectedType?.kind === "map" ||
+                      expectedType?.kind === "set"
+                    ? expectedType
+                    : undefined;
         if (!dataType) {
             this.context.fail(
                 expression,
@@ -3948,6 +4035,35 @@ export class DataLowerer {
         }
         const unwrapped = this.context.unwrap(argument);
         if (name === "Uint8Array") {
+            if (
+                ts.isCallExpression(unwrapped) &&
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                unwrapped.expression.name.text === "slice" &&
+                ts.isPropertyAccessExpression(unwrapped.expression.expression) &&
+                unwrapped.expression.expression.name.text === "buffer" &&
+                ts.isPropertyAccessExpression(
+                    unwrapped.expression.expression.expression,
+                ) &&
+                unwrapped.expression.expression.expression.name.text === "data" &&
+                ts.isIdentifier(
+                    unwrapped.expression.expression.expression.expression,
+                )
+            ) {
+                const imageData = this.context.lookupOptional(
+                    unwrapped.expression.expression.expression.expression,
+                );
+                const pixels = imageData?.recordProperties?.data;
+                if (
+                    pixels?.kind === "data" &&
+                    pixels.dataType?.kind === "u8array"
+                ) {
+                    return {
+                        kind: "data",
+                        cpp: `bbl::js::U8Array(${pixels.cpp}.buffer())`,
+                        dataType,
+                    };
+                }
+            }
             const source = this.compileDataPath(unwrapped, "read") ??
                 this.context.compileValue(unwrapped);
             if (source.dataType?.kind === "arraybuffer") {
@@ -4999,7 +5115,10 @@ export class DataLowerer {
                 }
                 if (ts.isNewExpression(unwrapped)) {
                     const created =
-                        this.compileMapOrSetNew(unwrapped);
+                        this.compileMapOrSetNew(
+                            unwrapped,
+                            dataType,
+                        );
                     if (
                         created?.dataType &&
                         dataTypesEqual(created.dataType, dataType)
@@ -6370,25 +6489,18 @@ export class DataLowerer {
                 target.dataType.inner.kind === "string" ||
                 target.dataType.inner.kind === "enum" ||
                 target.dataType.inner.kind === "handle" ||
-                (isTypedArrayType(target.dataType.inner) &&
+                // U8Array is a shared ArrayBuffer view. Copying the wrapper
+                // preserves JavaScript identity for constructor and helper
+                // results alike.
+                target.dataType.inner.kind === "u8array" ||
+                ((target.dataType.inner.kind === "map" ||
+                    target.dataType.inner.kind === "set") &&
                     ts.isNewExpression(
                         this.context.unwrap(expression.right),
                     )) ||
-                (target.dataType.inner.kind === "u8array" &&
-                    ts.isCallExpression(
+                (isTypedArrayType(target.dataType.inner) &&
+                    ts.isNewExpression(
                         this.context.unwrap(expression.right),
-                    ) &&
-                    ts.isPropertyAccessExpression(
-                        (this.context.unwrap(
-                            expression.right,
-                        ) as ts.CallExpression).expression,
-                    ) &&
-                    ["slice", "subarray"].includes(
-                        ((this.context.unwrap(
-                            expression.right,
-                        ) as ts.CallExpression)
-                            .expression as ts.PropertyAccessExpression)
-                            .name.text,
                     )) ||
                 ts.isObjectLiteralExpression(
                     this.context.unwrap(expression.right),
@@ -6525,7 +6637,9 @@ export class DataLowerer {
             const owner = this.compileDataPath(
                 left.expression,
                 "write",
-            );
+            ) ?? (ts.isPropertyAccessExpression(left.expression)
+                ? this.context.compileValue(left.expression)
+                : undefined);
             if (owner?.kind === "data") {
                 const narrowed = this.narrowOptional(
                     owner,
@@ -6555,14 +6669,29 @@ export class DataLowerer {
             return false;
         }
         if (ts.isElementAccessExpression(left)) {
-            const owner = this.compileDataPath(
-                left.expression,
-                "read",
+            // This first resolution only asks whether the target is a Map.
+            // Resolving a call-shaped owner emits its call, so discard that
+            // speculative emission when the answer is no and let the normal
+            // element-target path below perform the source's one evaluation.
+            const narrowed = this.context.probeEmission(
+                () => {
+                    const owner = this.compileDataPath(
+                        left.expression,
+                        "read",
+                    );
+                    const candidate = owner?.kind === "data"
+                        ? this.narrowOptional(owner, left.expression)
+                        : undefined;
+                    return candidate?.dataType?.kind === "map"
+                        ? {
+                              ...candidate,
+                              dataType: candidate.dataType,
+                          }
+                        : undefined;
+                },
+                (result) => result !== undefined,
             );
-            const narrowed = owner?.kind === "data"
-                ? this.narrowOptional(owner, left.expression)
-                : undefined;
-            if (narrowed?.dataType?.kind === "map") {
+            if (narrowed) {
                 if (operator !== "=") {
                     this.context.fail(
                         expression,
@@ -6964,10 +7093,13 @@ export class DataLowerer {
                     element.kind === "string" ||
                     element.kind === "enum"
                 ) {
-                    const guarded =
-                        this.compileGuardableElementAccess(
-                            unwrapped,
-                        );
+                    // The owner has already been resolved above. Reuse it:
+                    // resolving it again would duplicate a call expression
+                    // merely to derive the guard predicate.
+                    const guarded = this.guardableElementRead(
+                        owner,
+                        unwrapped,
+                    );
                     if (guarded?.truthinessCpp) {
                         return guarded.truthinessCpp;
                     }
@@ -7166,14 +7298,43 @@ export class DataLowerer {
             ["number", "boolean", "string", "enum"].includes(
                 dataType.inner.kind,
             );
-        const leftType = this.dataTypeAt(left);
-        const rightType = this.dataTypeAt(right);
+        // TypeScript's index signatures describe `Record<K, V>[key]` as V,
+        // even though a run-time lookup can miss. Our Map lowering preserves
+        // that missing-key state and an optional chain over the lookup
+        // therefore produces `Nullable<T>` even when the checker reports T.
+        // Prefer that concrete lowered type for optional-chain operands so
+        // `record[key]?.flag === true` compares the contained flag rather
+        // than the nullable's presence bit.
+        const loweredOptional = (
+            operand: ts.Expression,
+        ): Value | undefined => {
+            const unwrapped = this.context.unwrap(operand);
+            if (!ts.isOptionalChain(unwrapped)) {
+                return undefined;
+            }
+            const value = this.compileDataPath(
+                unwrapped,
+                "read",
+            );
+            return value?.kind === "data" &&
+                optionalScalar(value.dataType)
+                ? value
+                : undefined;
+        };
+        const leftOptional = loweredOptional(left);
+        const rightOptional = loweredOptional(right);
+        const leftType =
+            leftOptional?.dataType ?? this.dataTypeAt(left);
+        const rightType =
+            rightOptional?.dataType ?? this.dataTypeAt(right);
         const bindOptional = (
             operand: ts.Expression,
             expected: Extract<DataType, { kind: "optional" }>,
+            lowered?: Value,
         ): string => {
             this.context.reachJsData();
             const value =
+                lowered ??
                 this.compileDataPath(operand, "read") ??
                 this.context.compileValue(operand);
             const concreteType: DataType | undefined =
@@ -7232,15 +7393,27 @@ export class DataLowerer {
             optionalScalar(rightType) &&
             dataTypesEqual(leftType.inner, rightType.inner)
         ) {
-            const leftCpp = bindOptional(left, leftType);
-            const rightCpp = bindOptional(right, rightType);
+            const leftCpp = bindOptional(
+                left,
+                leftType,
+                leftOptional,
+            );
+            const rightCpp = bindOptional(
+                right,
+                rightType,
+                rightOptional,
+            );
             const equal =
                 `(${leftCpp}.has_value() == ${rightCpp}.has_value() && ` +
                 `(!${leftCpp}.has_value() || (*${leftCpp}) == (*${rightCpp})))`;
             return negated ? `!${equal}` : equal;
         }
         if (optionalScalar(leftType)) {
-            const leftCpp = bindOptional(left, leftType);
+            const leftCpp = bindOptional(
+                left,
+                leftType,
+                leftOptional,
+            );
             const rightCpp = this.compileForSink(
                 right,
                 leftType.inner,
@@ -7251,7 +7424,11 @@ export class DataLowerer {
             return negated ? `!${equal}` : equal;
         }
         if (optionalScalar(rightType)) {
-            const rightCpp = bindOptional(right, rightType);
+            const rightCpp = bindOptional(
+                right,
+                rightType,
+                rightOptional,
+            );
             const leftCpp = this.compileForSink(
                 left,
                 rightType.inner,

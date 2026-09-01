@@ -615,6 +615,15 @@ const propertyRules: readonly PropertyRule[] = [
     record: ["meshes", "name"],
   },
   {
+    // TransformNode is the pin's SceneNode alias and carries the factory name
+    // exactly like Mesh does.
+    owner: "transform-node",
+    property: "name",
+    value: "data",
+    dataType: { kind: "string" },
+    record: ["transform_nodes", "name"],
+  },
+  {
     // Node.parent is the same nullable object reference installed by
     // setParent; the zero handle is the native null state.
     owner: "mesh",

@@ -178,6 +178,7 @@ export interface StatementLoweringContext {
     restoreAliasState(snapshot: Map<string, string>): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
+    isInRuntimeControlFlow(): boolean;
     emit(line: string): void;
     rebindVariable(
         identifier: ts.Identifier,
@@ -325,6 +326,12 @@ function replaceHandleToken(line: string, token: string): string {
 // one AOT effect for many runtime iterations.
 const MAX_STATIC_INDEX_ITERATIONS = 32;
 const MAX_REQUIRED_STATIC_INDEX_ITERATIONS = 4096;
+// A data-only nest can contain individually small loops whose Cartesian
+// product is still large. Keep the outer layers native once that product
+// exceeds the largest established static nest (16 * 16 * 4), so large
+// voxel/grid walks do not duplicate their native inner body hundreds of
+// times during compilation.
+const MAX_DATA_STATIC_INDEX_NEST_PRODUCT = 1024;
 // The per-loop caps above compose multiplicatively in a nest, and the
 // generation-known-tuple `for...of` has no cap at all, so the emitted-text
 // budget is the PRODUCT of every enclosing static unroll. Past this product
@@ -1639,53 +1646,11 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForStatement,
     ): boolean {
-        if (
-            !statement.initializer ||
-            !ts.isVariableDeclarationList(
-                statement.initializer,
-            ) ||
-            statement.initializer.declarations.length !== 1 ||
-            !statement.condition ||
-            !statement.incrementor
-        ) {
-            return false;
-        }
-        const declaration =
-            statement.initializer.declarations[0]!;
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            !declaration.initializer ||
-            !ts.isNumericLiteral(
-                declaration.initializer,
-            ) ||
-            !ts.isBinaryExpression(statement.condition) ||
-            statement.condition.operatorToken.kind !==
-                ts.SyntaxKind.LessThanToken ||
-            !ts.isIdentifier(statement.condition.left) ||
-            statement.condition.left.text !==
-                declaration.name.text ||
-            !ts.isPostfixUnaryExpression(
-                statement.incrementor,
-            ) ||
-            statement.incrementor.operator !==
-                ts.SyntaxKind.PlusPlusToken ||
-            !ts.isIdentifier(
-                statement.incrementor.operand,
-            ) ||
-            statement.incrementor.operand.text !==
-                declaration.name.text
-        ) {
-            return false;
-        }
-        const start = Number(declaration.initializer.text);
-        if (!Number.isInteger(start) || start < 0) {
-            return false;
-        }
-        const indexBinding = declaration.name;
+        const shape = this.staticIndexLoopShape(statement);
+        if (!shape) return false;
+        const { indexBinding, start, end: endExpression } = shape;
         const indexName = indexBinding.text;
-        const length = context.compileValue(
-            statement.condition.right,
-        );
+        const length = context.compileValue(endExpression);
         if (
             length.kind !== "number" ||
             length.staticNumber === undefined ||
@@ -1697,6 +1662,16 @@ export class StatementLowerer {
         const requiresStaticIteration =
             context.requiresStaticIteration(statement.statement) ||
             containsFrameYield(context, statement.statement);
+        // Once an enclosing runtime branch or loop owns execution, a
+        // data-only counted loop gains nothing from generation-time
+        // unrolling. Keeping it native also prevents small inner grid walks
+        // from being duplicated inside each runtime iteration.
+        if (
+            context.isInRuntimeControlFlow() &&
+            !requiresStaticIteration
+        ) {
+            return false;
+        }
         if (
             length.staticNumber > MAX_STATIC_INDEX_ITERATIONS &&
             !requiresStaticIteration
@@ -1707,7 +1682,7 @@ export class StatementLowerer {
             length.staticNumber > MAX_REQUIRED_STATIC_INDEX_ITERATIONS
         ) {
             context.fail(
-                statement.condition.right,
+                endExpression,
                 "A loop that reaches pinned scene construction must be " +
                     "statically iterated, but its count is too large.",
             );
@@ -1756,6 +1731,16 @@ export class StatementLowerer {
             0,
             length.staticNumber - start,
         );
+        if (
+            !requiresStaticIteration &&
+            this.exceedsDataStaticIndexNest(
+                context,
+                statement.statement,
+                iterations,
+            )
+        ) {
+            return false;
+        }
         const emitIndexIteration = (index: number): void => {
             this.emitUnrolledIteration(
                 context,
@@ -1792,6 +1777,108 @@ export class StatementLowerer {
             }
         });
         return true;
+    }
+
+    /** The exact counted-loop form supported by the static index unroller. */
+    private staticIndexLoopShape(
+        statement: ts.ForStatement,
+    ):
+        | {
+              indexBinding: ts.Identifier;
+              start: number;
+              end: ts.Expression;
+          }
+        | undefined {
+        if (
+            !statement.initializer ||
+            !ts.isVariableDeclarationList(statement.initializer) ||
+            statement.initializer.declarations.length !== 1 ||
+            !statement.condition ||
+            !statement.incrementor
+        ) {
+            return undefined;
+        }
+        const declaration = statement.initializer.declarations[0]!;
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.initializer ||
+            !ts.isNumericLiteral(declaration.initializer) ||
+            !ts.isBinaryExpression(statement.condition) ||
+            statement.condition.operatorToken.kind !==
+                ts.SyntaxKind.LessThanToken ||
+            !ts.isIdentifier(statement.condition.left) ||
+            statement.condition.left.text !== declaration.name.text ||
+            !ts.isPostfixUnaryExpression(statement.incrementor) ||
+            statement.incrementor.operator !==
+                ts.SyntaxKind.PlusPlusToken ||
+            !ts.isIdentifier(statement.incrementor.operand) ||
+            statement.incrementor.operand.text !== declaration.name.text
+        ) {
+            return undefined;
+        }
+        const start = Number(declaration.initializer.text);
+        if (!Number.isInteger(start) || start < 0) return undefined;
+        return {
+            indexBinding: declaration.name,
+            start,
+            end: statement.condition.right,
+        };
+    }
+
+    /**
+     * Whether statically counted loops below this body form a data walk too
+     * large to duplicate at generation. Static constant resolution is
+     * side-effect free. An unresolved or runtime-shaped nested iteration
+     * has an unknown Cartesian product, so conservatively keep its enclosing
+     * data-only loop native as well.
+     */
+    private exceedsDataStaticIndexNest(
+        context: StatementLoweringContext,
+        body: ts.Statement,
+        iterations: number,
+    ): boolean {
+        let exceeded = false;
+        const visit = (node: ts.Node, product: number): void => {
+            if (exceeded || ts.isFunctionLike(node)) return;
+            if (ts.isForStatement(node)) {
+                const shape = this.staticIndexLoopShape(node);
+                if (shape) {
+                    const resolved = context.resolveStaticExpression(
+                        shape.end,
+                    );
+                    if (ts.isNumericLiteral(resolved)) {
+                        const end = Number(resolved.text);
+                        if (Number.isInteger(end) && end >= 0) {
+                            const count = Math.max(0, end - shape.start);
+                            const nestedProduct = product * count;
+                            if (
+                                nestedProduct >
+                                MAX_DATA_STATIC_INDEX_NEST_PRODUCT
+                            ) {
+                                exceeded = true;
+                                return;
+                            }
+                            visit(node.statement, nestedProduct);
+                            return;
+                        }
+                    }
+                }
+                exceeded = true;
+                return;
+            }
+            if (
+                ts.isForOfStatement(node) ||
+                ts.isForInStatement(node) ||
+                ts.isWhileStatement(node) ||
+                ts.isDoStatement(node)
+            ) {
+                exceeded = true;
+                return;
+            }
+            ts.forEachChild(node, (child) => visit(child, product));
+        };
+        visit(body, iterations);
+        return exceeded;
     }
 
     /**
@@ -2686,12 +2773,23 @@ export class StatementLowerer {
     ): void {
         const unwrapped = context.unwrap(expression);
         if (ts.isVoidExpression(unwrapped)) {
+            const operand = context.unwrap(unwrapped.expression);
+            if (
+                ts.isIdentifier(operand) ||
+                operand.kind === ts.SyntaxKind.ThisKeyword
+            ) {
+                // Reading these values has no observable side effect. This is
+                // the conventional `void unusedParameter;` spelling as well
+                // as the JavaScript equivalent of an intentionally discarded
+                // literal, so there is no native statement to emit.
+                return;
+            }
             // `void call()` preserves the call's side effects and discards
             // only its value. At a statement boundary the value was already
             // unused, so lower the operand through the same statement path.
             this.emitExpression(
                 context,
-                unwrapped.expression,
+                operand,
             );
             return;
         }
@@ -3113,6 +3211,11 @@ export class StatementLowerer {
                 },
                 scaling: {
                     entry: "set_transform_node_scaling",
+                    components: 3,
+                    wide: false,
+                },
+                rotation: {
+                    entry: "set_transform_node_rotation",
                     components: 3,
                     wide: false,
                 },

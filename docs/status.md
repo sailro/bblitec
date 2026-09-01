@@ -244,6 +244,7 @@ parity scene intentionally does not.
 | Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.161 / 0.121 | 0.161 / 0.121 | Animated glTF; PBR/IBL; retained chrome. |
 | Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.134 / 0.185 | 0.134 / 0.185 | Skinned Draco/WebP glTF; transmission; retained chrome. |
 | Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.175 / 0.172 | 0.158 / 0.155 | Strategy map; sprites; picking; retained cursor/tooltips. |
+| Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#cf222e}{\textsf{1.413}} / \color{#cf222e}{\textsf{1.414}}$ | $\color{#cf222e}{\textsf{1.413}} / \color{#cf222e}{\textsf{1.414}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: SDL_GPU 0.000 / 0.000, Dawn 0.000 / 0.000. |
 
 ## Project-owned differential gates
 

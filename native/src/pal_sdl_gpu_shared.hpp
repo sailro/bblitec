@@ -931,7 +931,9 @@ inline std::vector<SDL_GPUTextureSamplerBinding> sprite_fragment_textures(
                 extra.rgba.size(),
                 extra.width,
                 extra.height,
-                SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
+                extra.srgb
+                    ? SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM_SRGB
+                    : SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
                 label),
             create_texture_sampler(device, extra.sampler)});
     }

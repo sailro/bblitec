@@ -5703,7 +5703,10 @@ DawnPipeline& pipeline_for(
     if (
         traits.transparent ||
         (shader_info && shader_info->alpha_blending)) {
-        blend = blend_state_from(transparent_blend);
+        blend = blend_state_from(
+            shader_info && shader_info->additive_blending
+                ? shader_additive_blend
+                : transparent_blend);
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;

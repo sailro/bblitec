@@ -419,15 +419,22 @@ export function compileAudioMethodCall(
                 if (call.arguments.length !== 1) {
                     context.fail(
                         call,
-                        "connect(destination) is the reached form; " +
-                            "connecting to an AudioParam is not lowered.",
+                        "connect(destination) is the reached form.",
                     );
                 }
                 const destination = context.compileValue(call.arguments[0]!);
+                if (destination.kind === "audio-param") {
+                    return {
+                        kind: "void",
+                        cpp:
+                            `bbl::pal::audio_connect_param(${receiver.cpp}, ` +
+                            `${destination.cpp})`,
+                    };
+                }
                 if (destination.kind !== "audio-node") {
                     context.fail(
                         call.arguments[0]!,
-                        "connect expects an audio node.",
+                        "connect expects an audio node or AudioParam.",
                     );
                 }
                 return {

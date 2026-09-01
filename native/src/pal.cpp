@@ -2,6 +2,7 @@
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -10,10 +11,18 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 #include <utility>
 
-#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL.h>
+
+#if defined(_WIN32)
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <windows.h>
+#include <commdlg.h>
+#endif
 
 namespace bbl {
 
@@ -70,6 +79,18 @@ double set_timeout(
         std::move(callback),
     });
     return static_cast<double>(id);
+}
+
+void clear_timeout(Engine& engine, double id) {
+    if (!std::isfinite(id) || id < 0.0) {
+        return;
+    }
+    const auto native_id = static_cast<std::uint64_t>(id);
+    std::erase_if(
+        engine.timeout_callbacks,
+        [native_id](const Engine::TimeoutCallback& timeout) {
+            return timeout.id == native_id;
+        });
 }
 
 void run_timeout_callbacks(Engine& engine) {
@@ -151,6 +172,152 @@ namespace bbl::pal {
 
 std::string environment_variable(const char* name);
 
+namespace {
+
+#if defined(_WIN32)
+
+void release_pointer_lock_for_dialog(Engine& engine) {
+    if (!engine.pointer_locked && !engine.pointer_lock_requested) return;
+    engine.pointer_lock_requested = false;
+    SDL_Window* window = SDL_GetKeyboardFocus();
+    if (!window) window = SDL_GetMouseFocus();
+    if (window) {
+        SDL_SetWindowRelativeMouseMode(window, false);
+    }
+    const bool changed = engine.pointer_locked;
+    engine.pointer_locked = false;
+    SDL_ShowCursor();
+    if (changed) {
+        for (const auto& callback : engine.pointer_lock_change_callbacks) {
+            callback();
+        }
+    }
+}
+
+std::wstring utf8_to_wide(std::string_view value) {
+    if (value.empty()) return {};
+    const int size = MultiByteToWideChar(
+        CP_UTF8,
+        MB_ERR_INVALID_CHARS,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0);
+    if (size <= 0) {
+        throw std::runtime_error("Unable to convert file-dialog text to UTF-16.");
+    }
+    std::wstring result(static_cast<std::size_t>(size), L'\0');
+    if (MultiByteToWideChar(
+            CP_UTF8,
+            MB_ERR_INVALID_CHARS,
+            value.data(),
+            static_cast<int>(value.size()),
+            result.data(),
+            size) != size) {
+        throw std::runtime_error("Unable to convert file-dialog text to UTF-16.");
+    }
+    return result;
+}
+
+std::string wide_to_utf8(std::wstring_view value) {
+    if (value.empty()) return {};
+    const int size = WideCharToMultiByte(
+        CP_UTF8,
+        WC_ERR_INVALID_CHARS,
+        value.data(),
+        static_cast<int>(value.size()),
+        nullptr,
+        0,
+        nullptr,
+        nullptr);
+    if (size <= 0) {
+        throw std::runtime_error("Unable to convert the selected path to UTF-8.");
+    }
+    std::string result(static_cast<std::size_t>(size), '\0');
+    if (WideCharToMultiByte(
+            CP_UTF8,
+            WC_ERR_INVALID_CHARS,
+            value.data(),
+            static_cast<int>(value.size()),
+            result.data(),
+            size,
+            nullptr,
+            nullptr) != size) {
+        throw std::runtime_error("Unable to convert the selected path to UTF-8.");
+    }
+    return result;
+}
+
+std::optional<std::string> choose_windows_file(
+    const FileDialogOptions& options,
+    bool save) {
+    std::array<wchar_t, 32768> path{};
+    if (save) {
+        const std::wstring suggested = utf8_to_wide(options.suggested_name);
+        std::copy_n(
+            suggested.begin(),
+            std::min(suggested.size(), path.size() - 1),
+            path.begin());
+    }
+    const std::wstring title = utf8_to_wide(options.title);
+    const std::wstring filter_name = utf8_to_wide(options.filter_name);
+    const std::wstring filter_pattern = utf8_to_wide(options.filter_pattern);
+    const std::wstring default_extension =
+        utf8_to_wide(options.default_extension);
+    std::wstring filter = filter_name;
+    filter.push_back(L'\0');
+    filter.append(filter_pattern);
+    filter.push_back(L'\0');
+    filter.push_back(L'\0');
+
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = GetActiveWindow();
+    dialog.lpstrFilter = filter.c_str();
+    dialog.lpstrFile = path.data();
+    dialog.nMaxFile = static_cast<DWORD>(path.size());
+    dialog.lpstrTitle = title.c_str();
+    dialog.lpstrDefExt = default_extension.c_str();
+    dialog.Flags = OFN_EXPLORER | OFN_HIDEREADONLY |
+        OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST |
+        (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+
+    const BOOL accepted = save
+        ? GetSaveFileNameW(&dialog)
+        : GetOpenFileNameW(&dialog);
+    if (accepted) {
+        return wide_to_utf8(path.data());
+    }
+    const DWORD error = CommDlgExtendedError();
+    if (error == 0) return std::nullopt;
+    throw std::runtime_error(
+        "Native file dialog failed with common-dialog error " +
+        std::to_string(error) + ".");
+}
+
+#endif
+
+std::optional<std::string> choose_file(
+    Engine& engine,
+    const FileDialogOptions& options,
+    bool save) {
+    const std::string override_path = environment_variable(
+        save
+            ? "BBLITE_FILE_DIALOG_SAVE_PATH"
+            : "BBLITE_FILE_DIALOG_OPEN_PATH");
+    if (!override_path.empty()) return override_path;
+#if defined(_WIN32)
+    release_pointer_lock_for_dialog(engine);
+    return choose_windows_file(options, save);
+#else
+    // Until another host PAL supplies a native picker, preserve the previous
+    // portable working-directory behavior instead of removing save/load.
+    return options.suggested_name;
+#endif
+}
+
+} // namespace
+
 // Every scene reaches the engine through here, so this is where the
 // executable reports which sources it was built from. bblitec sets
 // BBLITE_BUILD_STAMP_OUT before a measured run and refuses the result
@@ -178,6 +345,18 @@ Engine create_engine(EngineOptions options) {
     engine.canvas_client_width = engine.options.width;
     engine.canvas_client_height = engine.options.height;
     return engine;
+}
+
+std::optional<std::string> choose_save_file(
+    Engine& engine,
+    const FileDialogOptions& options) {
+    return choose_file(engine, options, true);
+}
+
+std::optional<std::string> choose_open_file(
+    Engine& engine,
+    const FileDialogOptions& options) {
+    return choose_file(engine, options, false);
 }
 
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {

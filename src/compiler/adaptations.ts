@@ -21,6 +21,7 @@ export interface AdaptationContext {
     readonly unwrappedAwaitExpressions: ReadonlySet<number>;
     readonly jsDataReached: boolean;
     readonly jsRandomReached: boolean;
+    readonly voxelFileStorageReached: boolean;
     readonly assets: ReadonlyMap<string, CompileAsset>;
     readonly reachedShaderPrograms: readonly CompiledShaderProgram[];
     readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
@@ -167,6 +168,22 @@ export function compileAdaptations(
             validation: ["typed Promise<T> runtime", "local asset manifest", "generated glTF loader tests"],
         });
     }
+    if (context.voxelFileStorageReached) {
+        adaptations.push({
+            id: "native-voxel-file-dialog",
+            category: "browser-erasure",
+            sourceSemantics:
+                "Voxel Sandbox opens browser save/open pickers and falls back to a download or hidden file input.",
+            nativeSemantics:
+                "Ctrl+S and Ctrl+O open the host save/open dialog and write or read the same JSON payload, with world.voxelsave.json as the suggested name.",
+            risk: "medium",
+            validation: [
+                "voxel file-boundary compiler test",
+                "native SaveData JSON round-trip",
+                "non-interactive file-dialog path override",
+            ],
+        });
+    }
     if (context.jsDataReached) {
         adaptations.push({
             id: "plain-data-value-model",
@@ -218,7 +235,7 @@ export function compileAdaptations(
     }
     if (
         [...context.assets.values()].some(
-            (asset) => asset.kind === "pixels",
+            (asset) => asset.source.startsWith("generated:pixels:"),
         )
     ) {
         adaptations.push({
@@ -232,6 +249,27 @@ export function compileAdaptations(
             validation: [
                 "scenes 93 and 95 parity against the browser golden, which computes the same bytes at run time",
                 "byte-stable across repeated compilations",
+            ],
+        });
+    }
+    if (
+        [...context.assets.values()].some(
+            (asset) =>
+                asset.kind === "pixels" &&
+                asset.source.startsWith("generated:data-url:"),
+        )
+    ) {
+        adaptations.push({
+            id: "fetched-canvas-atlas",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene fetches its source-owned voxel PNG tiles, draws them into one Canvas2D atlas, and reads the resulting RGBA pixels at run time.",
+            nativeSemantics:
+                "Generation executes that bounded atlas path in headless Chromium against the exact tracked PNGs and packages the resulting RGBA bytes for both native backends.",
+            risk: "medium",
+            validation: [
+                "Voxel Sandbox browser-golden parity",
+                "transitive-input-keyed atlas bake cache",
             ],
         });
     }

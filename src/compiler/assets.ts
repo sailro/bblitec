@@ -79,6 +79,51 @@ export function registerAsset(
 }
 
 /**
+ * Package one root-relative browser UI image at the same logical path.
+ *
+ * A retained style can choose its image at runtime, so unlike an ordinary
+ * texture URL it cannot embed one generation-known hashed file name. Keeping
+ * the closed, audited browser path below `assets/` lets the style retain that
+ * choice while still resolving beside the native executable.
+ */
+export function registerUiImageAsset(
+    context: AssetRegistryContext,
+    source: string,
+    logicalPath: string,
+): CompileAsset {
+    const output = logicalPath
+        .replace(/\\/g, "/")
+        .replace(/^\/+/, "");
+    if (
+        output.length === 0 ||
+        output.split("/").some((part) => part === "" || part === "." || part === "..")
+    ) {
+        throw new Error(
+            `Retained UI image path '${logicalPath}' is not a bounded root-relative asset path.`,
+        );
+    }
+    source = resolveBundledAsset(source, context.options.fileName);
+    source = canonicalLocalAssetSource(source, context.options.fileName);
+    const key = `ui-image:${source}:${output}`;
+    const existing = context.assets.get(key);
+    if (existing) return existing;
+    const collision = [...context.assets.values()].find(
+        (asset) => asset.output === output && asset.source !== source,
+    );
+    if (collision) {
+        throw new Error(
+            `Retained UI image path '${output}' names both '${collision.source}' and '${source}'.`,
+        );
+    }
+    const asset = {
+        ...assetRecord(source, "texture", context.assetPayloads),
+        output,
+    };
+    context.assets.set(key, asset);
+    return asset;
+}
+
+/**
  * Gives one repository file one manifest identity regardless of how it was
  * discovered. Static URLs are normally entry-relative, while a closed
  * directory scan necessarily discovers absolute filesystem paths. Keeping

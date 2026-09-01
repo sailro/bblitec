@@ -22,3 +22,7 @@
 
 # External golden inputs are byte-addressed; never rewrite their contents.
 corpus/** -text
+# The Kenney archive's license is CRLF byte evidence; treating this one file
+# as binary keeps Git's whitespace checker from interpreting its CR bytes as
+# editable trailing space.
+corpus/babylon-lite/lab/lite/src/demos/minecraft/voxelpack/License.txt binary

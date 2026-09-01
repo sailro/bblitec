@@ -999,6 +999,7 @@ test("binds compacted sprite textures by shader resource name", () => {
 test("forwards DOM-compatible application input through every native loop", () => {
     const events = source("native/src/pal_platform_events.hpp");
     assert.match(events, /case SDL_SCANCODE_SPACE: return "Space";/);
+    assert.match(events, /case SDL_SCANCODE_F3: return "F3";/);
     assert.match(events, /if \(code == "Space"\) return " ";/);
     assert.match(events, /engine\.key_down_callbacks/);
     assert.match(events, /engine\.key_up_callbacks/);
@@ -1013,6 +1014,11 @@ test("forwards DOM-compatible application input through every native loop", () =
     );
     assert.match(events, /dom_wheel_delta_y\(event\.wheel\)/);
     assert.match(events, /code == "WheelUp" \? -100\.0 : 100\.0/);
+    assert.match(events, /code == "MouseMoveRight"/);
+    assert.match(events, /code == "WindowClose"/);
+    assert.match(events, /event_code == "MouseLeftOutsideCanvas"/);
+    assert.match(events, /event_code\.starts_with\("Ctrl\+"\)/);
+    assert.match(events, /\.movement_x = 100\.0/);
     assert.match(events, /SDL_SetWindowRelativeMouseMode/);
     assert.match(events, /SDL_HINT_MOUSE_AUTO_CAPTURE/);
     assert.match(events, /SDL_HINT_MOUSE_RELATIVE_SYSTEM_SCALE/);
@@ -1020,6 +1026,26 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /SDL_HINT_MOUSE_RELATIVE_CURSOR_VISIBLE/);
     assert.match(events, /SDL_HINT_OVERRIDE/);
     assert.match(events, /update_tracked_mouse_button\(event\.button\)/);
+    assert.match(events, /engine\.pointer_down_callbacks/);
+    assert.match(events, /engine\.canvas_click_callbacks/);
+    assert.match(
+        events,
+        /canvas_contains_client_point\([\s\S]{0,260}event\.client_x >= 0\.0[\s\S]{0,120}event\.client_y >= 0\.0[\s\S]{0,180}engine\.canvas_client_width[\s\S]{0,100}engine\.canvas_client_height/,
+    );
+    assert.equal(
+        (events.match(/dispatch_platform_pointer_down\(/g) ?? []).length,
+        3,
+        "the shared helper plus replay and live calls keep pointer-down client-only",
+    );
+    assert.equal(
+        (events.match(/dispatch_canvas_click\(/g) ?? []).length,
+        3,
+        "the shared helper plus replay and live calls keep click on release",
+    );
+    assert.match(
+        events,
+        /event\.button != 0\.0[\s\S]{0,180}engine\.canvas_click_armed[\s\S]{0,160}engine\.canvas_click_armed = false/,
+    );
     assert.match(
         events,
         /\.buttons = dom_mouse_buttons\(tracked_mouse_buttons\(\)\)/,
@@ -1031,6 +1057,15 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /SDL_HideCursor/);
     assert.match(events, /SDL_ShowCursor/);
     assert.match(events, /engine\.pointer_lock_change_callbacks/);
+    assert.match(
+        events,
+        /release_pointer_lock_on_escape\([\s\S]{0,220}code != "Escape"[\s\S]{0,120}engine\.pointer_lock_requested = false;[\s\S]{0,120}sync_pointer_lock\(/,
+    );
+    assert.equal(
+        (events.match(/release_pointer_lock_on_escape\(/g) ?? []).length,
+        3,
+        "the helper definition plus replay and live-event calls stay in sync",
+    );
     assert.match(events, /SDL_EVENT_WINDOW_RESIZED/);
     assert.match(events, /SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED/);
     assert.match(events, /SDL_GetWindowSizeInPixels/);
@@ -1041,7 +1076,7 @@ test("forwards DOM-compatible application input through every native loop", () =
         /for \(const auto& callback : engine\.window_resize_callbacks\)/,
     );
 
-    // The shared drain carries the whole per-event contract — quit,
+    // The shared drain carries the whole per-event contract — quit/close,
     // test-pass input filtering, an optional UI filter, the platform
     // dispatch, the per-event dispatched hook, and one canvas-cursor
     // refresh after a drain that dispatched anything — so a loop using
@@ -1049,7 +1084,7 @@ test("forwards DOM-compatible application input through every native loop", () =
     // once per-driver, and one driver forgot it).
     assert.match(
         events,
-        /inline void poll_platform_events\([\s\S]{0,320}SDL_PollEvent\(&event\)[\s\S]{0,120}SDL_EVENT_QUIT\) running = false;[\s\S]{0,160}is_platform_input_event\(event\)[\s\S]{0,260}handle_platform_event\(event, engine\);\s*any_dispatched = true;\s*dispatched\(event\);\s*\}\s*if \(any_dispatched\) apply_canvas_cursor\(engine\);/,
+        /inline void poll_platform_events\([\s\S]{0,320}SDL_PollEvent\(&event\)[\s\S]{0,160}SDL_EVENT_QUIT \|\|[\s\S]{0,100}SDL_EVENT_WINDOW_CLOSE_REQUESTED[\s\S]{0,100}running = false;[\s\S]{0,180}is_platform_input_event\(event\)[\s\S]{0,260}handle_platform_event\(event, engine\);\s*any_dispatched = true;\s*dispatched\(event\);\s*\}\s*if \(any_dispatched\) apply_canvas_cursor\(engine\);/,
     );
 
     // Every frame loop uses the shared helper — the two scene renderers
@@ -1091,6 +1126,42 @@ test("forwards DOM-compatible application input through every native loop", () =
             /input_replay\.dispatch\(frame, [^,]+, engine\);/,
         );
     }
+});
+
+test("routes voxel save and load through the host file-dialog PAL", () => {
+    const compiler = source("src/compiler.ts");
+    const runtime = source("native/include/bblite/js_data.hpp");
+    const palHeader = source("native/include/bblite/pal.hpp");
+    const pal = source("native/src/pal.cpp");
+    const cmake = source("native/CMakeLists.txt");
+
+    assert.match(
+        compiler,
+        /save_voxel_world\(\$\{this\.requireDefaultEngine\(call\)\}/,
+    );
+    assert.match(
+        compiler,
+        /load_voxel_world<\$\{this\.dataTypes\.cppType\(stored\)\}>[\s\S]{0,100}this\.requireDefaultEngine\(call\)/,
+    );
+    assert.match(runtime, /pal::choose_save_file\(/);
+    assert.match(runtime, /pal::choose_open_file\(/);
+    assert.match(runtime, /world\.voxelsave\.json/);
+    assert.match(runtime, /Voxel world save \(\*\.json\)/);
+    assert.equal(
+        (runtime.match(/std::u8string\(path->begin\(\), path->end\(\)\)/g) ?? [])
+            .length,
+        2,
+        "native save and load preserve UTF-8 dialog paths",
+    );
+    assert.match(palHeader, /struct FileDialogOptions/);
+    assert.match(pal, /GetSaveFileNameW\(&dialog\)/);
+    assert.match(pal, /GetOpenFileNameW\(&dialog\)/);
+    assert.match(pal, /OFN_OVERWRITEPROMPT/);
+    assert.match(pal, /OFN_FILEMUSTEXIST/);
+    assert.match(pal, /release_pointer_lock_for_dialog\(engine\)/);
+    assert.match(pal, /BBLITE_FILE_DIALOG_SAVE_PATH/);
+    assert.match(pal, /BBLITE_FILE_DIALOG_OPEN_PATH/);
+    assert.match(cmake, /target_link_libraries\(bblite_native PRIVATE comdlg32\)/);
 });
 
 test("keeps image decoding available to standalone effect renderers", () => {

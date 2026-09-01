@@ -98,6 +98,14 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     );
     assert.match(projection, /class UiRenderRecorder/);
     assert.match(projection, /record_ui_rml_frame/);
+    assert.match(
+        projection,
+        /take_crosshair_color[\s\S]{0,120}--bbl-crosshair/,
+    );
+    assert.match(
+        projection,
+        /append_crosshair[\s\S]{0,900}SetInnerRML/,
+    );
     assert.match(sdl, /render_ui_sdl_frame/);
     assert.match(dawn, /render_ui_dawn_frame/);
     assert.match(sdl, /multisample_layer/);

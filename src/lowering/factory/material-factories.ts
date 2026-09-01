@@ -97,6 +97,7 @@ NodeMaterialTexture node_material_texture(
     normalized.data.sampler = texture.sampler;
     normalized.data.uv_transform = texture.uv_transform;
     normalized.data.uv_invert_y = texture.uv_invert_y;
+    normalized.srgb = texture.srgb;
     normalized.width = texture.width;
     normalized.height = texture.height;
     return node_material_texture(
@@ -427,6 +428,7 @@ void set_shader_pixels_texture(
     normalized.data.sampler = texture.sampler;
     normalized.data.uv_transform = texture.uv_transform;
     normalized.data.uv_invert_y = texture.uv_invert_y;
+    normalized.srgb = texture.srgb;
     set_shader_texture(engine, material, slot, std::move(normalized));
 }
 
@@ -569,6 +571,7 @@ PixelsTexture create_texture_2d_from_bytes(
     texture.rgba = std::move(bytes);
     texture.width = static_cast<std::uint32_t>(width);
     texture.height = static_cast<std::uint32_t>(height);
+    texture.srgb = options.srgb;
     texture.identity = engine.next_pixels_texture_identity++;
     const std::size_t expected =
         static_cast<std::size_t>(texture.width) *

@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/pal.hpp>
+
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
 // arrays, nullable objects, readonly views, all-number tuples, JavaScript
 // Math semantics, and the deterministic seeded Math.random replacement.
@@ -15,6 +17,9 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
 #include <limits>
 #include <list>
 #include <memory>
@@ -25,6 +30,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -739,6 +745,8 @@ class IndexedInsertionOrdered {
         const auto entry = find(key);
         if (entry == storage_->index.end()) return false;
         const auto slot = entry->second;
+        storage_->cached_key.reset();
+        storage_->cached_index.reset();
         storage_->index.erase(entry);
         if (storage_->iterator_count > 0) {
             slot->active = false;
@@ -746,6 +754,18 @@ class IndexedInsertionOrdered {
             storage_->entries.erase(slot);
         }
         return true;
+    }
+    void clear() {
+        storage_->cached_key.reset();
+        storage_->cached_index.reset();
+        storage_->index.clear();
+        if (storage_->iterator_count > 0) {
+            for (Slot& entry : storage_->entries) {
+                entry.active = false;
+            }
+        } else {
+            storage_->entries.clear();
+        }
     }
     [[nodiscard]] Iterator begin() {
         return Iterator(
@@ -776,19 +796,35 @@ class IndexedInsertionOrdered {
   protected:
     using OrderedStorage = InsertionOrderedStorage<EntryT>;
     struct Storage : OrderedStorage {
-        std::unordered_map<
+        using Index = std::unordered_map<
             KeyT,
             typename OrderedStorage::Slots::iterator,
-            ValueHash<KeyT>>
-            index;
+            ValueHash<KeyT>>;
+        Index index;
+        mutable std::optional<KeyT> cached_key;
+        mutable std::optional<typename Index::const_iterator> cached_index;
     };
 
     [[nodiscard]] auto find(const KeyT& key) const {
-        return storage_->index.find(key);
+        // Hot JavaScript Map readers commonly query the same key repeatedly
+        // (for example while walking values that share an owner). Keep one
+        // shared lookup result beside the shared map storage. Every operation
+        // that can invalidate an unordered-map iterator clears it first.
+        if (storage_->cached_key.has_value() &&
+            std::equal_to<KeyT>{}(*storage_->cached_key, key)) {
+            return *storage_->cached_index;
+        }
+        const auto& index = storage_->index;
+        const auto entry = index.find(key);
+        storage_->cached_key = key;
+        storage_->cached_index = entry;
+        return entry;
     }
     /** Append a not-yet-present entry and index it under `key`. */
     void insert(const KeyT& key, const EntryT& entry) {
         storage_->entries.push_back(Slot{entry});
+        storage_->cached_key.reset();
+        storage_->cached_index.reset();
         storage_->index.emplace(
             key,
             std::prev(storage_->entries.end()));
@@ -972,6 +1008,36 @@ template <std::size_t N>
     if (value == std::numeric_limits<double>::infinity()) return "Infinity";
     if (value == -std::numeric_limits<double>::infinity()) return "-Infinity";
     if (value == 0.0) return "0";
+    // Integer coordinates and ids are repeatedly interpolated into JavaScript
+    // string keys. Cache a small direct-mapped working set per execution
+    // thread so those pure conversions do not rerun floating to_chars in hot
+    // Map/Set loops. Collisions only replace an entry and never affect the
+    // returned spelling.
+    constexpr double int32_min = -2147483648.0;
+    constexpr double int32_limit = 2147483648.0;
+    if (value >= int32_min && value < int32_limit) {
+        const auto integer = static_cast<std::int32_t>(value);
+        if (static_cast<double>(integer) == value) {
+            struct CachedIntegerString {
+                std::int32_t value = 0;
+                bool valid = false;
+                std::string text;
+            };
+            static thread_local std::array<CachedIntegerString, 32> cache;
+            auto& entry = cache[static_cast<std::uint32_t>(integer) & 31u];
+            if (entry.valid && entry.value == integer) return entry.text;
+            char integer_buffer[16];
+            const auto converted = std::to_chars(
+                integer_buffer,
+                integer_buffer + sizeof(integer_buffer),
+                integer);
+            assert(converted.ec == std::errc{});
+            entry.value = integer;
+            entry.valid = true;
+            entry.text.assign(integer_buffer, converted.ptr);
+            return entry.text;
+        }
+    }
     char buffer[64];
     const auto converted = std::to_chars(
         buffer, buffer + sizeof(buffer), value,
@@ -1174,6 +1240,198 @@ relative_slice_bounds(
     return *end == '\0'
         ? parsed
         : std::numeric_limits<double>::quiet_NaN();
+}
+
+[[nodiscard]] inline bool is_ascii_whitespace(char value) {
+    return value == ' ' || value == '\t' || value == '\n' ||
+        value == '\r' || value == '\f' || value == '\v';
+}
+
+/** JavaScript `parseInt(value, 10)` for the reached decimal-string form. */
+[[nodiscard]] inline double parse_int_decimal(
+    const std::string& value) {
+    std::size_t index = 0;
+    while (index < value.size() && is_ascii_whitespace(value[index])) {
+        ++index;
+    }
+    bool negative = false;
+    if (index < value.size() &&
+        (value[index] == '+' || value[index] == '-')) {
+        negative = value[index] == '-';
+        ++index;
+    }
+    double parsed = 0.0;
+    bool found_digit = false;
+    while (
+        index < value.size() &&
+        value[index] >= '0' && value[index] <= '9') {
+        found_digit = true;
+        parsed = parsed * 10.0 +
+            static_cast<double>(value[index] - '0');
+        ++index;
+    }
+    if (!found_digit) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return negative ? -parsed : parsed;
+}
+
+/**
+ * The voxel demo's native file boundary. The PAL selects a host path; this
+ * header retains the source's compact JSON serialization and validation.
+ */
+template <typename SaveData>
+[[nodiscard]] inline bool save_voxel_world(
+    Engine& engine,
+    const SaveData& data) {
+    if (!data || !data->player) {
+        return false;
+    }
+    const auto path = pal::choose_save_file(
+        engine,
+        pal::FileDialogOptions{
+            .title = "Save Voxel World",
+            .suggested_name = "world.voxelsave.json",
+            .filter_name = "Voxel world save (*.json)",
+            .filter_pattern = "*.json",
+            .default_extension = "json",
+        });
+    if (!path) return false;
+    const std::filesystem::path native_path{
+        std::u8string(path->begin(), path->end())};
+    std::ofstream output(
+        native_path,
+        std::ios::binary | std::ios::trunc);
+    if (!output) {
+        return false;
+    }
+    output << std::setprecision(std::numeric_limits<double>::max_digits10)
+           << "{\"v\":1,\"seed\":" << data->seed
+           << ",\"time\":" << data->time
+           << ",\"player\":{\"x\":" << data->player->x
+           << ",\"y\":" << data->player->y
+           << ",\"z\":" << data->player->z
+           << ",\"yaw\":" << data->player->yaw
+           << ",\"pitch\":" << data->player->pitch
+           << "},\"edits\":[";
+    for (std::size_t index = 0; index < data->edits.size(); ++index) {
+        if (index != 0) {
+            output << ',';
+        }
+        output << data->edits[index];
+    }
+    output << "]}";
+    return output.good();
+}
+
+class VoxelSaveJsonReader {
+  public:
+    explicit VoxelSaveJsonReader(std::string text)
+        : text_(std::move(text)) {}
+
+    [[nodiscard]] bool consume(std::string_view expected) {
+        skip_whitespace();
+        if (text_.compare(position_, expected.size(), expected) != 0) {
+            return false;
+        }
+        position_ += expected.size();
+        return true;
+    }
+
+    [[nodiscard]] bool number(double& value) {
+        skip_whitespace();
+        const char* begin = text_.c_str() + position_;
+        char* end = nullptr;
+        value = std::strtod(begin, &end);
+        if (end == begin || !std::isfinite(value)) {
+            return false;
+        }
+        position_ += static_cast<std::size_t>(end - begin);
+        return true;
+    }
+
+    [[nodiscard]] bool finished() {
+        skip_whitespace();
+        return position_ == text_.size();
+    }
+
+  private:
+    void skip_whitespace() {
+        while (
+            position_ < text_.size() &&
+            is_ascii_whitespace(text_[position_])) {
+            ++position_;
+        }
+    }
+
+    std::string text_;
+    std::size_t position_ = 0;
+};
+
+template <typename SaveData>
+[[nodiscard]] inline SaveData load_voxel_world(
+    Engine& engine) {
+    const auto path = pal::choose_open_file(
+        engine,
+        pal::FileDialogOptions{
+            .title = "Load Voxel World",
+            .suggested_name = "world.voxelsave.json",
+            .filter_name = "Voxel world save (*.json)",
+            .filter_pattern = "*.json",
+            .default_extension = "json",
+        });
+    if (!path) return {};
+    const std::filesystem::path native_path{
+        std::u8string(path->begin(), path->end())};
+    std::ifstream input(native_path, std::ios::binary);
+    if (!input) {
+        return {};
+    }
+    std::string text{
+        std::istreambuf_iterator<char>(input),
+        std::istreambuf_iterator<char>()};
+    VoxelSaveJsonReader reader(std::move(text));
+    using SaveRecord = typename SaveData::element_type;
+    SaveData data = std::make_shared<SaveRecord>();
+    using PlayerHandle =
+        std::remove_cvref_t<decltype(data->player)>;
+    using PlayerRecord = typename PlayerHandle::element_type;
+    data->player = std::make_shared<PlayerRecord>();
+    double version = 0.0;
+    if (!reader.consume("{\"v\":") ||
+        !reader.number(version) || version != 1.0 ||
+        !reader.consume(",\"seed\":") || !reader.number(data->seed) ||
+        !reader.consume(",\"time\":") || !reader.number(data->time) ||
+        !reader.consume(",\"player\":{\"x\":") ||
+        !reader.number(data->player->x) ||
+        !reader.consume(",\"y\":") || !reader.number(data->player->y) ||
+        !reader.consume(",\"z\":") || !reader.number(data->player->z) ||
+        !reader.consume(",\"yaw\":") || !reader.number(data->player->yaw) ||
+        !reader.consume(",\"pitch\":") ||
+        !reader.number(data->player->pitch) ||
+        !reader.consume("},\"edits\":[")) {
+        return {};
+    }
+    if (!reader.consume("]")) {
+        for (;;) {
+            double edit = 0.0;
+            if (!reader.number(edit)) {
+                return {};
+            }
+            data->edits.push_back(edit);
+            if (reader.consume("]")) {
+                break;
+            }
+            if (!reader.consume(",")) {
+                return {};
+            }
+        }
+    }
+    if (!reader.consume("}") || !reader.finished()) {
+        return {};
+    }
+    data->v = version;
+    return data;
 }
 
 [[nodiscard]] inline std::string string_from_char_code(double value) {
@@ -1442,10 +1700,16 @@ template <typename T>
 [[nodiscard]] inline bool array_has_index(
     const T& values,
     double index) {
-    return std::isfinite(index) &&
-        index >= 0.0 &&
-        std::floor(index) == index &&
-        index < static_cast<double>(values.size());
+    // Range-check before conversion so NaN, infinities, negatives and values
+    // too large for this container never reach the cast. Comparing the cast
+    // back to the source is the integer test, avoiding std::floor in every
+    // dynamic typed-array read while retaining JavaScript index semantics.
+    if (!(index >= 0.0 &&
+          index < static_cast<double>(values.size()))) {
+        return false;
+    }
+    const auto native = static_cast<std::size_t>(index);
+    return static_cast<double>(native) == index;
 }
 
 template <typename T>
@@ -1616,13 +1880,19 @@ using I32Array = std::vector<std::int32_t>;
 
 // ECMAScript ToUint32: modulo 2^32 with truncation toward zero.
 [[nodiscard]] inline std::uint32_t to_uint32(double value) {
-    if (!std::isfinite(value)) {
-        return 0u;
+    // Almost every reached conversion is already within int64 range. C++
+    // truncates floating-to-integer conversion toward zero, and conversion
+    // from signed int64 to uint32 is defined modulo 2^32, which together are
+    // exactly ECMAScript ToUint32 for this range. Keep fmod only for the rare
+    // finite values outside it; NaN and infinities still become zero.
+    constexpr double int64_min = -9223372036854775808.0;
+    constexpr double int64_limit = 9223372036854775808.0;
+    if (value >= int64_min && value < int64_limit) {
+        return static_cast<std::uint32_t>(
+            static_cast<std::int64_t>(value));
     }
+    if (!std::isfinite(value)) return 0u;
     const double truncated = std::trunc(value);
-    if (truncated >= 0.0 && truncated < 4294967296.0) {
-        return static_cast<std::uint32_t>(truncated);
-    }
     const double wrapped = std::fmod(truncated, 4294967296.0);
     return static_cast<std::uint32_t>(
         wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped);
@@ -1635,40 +1905,85 @@ using I32Array = std::vector<std::int32_t>;
               static_cast<std::int64_t>(value) - 0x100000000ll);
 }
 
+/**
+ * Bitwise expression intermediates stay in their specified 32-bit lane.
+ *
+ * JavaScript exposes a Number at an assignment/call boundary, so both wrappers
+ * convert to double there. Nested operations consume the bits directly instead
+ * of converting an exact int32 to double and immediately running ToUint32 on it
+ * again. This is representation-only: signed bitwise results and unsigned
+ * right-shift results retain their distinct JavaScript numeric values.
+ */
+struct SignedBitwiseNumber {
+    std::uint32_t bits = 0;
+    [[nodiscard]] operator double() const {
+        return static_cast<double>(uint32_as_int32(bits));
+    }
+};
+
+struct UnsignedBitwiseNumber {
+    std::uint32_t bits = 0;
+    [[nodiscard]] operator double() const {
+        return static_cast<double>(bits);
+    }
+};
+
+[[nodiscard]] inline std::uint32_t to_uint32(SignedBitwiseNumber value) {
+    return value.bits;
+}
+
+[[nodiscard]] inline std::uint32_t to_uint32(UnsignedBitwiseNumber value) {
+    return value.bits;
+}
+
 // ECMAScript Math.imul: multiply the two ToUint32 values modulo 2^32,
 // then expose the low word as a signed 32-bit JavaScript number. Unsigned
 // multiplication gives the specified wrap without relying on signed overflow.
-[[nodiscard]] inline double math_imul(double left, double right) {
-    return static_cast<double>(uint32_as_int32(
-        to_uint32(left) * to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber math_imul(
+    Left left,
+    Right right) {
+    return {to_uint32(left) * to_uint32(right)};
 }
 
-[[nodiscard]] inline double bitwise_not(double value) {
-    return static_cast<double>(uint32_as_int32(~to_uint32(value)));
+template <typename Value>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_not(Value value) {
+    return {~to_uint32(value)};
 }
 
-[[nodiscard]] inline double bitwise_and(double left, double right) {
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) & to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_and(
+    Left left,
+    Right right) {
+    return {to_uint32(left) & to_uint32(right)};
 }
 
-[[nodiscard]] inline double bitwise_or(double left, double right) {
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) | to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_or(
+    Left left,
+    Right right) {
+    return {to_uint32(left) | to_uint32(right)};
 }
 
-[[nodiscard]] inline double bitwise_xor(double left, double right) {
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) ^ to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_xor(
+    Left left,
+    Right right) {
+    return {to_uint32(left) ^ to_uint32(right)};
 }
 
-[[nodiscard]] inline double shift_left(double left, double right) {
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber shift_left(
+    Left left,
+    Right right) {
     const std::uint32_t count = to_uint32(right) & 31u;
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) << count));
+    return {to_uint32(left) << count};
 }
 
-[[nodiscard]] inline double shift_right(double left, double right) {
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber shift_right(
+    Left left,
+    Right right) {
     const std::uint32_t count = to_uint32(right) & 31u;
     const std::uint32_t value = to_uint32(left);
     const std::uint32_t shifted = count == 0u
@@ -1677,12 +1992,15 @@ using I32Array = std::vector<std::int32_t>;
               ((value & 0x80000000u) != 0u
                   ? (~std::uint32_t{0} << (32u - count))
                   : 0u);
-    return static_cast<double>(uint32_as_int32(shifted));
+    return {shifted};
 }
 
-[[nodiscard]] inline double shift_right_unsigned(double left, double right) {
+template <typename Left, typename Right>
+[[nodiscard]] inline UnsignedBitwiseNumber shift_right_unsigned(
+    Left left,
+    Right right) {
     const std::uint32_t count = to_uint32(right) & 31u;
-    return static_cast<double>(to_uint32(left) >> count);
+    return {to_uint32(left) >> count};
 }
 
 [[nodiscard]] inline std::uint16_t to_uint16(double value) {
@@ -1783,7 +2101,9 @@ template <typename Values>
 
 template <typename Values>
 [[nodiscard]] inline U32Array u32_array_from(const Values& values) {
-    return typed_array_from_values<U32Array>(values, to_uint32);
+    return typed_array_from_values<U32Array>(values, [](double value) {
+        return to_uint32(value);
+    });
 }
 
 template <typename Values>

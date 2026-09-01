@@ -117,7 +117,8 @@ inline WGPUStringView string_view(const char* text) {
  * Upload RGBA8 texels as a sampled 2D texture.
  *
  * Shared because a sprite atlas and a custom shader's extra texture are the
- * same upload: tightly packed rows and no sRGB view. `mip_levels` is the
+ * same upload: tightly packed rows, optionally decoded through sRGB.
+ * `mip_levels` is the
  * chain the pinned loader built -- one for `loadSpriteAtlas`, the full
  * chain for the `loadTexture2D` a particle graph's texture block reaches --
  * and the caller generates the levels, because the blit that fills them is
@@ -130,10 +131,13 @@ inline WGPUTexture upload_dawn_rgba_texture(
     std::size_t bytes,
     std::uint32_t width,
     std::uint32_t height,
-    std::uint32_t mip_levels = 1) {
+    std::uint32_t mip_levels = 1,
+    bool srgb = false) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.format = WGPUTextureFormat_RGBA8Unorm;
+    descriptor.format = srgb
+        ? WGPUTextureFormat_RGBA8UnormSrgb
+        : WGPUTextureFormat_RGBA8Unorm;
     descriptor.usage = mip_levels > 1
         ? (WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst |
            WGPUTextureUsage_RenderAttachment)
@@ -588,7 +592,9 @@ inline DawnSampledTexture upload_dawn_extra_texture(
         extra.rgba.data(),
         extra.rgba.size(),
         extra.width,
-        extra.height);
+        extra.height,
+        1,
+        extra.srgb);
     texture.view = wgpuTextureCreateView(texture.texture, nullptr);
     texture.sampler = create_texture_sampler(device, extra.sampler);
     texture.uploaded_version = extra.version;
