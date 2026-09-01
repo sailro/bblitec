@@ -586,6 +586,18 @@ A directory first configured without vcpkg is detected from its CMake cache
 and replaced before configuration. `VCPKG_ROOT` overrides the checkout
 discovered from Visual Studio or `PATH`.
 
+A linked git worktree shares the concurrency-safe disposable caches with the
+main checkout through directory junctions — `tools\setup-worktree.ps1 -Path
+C:\Dev\my-tree [-Branch b | -Commit c]` creates the worktree, links
+`node_modules`, `.cache`, `artifacts\{tools,shader-cache,bake-cache}` and the
+pinned DXC install, and builds `dist\`, so the tree generates and builds
+scenes immediately with no dependency downloads. The vcpkg install stays
+per-worktree by default because concurrent vcpkg use of one root is
+unreliable; `-SharedVcpkg` junctions it too for trees that will never build
+natively at the same time. A junctioned worktree must be deleted with the
+script's `-Remove` — a recursive delete would follow the junctions into the
+main checkout's caches.
+
 Override the generator only when needed:
 
 ```powershell

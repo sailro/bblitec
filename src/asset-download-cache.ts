@@ -18,7 +18,13 @@
  * misses rather than serving stale bytes.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+    mkdirSync,
+    readFileSync,
+    renameSync,
+    rmSync,
+    writeFileSync,
+} from "node:fs";
 import { existsSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
@@ -84,7 +90,26 @@ export async function downloadCachedResource(
     const contentType = response.headers.get("content-type")
         ?.split(";", 1)[0];
     mkdirSync(dirname(path), { recursive: true });
-    writeFileSync(path, bytes);
-    if (contentType) writeFileSync(`${path}.type`, contentType);
+    storeAtomically(path, bytes);
+    if (contentType) storeAtomically(`${path}.type`, contentType);
     return { bytes, ...(contentType ? { contentType } : {}) };
+}
+
+/**
+ * Temp-file-plus-rename, exactly as the bake cache stores its entries: the
+ * cache directory is shared between checkouts (worktree junctions) and
+ * between concurrently running builds, so a reader must never observe a
+ * half-written entry. Both writers of one URL carry the same pinned bytes,
+ * so whichever rename lands is correct.
+ */
+function storeAtomically(path: string, content: Uint8Array | string): void {
+    const temporary = `${path}.${process.pid}-${Date.now()}.tmp`;
+    writeFileSync(temporary, content);
+    try {
+        renameSync(temporary, path);
+    } catch {
+        // A concurrent writer won the rename on Windows; its bytes are
+        // this URL's bytes, so keep them and drop the temporary.
+        rmSync(temporary, { force: true });
+    }
 }
