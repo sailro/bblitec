@@ -100,6 +100,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
         const auto sync_render_textures = [&]() {
             render_textures.resize(
                 engine.sprite_render_textures.size(), nullptr);
+            // The one refusal walk covers every disposed record, so it
+            // runs once per sync -- at the first disposed record, before
+            // any release -- rather than once per record per frame.
+            bool disposed_refused = false;
             for (std::size_t index = 0;
                  index < engine.sprite_render_textures.size();
                  ++index) {
@@ -107,6 +111,11 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     engine.sprite_render_textures[index];
                 SDL_GPUTexture*& texture = render_textures[index];
                 if (record.disposed) {
+                    if (!disposed_refused) {
+                        refuse_disposed_sprite_render_texture_in_use(
+                            engine);
+                        disposed_refused = true;
+                    }
                     if (texture) SDL_ReleaseGPUTexture(device, texture);
                     texture = nullptr;
                     continue;
@@ -129,19 +138,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
             }
         };
         const auto sync_renderer_passes = [&]() {
-            bool matches =
-                passes.size() ==
-                engine.registered_sprite_renderers.size();
-            for (
-                std::size_t index = 0;
-                matches && index < passes.size();
-                ++index
-            ) {
-                matches =
-                    passes[index].renderer.value ==
-                    engine.registered_sprite_renderers[index].value;
-            }
-            if (matches) return;
+            if (sprite_passes_match_registered(engine, passes)) return;
             for (SpritePass& pass : passes) {
                 release_sprite_pass(device, pass);
             }
@@ -173,21 +170,18 @@ bool run_sprite_gpu_engine(Engine& engine) {
         FrameClock frame_clock;
         PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) running = false;
-                if (frame_options.test_pass && is_platform_input_event(event)) {
-                    continue;
-                }
-                bool propagate_to_scene = true;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-                propagate_to_scene =
-                    handle_ui_rml_event(*ui_runtime, event);
+            poll_platform_events(
+                engine,
+                running,
+                frame_options.test_pass,
+                [&](SDL_Event& event) {
+                    return handle_ui_rml_event(*ui_runtime, event);
+                });
+#else
+            poll_platform_events(
+                engine, running, frame_options.test_pass);
 #endif
-                if (propagate_to_scene) {
-                    handle_platform_event(event, engine);
-                }
-            }
             input_replay.dispatch(frame, window, engine);
             const float delta_ms = advance_frame(
                 engine,
@@ -233,23 +227,8 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
-            // The render capture describes CPU state alone — the same
-            // records the uploads above read — written at the frame the
-            // screenshot gate names, exactly as the scene loop writes its
-            // own beside its screenshot.
-            if (
-                frame >= frame_options.screenshot_frame &&
-                !captures.render_capture_saved &&
-                !frame_options.render_capture_path.empty()) {
-                write_standalone_render_capture(
-                    frame_options.render_capture_path,
-                    "sdl_gpu",
-                    engine,
-                    static_cast<int>(width),
-                    static_cast<int>(height),
-                    frame);
-                captures.render_capture_saved = true;
-            }
+            captures.maybe_write_standalone_render_capture(
+                "sdl_gpu", engine, width, height, frame);
 
             // Rendered offscreen and blitted, because a swapchain texture
             // cannot be read back for the capture.
@@ -281,23 +260,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     target = render_textures[
                         first_renderer.target.value];
                 }
-                std::size_t end_index = first_index + 1;
-                while (end_index < passes.size()) {
-                    const SpriteRendererRecord& next =
-                        engine.sprite_renderers[
-                            passes[end_index].renderer.value];
-                    if (
-                        next.has_target !=
-                            first_renderer.has_target ||
-                        (next.has_target &&
-                         next.target.value !=
-                             first_renderer.target.value)
-                    ) {
-                        break;
-                    }
-                    ++end_index;
-                }
-
+                const std::size_t end_index =
+                    sprite_pass_target_run_end(
+                        engine, passes, first_index);
                 SDL_GPUColorTargetInfo color_target{};
                 color_target.texture = target;
                 color_target.clear_color = SDL_FColor{
@@ -353,8 +318,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
             blit.flip_mode = SDL_FLIP_NONE;
             blit.filter = SDL_GPU_FILTER_NEAREST;
             SDL_BlitGPUTexture(command, &blit);
-
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             if (!ui_in_capture) {
                 render_sprite_ui_sdl_frame(
                     device,

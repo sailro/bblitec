@@ -92,7 +92,9 @@ class U8Array {
     U8Array()
         : storage_(std::make_shared<std::vector<std::uint8_t>>()) {}
     explicit U8Array(std::size_t length)
-        : storage_(std::make_shared<std::vector<std::uint8_t>>(length, 0u)),
+        : storage_(std::make_shared<std::vector<std::uint8_t>>(
+              length,
+              std::uint8_t{0})),
           length_(length) {}
     explicit U8Array(const ArrayBuffer& buffer)
         : storage_(buffer.storage()), length_(buffer.byte_length()) {}
@@ -337,6 +339,13 @@ template <typename T>
     Array<T>& target,
     std::size_t index) {
     if (index >= target.size()) {
+        if (index == std::numeric_limits<std::size_t>::max()) {
+            // The sentinel `array_index` maps every unrepresentable double
+            // to. Without this refusal `resize(index + 1)` wraps to
+            // `resize(0)` and silently truncates the array.
+            throw std::runtime_error(
+                "Array index write out of range.");
+        }
         target.resize(index + 1);
     }
     return target[index];
@@ -1365,19 +1374,26 @@ template <typename T, std::size_t N>
     return -1.0;
 }
 
-// `array.pop()!` — the compiled subset asserts the array is non-empty.
+// `array.pop()!` — the compiled subset requires a non-empty array (the
+// corpus always guards with `.length`); JavaScript would yield `undefined`,
+// which the plain-data model cannot represent, so an empty pop refuses by
+// name in every build configuration instead of reading freed storage.
 template <typename T>
 inline T array_pop(Array<T>& values) {
-    assert(!values.empty());
+    if (values.empty()) [[unlikely]] {
+        throw std::runtime_error("Array pop on an empty array.");
+    }
     T last = values.back();
     values.pop_back();
     return last;
 }
 
-// `array.shift()!` — the compiled subset asserts the array is non-empty.
+// `array.shift()!` — same contract as `array_pop`.
 template <typename T>
 inline T array_shift(Array<T>& values) {
-    assert(!values.empty());
+    if (values.empty()) [[unlikely]] {
+        throw std::runtime_error("Array shift on an empty array.");
+    }
     T first = values.front();
     values.erase(values.begin());
     return first;
@@ -1422,25 +1438,37 @@ template <typename T>
     return Array<T>(static_cast<std::size_t>(count), value);
 }
 
+[[nodiscard]] inline std::size_t array_index(double index) {
+    // The raw fast-path conversion for indices the compiler proved in
+    // bounds. It must still be defined over the full double domain — a
+    // negative, non-finite, or 2^64-and-up value makes the bare cast
+    // undefined behavior — so everything unrepresentable maps to the
+    // SIZE_MAX sentinel, which every internal range check rejects.
+    return index >= 0.0 && index < 18446744073709551616.0
+        ? static_cast<std::size_t>(index)
+        : std::numeric_limits<std::size_t>::max();
+}
+
 // `array.splice(index, 1)` — remove one element and shift the tail down,
 // the removal form the reached subset compiles (the particle sweep).
 template <typename T>
 inline void array_splice_one(Array<T>& values, double index) {
-    const auto position = static_cast<std::size_t>(index);
-    assert(position < values.size());
+    const auto position = array_index(index);
+    if (position >= values.size()) [[unlikely]] {
+        throw std::runtime_error("Array splice index out of range.");
+    }
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(position));
 }
 
 // `array.length = count` — the reached subset only shrinks (truncation).
 template <typename T>
 inline void array_truncate(Array<T>& values, double count) {
-    const auto size = static_cast<std::size_t>(count);
-    assert(size <= values.size());
+    const auto size = array_index(count);
+    if (size > values.size()) [[unlikely]] {
+        throw std::runtime_error(
+            "Array length assignment must not grow the array.");
+    }
     values.resize(size);
-}
-
-[[nodiscard]] inline std::size_t array_index(double index) {
-    return static_cast<std::size_t>(index);
 }
 
 template <typename T>
@@ -1454,7 +1482,21 @@ template <typename T>
 }
 
 template <typename T>
-inline T missing_array_value{};
+[[nodiscard]] inline T& missing_array_value() {
+    // Re-defaulted on every miss so a stray write through one missed index
+    // cannot persist into every later miss of the same element type.
+    static T slot{};
+    slot = T{};
+    return slot;
+}
+
+template <typename T>
+[[nodiscard]] inline const T& missing_array_value_readonly() {
+    // Never handed out mutably, so one immutable default serves every miss
+    // without the mutable slot's per-miss re-defaulting.
+    static const T missing{};
+    return missing;
+}
 
 template <typename T>
 [[nodiscard]] inline T& array_at_or_default(
@@ -1462,7 +1504,7 @@ template <typename T>
     double index) {
     return array_has_index(values, index)
         ? values[array_index(index)]
-        : missing_array_value<T>;
+        : missing_array_value<T>();
 }
 
 template <typename T>
@@ -1471,7 +1513,7 @@ template <typename T>
     double index) {
     return array_has_index(values, index)
         ? values[array_index(index)]
-        : missing_array_value<T>;
+        : missing_array_value_readonly<T>();
 }
 
 template <typename T, std::size_t Extent>
@@ -1480,7 +1522,77 @@ template <typename T, std::size_t Extent>
     double index) {
     return array_has_index(values, index)
         ? values[array_index(index)]
-        : missing_array_value<std::remove_const_t<T>>;
+        : missing_array_value_readonly<std::remove_const_t<T>>();
+}
+
+[[noreturn]] inline void throw_index_error(
+    const char* site,
+    const char* operation,
+    double index,
+    std::size_t size) {
+    throw std::runtime_error(
+        std::string(site) + ": array " + operation + " index " +
+        number_to_string(index) + " is out of bounds for length " +
+        number_to_string(static_cast<double>(size)) + ".");
+}
+
+/**
+ * A runtime index read the compiler could not prove in bounds.
+ *
+ * JavaScript would yield `undefined`; the plain-data model has no
+ * undefined number, struct, or handle to yield, and no reached scene
+ * depends on reading one (source-tested reads already ride
+ * `array_at_or_default` with its found flag). So an out-of-bounds read
+ * here is a scene or compiler defect, and it refuses by name in every
+ * build configuration, carrying the scene source location the emission
+ * recorded. Indices the compiler does prove in bounds keep the raw
+ * `values[array_index(i)]` fast path and never reach this function.
+ */
+template <typename Values>
+[[nodiscard]] inline auto& array_index_checked(
+    Values& values,
+    double index,
+    const char* site) {
+    if (!array_has_index(values, index)) [[unlikely]] {
+        throw_index_error(site, "read", index, values.size());
+    }
+    return values[static_cast<std::size_t>(index)];
+}
+
+/**
+ * The store form of `array_index_checked` for fixed-length storage
+ * (typed arrays and tuples). JavaScript drops an out-of-range typed
+ * store silently; nothing reached depends on that, so it refuses like
+ * the read does rather than hiding the defect.
+ */
+template <typename Values>
+[[nodiscard]] inline auto& array_store_checked(
+    Values& values,
+    double index,
+    const char* site) {
+    if (!array_has_index(values, index)) [[unlikely]] {
+        throw_index_error(site, "write", index, values.size());
+    }
+    return values[static_cast<std::size_t>(index)];
+}
+
+/**
+ * The growing store for an unproven Array index: a write past the end
+ * extends the array with default-valued holes exactly as
+ * `array_index_write` does, so only an index no JavaScript array could
+ * hold (negative, fractional, non-finite, or 2^32-1 and up — where
+ * JavaScript stores a plain property instead of an element) refuses.
+ */
+template <typename T>
+[[nodiscard]] inline T& array_index_write_checked(
+    Array<T>& values,
+    double index,
+    const char* site) {
+    if (!(index >= 0.0 && std::floor(index) == index &&
+          index < 4294967295.0)) [[unlikely]] {
+        throw_index_error(site, "write", index, values.size());
+    }
+    return array_index_write(values, static_cast<std::size_t>(index));
 }
 
 // JavaScript `%` (remainder keeps the dividend sign, like std::fmod).
@@ -1717,19 +1829,22 @@ template <typename Values>
  *
  * The spec copies `source` whole into `target` starting at `offset` and
  * raises a RangeError when the run would not fit, so no element is ever
- * written past the end. The compiled subset asserts that instead, the way
- * `array_pop` asserts non-emptiness: a compiled scene's lengths and offset
- * are its own, and a run that does not fit is a scene bug rather than a
- * condition a native frame could report.
+ * written past the end. The refusal here is that RangeError, kept in
+ * every build configuration the way `array_pop` keeps its emptiness
+ * check: a run that does not fit is a scene bug, and it must not become
+ * an out-of-bounds copy in a release parity build.
  */
 template <typename T>
 inline void typed_array_set(
     std::vector<T>& target,
     const std::vector<T>& source,
     double offset) {
-    const auto start = static_cast<std::size_t>(offset);
-    assert(offset >= 0.0);
-    assert(start + source.size() <= target.size());
+    const auto start = array_index(offset);
+    if (start > target.size() ||
+        source.size() > target.size() - start) [[unlikely]] {
+        throw std::runtime_error(
+            "TypedArray set does not fit the target array.");
+    }
     std::copy(source.begin(), source.end(), target.begin() + static_cast<std::ptrdiff_t>(start));
 }
 

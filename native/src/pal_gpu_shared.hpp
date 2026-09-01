@@ -7,6 +7,11 @@
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
+// The backend-neutral RmlUi frame types, for the scissor clamp every UI
+// consumer applies to a recorded draw before encoding it.
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#include <bblite/pal_ui.hpp>
+#endif
 #include <bblite/upstream/render_capabilities.hpp>
 // An always-emitted pinned read every scene shape carries: the surface
 // sample count (the effect drivers compile with no renderer_plan.hpp, so it
@@ -302,12 +307,15 @@ inline std::uint32_t pass_depth_samples(
 #include <array>
 #include <cmath>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iomanip>
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <sstream>
 #include <stdexcept>
 #include <span>
 #include <string>
@@ -1112,6 +1120,24 @@ inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
            static_cast<std::uint32_t>(texel[2]);
 }
 
+/**
+ * Clears `engine.pick_hook` when the frame loop's scope ends, however it
+ * ends. The hook holds the backend state, the scene and the render plan
+ * by reference, all of which die with that scope; clearing it on
+ * destruction makes that structural in both exit arms instead of relying
+ * on a copy of the reset in each.
+ */
+class PickHookGuard {
+public:
+    explicit PickHookGuard(Engine& engine) : engine_(engine) {}
+    PickHookGuard(const PickHookGuard&) = delete;
+    PickHookGuard& operator=(const PickHookGuard&) = delete;
+    ~PickHookGuard() { engine_.pick_hook = nullptr; }
+
+private:
+    Engine& engine_;
+};
+
 #endif
 
 // The CPU vertex bake and the shader draw world compose a mesh's world
@@ -1414,6 +1440,68 @@ inline std::array<float, 16> shader_draw_world(
         upstream::mesh_world_matrix(engine, mesh),
         mesh);
 }
+
+#if BBLITE_HAS_PICKING
+/** One mesh the pick pass will draw: its plan item and its uniform block. */
+struct PickMeshCandidate {
+    std::size_t item_index = 0;
+    PickMeshUniforms uniforms{};
+};
+
+/**
+ * The render-plan walk both pick passes share: which meshes are drawn, in
+ * which order, under which id, and with which world matrix.
+ *
+ * The RENDER PLAN, not `scene.meshes`: the backend mesh list is indexed by
+ * plan item, and the plan skips a mesh with no geometry -- so the two agree
+ * only while nothing has been skipped or removed. Walking the plan is also
+ * what makes a scene's own `removeFromScene` visible to a later pick, since
+ * `rematch_render_meshes` rebuilds both together. `has_geometry` is the one
+ * backend fact in the walk (whether the row's GPU buffers exist); the
+ * generated pick predicate over the live record, the world-or-identity
+ * selection and the id/range assignment are decided here, once, so the two
+ * backends cannot drift on which mesh answers a pick.
+ */
+template <typename HasGeometry>
+inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
+    const Engine& engine,
+    const upstream::RenderPlan& render_plan,
+    std::size_t gpu_mesh_count,
+    const HasGeometry& has_geometry,
+    std::vector<PickRange>& ranges,
+    std::uint32_t& next_id) {
+    std::vector<PickMeshCandidate> candidates;
+    for (std::size_t item_index = 0;
+         item_index < render_plan.items.size() &&
+         item_index < gpu_mesh_count;
+         ++item_index) {
+        const MeshHandle handle = render_plan.items[item_index].mesh;
+        if (!has_geometry(item_index)) continue;
+        // A mesh the pin's picker would not take never enters the pass, so
+        // it can neither answer a pick nor occlude one behind it. The
+        // predicate is generated, and it reads the live record rather than
+        // the plan's snapshot of it.
+        if (!upstream::pick_candidate(engine.meshes[handle.value])) {
+            continue;
+        }
+        PickMeshCandidate candidate;
+        candidate.item_index = item_index;
+        const MeshRecord& pick_mesh = engine.meshes[handle.value];
+        candidate.uniforms.world = pick_mesh.gpu_world_transform
+            ? shader_draw_world(engine, pick_mesh)
+            : std::array<float, 16>{
+                  1.0f, 0.0f, 0.0f, 0.0f,
+                  0.0f, 1.0f, 0.0f, 0.0f,
+                  0.0f, 0.0f, 1.0f, 0.0f,
+                  0.0f, 0.0f, 0.0f, 1.0f};
+        candidate.uniforms.pick_id = next_id;
+        candidates.push_back(candidate);
+        ranges.push_back({next_id, PickedNodeKind::mesh, handle.value});
+        ++next_id;
+    }
+    return candidates;
+}
+#endif
 #endif
 
 /** The pin's projection-view product times one mesh world, preserving its
@@ -3255,6 +3343,87 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
 }
 
 /**
+ * Whether the compiled environment carries a complete specular cube: a
+ * nonzero extent and mip count, and one face per (mip, face) cell. Moved
+ * verbatim from the two scene renderers' upload paths; what each backend
+ * does WITHOUT one stays deliberately its own (SDL uploads fallback faces,
+ * Dawn keeps its startup fallback cube).
+ */
+inline bool environment_cube_present(const EnvironmentState& environment) {
+    return environment.specular_width != 0 &&
+        environment.specular_mip_count != 0 &&
+        environment.specular_faces.size() >=
+            static_cast<std::size_t>(environment.specular_mip_count) * 6;
+}
+
+/**
+ * The DDS skybox payload walk both backends upload through: face-major,
+ * each face's mip chain in file order, with the running byte offset and the
+ * truncation guard decided here, once. `visit` receives one
+ * (face, mip, extent, offset, byte_size) cell and performs the backend's
+ * own upload; rgba16f texels at 8 bytes each, as the parser promised.
+ */
+template <typename Visit>
+inline void for_each_dds_skybox_level(
+    const EnvironmentState& environment,
+    const Visit& visit) {
+    const TextureData& data = environment.skybox_texture;
+    std::size_t offset = environment.skybox_data_offset;
+    for (std::uint32_t face = 0; face < 6; ++face) {
+        for (std::uint32_t mip = 0;
+             mip < environment.skybox_mip_count;
+             ++mip) {
+            const std::uint32_t size =
+                std::max(environment.skybox_width >> mip, 1u);
+            const std::size_t byte_size =
+                static_cast<std::size_t>(size) * size * 8;
+            if (offset + byte_size > data.bytes.size()) {
+                throw std::runtime_error(
+                    "DDS skybox pixel data is truncated.");
+            }
+            visit(face, mip, size, offset, byte_size);
+            offset += byte_size;
+        }
+    }
+}
+
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+/** A recorded UI draw's scissor, clamped to the frame it was recorded in. */
+struct UiScissorRect {
+    int left = 0;
+    int top = 0;
+    int width = 0;
+    int height = 0;
+};
+
+/**
+ * One recorded UI draw's scissor rectangle, clamped to the frame extent, or
+ * nothing for a draw the clamp empties (or that carries no indices). Moved
+ * verbatim from the two scene renderers' layer loops so the four RmlUi
+ * consumers cannot drift on how a recorded rectangle meets the surface.
+ */
+inline std::optional<UiScissorRect> clamped_ui_scissor(
+    const UiRenderDraw& draw,
+    std::uint32_t frame_width,
+    std::uint32_t frame_height) {
+    const int left = std::clamp(draw.scissor_x, 0, static_cast<int>(frame_width));
+    const int top = std::clamp(draw.scissor_y, 0, static_cast<int>(frame_height));
+    const int right = std::clamp(
+        draw.scissor_x + static_cast<int>(draw.scissor_width),
+        0,
+        static_cast<int>(frame_width));
+    const int bottom = std::clamp(
+        draw.scissor_y + static_cast<int>(draw.scissor_height),
+        0,
+        static_cast<int>(frame_height));
+    if (right <= left || bottom <= top || draw.index_count == 0) {
+        return std::nullopt;
+    }
+    return UiScissorRect{left, top, right - left, bottom - top};
+}
+#endif
+
+/**
  * The warmup every renderer's benchmark discards before sampling: a
  * tenth of the requested frames, clamped to [10, 120]. One policy for
  * both GPU frame loops and their sprite variants, so the published
@@ -3444,6 +3613,139 @@ inline std::vector<std::size_t> sprite_layer_draw_order(
                 engine.sprite_layers[renderer.layers[right].value].order;
         });
     return draw_order;
+}
+
+/**
+ * Refuse the one dispose schedule no backend can honour, before either
+ * releases the GPU texture behind the record.
+ *
+ * The generated dispose only flags the record; releasing the texture
+ * would dangle the borrowed atlas binding of any layer still drawn with
+ * it. (Upstream fails the same schedule too — as a WebGPU validation
+ * error on the destroyed texture.) One walk decides for both backends,
+ * so the refusal cannot become an SDL-undefined/Dawn-validation split.
+ *
+ * One walk covers every disposed record at once — a hit is a hit
+ * whichever record it borrows — so each per-frame texture sync runs it
+ * once, before its first release, while any record is disposed. A layer
+ * registered over a long-disposed record is still caught at its next
+ * sync, exactly as when the walk ran per record; a frame with nothing
+ * disposed never walks at all.
+ */
+inline void refuse_disposed_sprite_render_texture_in_use(
+    const Engine& engine) {
+    for (const SpriteRendererHandle& renderer_handle :
+         engine.registered_sprite_renderers) {
+        const SpriteRendererRecord& renderer =
+            engine.sprite_renderers[renderer_handle.value];
+        for (const Sprite2DLayerHandle& layer_handle : renderer.layers) {
+            const SpriteAtlasRecord& atlas =
+                engine.sprite_atlases[
+                    engine.sprite_layers[layer_handle.value].atlas.value];
+            if (atlas.has_render_texture &&
+                engine.sprite_render_textures[
+                    atlas.render_texture.value].disposed) {
+                throw std::runtime_error(
+                    "A disposed sprite render texture is "
+                    "still sampled by a registered "
+                    "SpriteRenderer layer's atlas.");
+            }
+        }
+    }
+}
+
+/**
+ * The instance rows one GPU copy of a layer must upload this frame.
+ *
+ * Another pass may already have consumed the layer's shared current
+ * range. Its reset stamp tells a later copy to recover with the whole
+ * active prefix rather than treating the now-empty range as count-only —
+ * so a copy that never uploaded, or whose last upload predates the
+ * stamp, takes `[0, count)`, and every other copy takes the shared range
+ * clamped to the active count. An empty result means nothing moved.
+ * Byte-identical in both backends, so derived once; only the write call
+ * itself stays with the backend.
+ */
+struct SpriteDirtyRange {
+    std::uint32_t begin = 0;
+    std::uint32_t end = 0;
+};
+
+inline SpriteDirtyRange resolve_sprite_dirty_range(
+    const Sprite2DLayerRecord& layer,
+    bool uploaded,
+    std::uint64_t uploaded_version) {
+    const bool needs_full_upload = !uploaded ||
+        uploaded_version < layer.dirty_sprite_reset_version;
+    return {
+        needs_full_upload
+            ? 0u
+            : std::min(layer.dirty_sprite_begin, layer.count),
+        needs_full_upload
+            ? layer.count
+            : std::min(layer.dirty_sprite_end, layer.count)};
+}
+
+/** Stamp the shared range consumed once a copy has uploaded it. */
+inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
+    layer.dirty_sprite_reset_version = layer.version;
+    layer.dirty_sprite_begin = invalid_handle;
+    layer.dirty_sprite_end = 0u;
+}
+
+/**
+ * Whether a standalone driver's pass list still mirrors
+ * `engine.registered_sprite_renderers` one-to-one, in order. Both
+ * backends' pass records carry the renderer handle, so one comparison
+ * serves either list; a mismatch means a callback registered or disposed
+ * a renderer and the passes must be rebuilt.
+ */
+template <typename SpritePassList>
+inline bool sprite_passes_match_registered(
+    const Engine& engine,
+    const SpritePassList& passes) {
+    if (passes.size() != engine.registered_sprite_renderers.size()) {
+        return false;
+    }
+    for (std::size_t index = 0; index < passes.size(); ++index) {
+        if (passes[index].renderer.value !=
+            engine.registered_sprite_renderers[index].value) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/**
+ * The end of the run of consecutive sprite passes that share one output
+ * target, starting at `first_index`.
+ *
+ * Registration order is draw order, and every renderer aiming at the
+ * same target joins the same GPU render pass — the first one's clear
+ * applies, the rest load — so the grouping is pure range computation
+ * over the renderer records and identical for both backends.
+ */
+template <typename SpritePassList>
+inline std::size_t sprite_pass_target_run_end(
+    const Engine& engine,
+    const SpritePassList& passes,
+    std::size_t first_index) {
+    const SpriteRendererRecord& first_renderer =
+        engine.sprite_renderers[passes[first_index].renderer.value];
+    std::size_t end_index = first_index + 1;
+    while (end_index < passes.size()) {
+        const SpriteRendererRecord& next =
+            engine.sprite_renderers[passes[end_index].renderer.value];
+        if (
+            next.has_target != first_renderer.has_target ||
+            (next.has_target &&
+             next.target.value != first_renderer.target.value)
+        ) {
+            break;
+        }
+        ++end_index;
+    }
+    return end_index;
 }
 
 /**
@@ -3853,6 +4155,51 @@ inline std::uint32_t scaled_target_extent(
         1.0,
         std::floor(static_cast<double>(source) * ratio)));
 }
+
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+/** One post-process pass's resolved output and source extents. */
+struct PostProcessExtent {
+    std::uint32_t output_width = 0;
+    std::uint32_t output_height = 0;
+    std::uint32_t source_width = 0;
+    std::uint32_t source_height = 0;
+};
+
+/**
+ * The extents both backends resolve one post-process pass against: the
+ * output target's own size (the frame's, when the pass presents to the
+ * swapchain), and the sampled target's when the pass names another render
+ * target whose backend row exists -- otherwise the source inherits the
+ * output extent. `RenderTargets` is each backend's per-target state
+ * vector; only its rows' `width`/`height` are read.
+ */
+template <typename RenderTargets>
+inline PostProcessExtent resolve_post_process_extent(
+    const RenderTargetRecord& output_record,
+    const RenderTargets& render_targets,
+    const PostProcessPassOptions& pass,
+    std::uint32_t frame_width,
+    std::uint32_t frame_height) {
+    PostProcessExtent extent;
+    extent.output_width = output_record.swapchain
+        ? frame_width
+        : render_targets[pass.output_target.value].width;
+    extent.output_height = output_record.swapchain
+        ? frame_height
+        : render_targets[pass.output_target.value].height;
+    extent.source_width = extent.output_width;
+    extent.source_height = extent.output_height;
+    if (
+        pass.source.source == RenderTextureSource::render_target &&
+        pass.source.target.value < render_targets.size()) {
+        extent.source_width =
+            render_targets[pass.source.target.value].width;
+        extent.source_height =
+            render_targets[pass.source.target.value].height;
+    }
+    return extent;
+}
+#endif
 
 inline TextureFormatClass geometry_format_class(
     const GeometryTextureDescription& description) {
@@ -4631,6 +4978,24 @@ public:
     bool cluster_buffer_saved = false;
     bool render_capture_saved = false;
 
+    /**
+     * The standalone loops' render capture, gated and marked here.
+     *
+     * The capture describes CPU state alone — the same records the
+     * loop's uploads read — written once, at the frame the screenshot
+     * gate names, exactly as the scene loops write theirs beside their
+     * screenshots. Six drivers each spelled the gate before this owned
+     * it, which is the class's founding reason. Defined in
+     * pal_render_capture.hpp beside the writer it calls, so a TU that
+     * includes only this header carries no undefined inline.
+     */
+    void maybe_write_standalone_render_capture(
+        const char* backend,
+        const Engine& engine,
+        std::uint32_t width,
+        std::uint32_t height,
+        long frame);
+
     /** Whether this run was asked for any capture at all. */
     [[nodiscard]] bool requested() const {
         return !options_->screenshot_path.empty() ||
@@ -4755,6 +5120,82 @@ inline void report_benchmark(
         << " ms\n";
     std::cout.flags(flags);
     std::cout.precision(precision);
+}
+
+/**
+ * The BBLITE_CPU_PROFILE startup marks both scene frame loops print --
+ * the same phases under the same field names, so the lines are parsed
+ * and compared across backends. One home keeps the format from
+ * drifting; only the backend label differs:
+ * `[cpu][<label>-startup] phase=<name> phase_ms=<ms> elapsed_ms=<ms>`.
+ *
+ * The instance is called like the lambda it replaced --
+ * `cpu_startup_mark("render-plan")` -- and prints nothing when
+ * profiling is off, while still anchoring its clock at construction.
+ */
+class CpuStartupMark {
+public:
+    CpuStartupMark(bool enabled, const char* label)
+        : enabled_(enabled),
+          label_(label),
+          start_(monotonic_milliseconds()),
+          previous_(start_) {}
+
+    void operator()(const char* phase) {
+        if (!enabled_) return;
+        const double now = monotonic_milliseconds();
+        std::fprintf(
+            stderr,
+            "[cpu][%s-startup] phase=%s phase_ms=%.3f elapsed_ms=%.3f\n",
+            label_,
+            phase,
+            now - previous_,
+            now - start_);
+        previous_ = now;
+    }
+
+private:
+    bool enabled_;
+    const char* label_;
+    double start_;
+    double previous_;
+};
+
+/**
+ * The per-frame BBLITE_CPU_PROFILE line, printed by both scene frame
+ * loops every 30th frame and parsed against each other, so the field
+ * order lives once. `write_ms` is Dawn's own phase -- the per-draw
+ * uniform writes WebGPU's no-push-constants model forces -- and the
+ * field appears only when the caller measured one, so each backend's
+ * line keeps exactly the bytes it always printed.
+ */
+inline void print_cpu_frame_profile(
+    long frame,
+    double total_ms,
+    double acquire_ms,
+    double update_ms,
+    double upload_ms,
+    const std::optional<double>& write_ms,
+    double encode_submit_ms,
+    std::size_t render_items,
+    std::size_t draw_commands,
+    std::size_t transformed_meshes,
+    std::size_t transformed_vertices) {
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(3)
+         << "[cpu][frame] frame=" << frame
+         << " total_ms=" << total_ms
+         << " acquire_ms=" << acquire_ms
+         << " update_ms=" << update_ms
+         << " upload_ms=" << upload_ms;
+    if (write_ms.has_value()) line << " write_ms=" << *write_ms;
+    line << " encode_submit_ms=" << encode_submit_ms
+         << " render_items=" << render_items
+         << " draw_commands=" << draw_commands
+         << " transformed_meshes=" << transformed_meshes
+         << " transformed_vertices=" << transformed_vertices
+         << '\n';
+    std::fputs(line.str().c_str(), stderr);
 }
 
 /**

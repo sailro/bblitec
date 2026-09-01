@@ -7,6 +7,7 @@
 
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include "pal_runtime_trace.hpp"
@@ -595,6 +596,71 @@ inline void handle_platform_event(
             callback(hidden);
         }
     }
+}
+
+/**
+ * One drain of the SDL event queue, shared by every frame loop so no
+ * loop can hold a partial copy of the contract: quit flips `running`, a
+ * deterministic test pass drops live user input, and a drain that
+ * dispatched anything refreshes the reached canvas-cursor surface once
+ * at its end -- the cursor is pure engine state, so applying it per
+ * event only repeated the same answer. The cursor arm used to be
+ * per-driver and one driver forgot it; composing the loop here is what
+ * makes that class of asymmetry impossible.
+ *
+ * `ui_filter` sees each event that survives the test-pass filter and
+ * returns whether it still propagates to the scene — the retained-UI
+ * loops pass `handle_ui_rml_event`, which consumes what the document
+ * captured. `dispatched` runs after each event the scene received — the
+ * two scene renderers pass their camera-controls dispatch, so that
+ * contract lives here rather than in a hand-rolled copy of the drain.
+ * Loops without one use the overloads below.
+ */
+template <typename UiEventFilter, typename DispatchedHook>
+inline void poll_platform_events(
+    Engine& engine,
+    bool& running,
+    bool test_pass,
+    UiEventFilter&& ui_filter,
+    DispatchedHook&& dispatched) {
+    SDL_Event event;
+    bool any_dispatched = false;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_EVENT_QUIT) running = false;
+        if (test_pass && is_platform_input_event(event)) {
+            continue;
+        }
+        if (!ui_filter(event)) continue;
+        handle_platform_event(event, engine);
+        any_dispatched = true;
+        dispatched(event);
+    }
+    if (any_dispatched) apply_canvas_cursor(engine);
+}
+
+template <typename UiEventFilter>
+inline void poll_platform_events(
+    Engine& engine,
+    bool& running,
+    bool test_pass,
+    UiEventFilter&& ui_filter) {
+    poll_platform_events(
+        engine,
+        running,
+        test_pass,
+        std::forward<UiEventFilter>(ui_filter),
+        [](const SDL_Event&) {});
+}
+
+inline void poll_platform_events(
+    Engine& engine,
+    bool& running,
+    bool test_pass) {
+    poll_platform_events(
+        engine,
+        running,
+        test_pass,
+        [](const SDL_Event&) { return true; });
 }
 
 } // namespace bbl::pal

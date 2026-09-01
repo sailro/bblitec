@@ -641,9 +641,6 @@ inline void upload_sprite_layer_gpu(
         gpu.instances = replacement;
         gpu.instance_buffer_bytes = needed_bytes;
         gpu.uploaded = false;
-        layer.dirty_sprite_begin =
-            layer.count == 0u ? invalid_handle : 0u;
-        layer.dirty_sprite_end = layer.count;
     }
     for (
         std::size_t extra_index = 0;
@@ -668,22 +665,12 @@ inline void upload_sprite_layer_gpu(
     if (layer.custom_shader) {
         gpu.elapsed_ms += delta_ms;
     }
-    if (gpu.uploaded && gpu.uploaded_version == layer.version) return;
-    if (layer.count > 0u) {
-        std::uint32_t dirty_begin = layer.dirty_sprite_begin;
-        std::uint32_t dirty_end = std::min(
-            layer.dirty_sprite_end,
-            layer.count);
-        // Fresh/replaced buffers need the complete active prefix. If another
-        // pass already consumed the shared record's range, fall back to that
-        // same full prefix for correctness.
-        if (
-            !gpu.uploaded ||
-            (dirty_begin == invalid_handle &&
-             gpu.uploaded_version < layer.dirty_sprite_reset_version)) {
-            dirty_begin = 0u;
-            dirty_end = layer.count;
-        }
+    if (!gpu.uploaded || gpu.uploaded_version != layer.version) {
+        // The shared derivation (`resolve_sprite_dirty_range`) answers
+        // which rows this copy uploads; only the write call is SDL's.
+        const auto [dirty_begin, dirty_end] =
+            resolve_sprite_dirty_range(
+                layer, gpu.uploaded, gpu.uploaded_version);
         if (dirty_begin < dirty_end) {
             const std::size_t stride_bytes =
                 layer.instance_floats_per_sprite * sizeof(float);
@@ -712,13 +699,11 @@ inline void upload_sprite_layer_gpu(
                     layer.instance_data.data(),
                     active_bytes);
             }
+            mark_sprite_dirty_range_consumed(layer);
         }
+        gpu.uploaded = true;
+        gpu.uploaded_version = layer.version;
     }
-    gpu.uploaded = true;
-    gpu.uploaded_version = layer.version;
-    layer.dirty_sprite_begin = invalid_handle;
-    layer.dirty_sprite_end = 0u;
-    layer.dirty_sprite_reset_version = layer.version;
 }
 
 inline void upload_sprite_pass(

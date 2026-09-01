@@ -130,14 +130,8 @@ bool run_effect_dawn_engine(Engine& engine) {
         FrameClock frame_clock;
         PlatformInputReplay input_replay;
         while (captures.keep_running(running, frame)) {
-            SDL_Event event;
-            while (SDL_PollEvent(&event)) {
-                if (event.type == SDL_EVENT_QUIT) running = false;
-                if (frame_options.test_pass && is_platform_input_event(event)) {
-                    continue;
-                }
-                handle_platform_event(event, engine);
-            }
+            poll_platform_events(
+                engine, running, frame_options.test_pass);
             input_replay.dispatch(frame, state.window, engine);
             sync_engine_canvas_size(state.window, engine);
             if (resize_dawn_surface(state, engine.options)) {
@@ -204,23 +198,8 @@ bool run_effect_dawn_engine(Engine& engine) {
                 frame >= frame_options.screenshot_frame &&
                 !captures.screenshot_saved &&
                 !frame_options.screenshot_path.empty();
-            // The render capture describes CPU state alone — the same
-            // records the passes above read — written at the frame the
-            // screenshot gate names, exactly as the scene loop writes its
-            // own beside its screenshot.
-            if (
-                frame >= frame_options.screenshot_frame &&
-                !captures.render_capture_saved &&
-                !frame_options.render_capture_path.empty()) {
-                write_standalone_render_capture(
-                    frame_options.render_capture_path,
-                    "dawn",
-                    engine,
-                    static_cast<int>(width),
-                    static_cast<int>(height),
-                    frame);
-                captures.render_capture_saved = true;
-            }
+            captures.maybe_write_standalone_render_capture(
+                "dawn", engine, width, height, frame);
             DawnSurfaceCapture capture{};
             if (capture_frame) {
                 capture = begin_dawn_surface_capture(

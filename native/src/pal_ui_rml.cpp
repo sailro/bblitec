@@ -1471,10 +1471,44 @@ public:
         frame.indices.clear();
         frame.textures.clear();
         frame.draws.clear();
+        frame.composite_first_index = 0;
         scissor_enabled = false;
         scissor = Rml::Rectanglei::FromSize(Rml::Vector2i{
             static_cast<int>(width), static_cast<int>(height)});
         transform = Rml::Matrix4f::Identity();
+    }
+
+    /**
+     * Appends the full-frame composite quad both scene renderers draw to
+     * blend their resolved transparent UI layer over the frame. Recorded
+     * here, once, so both GPU backends upload the frame's aggregate geometry
+     * verbatim instead of copying it to append the quad themselves. No
+     * `UiRenderDraw` references these vertices, so consumers that blend the
+     * draws straight into their target carry them inert.
+     */
+    void append_composite_quad() {
+        const std::uint32_t composite_first_vertex =
+            static_cast<std::uint32_t>(frame.vertices.size());
+        frame.composite_first_index =
+            static_cast<std::uint32_t>(frame.indices.size());
+        frame.vertices.insert(
+            frame.vertices.end(),
+            {
+                UiRenderVertex{0, 0, 255, 255, 255, 255, 0, 0},
+                UiRenderVertex{static_cast<float>(frame.width), 0, 255, 255, 255, 255, 1, 0},
+                UiRenderVertex{static_cast<float>(frame.width), static_cast<float>(frame.height), 255, 255, 255, 255, 1, 1},
+                UiRenderVertex{0, static_cast<float>(frame.height), 255, 255, 255, 255, 0, 1},
+            });
+        frame.indices.insert(
+            frame.indices.end(),
+            {
+                composite_first_vertex,
+                composite_first_vertex + 1,
+                composite_first_vertex + 2,
+                composite_first_vertex,
+                composite_first_vertex + 2,
+                composite_first_vertex + 3,
+            });
     }
 
     Rml::CompiledGeometryHandle CompileGeometry(
@@ -3122,6 +3156,7 @@ const UiRenderFrame& record_ui_rml_frame(
     // first, then let RmlUi draw the interactive tree above it.
     runtime.render_canvases();
     runtime.context->Render();
+    runtime.render_interface.append_composite_quad();
     return runtime.render_interface.frame;
 }
 

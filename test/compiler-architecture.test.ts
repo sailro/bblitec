@@ -137,6 +137,49 @@ test("keeps the pin-import family in the shader composer", () => {
     }
 });
 
+test("keeps the lifted-text helpers and pinned operator spellings single-copy", () => {
+    // The guarded re-homing loop and the statement formatter live once, in
+    // shader-builtins-utility.ts (the callers keep only their own error
+    // voices); the glTF expression renderer sources its operator spellings
+    // and Math-call matching from pinned-operators.ts instead of restating
+    // the tables; assignments.ts spells its TRS discriminator and axis map
+    // once. A regrown copy is how these drifted before.
+    const files = readdirSync("src", { recursive: true })
+        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
+        .filter((path) => path.endsWith(".ts"));
+    for (const marker of [
+        "function formatStatements",
+        "text.split(from).join(to)",
+    ]) {
+        const owners = files.filter((path) =>
+            source(path).includes(marker),
+        );
+        assert.deepEqual(
+            owners,
+            ["src/shader-builtins-utility.ts"],
+            `'${marker}' must live only in shader-builtins-utility.ts`,
+        );
+    }
+    const interpolation = source(
+        "src/lowering/gltf/animation-interpolation.ts",
+    );
+    assert.match(interpolation, /PINNED_BOOLEAN_OPERATORS\.get\(/);
+    assert.match(interpolation, /pinnedMathCall\(/);
+    assert.doesNotMatch(interpolation, /text: "&&"/);
+    const assignments = source("src/compiler/assignments.ts");
+    assert.equal(
+        (assignments.match(/\{ x: 0, y: 1, z: 2 \}/g) ?? []).length,
+        1,
+        "the TRS axis map must be spelled once in assignments.ts",
+    );
+    assert.equal(
+        (assignments.match(/"position", "rotation", "scaling"/g) ?? [])
+            .length,
+        1,
+        "the TRS vector list must be spelled once in assignments.ts",
+    );
+});
+
 test("keeps handle-collection semantics in one module", () => {
     // The collection resolvers, the loop frame, the find, the pushes and
     // the imported-mesh walk proof all live in handle-collections.ts —
@@ -708,7 +751,7 @@ test("keeps depth-hosted sprite buffers growable, paused while hidden, and inser
     );
     assert.match(
         dawn,
-        /sync_dawn_scene_sprite_pass_pipelines\([\s\S]{0,900}dawn_sprite_pipeline_state_matches\([\s\S]{0,1200}release_dawn_sprite_layer\([\s\S]{0,1400}build_dawn_sprite_layer\(/,
+        /sync_dawn_scene_sprite_pass_pipelines\([\s\S]{0,900}pipeline_version != layer\.pipeline_version[\s\S]{0,1200}release_dawn_sprite_layer\([\s\S]{0,1400}build_dawn_sprite_layer\(/,
     );
     assert.match(sdl, /struct SpriteAtlasGpu/);
     assert.match(sdl, /std::vector<SpriteAtlasGpu> atlases;/);
@@ -759,10 +802,14 @@ test("shares compatible depth-hosted sprite pipelines within a scene pass", () =
     assert.match(sdl, /gpu\.owns_pipeline = shared_pipeline == nullptr/);
     assert.match(
         dawn,
-        /shared_pipeline_layer = &pass\.layers\[previous\]/,
+        /shared_pipeline = pass\.layers\[previous\]\.pipeline/,
     );
-    assert.match(dawn, /gpu\.owns_pipeline = shared_pipeline_layer == nullptr/);
-    assert.match(dawn, /gpu\.owns_group_layouts = shared_pipeline_layer == nullptr/);
+    assert.match(
+        dawn,
+        /shared_group_layouts = pass\.layers\[previous\]\.group_layouts/,
+    );
+    assert.match(dawn, /gpu\.owns_pipeline = shared_pipeline == nullptr/);
+    assert.match(dawn, /gpu\.owns_group_layouts = shared_pipeline == nullptr/);
     assert.match(
         dawn,
         /pass\.layers\.rbegin\(\)[\s\S]{0,180}release_dawn_sprite_layer\(\*layer\)/,
@@ -801,7 +848,7 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
     const dawn = source("native/src/pal_dawn_sprite.cpp");
 
     for (const backend of [sdl, dawn]) {
-        assert.match(backend, /handle_platform_event\(event, engine\);/);
+        assert.match(backend, /poll_platform_events\(/);
         assert.match(
             backend,
             /input_replay\.dispatch\(frame, [^,]+, engine\);/,
@@ -919,9 +966,41 @@ test("forwards DOM-compatible application input through every native loop", () =
         /for \(const auto& callback : engine\.window_resize_callbacks\)/,
     );
 
+    // The shared drain carries the whole per-event contract — quit,
+    // test-pass input filtering, an optional UI filter, the platform
+    // dispatch, the per-event dispatched hook, and one canvas-cursor
+    // refresh after a drain that dispatched anything — so a loop using
+    // it cannot hold a partial copy of that contract (the cursor arm was
+    // once per-driver, and one driver forgot it).
+    assert.match(
+        events,
+        /inline void poll_platform_events\([\s\S]{0,320}SDL_PollEvent\(&event\)[\s\S]{0,120}SDL_EVENT_QUIT\) running = false;[\s\S]{0,160}is_platform_input_event\(event\)[\s\S]{0,260}handle_platform_event\(event, engine\);\s*any_dispatched = true;\s*dispatched\(event\);\s*\}\s*if \(any_dispatched\) apply_canvas_cursor\(engine\);/,
+    );
+
+    // Every frame loop uses the shared helper — the two scene renderers
+    // through the dispatched hook that carries their camera-controls
+    // dispatch, so that contract lives once rather than in a hand-rolled
+    // copy of the drain.
     for (const path of [
         "native/src/pal_sdl_gpu.cpp",
         "native/src/pal_dawn.cpp",
+    ]) {
+        const loop = source(path);
+        assert.match(
+            loop,
+            /camera_pointer_hook = \[&\]\(const SDL_Event& event\) \{[\s\S]{0,120}handle_camera_pointer_event\(event, camera, pointer_state\);/,
+        );
+        assert.match(
+            loop,
+            /poll_platform_events\([\s\S]{0,320}camera_pointer_hook\);/,
+        );
+        assert.doesNotMatch(loop, /SDL_PollEvent/);
+        assert.match(
+            loop,
+            /input_replay\.dispatch\(frame, [^,]+, engine\);/,
+        );
+    }
+    for (const path of [
         "native/src/pal_sdl_gpu_sprite.cpp",
         "native/src/pal_dawn_sprite.cpp",
         "native/src/pal_sdl_gpu_effect.cpp",
@@ -930,7 +1009,8 @@ test("forwards DOM-compatible application input through every native loop", () =
         "native/src/pal_dawn_frame_graph.cpp",
     ]) {
         const loop = source(path);
-        assert.match(loop, /handle_platform_event\(event, engine\);/);
+        assert.match(loop, /poll_platform_events\(/);
+        assert.doesNotMatch(loop, /SDL_PollEvent/);
         assert.match(
             loop,
             /input_replay\.dispatch\(frame, [^,]+, engine\);/,
