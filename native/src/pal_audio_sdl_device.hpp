@@ -101,13 +101,11 @@ public:
 
     ~AudioDeviceSdl3() override
     {
-        if (stream_) {
-            // Destroying the stream closes the device opened with it and
-            // guarantees the callback is no longer running -- so the buses
-            // below cannot be in use by the time they are released.
-            SDL_DestroyAudioStream(stream_);
-            stream_ = nullptr;
-        }
+        // Destroying the stream closes the device opened with it and
+        // guarantees the callback is no longer running -- so the buses
+        // below cannot be in use by the time they are released.
+        if (stream_alive()) SDL_DestroyAudioStream(stream_);
+        stream_ = nullptr;
     }
 
     /** Whether the SDL device came up at all; the PAL turns this into a throw. */
@@ -122,12 +120,23 @@ public:
 
     void stop() override
     {
-        if (!stream_) return;
-        SDL_PauseAudioStreamDevice(stream_);
+        if (stream_alive()) SDL_PauseAudioStreamDevice(stream_);
         running_ = false;
     }
 
     bool isRunning() const override { return running_; }
+
+    /**
+     * Whether the stream can still be spoken to. The renderer's SDL_Quit
+     * closes every audio device and destroys this stream with it, and a
+     * context reaching that point -- the run-end close runs after the
+     * backend returns -- would otherwise pause or destroy a dangling
+     * handle: a use-after-free inside SDL.
+     */
+    bool stream_alive() const
+    {
+        return stream_ != nullptr && SDL_WasInit(SDL_INIT_AUDIO) != 0;
+    }
 
     void backendReinitialize() override
     {
