@@ -261,4 +261,11 @@ void audio_param_cancel_scheduled_values(AudioParamHandle param, double time);
  */
 void audio_render_pending_captures();
 
+/**
+ * Closes every context: pauses each device before its graph dies and
+ * joins LabSound's threads. Called from the same run-end seam, after the
+ * captures rendered, so no audio thread survives into static destruction.
+ */
+void audio_close_all_contexts();
+
 } // namespace bbl::pal

@@ -123,13 +123,19 @@ bool run_dawn(Engine& engine, RendererKind kind) {
 void pal::run_engine(Engine& engine) {
     const RendererKind kind = renderer_kind(engine);
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
-    // A requested audio capture renders when the run ends, however it
-    // ends -- the same seam CaptureGate takes a screenshot at. A build
+    // The audio run ends when the render run ends, however it ends -- the
+    // same seam CaptureGate takes a screenshot at: a requested capture
+    // renders, then every context closes, so no audio thread outlives the
+    // run into static destruction. On the SDL_GPU paths this runs after
+    // the backend's SDL_Quit, which the device already tolerates. A build
     // that reached no audio compiles none of this, and never parses the
     // audio contract at all.
-    struct AudioCaptureOnExit {
-        ~AudioCaptureOnExit() { pal::audio_render_pending_captures(); }
-    } audio_capture_on_exit;
+    struct AudioRunEnd {
+        ~AudioRunEnd() {
+            pal::audio_render_pending_captures();
+            pal::audio_close_all_contexts();
+        }
+    } audio_run_end;
 #endif
     // bblitec requires a GPU. A backend that reaches its device and fails
     // throws, and the throw propagates: there is no software path to

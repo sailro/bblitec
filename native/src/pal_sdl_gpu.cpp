@@ -11465,18 +11465,6 @@ bool run_gpu_engine(Engine& engine) {
         if (!SDL_WaitForGPUIdle(state.device)) {
             gpu_error("SDL_WaitForGPUIdle");
         }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        destroy_ui_rml_runtime(ui_runtime);
-        ui_runtime = nullptr;
-#endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-        release_sprite_passes();
-#endif
-        // `pick_hook_guard` clears the pick hook when the try scope
-        // ends -- after this return, or during unwinding before the
-        // catch below runs -- and no pick can arrive in between.
-        release(state);
-        return true;
     } catch (...) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         destroy_ui_rml_runtime(ui_runtime);
@@ -11488,6 +11476,22 @@ bool run_gpu_engine(Engine& engine) {
         release(state);
         throw;
     }
+    // Teardown sits after the try, as in every sibling run loop: the
+    // run-lifetime objects declared inside it -- the upload batch, whose
+    // transfer buffer has to go back to a live device, and the pick hook
+    // guard -- have unwound by the time the device is destroyed. Inside
+    // the try they outlived `release(state)` on this path, and the batch
+    // released through a dead device: the application gates' intermittent
+    // exit crash.
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    destroy_ui_rml_runtime(ui_runtime);
+    ui_runtime = nullptr;
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+    release_sprite_passes();
+#endif
+    release(state);
+    return true;
 #else
     (void)engine;
     return false;

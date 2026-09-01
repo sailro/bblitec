@@ -70,3 +70,42 @@ test("both backends re-record the draw lists on the visibility epoch", () => {
         );
     }
 });
+
+// Teardown order is the class of defect single-frame parity cannot see: a
+// GPU or audio object released through a device that is already gone
+// crashes intermittently at exit, as the application gates did after the
+// audit hoisted the SDL upload batch to run lifetime. The fixes are
+// structural -- ownership and scope, not a call to remember -- so what is
+// pinned here is the structure that carries each invariant.
+test("the SDL scene loop tears down after its try, like its siblings", () => {
+    // A run-lifetime object declared inside the try (the upload batch,
+    // the pick hook guard) unwinds when the try ends. With the device
+    // teardown inside that same try on the normal path, the batch
+    // outlived the device and released through it; after the catch, it
+    // cannot.
+    const text = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const batch = text.indexOf(
+        "GpuBufferUploadBatch frame_buffer_uploads(state.device);",
+    );
+    assert.ok(batch >= 0, "the run-lifetime batch is not declared");
+    const rethrow = text.indexOf("} catch (...) {", batch);
+    const teardown = text.lastIndexOf("release(state);");
+    assert.ok(rethrow >= 0, "the scene loop has no catch after the batch");
+    assert.ok(
+        teardown > rethrow,
+        "the normal-path release(state) sits inside the try, before the batch unwinds",
+    );
+});
+
+test("the run end closes every audio context", () => {
+    // A context surviving into static destruction keeps its audio thread
+    // alive while the objects it touches are torn down in an order
+    // nothing controls. run_engine's exit guard is the one place a run
+    // ends, so it closes them there, after the captures rendered.
+    const text = readFileSync("native/src/pal_sdl.cpp", "utf8");
+    const guard = text.indexOf("~AudioRunEnd()");
+    assert.ok(guard >= 0, "run_engine has no audio run-end guard");
+    const captures = text.indexOf("audio_render_pending_captures();", guard);
+    const closes = text.indexOf("audio_close_all_contexts();", guard);
+    assert.ok(closes > captures && captures > guard);
+});

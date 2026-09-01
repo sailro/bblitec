@@ -69,6 +69,22 @@ struct AudioBufferRecord {
 #endif
 
 struct ContextRecord {
+    ContextRecord() = default;
+    ContextRecord(ContextRecord&&) = default;
+    ContextRecord& operator=(ContextRecord&&) = default;
+    /**
+     * Pause the device before the graph it pulls dies. A returned pause is
+     * a join -- SDL takes the device lock the audio thread holds while it
+     * runs the stream callback -- so no callback is rendering when the
+     * members below free the nodes and buffers. Member order alone would
+     * free them first and pause last (`context`, whose own uninitialize
+     * pauses, is destroyed last): a use-after-free on the audio thread,
+     * seen as the application gates' intermittent teardown crash.
+     */
+    ~ContextRecord() {
+        if (device) device->stop();
+    }
+
     std::shared_ptr<lab::AudioContext> context;
     std::shared_ptr<lab::AudioDestinationNode> destination;
     std::shared_ptr<detail::AudioDeviceSdl3> device;
@@ -482,6 +498,16 @@ void audio_close_context(AudioContextHandle context)
         record.context->disconnect(record.destination);
     }
     contexts().erase(found);
+}
+
+void audio_close_all_contexts()
+{
+    // Each record pauses its device before its graph dies (see
+    // ~ContextRecord), and ~AudioContext joins LabSound's graph-update
+    // thread -- so after this, no audio thread outlives the run into
+    // static destruction, where the objects it touches are torn down in
+    // an order nothing controls.
+    contexts().clear();
 }
 
 double audio_current_time(AudioContextHandle context)
