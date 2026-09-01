@@ -1124,18 +1124,32 @@ test("keeps structurally narrowed mutable arguments on the inline path", () => {
         const moved = manager.consume() && sectors[0]!.floorHeight < 8;
     `);
 
-    // The narrowing call did not become a namespace function, and no
+    // The narrowing call did not become a namespace function, so no
     // narrow-record copy of the sector was materialized for it.
     assert.doesNotMatch(result.cpp, /bblscene::Manager_step\(/);
-    assert.doesNotMatch(
-        result.cpp,
-        /Manager_step\([^)]*make_shared/,
-    );
     // The write lands on the stored sector itself, through its reference.
     assert.match(result.cpp, /->floorHeight -= 1\.0;/);
     // The identity rule is per-call: the sibling method with exact-typed
     // arguments still qualifies for the once-emitted arm.
     assert.match(result.cpp, /bblscene::Manager_consume\(/);
+});
+
+test("keeps structurally narrowed free-function arguments inline", () => {
+    // The free-function arm shares the sink conversion with the method
+    // arm, so it declines the same way: a narrowing call falls back to
+    // the function inliner, which aliases by construction.
+    const result = compileSource(`
+        interface Sector { floorHeight: number; tag: number; }
+        function step(target: { floorHeight: number }): void {
+            target.floorHeight -= 1;
+        }
+        const sectors: Sector[] = [{ floorHeight: 8, tag: 1 }];
+        step(sectors[0]!);
+        const moved = sectors[0]!.floorHeight < 8;
+    `);
+
+    assert.doesNotMatch(result.cpp, /bblscene::step\(/);
+    assert.match(result.cpp, /->floorHeight -= 1\.0;/);
 });
 
 test("extracts methods whose stored-object arguments match exactly", () => {

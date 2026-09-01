@@ -8598,6 +8598,8 @@ bool run_dawn_engine(Engine& engine) {
     upstream::RenderPlan render_plan;
     std::uint64_t synced_render_topology_version =
         scene.render_topology_version;
+    std::uint64_t synced_visibility_epoch =
+        engine.visibility_epoch;
     // For the post-registration family guard the topology update runs,
     // exactly as the SDL backend tracks it.
     std::uint32_t synced_material_family_mask =
@@ -10390,7 +10392,18 @@ bool run_dawn_engine(Engine& engine) {
                 state.shared_shader_material_textures.size(),
                 frame);
             topology_updated = true;
+        } else if (engine.visibility_epoch != synced_visibility_epoch) {
+            // The pin's visibility epoch re-records the cached opaque
+            // render bundles; the draw lists are this port's bundles, so
+            // only they and the task lists rebuild -- mesh GPU state is
+            // untouched. (A full topology rebuild above rebuilds them
+            // anyway.)
+            render_plan.draw_lists = upstream::build_render_draw_lists(
+                render_plan.items,
+                engine);
+            rebuild_task_draw_lists();
         }
+        synced_visibility_epoch = engine.visibility_epoch;
         // One mesh-sync pass per frame over the plan's items, the same
         // walk and skip logic as the SDL_GPU backend's loop: the
         // thin-instance pool re-upload, the GPU-deformation skip (the
@@ -10421,11 +10434,13 @@ bool run_dawn_engine(Engine& engine) {
             // per DRAW and so pays nothing for one; this loop was hoisted
             // to once per plan item, which widened it. The plan keeps a
             // hidden mesh so the pick pass can see it, so the sync asks
-            // the same per-draw predicate the renderers ask.
+            // the same predicate the draw lists ask.
             //
-            // Sound because both run each frame: the frame a visibility
-            // flip lets a mesh start drawing is a frame this loop already
-            // wrote it.
+            // Sound because visibility reaches the draw lists only through
+            // a version bump -- render_topology_version or the visibility
+            // epoch -- and the rebuild either triggers runs earlier in
+            // this same frame, so the frame a mesh starts drawing is a
+            // frame this loop writes it.
             const bool mesh_uniform_item =
                 upstream::mesh_draws(mesh) &&
                 item.material_kind !=
@@ -10808,15 +10823,6 @@ bool run_dawn_engine(Engine& engine) {
                 const ShaderPassMatrices& pass_matrices) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
-                    // The pin tests visibility per draw; the cached lists
-                    // keep hidden meshes so a toggle needs no plan
-                    // rebuild, and a hidden mesh gets no uniform writes.
-                    if (
-                        draw.item.mesh.value >= engine.meshes.size() ||
-                        !upstream::mesh_draws(
-                            engine.meshes[draw.item.mesh.value])) {
-                        continue;
-                    }
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
                     const bool grid_draw =
                         draw.item.material_kind ==
@@ -11400,14 +11406,6 @@ bool run_dawn_engine(Engine& engine) {
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
                 if (draw.item_index >= state.meshes.size()) continue;
-                // The pin tests visibility per draw; the cached lists keep
-                // hidden meshes so a toggle needs no plan rebuild.
-                if (
-                    draw.item.mesh.value >= engine.meshes.size() ||
-                    !upstream::mesh_draws(
-                        engine.meshes[draw.item.mesh.value])) {
-                    continue;
-                }
                 DawnMesh& mesh = state.meshes[draw.item_index];
 #if BBLITE_PBR_VARIANTS > 0
                 // Babylon's own composed stages for this draw. Everything
@@ -11780,15 +11778,6 @@ bool run_dawn_engine(Engine& engine) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
                     if (draw.item_index >= state.meshes.size()) {
-                        continue;
-                    }
-                    // The pin tests visibility per draw; the cached lists
-                    // keep hidden meshes so a toggle needs no plan
-                    // rebuild.
-                    if (
-                        draw.item.mesh.value >= engine.meshes.size() ||
-                        !upstream::mesh_draws(
-                            engine.meshes[draw.item.mesh.value])) {
                         continue;
                     }
                     const MaterialRecord* material =
@@ -12850,16 +12839,6 @@ bool run_dawn_engine(Engine& engine) {
                             if (
                                 draw.item_index >=
                                 state.meshes.size()) {
-                                continue;
-                            }
-                            // The pin tests visibility per draw; the
-                            // cached lists keep hidden meshes so a toggle
-                            // needs no plan rebuild.
-                            if (
-                                draw.item.mesh.value >=
-                                    engine.meshes.size() ||
-                                !upstream::mesh_draws(
-                                    engine.meshes[draw.item.mesh.value])) {
                                 continue;
                             }
                             [[maybe_unused]] DawnMesh& mesh =

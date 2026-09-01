@@ -7930,6 +7930,8 @@ bool run_gpu_engine(Engine& engine) {
         cpu_startup_mark("draw-lists-ready");
         std::uint64_t synced_render_topology_version =
             scene.render_topology_version;
+        std::uint64_t synced_visibility_epoch =
+            engine.visibility_epoch;
         std::uint32_t synced_material_family_mask =
             scene.material_family_mask;
 
@@ -8320,7 +8322,20 @@ bool run_gpu_engine(Engine& engine) {
                     state.shared_shader_material_textures.size(),
                     frame);
                 topology_updated = true;
+            } else if (
+                engine.visibility_epoch != synced_visibility_epoch) {
+                // The pin's visibility epoch re-records the cached opaque
+                // render bundles; the draw lists are this port's bundles,
+                // so only they and the task lists rebuild -- mesh GPU
+                // state is untouched. (A full topology rebuild above
+                // rebuilds them anyway.)
+                render_plan.draw_lists =
+                    upstream::build_render_draw_lists(
+                        render_plan.items,
+                        engine);
+                rebuild_task_draw_lists();
             }
+            synced_visibility_epoch = engine.visibility_epoch;
             frame_buffer_uploads.submit();
             const double uploaded =
                 cpu_profile ? monotonic_milliseconds() : 0.0;
@@ -8343,13 +8358,6 @@ bool run_gpu_engine(Engine& engine) {
                         list.commands) {
                         if (draw.item_index >= state.meshes.size()) continue;
                         if (draw.item.mesh.value >= engine.meshes.size()) {
-                            continue;
-                        }
-                        // The lists keep hidden meshes; visibility is the
-                        // pin's per-draw test, so a hidden skin streams no
-                        // palette.
-                        if (!upstream::mesh_draws(
-                                engine.meshes[draw.item.mesh.value])) {
                             continue;
                         }
                         const std::size_t palette_variant =
@@ -9107,16 +9115,6 @@ bool run_gpu_engine(Engine& engine) {
                             if (
                                 draw.item_index >=
                                 state.meshes.size()) {
-                                continue;
-                            }
-                            // The pin tests visibility per draw; the
-                            // cached lists keep hidden meshes so a toggle
-                            // needs no plan rebuild.
-                            if (
-                                draw.item.mesh.value >=
-                                    engine.meshes.size() ||
-                                !upstream::mesh_draws(
-                                    engine.meshes[draw.item.mesh.value])) {
                                 continue;
                             }
                             const GpuMesh& mesh =
@@ -10693,14 +10691,6 @@ bool run_gpu_engine(Engine& engine) {
                     if (
                         draw.item_index >=
                         state.meshes.size()) {
-                        continue;
-                    }
-                    // The pin tests visibility per draw; the cached lists
-                    // keep hidden meshes so a toggle needs no plan rebuild.
-                    if (
-                        draw.item.mesh.value >= engine.meshes.size() ||
-                        !upstream::mesh_draws(
-                            engine.meshes[draw.item.mesh.value])) {
                         continue;
                     }
                     const upstream::RenderItem& item = draw.item;

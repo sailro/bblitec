@@ -155,6 +155,31 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
 });
 
+test("bumps the visibility epoch only when setMeshVisible changes a flag", () => {
+    // The pin's two-writer rule (src/scene/visibility.ts): setMeshVisible
+    // is the sole epoch bumper, and only when the cascade actually moved a
+    // flag -- a per-frame re-assertion of the same value stays a true
+    // no-op, and a bare `visible` field write defers to the next rebuild
+    // (the regression-mesh-flags gate measures that deferral). The epoch
+    // is what makes a hide or show land the same frame; without the bump,
+    // a weapon picked up after the lists were built could never draw.
+    const lowered = new SceneLowerer(
+        new LoweringContext(),
+    ).lowerCore({ visibility: true });
+
+    assert.match(
+        lowered.source,
+        /bool changed = record\.visible != visible;/,
+    );
+    assert.match(
+        lowered.source,
+        /if \(set_mesh_visible_cascade\(engine, mesh, visible\)\) \{[\s\S]*?\+\+engine\.visibility_epoch;/,
+    );
+    // The bump is conditional: no unguarded increment exists.
+    const bumps = lowered.source.match(/\+\+engine\.visibility_epoch;/g);
+    assert.equal(bumps?.length, 1);
+});
+
 test("preserves full pinned TRS when setParent relinks a mesh", () => {
     const lowered = new SceneLowerer(
         new LoweringContext(),

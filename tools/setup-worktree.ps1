@@ -31,6 +31,8 @@
 #   tools\setup-worktree.ps1 -Path C:\Dev\bbl-fix -Branch my-branch
 #   tools\setup-worktree.ps1 -Path C:\Dev\bbl-old -Commit 294fd23
 #   tools\setup-worktree.ps1 -Path C:\Dev\bbl-fix -Remove
+# -Branch with -Commit creates the new branch at that commit; -Commit alone
+# checks out detached; -Branch alone branches from the current HEAD.
 param(
     [Parameter(Mandatory = $true)][string]$Path,
     [string]$Branch,
@@ -60,7 +62,6 @@ $junctions = @(
     "artifacts\bake-cache",
     "tools\shader-compiler\vcpkg_installed"
 )
-if ($SharedVcpkg) { $junctions += "artifacts\vcpkg-installed" }
 
 if ($Remove) {
     # Unlink every junction this script can have made, whether or not the
@@ -91,6 +92,7 @@ if (-not (Test-Path -LiteralPath $Path)) {
     if ($LASTEXITCODE -ne 0) { throw "git worktree add failed for $Path" }
 }
 
+if ($SharedVcpkg) { $junctions += "artifacts\vcpkg-installed" }
 foreach ($relative in $junctions) {
     $link = Join-Path $Path $relative
     $target = Join-Path $main $relative
@@ -99,15 +101,11 @@ foreach ($relative in $junctions) {
         if ($item.LinkType -eq "Junction") { continue }
         throw "$link already exists and is not a junction; move it aside first."
     }
-    if (-not (Test-Path -LiteralPath $target)) {
-        # Nothing to share yet (a cache the main checkout has not built);
-        # create it there so both sides grow into the same directory.
-        New-Item -ItemType Directory -Path $target -Force | Out-Null
-    }
-    $parent = Split-Path -Parent $link
-    if (-not (Test-Path -LiteralPath $parent)) {
-        New-Item -ItemType Directory -Path $parent -Force | Out-Null
-    }
+    # -Force tolerates an existing directory; a cache the main checkout has
+    # not built yet is created there so both sides grow into one directory.
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+    New-Item -ItemType Directory -Path (Split-Path -Parent $link) -Force |
+        Out-Null
     New-Item -ItemType Junction -Path $link -Target $target | Out-Null
 }
 

@@ -304,14 +304,35 @@ void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh) {
     const visibilitySource = options.visibility
       ? `
 // ${this.context.provenance("src/scene/visibility.ts", "setSubtreeVisible")}
-void set_mesh_visible(
+namespace {
+// The cascade half: writes the subtree, reports whether any flag moved.
+bool set_mesh_visible_cascade(
     Engine& engine,
     MeshHandle mesh,
     bool visible) {
     MeshRecord& record = engine.meshes.at(mesh.value);
+    bool changed = record.visible != visible;
     record.visible = visible;
     for (const MeshHandle child : record.children) {
-        set_mesh_visible(engine, child, visible);
+        if (set_mesh_visible_cascade(engine, child, visible)) {
+            changed = true;
+        }
+    }
+    return changed;
+}
+} // namespace
+
+void set_mesh_visible(
+    Engine& engine,
+    MeshHandle mesh,
+    bool visible) {
+    if (set_mesh_visible_cascade(engine, mesh, visible)) {
+        // The pin's visibility epoch: setSubtreeVisible is the sole
+        // bumper, a bare \`visible\` field write deliberately is not, and
+        // a same-value call skips the bump so a per-frame re-assertion
+        // stays a true no-op. The backends re-record the cached draw
+        // lists on it -- this port's render bundles.
+        ++engine.visibility_epoch;
     }
 }
 `

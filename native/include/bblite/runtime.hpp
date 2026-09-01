@@ -2823,6 +2823,13 @@ struct Engine {
      */
     std::vector<PropertyAnimationManager> animation_managers;
     std::vector<MeshRecord> meshes;
+    // The pin's visibility epoch (src/scene/visibility.ts): bumped only by
+    // setMeshVisible, and only when a flag actually changed -- a bare
+    // `visible` field write deliberately defers to the next draw-list
+    // rebuild, which is the pin's opaque-bundle rule and what the
+    // regression-mesh-flags gate measures. The backends re-record their
+    // cached draw lists when this moves, touching no mesh GPU state.
+    std::uint64_t visibility_epoch = 0;
     /** Whether original meshes and their clones have stable feature rows. */
     bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
