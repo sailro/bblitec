@@ -1023,6 +1023,184 @@ test("supports early returns in native data functions", () => {
     assert.match(result.cpp, /return v_fn0_value;/);
 });
 
+test("emits qualifying class methods once as native functions", () => {
+    const result = compileSource(`
+        class Stack {
+            private readonly heights: number[] = [];
+            private total = 0;
+            add(height: number, repeat = 2): void {
+                for (let i = 0; i < repeat; i++) {
+                    this.heights.push(height);
+                    this.total += height;
+                }
+            }
+        }
+        const stack = new Stack();
+        stack.add(1);
+        stack.add(2, 1);
+    `);
+
+    // One definition over mutable field reference channels; the body
+    // exists exactly once however many call sites there are.
+    assert.match(
+        result.cpp,
+        /void Stack_add\(\[\[maybe_unused\]\] bbl::js::Array<double>& v_fn\d+_this_heights, \[\[maybe_unused\]\] double& v_fn\d+_this_total, double v_fn\d+_height, double v_fn\d+_repeat\) \{/,
+    );
+    assert.equal(
+        (result.cpp.match(/push_back/g) ?? []).length,
+        1,
+    );
+    // Each call passes the instance's own field locals; the omitted
+    // default is compiled at the call site.
+    assert.match(
+        result.cpp,
+        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, v_bblite_class_field_total_\d+, 1\.0, 2\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, v_bblite_class_field_total_\d+, 2\.0, 1\.0\);/,
+    );
+});
+
+test("native method field writes alias every reference to the instance", () => {
+    const result = compileSource(`
+        class Meter {
+            level = 0;
+            bump(amount: number): number {
+                this.level += amount;
+                return this.level;
+            }
+        }
+        const meter = new Meter();
+        const alias = meter;
+        const first = meter.bump(2);
+        const second = alias.bump(3);
+        const total = first + second;
+    `);
+
+    // The mutation goes through the field reference channel once.
+    assert.match(
+        result.cpp,
+        /v_fn\d+_this_level \+= v_fn\d+_amount;/,
+    );
+    // Both references dispatch to the same emitted function and pass the
+    // one field local, so each call observes the other's write.
+    const calls = [
+        ...result.cpp.matchAll(
+            /bblscene::Meter_bump\((v_bblite_class_field_level_\d+), /g,
+        ),
+    ];
+    assert.equal(calls.length, 2);
+    assert.equal(
+        new Set(calls.map((match) => match[1])).size,
+        1,
+    );
+});
+
+test("keeps handle-touching methods on the inline path beside native siblings", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+        class Spinner {
+            speed = 2;
+            spin(mesh: Mesh, dt: number): void {
+                mesh.rotation.y += this.speed * dt;
+            }
+            rate(dt: number): number {
+                return this.speed * dt;
+            }
+        }
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const spinner = new Spinner();
+            const box = createBox(engine, 1);
+            spinner.spin(box, 0.1);
+            spinner.spin(box, 0.2);
+            const r = spinner.rate(0.5);
+        }
+        main();
+    `);
+
+    // A handle parameter keeps spin inlined per call site.
+    assert.doesNotMatch(result.cpp, /bblscene::Spinner_spin/);
+    assert.equal(
+        result.cpp.match(/rotation\.y \+=/g)?.length,
+        2,
+    );
+    // The plain-data sibling on the same instance still emits once.
+    assert.match(result.cpp, /bblscene::Spinner_rate\(/);
+});
+
+test("native methods read sibling getters through field channels", () => {
+    const result = compileSource(`
+        class Probe {
+            depth = 4;
+            private readonly bias = 1;
+            get scaled(): number {
+                return this.depth * 2;
+            }
+            sample(offset: number): number {
+                return this.scaled + this.bias + offset;
+            }
+        }
+        const probe = new Probe();
+        const a = probe.sample(1);
+        const b = probe.sample(2);
+    `);
+
+    // The getter's field joins the method's channels and its expression
+    // inlines at the read site inside the emitted body.
+    assert.match(
+        result.cpp,
+        /double Probe_sample\(\[\[maybe_unused\]\] double& v_fn\d+_this_depth, \[\[maybe_unused\]\] double& v_fn\d+_this_bias, double v_fn\d+_offset\) \{/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\(v_fn\d+_this_depth \* 2\.0\) \+ v_fn\d+_this_bias\) \+ v_fn\d+_offset/,
+    );
+    assert.equal(
+        (result.cpp.match(/bblscene::Probe_sample\(/g) ?? [])
+            .length,
+        2,
+    );
+});
+
+test("native methods call sibling methods natively", () => {
+    const result = compileSource(`
+        class Chain {
+            base = 10;
+            half(value: number): number {
+                return value / 2;
+            }
+            shifted(value: number): number {
+                return this.half(value) + this.base;
+            }
+        }
+        const chain = new Chain();
+        const a = chain.shifted(8);
+        const b = chain.shifted(16);
+    `);
+
+    assert.equal(
+        result.cpp.match(
+            /double Chain_half\(double v_fn\d+_value\) \{/g,
+        )?.length,
+        1,
+    );
+    assert.equal(
+        result.cpp.match(/double Chain_shifted\(/g)?.length,
+        2,
+    );
+    // The sibling call inside the emitted body is a native call, not an
+    // inline frame.
+    assert.match(
+        result.cpp,
+        /bblscene::Chain_half\(v_fn\d+_value\)/,
+    );
+});
+
 test("keeps closures over entry locals on the inline path", () => {
     const result = compileSource(`
         import {
@@ -1364,8 +1542,155 @@ test("materializes an inferred array before a runtime element read", () => {
     `);
 
     assert.match(result.cpp, /bbl::js::Array<bblscene::Point> v_triplet/);
-    assert.match(result.cpp, /v_triplet\[bbl::js::array_index\(v_i\)\]/);
+    // A runtime index the compiler cannot prove in bounds reads through
+    // the checked accessor carrying the access's source location.
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_checked\(v_triplet, v_i, "[^"]+:\d+:\d+"\)/,
+    );
     assert.equal((result.cpp.match(/bbl::js::random_js\(\)/g) ?? []).length, 1);
+});
+
+test("materializes an inferred array an element increment mutates", () => {
+    // `arr[0]++` writes without a binary assignment node, so the mutation
+    // walk needs its own increment clause; without one the array stays a
+    // folded constant and the write vanishes.
+    const result = compileSource(`
+        const source = [1, 2, 3];
+        const alias = source;
+        alias[0]++;
+        const first = alias[0];
+        console.log(first);
+    `);
+
+    assert.match(result.cpp, /bbl::js::Array<double> v_source/);
+    assert.match(result.cpp, /array_index_write\(v_alias/);
+    assert.match(result.cpp, /\)\+\+;/);
+});
+
+test("keeps canonical length-bound loop indices raw and checks the rest", () => {
+    const result = compileSource(`
+        const seed: number[] = [1, 2, 3, 4, 5];
+        const values = seed.filter((value) => value > 1);
+        let total = 0;
+        for (let i = 0; i < values.length; i++) {
+            const value = values[i]!;
+            total += value;
+        }
+        for (let j = 0; j < values.length; j += 2) {
+            const value = values[j]!;
+            total += value;
+        }
+        for (let k = 0; k < values.length; k++) {
+            const value = values[k]!;
+            total += value;
+            if (total > 90) {
+                values.pop();
+            }
+        }
+        for (let q = 0; q < values.length; q++) {
+            const raw = values[q]!;
+            const value = Math.abs(raw);
+            total += value;
+        }
+        console.log(total);
+    `);
+
+    // The canonical loops (plain and with a pure Math call) keep the
+    // raw fast path over their own induction variable.
+    const rawReads =
+        result.cpp.match(
+            /v_values\[bbl::js::array_index\(v_\w+\)\]/g,
+        ) ?? [];
+    assert.equal(rawReads.length, 2);
+    // The stride loop's condition no longer proves the read, and the
+    // pop() in the third loop's body could shrink the array mid-walk,
+    // so both read through the located checked accessor.
+    const checkedReads =
+        result.cpp.match(
+            /bbl::js::array_index_checked\(v_values, v_\w+, "[^"]+:\d+:\d+"\)/g,
+        ) ?? [];
+    assert.equal(checkedReads.length, 2);
+});
+
+test("splits array writes between growth-proven and checked arms", () => {
+    const result = compileSource(`
+        const seed: number[] = [2, 4, 6];
+        const values = seed.filter((value) => value > 2);
+        let total = 0;
+        for (let i = 0; i < values.length; i++) {
+            values[i] = total;
+            total += 1;
+        }
+        for (let j = 0; j < values.length; j += 2) {
+            values[j] = 1;
+        }
+        console.log(values.length);
+    `);
+
+    // A canonical-loop index writes raw; JavaScript growth semantics
+    // are untouched either way.
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_write\(v_values, bbl::js::array_index\(v_\w+\)\) = /,
+    );
+    // The unproven stride index writes through the checked grower.
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_write_checked\(v_values, v_\w+, "[^"]+:\d+:\d+"\) = /,
+    );
+});
+
+test("emits a checked read for a dead-guarded static out-of-bounds index", () => {
+    // scene20's parent-chain shape: the unrolled first iteration folds
+    // chain[-1] behind an always-false runtime guard. That index must
+    // compile (never a generation refusal) and must refuse by name only
+    // if the guard ever let it run.
+    const result = compileSource(`
+        const chain: number[] = [10, 20, 30];
+        let level = 0;
+        let acc = 0;
+        for (let s = 0; s < 3; s++) {
+            if (level !== 0) {
+                const previous = chain[s - 1]!;
+                acc += previous;
+            }
+            level++;
+        }
+        console.log(acc);
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_checked\([^,]+, \(0\.0 - 1\.0\), "[^"]+:\d+:\d+"\)/,
+    );
+});
+
+test("proves const typed-array lengths for static stores and checks runtime ones", () => {
+    const result = compileSource(`
+        const seed: number[] = [1, 2, 3];
+        const values = seed.filter((value) => value > 0);
+        const lane = new Float32Array(4);
+        lane[3] = 0.5;
+        let w = 0;
+        for (const value of values) {
+            lane[w] = value;
+            w++;
+        }
+        console.log(lane.length);
+    `);
+
+    // The const binding of a fixed-size construction proves the static
+    // store in bounds, so it keeps the raw fast path.
+    assert.match(
+        result.cpp,
+        /v_lane\[bbl::js::array_index\(3\.0\)\] = static_cast<float>\(0\.5\);/,
+    );
+    // The counter-driven store cannot be proven and is checked.
+    assert.match(
+        result.cpp,
+        /bbl::js::array_store_checked\(v_lane, v_w, "[^"]+:\d+:\d+"\) = /,
+    );
 });
 
 test("snapshots a returned value the next call in the same expression moves", () => {
@@ -1550,7 +1875,10 @@ test("materializes runtime-valued static maps as native arrays", () => {
         result.cpp,
         /bbl::js::Array<double> v_mapped = bbl::js::Array<double>\{/,
     );
-    assert.match(result.cpp, /v_mapped\[bbl::js::array_index\(/);
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_checked\(v_mapped, /,
+    );
 });
 
 test("returns the value of chained numeric field assignments", () => {
@@ -1759,9 +2087,11 @@ test("materializes static tables under runtime indices only", () => {
         result.cpp,
         /double v_staticRead = 3\.0;/,
     );
+    // The runtime row index is checked; the static in-range lane index
+    // keeps the raw fast path.
     assert.match(
         result.cpp,
-        /bblscene::WEIGHTS\[bbl::js::array_index\(v_fn\d+_index\)\]\[bbl::js::array_index\(1\.0\)\]/,
+        /bbl::js::array_index_checked\(bblscene::WEIGHTS, v_fn\d+_index, "[^"]+"\)\[bbl::js::array_index\(1\.0\)\]/,
     );
     assert.match(
         result.cpp,
@@ -1787,7 +2117,8 @@ test("lowers a class instance into per-field bindings", () => {
         stack.add(2, 1);
     `);
 
-    // No runtime object survives: fields are locals, methods inline.
+    // No runtime object survives: fields are locals; the qualifying
+    // method emits once over field reference channels.
     assert.match(
         result.cpp,
         /bbl::js::Array<double> v_\w*heights/,
@@ -1797,13 +2128,19 @@ test("lowers a class instance into per-field bindings", () => {
         /double v_bblite_class_field_total_\d+ = 0\.0/,
     );
     assert.doesNotMatch(result.cpp, /struct Stack/);
-    // Each call gets its own inlined runtime loop, with the default and
-    // explicit repeat values preserved at their call sites.
-    assert.match(result.cpp, /v_fn\d+_repeat = 2\.0/);
-    assert.match(result.cpp, /v_fn\d+_repeat = 1\.0/);
+    // One emitted loop body; the default and explicit repeat values are
+    // compiled at their call sites as ordinary arguments.
+    assert.match(
+        result.cpp,
+        /bblscene::Stack_add\([^)]*, 1\.0, 2\.0\);/,
+    );
+    assert.match(
+        result.cpp,
+        /bblscene::Stack_add\([^)]*, 2\.0, 1\.0\);/,
+    );
     assert.equal(
         (result.cpp.match(/push_back/g) ?? []).length,
-        2,
+        1,
     );
 });
 
@@ -1826,10 +2163,14 @@ test("initializes constructor parameter-properties before the body", () => {
     `);
 
     assert.match(result.cpp, /double v_fn\d+_scale = 2\.0/);
+    // initialize touches only the plain total field, so it emits once
+    // and writes through its reference channel.
     assert.match(
         result.cpp,
-        /v_bblite_class_field_total_\d+ = v_fn\d+_value/,
+        /v_fn\d+_this_total = v_fn\d+_value/,
     );
+    // add reads the scale parameter property, which stays on the inline
+    // path, so its compound write still targets the field local.
     assert.match(
         result.cpp,
         /v_bblite_class_field_total_\d+ \+= \(v_fn\d+_value \* v_fn\d+_scale\)/,
@@ -2130,11 +2471,18 @@ test("lowers typed values returned by class methods", () => {
         const total = counter.value(enabled);
     `);
 
-    assert.match(result.cpp, /\[&\]\(\) -> double \{/);
+    assert.match(
+        result.cpp,
+        /double Counter_value\(\[\[maybe_unused\]\] double& v_fn\d+_this_n, bool v_fn\d+_enabled\) \{/,
+    );
     assert.match(result.cpp, /return 0\.0;/);
     assert.match(
         result.cpp,
-        /return v_bblite_class_field_n_\d+;/,
+        /return v_fn\d+_this_n;/,
+    );
+    assert.match(
+        result.cpp,
+        /bblscene::Counter_value\(v_bblite_class_field_n_\d+, v_\w*enabled\)/,
     );
 });
 
@@ -2150,8 +2498,19 @@ test("lowers direct recursive plain-data class methods once", () => {
         const total = counter.sum(3);
     `);
 
-    assert.match(result.cpp, /std::function<double\(double\)>/);
-    assert.match(result.cpp, /recursive_method\(\(v_.*n - 1\.0\)\)/);
+    // The once-emitted arm handles the recursion as an ordinary native
+    // back edge; no per-call-site std::function survives.
+    assert.equal(
+        result.cpp.match(
+            /double Counter_sum\(double v_fn\d+_n\) \{/g,
+        )?.length,
+        1,
+    );
+    assert.match(
+        result.cpp,
+        /bblscene::Counter_sum\(\(v_fn\d+_n - 1\.0\)\)/,
+    );
+    assert.doesNotMatch(result.cpp, /recursive_method/);
     assert.ok(result.cpp.length < 20_000);
 });
 
@@ -2555,10 +2914,11 @@ test("cycles a constant tag array with indexOf and a runtime index", () => {
         ).length,
         1,
     );
-    // ...and the element copies, since a span's elements are const.
+    // ...and the element copies, since a span's elements are const. The
+    // cycling index is runtime, so the read is checked.
     assert.match(
         result.cpp,
-        /bblscene::Mode v_next = bblscene::MODE_CYCLE\[/,
+        /bblscene::Mode v_next = bbl::js::array_index_checked\(bblscene::MODE_CYCLE, /,
     );
 });
 
@@ -2671,9 +3031,11 @@ test("keeps an object element alive after its container is resized", () => {
         list.push({ value: 2 });
         entry.value = 5;
     `);
+    // The struct-element literal carries no element snapshot, so even
+    // the static index reads through the checked accessor.
     assert.match(
         result.cpp,
-        /bblscene::Entry v_entry = v_list\[bbl::js::array_index\(0\.0\)\];/,
+        /bblscene::Entry v_entry = bbl::js::array_index_checked\(v_list, 0\.0, "[^"]+"\);/,
     );
     assert.match(result.cpp, /v_entry->value = 5\.0;/);
 });
@@ -2864,13 +3226,16 @@ test("lowers typed arrays with storage-exact reads and writes", () => {
         result.cpp,
         /\(v_fn\d+_values\.push_back\(0\.25\), v_fn\d+_values\.push_back\(0\.5\), v_fn\d+_values\.push_back\(0\.75\)\);/,
     );
+    // `data` comes from a call, so its length is not statically known
+    // and even static indices are checked; the literal-constructed
+    // arrays below prove their lengths and stay raw.
     assert.match(
         result.cpp,
-        /double v_first = static_cast<double>\(v_data\[bbl::js::array_index\(0\.0\)\]\);/,
+        /double v_first = static_cast<double>\(bbl::js::array_index_checked\(v_data, 0\.0, "[^"]+"\)\);/,
     );
     assert.match(
         result.cpp,
-        /v_data\[bbl::js::array_index\(1\.0\)\] = static_cast<float>\(2\.5\);/,
+        /bbl::js::array_store_checked\(v_data, 1\.0, "[^"]+"\) = static_cast<float>\(2\.5\);/,
     );
     assert.match(
         result.cpp,
@@ -3187,9 +3552,11 @@ test("supports mutable tuple locals with runtime index writes", () => {
         result.cpp,
         /bbl::js::Tuple<3> v_fn\d+_p = bbl::js::Tuple<3>\{0\.0, 0\.0, 0\.0\};/,
     );
+    // The tuple's fixed arity cannot absorb an out-of-range runtime
+    // write, so the unproven index stores through the checked accessor.
     assert.match(
         result.cpp,
-        /v_fn\d+_p\[bbl::js::array_index\(v_fn\d+_axis\)\] = v_fn\d+_sign;/,
+        /bbl::js::array_store_checked\(v_fn\d+_p, v_fn\d+_axis, "[^"]+"\) = v_fn\d+_sign;/,
     );
     assert.match(
         result.cpp,
@@ -5199,6 +5566,118 @@ test("keeps synchronous recursive callbacks local to native data functions", () 
     assert.doesNotMatch(definition, /native_callback_owners|v_engine/);
 });
 
+test("keeps frame-local recursive callbacks out of the engine owner list", () => {
+    // The GC-1 leak shape: recursive-callback storage emitted inside a RAF
+    // arm re-executes every frame, so an unconditional engine push grew
+    // `native_callback_owners` once per frame. Every reference here is a
+    // direct call the owner local's scope lifetime covers, so the frame arm
+    // must emit the owner pair without the push.
+    const result = compileSource(`
+        import { createEngine, startEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            let total = 0;
+            const tick = (time: number): void => {
+                let burst = 0;
+                const drain = (value: number): void => {
+                    if (value <= 0) return;
+                    burst += value;
+                    drain(value - 1);
+                };
+                drain(3);
+                total += burst;
+                requestAnimationFrame(tick);
+            };
+            requestAnimationFrame(tick);
+            await startEngine(engine);
+        }
+        main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_\w*drain_owner = std::make_shared<std::function<void\(double\)>>\(\);/,
+    );
+    assert.match(
+        result.cpp,
+        /auto& v_\w*drain = \*v_\w*drain_owner;/,
+    );
+    assert.doesNotMatch(result.cpp, /native_callback_owners/);
+});
+
+test("keeps synchronous recursive groups off the engine owner list", () => {
+    // The recursive-group arm of the same rule: a local declaration that
+    // captures scoped state cannot be lifted to a namespace function, but
+    // with only direct calls its storage still needs no engine ownership.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            let total = 0;
+            function drain(value: number): void {
+                if (value <= 0) return;
+                total += value;
+                drain(value - 1);
+            }
+            drain(3);
+        }
+        main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto bbl_recursive_\w*drain_owner = std::make_shared<std::function<void\(double\)>>\(\);/,
+    );
+    assert.match(
+        result.cpp,
+        /auto& bbl_recursive_\w*drain = \*bbl_recursive_\w*drain_owner;/,
+    );
+    assert.doesNotMatch(result.cpp, /native_callback_owners/);
+});
+
+test("pushes only the timer-scheduled recursive callback to the engine", () => {
+    // Both storage arms side by side: `poll` re-schedules itself through
+    // setTimeout, so its object outlives the emitting scope and the engine
+    // must co-own it; `countdown` is only ever called directly, so its
+    // owner stays local. Exactly one push may remain.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            let polls = 0;
+            let total = 0;
+            const countdown = (value: number): void => {
+                if (value <= 0) return;
+                total += value;
+                countdown(value - 1);
+            };
+            const poll = (): void => {
+                polls += 1;
+                if (polls < 5) setTimeout(poll, 40);
+            };
+            countdown(2);
+            poll();
+        }
+        main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /native_callback_owners\.push_back\(bbl_recursive_\w*poll_owner\);/,
+    );
+    assert.match(
+        result.cpp,
+        /auto v_\w*countdown_owner = std::make_shared<std::function<void\(double\)>>\(\);/,
+    );
+    assert.equal(
+        result.cpp.match(/native_callback_owners\.push_back/g)?.length,
+        1,
+    );
+});
+
 test("snapshots scalar members of records retained by classes", () => {
     const result = compileSource(`
         import { createBox, createEngine, type Mesh } from "@babylonjs/lite";
@@ -6018,7 +6497,7 @@ test("imports simple retained stylesheet id and class rules", () => {
             style.textContent = \`
                 #labels { position: fixed; inset: 0; }
                 #labels .label { display: flex; background: rgba(1,2,3,.5); }
-                .pill:hover { color: red; }
+                @keyframes pulse { 0%, 49% { opacity: 1; } 50%, 100% { opacity: .05; } }
             \`;
             document.head.appendChild(style);
             const labels = document.createElement("div");
@@ -6036,7 +6515,272 @@ test("imports simple retained stylesheet id and class rules", () => {
     assert.match(result.cpp, /position:absolute/);
     assert.match(result.cpp, /ui_add_class_style[^\n]*"label"/);
     assert.match(result.cpp, /background-color:\s*rgba\(1,2,3,.5\)/);
-    assert.doesNotMatch(result.cpp, /ui_add_class_style[^\n]*"pill"/);
+    // The @keyframes block is not a rule: it rides ui_set_text and the PAL
+    // projects it from there, so its percentage blocks emit no rules and
+    // trip no selector refusal.
+    assert.doesNotMatch(result.cpp, /ui_add_class_style[^\n]*"pulse"/);
+    assert.match(result.cpp, /ui_set_text[^\n]*@keyframes pulse/);
+    // The reviewed descendant form is recorded as a widened projection.
+    assert.ok(
+        result.manifest.adaptations.some(
+            (adaptation) =>
+                adaptation.id === "substituted-ui-runtime" &&
+                adaptation.nativeSemantics.includes("'#labels .label'"),
+        ),
+    );
+});
+
+test("refuses stylesheet selectors outside the reviewed surface by name", () => {
+    const sheet = (rules: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`${rules}\`;
+            document.head.appendChild(style);
+        }
+
+        void main();
+    `;
+
+    assert.throws(
+        () => compileSource(sheet(".pill:hover { color: red; }")),
+        /Retained stylesheet selector '\.pill:hover' is not lowered/,
+    );
+    assert.throws(
+        () => compileSource(sheet("div p { color: red; }")),
+        /Retained stylesheet selector 'div p' is not lowered/,
+    );
+    assert.throws(
+        () => compileSource(sheet(".a > .b { color: red; }")),
+        /Retained stylesheet selector '\.a > \.b' is not lowered/,
+    );
+});
+
+test("refuses widened descendant rules that collide on one class", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent = \`
+                        #a .badge { color: red; }
+                        .badge { color: blue; }
+                    \`;
+                    document.head.appendChild(style);
+                }
+
+                void main();
+            `),
+        /'#a \.badge' and '\.badge' both project onto the global class rule 'badge'/,
+    );
+});
+
+test("refuses retained style properties outside the reviewed surface", () => {
+    const withCss = (css: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            panel.style.cssText = "${css}";
+            document.body.appendChild(panel);
+        }
+
+        void main();
+    `;
+
+    assert.throws(
+        () => compileSource(withCss("mix-blend-mode:screen;")),
+        /Retained UI style property 'mix-blend-mode' is not lowered: it is outside the reviewed retained-UI surface/,
+    );
+    // The refusal names the accepted sets so the boundary is discoverable.
+    assert.throws(
+        () => compileSource(withCss("clip-path:circle(4px);")),
+        /accepted with a recorded degradation: .*backdrop-filter.*box-shadow/,
+    );
+    // Gradient-text consumables refuse outside their combination instead of
+    // silently dropping.
+    assert.throws(
+        () => compileSource(withCss("background-size:cover;")),
+        /Retained UI style property 'background-size' is not lowered: it is consumed only by the gradient-text projection/,
+    );
+    assert.throws(
+        () => compileSource(withCss("color:transparent;")),
+        /Retained UI style property 'color' is not lowered: color:transparent is consumed only by the gradient-text/,
+    );
+    assert.throws(
+        () => compileSource(withCss("display:grid;color:#fff;")),
+        /Retained UI style property 'display' is not lowered: display:grid lowers only with/,
+    );
+    assert.throws(
+        () => compileSource(withCss("text-shadow:oops;")),
+        /Retained UI style property 'text-shadow' is not lowered: the shadow list 'oops'/,
+    );
+});
+
+test("refuses direct style writes and reads outside the reviewed surface", () => {
+    const withStatement = (statement: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            document.body.appendChild(panel);
+            ${statement}
+        }
+
+        void main();
+    `;
+
+    assert.throws(
+        () =>
+            compileSource(
+                withStatement('panel.style.mixBlendMode = "screen";'),
+            ),
+        /Retained UI style property 'mix-blend-mode' is not lowered/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                withStatement(
+                    'if (panel.style.clipPath === "") panel.remove();',
+                ),
+            ),
+        /Retained UI style property 'clip-path' is not lowered/,
+    );
+});
+
+test("records reached degraded style properties in the UI adaptation", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            panel.style.cssText =
+                "position:fixed;backdrop-filter:blur(3px);" +
+                "font-variant-numeric:tabular-nums;";
+            const cell = document.createElement("div");
+            cell.style.boxShadow = "0 0 10px #fff";
+            document.body.appendChild(panel);
+            document.body.appendChild(cell);
+        }
+
+        void main();
+    `);
+
+    const adaptation = result.manifest.adaptations.find(
+        ({ id }) => id === "substituted-ui-runtime",
+    );
+    assert.ok(adaptation);
+    assert.equal(adaptation.category, "platform");
+    assert.match(
+        adaptation.nativeSemantics,
+        /backdrop-filter, box-shadow, font-variant-numeric/,
+    );
+    assert.match(adaptation.nativeSemantics, /RmlUi/);
+    assert.match(adaptation.nativeSemantics, /element\.animate\(\)/);
+    assert.match(adaptation.nativeSemantics, /steps\(\)/);
+    // The degraded declarations still compile: accepted, not refused.
+    assert.match(result.cpp, /ui_set_style_property/);
+});
+
+test("emits the UI adaptation for a companion-only scene with its degradations", () => {
+    const result = compileSource(
+        `
+            import { createEngine, startEngine } from "@babylonjs/lite";
+
+            async function main(): Promise<void> {
+                const engine = await createEngine({});
+                await startEngine(engine);
+            }
+
+            void main();
+        `,
+        {
+            nativeHostUi: {
+                sourcePath: "ui/test-host.json",
+                elements: [
+                    {
+                        tag: "div",
+                        text: "hint",
+                        attributes: {
+                            style: "position:fixed;backdrop-filter:blur(14px);",
+                        },
+                    },
+                ],
+            },
+        },
+    );
+
+    const adaptation = result.manifest.adaptations.find(
+        ({ id }) => id === "substituted-ui-runtime",
+    );
+    assert.ok(adaptation);
+    assert.match(adaptation.nativeSemantics, /backdrop-filter/);
+});
+
+test("names the refused element tag, context kind, and event type", () => {
+    const withStatement = (statement: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            ${statement}
+        }
+
+        void main();
+    `;
+
+    assert.throws(
+        () =>
+            compileSource(
+                withStatement('document.createElement("bad tag");'),
+            ),
+        /Native UI element tag 'bad tag' is not valid/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                withStatement(
+                    'const canvas = document.createElement("canvas"); canvas.getContext("webgl2");',
+                ),
+            ),
+        /Retained native canvas only supports the '2d' context/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                withStatement(
+                    'const button = document.createElement("button"); button.addEventListener("dblclick", () => {});',
+                ),
+            ),
+        /do not support the 'dblclick' event/,
+    );
+});
+
+test("keeps scenes without retained UI free of the UI adaptation", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            createBox(engine);
+        }
+
+        void main();
+    `);
+
+    assert.ok(
+        !result.manifest.adaptations.some(
+            ({ id }) => id === "substituted-ui-runtime",
+        ),
+    );
 });
 
 test("lowers retained UI replaceChildren clearing", () => {
@@ -6283,6 +7027,7 @@ test("projects an audited native host-page UI companion without changing scene s
         `,
         {
             nativeHostUi: {
+                sourcePath: "ui/test-host.json",
                 classStyles: [
                     {
                         className: "touch-controls",
@@ -6304,6 +7049,12 @@ test("projects an audited native host-page UI companion without changing scene s
     );
 
     assert.ok(result.manifest.features.includes("ui:rml"));
+    // A companion-only scene's activation names the companion file, not
+    // the compiled scene TypeScript.
+    assert.equal(
+        result.manifest.featureSites["ui:rml"],
+        "ui/test-host.json (host UI companion)",
+    );
     assert.match(result.cpp, /ui_add_class_style[^\n]*"touch-controls"[^\n]*"display:none;"/);
     assert.match(result.cpp, /ui_create_element[^\n]*"div"/);
     assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
@@ -6333,6 +7084,7 @@ test("resolves audited host UI ids before unchanged scene setup binds listeners"
         `,
         {
             nativeHostUi: {
+                sourcePath: "ui/test-host.json",
                 elements: [
                     {
                         tag: "button",
@@ -6533,6 +7285,190 @@ test("lowers the reached Canvas2D overlay subset beside retained DOM UI", () => 
     assert.match(result.cpp, /ui_canvas_set_shadow_blur/);
     assert.match(result.cpp, /ui_canvas_fill_text/);
     assert.match(result.cpp, /ui_append_to_root/);
+});
+
+test("lowers the reached full-surface Canvas2D clear shapes", () => {
+    // The reached proofs: the canvas's own width/height reads, const
+    // aliases of those reads, a statically-sized rect that a reached
+    // scale() maps exactly onto the backing store, and a rect equal to a
+    // (width, height) pair statically assigned to that same canvas.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const direct = document.createElement("canvas");
+            direct.width = window.innerWidth;
+            direct.height = window.innerHeight;
+            const directContext = direct.getContext("2d")!;
+            directContext.clearRect(0, 0, direct.width, direct.height);
+
+            const aliased = document.createElement("canvas");
+            aliased.width = window.innerWidth;
+            aliased.height = window.innerHeight;
+            const aliasedContext = aliased.getContext("2d")!;
+            const w = aliased.width;
+            const h = aliased.height;
+            aliasedContext.clearRect(0, 0, w, h);
+
+            const scaled = document.createElement("canvas");
+            scaled.width = window.innerWidth;
+            scaled.height = window.innerHeight;
+            const scaledContext = scaled.getContext("2d")!;
+            scaledContext.scale(scaled.width / 150, scaled.height / 150);
+            scaledContext.clearRect(0, 0, 150, 150);
+
+            const sized = document.createElement("canvas");
+            sized.width = 320;
+            sized.height = 180;
+            const sizedContext = sized.getContext("2d")!;
+            sizedContext.clearRect(0, 0, 320, 180);
+
+            document.body.appendChild(direct);
+            document.body.appendChild(aliased);
+            document.body.appendChild(scaled);
+            document.body.appendChild(sized);
+        }
+
+        void main();
+    `);
+
+    assert.equal(
+        (result.cpp.match(/ui_canvas_clear_rect/g) ?? []).length,
+        4,
+    );
+});
+
+test("refuses Canvas2D clearRect shapes that are not provably full-surface", () => {
+    const withClear = (statements: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const canvas = document.createElement("canvas");
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            const context = canvas.getContext("2d")!;
+            ${statements}
+            document.body.appendChild(canvas);
+        }
+
+        void main();
+    `;
+
+    // A statically partial rect.
+    assert.throws(
+        () => compileSource(withClear("context.clearRect(0, 0, 32, 32);")),
+        /Retained Canvas2D clearRect is lowered only as a full-surface clear/,
+    );
+    // A non-zero origin.
+    assert.throws(
+        () =>
+            compileSource(
+                withClear(
+                    "context.clearRect(4, 0, canvas.width, canvas.height);",
+                ),
+            ),
+        /argument 1 is not statically 0/,
+    );
+    // Extents the compiler cannot tie to the surface.
+    assert.throws(
+        () =>
+            compileSource(
+                withClear(
+                    "let w = canvas.width; w = 12; context.clearRect(0, 0, w, canvas.height);",
+                ),
+            ),
+        /not reads of the canvas's own width and height/,
+    );
+    // Two canvases' static sizes must not cross: 300x200 and 400x100 are
+    // both recorded, but (300, 100) is a surface neither canvas ever had,
+    // so it proves nothing about the canvas being cleared.
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const first = document.createElement("canvas");
+                    first.width = 300;
+                    first.height = 200;
+                    const second = document.createElement("canvas");
+                    second.width = 400;
+                    second.height = 100;
+                    const context = first.getContext("2d")!;
+                    context.clearRect(0, 0, 300, 100);
+                    document.body.appendChild(first);
+                    document.body.appendChild(second);
+                }
+
+                void main();
+            `),
+        /backing size statically assigned to this canvas/,
+    );
+});
+
+test("refuses retained UI under the standalone effect and frame-graph drivers", () => {
+    // NA-26: those two loops render no UiRenderFrame on either backend, so
+    // the combination refuses at generation instead of silently dropping
+    // the chrome.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEffectRenderer,
+                    createEffectWrapper,
+                    createEngine,
+                    registerEffectRenderer,
+                    startEngine,
+                } from "@babylonjs/lite";
+
+                async function main(): Promise<void> {
+                    const engine = await createEngine({});
+                    const effect = createEffectWrapper(engine, {
+                        name: "fx",
+                        fragmentWGSL: "@fragment fn effectFragment(input:EffectVertexOutput)->@location(0) vec4<f32>{return vec4<f32>(1.0);}",
+                    });
+                    const renderer = createEffectRenderer(engine, effect, {
+                        name: "fx-renderer",
+                    });
+                    registerEffectRenderer(renderer);
+                    const hint = document.createElement("div");
+                    hint.textContent = "hint";
+                    document.body.appendChild(hint);
+                    await startEngine(engine);
+                }
+
+                void main();
+            `),
+        /Retained UI is not lowered under the standalone fullscreen-effect driver/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createFrameGraphContext,
+                    registerFrameGraphContext,
+                    startEngine,
+                } from "@babylonjs/lite";
+
+                async function main(): Promise<void> {
+                    const engine = await createEngine({});
+                    const context = createFrameGraphContext(engine);
+                    registerFrameGraphContext(context);
+                    const hint = document.createElement("div");
+                    hint.textContent = "hint";
+                    document.body.appendChild(hint);
+                    await startEngine(engine);
+                }
+
+                void main();
+            `),
+        /Retained UI is not lowered under the standalone frame-graph driver/,
+    );
 });
 
 test("keeps the packaged success arm of a nullable retained-canvas factory", () => {

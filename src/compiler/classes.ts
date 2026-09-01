@@ -17,6 +17,14 @@ const successfulConstructorResourceKinds = new Set([
 export interface ClassLoweringContext {
     readonly checker: ts.TypeChecker;
     readonly dataTypes: DataTypeRegistry;
+    readonly nativeFunctions: {
+        tryCompileMethodCall(
+            call: ts.CallExpression,
+            method: ts.MethodDeclaration,
+            classDeclaration: ts.ClassDeclaration,
+            instance: Value,
+        ): Value | undefined;
+    };
     compileValue(expression: ts.Expression): Value;
     emitStatement(statement: ts.Statement): void;
     bindParameterValue(
@@ -69,10 +77,14 @@ export interface ClassLoweringContext {
  * Each field becomes its own binding — data fields (numbers, arrays,
  * structs, handles) are ordinary locals the enclosing scope owns, and
  * resource fields (the engine, the scene, a material) bind the value
- * they were constructed with. Methods inline at their call sites with
- * `this` bound to that record, exactly like the function-literal
- * arguments the inline path already lowers, so a field write inside a
- * method reaches the same local a field read outside it does.
+ * they were constructed with. A method whose reached fields,
+ * parameters, and return all map into the plain-data model emits once
+ * as a namespace function taking each field as a mutable reference
+ * channel (`NativeFunctionLowerer.tryCompileMethodCall`); every other
+ * method inlines at its call sites with `this` bound to that record,
+ * exactly like the function-literal arguments the inline path already
+ * lowers, so a field write inside a method reaches the same local a
+ * field read outside it does.
  *
  * The subset deliberately stops short of runtime object identity: an
  * instance cannot be stored in plain data, put in an array, or selected
@@ -590,6 +602,20 @@ export class ClassLowerer {
                 activeRecursive.parameters,
                 activeRecursive.returnType,
             );
+        }
+        // A method whose reached fields, parameters, and return all map
+        // into the plain-data model emits once as a namespace function
+        // over field reference channels; anything that does not cleanly
+        // qualify keeps the per-call-site inline lowering below.
+        const nativeMethod =
+            this.context.nativeFunctions.tryCompileMethodCall(
+                call,
+                method,
+                declaration,
+                instance,
+            );
+        if (nativeMethod) {
+            return nativeMethod;
         }
         const signature =
             this.context.checker.getSignatureFromDeclaration(

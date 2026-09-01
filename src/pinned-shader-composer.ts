@@ -17,6 +17,8 @@
  * the pinned imports and extraction helpers they and the lifted builtins
  * share.
  */
+import ts from "typescript";
+
 import { javascriptModuleUrl } from "./data-url.js";
 import { existsSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
@@ -390,6 +392,53 @@ function anchorPinnedSpecifiers(
 }
 
 /**
+ * Strips the given keywords (and their trailing whitespace) from module
+ * text — everywhere except inside string, template, or regex literals,
+ * because the stripped text is *executed* and a pinned literal that happens
+ * to contain a word must survive byte-for-byte. Literal spans come from
+ * parsing the text once, so an escape or a nested `${}` cannot fool the
+ * filter; the keyword matches are disjoint, so one combined replace keeps
+ * every offset valid against that single parse.
+ */
+function stripKeywordsOutsideLiterals(
+    text: string,
+    keywords: readonly ["async", "await"],
+): string {
+    const source = ts.createSourceFile(
+        "pinned-module.js",
+        text,
+        ts.ScriptTarget.ES2022,
+        false,
+        ts.ScriptKind.JS,
+    );
+    const literals: Array<readonly [number, number]> = [];
+    const collect = (node: ts.Node): void => {
+        if (
+            ts.isStringLiteral(node) ||
+            ts.isNoSubstitutionTemplateLiteral(node) ||
+            ts.isTemplateHead(node) ||
+            ts.isTemplateMiddle(node) ||
+            ts.isTemplateTail(node) ||
+            ts.isRegularExpressionLiteral(node)
+        ) {
+            literals.push([node.getStart(source), node.end]);
+            return;
+        }
+        ts.forEachChild(node, collect);
+    };
+    collect(source);
+    return text.replace(
+        new RegExp(`\\b(?:${keywords.join("|")})\\s+`, "g"),
+        (match: string, offset: number) =>
+            literals.some(
+                ([start, end]) => offset >= start && offset < end,
+            )
+                ? match
+                : "",
+    );
+}
+
+/**
  * Imports a pinned module with its `async`/`await` erased.
  *
  * The loader's `applyMaterial` hooks are `async` because the real `ctx`
@@ -425,7 +474,7 @@ export async function importPinnedModuleUnasynced(
     // The dynamic imports are hoisted BEFORE the specifiers are anchored,
     // so the hoisted statements resolve through the same shim map and the
     // anchoring pass sees no `import(` left to rewrite.
-    const text = anchorSpecifiersInText(
+    const anchored = anchorSpecifiersInText(
         readPinnedLibraryModule(relativePath).replace(
             /\bimport\((["'])([^"']+)\1\)/g,
             (_match, _quote: string, specifier: string) => {
@@ -440,9 +489,8 @@ export async function importPinnedModuleUnasynced(
         ),
         modulePath,
         redirects,
-    )
-        .replace(/\basync\s+/g, "")
-        .replace(/\bawait\s+/g, "");
+    );
+    const text = stripKeywordsOutsideLiterals(anchored, ["async", "await"]);
     const augmented = [
         ...hoisted,
         "const Promise = { all: (values) => values };",

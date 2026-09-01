@@ -14,8 +14,8 @@ import { resolve } from "node:path";
 import {
     extractPackagedStringLiteral,
     extractPackagedTemplateLiteral,
-    splitWgslStatements,
 } from "./pinned-shader-composer.js";
+import { formatStatements, rehomeText } from "./shader-builtins-utility.js";
 
 /**
  * The shared model vertex output every background fragment consumes. The
@@ -39,31 +39,20 @@ function backgroundLiftError(what: string): never {
     throw new Error(`Pinned Babylon Lite background ${what} changed.`);
 }
 
-/** Re-indent a lifted statement list, one pinned statement per line. */
-function formatStatements(body: string): string {
-    return splitWgslStatements(body)
-        .map((statement) => `    ${statement}`)
-        .join("\n");
-}
-
 /**
- * Applies the documented re-homing map to a lifted body. Every entry must
- * occur — a missing token means the pin no longer reads the member the native
- * uniform layout was built to feed, which is a contract change to surface.
+ * The shared re-homing loop over this module's documented maps. Every entry
+ * must occur — a missing token means the pin no longer reads the member the
+ * native uniform layout was built to feed, which is a contract change to
+ * surface.
  */
 function rehome(
     source: string,
     replacements: ReadonlyArray<readonly [string, string]>,
     what: string,
 ): string {
-    let text = source;
-    for (const [from, to] of replacements) {
-        if (!text.includes(from)) {
-            backgroundLiftError(`${what} ('${from}' is gone)`);
-        }
-        text = text.split(from).join(to);
-    }
-    return text;
+    return rehomeText(source, replacements, (from) =>
+        backgroundLiftError(`${what} ('${from}' is gone)`),
+    );
 }
 
 /**

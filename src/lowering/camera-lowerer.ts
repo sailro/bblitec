@@ -868,6 +868,41 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
         };
     }
 
+    /**
+     * Anchors one pinned assignment: the write at `path` with `operator`
+     * whose right side has `expectedRight`'s shape. The arc block requires
+     * exactly one match; the free block accepts the first, because its
+     * accumulations repeat per axis.
+     */
+    private requirePinnedWrite(
+        list: readonly ts.BinaryExpression[],
+        errorNode: ts.Node,
+        exactlyOne: boolean,
+        path: string,
+        operator: ts.SyntaxKind,
+        expectedRight: string,
+        label: string,
+    ): void {
+        const matches = list.filter(
+            (expression) =>
+                expression.operatorToken.kind === operator &&
+                this.context
+                    .propertyPath(expression.left)
+                    ?.join(".") === path,
+        );
+        if (exactlyOne ? matches.length !== 1 : matches.length === 0) {
+            this.context.contractError(
+                errorNode,
+                exactlyOne ? `Expected one ${label}.` : `Expected ${label}.`,
+            );
+        }
+        this.context.assertExpressionShape(
+            matches[0]!.right,
+            expectedRight,
+            label,
+        );
+    }
+
     public lowerControls(): LoweredSource {
         const modulePath = "src/camera/arc-rotate-controls.ts";
         const symbolName = "attachControl";
@@ -1092,6 +1127,135 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             "rightZ * camera.inertialPanningX * panScale",
             "ArcRotate pan Z increment",
         );
+        // The pointer and wheel handlers the platform layer routes into
+        // the record (onPointerMove/onWheel). Each accumulation is stated
+        // once in the pin, dividing the event delta by a sensibility
+        // local snapshotted from the live camera field on that same
+        // event — so the local initializers are asserted alongside the
+        // accumulation shapes, and the emitted bodies read the record
+        // fields directly.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "dx"),
+            "e.clientX - lastX",
+            "ArcRotate pointer delta X",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "dy"),
+            "e.clientY - lastY",
+            "ArcRotate pointer delta Y",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "angularSensibility",
+            ),
+            "camera.angularSensibility",
+            "ArcRotate live angular sensibility",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(
+                declaration,
+                "panningSensibility",
+            ),
+            "camera.panningSensibility",
+            "ArcRotate live panning sensibility",
+        );
+        const requireArcAccumulation = (
+            path: string,
+            operator: ts.SyntaxKind,
+            expectedRight: string,
+            label: string,
+        ): void =>
+            this.requirePinnedWrite(
+                assignments,
+                declaration,
+                true,
+                path,
+                operator,
+                expectedRight,
+                label,
+            );
+        requireArcAccumulation(
+            "camera.inertialAlphaOffset",
+            ts.SyntaxKind.MinusEqualsToken,
+            "dx / angularSensibility",
+            "ArcRotate orbit alpha accumulation",
+        );
+        requireArcAccumulation(
+            "camera.inertialBetaOffset",
+            ts.SyntaxKind.MinusEqualsToken,
+            "dy / angularSensibility",
+            "ArcRotate orbit beta accumulation",
+        );
+        requireArcAccumulation(
+            "camera.inertialPanningX",
+            ts.SyntaxKind.PlusEqualsToken,
+            "-dx / panningSensibility",
+            "ArcRotate pan X accumulation",
+        );
+        requireArcAccumulation(
+            "camera.inertialPanningY",
+            ts.SyntaxKind.PlusEqualsToken,
+            "dy / panningSensibility",
+            "ArcRotate pan Y accumulation",
+        );
+        // The wheel-zoom accumulation: the pin subtracts
+        // (deltaY * radius) / (wheelPrecision * <scale>) from the radius
+        // offset, reading wheelPrecision live. The scale flows into the
+        // emitted apply_arc_rotate_wheel; the caller owns only the
+        // translation of its platform wheel units into the DOM deltaY the
+        // pin consumes.
+        const wheelWrites = assignments.filter(
+            (expression) =>
+                expression.operatorToken.kind ===
+                    ts.SyntaxKind.MinusEqualsToken &&
+                this.context
+                    .propertyPath(expression.left)
+                    ?.join(".") === "camera.inertialRadiusOffset",
+        );
+        if (wheelWrites.length !== 1) {
+            this.context.contractError(
+                declaration,
+                "Expected one ArcRotate wheel-zoom accumulation.",
+            );
+        }
+        const wheelRight = this.context.unwrapExpression(
+            wheelWrites[0]!.right,
+        );
+        if (
+            !ts.isBinaryExpression(wheelRight) ||
+            wheelRight.operatorToken.kind !== ts.SyntaxKind.SlashToken
+        ) {
+            this.context.contractError(
+                wheelRight,
+                "Expected the wheel zoom to divide by the precision term.",
+            );
+        }
+        this.context.assertExpressionShape(
+            wheelRight.left,
+            "e.deltaY * camera.radius",
+            "ArcRotate wheel-zoom numerator",
+        );
+        const wheelDivisor = this.context.unwrapExpression(
+            wheelRight.right,
+        );
+        if (
+            !ts.isBinaryExpression(wheelDivisor) ||
+            wheelDivisor.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            this.context
+                .propertyPath(wheelDivisor.left)
+                ?.join(".") !== "camera.wheelPrecision"
+        ) {
+            this.context.contractError(
+                wheelDivisor,
+                "Expected the wheel zoom to scale the live wheel precision.",
+            );
+        }
+        const wheelPrecisionScale = this.context.numericValue(
+            wheelDivisor.right,
+            file,
+        );
         const { file: freeFile, declaration: attachFreeControl } =
             this.context.functionDeclaration(
                 freeModule,
@@ -1107,26 +1271,16 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             operator: ts.SyntaxKind,
             expectedRight: string,
             label: string,
-        ): void => {
-            const expression = freeAssignments.find(
-                (candidate) =>
-                    candidate.operatorToken.kind === operator &&
-                    this.context
-                        .propertyPath(candidate.left)
-                        ?.join(".") === path,
-            );
-            if (!expression) {
-                this.context.contractError(
-                    attachFreeControl,
-                    `Expected ${label}.`,
-                );
-            }
-            this.context.assertExpressionShape(
-                expression.right,
+        ): void =>
+            this.requirePinnedWrite(
+                freeAssignments,
+                attachFreeControl,
+                false,
+                path,
+                operator,
                 expectedRight,
                 label,
             );
-        };
         requireAssignment(
             "camera._pitch",
             ts.SyntaxKind.EqualsToken,
@@ -1144,6 +1298,55 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
             ts.SyntaxKind.AsteriskEqualsToken,
             "inertia",
             "FreeCamera movement inertia",
+        );
+        // The look accumulation and its application signs. The pin
+        // accumulates crY/crX from the pointer deltas and applies
+        // _yaw += crY, _pitch -= crX; the record keeps both offsets in
+        // apply-additive form (apply_free_camera_inertia adds them), so
+        // the pitch sign folds into the emitted accumulator and both
+        // pinned statements anchor that fold.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(attachFreeControl, "dx"),
+            "e.clientX - lastPX",
+            "FreeCamera pointer delta X",
+        );
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(attachFreeControl, "dy"),
+            "e.clientY - lastPY",
+            "FreeCamera pointer delta Y",
+        );
+        requireAssignment(
+            "crY",
+            ts.SyntaxKind.PlusEqualsToken,
+            "dx / camera.angularSensitivity",
+            "FreeCamera yaw accumulation",
+        );
+        requireAssignment(
+            "crX",
+            ts.SyntaxKind.PlusEqualsToken,
+            "dy / camera.angularSensitivity",
+            "FreeCamera pitch accumulation",
+        );
+        requireAssignment(
+            "camera._yaw",
+            ts.SyntaxKind.PlusEqualsToken,
+            "crY",
+            "FreeCamera yaw application",
+        );
+        requireAssignment(
+            "camera._pitch",
+            ts.SyntaxKind.MinusEqualsToken,
+            "crX",
+            "FreeCamera pitch application",
+        );
+        // Each pressed key contributes exactly one moveSpeed step to a
+        // direction accumulator; one axis anchors the shape, the platform
+        // layer owns only the scancode translation.
+        requireAssignment(
+            "cdZ",
+            ts.SyntaxKind.PlusEqualsToken,
+            "moveSpeed",
+            "FreeCamera forward accumulation",
         );
         // The pinned pitch ceiling is `Math.PI / 2 - <margin>`; the
         // quarter-turn divisor and the margin both flow into the emitted
@@ -1227,6 +1430,91 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
                 "Expected one shared free-camera stop-threshold scale.",
             );
         }
+        // The pinned per-frame move scale: update computes
+        // moveSpeed = camera.speed * Math.sqrt((dt * dt) / <divisor>)
+        // from dt = Math.max(deltaMs, <floor>). Both numbers flow into
+        // the emitted free_camera_move_speed, which evaluates the pin's
+        // own formula at full precision from whatever frame step the
+        // caller hands in — the native loop's fixed cadence stays a
+        // platform fact, never a hand-evaluated constant.
+        const frameStep = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                attachFreeControl,
+                "dt",
+            ),
+        );
+        if (
+            !ts.isCallExpression(frameStep) ||
+            this.context
+                .propertyPath(frameStep.expression)
+                ?.join(".") !== "Math.max" ||
+            frameStep.arguments.length !== 2 ||
+            this.context
+                .propertyPath(frameStep.arguments[0]!)
+                ?.join(".") !== "deltaMs"
+        ) {
+            this.context.contractError(
+                frameStep,
+                "Expected the free-camera frame step to floor deltaMs.",
+            );
+        }
+        const frameStepFloor = this.context.numericValue(
+            frameStep.arguments[1]!,
+            freeFile,
+        );
+        const moveSpeed = this.context.unwrapExpression(
+            this.context.variableInitializer(
+                attachFreeControl,
+                "moveSpeed",
+            ),
+        );
+        if (
+            !ts.isBinaryExpression(moveSpeed) ||
+            moveSpeed.operatorToken.kind !==
+                ts.SyntaxKind.AsteriskToken ||
+            this.context
+                .propertyPath(moveSpeed.left)
+                ?.join(".") !== "camera.speed"
+        ) {
+            this.context.contractError(
+                moveSpeed,
+                "Expected the move speed to scale with the camera speed.",
+            );
+        }
+        const moveSqrt = this.context.unwrapExpression(moveSpeed.right);
+        if (
+            !ts.isCallExpression(moveSqrt) ||
+            this.context
+                .propertyPath(moveSqrt.expression)
+                ?.join(".") !== "Math.sqrt" ||
+            moveSqrt.arguments.length !== 1
+        ) {
+            this.context.contractError(
+                moveSpeed,
+                "Expected the move scale to take a square root.",
+            );
+        }
+        const moveRatio = this.context.unwrapExpression(
+            moveSqrt.arguments[0]!,
+        );
+        if (
+            !ts.isBinaryExpression(moveRatio) ||
+            moveRatio.operatorToken.kind !== ts.SyntaxKind.SlashToken
+        ) {
+            this.context.contractError(
+                moveRatio,
+                "Expected the move scale to divide the squared step.",
+            );
+        }
+        this.context.assertExpressionShape(
+            moveRatio.left,
+            "dt * dt",
+            "FreeCamera move-scale numerator",
+        );
+        const moveScaleDivisor = this.context.numericValue(
+            moveRatio.right,
+            freeFile,
+        );
         const dvalue = (input: number): string => this.context.doubleLiteral(input);
         return {
             modulePath,
@@ -1237,12 +1525,33 @@ CameraHandle create_default_camera(Engine& engine, Scene& scene) {
 
 namespace bbl::upstream {
 
+// Event accumulation from the pinned attachControl/attachFreeControl
+// handlers. dx/dy are the pin's client-pixel pointer deltas and delta_y
+// is the DOM WheelEvent deltaY; the platform layer translates its native
+// events into those units and owns none of the math.
+void apply_arc_rotate_pointer_rotation(
+    CameraRecord& camera,
+    double dx,
+    double dy);
+void apply_arc_rotate_pointer_pan(
+    CameraRecord& camera,
+    double dx,
+    double dy);
+void apply_arc_rotate_wheel(CameraRecord& camera, double delta_y);
+void apply_free_camera_pointer_rotation(
+    CameraRecord& camera,
+    double dx,
+    double dy);
+// The pinned per-frame move scale from attachFreeControl's update; the
+// caller hands in the frame step it runs at, in milliseconds.
+double free_camera_move_speed(const CameraRecord& camera, double delta_ms);
+
 void apply_arc_rotate_inertia(CameraRecord& camera);
 void apply_free_camera_inertia(CameraRecord& camera);
 
 } // namespace bbl::upstream
 `,
-            source: `// ${this.context.provenance(modulePath, symbolName)}
+            source: `// ${this.context.provenance(modulePath, symbolName, `${freeModule}#attachFreeControl`)}
 #include <bblite/upstream/camera_controls.hpp>
 
 #include <algorithm>
@@ -1316,6 +1625,33 @@ void attach_free_control(Engine& engine, CameraHandle camera) {
 
 namespace bbl::upstream {
 
+// The pointer and wheel accumulations (attachControl's onPointerMove and
+// onWheel): each event delta is divided by the sensibility the pin
+// snapshots from the live camera field on that same event — so reading
+// the record field here is the same value — and folded into the inertial
+// accumulators the per-frame applyInertia integrates.
+void apply_arc_rotate_pointer_rotation(
+    CameraRecord& camera,
+    double dx,
+    double dy) {
+    camera.inertial_alpha_offset -= dx / camera.angular_sensibility;
+    camera.inertial_beta_offset -= dy / camera.angular_sensibility;
+}
+
+void apply_arc_rotate_pointer_pan(
+    CameraRecord& camera,
+    double dx,
+    double dy) {
+    camera.inertial_panning_x += -dx / camera.panning_sensibility;
+    camera.inertial_panning_y += dy / camera.panning_sensibility;
+}
+
+void apply_arc_rotate_wheel(CameraRecord& camera, double delta_y) {
+    camera.inertial_radius_offset -=
+        (delta_y * camera.radius) /
+        (camera.wheel_precision * ${dvalue(wheelPrecisionScale)});
+}
+
 void apply_arc_rotate_inertia(CameraRecord& camera) {
     constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
     constexpr double radius_epsilon = ${dvalue(radiusEpsilon)};
@@ -1351,6 +1687,31 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
         if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0;
         if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0;
     }
+}
+
+// src/camera/free-camera-controls.ts accumulates crY += dx / sensitivity
+// and crX += dy / sensitivity, then applies _yaw += crY and
+// _pitch -= crX. The record keeps both offsets in apply-additive form
+// (apply_free_camera_inertia adds them), so the pinned pitch sign folds
+// into this accumulation.
+void apply_free_camera_pointer_rotation(
+    CameraRecord& camera,
+    double dx,
+    double dy) {
+    camera.inertial_yaw_offset += dx / camera.angular_sensibility;
+    camera.inertial_pitch_offset -= dy / camera.angular_sensibility;
+}
+
+// The pinned per-frame move scale each pressed key contributes to the
+// direction accumulator: update floors the frame step and takes
+// camera.speed * sqrt(dt^2 / the pinned divisor), evaluated here at
+// full double precision from whatever step the caller runs at.
+double free_camera_move_speed(
+    const CameraRecord& camera,
+    double delta_ms) {
+    const double dt = std::max(delta_ms, ${dvalue(frameStepFloor)});
+    return camera.speed *
+        std::sqrt((dt * dt) / ${dvalue(moveScaleDivisor)});
 }
 
 void apply_free_camera_inertia(CameraRecord& camera) {

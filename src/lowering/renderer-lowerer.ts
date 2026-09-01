@@ -42,6 +42,7 @@ import {
     fogFactorWgsl,
     imageProcessingFragmentWgsl,
     imageProcessingMultisampledFragmentWgsl,
+    rehomeText,
 } from "../shader-builtins-utility.js";
 import {
     backgroundDdsSkyboxVertexWgsl,
@@ -117,7 +118,7 @@ function pinnedFogInfosPacking(): string {
 }
 
 /**
- * Applies a documented re-homing map, requiring every entry to occur so a
+ * The shared re-homing loop, failing in this lowerer's contract voice: a
  * pinned rename fails generation instead of leaving a dangling reference.
  */
 function rehomePinned(
@@ -125,16 +126,11 @@ function rehomePinned(
     replacements: ReadonlyArray<readonly [string, string]>,
     what: string,
 ): string {
-    let text = source;
-    for (const [from, to] of replacements) {
-        if (!text.includes(from)) {
-            throw new Error(
-                `Pinned Babylon Lite ${what} changed ('${from}' is gone).`,
-            );
-        }
-        text = text.split(from).join(to);
-    }
-    return text;
+    return rehomeText(source, replacements, (from) => {
+        throw new Error(
+            `Pinned Babylon Lite ${what} changed ('${from}' is gone).`,
+        );
+    });
 }
 
 /** The statement list of a packaged WGSL literal's `fn main` body. */
@@ -3142,7 +3138,9 @@ ${lifted.fragmentBody}
      * generation with the formula's own name.
      */
     private assertPinnedShaderFormulas(options: {
+        gpuDeformation?: boolean;
         morphStorage?: boolean;
+        gpuInstancing?: boolean;
         clearcoat?: boolean;
         sheen?: boolean;
         iridescence?: boolean;
@@ -3258,6 +3256,83 @@ ${lifted.fragmentBody}
                     morphTargets,
                     "MORPH_WEIGHTS_HEADER_BYTES = 16",
                     "morph weights header ABI",
+                ],
+            );
+        }
+        if (options.gpuDeformation || options.gpuInstancing) {
+            // The transcribed vertex stage's deformation and instancing
+            // bodies (shader-builtins-standard.ts) reassign the world matrix
+            // where the pin's /*VW*/ slot does and re-apply it exactly as the
+            // pinned template does: position at w=1, normal and tangent at
+            // w=0 after a normalize, bitangent at w=0 without one.
+            requiredUpstreamFormulas.push(
+                [
+                    pbr,
+                    "let worldPos4 = finalWorld * vec4<f32>(${posVar}, 1.0);",
+                    "vertex world position application",
+                ],
+                [
+                    pbr,
+                    "out.worldNormal = (finalWorld * vec4<f32>(normalize(${normVar}), 0.0)).xyz;",
+                    "vertex world normal application",
+                ],
+                [
+                    pbr,
+                    "out.worldTangent=(finalWorld*vec4<f32>(T_local,0.0)).xyz;",
+                    "vertex world tangent application",
+                ],
+                [
+                    pbr,
+                    "out.worldBitangent=(finalWorld*vec4<f32>(B_local,0.0)).xyz;",
+                    "vertex world bitangent application",
+                ],
+            );
+        }
+        if (options.gpuDeformation) {
+            // The 4-influence skinning sum transcribes the pin's shared
+            // skeleton fragment; the world-composed bone palette is the
+            // documented transport for `finalWorld = world * influence`
+            // (the left world distributes over the weighted sum).
+            const skeletonFragmentModule =
+                "src/shader/fragments/skeleton-fragment.ts";
+            const skeletonFragment =
+                this.context.store.getSource(skeletonFragmentModule);
+            requiredUpstreamFormulas.push(
+                [
+                    skeletonFragment,
+                    "var influence: mat4x4<f32> = readMatrixFromRawSampler(boneSampler, f32(joints[0])) * weights[0];",
+                    "skinning first bone influence",
+                ],
+                [
+                    skeletonFragment,
+                    "influence = influence + readMatrixFromRawSampler(boneSampler, f32(joints[3])) * weights[3];",
+                    "skinning fourth bone influence",
+                ],
+                [
+                    skeletonFragment,
+                    "finalWorld = ${worldExpr} * influence;",
+                    "skinning blended world composition",
+                ],
+            );
+        }
+        if (options.gpuInstancing) {
+            // The instancing body transcribes the pin's shared thin-instance
+            // fragment: the mat4 assembled from the four instance columns in
+            // order, composed with the parent world on the left.
+            const thinInstanceFragmentModule =
+                "src/shader/fragments/thin-instance-fragment.ts";
+            const thinInstanceFragment =
+                this.context.store.getSource(thinInstanceFragmentModule);
+            requiredUpstreamFormulas.push(
+                [
+                    thinInstanceFragment,
+                    "let instanceWorld = mat4x4<f32>(world0, world1, world2, world3);",
+                    "thin-instance matrix column order",
+                ],
+                [
+                    thinInstanceFragment,
+                    "finalWorld = mesh.world * instanceWorld;",
+                    "thin-instance world composition order",
                 ],
             );
         }

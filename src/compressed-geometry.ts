@@ -682,22 +682,6 @@ async function decodeDracoGlb(
 }
 
 /**
- * Replaces meshopt- and Draco-compressed geometry with ordinary accessors.
- *
- * This narrower API resolves only compression. The complete asset pipeline
- * below additionally runs sparse and quantization passes in registry order.
- */
-export async function decompressGeometry(
-    bytes: Uint8Array,
-    label: string,
-): Promise<Uint8Array> {
-    const glb = readGlb(bytes);
-    if (!glb) return bytes;
-    let rewrote = await runPinnedPreParse(meshoptPreParsePass, glb, label);
-    rewrote = (await decodeDracoGlb(glb, label)) || rewrote;
-    return rewrote ? writeGlb(glb.json, glb.binary) : bytes;
-}
-
 
 /**
  * A pinned `preParse` hook, run over one packaged asset.

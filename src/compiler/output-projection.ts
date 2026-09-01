@@ -245,6 +245,8 @@ function markUnreferencedLocals(body: string[]): void {
 export interface MainCppProjection {
     features: readonly Feature[];
     jsDataReached: boolean;
+    /** Whether the entry body itself decodes an image (drawn-atlas records). */
+    imageDecodeReached: boolean;
     jsRandomReached: boolean;
     throwReached: boolean;
     postProcessCompositeCount: number;
@@ -260,6 +262,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
     const {
         features,
         jsDataReached,
+        imageDecodeReached,
         jsRandomReached,
         throwReached,
         postProcessCompositeCount,
@@ -308,7 +311,10 @@ export function renderMainCpp(projection: MainCppProjection): string {
     const audioInclude = features.includes("audio:engine")
         ? "#include <bblite/pal_audio.hpp>\n"
         : "";
-    const imageInclude = features.includes("texture:file")
+    // Keyed on this translation unit's own decode emission, not on
+    // `texture:file`: the texture loaders decode inside their own generated
+    // TUs, so only a drawn-atlas record puts `bbl::pal::decode_image` here.
+    const imageInclude = imageDecodeReached
         ? "#include <bblite/pal_image.hpp>\n"
         : "";
     const uiInclude = features.includes("ui:rml")

@@ -460,15 +460,19 @@ export function resolveFunctionDeclaration(
 
 /**
  * Resolve only a function this lowerer could call directly, without turning a
- * speculative call-graph walk into the diagnostic site.
+ * speculative probe into the diagnostic site.
  *
  * Some local calls are consumed by an earlier source-shape lowerer (compressed
  * JSON is one); those declarations may deliberately use language outside the
  * generic user-function surface.  Recursive-group discovery needs to ignore
  * them and let the real call dispatch decide, while an actually reached
  * unsupported call still fails through `resolveFunctionDeclaration` itself.
+ * The generation-time Canvas2D probe asks the same question — "is this a
+ * declaration the lowerers could accept?" — so it resolves through here too.
+ * The strict form's fail contract stays `never`; this wrapper is the one
+ * probe shape, converting the refusal into an undefined result.
  */
-function probeSupportedFunctionDeclaration(
+export function tryResolveFunctionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
 ): SupportedFunction | undefined {
@@ -485,6 +489,92 @@ function probeSupportedFunctionDeclaration(
         if (error === unsupported) return undefined;
         throw error;
     }
+}
+
+/**
+ * Whether a recursive callback's heap `std::function` object can be
+ * referenced after the scope that emitted its storage returns.
+ *
+ * The storage is reachable only through the bindings that exist while the
+ * recursive bodies are generated, so the escape surface is the members'
+ * own bodies plus every function or constructor inlined into them (an
+ * inlined body resolves the same canonical symbol the binding was made
+ * under). Within that surface, a reference that is the callee of a direct
+ * call runs while the emitting scope is still on the stack, so the owner
+ * local already covers it. Any other reference can outlive the scope: a
+ * member passed as a value (`setTimeout(tick, 700)` invokes the object
+ * after the scope returned) or any reference inside a nested closure,
+ * which may itself be retained.
+ *
+ * Member references resolve through `tryResolveFunctionDeclaration` -- the
+ * resolver `directCalls` builds recursive groups with -- so this walk
+ * cannot disagree with group discovery about what a member reference is,
+ * and inlined callees follow `getResolvedSignature` exactly as
+ * `returnedValueCanMove` follows them. Resolution only runs for
+ * identifiers whose position is not already safe.
+ */
+export function recursiveStorageEscapes(
+    checker: ts.TypeChecker,
+    members: ReadonlySet<SupportedFunction>,
+    regions: readonly ts.Node[],
+): boolean {
+    const visited = [new Set<ts.Node>(), new Set<ts.Node>()] as const;
+    let escapes = false;
+    const scan = (root: ts.Node, foreign: boolean): void => {
+        const seen = visited[foreign ? 1 : 0];
+        if (escapes || seen.has(root)) return;
+        seen.add(root);
+        const visit = (node: ts.Node, nested: boolean): void => {
+            if (escapes) return;
+            if (ts.isIdentifier(node)) {
+                const parent = node.parent;
+                const namesOwnDeclaration =
+                    (ts.isVariableDeclaration(parent) ||
+                        ts.isFunctionDeclaration(parent) ||
+                        ts.isFunctionExpression(parent) ||
+                        ts.isMethodDeclaration(parent) ||
+                        ts.isParameter(parent)) &&
+                    parent.name === node;
+                const directCallee =
+                    !nested &&
+                    ts.isCallExpression(parent) &&
+                    parent.expression === node;
+                if (namesOwnDeclaration || directCallee) return;
+                const resolved = tryResolveFunctionDeclaration(
+                    checker,
+                    node,
+                );
+                if (resolved && members.has(resolved)) escapes = true;
+                return;
+            }
+            let childNested = nested;
+            if (node !== root && ts.isFunctionLike(node)) {
+                childNested =
+                    nested ||
+                    !(isSupportedFunction(node) && members.has(node));
+            }
+            if (ts.isCallExpression(node) || ts.isNewExpression(node)) {
+                const called =
+                    checker.getResolvedSignature(node)?.declaration;
+                if (
+                    called !== undefined &&
+                    (ts.isConstructorDeclaration(called) ||
+                        (isSupportedFunction(called) &&
+                            !members.has(called))) &&
+                    called.body !== undefined
+                ) {
+                    scan(called.body, nested);
+                }
+            }
+            ts.forEachChild(node, (child) => visit(child, childNested));
+        };
+        visit(root, foreign);
+    };
+    for (const region of regions) {
+        scan(region, false);
+        if (escapes) break;
+    }
+    return escapes;
 }
 
 export interface UserFunctionParameterIr {
@@ -557,6 +647,7 @@ export interface UserFunctionContext {
     emitNativeCallbackStorage(
         cppName: string,
         signature: string,
+        escapesEmittingScope: boolean,
     ): void;
     beginInlineFrame(wrapped: boolean): void;
     endInlineFrame(): void;
@@ -577,6 +668,10 @@ export class UserFunctionLowerer {
     private readonly recursiveGroupCache = new Map<
         SupportedFunction,
         readonly SupportedFunction[] | null
+    >();
+    private readonly groupEscapeCache = new Map<
+        SupportedFunction,
+        boolean
     >();
 
     private readonly cache = new Map<
@@ -1027,7 +1122,7 @@ export class UserFunctionLowerer {
                 ts.isCallExpression(node) &&
                 ts.isIdentifier(node.expression)
             ) {
-                const called = probeSupportedFunctionDeclaration(
+                const called = tryResolveFunctionDeclaration(
                     this.checker,
                     node.expression,
                 );
@@ -1037,7 +1132,7 @@ export class UserFunctionLowerer {
                     node.arguments[0] &&
                     ts.isIdentifier(node.arguments[0])
                 ) {
-                    const scheduled = probeSupportedFunctionDeclaration(
+                    const scheduled = tryResolveFunctionDeclaration(
                         this.checker,
                         node.arguments[0],
                     );
@@ -1049,6 +1144,31 @@ export class UserFunctionLowerer {
         if (body) visit(body);
         this.directCallCache.set(declaration, callees);
         return callees;
+    }
+
+    /**
+     * Whether this group's callback storage must outlive the emitting
+     * scope. One verdict covers every member: an escaping member's body
+     * reaches its siblings through their `[&]`-captured references, so if
+     * any member survives the scope, every member's object must. The
+     * verdict depends only on source shape, so it is cached per root the
+     * way the group itself is.
+     */
+    private groupStorageEscapes(
+        declarations: readonly SupportedFunction[],
+    ): boolean {
+        const root = declarations[0]!;
+        const cached = this.groupEscapeCache.get(root);
+        if (cached !== undefined) return cached;
+        const escapes = recursiveStorageEscapes(
+            this.checker,
+            new Set(declarations),
+            declarations.flatMap((declaration) =>
+                declaration.body ? [declaration.body] : [],
+            ),
+        );
+        this.groupEscapeCache.set(root, escapes);
+        return escapes;
     }
 
     private lowerRecursiveGroup(
@@ -1145,6 +1265,7 @@ export class UserFunctionLowerer {
         });
 
         context.reachJsData();
+        const escapes = this.groupStorageEscapes(declarations);
         for (const entry of entries) {
             const returnCpp = entry.returnType
                 ? context.dataTypes.cppType(entry.returnType)
@@ -1163,6 +1284,7 @@ export class UserFunctionLowerer {
             context.emitNativeCallbackStorage(
                 entry.cppName,
                 `${returnCpp}(${parametersCpp.join(", ")})`,
+                escapes,
             );
         }
 
