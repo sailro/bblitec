@@ -975,12 +975,17 @@ export class BrowserErasure {
      *
      * `requestAnimationFrame` is a browser API with no native counterpart,
      * and what the wait buys in the browser is that the work scheduled
-     * before it has landed by the time the capture happens. This runtime
-     * has no queue to drain: the frame's own thread does that work before
-     * the draw that reads it. So the yield is erased -- but only in exactly
-     * this shape, matched structurally rather than by counting `new
-     * Promise`, because a multi-frame wait or one that resolves on some
-     * other condition is NOT this and must keep refusing.
+     * before it has landed by the time the capture happens. Before the
+     * frame loop exists this runtime satisfies that by construction -- the
+     * frame's own thread does that work before the draw that reads it --
+     * so the yield is erased there. Inside the hoisted `startEngine`
+     * continuation the statements around it already run at a frame
+     * boundary, so the yield instead re-queues the rest of the
+     * continuation to the NEXT boundary (`emitFrameYieldRequeue`), which
+     * is what keeps "one more frame has drawn" true. Either way the shape
+     * is matched structurally rather than by counting `new Promise`,
+     * because a multi-frame wait or one that resolves on some other
+     * condition is NOT this and must keep refusing.
      */
     /**
      * The `new Promise((resolve) => ...)` head both frame waits share.

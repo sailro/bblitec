@@ -1839,7 +1839,7 @@ export type Feature =
   | "renderer:frame-graph"
   | "effect:wrapper"
   | "effect:task"
-  | "renderer:pbr"
+  | "renderer:scene"
   | "renderer:transmission"
   | "material:pbr-linear-image-processing"
   | "renderer:fog"

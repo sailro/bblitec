@@ -267,7 +267,7 @@ export function compileAssetIntrinsic(
             );
             context.recordGltfContainerLoad(asset, call);
             context.reachFeature("loader:gltf", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "asset",
                 cpp:
@@ -308,9 +308,8 @@ export function compileAssetIntrinsic(
             // A splat cloud is a scene renderable -- upstream pushes it onto
             // the SceneContext's own `_renderables` -- so it reaches the
             // scene renderer the way a loaded glTF does. Nothing here needs
-            // the PBR material family; that feature is what names the scene
-            // render loop in this port.
-            context.reachFeature("renderer:pbr", call);
+            // any material family.
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "splat-mesh",
                 cpp:
@@ -420,7 +419,7 @@ export function compileAssetIntrinsic(
             context.reachFeature("camera:free", call);
             context.reachFeature("loader:babylon", call);
             context.reachFeature("material:standard", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "asset",
                 cpp:

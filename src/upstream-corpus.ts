@@ -7,6 +7,13 @@ export interface CorpusFile {
     /** Origin for reached bytes that the Babylon Lite repository downloads
      * rather than stores, such as the pinned Freedoom release. */
     origin?: string;
+    /** The pinned upstream script that GENERATES this file at lab build
+     * time — the upstreamPath then names the script's output, which exists
+     * in no tree. The digest is the adoption-time render of the pinned
+     * template, re-verified by rendering it whenever the row is audited;
+     * `corpus:verify` checks the generator itself is pinned tree content
+     * that names this output. */
+    generatedBy?: string;
     source: string;
     sha256: string;
 }

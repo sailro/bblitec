@@ -708,9 +708,11 @@ per-face cross products, and the arrays handed to `create_mesh_from_data` as
 the pinned wrapper hands them over. The image is packaged and decoded like
 any other — which is where a greyscale PNG arrived a level dark, because
 SDL_image synthesises a palette-less PNG's ramp as `(i * 255) / ncolors`
-rather than dividing by the last index. The PAL rebuilds that ramp only where
-the file carries no `PLTE`, the one case where the correct ramp is derivable
-rather than guessed.
+rather than dividing by the last index, topping an 8-bit ramp out at 254.
+The vendored overlay port (`native/vcpkg-overlay-ports/sdl3-image`) corrects
+the ramp in the dependency itself, so the PAL decodes what SDL_image hands
+it; the patch self-retires by failing to apply once an SDL_image release
+divides by the last index.
 
 `createTube` is lowered from its pinned chain — a circle swept along
 `computePath3D`'s Frenet frames by Rodrigues rotation, triangulated by the
@@ -1581,7 +1583,8 @@ spot generator in what it stores, not in how it is scheduled. A directional
 light has no position to project from, so its light-space volume is fitted to
 the CASTERS: `computeDirectionalLightMatrix` folds each caster's eight
 world-space AABB corners into light space and sizes an orthographic
-projection to that box, refitted every frame. Its caster pass writes an
+projection to that box, refitted on every frame the render gate finds a
+caster or light version moved. Its caster pass writes an
 *exponential* depth into an `rgba16float` colour attachment through
 `createStandardEsmShadowMaterialView` — not the depth-only view a PCF caster
 takes — and the map is blurred in two separable Gaussian passes whose tap
@@ -1647,8 +1650,8 @@ but a statically known boolean (the Standard/PBR variant is selected at
 generation), and generator controls outside the reached factory sets.
 `normalBias` remains refused everywhere, `forceRefreshEveryFrame` on the two
 PCF factories — the ESM and CSM factories validate it as generation-known and
-carry nothing across the seam, since native refreshes every reached shadow
-task per frame; CSM controls whose
+carry it into the record, where it disables the pinned render gate the way
+`renderEsmShadowMap`'s own first test does; CSM controls whose
 only effect belongs to omitted farther cascades are accepted, validated, and
 named by the fidelity adaptation rather than silently approximated.
 
@@ -1801,9 +1804,10 @@ composite rather than from the pass, which publishes neither
 **Compile time: the stage.** The effect's factory runs under Node against a
 descriptor-only render target and the pin's `getShaderModule` concatenates
 the module, so what deploys is the text the browser compiles for the options
-this scene passed. Both stages live in one module, so it deploys twice — once
-per entry point — and SDL_GPU re-addresses the pin's groups as it does for a
-composed material variant. A module is identified by its text, not the pass
+this scene passed. Both stages live in one module, so it deploys once under
+the fragment stem and declares the vertex stem beside it — the shader
+compiler still runs once per stem — and SDL_GPU re-addresses the pin's
+groups as it does for a composed material variant. A module is identified by its text, not the pass
 that reached it: a blur pair differing only in its `direction` uniform
 composes one module and deploys it once. Why the factory is executed rather
 than folded is in [fidelity](fidelity.md#attribution).
@@ -1830,8 +1834,8 @@ scene needs no `SceneContext` at all.
 **Compile time: the module and the layout.** The pin builds one shader module
 as `vertexWGSL ?? DEFAULT_VERTEX_WGSL` concatenated with the caller's
 fragment, and generation performs the same concatenation; both entry points
-live in the one module, so it deploys twice — once per stage — exactly as a
-post-process module does. The bind-group layout is the descriptor's
+live in the one module, so it deploys once under the fragment stem with the
+vertex stem declared beside it, exactly as a post-process module does. The bind-group layout is the descriptor's
 `bindings` array rather than anything reflected out of the WGSL, so it
 travels to the generated table whole, with a sampler's `textureBinding`
 fallback resolved once at generation. Everything else the pin decides about

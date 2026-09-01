@@ -1106,6 +1106,174 @@ function assertPcfResourceContracts(
     };
 }
 
+/**
+ * The pinned render gate, anchored where each generator states it.
+ *
+ * All three `render*ShadowMap` hooks open the same way: read the casters'
+ * summed version and the light's world-matrix version, and return before
+ * the matrix fit, the caster pass and (for ESM) both blur passes when
+ * nothing moved since the last render. The single-map generators fold the
+ * floating-origin offset's version in beside those two; the CSM one folds
+ * the active camera's change key and aspect instead, because its cascade is
+ * fitted to the camera frustum. `forceRefreshEveryFrame` disables the gate,
+ * and a fresh task state's `-1` sentinels make the first frame render.
+ *
+ * Each condition is asserted against the pin's own text and the mirrored
+ * C++ below is what both backends execute, so a pin that changes which
+ * versions gate the render refuses generation here rather than leaving the
+ * port refreshing on a different rule.
+ */
+function assertShadowRenderGateContracts(context: LoweringContext): void {
+    const singleMapGate =
+        "!sg._config._forceRefreshEveryFrame && " +
+        "casterVersion === state._lastCasterVersion && " +
+        "lightVersion === state._lastLightVersion && " +
+        "foVersion === state._lastFoVersion";
+    for (const [module, renderer, ensure, stateLocal] of [
+        [esmModule, "renderEsmShadowMap", "ensureEsmShadowTaskState", "taskState"],
+        [hooksModule, "renderPcfShadowMap", "ensurePcfShadowTaskState", "state"],
+    ] as const) {
+        const { file, declaration } = context.functionDeclaration(
+            module,
+            renderer,
+        );
+        context.expectShapeCount(
+            declaration,
+            singleMapGate,
+            `${renderer} render gate`,
+        );
+        // The three signals the gate compares, each read where the pin
+        // reads it: the caster sum, the light's world version, and the
+        // floating-origin camera's version (zero with the mode off).
+        context.expectShapeCount(
+            declaration,
+            "casterVersionSum(casterMeshes)",
+            `${renderer} caster version read`,
+        );
+        context.expectShapeCount(
+            declaration,
+            "sg._light.worldMatrixVersion",
+            `${renderer} light version read`,
+        );
+        context.expectShapeCount(
+            declaration,
+            "foCam ? foCam.worldMatrixVersion : 0",
+            `${renderer} floating-origin version read`,
+        );
+        // A fresh task state renders its first frame: every `_last*` lane
+        // starts at -1, which no live version sum equals.
+        const { declaration: ensureDeclaration } =
+            context.functionDeclaration(module, ensure);
+        // The identity test that makes `caster_list_version` the right
+        // mirror: the pin rebuilds this state — fresh -1 sentinels, so a
+        // forced next render — exactly when `ensure*` is handed a new
+        // caster ARRAY, not new contents.
+        context.expectShapeCount(
+            ensureDeclaration,
+            "existing._casterMeshes === casterMeshes",
+            `${ensure} caster-array identity`,
+        );
+        const taskState = context.unwrapExpression(
+            context.variableInitializer(ensureDeclaration, stateLocal),
+        );
+        if (!ts.isObjectLiteralExpression(taskState)) {
+            context.contractError(
+                taskState,
+                `Expected pinned ${ensure} to build its state literal.`,
+            );
+        }
+        for (const lane of [
+            "_lastCasterVersion",
+            "_lastLightVersion",
+            "_lastFoVersion",
+        ]) {
+            if (
+                context.numericValue(
+                    context.propertyInitializer(taskState, lane),
+                    file,
+                ) !== -1
+            ) {
+                context.contractError(
+                    taskState,
+                    `Expected pinned ${ensure} to seed ${lane} at -1.`,
+                );
+            }
+        }
+    }
+    // The CSM gate swaps the floating-origin term for the camera the
+    // cascade is fitted to: its change key and the fitted aspect.
+    const { declaration: csmRender } = context.functionDeclaration(
+        csmHooksModule,
+        "renderCsmShadowMap",
+    );
+    context.expectShapeCount(
+        csmRender,
+        "!cfg._forceRefreshEveryFrame && " +
+            "casterVersion === state._lastCasterVersion && " +
+            "lightVersion === state._lastLightVersion && " +
+            "camVersion === state._lastCamVersion && " +
+            "camAspect === state._lastCamAspect",
+        "renderCsmShadowMap render gate",
+    );
+    // The caster sum itself: worldMatrixVersion (bumped eagerly per write
+    // and pushed down the subtree, which is `MeshRecord::transform_version`
+    // to the letter) plus the thin-instance pool's version, with the pin's
+    // `~~` mapping an absent pool to the zero an unbound `instance_version`
+    // holds.
+    const { declaration: sumDeclaration } = context.functionDeclaration(
+        baseModule,
+        "casterVersionSum",
+    );
+    context.expectShapeCount(
+        sumDeclaration,
+        "sum += mesh.worldMatrixVersion + " +
+            "~~(mesh.thinInstances?._version as number)",
+        "casterVersionSum per-caster term",
+    );
+    // `forceRefreshEveryFrame ?? false` on all four factories. ESM and CSM
+    // carry it into the record: what the emitted gate's disable flag
+    // defaults from. The two PCF factories read the same default while the
+    // port refuses the option there, so these anchors hold the shape a
+    // future pin could quietly start carrying somewhere the port drops it.
+    const { declaration: esmFactory } = context.functionDeclaration(
+        esmModule,
+        "createEsmDirectionalShadowGenerator",
+    );
+    context.expectShapeCount(
+        esmFactory,
+        "cfg.forceRefreshEveryFrame ?? false",
+        "ESM forceRefreshEveryFrame default",
+    );
+    const { declaration: csmFactory } = context.functionDeclaration(
+        csmModule,
+        "createCsmDirectionalShadowGenerator",
+    );
+    context.expectShapeCount(
+        csmFactory,
+        "cfg.forceRefreshEveryFrame ?? false",
+        "CSM forceRefreshEveryFrame default",
+    );
+    const { declaration: pcfDirectionalFactory } =
+        context.functionDeclaration(
+            pcfDirectionalModule,
+            "createPcfDirectionalShadowGenerator",
+        );
+    context.expectShapeCount(
+        pcfDirectionalFactory,
+        "cfg.forceRefreshEveryFrame ?? false",
+        "PCF directional forceRefreshEveryFrame default",
+    );
+    const { declaration: spotFactory } = context.functionDeclaration(
+        spotModule,
+        "createPcfSpotlightShadowGenerator",
+    );
+    context.expectShapeCount(
+        spotFactory,
+        "cfg.forceRefreshEveryFrame ?? false",
+        "PCF spot forceRefreshEveryFrame default",
+    );
+}
+
 /** The pinned WebGPU filter string, as this header's own enum. */
 function esmFilter(filter: string): string {
     if (filter === "linear") return "linear";
@@ -1288,6 +1456,7 @@ inline constexpr std::size_t shadow_params_block_bytes =
 /** The generated header carrying the pinned shadow family. */
 export function pinnedShadowHeader(context: LoweringContext): string {
     assertShadowUboLayout(context);
+    assertShadowRenderGateContracts(context);
     const target = assertPcfResourceContracts(context);
     const defaults = pcfSpotDefaults(context);
     const esm = esmDefaults(context);
@@ -1534,6 +1703,152 @@ inline ShadowInfoUniforms shadow_info_block(
     // combinations, which is why the filter decides here rather than at
     // creation -- and why the arms are read off those factories.
 ${shadowBlockArms(context)}
+}
+
+// ${context.provenance(
+        esmModule,
+        "renderEsmShadowMap",
+        `${hooksModule}#renderPcfShadowMap, ` +
+            `${csmHooksModule}#renderCsmShadowMap, and ` +
+            `${baseModule}#casterVersionSum`,
+    )}
+/**
+ * \`casterVersionSum\`: the casters' summed change signal.
+ *
+ * The pin sums \`mesh.worldMatrixVersion\` — bumped eagerly on every own
+ * transform write and pushed down the subtree by \`world-matrix-state.ts\`,
+ * which is \`mark_mesh_dirty\`'s contract for
+ * \`MeshRecord::transform_version\` to the letter — plus the thin-instance
+ * pool's \`_version\`, with \`~~\` mapping an absent pool to the zero an
+ * unbound \`instance_version\` holds. Versions only grow, so an equal sum
+ * means no term moved.
+ */
+inline std::uint64_t shadow_caster_version_sum(
+    const Engine& engine,
+    const std::vector<MeshHandle>& caster_meshes) {
+    std::uint64_t sum = 0;
+    for (const MeshHandle handle : caster_meshes) {
+        if (handle.value >= engine.meshes.size()) continue;
+        const MeshRecord& mesh = engine.meshes[handle.value];
+        sum += mesh.transform_version + mesh.instance_version;
+    }
+    return sum;
+}
+
+/**
+ * The \`_last*\` lanes a pinned task state keeps between frames, one per
+ * generator and per backend, exactly as \`EsmTaskState\` / \`PcfTaskState\`
+ * / \`CsmTaskState\` keep them on the task. \`rendered\` stands for the
+ * pin's \`-1\` sentinels: a state that never rendered cannot skip.
+ */
+struct ShadowRefreshGate {
+    std::uint64_t last_caster_version = 0;
+    std::uint64_t last_caster_list_version = 0;
+    Vec3 last_light_position{};
+    Vec3 last_light_direction{};
+    Vec3d last_fo_offset{};
+    std::array<float, 16> last_camera_view_projection{};
+    double last_camera_near = 0.0;
+    double last_camera_far = 0.0;
+    bool rendered = false;
+    /** This frame's verdict, written beside the gate test by the shared
+     *  \`refresh_shadow_generators\` walk and read by each backend's task
+     *  loop: whether the caster pass (and, ESM, both blur passes) runs or
+     *  the map keeps its last — bit-identical — content. Seeded due so a
+     *  generator the walk has not visited renders rather than skips. */
+    bool due = true;
+};
+
+/**
+ * The CSM gate's camera terms — \`_cameraChangeKey(camera)\` and the
+ * fitted aspect — as the values the single-map fit actually consumes: the
+ * camera view-projection (the aspect is folded into its projection) and
+ * the near/far pair the split formula reads directly.
+ */
+struct CsmCameraKey {
+    std::array<float, 16> view_projection{};
+    double near_plane = 0.0;
+    double far_plane = 0.0;
+};
+
+/**
+ * The pinned render gate: whether this generator's map must re-render.
+ *
+ * Every \`render*ShadowMap\` hook opens with the same test and returns
+ * before the matrix fit, the caster pass and (ESM) both blur passes when
+ * it holds; the map textures persist, so the receiver keeps sampling last
+ * render's — bit-identical — content. The signals are the pin's own:
+ *
+ * - the casters' version sum, plus the caster LIST's identity — the pin
+ *   rebuilds its task state (and so re-renders) when \`ensure*\` is handed
+ *   a new caster array, which is what \`caster_list_version\` counts;
+ * - the light's world-matrix version. The record has no counter, so the
+ *   gate compares the two fields that version tracks — the light's
+ *   position and direction — which every writer, setter and animated
+ *   glTF light pose alike, goes through. A same-value write re-renders
+ *   upstream and skips here, which no pixel can tell apart. A spot's
+ *   \`angle\` IS a fit input, but writing it moves neither signal: the
+ *   pin keys \`worldMatrixVersion\`, which an angle write does not bump,
+ *   so BOTH sides keep the stale map — the port mirrors the pin's
+ *   insensitivity, not just its coverage. Its \`range\` reaches neither
+ *   side's fit at all: both resolve it into the projection's far plane
+ *   at creation.
+ * - single-map generators: the floating-origin offset the fit subtracts
+ *   (the pin keys the FO camera's version; off the mode both sides hold
+ *   constants). The CSM generator keys its fitted camera instead, and no
+ *   floating-origin term — its own gate has none.
+ *
+ * \`forceRefreshEveryFrame\` disables the gate outright, and the first
+ * frame always renders. The lanes update only on a render, as the pin's
+ * do — except a forced generator's, which nothing can ever read again.
+ */
+inline bool shadow_refresh_due(
+    const Engine& engine,
+    const ShadowGeneratorRecord& generator,
+    const LightRecord& light,
+    Vec3d eye,
+    const CsmCameraKey* csm_camera,
+    ShadowRefreshGate& gate) {
+    // The pin evaluates \`_forceRefreshEveryFrame\` first in its own
+    // \`&&\` chain, so nothing else is read on a forced frame; returning
+    // here is that same order, minus the version sum and the lane updates
+    // a flag fixed at creation makes unreadable.
+    if (generator.force_refresh_every_frame) return true;
+    const std::uint64_t caster_version =
+        shadow_caster_version_sum(engine, generator.caster_meshes);
+    const bool camera_unchanged = csm_camera == nullptr
+        ? eye.x == gate.last_fo_offset.x &&
+            eye.y == gate.last_fo_offset.y &&
+            eye.z == gate.last_fo_offset.z
+        : csm_camera->view_projection ==
+                gate.last_camera_view_projection &&
+            csm_camera->near_plane == gate.last_camera_near &&
+            csm_camera->far_plane == gate.last_camera_far;
+    if (
+        gate.rendered &&
+        caster_version == gate.last_caster_version &&
+        generator.caster_list_version == gate.last_caster_list_version &&
+        light.position.x == gate.last_light_position.x &&
+        light.position.y == gate.last_light_position.y &&
+        light.position.z == gate.last_light_position.z &&
+        light.direction.x == gate.last_light_direction.x &&
+        light.direction.y == gate.last_light_direction.y &&
+        light.direction.z == gate.last_light_direction.z &&
+        camera_unchanged) {
+        return false;
+    }
+    gate.rendered = true;
+    gate.last_caster_version = caster_version;
+    gate.last_caster_list_version = generator.caster_list_version;
+    gate.last_light_position = light.position;
+    gate.last_light_direction = light.direction;
+    gate.last_fo_offset = eye;
+    if (csm_camera != nullptr) {
+        gate.last_camera_view_projection = csm_camera->view_projection;
+        gate.last_camera_near = csm_camera->near_plane;
+        gate.last_camera_far = csm_camera->far_plane;
+    }
+    return true;
 }
 
 /**
@@ -2034,6 +2349,7 @@ ${!csmSingleMapShadows ? "" : shadowGeneratorFactory({
         "darkness",
         "csm_num_cascades",
         "csm_lambda",
+        "force_refresh_every_frame",
     ],
     tail: "    generator.csm_single_map = true;",
 })}
@@ -2051,6 +2367,7 @@ ${!esmShadows ? "" : shadowGeneratorFactory({
         "frustum_edge_falloff",
         "ortho_min_z",
         "ortho_max_z",
+        "force_refresh_every_frame",
         "esm_index",
     ],
 })}
@@ -2129,6 +2446,12 @@ void set_shadow_task_caster_meshes(
     }
     engine.shadow_generators[generator.value].caster_meshes =
         std::move(caster_meshes);
+    // The pin's ensure hooks rebuild the task state when handed a new
+    // caster array, and the fresh state's -1 sentinels force the next
+    // render; this counter is what the render gate compares in their
+    // place, so a re-registered list re-renders even when its version sum
+    // happens to match the old list's.
+    ++engine.shadow_generators[generator.value].caster_list_version;
     refresh_shadow_task_meshes(engine, generator);
 }
 

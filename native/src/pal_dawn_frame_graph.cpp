@@ -56,7 +56,7 @@ struct PostProcessProgram {
 };
 
 struct PostProcessPass {
-    std::size_t program = std::numeric_limits<std::size_t>::max();
+    std::size_t program = npos;
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
 };
@@ -270,26 +270,15 @@ std::pair<WGPUTexture, WGPUTextureView> source_view(
     return {target.sampled, target.sampled_view};
 }
 
-std::size_t post_process_program(
+/** Builds the entry `post_process_program` below found missing. */
+PostProcessProgram build_post_process_program(
     State& state,
     const upstream::PostProcessShaderInfo& info,
     WGPUTextureFormat format,
     std::uint32_t samples,
     std::uint32_t alpha_mode,
-    std::size_t extras) {
-    const std::uint32_t uniform_size =
-        (info.uniform_byte_length + 15u) & ~15u;
-    for (std::size_t index = 0; index < state.programs.size(); ++index) {
-        const PostProcessProgram& found = state.programs[index];
-        if (
-            found.module == info.module_index && found.format == format &&
-            found.samples == samples && found.alpha_mode == alpha_mode &&
-            found.extra_textures == extras &&
-            found.uniform_binding == info.uniform_binding &&
-            found.uniform_size == uniform_size) {
-            return index;
-        }
-    }
+    std::size_t extras,
+    std::uint32_t uniform_size) {
     PostProcessProgram program;
     program.module = info.module_index;
     program.format = format;
@@ -360,8 +349,41 @@ std::size_t post_process_program(
     if (!program.pipeline) {
         dawn_error("post-process pipeline creation failed.");
     }
-    state.programs.push_back(program);
-    return state.programs.size() - 1;
+    return program;
+}
+
+// The find-or-create walk is the shared `find_or_create_program`; the key
+// stays this driver's own -- its layout bakes in the bind-group shape.
+std::size_t post_process_program(
+    State& state,
+    const upstream::PostProcessShaderInfo& info,
+    WGPUTextureFormat format,
+    std::uint32_t samples,
+    std::uint32_t alpha_mode,
+    std::size_t extras) {
+    const std::uint32_t uniform_size =
+        (info.uniform_byte_length + 15u) & ~15u;
+    return find_or_create_program(
+        state.programs,
+        [&](const PostProcessProgram& found) {
+            return found.module == info.module_index &&
+                found.format == format &&
+                found.samples == samples &&
+                found.alpha_mode == alpha_mode &&
+                found.extra_textures == extras &&
+                found.uniform_binding == info.uniform_binding &&
+                found.uniform_size == uniform_size;
+        },
+        [&] {
+            return build_post_process_program(
+                state,
+                info,
+                format,
+                samples,
+                alpha_mode,
+                extras,
+                uniform_size);
+        });
 }
 
 void record_post_process(
@@ -393,7 +415,7 @@ void record_post_process(
         source_width = source.width;
         source_height = source.height;
     }
-    if (gpu.program == std::numeric_limits<std::size_t>::max()) {
+    if (gpu.program == npos) {
         gpu.program = post_process_program(
             state,
             info,

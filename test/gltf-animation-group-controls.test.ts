@@ -81,3 +81,62 @@ test("carries STEP and the non-triangle topologies into the glTF loader", () => 
         /const float raw = seek\s*\?\s*animation_runtime->time/,
     );
 });
+
+test("the weighted mixer walks each clip's own recorded track range", () => {
+    const lowerer = new GltfLowerer(new LoweringContext());
+    const blended = lowerer.lowerLoaderAdapter({
+        animationBlending: true,
+    });
+    // The loader records each clip's contiguous [first, last) run beside
+    // the track vectors, filled where it appends: first before the
+    // channel loop, last after, pushed once per clip in clip order.
+    assert.match(
+        blended.source,
+        /std::vector<ClipTrackRanges> clip_track_ranges;/,
+    );
+    assert.match(
+        blended.source,
+        /clip_track_range\.rotation\.first =\s*animation_runtime->rotation_tracks\.size\(\);/,
+    );
+    assert.match(
+        blended.source,
+        /clip_track_range\.scale\.last =\s*animation_runtime->scale_tracks\.size\(\);/,
+    );
+    assert.match(
+        blended.source,
+        /clip_track_ranges\.push_back\(\s*clip_track_range\);/,
+    );
+    // The mixer iterates only the clip's own run instead of rejecting
+    // every other clip's tracks once per blended clip...
+    assert.match(
+        blended.source,
+        /clip_range\.rotation\.first;\s*track_index < clip_range\.rotation\.last;/,
+    );
+    assert.match(
+        blended.source,
+        /const TrackRange& range,/,
+    );
+    assert.match(
+        blended.source,
+        /clip_range\.translation,\s*&AnimatedNode::translation/,
+    );
+    assert.match(
+        blended.source,
+        /clip_range\.scale,\s*&AnimatedNode::scale/,
+    );
+    // ...and keeps the track.clip rejection inside the narrowed walks, so
+    // correctness never depends on the grouping (rotation walk plus the
+    // shared translation/scale lambda).
+    const rejects = blended.source.match(
+        /track\.clip != entry\.clip/g,
+    );
+    assert.ok(
+        rejects !== null && rejects.length >= 2,
+        "the clip test stays inside the narrowed walks",
+    );
+    // Without blending there is no mixer, so none of the bookkeeping is
+    // emitted -- untouched scenes stay byte-identical.
+    const plain = lowerer.lowerLoaderAdapter();
+    assert.doesNotMatch(plain.source, /ClipTrackRanges/);
+    assert.doesNotMatch(plain.source, /clip_track_range/);
+});

@@ -310,7 +310,7 @@ function reachLineFeatures(
 ): void {
     context.reachFeature("mesh:lines", call);
     context.reachFeature("material:shader", call);
-    context.reachFeature("renderer:pbr", call);
+    context.reachFeature("renderer:scene", call);
 }
 
 /**

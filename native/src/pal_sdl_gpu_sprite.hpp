@@ -612,8 +612,9 @@ inline SpritePass create_sprite_pass(
 }
 
 /**
- * `_update`: re-upload the layers whose CPU data moved. Runs on its own
- * command buffer, so callers must call it before acquiring the frame's.
+ * `_update`: re-upload the layers whose CPU data moved. The copies stage
+ * into the caller's run-lifetime batch, whose submit runs on a command
+ * buffer of its own -- so callers submit it before acquiring the frame's.
  */
 inline void upload_sprite_layer_gpu(
     SDL_GPUDevice* device,
@@ -621,7 +622,7 @@ inline void upload_sprite_layer_gpu(
     Sprite2DLayerHandle handle,
     SpriteLayerGpu& gpu,
     float delta_ms,
-    GpuBufferUploadBatch* buffer_uploads = nullptr) {
+    GpuBufferUploadBatch& buffer_uploads) {
     Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
     // sprite-renderable.ts uploadLayer returns here before FX, texture,
     // instance or UBO work. A hidden custom layer pauses its clock.
@@ -682,23 +683,11 @@ inline void upload_sprite_layer_gpu(
             const float* data = layer.instance_data.data() +
                 static_cast<std::ptrdiff_t>(dirty_begin) *
                     layer.instance_floats_per_sprite;
-            if (buffer_uploads) {
-                buffer_uploads->update(
-                    gpu.instances,
-                    offset,
-                    data,
-                    bytes);
-            } else {
-                // The immediate helper is whole-buffer only. This arm is a
-                // test/fallback path; production batches preserve the range.
-                const std::size_t active_bytes =
-                    static_cast<std::size_t>(layer.count) * stride_bytes;
-                update_buffer(
-                    device,
-                    gpu.instances,
-                    layer.instance_data.data(),
-                    active_bytes);
-            }
+            buffer_uploads.update(
+                gpu.instances,
+                offset,
+                data,
+                bytes);
             mark_sprite_dirty_range_consumed(layer);
         }
         gpu.uploaded = true;
@@ -711,7 +700,7 @@ inline void upload_sprite_pass(
     Engine& engine,
     SpritePass& pass,
     float delta_ms,
-    GpuBufferUploadBatch* buffer_uploads = nullptr) {
+    GpuBufferUploadBatch& buffer_uploads) {
     sync_sprite_pass_pipelines(device, engine, pass);
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
@@ -856,7 +845,7 @@ inline void upload_scene_sprite_pass(
     Engine& engine,
     SceneSpritePass& pass,
     float delta_ms,
-    GpuBufferUploadBatch* buffer_uploads = nullptr) {
+    GpuBufferUploadBatch& buffer_uploads) {
     bool rebuild_pipelines = false;
     for (std::size_t index = 0; index < pass.handles.size(); ++index) {
         if (pass.layers[index].pipeline_version !=

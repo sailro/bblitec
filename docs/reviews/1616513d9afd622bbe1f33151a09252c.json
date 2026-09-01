@@ -1,0 +1,75 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "the scene backend still constructed its upload batch inside the frame loop, releasing the persistent transfer buffer this very branch added at the end of every frame — only the sprite runner had the run-lifetime hoist; the declaration moved above the while, mirroring the sprite runner",
+      "applied": true
+    },
+    {
+      "summary": "seventeen caller-side mutable-counter lambdas re-derived a slot index the three stage walks already own, six of them near-identical shadow-fallback closures; the walks now hand the resolver the slot, and one with_shadow_uniform_rows helper serves every family",
+      "applied": true
+    },
+    {
+      "summary": "SDL's new node-material texture arm repeated the whole find-or-create-and-refcount shell of the shader arm beside it where Dawn had folded the two; SDL now takes Dawn's one-arm shape with a fill fork",
+      "applied": true
+    },
+    {
+      "summary": "refresh_shadow_generators called the emitted gate in four copy-pasted family arms and kept the per-frame verdict in a parallel vector beside the gates; one gate call with an optional CSM key, one verdict write, the verdict as a lane on ShadowRefreshGate, and fitted_shadow_casters hoisted once",
+      "applied": true
+    },
+    {
+      "summary": "the emitted gate computed the per-caster version sum and the caller built the CSM camera key before consulting force_refresh_every_frame; the flag now short-circuits at the top — the pin's own evaluation order — and the key builds only when it is off",
+      "applied": true
+    },
+    {
+      "summary": "on gated frames the refresh walk still packed, compared and copied every generator's receiver block though the skipped fit proves the bytes unchanged; the pack is skipped when not due and already uploaded",
+      "applied": true
+    },
+    {
+      "summary": "the frame-graph TUs kept hand-rolled post_process_program find-or-create walks and numeric_limits sentinels beside the very helpers this branch created; both adopted npos and find_or_create_program",
+      "applied": true
+    },
+    {
+      "summary": "the three sprite upload functions defaulted a nullable batch and kept a one-shot fallback arm no caller reaches; the parameter is a reference and the arm is deleted",
+      "applied": true
+    },
+    {
+      "summary": "the dual-stem alsoStages mechanism was applied only to post-process while effect and both node families still deployed identical bytes under two stems; effect converted directly, node needed a two-line Dawn edit first (its loader read each stem's own file) and then converted — 30 more duplicate vertex-stem files gone across 26 node scenes, with per-stem compiled artifacts proven byte-identical, and the keep-alive moved to the generic composition write so the next declarer cannot forget it",
+      "applied": true
+    },
+    {
+      "summary": "hoistEngineContinuation emitted the defer_start_continuation wrapper in two places; the outer hoist now folds as part zero's wrap, proven byte-neutral over the corpus",
+      "applied": true
+    },
+    {
+      "summary": "a post-mark frame yield inside a helper body silently kept the erasure the branch had just made truthful for entry bodies; it now refuses with the same message, proven non-vacuous by an A/B fixture that compiled silently before",
+      "applied": true
+    },
+    {
+      "summary": "verify-corpus hand-rolled a concurrency pool beside runConcurrently and restated the fetch-outcome triage in three arms with drifting wording; runConcurrently adopted, one classified fetch serves all arms, the archive verdict flattened, the summary distinguishes digest-verified rows from provenance-only generated rows, and an output-less generatedBy row refuses",
+      "applied": true
+    },
+    {
+      "summary": "the shadow gate contract anchored the ESM and CSM factory defaults but not the two PCF factories whose emitted gate runs with the flag permanently false, and quoted the caster-array identity rule without asserting it; both anchors added",
+      "applied": true
+    },
+    {
+      "summary": "the alsoStages expansion in compile-shaders.ps1 scanned all declared modules per source with reflection probes; the synthetic rows group into a hashtable once per directory",
+      "applied": true
+    },
+    {
+      "summary": "the emitted light-key comment overstated itself (spot angle and range are fit inputs); rewritten to the real parity argument — the pin's worldMatrixVersion key is equally insensitive to both, so both sides go stale identically",
+      "applied": true
+    },
+    {
+      "summary": "stale text left by the branch's own changes: the moved bind_stage_storage doc pointing at a deleted shared walk, two Dawn 'two deployed files carry the same text' comments, the architecture and features pages' deploys-twice claims for post-process and effect modules",
+      "applied": true
+    },
+    {
+      "summary": "tint-reflection sidecars replayed from the shader cache embed the absolute path of whichever scene first compiled the shared variant, so generated-tree digests churn with compile order",
+      "applied": false,
+      "blockedBy": "pre-existing shader-cache behavior, not introduced by this branch; the fix (rewrite the requesting path on replay, or strip at record time) is its own change to the cache contract with its own replay proof",
+      "filedIn": "TODO.md, P1 Runtime and validation ('Normalize the source path Tint's reflection sidecar embeds')"
+    }
+  ]
+}

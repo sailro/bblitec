@@ -41,12 +41,12 @@ test("reaches only the sources a feature set implies", () => {
 test("keeps the manifest order stable regardless of feature order", () => {
     const forward = reachedGeneratedSources([
         "material:standard",
-        "renderer:pbr",
+        "renderer:scene",
         "camera:arc-rotate",
     ]);
     const reversed = reachedGeneratedSources([
         "camera:arc-rotate",
-        "renderer:pbr",
+        "renderer:scene",
         "material:standard",
     ]);
     assert.deepEqual(forward, reversed);

@@ -1733,8 +1733,9 @@ fragment-kill semantics.
 ## Picking contract
 
 A pick renders rather than intersects, so what it answers is the renderer's
-and both backends run the pin's own two modules. Two facts are this port's,
-and both come from where a transform lives.
+and both backends run the pin's own two modules. Two facts are this port's:
+where a mesh's transform lives, and which boundary the picking continuation
+runs at.
 
 **A mesh's pick block carries the identity, because its vertices are already
 world-space.** `transformed_vertices` bakes the node's world matrix into the
@@ -1749,17 +1750,22 @@ picking geometry at the wrong place. The position stream is the renderer's
 interleaved buffer read at its own pitch rather than a second position-only
 upload -- the pin binds `gpu.positionBuffer`, and these are the same numbers.
 
-**The pick brings each cloud's sort current before it opens its pass.**
-Upstream the scene awaits `splat.firstSortReady` before it picks. Here the
-statements after `startEngine` are the browser's continuation and arrive on
-the deferred queue, which `advance_frame` drains BEFORE the frame's splat
-upload -- so the GPU-side order buffer is still unwritten, the cloud samples
-its data textures at garbage indices, and it covers no pixel at all. The
-symptom is not a wrong depth but an absent fragment: disabling the cloud
-depth test entirely changes nothing, which is what separates this from the
-comparison the two pipelines disagree on. The upload is idempotent
-(`splat_sort_dirty` answers no when neither the world nor the view moved),
-so the pick performs it and the frame's own upload then finds nothing to do.
+**The pick reads a sort the frame loop already wrote; the barrier before it
+is real.** Upstream the scene awaits `splat.firstSortReady` and one more
+animation frame before it picks. Here the statements after `startEngine` are
+the browser's continuation and arrive on the deferred queue, which
+`finish_frame` drains at the END of a frame -- after that frame's uploads
+and render -- and a frame yield inside the continuation re-queues its
+remainder to the NEXT frame's drain, one elapsed frame per yield. So by the
+time a pick runs, the frame loop's own upload phase has created each cloud's
+pass and brought its GPU-side order buffer current, on both backends, and
+the pick performs no upload of its own. Neither PAL compensates any more;
+the drain used to sit at the START of the frame, before its uploads, and
+each pick then had to bring every cloud's sort current itself. The symptom
+of an unwritten order buffer, should the sequencing ever regress, is not a
+wrong depth but an absent fragment: the cloud samples its data textures at
+garbage indices and covers no pixel at all, so disabling the cloud depth
+test changes nothing.
 
 **The answer is an identity, not a name.** `PickingInfo` stores the
 collection and the index the pick resolved to, and `pickedMesh.name` reads

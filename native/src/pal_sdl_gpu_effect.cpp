@@ -101,6 +101,14 @@ bool run_effect_gpu_engine(Engine& engine) {
         const bool benchmark = frame_options.benchmarking();
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
+        // A swapchain texture cannot be read back, so a run that was
+        // asked for any capture keeps a sampleable resolve texture and
+        // blits it -- the whole run, so the captured frame is composed
+        // exactly like the ones before it. A run without one renders (or
+        // MSAA-resolves, the pin's own arm) straight into the swapchain;
+        // the presented image is identical because the blit is a
+        // full-surface 1:1 copy.
+        const bool capture_run = captures.requested();
         std::vector<double> samples_ms;
         bool running = true;
         long frame = 0;
@@ -141,9 +149,11 @@ bool run_effect_gpu_engine(Engine& engine) {
             captures.maybe_write_standalone_render_capture(
                 "sdl_gpu", engine, width, height, frame);
 
-            // Rendered offscreen and blitted, because a swapchain texture
-            // cannot be read back for the capture. The multisampled colour
-            // target resolves into it, which is the pin's own arm.
+            // Offscreen textures exist only where a lane needs one: the
+            // sampleable resolve target for a capture run's readback, the
+            // multisampled colour target whenever the surface is
+            // multisampled. The multisampled target resolves into the
+            // frame's destination, which is the pin's own arm.
             if (color_width != width || color_height != height) {
                 if (color) SDL_ReleaseGPUTexture(device, color);
                 if (resolve) SDL_ReleaseGPUTexture(device, resolve);
@@ -159,8 +169,12 @@ bool run_effect_gpu_engine(Engine& engine) {
                 info.layer_count_or_depth = 1;
                 info.num_levels = 1;
                 info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-                resolve = SDL_CreateGPUTexture(device, &info);
-                if (!resolve) gpu_error("SDL_CreateGPUTexture effect resolve");
+                if (capture_run) {
+                    resolve = SDL_CreateGPUTexture(device, &info);
+                    if (!resolve) {
+                        gpu_error("SDL_CreateGPUTexture effect resolve");
+                    }
+                }
                 if (samples > 1) {
                     SDL_GPUTextureCreateInfo msaa = info;
                     msaa.usage = SDL_GPU_TEXTUREUSAGE_COLOR_TARGET;
@@ -172,8 +186,12 @@ bool run_effect_gpu_engine(Engine& engine) {
                 color_height = height;
             }
 
+            // Where this frame's single-sample pixels land: the readback
+            // texture on a capture run, the swapchain itself otherwise.
+            SDL_GPUTexture* const destination =
+                capture_run ? resolve : swapchain;
             SDL_GPUColorTargetInfo color_target{};
-            color_target.texture = samples > 1 ? color : resolve;
+            color_target.texture = samples > 1 ? color : destination;
             color_target.clear_color = SDL_FColor{
                 first.clear_color.r,
                 first.clear_color.g,
@@ -184,7 +202,7 @@ bool run_effect_gpu_engine(Engine& engine) {
                 : SDL_GPU_LOADOP_LOAD;
             if (samples > 1) {
                 color_target.store_op = SDL_GPU_STOREOP_RESOLVE;
-                color_target.resolve_texture = resolve;
+                color_target.resolve_texture = destination;
             } else {
                 color_target.store_op = SDL_GPU_STOREOP_STORE;
             }
@@ -203,15 +221,18 @@ bool run_effect_gpu_engine(Engine& engine) {
             }
             SDL_EndGPURenderPass(render_pass);
 
-            SDL_GPUBlitInfo blit{};
-            blit.source =
-                SDL_GPUBlitRegion{resolve, 0, 0, 0, 0, width, height};
-            blit.destination =
-                SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
-            blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-            blit.flip_mode = SDL_FLIP_NONE;
-            blit.filter = SDL_GPU_FILTER_NEAREST;
-            SDL_BlitGPUTexture(command, &blit);
+            if (capture_run) {
+                SDL_GPUBlitInfo blit{};
+                blit.source =
+                    SDL_GPUBlitRegion{resolve, 0, 0, 0, 0, width, height};
+                blit.destination =
+                    SDL_GPUBlitRegion{
+                        swapchain, 0, 0, 0, 0, width, height};
+                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                blit.flip_mode = SDL_FLIP_NONE;
+                blit.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(command, &blit);
+            }
 
             if (capture_frame) {
                 save_texture_png(

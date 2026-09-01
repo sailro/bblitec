@@ -148,7 +148,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/renderer_plan.cpp",
-        features: ["renderer:pbr"],
+        features: ["renderer:scene"],
     },
     {
         source: "upstream/src/frame_graph_geometry.cpp",

@@ -500,6 +500,23 @@ function Get-ShaderComposition {
     foreach ($module in $parsed.modules) {
         $name = [System.IO.Path]::GetFileName($module.output)
         $declared[$name] = $module
+        # A module carrying both entry points deploys ONE file and
+        # declares its other compiled stem beside it. Expand each
+        # declared stem into a synthetic row keyed the way the stem's
+        # own WGSL would have been, carrying the source file it
+        # compiles from — the Tint pass compiles that source once per
+        # stem, and the DXC pass looks its produced `.hlsl` up here.
+        $alsoStages = $module.PSObject.Properties["alsoStages"]
+        if ($null -ne $alsoStages -and $null -ne $alsoStages.Value) {
+            foreach ($stage in $alsoStages.Value) {
+                $declared["$($stage.stem).native.wgsl"] = [pscustomobject]@{
+                    entryPoint = [string]$stage.entryPoint
+                    pinnedBindings = [bool]$module.pinnedBindings
+                    stem = [string]$stage.stem
+                    sourceName = $name
+                }
+            }
+        }
     }
     return $declared
 }
@@ -789,6 +806,20 @@ foreach ($shaderDirectory in $shaderDirectories) {
         Get-ChildItem $shaderDirectory -Filter "*.native.wgsl"
     )
     $declaredModules = Get-ShaderComposition $shaderDirectory
+    # The synthetic rows Get-ShaderComposition expanded from `alsoStages`,
+    # grouped once by the deployed source they compile from; the loop below
+    # then looks its own extras up by name instead of probing every declared
+    # module per source.
+    $stagesBySource = @{}
+    foreach ($extra in $declaredModules.Values) {
+        $extraSource = $extra.PSObject.Properties["sourceName"]
+        if ($null -ne $extraSource) {
+            if (-not $stagesBySource.ContainsKey($extraSource.Value)) {
+                $stagesBySource[$extraSource.Value] = @()
+            }
+            $stagesBySource[$extraSource.Value] += $extra
+        }
+    }
     if ($directoryNativeWgsl.Count -gt 0) {
         $usedTint = $true
         foreach ($source in $directoryNativeWgsl) {
@@ -807,148 +838,168 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     "generation must name every module's family."
                 )
             }
-            $isPinnedComposed = [bool]$declared.pinnedBindings
-            $entryPoint = [string]$declared.entryPoint
-            # The Tint half is content-addressed like the DXC half: on a
-            # hit the selected Tint-derived artifacts come from the cache
-            # byte-for-byte, published through the same no-churn compare
-            # as a fresh run.
-            $tintCacheBase = Get-TintCacheBase `
-                -Source $source `
-                -EntryPoint $entryPoint `
-                -PinnedBindings $isPinnedComposed `
-                -IsVertex ($outputBase.EndsWith(".vert"))
-            if (Test-TintCacheEntry $tintCacheBase) {
-                foreach ($extension in $tintArtifactExtensions) {
-                    Copy-IfDifferent "$tintCacheBase$extension" `
-                        "$outputBase$extension"
+            # The stems this one deployed file also serves: a module
+            # carrying both entry points deploys once and declares its
+            # other stem, so the same source compiles once per stem,
+            # each at that stem's own entry point and cache key.
+            $stages = @([pscustomobject]@{
+                OutputBase = $outputBase
+                Declared = $declared
+            })
+            if ($stagesBySource.ContainsKey($source.Name)) {
+                foreach ($extra in $stagesBySource[$source.Name]) {
+                    $stages += [pscustomobject]@{
+                        OutputBase = Join-Path $shaderDirectory $extra.stem
+                        Declared = $extra
+                    }
                 }
-                $tintReused += 1
-                continue
             }
-            $pendingHlsl = "$outputBase.pending-hlsl"
-            $reflection = & $Tint $source.FullName `
-                --entry-point $entryPoint `
-                --format hlsl `
-                --output-name $pendingHlsl `
-                --dump-inspector-bindings true 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "Tint HLSL generation failed for $($source.FullName)."
-            }
-            $reflectionText = $reflection -join [Environment]::NewLine
-            $pendingReflection = "$outputBase.pending-reflection"
-            $reflectionText | Set-Content $pendingReflection
-            Move-IfDifferent $pendingReflection "$outputBase.tint-reflection.txt"
-            $wgsl = Get-Content $source.FullName -Raw
-            $expectedBindings = @(
-                [regex]::Matches(
-                    $wgsl,
-                    "@group\((\d+)u?\)\s*@binding\((\d+)u?\)"
-                ) |
-                    ForEach-Object {
-                        "$($_.Groups[1].Value):$($_.Groups[2].Value)"
-                    } |
-                    Sort-Object -Unique
-            )
-            $actualBindings = @(
-                [regex]::Matches(
-                    $reflectionText,
-                    "\[(\d+)\]\[(\d+)\]"
-                ) |
-                    ForEach-Object {
-                        "$($_.Groups[1].Value):$($_.Groups[2].Value)"
-                    } |
-                    Sort-Object -Unique
-            )
-            # The cross-check validates *this repository's* binding
-            # specialization survived Tint: every binding Tint kept has to be
-            # one the WGSL declared, at the group and binding it declared it
-            # at. The other direction does not hold — a stage may declare a
-            # block it never reads, which Tint drops, and a custom sprite
-            # fragment does exactly that with whichever of the layer block
-            # and the `fx` block the caller's body left alone. Which ones
-            # survived is published by `Write-StageSlots`, not inferred here.
-            # A pinned composed variant is not specialized here — its groups
-            # and bindings are the pin's own, and Tint validates them by
-            # compiling the module.
-            $undeclared = @(
-                $actualBindings | Where-Object { $expectedBindings -notcontains $_ }
-            )
-            if ((-not $isPinnedComposed) -and $undeclared.Count -gt 0) {
-                throw (
-                    "Tint reports binding(s) $($undeclared -join ', ') that " +
-                    "$($source.FullName) does not declare."
+            foreach ($stage in $stages) {
+                $outputBase = $stage.OutputBase
+                $declared = $stage.Declared
+                $isPinnedComposed = [bool]$declared.pinnedBindings
+                $entryPoint = [string]$declared.entryPoint
+                # The Tint half is content-addressed like the DXC half: on a
+                # hit the selected Tint-derived artifacts come from the cache
+                # byte-for-byte, published through the same no-churn compare
+                # as a fresh run.
+                $tintCacheBase = Get-TintCacheBase `
+                    -Source $source `
+                    -EntryPoint $entryPoint `
+                    -PinnedBindings $isPinnedComposed `
+                    -IsVertex ($outputBase.EndsWith(".vert"))
+                if (Test-TintCacheEntry $tintCacheBase) {
+                    foreach ($extension in $tintArtifactExtensions) {
+                        Copy-IfDifferent "$tintCacheBase$extension" `
+                            "$outputBase$extension"
+                    }
+                    $tintReused += 1
+                    continue
+                }
+                $pendingHlsl = "$outputBase.pending-hlsl"
+                $reflection = & $Tint $source.FullName `
+                    --entry-point $entryPoint `
+                    --format hlsl `
+                    --output-name $pendingHlsl `
+                    --dump-inspector-bindings true 2>&1
+                if ($LASTEXITCODE -ne 0) {
+                    throw "Tint HLSL generation failed for $($source.FullName)."
+                }
+                $reflectionText = $reflection -join [Environment]::NewLine
+                $pendingReflection = "$outputBase.pending-reflection"
+                $reflectionText | Set-Content $pendingReflection
+                Move-IfDifferent $pendingReflection "$outputBase.tint-reflection.txt"
+                $wgsl = Get-Content $source.FullName -Raw
+                $expectedBindings = @(
+                    [regex]::Matches(
+                        $wgsl,
+                        "@group\((\d+)u?\)\s*@binding\((\d+)u?\)"
+                    ) |
+                        ForEach-Object {
+                            "$($_.Groups[1].Value):$($_.Groups[2].Value)"
+                        } |
+                        Sort-Object -Unique
                 )
-            }
-            # SDL_GPU caps uniform buffers at four per stage. The count that
-            # binds is the emitted HLSL's, not the WGSL's -- Tint strips a
-            # block a stage declares but never reads -- so the overflow check
-            # reads the first compile of EVERY stage and, when it trips,
-            # recompiles every SDL-facing artifact from a source whose gp
-            # block is demoted to a read-only storage buffer. Dawn keeps
-            # the pin's uniform declaration in the `.native.wgsl` it
-            # consumes.
-            # Demotion eligibility is the semantic fact itself: the stage
-            # declares the frame-graph `gp` uniform block (the exact
-            # declaration the demotion rewrites). composition.json carries
-            # no family field to key this on -- its rows declare
-            # `entryPoint` and `pinnedBindings` only -- so the WGSL
-            # declaration is the authority; a stage over the cap without a
-            # gp block has nothing demotable and refuses by name.
-            $sdlSource = $source.FullName
-            $uniformCount = (Get-HlslUniformBufferNames $pendingHlsl).Count
-            if ($uniformCount -gt 4) {
-                $demotable = @(Get-DemotableUniformBlocks $wgsl)
-                if ($demotable.Count -gt 0) {
-                    # Every demotable block moves. No composed stage in the
-                    # tree declares more than one, so spending them all is
-                    # what the overflow needs; a stage that grew a second
-                    # kind would want the order above rather than a count.
-                    $chosen = $demotable
-                    $sdlSource = Demote-PinnedVariantUniformBlocks `
-                        $source.FullName `
-                        $outputBase `
-                        $uniformCount `
-                        $chosen
+                $actualBindings = @(
+                    [regex]::Matches(
+                        $reflectionText,
+                        "\[(\d+)\]\[(\d+)\]"
+                    ) |
+                        ForEach-Object {
+                            "$($_.Groups[1].Value):$($_.Groups[2].Value)"
+                        } |
+                        Sort-Object -Unique
+                )
+                # The cross-check validates *this repository's* binding
+                # specialization survived Tint: every binding Tint kept has to be
+                # one the WGSL declared, at the group and binding it declared it
+                # at. The other direction does not hold — a stage may declare a
+                # block it never reads, which Tint drops, and a custom sprite
+                # fragment does exactly that with whichever of the layer block
+                # and the `fx` block the caller's body left alone. Which ones
+                # survived is published by `Write-StageSlots`, not inferred here.
+                # A pinned composed variant is not specialized here — its groups
+                # and bindings are the pin's own, and Tint validates them by
+                # compiling the module.
+                $undeclared = @(
+                    $actualBindings | Where-Object { $expectedBindings -notcontains $_ }
+                )
+                if ((-not $isPinnedComposed) -and $undeclared.Count -gt 0) {
+                    throw (
+                        "Tint reports binding(s) $($undeclared -join ', ') that " +
+                        "$($source.FullName) does not declare."
+                    )
+                }
+                # SDL_GPU caps uniform buffers at four per stage. The count that
+                # binds is the emitted HLSL's, not the WGSL's -- Tint strips a
+                # block a stage declares but never reads -- so the overflow check
+                # reads the first compile of EVERY stage and, when it trips,
+                # recompiles every SDL-facing artifact from a source whose gp
+                # block is demoted to a read-only storage buffer. Dawn keeps
+                # the pin's uniform declaration in the `.native.wgsl` it
+                # consumes.
+                # Demotion eligibility is the semantic fact itself: the stage
+                # declares the frame-graph `gp` uniform block (the exact
+                # declaration the demotion rewrites). composition.json carries
+                # no family field to key this on -- its rows declare
+                # `entryPoint` and `pinnedBindings` only -- so the WGSL
+                # declaration is the authority; a stage over the cap without a
+                # gp block has nothing demotable and refuses by name.
+                $sdlSource = $source.FullName
+                $uniformCount = (Get-HlslUniformBufferNames $pendingHlsl).Count
+                if ($uniformCount -gt 4) {
+                    $demotable = @(Get-DemotableUniformBlocks $wgsl)
+                    if ($demotable.Count -gt 0) {
+                        # Every demotable block moves. No composed stage in the
+                        # tree declares more than one, so spending them all is
+                        # what the overflow needs; a stage that grew a second
+                        # kind would want the order above rather than a count.
+                        $chosen = $demotable
+                        $sdlSource = Demote-PinnedVariantUniformBlocks `
+                            $source.FullName `
+                            $outputBase `
+                            $uniformCount `
+                            $chosen
+                        & $Tint $sdlSource `
+                            --entry-point $entryPoint `
+                            --format hlsl `
+                            --output-name $pendingHlsl
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Tint HLSL generation failed for $sdlSource."
+                        }
+                        Assert-UniformBufferCap `
+                            $pendingHlsl `
+                            ("$($source.FullName) (after demoting " +
+                             "$($chosen -join ', '))")
+                    } else {
+                        Assert-UniformBufferCap $pendingHlsl $source.FullName
+                    }
+                }
+                if ($isPinnedComposed) {
+                    Remap-PinnedVariantRegisters `
+                        $pendingHlsl `
+                        $outputBase.EndsWith(".vert")
+                } else {
+                    Normalize-TintHlslBindings $pendingHlsl
+                }
+                Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
+                if ($emitMsl) {
+                    $pendingMsl = "$outputBase.pending-msl"
                     & $Tint $sdlSource `
                         --entry-point $entryPoint `
-                        --format hlsl `
-                        --output-name $pendingHlsl
+                        --format msl `
+                        --output-name $pendingMsl
                     if ($LASTEXITCODE -ne 0) {
-                        throw "Tint HLSL generation failed for $sdlSource."
+                        throw "Tint MSL generation failed for $($source.FullName)."
                     }
-                    Assert-UniformBufferCap `
-                        $pendingHlsl `
-                        ("$($source.FullName) (after demoting " +
-                         "$($chosen -join ', '))")
-                } else {
-                    Assert-UniformBufferCap $pendingHlsl $source.FullName
+                    Move-IfDifferent $pendingMsl "$outputBase.msl"
                 }
-            }
-            if ($isPinnedComposed) {
-                Remap-PinnedVariantRegisters `
-                    $pendingHlsl `
-                    $outputBase.EndsWith(".vert")
-            } else {
-                Normalize-TintHlslBindings $pendingHlsl
-            }
-            Move-IfDifferent $pendingHlsl "$outputBase.hlsl"
-            if ($emitMsl) {
-                $pendingMsl = "$outputBase.pending-msl"
-                & $Tint $sdlSource `
-                    --entry-point $entryPoint `
-                    --format msl `
-                    --output-name $pendingMsl
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Tint MSL generation failed for $($source.FullName)."
+                if ($sdlSource -ne $source.FullName) {
+                    Remove-Item $sdlSource
                 }
-                Move-IfDifferent $pendingMsl "$outputBase.msl"
+                Save-TintCacheEntry $tintCacheBase $outputBase
+                $tintCompiled += 1
             }
-            if ($sdlSource -ne $source.FullName) {
-                Remove-Item $sdlSource
-            }
-            Save-TintCacheEntry $tintCacheBase $outputBase
-            $tintCompiled += 1
         }
     }
     foreach ($source in Get-ChildItem $shaderDirectory -Filter "*.hlsl") {

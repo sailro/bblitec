@@ -89,6 +89,11 @@ bool run_sprite_gpu_engine(Engine& engine) {
         device_options.gpu_debug = frame_options.gpu_debug;
         create_sdl_gpu_device(engine.options, device_options, gpu);
         const SDL_GPUTextureFormat swapchain_format = gpu.swapchain_format;
+        // One batch for the run: its transfer buffer persists across
+        // frames, so a per-frame sprite mutation stages its dirty span
+        // and shares one copy-pass submission instead of paying a
+        // transfer-buffer create/release and a submit per layer.
+        GpuBufferUploadBatch buffer_uploads(device);
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         ui_runtime = create_ui_rml_runtime(
             engine,
@@ -164,6 +169,13 @@ bool run_sprite_gpu_engine(Engine& engine) {
 #endif
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
+        // A swapchain texture cannot be read back, so a run that was
+        // asked for any capture renders offscreen and blits -- the whole
+        // run, so the captured frame is composed exactly like the ones
+        // before it. A run without one draws straight to the swapchain
+        // and skips the readback-only texture and the blit; the presented
+        // image is identical because the blit is a full-surface 1:1 copy.
+        const bool capture_run = captures.requested();
         std::vector<double> samples;
         bool running = true;
         long frame = 0;
@@ -201,8 +213,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 // by position, so it is rebuilt before anything reads it.
                 sync_sprite_pass_layers(
                     device, engine, pass, render_textures);
-                upload_sprite_pass(device, engine, pass, delta_ms);
+                upload_sprite_pass(
+                    device, engine, pass, delta_ms, buffer_uploads);
             }
+            buffer_uploads.submit();
 
             SDL_GPUCommandBuffer* command =
                 SDL_AcquireGPUCommandBuffer(device);
@@ -230,9 +244,11 @@ bool run_sprite_gpu_engine(Engine& engine) {
             captures.maybe_write_standalone_render_capture(
                 "sdl_gpu", engine, width, height, frame);
 
-            // Rendered offscreen and blitted, because a swapchain texture
-            // cannot be read back for the capture.
-            if (color_width != width || color_height != height) {
+            // Rendered offscreen and blitted only on a capture run,
+            // because a swapchain texture cannot be read back for the
+            // capture.
+            if (capture_run &&
+                (color_width != width || color_height != height)) {
                 if (color) SDL_ReleaseGPUTexture(device, color);
                 SDL_GPUTextureCreateInfo color_info{};
                 color_info.type = SDL_GPU_TEXTURETYPE_2D;
@@ -255,7 +271,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 const SpriteRendererRecord& first_renderer =
                     engine.sprite_renderers[
                         passes[first_index].renderer.value];
-                SDL_GPUTexture* target = color;
+                SDL_GPUTexture* target = capture_run ? color : swapchain;
                 if (first_renderer.has_target) {
                     target = render_textures[
                         first_renderer.target.value];
@@ -309,15 +325,18 @@ bool run_sprite_gpu_engine(Engine& engine) {
             }
 #endif
 
-            SDL_GPUBlitInfo blit{};
-            blit.source =
-                SDL_GPUBlitRegion{color, 0, 0, 0, 0, width, height};
-            blit.destination =
-                SDL_GPUBlitRegion{swapchain, 0, 0, 0, 0, width, height};
-            blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
-            blit.flip_mode = SDL_FLIP_NONE;
-            blit.filter = SDL_GPU_FILTER_NEAREST;
-            SDL_BlitGPUTexture(command, &blit);
+            if (capture_run) {
+                SDL_GPUBlitInfo blit{};
+                blit.source =
+                    SDL_GPUBlitRegion{color, 0, 0, 0, 0, width, height};
+                blit.destination =
+                    SDL_GPUBlitRegion{
+                        swapchain, 0, 0, 0, 0, width, height};
+                blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                blit.flip_mode = SDL_FLIP_NONE;
+                blit.filter = SDL_GPU_FILTER_NEAREST;
+                SDL_BlitGPUTexture(command, &blit);
+            }
             #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             if (!ui_in_capture) {
                 render_sprite_ui_sdl_frame(

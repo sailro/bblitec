@@ -11,6 +11,10 @@ import { gunzipSync } from "node:zlib";
 import ts from "typescript";
 
 import { doubleLiteral } from "../cpp-literals.js";
+import {
+    jsonToValue,
+    type JsonValuePolicy,
+} from "./json-value.js";
 import type { Value } from "./types.js";
 
 export interface CompressedJsonContext {
@@ -508,67 +512,26 @@ function isInputNameAliasRestorer(
         isInputAliasLoop(inputLoop!, inputs.name);
 }
 
+/**
+ * This lane's whole policy for the shared converter: graph documents keep
+ * full static metadata for the generation-known passes downstream, and
+ * their numbers are stored double because they feed pinned double
+ * arithmetic. No finite guard — the value arrives from JSON.parse.
+ */
+const compressedJsonPolicy: JsonValuePolicy = {
+    numberLiteral: doubleLiteral,
+    nullCpp: "std::nullopt",
+    staticMetadata: true,
+    unsupportedMessage:
+        "Compressed JSON contains a value JSON cannot represent.",
+};
+
 function jsonValue(
     context: CompressedJsonContext,
     json: unknown,
     node: ts.Node,
 ): Value {
-    if (json === null) {
-        return { kind: "json-null", cpp: "std::nullopt", staticJson: null };
-    }
-    if (typeof json === "string") {
-        return {
-            kind: "string",
-            cpp: context.cppString(json),
-            staticString: json,
-            staticJson: json,
-        };
-    }
-    if (typeof json === "number") {
-        return {
-            kind: "number",
-            cpp: doubleLiteral(json),
-            staticNumber: json,
-            staticJson: json,
-            dataType: { kind: "number" },
-        };
-    }
-    if (typeof json === "boolean") {
-        return {
-            kind: "boolean",
-            cpp: json ? "true" : "false",
-            staticBoolean: json,
-            staticJson: json,
-            dataType: { kind: "boolean" },
-        };
-    }
-    if (Array.isArray(json)) {
-        return {
-            kind: "tuple",
-            cpp: "",
-            tupleElements: json.map((element) =>
-                jsonValue(context, element, node),
-            ),
-            staticJson: json,
-        };
-    }
-    if (typeof json === "object") {
-        return {
-            kind: "record",
-            cpp: "",
-            recordProperties: Object.fromEntries(
-                Object.entries(json).map(([name, value]) => [
-                    name,
-                    jsonValue(context, value, node),
-                ]),
-            ),
-            staticJson: json,
-        };
-    }
-    context.fail(
-        node,
-        "Compressed JSON contains a value JSON cannot represent.",
-    );
+    return jsonToValue(context, compressedJsonPolicy, json, node);
 }
 
 function restoreInputNameAliases(json: unknown): unknown {

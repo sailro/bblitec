@@ -1,5 +1,5 @@
 {
-  "$comment": "Overlay ports take precedence over the registry named by vcpkg.json's builtin-baseline. The entry carries two patches: libsdl-org/SDL#15838, without which the SDL_GPU backend cannot run the pinned per-sample image-processing pass, and this project's own D3D12 multisampled-line rasterization fix, without which a line-list pipeline ignores its target's sample count. Delete this file and native/vcpkg-overlay-ports once an SDL release contains both, and move the baseline to it.",
+  "$comment": "Overlay ports take precedence over the registry named by vcpkg.json's builtin-baseline. sdl3 and sdl3-image are the registry's own ports at that baseline with patches appended: sdl3 carries libsdl-org/SDL#15838, without which the SDL_GPU backend cannot run the pinned per-sample image-processing pass, and the D3D12 multisampled-line rasterization fix (SDL#16182), without which a line-list pipeline ignores its target's sample count; sdl3-image corrects the synthetic greyscale-PNG ramp to divide by the last index so the top entry lands on 255. Delete an SDL port and rejoin the registry once a release contains its patches. recastnavigation is not a registry copy: it pins the fork commit the pinned @recast-navigation/wasm builds, and retires only with that pin.",
   "overlay-ports": [
     "./vcpkg-overlay-ports"
   ]

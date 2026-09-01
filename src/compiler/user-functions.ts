@@ -105,6 +105,95 @@ function writesThroughRoot(
     );
 }
 
+/** The tracked-alias queries a mutation walk's per-kind clauses consult. */
+export interface AliasedMutationScan {
+    /** Whether `node` is an identifier naming a tracked alias. */
+    readonly namesAlias: (node: ts.Node) => boolean;
+    /** Whether any identifier in the subtree names a tracked alias. */
+    readonly containsAlias: (node: ts.Node) => boolean;
+    /** Track one more alias; a new symbol queues another pass. */
+    readonly addAlias: (symbol: ts.Symbol | undefined) => void;
+}
+
+/**
+ * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
+ *
+ * Seeds the tracked set with the declared identifier's symbol, then rewalks
+ * the whole source file until a pass adds no alias: a variable declaration
+ * whose initializer `aliasingInitializer` accepts extends the set (queueing
+ * another pass), and the first node `mutates` accepts ends the scan. What
+ * counts as an alias-creating initializer and as a mutation site is the
+ * per-kind half the callers keep — arrays and plain objects recognize
+ * writes differently — and `mutates` may itself extend the set through
+ * `addAlias` (the object walk follows call arguments into parameters).
+ */
+export function aliasedMutationScan(
+    identifier: ts.Identifier,
+    valueSymbol: (identifier: ts.Identifier) => ts.Symbol | undefined,
+    walk: {
+        readonly aliasingInitializer: (
+            initializer: ts.Expression,
+            scan: AliasedMutationScan,
+        ) => boolean;
+        readonly mutates: (
+            node: ts.Node,
+            scan: AliasedMutationScan,
+        ) => boolean;
+    },
+): boolean {
+    const initial = valueSymbol(identifier);
+    if (!initial) return false;
+    const aliases = new Set<ts.Symbol>([initial]);
+    const source = identifier.getSourceFile();
+    let changed = true;
+    const scan: AliasedMutationScan = {
+        namesAlias: (node) =>
+            ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
+        containsAlias: (node) => {
+            let found = false;
+            const visit = (candidate: ts.Node): void => {
+                if (found) return;
+                if (scan.namesAlias(candidate)) {
+                    found = true;
+                    return;
+                }
+                ts.forEachChild(candidate, visit);
+            };
+            visit(node);
+            return found;
+        },
+        addAlias: (symbol) => {
+            if (symbol && !aliases.has(symbol)) {
+                aliases.add(symbol);
+                changed = true;
+            }
+        },
+    };
+    while (changed) {
+        changed = false;
+        let mutated = false;
+        const visit = (node: ts.Node): void => {
+            if (mutated) return;
+            if (walk.mutates(node, scan)) {
+                mutated = true;
+                return;
+            }
+            if (
+                ts.isVariableDeclaration(node) &&
+                ts.isIdentifier(node.name) &&
+                node.initializer &&
+                walk.aliasingInitializer(node.initializer, scan)
+            ) {
+                scan.addAlias(valueSymbol(node.name));
+            }
+            ts.forEachChild(node, visit);
+        };
+        ts.forEachChild(source, visit);
+        if (mutated) return true;
+    }
+    return false;
+}
+
 /** Conservatively determines whether a function leaves a parameter unchanged. */
 export function parameterIsReadOnly(
     checker: ts.TypeChecker,

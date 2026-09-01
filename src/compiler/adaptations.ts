@@ -467,7 +467,7 @@ export function compileAdaptations(
             validation: ["ArcRotate constant extraction tests", "native input smoke tests"],
         });
     }
-    if (features.includes("renderer:pbr")) {
+    if (features.includes("renderer:scene")) {
         adaptations.push({
             id: "sdl-gpu-shader-backends",
             category: "rendering",

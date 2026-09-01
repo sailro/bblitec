@@ -487,7 +487,7 @@ if(SDL3_FOUND)
     find_package(WebP CONFIG QUIET)
 endif()
 
-if("renderer:pbr" IN_LIST BBLITE_RUNTIME_FEATURES)
+if("renderer:scene" IN_LIST BBLITE_RUNTIME_FEATURES)
     # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
     # because a loaded asset reaches scene transmission on its own and the
     # reached-feature list only records what the scene's code asked for.

@@ -22,6 +22,10 @@
 // the pinned binding names it serves. Emitted for every scene beside the
 // capability defines, so the include is unconditional.
 #include <bblite/upstream/material_texture_slots.hpp>
+// The float world-basis multiplies the CPU vertex bake applies, restated
+// once from the pinned WGSL vertex stages and shared with both geometry
+// loaders. Always emitted, so the include is unconditional too.
+#include <bblite/upstream/pinned_world_transform.hpp>
 // The render plan is generated only for scenes that register a
 // SceneContext; a sprite-only scene has none, and reaches this header for
 // the frame options, capture gate and clock alone.
@@ -63,6 +67,14 @@
 #include <bblite/upstream/pinned_depth_state.hpp>
 
 namespace bbl::pal {
+
+/**
+ * The `std::size_t` sentinel this file's comments already call `npos`: an
+ * unresolved variant, an unbuilt program, a draw outside any geometry task.
+ * Defined once so the backends and the selectors spell the absence the same
+ * way instead of repeating the `numeric_limits` incantation per site.
+ */
+inline constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
 
 inline std::string sprite_fragment_shader_name(
     std::uint32_t program) {
@@ -938,38 +950,10 @@ inline DeformationUniforms build_deformation_uniforms(
 }
 #endif
 
-/** `world * vec4(value, 1)`, the pin's own vertex-stage position multiply. */
-inline Vec3 transform_position(
-    const std::array<float, 16>& world,
-    Vec3 value) {
-    return Vec3{
-        world[0] * value.x + world[4] * value.y + world[8] * value.z +
-            world[12],
-        world[1] * value.x + world[5] * value.y + world[9] * value.z +
-            world[13],
-        world[2] * value.x + world[6] * value.y + world[10] * value.z +
-            world[14],
-    };
-}
-
-/**
- * `world * vec4(value, 0)`, which is what both pinned templates apply to a
- * normal and a tangent alike — `pbr-template.ts` writes
- * `(finalWorld * vec4<f32>(normalize(normal), 0.0)).xyz` and
- * `standard-template.ts` the `mat3x3` of the same three columns. Neither
- * divides by the scale: the pin transforms a normal by the plain world
- * basis rather than by an inverse transpose, and a port that divided
- * agreed with it only where a normal lines up with a scaling axis.
- */
-inline Vec3 transform_direction(
-    const std::array<float, 16>& world,
-    Vec3 value) {
-    return Vec3{
-        world[0] * value.x + world[4] * value.y + world[8] * value.z,
-        world[1] * value.x + world[5] * value.y + world[9] * value.z,
-        world[2] * value.x + world[6] * value.y + world[10] * value.z,
-    };
-}
+// `transform_position`/`transform_direction` — the pin's own vertex-stage
+// world multiplies — moved to the always-emitted
+// `upstream/pinned_world_transform.hpp`, where both geometry loaders share
+// the same single emission.
 
 inline Vec3 normalize_vec3(Vec3 value) {
     const float length = std::sqrt(
@@ -1198,13 +1182,13 @@ inline std::vector<GpuVertex> transformed_vertices(
         // float32 exactly as `allocateMat4()` leaves it, so this multiply is
         // the arithmetic the GPU would have run on the same bytes.
         const Vec3 position =
-            transform_position(world, vertex.position);
+            upstream::transform_position(world, vertex.position);
         const Vec3 normal = normalize_vec3(
-            transform_direction(world, normal_vertex.normal));
+            upstream::transform_direction(world, normal_vertex.normal));
         // `T_local` is the tangent's xyz; its `w` is the handedness the
         // bitangent reads and travels unchanged.
         const Vec3 tangent = normalize_vec3(
-            transform_direction(
+            upstream::transform_direction(
                 world,
                 Vec3{
                     vertex.tangent.x,
@@ -1425,6 +1409,29 @@ inline void release_all_shared(
 }
 
 /**
+ * The find-or-create walk both backends' post-process program caches share:
+ * a linear scan of a small grown vector under the caller's own key equality,
+ * then the caller's builder appended once. Returns the entry's INDEX because
+ * the vector grows -- a pointer is reallocated out from under a pass the
+ * moment a later pass creates a second program. The program types and their
+ * keys stay each backend's own: SDL_GPU's key omits the bind-group shape
+ * (`extra_textures`, `uniform_binding`, `uniform_size`) that Dawn's layout
+ * bakes in, which is why the template takes a match predicate rather than a
+ * key struct.
+ */
+template <typename Program, typename Matches, typename Build>
+inline std::size_t find_or_create_program(
+    std::vector<Program>& programs,
+    Matches matches,
+    Build build) {
+    for (std::size_t index = 0; index < programs.size(); ++index) {
+        if (matches(programs[index])) return index;
+    }
+    programs.push_back(build());
+    return programs.size() - 1;
+}
+
+/**
  * The ordinary mesh TRS as a column-major world matrix.
  *
  * The same composition the CPU vertex bake reads, so moving a transform into
@@ -1524,12 +1531,6 @@ inline std::array<float, 16> shader_matrix_product(
         }
     }
     return result;
-}
-
-inline std::array<float, 16> shader_world_view_projection(
-    const float* view_projection,
-    const std::array<float, 16>& world) {
-    return shader_matrix_product(view_projection, world);
 }
 
 inline std::optional<std::array<float, 16>> shader_world_view(
@@ -2140,21 +2141,49 @@ struct ShadowRefreshState {
     std::vector<upstream::ShadowInfoUniforms> blocks;
     /** Whether `blocks[handle]` holds an upload yet. */
     std::vector<bool> uploaded;
+    /**
+     * The pinned render gate's `_last*` lanes, by handle — the state each
+     * `render*ShadowMap` hook keeps on its task between frames, plus the
+     * frame's `due` verdict `refresh_shadow_generators` writes for the
+     * task loop. Backend state rather than a record field because the
+     * pin's is task state: each backend's task loop skips against what IT
+     * last rendered.
+     */
+    std::vector<upstream::ShadowRefreshGate> gates;
+    /**
+     * Frame-graph texture recreation (a resize, a target added) released
+     * every rendered map, so what the gate knows is rendered no longer
+     * exists. Clearing the sentinels makes each generator's next frame
+     * render, the way a fresh pinned task state's `-1` lanes do.
+     */
+    void invalidate_rendered_maps() {
+        for (upstream::ShadowRefreshGate& gate : gates) {
+            gate.rendered = false;
+        }
+    }
 };
 
 /**
  * Refresh every generator the scene's lights name, then hand each to the
  * backend.
  *
- * What is shared is the refresh and the dirty test: the ESM fit re-reads
- * its casters' world bounds every frame because it is sized to them and
- * not to the light, the PCF spot rebuilds from the light's live position
- * and direction, and the receiver block that falls out is re-uploaded only
- * when it moved. All of that is engine-side math with one right answer.
+ * What is shared is the refresh and BOTH dirty tests. The outer one is the
+ * pin's render gate: every `render*ShadowMap` hook returns before the
+ * matrix fit and the caster pass when neither the casters' nor the light's
+ * version moved (`shadow_refresh_due` carries the full rule), so the fit
+ * runs — the ESM/directional one re-reading its casters' world bounds, the
+ * PCF spot rebuilding from the light's live position and direction — only
+ * on the frames the pin would run it. The inner one is the receiver block:
+ * what falls out of a fit is re-uploaded only when it moved. All of that
+ * is engine-side math with one right answer.
  *
  * What stays per backend is the resource each keeps for a generator, which
  * is what the visitor receives: the record, its own handle, its dense
  * position in the light order, the block, and whether that block is new.
+ * The gate's verdict lands on the gate itself (`gates[handle].due`), which
+ * the backend's task loop reads to skip the pass itself. A gated frame
+ * whose block is already uploaded skips the visitor too: the fit did not
+ * run, so the block's bytes are provably the ones the backend holds.
  */
 template <typename Visit>
 inline void refresh_shadow_generators(
@@ -2165,6 +2194,7 @@ inline void refresh_shadow_generators(
     if (refresh.blocks.size() < engine.shadow_generators.size()) {
         refresh.blocks.resize(engine.shadow_generators.size());
         refresh.uploaded.resize(engine.shadow_generators.size(), false);
+        refresh.gates.resize(engine.shadow_generators.size());
     }
     // The pin's own floating-origin offset for a shadow map:
     // `renderPcfShadowMap` and `renderEsmShadowMap` each read the active
@@ -2183,44 +2213,90 @@ inline void refresh_shadow_generators(
             std::size_t slot) {
             ShadowGeneratorRecord& generator =
                 engine.shadow_generators[handle.value];
-#if BBLITE_SHADOWS_ESM
-            if (generator.filter == ShadowFilter::esm_directional) {
-                fitted_shadow_casters(engine, generator, refresh.casters);
-                upstream::update_esm_directional_shadow(
-                    generator,
-                    engine.lights[light.value],
-                    refresh.casters,
-                    eye);
-            } else
-#endif
-            // The third arm needs no define of its own: it shares every
-            // resource the spot generator builds, and what it needs beside
-            // them -- the caster fit -- is the receiver half's, not the
-            // ESM's.
-            if (generator.filter == ShadowFilter::pcf_directional) {
-                fitted_shadow_casters(engine, generator, refresh.casters);
-                if (
-                    generator.csm_single_map &&
-                    scene.camera.value < engine.cameras.size()) {
-                    upstream::update_csm_single_map_shadow(
-                        generator,
-                        engine.lights[light.value],
-                        engine.cameras[scene.camera.value],
-                        static_cast<double>(engine.options.width) /
-                            static_cast<double>(engine.options.height),
-                        refresh.casters);
-                } else {
-                    upstream::update_pcf_directional_shadow(
-                        generator,
-                        engine.lights[light.value],
-                        refresh.casters,
-                        eye);
-                }
-            } else
-            upstream::update_pcf_spot_shadow(
+            const LightRecord& light_record = engine.lights[light.value];
+            upstream::ShadowRefreshGate& gate = refresh.gates[handle.value];
+            const double aspect =
+                static_cast<double>(engine.options.width) /
+                static_cast<double>(engine.options.height);
+            // `renderCsmShadowMap` keys its gate on the camera the cascade
+            // is fitted to — change key and aspect — in place of the
+            // single-map generators' floating-origin term. The key here is
+            // what the fit consumes: the camera view-projection (aspect
+            // folded in) and the near/far pair the split formula reads. A
+            // forced generator's gate returns before reading it, so the
+            // key is built only when the gate will.
+            const bool csm_fit =
+                generator.filter == ShadowFilter::pcf_directional &&
+                generator.csm_single_map &&
+                scene.camera.value < engine.cameras.size();
+            upstream::CsmCameraKey camera_key;
+            if (csm_fit && !generator.force_refresh_every_frame) {
+                const CameraRecord& camera =
+                    engine.cameras[scene.camera.value];
+                camera_key.view_projection =
+                    upstream::build_view_projection(camera, aspect);
+                camera_key.near_plane = camera.near_plane;
+                camera_key.far_plane = camera.far_plane;
+            }
+            // The pin's render gate, ahead of each family's fit exactly as
+            // each `render*ShadowMap` hook tests it ahead of its own. On a
+            // skipped frame the generator's matrices — and so the block
+            // below — keep their last-render values. The verdict lands on
+            // the gate, where each backend's task loop reads it to skip
+            // the caster pass itself.
+            const bool due = upstream::shadow_refresh_due(
+                engine,
                 generator,
-                engine.lights[light.value],
-                eye);
+                light_record,
+                eye,
+                csm_fit ? &camera_key : nullptr,
+                gate);
+            gate.due = due;
+            if (due) {
+                if (generator.filter == ShadowFilter::pcf_spot) {
+                    upstream::update_pcf_spot_shadow(
+                        generator,
+                        light_record,
+                        eye);
+                } else {
+                    // Every directional fit re-reads its casters' world
+                    // bounds; the spot rebuild reads only the light. The
+                    // PCF directional arm needs no define of its own: it
+                    // shares every resource the spot generator builds, and
+                    // what it needs beside them -- the caster fit -- is
+                    // the receiver half's, not the ESM's.
+                    fitted_shadow_casters(
+                        engine, generator, refresh.casters);
+#if BBLITE_SHADOWS_ESM
+                    if (generator.filter == ShadowFilter::esm_directional) {
+                        upstream::update_esm_directional_shadow(
+                            generator,
+                            light_record,
+                            refresh.casters,
+                            eye);
+                    } else
+#endif
+                    if (csm_fit) {
+                        upstream::update_csm_single_map_shadow(
+                            generator,
+                            light_record,
+                            engine.cameras[scene.camera.value],
+                            aspect,
+                            refresh.casters);
+                    } else {
+                        upstream::update_pcf_directional_shadow(
+                            generator,
+                            light_record,
+                            refresh.casters,
+                            eye);
+                    }
+                }
+            } else if (refresh.uploaded[handle.value]) {
+                // A gated frame's fit did not run, so the block's bytes
+                // are provably the ones already uploaded: the pack, the
+                // compare and the visitor are skipped with the pass.
+                return;
+            }
             const upstream::ShadowInfoUniforms block =
                 upstream::shadow_info_block(generator);
             const bool moved = !refresh.uploaded[handle.value] ||
@@ -2608,7 +2684,7 @@ inline PinnedVariantKey pinned_variant_key(
             // from the fixed-set builders; a scene whose builders disagree
             // publishes npos here and such a draw refuses.
             : upstream::pbr_runtime_mesh_features;
-    if (key.mesh_features == std::numeric_limits<std::size_t>::max()) {
+    if (key.mesh_features == npos) {
         key.refusal =
             "the scene's runtime meshes carry no single attribute set";
         return key;
@@ -2684,7 +2760,7 @@ inline PinnedVariantKey pinned_variant_key(
  */
 inline std::string pinned_variant_request(
     const PinnedVariantKey& key,
-    std::size_t geometry_task = std::numeric_limits<std::size_t>::max()) {
+    std::size_t geometry_task = npos) {
     if (!key.resolved) return "no key: " + key.refusal;
     return "material " + std::to_string(key.material_index) +
         ", view " + std::to_string(key.material_view) +
@@ -2693,7 +2769,7 @@ inline std::string pinned_variant_request(
         ", single light '" + std::string(key.single_light_type) + "'" +
         ", tone mapping " + (key.tone_mapping ? "on" : "off") +
         ", geometry task " +
-        (geometry_task == std::numeric_limits<std::size_t>::max()
+        (geometry_task == npos
              ? std::string("none")
              : std::to_string(geometry_task));
 }
@@ -2705,12 +2781,12 @@ inline std::size_t pinned_variant_for_draw(
     // The geometry-output task the draw belongs to, npos for the colour
     // passes: the selector table keys on it, so a geometry draw resolves
     // its own MRT arm and never a colour variant.
-    std::size_t geometry_task = std::numeric_limits<std::size_t>::max(),
+    std::size_t geometry_task = npos,
     // Filled with the key the lookup used, so a miss reports that key
     // rather than a second derivation of it.
     PinnedVariantKey* key_out = nullptr) {
     if (upstream::pbr_variants.empty()) {
-        return std::numeric_limits<std::size_t>::max();
+        return npos;
     }
     // A mesh whose node transform is not baked into its vertices carries it
     // in the record's parent matrix, which the composed stages consume; a
@@ -2746,7 +2822,7 @@ inline std::size_t pinned_variant_for_draw(
         }
     }
     const PinnedVariantKey key = pinned_variant_key(scene, engine, draw);
-    if (!key.resolved) return std::numeric_limits<std::size_t>::max();
+    if (!key.resolved) return npos;
     if (key_out) *key_out = key;
     // Every light mode. All three read the same lights block, whose writers index
     // the pin's own light world matrix; the block itself was diffed against the
@@ -2767,8 +2843,8 @@ inline std::size_t pinned_variant_for_draw(
         key.single_light_type,
         key.tone_mapping,
         geometry_task);
-    if (variant == std::numeric_limits<std::size_t>::max()) {
-        return std::numeric_limits<std::size_t>::max();
+    if (variant == npos) {
+        return npos;
     }
     // A skeleton variant needs the palette to exist or the deformation is
     // lost. The reverse -- a palette on a non-skeleton variant -- is the
@@ -2777,7 +2853,7 @@ inline std::size_t pinned_variant_for_draw(
     // buffer, the same convention the skinned draw measured.
     const bool skeleton_variant = pinned_variant_skeleton(variant);
     if (skeleton_variant && !has_bones) {
-        return std::numeric_limits<std::size_t>::max();
+        return npos;
     }
     return variant;
 }
@@ -2918,7 +2994,7 @@ inline StandardVariantKey standard_variant_key(
             ? upstream::standard_renderable_mesh_features[
                   feature_mesh]
             : upstream::standard_runtime_mesh_features;
-    if (key.mesh_features == std::numeric_limits<std::size_t>::max()) {
+    if (key.mesh_features == npos) {
         return key;
     }
     if (draw.item.mesh.value < engine.meshes.size()) {
@@ -3011,7 +3087,7 @@ inline std::size_t standard_variant_for_draw(
     const Scene& scene,
     const Engine& engine,
     const upstream::RenderDrawCommand& draw,
-    std::size_t geometry_task = std::numeric_limits<std::size_t>::max(),
+    std::size_t geometry_task = npos,
     // Filled with the derived key when the caller passes one, so the draw
     // can consume `key.features` instead of re-deriving it.
     StandardVariantKey* key_out = nullptr) {
@@ -3019,7 +3095,7 @@ inline std::size_t standard_variant_for_draw(
     const StandardVariantKey key = standard_variant_key(engine, draw);
     if (key_out) *key_out = key;
     if (!key.resolved) {
-        return std::numeric_limits<std::size_t>::max();
+        return npos;
     }
     return upstream::standard_variant_for(
         key.features,
@@ -4728,6 +4804,39 @@ struct ShaderPassMatrices {
     const std::array<float, 4>* camera_position = nullptr;
 };
 
+/**
+ * One shader draw's own matrix lanes, derived once and consumed
+ * identically by both backends' draw loops and the render capture: the
+ * mesh world fold, the world-view-projection product, and the
+ * world-view product when the pass carries a view. The record owns the
+ * storage the patched ShaderPassMatrices points into, so keep it alive
+ * through the block writes made against `apply`'s result.
+ */
+struct ShaderDrawMatrices {
+    std::array<float, 16> world;
+    std::array<float, 16> world_view_projection;
+    std::optional<std::array<float, 16>> world_view;
+
+    ShaderDrawMatrices(
+        const Engine& engine,
+        const MeshRecord& mesh,
+        const ShaderPassMatrices& pass)
+        : world(shader_draw_world(engine, mesh)),
+          world_view_projection(
+              shader_matrix_product(pass.view_projection, world)),
+          world_view(shader_world_view(pass.view, world)) {}
+
+    /** The pass matrices with this draw's three lanes patched in. */
+    [[nodiscard]] ShaderPassMatrices apply(
+        const ShaderPassMatrices& pass) const {
+        ShaderPassMatrices patched = pass;
+        patched.world = &world;
+        patched.world_view = world_view ? &*world_view : nullptr;
+        patched.world_view_projection = &world_view_projection;
+        return patched;
+    }
+};
+
 /** Camera position in the same absolute/eye-relative frame as shader world. */
 inline std::array<float, 4> shader_camera_position(
     const Scene& scene,
@@ -4756,11 +4865,16 @@ inline std::array<float, 4> shader_camera_position(
  * One custom-shader stage block: declared system matrices followed by the
  * reflected gathers from the material's flat value storage. These exact
  * floats feed SDL pushes, Dawn buffer writes and render capture.
+ *
+ * Filled into a caller-owned scratch rather than a returned vector so the
+ * per-draw walks in all three consumers reuse one allocation; `assign`
+ * zero-fills every element, so the bytes match a freshly sized vector's.
  */
-inline std::vector<float> shader_stage_block_floats(
+inline void shader_stage_block_floats(
     const upstream::ShaderVariantStageBlock& block,
     const ShaderPassMatrices& pass,
-    const MaterialRecord& material) {
+    const MaterialRecord& material,
+    std::vector<float>& floats) {
     // Declared here rather than reusing `pinned_identity_world`, which
     // lives under BBLITE_PINNED_MATERIALS -- a shader-only scene compiles
     // this function without it.
@@ -4770,7 +4884,7 @@ inline std::vector<float> shader_stage_block_floats(
         0.0f, 0.0f, 1.0f, 0.0f,
         0.0f, 0.0f, 0.0f, 1.0f,
     };
-    std::vector<float> floats(block.float_size, 0.0f);
+    floats.assign(block.float_size, 0.0f);
     std::size_t head = 0;
     const auto copy_from =
         [&](const float* source, std::size_t count, const char* name) {
@@ -4844,7 +4958,6 @@ inline std::vector<float> shader_stage_block_floats(
                 material.shader_uniform_values[gather[1] + index];
         }
     }
-    return floats;
 }
 #endif
 

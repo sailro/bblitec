@@ -1,5 +1,8 @@
 import ts from "typescript";
-import { cppIdentifier } from "../cpp-literals.js";
+import {
+    cppIdentifier,
+    cppIdentifierPattern,
+} from "../cpp-literals.js";
 import type { DataLowerer } from "./data-lowering.js";
 import {
     dataTypesEqual,
@@ -109,8 +112,6 @@ interface MethodClosure {
     readonly getters: ReadonlySet<ts.GetAccessorDeclaration>;
     readonly fieldNames: ReadonlySet<string>;
 }
-
-const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 /**
  * Whether a class-field binding still is exactly the leaf value its native

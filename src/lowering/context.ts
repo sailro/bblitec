@@ -4,6 +4,7 @@ import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
+import { sourceLocation } from "../source-location.js";
 
 export interface LoweredSource {
     header: string;
@@ -30,12 +31,9 @@ export class LoweringContext {
         node: ts.Node,
         message: string,
     ): never {
-        const file = node.getSourceFile();
-        const position = file.getLineAndCharacterOfPosition(
-            node.getStart(file, false),
-        );
+        const { file, line, character } = sourceLocation(node);
         throw new Error(
-            `${file.fileName}:${position.line + 1}:${position.character + 1}: ${message}`,
+            `${file.fileName}:${line}:${character}: ${message}`,
         );
     }
 

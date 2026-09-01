@@ -1,0 +1,40 @@
+A greyscale PNG carries no PLTE, so SDL_image expands it to an indexed
+surface over a ramp it synthesises itself -- and builds as
+`(i * 255) / ncolors`, where the last entry has to land on 255: the
+indices are the file's own grey sample values, so the divisor is the
+last index, not the count. At eight bits the count-division maps grey
+146 to 145 and tops the ramp out at 254, so every greyscale PNG decodes
+one level dark. Measured here on a greyscale heightmap whose displaced
+terrain sat one quantisation step low across most of the mesh.
+
+`ncolors` is at least 2 on every path that reaches the ramp (the grey
+formats are INDEX1/2/4/8), so the last-index division is safe, and the
+1/2/4-bit ramps it produces (0,255; 0,85,170,255; i*17) are the exact
+sample expansions.
+
+This patch self-retires: once SDL_image builds the ramp over the last
+index upstream, it fails to apply and the overlay is deleted.
+
+diff --git a/src/IMG_libpng.c b/src/IMG_libpng.c
+index eb3eb12..d7ed74f 100644
+--- a/src/IMG_libpng.c
++++ b/src/IMG_libpng.c
+@@ -479,10 +479,15 @@ static bool LIBPNG_LoadPNG_IO_Internal(SDL_IOStream *src, struct png_load_vars *
+             return false;
+         }
+ 
++        // The indices are the file's own grey sample values, so the ramp
++        // must map the last one to full white: divide by the last index,
++        // not the count. Dividing by ncolors tops an 8-bit ramp out at
++        // 254 and lands grey 146 on 145 -- every level above zero comes
++        // back one shade dark.
+         for (int i = 0; i < palette->ncolors; i++) {
+-            palette->colors[i].r = (i * 255) / palette->ncolors;
+-            palette->colors[i].g = (i * 255) / palette->ncolors;
+-            palette->colors[i].b = (i * 255) / palette->ncolors;
++            palette->colors[i].r = (i * 255) / (palette->ncolors - 1);
++            palette->colors[i].g = (i * 255) / (palette->ncolors - 1);
++            palette->colors[i].b = (i * 255) / (palette->ncolors - 1);
+             palette->colors[i].a = 255;
+         }
+     }

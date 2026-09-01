@@ -122,8 +122,9 @@ const csmDirectionalOptions = [
  * folded into the blur fragment's own tap table by
  * `createShadowBlurFragmentWGSL`. The rest stay run-time expressions,
  * because scene 4 reads the two ortho bounds off the camera it just
- * configured. `forceRefreshEveryFrame` is accepted generation-known as a
- * checked no-op: native refreshes every reached shadow task per frame.
+ * configured. `forceRefreshEveryFrame` rides into the record, where it
+ * disables the pinned render gate (break-meshes reaches it: its
+ * physics-driven pieces move the map every frame).
  */
 const esmDirectionalOptions = [
     "mapSize",
@@ -149,6 +150,7 @@ const esmDirectionalEmitted = [
     "frustumEdgeFalloff",
     "orthoMinZ",
     "orthoMaxZ",
+    "forceRefreshEveryFrame",
     "esmIndex",
 ] as const;
 
@@ -241,6 +243,7 @@ const shadowGeneratorFactories: Readonly<
             "lambda",
             "bias",
             "darkness",
+            "forceRefreshEveryFrame",
         ],
         defaults: {
             mapSize: "bbl::upstream::csm_default_map_size",
@@ -248,6 +251,9 @@ const shadowGeneratorFactories: Readonly<
             lambda: "bbl::upstream::csm_default_lambda",
             bias: "bbl::upstream::csm_default_bias",
             darkness: "bbl::upstream::csm_default_darkness",
+            // The pin's `cfg.forceRefreshEveryFrame ?? false`, whose shape
+            // the shadow lowerer asserts against the factory.
+            forceRefreshEveryFrame: "false",
         },
         generationResolved: ["mapSize", "numCascades"],
         factory: "bbl::create_csm_directional_shadow_generator",
@@ -271,6 +277,9 @@ const shadowGeneratorFactories: Readonly<
                 "bbl::upstream::esm_default_frustum_edge_falloff",
             orthoMinZ: "bbl::upstream::esm_default_ortho_min_z",
             orthoMaxZ: "bbl::upstream::esm_default_ortho_max_z",
+            // The pin's `cfg.forceRefreshEveryFrame ?? false`, whose shape
+            // the shadow lowerer asserts against the factory.
+            forceRefreshEveryFrame: "false",
         },
         // These three decide the blur shader's own text and the four
         // textures' extents.
@@ -335,9 +344,10 @@ function compileShadowGeneratorFactory(
                         "forceRefreshEveryFrame must be generation-known.",
                     );
                 }
-                // Native refreshes and records every reached shadow task on
-                // every frame already, so either pinned setting has no
-                // additional state to carry across this seam.
+                // Into the record: the flag disables the pinned render
+                // gate, so the map re-renders every frame the way
+                // `renderEsmShadowMap` / `renderCsmShadowMap` would.
+                resolved[name] = fixed ? "true" : "false";
                 continue;
             }
             if (spec.generationResolved.includes(name)) {

@@ -1860,7 +1860,7 @@ export function compileSpriteIntrinsic(
             context.reachFeature("sprite:2d", call);
             context.reachFeature("sprite:2d-depth-host", call);
             context.reachFeature("renderer:sprite", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             context.emit(
                 `bbl::add_depth_hosted_sprite_layer(${scene.cpp}, ${layer.cpp});`,
             );
@@ -1887,7 +1887,7 @@ export function compileSpriteIntrinsic(
             // scene renderer's own pass, against its camera and depth. A
             // scene of nothing but billboards still needs that pass, the way
             // a render target does.
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             context.emit(
                 `bbl::add_billboard_system(${scene.cpp}, ${system.cpp});`,
             );

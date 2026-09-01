@@ -149,7 +149,7 @@ function scene33Inputs(): FeatureActivationInputs {
             "environment:ibl",
             "environment:env",
             "loader:gltf",
-            "renderer:pbr",
+            "renderer:scene",
             "renderer:transmission",
             "material:pbr-linear-image-processing",
             "light:point",
@@ -164,7 +164,7 @@ function scene33Inputs(): FeatureActivationInputs {
             "environment:ibl": "scene33.ts:15",
             "environment:env": "scene33.ts:15",
             "loader:gltf": "scene33.ts:9",
-            "renderer:pbr": "scene33.ts:9",
+            "renderer:scene": "scene33.ts:9",
             "renderer:transmission": "scene33.ts:24",
             "material:pbr-linear-image-processing": "scene33.ts:24",
         },
@@ -210,7 +210,7 @@ function dispersiveInputs(): FeatureActivationInputs {
             "backend:sdl",
             "camera:arc-rotate",
             "loader:gltf",
-            "renderer:pbr",
+            "renderer:scene",
         ],
         assetJoinedFeatures: new Map(),
         specialization: specialization({
@@ -492,7 +492,7 @@ test("records scene-source and asset-joined runtime features", () => {
     }
 
     // (i) A scene-source feature.
-    const pbr = named(rows, "renderer:pbr");
+    const pbr = named(rows, "renderer:scene");
     assert.equal(pbr.active, true);
     assert.match(pbr.activatedBy, /^scene source/);
     assert.match(pbr.upstreamProvenance, /pbr-template\.ts/);
@@ -722,7 +722,7 @@ test("scene-source rows cite the recorded first-reach site", () => {
 
     // A feature with a recorded site cites it verbatim.
     assert.equal(
-        named(rows, "renderer:pbr").activatedBy,
+        named(rows, "renderer:scene").activatedBy,
         "scene source: reached at scene33.ts:9",
     );
     assert.equal(
@@ -758,7 +758,7 @@ test("scene-source rows cite the recorded first-reach site", () => {
     delete unrecorded.featureSites;
     const uncited = featureActivationRows(unrecorded);
     assert.equal(
-        named(uncited, "renderer:pbr").activatedBy,
+        named(uncited, "renderer:scene").activatedBy,
         "scene source: reached by the compiled scene TypeScript",
     );
 });

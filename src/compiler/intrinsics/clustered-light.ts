@@ -230,7 +230,7 @@ export function compileClusteredLightIntrinsic(
             }
             container.state.frozen = true;
             context.reachFeature("light:clustered", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             context.reachClusteredContainer(container.state, call);
             return {
                 kind: "void",

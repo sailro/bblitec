@@ -1,0 +1,66 @@
+{
+    "version": 5,
+    "cmakeMinimumRequired": { "major": 3, "minor": 24, "patch": 0 },
+    "configurePresets": [
+        {
+            "name": "base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/build-${presetName}",
+            "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Release",
+                "BBLITE_GENERATED_DIR": "$env{BBLITE_GENERATED_DIR}"
+            }
+        },
+        {
+            "name": "dev",
+            "displayName": "Development, both GPU backends",
+            "inherits": "base",
+            "cacheVariables": { "BBLITE_BACKEND": "BOTH" }
+        },
+        {
+            "name": "dev-sdl",
+            "displayName": "Development, SDL_GPU only",
+            "inherits": "base",
+            "cacheVariables": { "BBLITE_BACKEND": "SDL_GPU" }
+        },
+        {
+            "name": "dev-dawn",
+            "displayName": "Development, Dawn only",
+            "inherits": "base",
+            "cacheVariables": { "BBLITE_BACKEND": "DAWN" }
+        },
+        {
+            "name": "min-sdl",
+            "displayName": "Minimal-size shipping, SDL_GPU",
+            "inherits": "base",
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+                "BBLITE_BACKEND": "SDL_GPU",
+                "BBLITE_MINSIZE": "ON",
+                "BBLITE_SDL_DIR": "${sourceDir}/../artifacts/tools/sdl-min"
+            }
+        },
+        {
+            "name": "min-dawn",
+            "displayName": "Minimal-size shipping, Dawn",
+            "inherits": "base",
+            "cacheVariables": {
+                "VCPKG_TARGET_TRIPLET": "x64-windows-static",
+                "CMAKE_MSVC_RUNTIME_LIBRARY": "MultiThreaded$<$<CONFIG:Debug>:Debug>",
+                "BBLITE_BACKEND": "DAWN",
+                "BBLITE_MINSIZE": "ON",
+                "BBLITE_DAWN_DIR": "${sourceDir}/../artifacts/tools/dawn-min"
+            }
+        }
+    ],
+    "buildPresets": [
+        { "name": "dev", "configurePreset": "dev" },
+        { "name": "dev-sdl", "configurePreset": "dev-sdl" },
+        { "name": "dev-dawn", "configurePreset": "dev-dawn" },
+        { "name": "min-sdl", "configurePreset": "min-sdl" },
+        { "name": "min-dawn", "configurePreset": "min-dawn" }
+    ]
+}
