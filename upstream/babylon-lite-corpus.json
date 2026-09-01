@@ -1376,6 +1376,318 @@
       "sha256": "134bfc96ae0113a5f7820a07063efa5904e7e9e28a3d06de7f563e231a43c79f"
     }
   ],
+  "staged": [
+    {
+      "upstreamPath": "LICENSE",
+      "source": "corpus/babylon-lite/LICENSE",
+      "sha256": "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene41.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene41.ts",
+      "sha256": "17bbc23c0aa47cff400b344030b050b24e9e9d5d6e5813db5305aee0c162f903"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene42.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene42.ts",
+      "sha256": "d71c0434f589cf3f7712111ea9aebb0d8ad5f60295e5b289acca1ef3e8f8fa3f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene44.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene44.ts",
+      "sha256": "8174a4e598b423b59edd7c679c48a5abbcae8e3d5a73d770a5adb20d69e9e98d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene45.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene45.ts",
+      "sha256": "72fdc035e5e587d653b8039b0d6e4ff172c6e2e40a9259d4be94ecdbc02545f2"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene46.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene46.ts",
+      "sha256": "b60d4c5c49a65427a9c4339e1eadb89eeff1f7fcd6e83eb2b93cb7b74f1ab4f5"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene47.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene47.ts",
+      "sha256": "0ed9ea0bdd04bcc7d6973817ce613c15243afb60af7c1e623965bcdb56323726"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene48.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene48.ts",
+      "sha256": "14f9b90d35ce89fefc1cb1ae221da1cc4ca1371ded01208490b55f2fd4d0abcc"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene49.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
+      "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene73.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
+      "sha256": "cd697444db8da41e9353be82f9dafdcfd7f494ad22e8847bfb05f3b6fdd91c3c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene86.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene86.ts",
+      "sha256": "5f8fbb5b9047fcef60439cfa84e13fe73c1b07756a7238d0b4bd4d652b8879f4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene90.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene90.ts",
+      "sha256": "f0f054fb8309f86819be0ca5e1ee3a5d91e2c3a46c3a987de23f7fc87d1deeef"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene91.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene91.ts",
+      "sha256": "31f029bb1f6383432b184017cde0ce44ebc08a4fcb47a5bcecddd97c9e67c5ee"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene101.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene101.ts",
+      "sha256": "22901adc3dbf5c36e31f3fe543be9dde33ba9d5e307febd5ea58498f1b5f34bd"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene102.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene102.ts",
+      "sha256": "4d77e2f26b3a0b0d3fab0ffffccbdd174322728f55cd46fc383394c6d68634d0"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene103.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene103.ts",
+      "sha256": "335b572d7512baa348d0ebba78a987c451416524e436d19472e24b025625936a"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene104.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene104.ts",
+      "sha256": "884491a54742d7d4e6cd09e59b2b667407d29015c55fdb79bdf4a951cff29e32"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene105.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene105.ts",
+      "sha256": "73cfaaffd6608f65defaf93e3695b8c1ecb131852b2e3eb02c365553e88c269d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene106.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",
+      "sha256": "080dc80c222e3a1fa16e9fa8cb284a77b0ccb9d9b417821c5d7cdc25d9635caf"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene111.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene111.ts",
+      "sha256": "d92be8f660eeef9ba2fe5b6b1f0fc6ae6d9def162133feb7c7e7cc55632b2b99"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene112.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene112.ts",
+      "sha256": "234373e22bbed4f2b4ffa5620d643f3e927ef2449337938300d81498fa645346"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene113.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene113.ts",
+      "sha256": "c34afe911c384e95c0b57980946d07a2c2140805ad111cecaf0431dd71c66d0c"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene114.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene114.ts",
+      "sha256": "879093cd0639b8b54bb0a7b8373796e8b6d16ae2f860a3a57acd354d867aecd4"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene115.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene115.ts",
+      "sha256": "1363966f8d59b9872e7fd4ded1e650353ffb6a57108e08d373e57fe5c3ff5a22"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene118.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene118.ts",
+      "sha256": "91085e9a451ac4b50eb063d6d077e48204734b13c302d8bfabea0efd7f906bb1"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene121.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene121.ts",
+      "sha256": "46bac70e9b72f34cb76ddd2ed68fe367a789a58b4566b992e9c84f1d5c93d68e"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene122.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene122.ts",
+      "sha256": "84ce3d0d60a7459ff62ad7fe9fb3cd23b6b599f8c72ad8a80f0a268098088139"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene123.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene123.ts",
+      "sha256": "b7ad0f7dfcfdaab1475c6d581fd3c60b3c5a2caa0b987a6d6c27a0cd72d15615"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene124.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene124.ts",
+      "sha256": "0057d1c7fb808a07236bc997e8466c25be5e3e923a130fb6c027c86f619e66b8"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene140.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene140.ts",
+      "sha256": "218da9a7a4c9d42ff908f2467ed683c1a7b21394cc5474a612e1992f3fc0ed6d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene149.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene149.ts",
+      "sha256": "3d78b87edc62f16f4faa73b46b992f4a206218778371062039cf7d537b00037f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene153.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene153.ts",
+      "sha256": "401abf26cbef8f76773a4ea8f1ba371cec96efa9ec6965e75e84b22762ac0235"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene164.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene164.ts",
+      "sha256": "0183a33e978006dc856d8670fde71bbafb41807dd0ea8bc677506e420aa9d74f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene167.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene167.ts",
+      "sha256": "b991dd5df3b73c3558567ce3ae8d29ea78153b2f64346b9340fb87d4976767a5"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene180.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
+      "sha256": "94d545ad18085c30dcd57566519088d247ffd0e2d2a716fc5a59c5253f62c0fe"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene181.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene181.ts",
+      "sha256": "3a92dce31d37cac4e9b4e8fcab444d67e7b1dae72c1ba6801b0dc8f50874569e"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene186.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene186.ts",
+      "sha256": "1bc6cc845a2fdb423a0f5c380862bbdcc53148bd1ebbe7bbb71a972999035459"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene186-debug.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene186-debug.ts",
+      "sha256": "94e5412c3d86bda80f2cc5962ed9aed0569710451936c5ff684f310f88a23a03"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene187.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene187.ts",
+      "sha256": "074e4d1d2e1d7e218f278a0b495f55eb00df87545f007e3267ef866313fbdd9d"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene187-debug.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene187-debug.ts",
+      "sha256": "285c0899039f0eead5d7a0d9465b7186c2cd39a17e6abfa8664fb0f9d5c1af63"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene209.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene209.ts",
+      "sha256": "1f41c897df133ded75b355f1d96fcd9df2c461098f4b10abbdeafec25afe34c5"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene214.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene214.ts",
+      "sha256": "cb22c178686612124b859de22057cd63872c8ccc17ab3f2c0a16463f8589c642"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene215.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene215.ts",
+      "sha256": "f12b7e7819937111a6a1a29b9aa0df23af5fbe8424f091876c7a4a5df98e62ba"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene218.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene218.ts",
+      "sha256": "b9be518f2c036c854420791269539016df1a66020ac6f2ab39db54556d6a7c49"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene219.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene219.ts",
+      "sha256": "2655ffe6a3eef79be0cbde43eb68459a44266baf3429beb3f8a03311e0a3497f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene221.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene221.ts",
+      "sha256": "b0633d0fd0f56ba3d92fcb1e6ee08c55b19d3619cd2bc6d6338f355907476a18"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene222.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene222.ts",
+      "sha256": "32529423c1b2068df86ac19fd578d74458746715e58b8142f327f04a0e3ff35f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene223.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
+      "sha256": "bcee1f2fde33e38c81eff300940ee0646c06880dc6ff48a10289474f580a6617"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene224.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene224.ts",
+      "sha256": "6b5f16e724cc1db47061e4da09ffcd3104d3af039515934c3f5d921b1bbba8fe"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene225.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene225.ts",
+      "sha256": "7030591dcb13f04e127a09772ed5b547452f358984e092450d51cfaca6451aa5"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene226.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene226.ts",
+      "sha256": "3de74d210e74dcbedc681d19522f1517b130e33a8791002815c599a4da8a2adf"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene227.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene227.ts",
+      "sha256": "c49be020754f516f5699ac9ce67460bfb6b5b1c40fb0dd4dbe65bde44ed6ab3b"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene228.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene228.ts",
+      "sha256": "d0965fff6c7ca27320b49d7d70388c2a13f8f215c018a3486c5f0e2948f72f7f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene231.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene231.ts",
+      "sha256": "a286276c00b4abd989502b4a123b96a4f55e748736b61de3ac7de7f127d9fd3f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene241.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene241.ts",
+      "sha256": "3279afdd02eec8f88205b5f22b98bf4c0a35e24832beeae90e58687c473f8764"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene261.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene261.ts",
+      "sha256": "f53c4c2c27a6fd1dd75abb55a4f87fdb9ee09e1ab6d0ae26903fbc2568f25a7e"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene272.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene272.ts",
+      "sha256": "e56f01b4bcde9bdd59bc276387baf7e615b7dfd5b761ace906be6098548cdc78"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene275.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene275.ts",
+      "sha256": "6b552ab507bb60b5311ca18fa2091753afed0225d77379e68b0a106b32f4b895"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene300.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene300.ts",
+      "sha256": "3bcf3e3217ed0de2aff2c43bd4eab3035f17bb32895c21f40c6ef794b7b2e5ab"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene302.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene302.ts",
+      "sha256": "58a6ecbf8bd43186b0621304211e9b1ba4eef231be644e0f17e24f16fa3a53c2"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene303.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene303.ts",
+      "sha256": "ddff9e0af5f52ca1f646100c36c8d7a4d050b890704cceb40438bcc971760b09"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene304.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene304.ts",
+      "sha256": "c5e727d1e15968ef6ff1f786f7dc7672c9ecc3d68e5fc4847e0dcdc5d49df2d7"
+    }
+  ],
   "applications": [
     {
       "id": "tetris",

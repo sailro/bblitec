@@ -185,6 +185,18 @@ function parseArguments(arguments_: string[]): CliOptions {
     };
 }
 
+function refuseUnknownKeys(
+    record: Record<string, unknown>,
+    known: readonly string[],
+    location: string,
+): void {
+    for (const key of Object.keys(record)) {
+        if (!known.includes(key)) {
+            throw new Error(`${location}: unknown key '${key}'.`);
+        }
+    }
+}
+
 function nativeHostUiElement(
     value: unknown,
     location: string,
@@ -193,6 +205,11 @@ function nativeHostUiElement(
         throw new Error(`${location} must be an object.`);
     }
     const record = value as Record<string, unknown>;
+    refuseUnknownKeys(
+        record,
+        ["tag", "text", "attributes", "children"],
+        location,
+    );
     if (typeof record.tag !== "string") {
         throw new Error(`${location}.tag must be a string.`);
     }
@@ -244,6 +261,11 @@ function readNativeHostUi(path: string): NativeHostUi {
         throw new Error(`Native host UI '${path}' must contain an object.`);
     }
     const record = value as Record<string, unknown>;
+    refuseUnknownKeys(
+        record,
+        ["elements", "classStyles"],
+        `Native host UI '${path}'`,
+    );
     if (!Array.isArray(record.elements)) {
         throw new Error(`Native host UI '${path}' must contain elements[].`);
     }
@@ -258,6 +280,11 @@ function readNativeHostUi(path: string): NativeHostUi {
             throw new Error(`Native host UI '${path}' classStyles[${index}] must be an object.`);
         }
         const item = rule as Record<string, unknown>;
+        refuseUnknownKeys(
+            item,
+            ["className", "style"],
+            `Native host UI '${path}' classStyles[${index}]`,
+        );
         if (
             typeof item.className !== "string" ||
             typeof item.style !== "string"
@@ -267,9 +294,15 @@ function readNativeHostUi(path: string): NativeHostUi {
         return { className: item.className, style: item.style };
     });
     return {
+        // As given (registry-relative), so the recorded activation site is
+        // machine-independent where an absolute resolution would not be.
+        sourcePath: path,
         ...(classStyles.length > 0 ? { classStyles } : {}),
         elements: record.elements.map((element, index) =>
-            nativeHostUiElement(element, `elements[${index}]`),
+            nativeHostUiElement(
+                element,
+                `Native host UI '${path}' elements[${index}]`,
+            ),
         ),
     };
 }

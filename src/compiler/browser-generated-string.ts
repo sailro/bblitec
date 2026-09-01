@@ -5,12 +5,24 @@
 // Canvas2D surface; executing that closed helper in the pinned capture browser
 // preserves the browser's actual rasterization while leaving the source graph
 // byte-identical.
+//
+// The compiler walk is synchronous, so the Chromium run crosses a
+// `spawnSync` subprocess boundary — the same shape as
+// `asset-bytes-sync.ts` — and the subprocess imports the one browser
+// ceremony (`browser-harness.ts`'s `withBrowserPage`) rather than
+// inlining its own launch. Results replay from the content-addressed
+// bake cache: warm recompiles launch no Chromium and yield the exact
+// bytes of the run that produced them.
 import { spawnSync } from "node:child_process";
 
 import ts from "typescript";
 
-import { resolveFunctionDeclaration } from "./user-functions.js";
+import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 
+// Same-process fast path in front of the durable bake cache: a scene
+// that calls the same helper twice pays neither a subprocess nor a
+// cache-file read the second time.
 const cache = new Map<string, string>();
 
 export function browserGeneratedString(
@@ -18,10 +30,9 @@ export function browserGeneratedString(
     call: ts.CallExpression,
 ): string | undefined {
     if (!ts.isIdentifier(call.expression)) return undefined;
-    const declaration = resolveFunctionDeclaration(
+    const declaration = tryResolveFunctionDeclaration(
         checker,
         call.expression,
-        () => undefined as never,
     );
     if (!declaration?.body || !ts.isFunctionDeclaration(declaration)) {
         return undefined;
@@ -59,29 +70,85 @@ export function browserGeneratedString(
             fileName: source.fileName,
         }).outputText;
 
-    const browserPathModule = new URL(
-        "../browser-path.js",
+    const value = cachedBrowserGeneratedString(
+        javascript,
+        functionName,
+        argumentsText,
+        runCanvasHelperInChromium,
+    );
+    cache.set(key, value);
+    return value;
+}
+
+/**
+ * The bake-cache wrapper around the Chromium run. The string is
+ * deterministic in (the helper's transpiled source with its call
+ * appended, pin, browser) — the transpiled input already embeds the
+ * helper's whole source file and the literal arguments, and the
+ * parameters name them again for the key's readability. The runner is
+ * injectable so the replay contract is testable without a browser
+ * launch.
+ */
+export function cachedBrowserGeneratedString(
+    javascript: string,
+    functionName: string,
+    argumentsText: string,
+    run: (javascript: string, functionName: string) => string,
+): string {
+    const bytes = cachedBakeSync(
+        {
+            kind: "browser-generated-string",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: { functionName, arguments: argumentsText },
+            inputs: [Buffer.from(javascript, "utf8")],
+        },
+        () => Buffer.from(run(javascript, functionName), "utf8"),
+    );
+    return Buffer.from(bytes).toString("utf8");
+}
+
+/**
+ * Execute the transpiled helper in the capture Chromium and return the
+ * string it assigned to `__bbliteGeneratedString`. The subprocess
+ * imports the one launch ceremony from `browser-harness.js`; like the
+ * drawn-atlas Canvas2D bake it passes no Chromium flags, and the script
+ * runs on the fresh page exactly as it always has (`addScriptTag` on the
+ * unnavigated page — the served shell exists only because the ceremony
+ * hosts one).
+ */
+function runCanvasHelperInChromium(
+    javascript: string,
+    functionName: string,
+): string {
+    const harnessModule = new URL(
+        "../browser-harness.js",
         import.meta.url,
     ).href;
     const script = `
-        import { chromium } from "playwright-core";
-        import { resolveBrowserPath } from ${JSON.stringify(browserPathModule)};
+        import { createServer } from "node:http";
+        import { withBrowserPage } from ${JSON.stringify(harnessModule)};
         const chunks = [];
         for await (const chunk of process.stdin) chunks.push(chunk);
         const code = Buffer.concat(chunks).toString("utf8");
-        const browser = await chromium.launch({
-            executablePath: resolveBrowserPath("Canvas2D texture generation requires Chromium."),
-            headless: true,
+        const server = createServer((_request, response) => {
+            response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+            response.end("<!doctype html><title>Canvas2D helper</title>");
         });
-        try {
-            const page = await browser.newPage();
-            await page.addScriptTag({ content: code });
-            const value = await page.evaluate(() => globalThis.__bbliteGeneratedString);
-            if (typeof value !== "string") throw new Error("Canvas helper did not return a string.");
-            process.stdout.write(Buffer.from(value, "utf8").toString("base64"));
-        } finally {
-            await browser.close();
-        }
+        const value = await withBrowserPage(
+            server,
+            {
+                serverName: "Canvas2D helper server",
+                browserRequirement: "Canvas2D texture generation requires Chromium.",
+            },
+            async (page) => {
+                await page.addScriptTag({ content: code });
+                return page.evaluate(() => globalThis.__bbliteGeneratedString);
+            },
+        );
+        if (typeof value !== "string") throw new Error("Canvas helper did not return a string.");
+        process.stdout.write(Buffer.from(value, "utf8").toString("base64"));
     `;
     const child = spawnSync(
         process.execPath,
@@ -99,9 +166,7 @@ export function browserGeneratedString(
                 `${(child.stderr || child.error?.message || "no output").trim()}`,
         );
     }
-    const value = Buffer.from(child.stdout.trim(), "base64").toString("utf8");
-    cache.set(key, value);
-    return value;
+    return Buffer.from(child.stdout.trim(), "base64").toString("utf8");
 }
 
 function isLiteralConfiguration(expression: ts.Expression): boolean {

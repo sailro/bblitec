@@ -13,6 +13,9 @@ import {
     moduleClosureBytes,
     moduleIdentity,
 } from "../src/bake-cache.js";
+import { resolveBrowserPath } from "../src/browser-path.js";
+import { cachedBrowserGeneratedString } from "../src/compiler/browser-generated-string.js";
+import { cachedIblBrdfLut } from "../src/ibl-brdf-lut.js";
 
 // The replay cache for the deterministic executed bakes. Its contract:
 // a key change misses, a repeat hits with the same bytes, a deleted
@@ -22,18 +25,26 @@ import {
 
 const cacheRoot = resolve("artifacts", "bake-cache");
 
-function withCacheEnabled<T>(body: () => T): T {
-    // Node's test runner marks its children, and the cache disables
-    // itself there on purpose; this test IS about the cache, so the
-    // marker is lifted for its body alone.
+// Node's test runner marks its children, and the cache disables itself
+// there on purpose; these tests ARE about the cache, so the marker is
+// lifted for a body alone — until the sync body returns, or the async
+// body settles.
+function liftCacheMarker(): () => void {
     const previous = process.env.NODE_TEST_CONTEXT;
     delete process.env.NODE_TEST_CONTEXT;
-    try {
-        return body();
-    } finally {
+    return () => {
         if (previous !== undefined) {
             process.env.NODE_TEST_CONTEXT = previous;
         }
+    };
+}
+
+function withCacheEnabled<T>(body: () => T): T {
+    const restore = liftCacheMarker();
+    try {
+        return body();
+    } finally {
+        restore();
     }
 }
 
@@ -205,4 +216,111 @@ test("moduleIdentity hashes the calling module's compiled source", () => {
     const identity = moduleIdentity(import.meta.url);
     assert.match(identity, /^[0-9a-f]{64}$/);
     assert.equal(identity, moduleIdentity(import.meta.url));
+});
+
+// The two browser-keyed kinds' replay contracts, exercised through their
+// injectable bakes so no Chromium is launched. Fake inputs key fake
+// entries that can never collide with a production key (the input hash
+// differs), and both kinds' entries are removed either way. The keys are
+// browser-keyed, so the tests skip where no capture browser resolves —
+// there the cache deliberately stands aside and every call bakes.
+
+function browserResolves(): boolean {
+    try {
+        resolveBrowserPath();
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+async function withCacheEnabledAsync<T>(
+    body: () => Promise<T>,
+): Promise<T> {
+    const restore = liftCacheMarker();
+    try {
+        return await body();
+    } finally {
+        restore();
+    }
+}
+
+test("replays the BRDF-LUT bake instead of relaunching Chromium", async (t) => {
+    if (!browserResolves()) {
+        t.skip("no capture browser resolves; the browser-keyed cache stands aside");
+        return;
+    }
+    const kind = "ibl-brdf-lut";
+    removeEntries(kind);
+    try {
+        await withCacheEnabledAsync(async () => {
+            let bakes = 0;
+            const fake = async (shader: string): Promise<Uint8Array> => {
+                bakes += 1;
+                return Buffer.from(`lut:${shader}:${bakes}`, "utf8");
+            };
+            const first = await cachedIblBrdfLut("fake shader", fake);
+            const second = await cachedIblBrdfLut("fake shader", fake);
+            assert.equal(bakes, 1);
+            assert.deepEqual([...second], [...first]);
+            // The shader text is a key axis: a changed pin misses.
+            await cachedIblBrdfLut("fake shader v2", fake);
+            assert.equal(bakes, 2);
+        });
+    } finally {
+        removeEntries(kind);
+    }
+});
+
+test("replays the Canvas2D helper string instead of relaunching Chromium", (t) => {
+    if (!browserResolves()) {
+        t.skip("no capture browser resolves; the browser-keyed cache stands aside");
+        return;
+    }
+    const kind = "browser-generated-string";
+    removeEntries(kind);
+    try {
+        withCacheEnabled(() => {
+            let runs = 0;
+            const fake = (
+                javascript: string,
+                functionName: string,
+            ): string => {
+                runs += 1;
+                return `data:text/plain,${functionName}:${javascript.length}:${runs}`;
+            };
+            const first = cachedBrowserGeneratedString(
+                "const helper = 1;",
+                "makeTexture",
+                "8, true",
+                fake,
+            );
+            const second = cachedBrowserGeneratedString(
+                "const helper = 1;",
+                "makeTexture",
+                "8, true",
+                fake,
+            );
+            assert.equal(runs, 1);
+            assert.equal(second, first);
+            // Both declared axes miss on change: the helper's transpiled
+            // source, and the literal arguments.
+            cachedBrowserGeneratedString(
+                "const helper = 2;",
+                "makeTexture",
+                "8, true",
+                fake,
+            );
+            assert.equal(runs, 2);
+            cachedBrowserGeneratedString(
+                "const helper = 2;",
+                "makeTexture",
+                "9, true",
+                fake,
+            );
+            assert.equal(runs, 3);
+        });
+    } finally {
+        removeEntries(kind);
+    }
 });

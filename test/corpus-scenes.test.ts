@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
+import { join, sep } from "node:path";
 import test from "node:test";
 import { suiteBrowserModule } from "../src/capture-suite-reference.js";
 import {
@@ -100,6 +101,89 @@ test("keeps registered Babylon Lite support modules byte-identical to the pin", 
             `${module.upstreamPath} input differs from pinned upstream evidence.`,
         );
     }
+});
+
+test("keeps staged corpus files byte-identical to the pin", () => {
+    const manifest = readBabylonLiteCorpus();
+    const pinnedElsewhere = new Set([
+        ...manifest.scenes.map(({ source }) => source),
+        ...(manifest.modules ?? []).map(({ source }) => source),
+        ...manifest.applications.flatMap(({ files }) =>
+            files.map(({ source }) => source),
+        ),
+    ]);
+    for (const file of manifest.staged ?? []) {
+        assert.match(
+            file.upstreamPath,
+            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts)$/,
+        );
+        assert.equal(
+            file.source,
+            `corpus/babylon-lite/${file.upstreamPath}`,
+        );
+        // A staged row that registers moves to `scenes`; a copy left
+        // behind would let the two rows pin different bytes.
+        assert.ok(
+            !pinnedElsewhere.has(file.source),
+            `${file.upstreamPath} is pinned twice; move the staged row when a file registers.`,
+        );
+        const digest = createHash("sha256")
+            .update(readFileSync(file.source))
+            .digest("hex");
+        assert.equal(
+            digest,
+            file.sha256,
+            `${file.upstreamPath} input differs from pinned upstream evidence.`,
+        );
+    }
+});
+
+/**
+ * The coverage half of the corpus gate: hashing pinned rows proves the
+ * listed files immutable, but a file the manifest never lists is checked
+ * by nothing — exactly the class the break-mesh.ts drift lived in, where
+ * an unlisted corpus file drifted and would have been pinned drifted at
+ * its future integration. Every file under `corpus/` must therefore be
+ * pinned somewhere in the manifest. The only exceptions are named here
+ * exactly, each with the reason it cannot ride the git-blob pin.
+ */
+test("lists every corpus file in the pinned manifest", () => {
+    const manifest = readBabylonLiteCorpus();
+    const pinned = new Set<string>([
+        ...manifest.scenes.map(({ source }) => source),
+        ...(manifest.modules ?? []).map(({ source }) => source),
+        ...(manifest.staged ?? []).map(({ source }) => source),
+        ...manifest.applications.flatMap(({ files }) =>
+            files.map(({ source }) => source),
+        ),
+    ]);
+    const allowedUnpinned = new Set([
+        // The package's bundled third-party NOTICE, carried for license
+        // compliance; the pinned git tree holds no blob to verify it
+        // against.
+        "corpus/babylon-lite/NOTICE.txt",
+        // The repository's own corpus documentation, not upstream bytes.
+        "corpus/babylon-lite/README.md",
+    ]);
+    const unlisted: string[] = [];
+    for (const entry of readdirSync("corpus", {
+        recursive: true,
+        withFileTypes: true,
+    })) {
+        if (!entry.isFile()) continue;
+        const source = join(entry.parentPath, entry.name)
+            .split(sep)
+            .join("/");
+        if (pinned.has(source) || allowedUnpinned.has(source)) {
+            continue;
+        }
+        unlisted.push(source);
+    }
+    assert.deepEqual(
+        unlisted.sort(),
+        [],
+        "corpus/ holds files without a hash gate; pin them in upstream/babylon-lite-corpus.json (a file that cannot ride the git-blob pin is named in this test instead).",
+    );
 });
 
 test("keeps exact-source corpus references immutable", () => {

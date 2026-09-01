@@ -1,12 +1,13 @@
 /**
  * A content-addressed replay cache for the deterministic executed bakes.
  *
- * Five generation steps EXECUTE pinned code instead of folding it — the
- * HDR GGX prefilter, the Basis transcode, the node-particle simulation,
- * the drawn sprite atlas / computed pixel modules (all four in headless
- * Chromium), and the CPU-side DDS/splat parses — and re-run it on every
- * compile of the scenes that reach them: a measured 10–15 s of CPU per
- * `compile all`, and the full Chromium launch on every dev-loop
+ * Seven generation steps EXECUTE pinned or scene code instead of folding
+ * it — the HDR GGX prefilter, the Basis transcode, the node-particle
+ * simulation, the drawn sprite atlas / computed pixel modules, the
+ * pinned BRDF-LUT compute, the Canvas2D data-URL helpers (all six in
+ * headless Chromium), and the CPU-side DDS/splat parses — and re-run it
+ * on every compile of the scenes that reach them: a measured 10–15 s of
+ * CPU per `compile all`, and the full Chromium launch on every dev-loop
  * recompile of those scenes. The bakes are deterministic in their
  * declared inputs, so their results replay: each call site keys its
  * inputs here and, on a hit, gets the previous run's exact bytes back
@@ -110,7 +111,8 @@ function browserIdentity(): string | undefined {
 
 interface BakeKey {
     /** `hdr-prefilter`, `basis-transcode`, `node-particle`,
-     *  `executed-module`, `dds-package`, `splat-ply`. */
+     *  `executed-module`, `ibl-brdf-lut`, `browser-generated-string`,
+     *  `dds-package`, `splat-ply`. */
     kind: string;
     /** Bumped when the bake's contract changes. */
     version: string;
@@ -179,7 +181,10 @@ export async function cachedBake(
     return produced;
 }
 
-/** `cachedBake` for the synchronous CPU parses (DDS, splat PLY). */
+/** `cachedBake` for the bakes reached from synchronous callers: the CPU
+ *  parses (DDS, splat PLY) and the compiler walk's Canvas2D data-URL
+ *  helper, whose Chromium run is a `spawnSync` subprocess and therefore
+ *  synchronous at this boundary. */
 export function cachedBakeSync(
     key: BakeKey,
     bake: () => Uint8Array,

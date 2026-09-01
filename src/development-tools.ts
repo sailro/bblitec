@@ -28,6 +28,8 @@ export interface DevelopmentTools {
     labSoundDirectory: string;
     labSoundInstalled: boolean;
     powershell: string | undefined;
+    rmlUiDirectory: string;
+    rmlUiInstalled: boolean;
     tint: string | undefined;
     vcpkg: string | undefined;
     vcpkgRoot: string | undefined;
@@ -291,6 +293,10 @@ export function discoverDevelopmentTools(
         environment.BBLITE_LABSOUND_DIR ??
             join("artifacts", "tools", "labsound"),
     );
+    const rmlUiDirectory = resolve(
+        cwd,
+        environment.BBLITE_RMLUI_DIR ?? join("artifacts", "tools", "rmlui"),
+    );
     const localTint = resolve(
         cwd,
         "artifacts",
@@ -350,5 +356,22 @@ export function discoverDevelopmentTools(
         labSoundInstalled:
             existsSync(join(labSoundDirectory, "lib", "LabSound.lib")) &&
             existsSync(join(labSoundDirectory, "lib", "libnyquist.lib")),
+        rmlUiDirectory,
+        rmlUiInstalled:
+            // The two pieces native/CMakeLists.txt consumes: the package
+            // config find_package resolves, and the SDL platform source
+            // the UI feature compiles directly.
+            existsSync(
+                join(
+                    rmlUiDirectory,
+                    "lib",
+                    "cmake",
+                    "RmlUi",
+                    "RmlUiConfig.cmake",
+                ),
+            ) &&
+            existsSync(
+                join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"),
+            ),
     };
 }

@@ -27,6 +27,18 @@ export interface SceneParityDefinition {
     // browser-compiler parity); the shared thresholds above gate
     // SDL_GPU and any scene without an entry here.
     dawnThresholds?: { maxFullMad: number; maxForegroundMad: number };
+    /**
+     * Gates for the canvas-only lane of a UI-dominated application whose
+     * full-page thresholds sit at the platform font-rasterization floor
+     * (docs/ui.md): loose enough for a genuine 3D regression of a few
+     * tenths MAD to hide under. A canonical parity run of a scene
+     * declaring this also measures the `BBLITE_CAPTURE_UI=0` pair into
+     * `artifacts/parity-canvas/` — the same artifacts the manual
+     * attribution run writes — and gates it. One pair gates both
+     * backends, and only declaring scenes pay the extra native run and
+     * canvas reference capture.
+     */
+    canvasThresholds?: { maxFullMad: number; maxForegroundMad: number };
     backgroundColor: [number, number, number];
     backgroundThreshold: number;
     nativeEnvironment?: Record<string, string>;
@@ -3153,6 +3165,12 @@ const sceneInputs: readonly SceneInput[] = [
         parity: {
             maxFullMad: 1.4,
             maxForegroundMad: 1.1,
+            // Canvas-only lane: 0.093 / 0.101 on both backends
+            // (docs/status.md row note). The gate is the exact pair the
+            // canvas-golden era enforced before the full-page promotion,
+            // so a 3D regression cannot hide under the UI font residual
+            // the composite thresholds above must absorb.
+            canvasThresholds: { maxFullMad: 0.15, maxForegroundMad: 0.15 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             nativeEnvironment: adHocCaptureEnvironment(),
@@ -3215,6 +3233,10 @@ const sceneInputs: readonly SceneInput[] = [
             referenceFrame: 180,
             maxFullMad: 1.1,
             maxForegroundMad: 1.1,
+            // Canvas-only lane: 0.013 / 0.013 SDL_GPU and 0.010 / 0.010
+            // Dawn (docs/status.md row note); the canvas-golden era's own
+            // enforced pair.
+            canvasThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.05 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
             nativeEnvironment: fixedCaptureEnvironment(),
@@ -3245,6 +3267,10 @@ const sceneInputs: readonly SceneInput[] = [
             referenceFrame: 180,
             maxFullMad: 1.2,
             maxForegroundMad: 1.2,
+            // Canvas-only lane: 0.455 / 0.455 on both backends
+            // (docs/status.md row note); the canvas-golden era's own
+            // enforced pair.
+            canvasThresholds: { maxFullMad: 0.5, maxForegroundMad: 0.5 },
             backgroundColor: [158, 204, 235],
             backgroundThreshold: 30,
             nativeEnvironment: fixedCaptureEnvironment(),

@@ -29,6 +29,14 @@ export interface BabylonLiteCorpusManifest {
     sourceVersion: string;
     scenes: CorpusScene[];
     modules?: CorpusFile[];
+    /**
+     * Corpus files held as immutable evidence ahead of any registration:
+     * the staged numbered scenes (plus their upstream debug helpers) and
+     * the upstream LICENSE. They carry the same byte pin as everything
+     * else so a drift cannot sit unnoticed until the file is integrated;
+     * a row moves to `scenes` when its scene registers.
+     */
+    staged?: CorpusFile[];
     applications: CorpusApplication[];
 }
 

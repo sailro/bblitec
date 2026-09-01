@@ -16,6 +16,7 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+    captureUiEnabled,
     createSuiteSceneServer,
     suiteBrowserModule,
     suiteBrowserModuleDigest,
@@ -33,7 +34,9 @@ import {
     captureShadersDirectory,
     captureTextureUploadsPath,
     defaultCaptureDirectory,
+    goldenFixedFrame,
     readCaptureMeta,
+    usesRetainedUi,
     usesSeededRandom,
     writeSeekMeta,
     type CaptureMeta,
@@ -91,11 +94,18 @@ export function browserCaptureStaleness(
     if (meta.moduleSha256 === undefined) {
         return "carries no scene-module provenance";
     }
+    // The frame derivation follows the ambient capture mode, exactly as
+    // the capture's writer derived it; a `BBLITE_CAPTURE_UI` flip
+    // between capture and reuse therefore refuses a retained-UI
+    // application's capture and recaptures — the safe direction.
     const current = suiteBrowserModuleDigest(
         scene.source,
         meta.seekSeconds ?? undefined,
         scene.parity?.referenceAnimationGroups,
-        scene.parity?.referenceFrame,
+        goldenFixedFrame(
+            scene,
+            captureUiEnabled() && usesRetainedUi(scene),
+        ),
     );
     if (meta.moduleSha256 !== current) {
         return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
@@ -299,6 +309,16 @@ export async function runInstrumentedCapture(
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
     const animationGroups = scene.parity?.referenceAnimationGroups;
     const skipDrawIndexCount = options.skipDrawIndexCount ?? 0;
+    // The golden's page composition, mirrored exactly: full page vs
+    // canvas-only, the audited host-page UI, and the fixed-frame
+    // derivation are what the parity reference capture used — or the
+    // byte-identity check below compares two different conventions,
+    // which is how every retained-UI scene once read DIFFERS forever.
+    const captureUi = captureUiEnabled();
+    const referenceFrame = goldenFixedFrame(
+        scene,
+        captureUi && usesRetainedUi(scene),
+    );
     const outputDirectory = resolve(
         options.outputDirectory ?? defaultCaptureDirectory(scene.id),
     );
@@ -311,23 +331,34 @@ export async function runInstrumentedCapture(
         undefined,
         seekSeconds,
         animationGroups,
-        scene.parity?.referenceFrame,
+        referenceFrame,
     );
     const server = createSuiteSceneServer(
         moduleSource,
         {
             sourcePath: scene.source,
-            ...(scene.parity?.referenceFrame !== undefined
-                ? {
-                      fixedAnimationFrame:
-                          scene.parity.referenceFrame,
-                  }
+            ...(referenceFrame !== undefined
+                ? { fixedAnimationFrame: referenceFrame }
                 : {}),
             // The same stub the parity reference installs: a scene whose
             // manifest records `deterministic-seeded-random` must draw the
             // pinned sequence here too, or the capture describes a
             // different set of particles than the golden renders.
             seededRandom: usesSeededRandom(scene),
+            // The same audited host-page elements the golden's page
+            // carries. Served in the HTML ahead of the module script,
+            // after the init-script hooks are installed — the injection
+            // cannot disturb hook timing.
+            ...(captureUi && scene.nativeHostUi
+                ? {
+                      hostUi: JSON.parse(
+                          readFileSync(
+                              resolve(scene.nativeHostUi),
+                              "utf8",
+                          ),
+                      ),
+                  }
+                : {}),
         },
     );
     await withBrowserPage(
@@ -347,15 +378,37 @@ export async function runInstrumentedCapture(
                 origin,
                 seekSeconds !== undefined,
                 scene.parity?.referenceSearch,
-                scene.parity?.referenceFrame,
+                referenceFrame,
             );
             mkdirSync(captureShadersDirectory(outputDirectory), {
                 recursive: true,
             });
-            await hideNonCanvasChrome(page);
-            await page.locator("#renderCanvas").screenshot({
-                path: join(outputDirectory, "screenshot.png"),
-            });
+            // The golden's screenshot, shot-for-shot: full page (with
+            // the reference capture's CSS-animation freeze at the fixed
+            // frame) by default; canvas-only when `BBLITE_CAPTURE_UI=0`
+            // took the golden that way too.
+            const screenshotPath = join(outputDirectory, "screenshot.png");
+            if (captureUi) {
+                if (referenceFrame !== undefined) {
+                    // requestAnimationFrame and performance.now() are
+                    // pinned by the deterministic harness, but CSS
+                    // animations use the document timeline directly.
+                    // Freeze them at the same requested frame, as the
+                    // reference capture does.
+                    await page.evaluate((elapsedMilliseconds) => {
+                        for (const animation of document.getAnimations()) {
+                            animation.pause();
+                            animation.currentTime = elapsedMilliseconds;
+                        }
+                    }, referenceFrame * (1000 / 60));
+                }
+                await page.screenshot({ path: screenshotPath });
+            } else {
+                await hideNonCanvasChrome(page);
+                await page.locator("#renderCanvas").screenshot({
+                    path: screenshotPath,
+                });
+            }
 
             const dump = (await page.evaluate("window.__wgpuDump")) as {
                 shaders: { label: string; code: string }[];
@@ -408,10 +461,22 @@ export async function runInstrumentedCapture(
             console.log(summary);
 
             // Non-perturbation check: with no draw filter, the hooked
-            // render must stay byte-identical to the committed golden.
-            // The verdict is recorded in the sidecar rather than only
-            // printed and discarded.
-            const referencePath = scene.parity?.reference.path;
+            // render must stay byte-identical to the reference of the
+            // SAME convention — the committed full-page golden by
+            // default, or parity's canvas-only reference when
+            // `BBLITE_CAPTURE_UI=0` took the canvas-only shot above.
+            // Comparing across conventions is what once made the check
+            // cry wolf on every retained-UI scene. The verdict is
+            // recorded in the sidecar rather than only printed and
+            // discarded.
+            const referencePath = captureUi
+                ? scene.parity?.reference.path
+                : resolve(
+                      "artifacts",
+                      "parity-canvas",
+                      scene.id,
+                      "browser-canvas.png",
+                  );
             let goldenIdentity: NonNullable<
                 CaptureMeta["goldenIdentity"]
             > = "not-checked";
@@ -420,17 +485,18 @@ export async function runInstrumentedCapture(
                 referencePath &&
                 existsSync(referencePath)
             ) {
-                const captured = readFileSync(
-                    join(outputDirectory, "screenshot.png"),
-                );
+                const captured = readFileSync(screenshotPath);
                 const golden = readFileSync(resolve(referencePath));
                 goldenIdentity = captured.equals(golden)
                     ? "identical"
                     : "differs";
+                const referenceName = captureUi
+                    ? "committed golden"
+                    : "canvas-only parity reference";
                 console.log(
                     goldenIdentity === "identical"
-                        ? "Screenshot is byte-identical to the committed golden."
-                        : "Screenshot DIFFERS from the committed golden — the pose, environment, or pinned package changed.",
+                        ? `Screenshot is byte-identical to the ${referenceName}.`
+                        : `Screenshot DIFFERS from the ${referenceName} — the pose, environment, or pinned package changed.`,
                 );
             }
             // The capture's provenance, so a reuse path can tell whether
@@ -441,7 +507,7 @@ export async function runInstrumentedCapture(
                     scene.source,
                     seekSeconds,
                     animationGroups,
-                    scene.parity?.referenceFrame,
+                    referenceFrame,
                 ),
                 goldenIdentity,
                 ...(skipDrawIndexCount !== 0
