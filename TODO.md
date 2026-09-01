@@ -132,7 +132,6 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   rotation. This closes once the loader records each primitive's local box
   beside its node matrix. The port must keep every sized scene bit-identical at
   its gated pose.
-- [ ] Add generation-checked handles and resource lifetime/leak checks.
 - [ ] Reclaim retired live-shadow topology state. Replacing a generator now
   removes its task from the scene and both PALs rebuild only active task draw
   lists, but the engine retains the old task, render target, generator caster
