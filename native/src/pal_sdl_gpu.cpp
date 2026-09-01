@@ -675,7 +675,7 @@ struct GpuPostProcessTask {
      * is where that first became reachable -- four passes over three
      * distinct programs.
      */
-    std::size_t program = std::numeric_limits<std::size_t>::max();
+    std::size_t program = npos;
     /**
      * What each fragment texture slot names, resolved from the `.slots`
      * sidecar once: -1 is the pass's source, and 0.. indexes its extra
@@ -730,6 +730,28 @@ struct UiSdlGpuResources {
 struct PinnedResource {
     SDL_GPUTexture* texture = nullptr;
     SDL_GPUSampler* sampler = nullptr;
+};
+#endif
+
+#if BBLITE_SHADOW_RECEIVERS
+/**
+ * One stage's composed shadow rows, parallel to its `.slots` lists.
+ *
+ * This backend binds by NAME, so a receiving draw used to walk the
+ * variant's reflected rows per binding name per stage -- ~100 string
+ * compares a frame on scene 22, growing as bindings x shadow-lights x
+ * receiving draws. The rows and the slot name list are both fixed per
+ * variant, so each list here is resolved once beside the slot cache and
+ * per-draw resolution becomes an index: entry i answers for slot i, null
+ * where that slot is not a shadow binding. `texture_samplers` carries the
+ * sampler row declared beside each map row's light, resolved with it so
+ * the draw keeps only the comparison-versus-filtering choice.
+ */
+struct PinnedStageShadowRows {
+    std::vector<const upstream::PinnedShadowBinding*> uniforms;
+    std::vector<const upstream::PinnedShadowBinding*> textures;
+    std::vector<const upstream::PinnedShadowBinding*> texture_samplers;
+    std::vector<const upstream::PinnedShadowBinding*> storage;
 };
 #endif
 
@@ -806,6 +828,13 @@ struct GpuState {
     // Each variant's stage slot maps, read once from the `.slots` sidecars.
     std::vector<PinnedStageSlots> pinned_vertex_slots;
     std::vector<PinnedStageSlots> pinned_fragment_slots;
+#if BBLITE_PBR_SHADOWS
+    // Each stage's composed shadow rows, parallel to the slot maps above
+    // and filled beside them (`ensure_pinned_slots`), so a receiving draw
+    // resolves a shadow name by index instead of walking the rows.
+    std::vector<PinnedStageShadowRows> pinned_vertex_shadow_rows;
+    std::vector<PinnedStageShadowRows> pinned_fragment_shadow_rows;
+#endif
     // Paired with every bone palette binding. The pin reads the palette with
     // textureLoad, so the sampler is never consulted; SDL_GPU still binds the
     // pair together.
@@ -868,16 +897,32 @@ struct GpuState {
     std::map<std::size_t, SDL_GPUGraphicsPipeline*> standard_variant_pipelines;
     std::vector<PinnedStageSlots> standard_vertex_slots;
     std::vector<PinnedStageSlots> standard_fragment_slots;
+#if BBLITE_STANDARD_SHADOWS
+    // The PBR pair's Standard siblings, filled by `ensure_standard_slots`.
+    std::vector<PinnedStageShadowRows> standard_vertex_shadow_rows;
+    std::vector<PinnedStageShadowRows> standard_fragment_shadow_rows;
+#endif
 #endif
 #if BBLITE_NODE_VARIANTS > 0
     // The node family's pipelines and slot maps, cached the same way.
     std::map<std::size_t, SDL_GPUGraphicsPipeline*> node_variant_pipelines;
     std::vector<PinnedStageSlots> node_vertex_slots;
     std::vector<PinnedStageSlots> node_fragment_slots;
+#if BBLITE_NODE_SHADOWS
+    // The same rows per node SLOT: a graph's receiver and caster views
+    // compile separate stages, so each view's lists are its own.
+    std::vector<PinnedStageShadowRows> node_vertex_shadow_rows;
+    std::vector<PinnedStageShadowRows> node_fragment_shadow_rows;
+#endif
 #endif
 #if BBLITE_PINNED_MATERIALS
     SDL_GPUTextureFormat pinned_color_format =
         SDL_GPU_TEXTUREFORMAT_INVALID;
+    // Caller-owned scratch for the composed families' storage binds: the
+    // pointer list a stage binds lives here so the per-draw walk reuses
+    // one allocation, its capacity following whichever stage shape --
+    // node-morph or shadow slot counts differ -- was the largest so far.
+    std::vector<SDL_GPUBuffer*> storage_binding_scratch;
 #endif
     SDL_GPUTextureFormat depth_format =
         SDL_GPU_TEXTUREFORMAT_D16_UNORM;
@@ -963,6 +1008,54 @@ struct GpuState {
     SDL_GPUBuffer* background_instances = nullptr;
 #endif
 };
+
+#if BBLITE_PINNED_MATERIALS
+/**
+ * The storage sibling of the shared `push_stage_uniforms` /
+ * `bind_stage_textures` walks: the same order, the same by-name refusal
+ * and the same slot index handed to the resolver, with the pointer list
+ * living in a caller-owned scratch (`GpuState::storage_binding_scratch`)
+ * instead of a vector allocated per non-empty stage per draw. Node-morph
+ * and shadow stages carry different slot counts, so the scratch refills
+ * to each stage's own list and only its capacity persists.
+ */
+template <typename Resolve>
+void bind_stage_storage(
+    SDL_GPURenderPass* pass,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    const char* what,
+    std::vector<SDL_GPUBuffer*>& scratch,
+    Resolve resolve) {
+    if (slots.storage.empty()) return;
+    scratch.clear();
+    scratch.reserve(slots.storage.size());
+    for (std::size_t slot = 0; slot < slots.storage.size(); ++slot) {
+        const std::string& name = slots.storage[slot];
+        SDL_GPUBuffer* buffer = resolve(name, slot);
+        if (!buffer) {
+            gpu_error(
+                (std::string(what) +
+                 " declares an unmapped storage buffer '" + name + "'.")
+                    .c_str());
+        }
+        scratch.push_back(buffer);
+    }
+    if (fragment) {
+        SDL_BindGPUFragmentStorageBuffers(
+            pass,
+            0,
+            scratch.data(),
+            static_cast<Uint32>(scratch.size()));
+        return;
+    }
+    SDL_BindGPUVertexStorageBuffers(
+        pass,
+        0,
+        scratch.data(),
+        static_cast<Uint32>(scratch.size()));
+}
+#endif
 
 // Geometry-task helpers shared by the PBR and Standard variant
 // pipelines; the definitions sit with the transmission helpers below.
@@ -1626,32 +1719,69 @@ const upstream::PinnedShadowBinding* shadow_sampler_row_for(
 }
 
 /**
- * The map-and-sampler pair one group-2 texture name resolves to, or an empty
- * pair when the name is not a receiver binding.
- */
-/**
- * The receiver block one group-2 name resolves to, or null.
+ * Resolve one stage's slot names against a family's composed rows, once.
  *
- * The buffer half of `shadow_resource_for`'s question: the vertex stage reads
+ * The per-name walk `shadow_row_for` makes runs here once per variant
+ * stage, beside the slot cache each family's `ensure_*_slots` fills; the
+ * draw path then indexes the result. A map row's companion sampler row is
+ * resolved with it -- SDL_GPU binds a texture and its sampler as one pair,
+ * and which sampler a map takes is the paired row's to say: a PCF map's
+ * companion is declared `sampler_comparison`, an ESM map's a plain
+ * `sampler`. A map row with no sampler row beside it fails here by name,
+ * the same refusal the draw path used to make.
+ */
+PinnedStageShadowRows resolve_stage_shadow_rows(
+    const PinnedStageSlots& slots,
+    std::span<const upstream::PinnedShadowBinding> rows) {
+    PinnedStageShadowRows resolved;
+    const auto rows_for = [&](const std::vector<std::string>& names) {
+        std::vector<const upstream::PinnedShadowBinding*> result;
+        result.reserve(names.size());
+        for (const std::string& name : names) {
+            result.push_back(shadow_row_for(rows, name));
+        }
+        return result;
+    };
+    resolved.uniforms = rows_for(slots.uniforms);
+    resolved.textures = rows_for(slots.textures);
+    resolved.storage = rows_for(slots.storage);
+    resolved.texture_samplers.reserve(resolved.textures.size());
+    for (const upstream::PinnedShadowBinding* row : resolved.textures) {
+        const upstream::PinnedShadowBinding* companion = row
+            ? shadow_sampler_row_for(rows, row->light)
+            : nullptr;
+        if (row && !companion) {
+            gpu_error(
+                ("a composed shadow map '" + std::string(row->name) +
+                 "' declares no sampler beside it.")
+                    .c_str());
+        }
+        resolved.texture_samplers.push_back(companion);
+    }
+    return resolved;
+}
+
+/**
+ * The receiver block one cached row names, or null for a slot that is not
+ * a shadow binding.
+ *
+ * The buffer half of `shadow_resource_at`'s question: the vertex stage reads
  * the block as a uniform and the fragment as a storage buffer, because the
  * shader compile demotes it out of SDL_GPU's four uniform slots -- so both
- * stages ask by name, for both material families, through one lookup.
+ * stages ask through one lookup, for both material families. The generator
+ * itself stays a per-draw read: `state.shadow_generators` is runtime state.
  */
-inline SDL_GPUBuffer* shadow_info_buffer_for(
+inline SDL_GPUBuffer* shadow_info_buffer_at(
     const GpuState& state,
-    std::span<const upstream::PinnedShadowBinding> rows,
-    const std::string& name) {
-    const upstream::PinnedShadowBinding* row = shadow_row_for(rows, name);
+    const upstream::PinnedShadowBinding* row) {
     if (row == nullptr) return nullptr;
     return shadow_generator_for_row(state, *row).info;
 }
 
 /** The same block as uniform bytes, for the stage that kept it a uniform. */
-inline PinnedStageBlock shadow_info_uniform_for(
+inline PinnedStageBlock shadow_info_uniform_at(
     const GpuState& state,
-    std::span<const upstream::PinnedShadowBinding> rows,
-    const std::string& block) {
-    const upstream::PinnedShadowBinding* row = shadow_row_for(rows, block);
+    const upstream::PinnedShadowBinding* row) {
     if (row == nullptr) return {};
     return {
         &shadow_generator_for_row(state, *row).block,
@@ -1659,32 +1789,45 @@ inline PinnedStageBlock shadow_info_uniform_for(
     };
 }
 
-PinnedResource shadow_resource_for(
+/**
+ * The map-and-sampler pair one stage texture slot resolves to, or an empty
+ * pair when that slot is not a receiver binding.
+ */
+PinnedResource shadow_resource_at(
     const GpuState& state,
-    std::span<const upstream::PinnedShadowBinding> rows,
-    const std::string& name) {
-    const upstream::PinnedShadowBinding* row = shadow_row_for(rows, name);
+    const PinnedStageShadowRows& rows,
+    std::size_t slot) {
+    const upstream::PinnedShadowBinding* row = rows.textures[slot];
     if (row == nullptr) return {};
-    const GpuState::ShadowGenerator& generator =
-        shadow_generator_for_row(state, *row);
-    // SDL_GPU binds a texture and its sampler as one pair, resolved from
-    // the TEXTURE's name -- so which sampler this map takes is the
-    // paired row's to say, not this one's: a PCF map's companion is
-    // declared `sampler_comparison`, an ESM map's a plain `sampler`.
-    const upstream::PinnedShadowBinding* companion =
-        shadow_sampler_row_for(rows, row->light);
-    if (!companion) {
-        gpu_error(
-            ("a composed shadow map '" + std::string(row->name) +
-             "' declares no sampler beside it.")
-                .c_str());
-    }
     return {
-        generator.map,
-        companion->kind ==
+        shadow_generator_for_row(state, *row).map,
+        rows.texture_samplers[slot]->kind ==
                 upstream::PinnedBindingKind::samplerComparison
             ? state.shadow_comparison_sampler
             : state.shadow_filtering_sampler,
+    };
+}
+
+/**
+ * Wrap a family's uniform resolver with the receiver-block fallback.
+ *
+ * Every receiving family's `push_stage_uniforms` walk answers the same
+ * way: the family's own blocks first, then the receiver block the cached
+ * row for this slot names -- or the walk's by-name refusal when that row
+ * is null. The families differ only in which rows they cached, so the
+ * fallback is stated once and each stage passes its own rows.
+ */
+template <typename Resolve>
+auto with_shadow_uniform_rows(
+    const GpuState& state,
+    const PinnedStageShadowRows& rows,
+    Resolve resolve) {
+    return [&state, &rows, resolve](
+               const std::string& block,
+               std::size_t slot) -> PinnedStageBlock {
+        const PinnedStageBlock resolved = resolve(block);
+        if (resolved.data != nullptr) return resolved;
+        return shadow_info_uniform_at(state, rows.uniforms[slot]);
     };
 }
 
@@ -1799,7 +1942,11 @@ PinnedResource pinned_resource_for(
     const GpuState& state,
     const GpuMesh& mesh,
     const std::string& name,
-    [[maybe_unused]] std::size_t variant) {
+    [[maybe_unused]] std::size_t variant,
+    // Which stage's texture list the name came from, and its index there:
+    // the pair that makes the group-2 fallback below a cached-row index.
+    [[maybe_unused]] bool fragment,
+    [[maybe_unused]] std::size_t stage_slot) {
     const upstream::MaterialTextureSlot* slot =
         material_slot_for_binding(name);
     if (slot != nullptr) {
@@ -1825,16 +1972,18 @@ PinnedResource pinned_resource_for(
         }
     }
 #if BBLITE_PBR_SHADOWS
-    // The receiver's group 2, resolved from its own composed rows exactly as
+    // The receiver's group 2, resolved from its own cached rows exactly as
     // the Standard family's is: this backend binds by name, so group 2 joins
     // the same lookup rather than being a separate bind call. Asked AFTER the
     // slot table because the two name sets are disjoint and a material
-    // texture is the common case -- walking the shadow rows first would make
-    // every base-colour and ORM binding pay for it.
-    if (const PinnedResource shadow = shadow_resource_for(
+    // texture is the common case -- so an ordinary base-colour or ORM
+    // binding never pays for the shadow lookup at all.
+    if (const PinnedResource shadow = shadow_resource_at(
             state,
-            pal::pbr_shadow_rows(variant),
-            name);
+            (fragment
+                 ? state.pinned_fragment_shadow_rows
+                 : state.pinned_vertex_shadow_rows)[variant],
+            stage_slot);
         shadow.texture != nullptr) {
         return shadow;
     }
@@ -1863,6 +2012,12 @@ void ensure_pinned_slots(GpuState& state, std::size_t variant) {
     if (state.pinned_vertex_slots.size() < upstream::pbr_variants.size()) {
         state.pinned_vertex_slots.resize(upstream::pbr_variants.size());
         state.pinned_fragment_slots.resize(upstream::pbr_variants.size());
+#if BBLITE_PBR_SHADOWS
+        state.pinned_vertex_shadow_rows.resize(
+            upstream::pbr_variants.size());
+        state.pinned_fragment_shadow_rows.resize(
+            upstream::pbr_variants.size());
+#endif
     }
     if (!state.pinned_vertex_slots[variant].uniforms.empty()) return;
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
@@ -1870,6 +2025,16 @@ void ensure_pinned_slots(GpuState& state, std::size_t variant) {
         read_pinned_stage_slots(pinned_stage_name(entry.vertex_shader));
     state.pinned_fragment_slots[variant] =
         read_pinned_stage_slots(pinned_stage_name(entry.fragment_shader));
+#if BBLITE_PBR_SHADOWS
+    // The shadow rows each slot resolves to, cached beside the slots they
+    // are parallel to and refreshed with them.
+    state.pinned_vertex_shadow_rows[variant] = resolve_stage_shadow_rows(
+        state.pinned_vertex_slots[variant],
+        pal::pbr_shadow_rows(variant));
+    state.pinned_fragment_shadow_rows[variant] = resolve_stage_shadow_rows(
+        state.pinned_fragment_slots[variant],
+        pal::pbr_shadow_rows(variant));
+#endif
 }
 
 
@@ -2240,17 +2405,6 @@ void draw_pinned_variant(
             }
             return {geometry_params, sizeof(*geometry_params)};
         }
-#if BBLITE_PBR_SHADOWS
-        // The receiver block, one per shadow-casting light, named after that
-        // light's slot -- read off the composed row rather than parsed.
-        if (const PinnedStageBlock info = shadow_info_uniform_for(
-                state,
-                pal::pbr_shadow_rows(pinned_variant),
-                block);
-            info.data != nullptr) {
-            return info;
-        }
-#endif
 #if BBLITE_SHADOWS_ESM
         // The ESM caster's own block, the same lookup the Standard family
         // makes: the two share the view's factory shape.
@@ -2281,18 +2435,37 @@ void draw_pinned_variant(
 #endif
         return {};
     };
+#if BBLITE_PBR_SHADOWS
+    // The cached rows parallel to this variant's slot lists; the walks
+    // below hand each resolver the slot index into them -- what turns the
+    // old per-name row walk into a read. The uniform fallback answers with
+    // the receiver block, one per shadow-casting light, by the cached row
+    // each slot resolved to, never by parsing the name.
+    const PinnedStageShadowRows& vertex_shadow_rows =
+        state.pinned_vertex_shadow_rows[pinned_variant];
+    const PinnedStageShadowRows& fragment_shadow_rows =
+        state.pinned_fragment_shadow_rows[pinned_variant];
+    const auto vertex_uniforms =
+        with_shadow_uniform_rows(state, vertex_shadow_rows, resolve);
+    const auto fragment_uniforms =
+        with_shadow_uniform_rows(state, fragment_shadow_rows, resolve);
+#else
+    const auto vertex_uniforms =
+        [&](const std::string& block, std::size_t) { return resolve(block); };
+    const auto fragment_uniforms = vertex_uniforms;
+#endif
     push_stage_uniforms(
         command,
         state.pinned_vertex_slots[pinned_variant],
         false,
         "pinned variant",
-        resolve);
+        vertex_uniforms);
     push_stage_uniforms(
         command,
         state.pinned_fragment_slots[pinned_variant],
         true,
         "pinned variant",
-        resolve);
+        fragment_uniforms);
     const PinnedStageSlots& pinned_fragment =
         state.pinned_fragment_slots[pinned_variant];
     bind_stage_textures(
@@ -2300,9 +2473,9 @@ void draw_pinned_variant(
         pinned_fragment,
         true,
         "pinned variant fragment",
-        [&](const std::string& name) {
-            const PinnedResource resource =
-                pinned_resource_for(state, mesh, name, pinned_variant);
+        [&](const std::string& name, std::size_t slot) {
+            const PinnedResource resource = pinned_resource_for(
+                state, mesh, name, pinned_variant, true, slot);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -2313,17 +2486,17 @@ void draw_pinned_variant(
         pinned_fragment,
         true,
         "pinned variant fragment",
-        [&](const std::string& name) -> SDL_GPUBuffer* {
+        state.storage_binding_scratch,
+        [&](const std::string& name,
+            [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
             if (name == "gp") return geometry_params_buffer;
 #if BBLITE_PBR_SHADOWS
             // The receiver blocks the shader compile demoted out of the
             // uniform slots, the same way the geometry arms' gp block is:
             // SDL_GPU caps those at four per stage and a receiving PBR
             // fragment spends all four on scene, lights, mesh and material.
-            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
-                    state,
-                    pal::pbr_shadow_rows(pinned_variant),
-                    name)) {
+            if (SDL_GPUBuffer* info = shadow_info_buffer_at(
+                    state, fragment_shadow_rows.storage[slot])) {
                 return info;
             }
 #endif
@@ -2341,7 +2514,9 @@ void draw_pinned_variant(
         pinned_vertex,
         false,
         "pinned variant vertex",
-        [&](const std::string& name) -> SDL_GPUBuffer* {
+        state.storage_binding_scratch,
+        [&](const std::string& name,
+            [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
             // Cast unconditionally: which arms below compile is a capability
             // question, and a compound negative would have to be re-derived
             // every time one is added.
@@ -2353,10 +2528,8 @@ void draw_pinned_variant(
 #if BBLITE_PBR_SHADOWS
             // A receiver whose vertex stage also overflows the four uniform
             // slots has its own receiver blocks demoted there too.
-            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
-                    state,
-                    pal::pbr_shadow_rows(pinned_variant),
-                    name)) {
+            if (SDL_GPUBuffer* info = shadow_info_buffer_at(
+                    state, vertex_shadow_rows.storage[slot])) {
                 return info;
             }
 #endif
@@ -2367,9 +2540,9 @@ void draw_pinned_variant(
         pinned_vertex,
         false,
         "pinned variant vertex",
-        [&](const std::string& name) {
-            const PinnedResource resource =
-                pinned_resource_for(state, mesh, name, pinned_variant);
+        [&](const std::string& name, std::size_t slot) {
+            const PinnedResource resource = pinned_resource_for(
+                state, mesh, name, pinned_variant, false, slot);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -2425,6 +2598,10 @@ void ensure_node_slots(GpuState& state, std::size_t slot) {
     if (state.node_vertex_slots.size() < pal::node_variant_slots()) {
         state.node_vertex_slots.resize(pal::node_variant_slots());
         state.node_fragment_slots.resize(pal::node_variant_slots());
+#if BBLITE_NODE_SHADOWS
+        state.node_vertex_shadow_rows.resize(pal::node_variant_slots());
+        state.node_fragment_shadow_rows.resize(pal::node_variant_slots());
+#endif
     }
     if (!state.node_vertex_slots[slot].uniforms.empty()) return;
     const upstream::NodeVariantStems stems =
@@ -2433,6 +2610,18 @@ void ensure_node_slots(GpuState& state, std::size_t slot) {
         read_pinned_stage_slots(std::string(stems.vertex));
     state.node_fragment_slots[slot] =
         read_pinned_stage_slots(std::string(stems.fragment));
+#if BBLITE_NODE_SHADOWS
+    // The graph's receiver rows, resolved per compiled view: the rows are
+    // the variant's, the slots are this view's own stages'.
+    const upstream::NodeVariantEntry& entry =
+        upstream::node_variants[pal::node_slot_variant(slot)];
+    state.node_vertex_shadow_rows[slot] = resolve_stage_shadow_rows(
+        state.node_vertex_slots[slot],
+        pal::node_shadow_rows(entry));
+    state.node_fragment_shadow_rows[slot] = resolve_stage_shadow_rows(
+        state.node_fragment_slots[slot],
+        pal::node_shadow_rows(entry));
+#endif
 }
 
 /**
@@ -2646,32 +2835,38 @@ void draw_node_variant(
             }
         }
 #endif
-#if BBLITE_NODE_SHADOWS
-        // The receiver blocks, through the same by-name lookup both other
-        // families use -- the node rows are the same reflected shape, in
-        // the graph's own group rather than a group of their own.
-        if (const PinnedStageBlock info = shadow_info_uniform_for(
-                state,
-                pal::node_shadow_rows(entry),
-                block);
-            info.data != nullptr) {
-            return info;
-        }
-#endif
         return {};
     };
+#if BBLITE_NODE_SHADOWS
+    // The cached receiver rows for this view's stages, indexed by the slot
+    // every walk below hands its resolver -- the node rows are the same
+    // reflected shape both other families cache, in the graph's own group
+    // rather than a group of their own.
+    const PinnedStageShadowRows& vertex_shadow_rows =
+        state.node_vertex_shadow_rows[slot];
+    const PinnedStageShadowRows& fragment_shadow_rows =
+        state.node_fragment_shadow_rows[slot];
+    const auto vertex_uniforms =
+        with_shadow_uniform_rows(state, vertex_shadow_rows, resolve);
+    const auto fragment_uniforms =
+        with_shadow_uniform_rows(state, fragment_shadow_rows, resolve);
+#else
+    const auto vertex_uniforms =
+        [&](const std::string& block, std::size_t) { return resolve(block); };
+    const auto fragment_uniforms = vertex_uniforms;
+#endif
     push_stage_uniforms(
         command,
         state.node_vertex_slots[slot],
         false,
         "node variant",
-        resolve);
+        vertex_uniforms);
     push_stage_uniforms(
         command,
         state.node_fragment_slots[slot],
         true,
         "node variant",
-        resolve);
+        fragment_uniforms);
     // Two kinds of name reach a node stage's sampler slots. The graph's own
     // `TextureBlock` bindings are declared `nodeTex_<name>` / `nodeSamp_<name>`
     // around the sanitized block name, so they resolve against the images the
@@ -2681,7 +2876,10 @@ void draw_node_variant(
     // table knows, so it joins through the source `node_binding_resources`
     // declares, the pair every other family already resolves.
     const auto resolve_texture =
-        [&](const std::string& name) -> SDL_GPUTextureSamplerBinding {
+        [&](const std::string& name,
+            [[maybe_unused]] bool fragment_stage,
+            [[maybe_unused]] std::size_t texture_slot)
+        -> SDL_GPUTextureSamplerBinding {
         const auto& shader_textures =
             mesh_shader_textures(mesh);
         // The prefix is stripped once rather than re-concatenated onto every
@@ -2709,10 +2907,12 @@ void draw_node_variant(
             }
         }
 #if BBLITE_NODE_SHADOWS
-        if (const PinnedResource shadow = shadow_resource_for(
+        if (const PinnedResource shadow = shadow_resource_at(
                 state,
-                pal::node_shadow_rows(entry),
-                name);
+                fragment_stage
+                    ? fragment_shadow_rows
+                    : vertex_shadow_rows,
+                texture_slot);
             shadow.texture != nullptr) {
             return SDL_GPUTextureSamplerBinding{
                 shadow.texture,
@@ -2739,18 +2939,24 @@ void draw_node_variant(
         state.node_vertex_slots[slot],
         false,
         "node variant vertex",
-        resolve_texture);
+        [&](const std::string& name, std::size_t texture_slot) {
+            return resolve_texture(name, false, texture_slot);
+        });
     bind_stage_textures(
         pass,
         state.node_fragment_slots[slot],
         true,
         "node variant fragment",
-        resolve_texture);
+        [&](const std::string& name, std::size_t texture_slot) {
+            return resolve_texture(name, true, texture_slot);
+        });
     // Storage resources survive register compaction by name. MorphTargetsBlock
     // contributes the vertex pair below; shadow receiver blocks can join the
     // same sidecar when the fragment has exhausted SDL_GPU's uniform slots.
-    const auto resolve_storage = [&](const std::string& name)
-        -> SDL_GPUBuffer* {
+    const auto resolve_storage = [&](const std::string& name,
+                                     [[maybe_unused]] bool fragment_stage,
+                                     [[maybe_unused]] std::size_t
+                                         storage_slot) -> SDL_GPUBuffer* {
         // A non-morph, non-shadow node build keeps the common resolver but
         // compiles every named arm below out.
         (void)name;
@@ -2769,10 +2975,11 @@ void draw_node_variant(
             }
         }
 #endif
-        return shadow_info_buffer_for(
+        return shadow_info_buffer_at(
             state,
-            pal::node_shadow_rows(entry),
-            name);
+            (fragment_stage
+                 ? fragment_shadow_rows
+                 : vertex_shadow_rows).storage[storage_slot]);
 #else
         return nullptr;
 #endif
@@ -2782,13 +2989,19 @@ void draw_node_variant(
         state.node_vertex_slots[slot],
         false,
         "node variant vertex",
-        resolve_storage);
+        state.storage_binding_scratch,
+        [&](const std::string& name, std::size_t storage_slot) {
+            return resolve_storage(name, false, storage_slot);
+        });
     bind_stage_storage(
         pass,
         state.node_fragment_slots[slot],
         true,
         "node variant fragment",
-        resolve_storage);
+        state.storage_binding_scratch,
+        [&](const std::string& name, std::size_t storage_slot) {
+            return resolve_storage(name, true, storage_slot);
+        });
     const SDL_GPUBufferBinding vertex_binding{mesh.vertices, 0};
     SDL_BindGPUVertexBuffers(pass, 0, &vertex_binding, 1);
     const SDL_GPUBufferBinding index_binding{mesh.indices, 0};
@@ -3033,8 +3246,8 @@ void update_shadow_generators(
             bool moved) {
             GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
             // Kept beside the map and the buffer under the composed row's
-            // LIGHT slot, which is what `shadow_info_uniform_for` binds by
-            // -- not the generator's handle.
+            // LIGHT slot, which is what `shadow_generator_for_row` resolves
+            // by -- not the generator's handle.
             gpu.block = block;
             if (
                 generator.task.value < engine.frame_tasks.size() &&
@@ -3087,6 +3300,12 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
             upstream::standard_variants.size());
         state.standard_fragment_slots.resize(
             upstream::standard_variants.size());
+#if BBLITE_STANDARD_SHADOWS
+        state.standard_vertex_shadow_rows.resize(
+            upstream::standard_variants.size());
+        state.standard_fragment_shadow_rows.resize(
+            upstream::standard_variants.size());
+#endif
     }
     if (!state.standard_vertex_slots[variant].uniforms.empty()) return;
     const upstream::StandardVariantEntry& entry =
@@ -3095,6 +3314,17 @@ void ensure_standard_slots(GpuState& state, std::size_t variant) {
         standard_stage_name(entry.vertex_shader));
     state.standard_fragment_slots[variant] = read_pinned_stage_slots(
         standard_stage_name(entry.fragment_shader));
+#if BBLITE_STANDARD_SHADOWS
+    // The shadow rows each slot resolves to, cached beside the slots they
+    // are parallel to, exactly as the PBR family's are.
+    state.standard_vertex_shadow_rows[variant] = resolve_stage_shadow_rows(
+        state.standard_vertex_slots[variant],
+        pal::standard_shadow_rows(variant));
+    state.standard_fragment_shadow_rows[variant] =
+        resolve_stage_shadow_rows(
+            state.standard_fragment_slots[variant],
+            pal::standard_shadow_rows(variant));
+#endif
 }
 
 
@@ -3111,7 +3341,11 @@ PinnedResource standard_resource_for(
     const MaterialRecord* material,
     const StandardRenderTextures& render_textures,
     const std::string& name,
-    [[maybe_unused]] std::size_t variant) {
+    [[maybe_unused]] std::size_t variant,
+    // The name's index in the fragment stage's texture list -- the only
+    // stage a Standard draw binds textures for -- which is what makes the
+    // group-2 fallback below a cached-row read.
+    [[maybe_unused]] std::size_t stage_slot) {
     for (
         const upstream::StandardBindingResource& row :
         upstream::standard_binding_resources) {
@@ -3152,10 +3386,10 @@ PinnedResource standard_resource_for(
     // Group 2, after the slot table for the reason the PBR resolver asks in
     // that order: the two name sets are disjoint, and a material texture is
     // the common case.
-    if (const PinnedResource shadow = shadow_resource_for(
+    if (const PinnedResource shadow = shadow_resource_at(
             state,
-            pal::standard_shadow_rows(variant),
-            name);
+            state.standard_fragment_shadow_rows[variant],
+            stage_slot);
         shadow.texture != nullptr) {
         return shadow;
     }
@@ -3426,15 +3660,6 @@ void draw_standard_variant(
             }
             return {geometry_params, sizeof(*geometry_params)};
         }
-#if BBLITE_STANDARD_SHADOWS
-        if (const PinnedStageBlock info = shadow_info_uniform_for(
-                state,
-                pal::standard_shadow_rows(variant),
-                block);
-            info.data != nullptr) {
-            return info;
-        }
-#endif
 #if BBLITE_SHADOWS_ESM
         // The ESM caster's own block, from the generator its material view
         // was built for.
@@ -3450,18 +3675,35 @@ void draw_standard_variant(
 #endif
         return {};
     };
+#if BBLITE_STANDARD_SHADOWS
+    // The cached rows parallel to this variant's slot lists; the walks
+    // below hand each resolver the slot index into them, and the uniform
+    // fallback answers with the receiver block the cached row names.
+    const PinnedStageShadowRows& vertex_shadow_rows =
+        state.standard_vertex_shadow_rows[variant];
+    const PinnedStageShadowRows& fragment_shadow_rows =
+        state.standard_fragment_shadow_rows[variant];
+    const auto vertex_uniforms =
+        with_shadow_uniform_rows(state, vertex_shadow_rows, resolve);
+    const auto fragment_uniforms =
+        with_shadow_uniform_rows(state, fragment_shadow_rows, resolve);
+#else
+    const auto vertex_uniforms =
+        [&](const std::string& block, std::size_t) { return resolve(block); };
+    const auto fragment_uniforms = vertex_uniforms;
+#endif
     push_stage_uniforms(
         command,
         state.standard_vertex_slots[variant],
         false,
         "standard variant",
-        resolve);
+        vertex_uniforms);
     push_stage_uniforms(
         command,
         state.standard_fragment_slots[variant],
         true,
         "standard variant",
-        resolve);
+        fragment_uniforms);
     const PinnedStageSlots& fragment_slots =
         state.standard_fragment_slots[variant];
     bind_stage_textures(
@@ -3469,14 +3711,15 @@ void draw_standard_variant(
         fragment_slots,
         true,
         "standard variant fragment",
-        [&](const std::string& name) {
+        [&](const std::string& name, std::size_t slot) {
             const PinnedResource resource = standard_resource_for(
                 state,
                 mesh,
                 material,
                 render_textures,
                 name,
-                variant);
+                variant,
+                slot);
             return SDL_GPUTextureSamplerBinding{
                 resource.texture,
                 resource.sampler,
@@ -3490,13 +3733,13 @@ void draw_standard_variant(
         fragment_slots,
         true,
         "standard variant fragment",
-        [&](const std::string& name) -> SDL_GPUBuffer* {
+        state.storage_binding_scratch,
+        [&](const std::string& name,
+            [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
             if (name == "gp") return geometry_params_buffer;
 #if BBLITE_STANDARD_SHADOWS
-            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
-                    state,
-                    pal::standard_shadow_rows(variant),
-                    name)) {
+            if (SDL_GPUBuffer* info = shadow_info_buffer_at(
+                    state, fragment_shadow_rows.storage[slot])) {
                 return info;
             }
 #endif
@@ -3510,7 +3753,9 @@ void draw_standard_variant(
         vertex_slots,
         false,
         "standard variant vertex",
-        [&](const std::string& name) -> SDL_GPUBuffer* {
+        state.storage_binding_scratch,
+        [&](const std::string& name,
+            [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
             (void)name;
             if (SDL_GPUBuffer* morph =
                     morph_storage_buffer_for(mesh, name)) {
@@ -3519,10 +3764,8 @@ void draw_standard_variant(
 #if BBLITE_STANDARD_SHADOWS
             // A receiver whose vertex stage also overflows SDL_GPU's four
             // uniform slots has its own receiver blocks demoted there too.
-            if (SDL_GPUBuffer* info = shadow_info_buffer_for(
-                    state,
-                    pal::standard_shadow_rows(variant),
-                    name)) {
+            if (SDL_GPUBuffer* info = shadow_info_buffer_at(
+                    state, vertex_shadow_rows.storage[slot])) {
                 return info;
             }
 #endif
@@ -4374,6 +4617,12 @@ void create_frame_graph_textures(
         return;
     }
     release_frame_graph_textures(state);
+#if BBLITE_SHADOW_RECEIVERS
+    // Every shadow map was just released with the other targets, so the
+    // render gate's "already rendered" sentinels no longer describe a
+    // texture that exists: each generator's next frame must render.
+    state.shadow_refresh.invalidate_rendered_maps();
+#endif
     state.frame_graph_width = width;
     state.frame_graph_height = height;
     state.render_targets.resize(engine.render_targets.size());
@@ -5085,34 +5334,13 @@ void release(GpuState& state) {
 }
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-/**
- * The program a post-process pass draws with, built once per distinct one.
- *
- * A pass is identified as a drawing by its deployed module and the pipeline
- * state its output implies; everything else about it -- which textures it
- * binds, what its uniform block holds -- is per pass and stays there. A
- * composite's chain repeats the first and varies the second, so depth of
- * field's six blurs share one entry here.
- */
-std::size_t post_process_program(
+/** Builds the entry `post_process_program` below found missing. */
+GpuPostProcessProgram build_post_process_program(
     GpuState& state,
     std::uint32_t module_index,
     SDL_GPUTextureFormat format,
     SDL_GPUSampleCount samples,
     std::uint32_t alpha_mode) {
-    for (std::size_t index = 0;
-         index < state.post_process_programs.size();
-         ++index) {
-        const GpuPostProcessProgram& program =
-            state.post_process_programs[index];
-        if (
-            program.module_index == module_index &&
-            program.format == format &&
-            program.samples == samples &&
-            program.alpha_mode == alpha_mode) {
-            return index;
-        }
-    }
     GpuPostProcessProgram program;
     program.module_index = module_index;
     program.format = format;
@@ -5162,8 +5390,37 @@ std::size_t post_process_program(
     }
     SDL_ReleaseGPUShader(state.device, vertex_shader);
     SDL_ReleaseGPUShader(state.device, fragment_shader);
-    state.post_process_programs.push_back(std::move(program));
-    return state.post_process_programs.size() - 1;
+    return program;
+}
+
+/**
+ * The program a post-process pass draws with, built once per distinct one.
+ *
+ * A pass is identified as a drawing by its deployed module and the pipeline
+ * state its output implies; everything else about it -- which textures it
+ * binds, what its uniform block holds -- is per pass and stays there. A
+ * composite's chain repeats the first and varies the second, so depth of
+ * field's six blurs share one entry here. The find-or-create walk is the
+ * shared `find_or_create_program`; only the key equality is this backend's.
+ */
+std::size_t post_process_program(
+    GpuState& state,
+    std::uint32_t module_index,
+    SDL_GPUTextureFormat format,
+    SDL_GPUSampleCount samples,
+    std::uint32_t alpha_mode) {
+    return find_or_create_program(
+        state.post_process_programs,
+        [&](const GpuPostProcessProgram& program) {
+            return program.module_index == module_index &&
+                program.format == format &&
+                program.samples == samples &&
+                program.alpha_mode == alpha_mode;
+        },
+        [&] {
+            return build_post_process_program(
+                state, module_index, format, samples, alpha_mode);
+        });
 }
 
 /**
@@ -5228,7 +5485,7 @@ void record_post_process_pass(
                 SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
                     SDL_GPU_TEXTUREUSAGE_SAMPLER);
     }
-    if (gpu.program == std::numeric_limits<std::size_t>::max()) {
+    if (gpu.program == npos) {
         // A pass writes into its own output, whose format the frame graph
         // already resolved -- a composite's intermediate may name its own
         // (the circle-of-confusion map is r16) or follow its source's. The
@@ -7082,26 +7339,6 @@ bool run_gpu_engine(Engine& engine) {
                 build_pick_scene_uniforms(
                     view_projection, x, y, width, height);
 
-#if BBLITE_HAS_SPLATS
-            // `await splat.firstSortReady` is what the pin's own scene
-            // waits for before it picks, and the sort's GPU-side order
-            // buffer is written by the frame's upload -- which runs after
-            // the deferred queue this continuation arrives on. So the pick
-            // brings each cloud current itself: the upload is idempotent
-            // (`splat_sort_dirty` answers no when neither the world nor
-            // the view moved), and a pick that read an unwritten order
-            // buffer would sample the data textures at garbage indices and
-            // miss a cloud that covers the sample.
-            {
-                const std::array<float, 16> pick_view =
-                    upstream::build_view_matrix(
-                        upstream::camera_world_matrix(*camera_record));
-                for (SplatPass& splat : state.splat_passes) {
-                    upload_splat_pass(
-                        state.device, engine, splat, pick_view);
-                }
-            }
-#endif
             SDL_GPUCommandBuffer* command =
                 SDL_AcquireGPUCommandBuffer(state.device);
             if (!command) gpu_error("SDL_AcquireGPUCommandBuffer pick");
@@ -7585,19 +7822,22 @@ bool run_gpu_engine(Engine& engine) {
                             state.device,
                             texture.data.sampler)};
                 };
-            // A node graph's own textures upload in the order the variant
-            // table declares them, because that is the order the draw
-            // resolves a declared binding by -- the compaction that reorders
-            // a shader material's slots does not reach them, since a node
-            // stage names its bindings `nodeTex_<name>` and the draw matches
-            // on the name rather than on a register.
-            if (material && material->node_material) {
-                for (const FileTexture& texture : material->shader_textures) {
-                    gpu_mesh.shader_textures.push_back(
-                        upload_material_slot_texture(texture));
-                }
-            }
-            if (material && material->shader_material) {
+            // The caller-owned texture families share one per-MATERIAL
+            // cache -- keyed by handle, and a material is exactly one
+            // family -- so two meshes sharing one material decode and
+            // upload its images once, the same shell the Dawn backend
+            // keeps. Only the fill differs: a node graph's textures
+            // upload in the order the variant table declares them,
+            // because that is the order the draw resolves a declared
+            // binding by -- the compaction that reorders a shader
+            // material's slots does not reach them, since a node stage
+            // names its bindings `nodeTex_<name>` and the draw matches on
+            // the name rather than on a register. A shader material's
+            // upload instead walks the compiled stage's sidecar and pulls
+            // each surviving name's texture out of the declared order.
+            if (
+                material &&
+                (material->shader_material || material->node_material)) {
                 gpu_mesh.shared_shader_textures =
                     find_shared_shader_material_textures(
                         state.shared_shader_material_textures,
@@ -7609,39 +7849,51 @@ bool run_gpu_engine(Engine& engine) {
                                 .material = item.material,
                                 .bindings = {},
                             });
-                    const upstream::ShaderVariantInfo& shader_info =
-                        upstream::shader_variant_info(
-                            material->shader_variant);
-                    const PinnedStageSlots& slots =
-                        state.shader_fragment_slots[
-                            material->shader_variant];
-                    for (const std::string& texture_name : slots.textures) {
-                        const auto declared = std::find_if(
-                            shader_info.samplers.begin(),
-                            shader_info.samplers.end(),
-                            [&](const char* candidate) {
-                                return texture_name == candidate;
-                            });
-                        if (declared == shader_info.samplers.end()) {
-                            gpu_error(
-                                shader_sampler_unmapped(
-                                    shader_info,
-                                    texture_name)
-                                    .c_str());
+                    if (material->node_material) {
+                        for (
+                            const FileTexture& texture :
+                            material->shader_textures) {
+                            created->bindings.push_back(
+                                upload_material_slot_texture(texture));
                         }
-                        const std::size_t slot =
-                            static_cast<std::size_t>(
-                                declared - shader_info.samplers.begin());
-                        if (slot >= material->shader_textures.size()) {
-                            gpu_error(
-                                shader_sampler_shortfall(
-                                    shader_info,
-                                    material->shader_textures.size())
-                                    .c_str());
+                    } else {
+                        const upstream::ShaderVariantInfo& shader_info =
+                            upstream::shader_variant_info(
+                                material->shader_variant);
+                        const PinnedStageSlots& slots =
+                            state.shader_fragment_slots[
+                                material->shader_variant];
+                        for (
+                            const std::string& texture_name :
+                            slots.textures) {
+                            const auto declared = std::find_if(
+                                shader_info.samplers.begin(),
+                                shader_info.samplers.end(),
+                                [&](const char* candidate) {
+                                    return texture_name == candidate;
+                                });
+                            if (declared == shader_info.samplers.end()) {
+                                gpu_error(
+                                    shader_sampler_unmapped(
+                                        shader_info,
+                                        texture_name)
+                                        .c_str());
+                            }
+                            const std::size_t slot =
+                                static_cast<std::size_t>(
+                                    declared -
+                                    shader_info.samplers.begin());
+                            if (slot >= material->shader_textures.size()) {
+                                gpu_error(
+                                    shader_sampler_shortfall(
+                                        shader_info,
+                                        material->shader_textures.size())
+                                        .c_str());
+                            }
+                            created->bindings.push_back(
+                                upload_material_slot_texture(
+                                    material->shader_textures[slot]));
                         }
-                        created->bindings.push_back(
-                            upload_material_slot_texture(
-                                material->shader_textures[slot]));
                     }
                     gpu_mesh.shared_shader_textures = created.get();
                     state.shared_shader_material_textures.push_back(
@@ -7702,6 +7954,10 @@ bool run_gpu_engine(Engine& engine) {
         bool running = true;
         long frame = 0;
         FrameClock frame_clock;
+        // Caller-owned scratch for the custom-shader stage blocks: the
+        // packer fills it in place, so the per-draw pushes reuse one
+        // allocation across draws and frames.
+        std::vector<float> shader_block_scratch;
         // The shared drain owns the per-event contract; the scene loop
         // only adds its camera-controls dispatch, which rides the hook so
         // every event the scene receives also reaches the camera -- and
@@ -7710,6 +7966,11 @@ bool run_gpu_engine(Engine& engine) {
             if (hidden_test_pass) return;
             handle_camera_pointer_event(event, camera, pointer_state);
         };
+        // One batch for the run: its transfer buffer persists across
+        // frames, so a per-frame mesh mutation stages its dirty span and
+        // shares one copy-pass submission instead of paying a
+        // transfer-buffer create/release per frame.
+        GpuBufferUploadBatch frame_buffer_uploads(state.device);
         while (captures.keep_running(running, frame)) {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             poll_platform_events(
@@ -7760,7 +8021,11 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_CancelGPUCommandBuffer(command);
                 continue;
             }
-            const double acquired = monotonic_milliseconds();
+            // The three phase stamps below feed only the CPU profile, so
+            // with profiling off they cost nothing; `start` and `end` stay
+            // unconditional because the benchmark bracket reads them.
+            const double acquired =
+                cpu_profile ? monotonic_milliseconds() : 0.0;
             // Only an animated billboard pass reads it, so the frame's own
             // delta is unused in a build that reaches no billboards.
             [[maybe_unused]] const float delta_ms =
@@ -7774,11 +8039,11 @@ bool run_gpu_engine(Engine& engine) {
             // callbacks before painting the frame.
             update_ui_rml_runtime(*ui_runtime, width, height);
 #endif
-            const double updated = monotonic_milliseconds();
+            const double updated =
+                cpu_profile ? monotonic_milliseconds() : 0.0;
             std::size_t profile_transformed_meshes = 0;
             std::size_t profile_transformed_vertices = 0;
             trace_dynamic_frame(engine, delta_ms, frame);
-            GpuBufferUploadBatch frame_buffer_uploads(state.device);
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
             // `_update` for every sprite context precedes every `_record`,
             // sharing the scene's one batched upload submission. Registration
@@ -7795,7 +8060,7 @@ bool run_gpu_engine(Engine& engine) {
                     engine,
                     sprite_pass,
                     delta_ms,
-                    &frame_buffer_uploads);
+                    frame_buffer_uploads);
             }
             if (has_scene_sprite_pass) {
                 upload_scene_sprite_pass(
@@ -7803,7 +8068,7 @@ bool run_gpu_engine(Engine& engine) {
                     engine,
                     scene_sprite_pass,
                     delta_ms,
-                    &frame_buffer_uploads);
+                    frame_buffer_uploads);
             }
 #endif
             for (
@@ -8057,7 +8322,8 @@ bool run_gpu_engine(Engine& engine) {
                 topology_updated = true;
             }
             frame_buffer_uploads.submit();
-            const double uploaded = monotonic_milliseconds();
+            const double uploaded =
+                cpu_profile ? monotonic_milliseconds() : 0.0;
             update_camera(camera);
             trace_camera_state(camera, camera_trace_state, frame);
             upstream::sort_transparent_draws(
@@ -8082,8 +8348,7 @@ bool run_gpu_engine(Engine& engine) {
                         const std::size_t palette_variant =
                             pinned_variant_for_draw(scene, engine, draw);
                         if (
-                            palette_variant ==
-                                std::numeric_limits<std::size_t>::max() ||
+                            palette_variant == npos ||
                             !pinned_variant_skeleton(palette_variant)) {
                             continue;
                         }
@@ -8859,8 +9124,7 @@ bool run_gpu_engine(Engine& engine) {
                                         ? static_cast<std::size_t>(
                                               geometry_task->geometry
                                                   .shader_index)
-                                        : std::numeric_limits<
-                                              std::size_t>::max();
+                                        : npos;
                                 pal::PinnedVariantKey pinned_key;
                                 const std::size_t pinned_variant =
                                     pinned_variant_for_draw(
@@ -8869,10 +9133,7 @@ bool run_gpu_engine(Engine& engine) {
                                         draw,
                                         task_shader,
                                         &pinned_key);
-                                if (
-                                    pinned_variant ==
-                                    std::numeric_limits<
-                                        std::size_t>::max()) {
+                                if (pinned_variant == npos) {
                                     gpu_error(
                                         ("PBR draw for mesh " +
                                          std::to_string(
@@ -8934,13 +9195,9 @@ bool run_gpu_engine(Engine& engine) {
                                             ? static_cast<std::size_t>(
                                                   geometry_task->geometry
                                                       .shader_index)
-                                            : std::numeric_limits<
-                                                  std::size_t>::max(),
+                                            : npos,
                                         &standard_key);
-                                if (
-                                    standard_variant ==
-                                    std::numeric_limits<
-                                        std::size_t>::max()) {
+                                if (standard_variant == npos) {
                                     gpu_error(
                                         ("Standard draw for mesh " +
                                          std::to_string(
@@ -9064,26 +9321,15 @@ bool run_gpu_engine(Engine& engine) {
                                     throw std::runtime_error(
                                         "Shader draw has an invalid material.");
                                 }
-                                const std::array<float, 16> shader_world =
-                                    shader_draw_world(
-                                        engine,
-                                        engine.meshes[
-                                            draw_item.mesh.value]);
-                                const std::array<float, 16> shader_wvp =
-                                    shader_world_view_projection(
-                                        draw_pass_matrices.view_projection,
-                                        shader_world);
-                                const auto shader_wv =
-                                    shader_world_view(
-                                        draw_pass_matrices.view,
-                                        shader_world);
-                                ShaderPassMatrices shader_pass_matrices =
-                                    draw_pass_matrices;
-                                shader_pass_matrices.world = &shader_world;
-                                shader_pass_matrices.world_view =
-                                    shader_wv ? &*shader_wv : nullptr;
-                                shader_pass_matrices
-                                    .world_view_projection = &shader_wvp;
+                                const ShaderDrawMatrices shader_matrices(
+                                    engine,
+                                    engine.meshes[
+                                        draw_item.mesh.value],
+                                    draw_pass_matrices);
+                                const ShaderPassMatrices
+                                    shader_pass_matrices =
+                                        shader_matrices.apply(
+                                            draw_pass_matrices);
                                 // Per-stage blocks from the generated
                                 // variant table: [the declared system
                                 // matrices][custom floats gathered from
@@ -9099,27 +9345,28 @@ bool run_gpu_engine(Engine& engine) {
                                                 block,
                                         bool fragment_stage) {
                                     if (!block.present) return;
-                                    const std::vector<float>
-                                        block_floats =
-                                            shader_stage_block_floats(
-                                                block,
-                                                shader_pass_matrices,
-                                                *material);
+                                    shader_stage_block_floats(
+                                        block,
+                                        shader_pass_matrices,
+                                        *material,
+                                        shader_block_scratch);
                                     if (fragment_stage) {
                                         SDL_PushGPUFragmentUniformData(
                                             command,
                                             0,
-                                            block_floats.data(),
+                                            shader_block_scratch.data(),
                                             static_cast<Uint32>(
-                                                block_floats.size() *
+                                                shader_block_scratch
+                                                    .size() *
                                                 sizeof(float)));
                                     } else {
                                         SDL_PushGPUVertexUniformData(
                                             command,
                                             0,
-                                            block_floats.data(),
+                                            shader_block_scratch.data(),
                                             static_cast<Uint32>(
-                                                block_floats.size() *
+                                                shader_block_scratch
+                                                    .size() *
                                                 sizeof(float)));
                                     }
                                 };
@@ -9299,6 +9546,20 @@ bool run_gpu_engine(Engine& engine) {
                         if (
                             task.render.shadow_generator.value <
                                 engine.shadow_generators.size()) {
+                            // The pin's render gate: `renderEsmShadowMap` /
+                            // `renderPcfShadowMap` return before the caster
+                            // pass and both blur passes when nothing moved
+                            // since the last render, and the map textures
+                            // persist — the receiver keeps sampling last
+                            // render's bit-identical content. The verdict
+                            // was written onto the gate by
+                            // `refresh_shadow_generators` earlier this
+                            // frame.
+                            if (!state.shadow_refresh.gates[
+                                    task.render.shadow_generator.value]
+                                     .due) {
+                                continue;
+                            }
                             if (!target_record.has_depth || !target.depth) {
                                 throw std::runtime_error(
                                     "Shadow render task has no depth attachment.");
@@ -10489,14 +10750,13 @@ bool run_gpu_engine(Engine& engine) {
                                   scene,
                                   engine,
                                   draw,
-                                  std::numeric_limits<std::size_t>::max(),
+                                  npos,
                                   &pinned_key)
-                            : std::numeric_limits<std::size_t>::max();
+                            : npos;
                     if (
                         item.material_kind ==
                             upstream::RenderMaterialKind::pbr &&
-                        pinned_variant ==
-                            std::numeric_limits<std::size_t>::max()) {
+                        pinned_variant == npos) {
                         gpu_error(
                             ("PBR draw for mesh " +
                              std::to_string(item.mesh.value) +
@@ -10506,14 +10766,10 @@ bool run_gpu_engine(Engine& engine) {
                              pal::pinned_variant_request(pinned_key))
                                 .c_str());
                     }
-                    if (
-                        pinned_variant !=
-                        std::numeric_limits<std::size_t>::max()) {
+                    if (pinned_variant != npos) {
                         ensure_pinned_slots(state, pinned_variant);
                     }
-                    if (
-                        pinned_variant !=
-                        std::numeric_limits<std::size_t>::max()) {
+                    if (pinned_variant != npos) {
                         draw_pinned_variant(
                             state,
                             command,
@@ -10565,11 +10821,9 @@ bool run_gpu_engine(Engine& engine) {
                                 scene,
                                 engine,
                                 draw,
-                                std::numeric_limits<std::size_t>::max(),
+                                npos,
                                 &standard_key);
-                        if (
-                            standard_variant ==
-                            std::numeric_limits<std::size_t>::max()) {
+                        if (standard_variant == npos) {
                             gpu_error(
                                 ("Standard draw for mesh " +
                                  std::to_string(item.mesh.value) +
@@ -10656,25 +10910,12 @@ bool run_gpu_engine(Engine& engine) {
                             throw std::runtime_error(
                                 "Shader draw has an invalid material.");
                         }
-                        const std::array<float, 16> shader_world =
-                            shader_draw_world(
-                                engine,
-                                engine.meshes[item.mesh.value]);
-                        const std::array<float, 16> shader_wvp =
-                            shader_world_view_projection(
-                                frame_pass_matrices.view_projection,
-                                shader_world);
-                        const auto shader_wv =
-                            shader_world_view(
-                                frame_pass_matrices.view,
-                                shader_world);
-                        ShaderPassMatrices shader_pass_matrices =
-                            frame_pass_matrices;
-                        shader_pass_matrices.world = &shader_world;
-                        shader_pass_matrices.world_view =
-                            shader_wv ? &*shader_wv : nullptr;
-                        shader_pass_matrices.world_view_projection =
-                            &shader_wvp;
+                        const ShaderDrawMatrices shader_matrices(
+                            engine,
+                            engine.meshes[item.mesh.value],
+                            frame_pass_matrices);
+                        const ShaderPassMatrices shader_pass_matrices =
+                            shader_matrices.apply(frame_pass_matrices);
                         // Per-stage blocks from the generated variant
                         // table: [optional scene worldViewProjection]
                         // [custom floats gathered from the material's
@@ -10688,26 +10929,26 @@ bool run_gpu_engine(Engine& engine) {
                                     block,
                                 bool fragment_stage) {
                             if (!block.present) return;
-                            const std::vector<float> block_floats =
-                                shader_stage_block_floats(
-                                    block,
-                                    shader_pass_matrices,
-                                    *material);
+                            shader_stage_block_floats(
+                                block,
+                                shader_pass_matrices,
+                                *material,
+                                shader_block_scratch);
                             if (fragment_stage) {
                                 SDL_PushGPUFragmentUniformData(
                                     command,
                                     0,
-                                    block_floats.data(),
+                                    shader_block_scratch.data(),
                                     static_cast<Uint32>(
-                                        block_floats.size() *
+                                        shader_block_scratch.size() *
                                         sizeof(float)));
                             } else {
                                 SDL_PushGPUVertexUniformData(
                                     command,
                                     0,
-                                    block_floats.data(),
+                                    shader_block_scratch.data(),
                                     static_cast<Uint32>(
-                                        block_floats.size() *
+                                        shader_block_scratch.size() *
                                         sizeof(float)));
                             }
                         };

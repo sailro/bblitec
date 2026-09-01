@@ -65,7 +65,6 @@ import {
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
-import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import {
     lowerMat4MultiplyWriterCpp,
     lowerPinnedFunction,
@@ -594,12 +593,6 @@ export class RendererLowerer {
         // carries the same lanes because upstream it is the same type.
         const nodeTrs: PinnedTrsComposition =
             pinnedTrsComposition(this.context, "node");
-        // src/math/mat4-determinant3.ts, the scalar triple product the
-        // mirrored-mesh predicate reads. Lowered rather than typed: it is
-        // the one expression that decides a winding.
-        const mirrorDeterminant = options.mirroredMeshes
-            ? lowerMat4Determinant3(this.context)
-            : "";
         // The projection writers, translated whole from their pinned
         // declarations. `near`/`far` are spelled `near_plane`/`far_plane`
         // because Windows headers define the bare names away.
@@ -670,7 +663,6 @@ export class RendererLowerer {
                 shaderVariantEntries,
                 meshTrs,
                 nodeTrs,
-                mirrorDeterminant,
                 secondAnalyticLightFill,
                 backgroundGeometry,
                 perspectiveWriter,
@@ -1456,7 +1448,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantEntries: string;
             meshTrs: PinnedTrsComposition;
             nodeTrs: PinnedTrsComposition;
-            mirrorDeterminant: string;
             secondAnalyticLightFill: string;
             backgroundGeometry: {
                 groundVertexRows: string;
@@ -1478,7 +1469,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             shaderVariantEntries,
             meshTrs,
             nodeTrs,
-            mirrorDeterminant,
             secondAnalyticLightFill,
             backgroundGeometry,
             perspectiveWriter,
@@ -1491,7 +1481,10 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 `${renderTaskModule}#sortTransparentBindings`,
             )}
 #include <bblite/upstream/renderer_plan.hpp>
-#include <bblite/upstream/camera_math.hpp>
+#include <bblite/upstream/camera_math.hpp>${options.mirroredMeshes ? `
+// The mirrored-mesh watcher reads the pin's determinant from the shared
+// always-emitted fold, so load-time and run-time round alike.
+#include <bblite/upstream/pinned_world_transform.hpp>` : ""}
 
 #include <algorithm>
 #include <cmath>
@@ -2152,9 +2145,7 @@ std::array<float, 16> mesh_world_matrix(
 }
 
 ${options.mirroredMeshes
-    ? `${mirrorDeterminant}
-
-bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
+    ? `bool refresh_mirrored_meshes(Scene& scene, Engine& engine) {
     bool flipped = false;
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value >= engine.meshes.size()) continue;

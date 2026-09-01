@@ -236,48 +236,6 @@ inline int stage_uniform_slot(
 }
 
 /**
- * Bind the storage buffers a stage kept, in the sidecar's own slot order.
- *
- * Every caller answers the same two questions — which names this stage
- * survived with, and which buffer each names — so only the resolver differs;
- * a name it cannot map fails loudly rather than binding a neighbour.
- */
-template <typename Resolve>
-inline void bind_stage_storage(
-    SDL_GPURenderPass* pass,
-    const PinnedStageSlots& slots,
-    bool fragment,
-    const char* what,
-    Resolve resolve) {
-    if (slots.storage.empty()) return;
-    std::vector<SDL_GPUBuffer*> buffers;
-    buffers.reserve(slots.storage.size());
-    for (const std::string& name : slots.storage) {
-        SDL_GPUBuffer* buffer = resolve(name);
-        if (!buffer) {
-            gpu_error(
-                (std::string(what) +
-                 " declares an unmapped storage buffer '" + name + "'.")
-                    .c_str());
-        }
-        buffers.push_back(buffer);
-    }
-    if (fragment) {
-        SDL_BindGPUFragmentStorageBuffers(
-            pass,
-            0,
-            buffers.data(),
-            static_cast<Uint32>(buffers.size()));
-        return;
-    }
-    SDL_BindGPUVertexStorageBuffers(
-        pass,
-        0,
-        buffers.data(),
-        static_cast<Uint32>(buffers.size()));
-}
-
-/**
  * Bind the texture/sampler pairs a stage kept, in the sidecar's own order.
  *
  * The storage twin above says why the resolver is the parameter, and this is
@@ -295,8 +253,9 @@ inline void bind_stage_textures(
     if (slots.textures.empty()) return;
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
     bindings.reserve(slots.textures.size());
-    for (const std::string& name : slots.textures) {
-        const SDL_GPUTextureSamplerBinding binding = resolve(name);
+    for (std::size_t slot = 0; slot < slots.textures.size(); ++slot) {
+        const std::string& name = slots.textures[slot];
+        const SDL_GPUTextureSamplerBinding binding = resolve(name, slot);
         // The refusal its storage and uniform siblings carry: a resolver
         // that produced no texture must fail by name here, not bind null.
         if (!binding.texture) {
@@ -424,7 +383,9 @@ struct PinnedStageBlock {
  * The composed families differ only in which blocks they can name — the walk,
  * the slot index and the stage split are the same for all of them, which is
  * why the resolver is the parameter and a name it cannot map fails loudly
- * rather than pushing a neighbour's bytes.
+ * rather than pushing a neighbour's bytes. The walk hands the resolver the
+ * slot index it is visiting, so a resolver that answers by cached row reads
+ * it instead of counting calls.
  */
 template <typename Resolve>
 inline void push_stage_uniforms(
@@ -434,7 +395,7 @@ inline void push_stage_uniforms(
     const char* what,
     Resolve resolve) {
     for (std::size_t slot = 0; slot < slots.uniforms.size(); ++slot) {
-        const PinnedStageBlock block = resolve(slots.uniforms[slot]);
+        const PinnedStageBlock block = resolve(slots.uniforms[slot], slot);
         if (!block.data) {
             gpu_error(
                 (std::string(what) + " declares an unmapped uniform block '" +
@@ -723,6 +684,15 @@ public:
     GpuBufferUploadBatch(const GpuBufferUploadBatch&) = delete;
     GpuBufferUploadBatch& operator=(const GpuBufferUploadBatch&) = delete;
 
+    // The transfer buffer persists across submits, so a batch that
+    // outlives its frame loop stops paying a create/release per frame;
+    // SDL defers the actual release past any submit still reading it.
+    ~GpuBufferUploadBatch() {
+        if (transfer_) {
+            SDL_ReleaseGPUTransferBuffer(device_, transfer_);
+        }
+    }
+
     SDL_GPUBuffer* upload(
         SDL_GPUBufferUsageFlags usage,
         const void* data,
@@ -757,19 +727,28 @@ public:
 
     void submit() {
         if (uploads_.empty()) return;
-        SDL_GPUTransferBufferCreateInfo transfer_info{};
-        transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-        transfer_info.size = static_cast<Uint32>(bytes_.size());
-        SDL_GPUTransferBuffer* transfer =
-            SDL_CreateGPUTransferBuffer(device_, &transfer_info);
-        if (!transfer) {
-            gpu_error("SDL_CreateGPUTransferBuffer buffer batch");
+        if (transfer_capacity_ < bytes_.size()) {
+            if (transfer_) {
+                SDL_ReleaseGPUTransferBuffer(device_, transfer_);
+                transfer_ = nullptr;
+            }
+            SDL_GPUTransferBufferCreateInfo transfer_info{};
+            transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+            transfer_info.size = static_cast<Uint32>(bytes_.size());
+            transfer_ = SDL_CreateGPUTransferBuffer(device_, &transfer_info);
+            if (!transfer_) {
+                gpu_error("SDL_CreateGPUTransferBuffer buffer batch");
+            }
+            transfer_capacity_ = bytes_.size();
         }
+        // Cycling hands back a fresh backing store when the previous
+        // submit still reads the kept transfer buffer, which is what
+        // makes reuse across submits safe.
         void* mapped =
-            SDL_MapGPUTransferBuffer(device_, transfer, false);
+            SDL_MapGPUTransferBuffer(device_, transfer_, true);
         if (!mapped) gpu_error("SDL_MapGPUTransferBuffer buffer batch");
         std::memcpy(mapped, bytes_.data(), bytes_.size());
-        SDL_UnmapGPUTransferBuffer(device_, transfer);
+        SDL_UnmapGPUTransferBuffer(device_, transfer_);
 
         SDL_GPUCommandBuffer* command =
             SDL_AcquireGPUCommandBuffer(device_);
@@ -780,7 +759,7 @@ public:
         if (!copy) gpu_error("SDL_BeginGPUCopyPass buffer batch");
         for (const StagedUpload& upload : uploads_) {
             const SDL_GPUTransferBufferLocation source{
-                transfer,
+                transfer_,
                 static_cast<Uint32>(upload.offset),
             };
             const SDL_GPUBufferRegion destination{
@@ -796,10 +775,8 @@ public:
         }
         SDL_EndGPUCopyPass(copy);
         if (!SDL_SubmitGPUCommandBuffer(command)) {
-            SDL_ReleaseGPUTransferBuffer(device_, transfer);
             gpu_error("SDL_SubmitGPUCommandBuffer buffer batch");
         }
-        SDL_ReleaseGPUTransferBuffer(device_, transfer);
         uploads_.clear();
         bytes_.clear();
     }
@@ -842,6 +819,10 @@ private:
     };
 
     SDL_GPUDevice* device_ = nullptr;
+    // Kept across submits and grown when a frame stages more; released by
+    // the destructor.
+    SDL_GPUTransferBuffer* transfer_ = nullptr;
+    std::size_t transfer_capacity_ = 0;
     std::vector<StagedUpload> uploads_;
     std::vector<std::uint8_t> bytes_;
 };

@@ -210,7 +210,7 @@ function emitFrameGraphTransmission(
   }
   const scene = context.compileValue(frameGraph.arguments[0]!);
   context.expectKind(scene, "scene", frameGraph.arguments[0]!);
-  context.reachFeature("renderer:pbr", expression);
+  context.reachFeature("renderer:scene", expression);
   context.reachFeature("renderer:transmission", expression);
   context.reachFeature("material:pbr-linear-image-processing", expression);
   context.emit(`bbl::enable_scene_transmission(${scene.cpp});`);

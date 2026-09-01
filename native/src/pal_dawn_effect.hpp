@@ -180,8 +180,9 @@ inline DawnEffectPass create_dawn_effect_pass(
             wgpuDeviceCreateBindGroup(device_state.device, &group_descriptor);
     }
 
-    // Both entry points live in one module; the two deployed files carry the
-    // same text, so either loads it.
+    // Both entry points live in one module, deployed once under the
+    // fragment stem (the vertex stem declares only compiled artifacts), so
+    // the fragment file is the module.
     WGPUShaderModule module = load_wgsl_module(
         device_state.device,
         std::string(entry.fragment_stem));

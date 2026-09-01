@@ -42,6 +42,19 @@ export async function downloadCached(url: string): Promise<Uint8Array> {
 }
 
 /**
+ * The cached bytes behind a URL without touching the network; `undefined`
+ * when the URL has never been fetched. This is what lets `corpus:verify
+ * --offline` re-verify cache-served rows while reporting the rest as
+ * unverifiable rather than failing on the first fetch.
+ */
+export function readCachedDownload(url: string): Uint8Array | undefined {
+    const path = entryPath(url);
+    return existsSync(path)
+        ? new Uint8Array(readFileSync(path))
+        : undefined;
+}
+
+/**
  * The same, keeping the response's content type.
  *
  * A remote glTF image can name a type the URL's extension does not, and the

@@ -15,6 +15,7 @@
 # whole native build depends on them staying LF.
 # Blank context lines in unified diffs carry the required single-space prefix.
 *.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+*.diff text eol=lf whitespace=-blank-at-eol,-blank-at-eof
 *.png binary
 *.ts text eol=lf
 *.yml text eol=lf

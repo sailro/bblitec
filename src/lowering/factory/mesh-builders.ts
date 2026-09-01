@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { cppIdentifierPattern } from "../../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "../context.js";
 import {
     PinnedNumericLowerer,
@@ -208,7 +209,7 @@ export class MeshBuilderLowerer {
                     // refuses. One that preallocated returns the buffer by
                     // NAME, which must move -- so a bare identifier is
                     // exactly the case that does.
-                    return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value)
+                    return cppIdentifierPattern.test(value)
                         ? `std::move(${value})`
                         : value;
                 });

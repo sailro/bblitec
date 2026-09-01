@@ -292,6 +292,7 @@ export function gltfLoaderCpp(
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
 #include <algorithm>
@@ -750,7 +751,25 @@ ${animationSpeedRatio ? `
     bool additive = false;
     float additive_reference_time = 0.0f;` : ""}
 };
+${animationBlending ? `
+// The clip loop below appends the transform tracks clip by clip in
+// ascending order, so each clip's tracks are one contiguous run of the
+// vectors. [first, last) per channel, recorded beside the vectors so
+// the weighted mixer walks only the clip's own run instead of
+// rejecting every other clip's tracks by track.clip once per blended
+// clip -- the walk keeps that test, so correctness never depends on
+// this grouping.
+struct TrackRange {
+    std::size_t first = 0;
+    std::size_t last = 0;
+};
 
+struct ClipTrackRanges {
+    TrackRange rotation;
+    TrackRange translation;
+    TrackRange scale;
+};
+` : ""}
 struct AnimationRuntime {
     float time = 0.0f;
     bool paused = false;${animationMask ? `
@@ -760,7 +779,9 @@ struct AnimationRuntime {
     std::vector<AnimationClip> clips;
     std::vector<RotationTrack> rotation_tracks;
     std::vector<TranslationTrack> translation_tracks;
-    std::vector<TranslationTrack> scale_tracks;
+    std::vector<TranslationTrack> scale_tracks;${animationBlending ? `
+    // One entry per clip, indexed like clips.
+    std::vector<ClipTrackRanges> clip_track_ranges;` : ""}
     std::vector<WeightTrack> weight_tracks;${animationPointer ? `
     std::vector<VisibilityTrack> visibility_tracks;
     std::vector<LightTrack> light_tracks;
@@ -1033,24 +1054,11 @@ ${lowered.matrixCompose}
 
 ${lowered.matrixNative}
 
-Vec3 transform_point_raw(const Matrix& matrix, Vec3 value) {
-    return Vec3{
-        matrix[0] * value.x + matrix[4] * value.y + matrix[8] * value.z + matrix[12],
-        matrix[1] * value.x + matrix[5] * value.y + matrix[9] * value.z + matrix[13],
-        matrix[2] * value.x + matrix[6] * value.y + matrix[10] * value.z + matrix[14],
-    };
-}
-
-Vec3 transform_direction_raw(const Matrix& matrix, Vec3 value) {
-    return Vec3{
-        matrix[0] * value.x + matrix[4] * value.y + matrix[8] * value.z,
-        matrix[1] * value.x + matrix[5] * value.y + matrix[9] * value.z,
-        matrix[2] * value.x + matrix[6] * value.y + matrix[10] * value.z,
-    };
-}
-
+// The raw world multiplies live in the always-emitted
+// upstream::transform_position/transform_direction pair; these wrappers add
+// only the loader's RH->LH x-negation.
 Vec3 transform_point(const Matrix& matrix, Vec3 value) {
-    const Vec3 transformed = transform_point_raw(matrix, value);
+    const Vec3 transformed = upstream::transform_position(matrix, value);
     return Vec3{-transformed.x, transformed.y, transformed.z};
 }
 
@@ -1058,15 +1066,8 @@ Vec3 transform_point(const Matrix& matrix, Vec3 value) {
 // the transformed vector unnormalized; only the fragment renormalizes.
 Vec3 transform_direction(const Matrix& matrix, Vec3 value) {
     const Vec3 transformed =
-        transform_direction_raw(matrix, normalize(value));
+        upstream::transform_direction(matrix, normalize(value));
     return Vec3{-transformed.x, transformed.y, transformed.z};
-}
-
-float linear_determinant(const Matrix& matrix) {
-    return
-        matrix[0] * (matrix[5] * matrix[10] - matrix[9] * matrix[6]) -
-        matrix[4] * (matrix[1] * matrix[10] - matrix[9] * matrix[2]) +
-        matrix[8] * (matrix[1] * matrix[6] - matrix[5] * matrix[2]);
 }
 
 // getTextureImageIndex: an alternate-source extension supplies the image index
@@ -2687,7 +2688,12 @@ ${nonTrianglePrimitives
             const Matrix matrix = instanced
                 ? identity_matrix()
                 : compute_world(node_index);
-            const float determinant = linear_determinant(matrix);
+            // The pin's own mat4Determinant3, from the shared emission --
+            // double, expanded along the same cofactor column as the
+            // run-time mirrored-mesh watcher, so the load-time and
+            // run-time answers to "is this basis mirrored" round alike.
+            const double determinant =
+                upstream::pinned_mat4_determinant3(matrix);
             const std::size_t material_index =
                 ${materialVariants
                     ? `variant_material_index(document, primitive, material_json.size())`
@@ -2711,7 +2717,7 @@ ${nonTrianglePrimitives
                     false));
             }
             const bool clockwise_front_face =
-                determinant < 0.0f &&
+                determinant < 0.0 &&
                 material_index < materials.size() &&
                 materials[material_index].value <
                     engine.materials.size() &&
@@ -2779,7 +2785,7 @@ ${nonTrianglePrimitives
                         tangent.x,
                         tangent.y,
                         tangent.z,
-                        (determinant < 0.0f ? 1.0f : -1.0f) *
+                        (determinant < 0.0 ? 1.0f : -1.0f) *
                             local_tangent_w,
                     };
                 }
@@ -3007,7 +3013,7 @@ ${lowered.vertexColor}
             }
             if (
                 geometry.topology == MeshTopology::triangles &&
-                determinant < 0.0f &&
+                determinant < 0.0 &&
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
@@ -3109,7 +3115,7 @@ ${lowered.vertexColor}
                     for (const ModelVertex& vertex :
                          geometry.vertices) {
                         const Vec3 position =
-                            transform_point_raw(
+                            upstream::transform_position(
                                 world_instance,
                                 vertex.position);
                         geometry.bounds_min.x = std::min(
@@ -3216,7 +3222,7 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
             // the mirror in the mesh block's own world matrix. A PAL feeding
             // the pin's composed stages has to undo one to supply the other,
             // and the sign is only known here.
-            record.mirrored_x = determinant < 0.0f;${nodeVisibility ? `
+            record.mirrored_x = determinant < 0.0;${nodeVisibility ? `
             record.visible = node_visible[node_index];` : ""}
             record.instance_parent_matrix =
                 instance_parent_matrix;
@@ -3298,7 +3304,18 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                 "animation_" + std::to_string(clip_index));
             clip.playing = clip_index == 0;
             clip.stopped = !clip.playing;
-            animation_runtime->clips.push_back(std::move(clip));
+            animation_runtime->clips.push_back(std::move(clip));${animationBlending ? `
+            // Where this clip's contiguous run of each track vector
+            // starts; the ends land after the channel loop, and the
+            // pair is pushed in clip order so the ranges index like
+            // clips.
+            ClipTrackRanges clip_track_range;
+            clip_track_range.rotation.first =
+                animation_runtime->rotation_tracks.size();
+            clip_track_range.translation.first =
+                animation_runtime->translation_tracks.size();
+            clip_track_range.scale.first =
+                animation_runtime->scale_tracks.size();` : ""}
             // Every channel path notes its key times here, so a clip whose
             // only channels are animation pointers still gets a duration.
             const auto note_clip_time =
@@ -4054,7 +4071,15 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                         ->weight_tracks
                         .push_back(std::move(track));
                 }
-            }
+            }${animationBlending ? `
+            clip_track_range.rotation.last =
+                animation_runtime->rotation_tracks.size();
+            clip_track_range.translation.last =
+                animation_runtime->translation_tracks.size();
+            clip_track_range.scale.last =
+                animation_runtime->scale_tracks.size();
+            animation_runtime->clip_track_ranges.push_back(
+                clip_track_range);` : ""}
         }
 ${animationMask ? `        // parseAnimationData's own nodeNames, in document order: what an
         // AnimationGroupMask matches against. A node with no name matches
@@ -4243,7 +4268,7 @@ ${lowered.gltfCameraPoseRefresh}` : ""}
                                 continue;
                             }
                             const Vec3 joint_position =
-                                transform_point_raw(
+                                upstream::transform_position(
                                     joint_matrices[joint],
                                     morphed_position);
                             position.x += joint_position.x * weight;
@@ -4251,7 +4276,7 @@ ${lowered.gltfCameraPoseRefresh}` : ""}
                             position.z += joint_position.z * weight;
                         }
                     } else {
-                        position = transform_point_raw(
+                        position = upstream::transform_position(
                             mesh_world,
                             morphed_position);
                     }
@@ -4364,8 +4389,19 @@ ${animationBlending ? `        // src/animation/weighted-gltf-mixer.ts: the mana
                 if (clip.additive) continue;` : ""}
                 const float weight = entry.weight;
                 if (weight == 0.0f) continue;
-                for (const RotationTrack& track :
-                     animation_runtime->rotation_tracks) {
+                // The clip's own contiguous run of each vector; the
+                // track.clip test below stays, so a grouping this
+                // bookkeeping got wrong could only skip work, never
+                // blend another clip's track.
+                const ClipTrackRanges& clip_range =
+                    animation_runtime->clip_track_ranges[entry.clip];
+                for (std::size_t track_index =
+                         clip_range.rotation.first;
+                     track_index < clip_range.rotation.last;
+                     ++track_index) {
+                    const RotationTrack& track =
+                        animation_runtime
+                            ->rotation_tracks[track_index];
                     if (
                         track.clip != entry.clip ||
                         track.times.empty() ||
@@ -4397,9 +4433,14 @@ ${animationMask ? `
                 // channel is a pair of members rather than a second loop.
                 const auto accumulate_vec3 =
                     [&](const std::vector<TranslationTrack>& tracks,
+                        const TrackRange& range,
                         Vec3 AnimatedNode::*value,
                         float AnimatedNode::*accumulated) {
-                    for (const TranslationTrack& track : tracks) {
+                    for (std::size_t track_index = range.first;
+                         track_index < range.last;
+                         ++track_index) {
+                        const TranslationTrack& track =
+                            tracks[track_index];
                         if (
                             track.clip != entry.clip ||
                             track.times.empty() ||
@@ -4426,10 +4467,12 @@ ${animationMask ? `
                 };
                 accumulate_vec3(
                     animation_runtime->translation_tracks,
+                    clip_range.translation,
                     &AnimatedNode::translation,
                     &AnimatedNode::translation_weight);
                 accumulate_vec3(
                     animation_runtime->scale_tracks,
+                    clip_range.scale,
                     &AnimatedNode::scale,
                     &AnimatedNode::scale_weight);
             }
@@ -4461,8 +4504,15 @@ ${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accum
                 if (clip.stopped || !clip.additive) continue;
                 const float weight = entry.weight;
                 if (weight == 0.0f) continue;
-                for (const RotationTrack& track :
-                     animation_runtime->rotation_tracks) {
+                const ClipTrackRanges& clip_range =
+                    animation_runtime->clip_track_ranges[entry.clip];
+                for (std::size_t track_index =
+                         clip_range.rotation.first;
+                     track_index < clip_range.rotation.last;
+                     ++track_index) {
+                    const RotationTrack& track =
+                        animation_runtime
+                            ->rotation_tracks[track_index];
                     if (
                         track.clip != entry.clip ||
                         track.times.empty() ||
@@ -4495,8 +4545,13 @@ ${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accum
                 }
                 const auto accumulate_additive_vec3 =
                     [&](const std::vector<TranslationTrack>& tracks,
+                        const TrackRange& range,
                         Vec3 AnimatedNode::*value) {
-                    for (const TranslationTrack& track : tracks) {
+                    for (std::size_t track_index = range.first;
+                         track_index < range.last;
+                         ++track_index) {
+                        const TranslationTrack& track =
+                            tracks[track_index];
                         if (
                             track.clip != entry.clip ||
                             track.times.empty() ||
@@ -4523,9 +4578,11 @@ ${animationAdditive ? `            // src/animation/weighted-gltf-mixer.ts accum
                 };
                 accumulate_additive_vec3(
                     animation_runtime->translation_tracks,
+                    clip_range.translation,
                     &AnimatedNode::translation);
                 accumulate_additive_vec3(
                     animation_runtime->scale_tracks,
+                    clip_range.scale,
                     &AnimatedNode::scale);
             }
 ` : ""}            // A node the clips animate below full weight keeps the

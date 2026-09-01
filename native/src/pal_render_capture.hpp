@@ -985,37 +985,35 @@ inline void write_draw_uniforms(
                 draw.item.mesh.value < engine.meshes.size()) {
                 const MaterialRecord& material =
                     engine.materials[draw.item.material.value];
-                const std::array<float, 16> shader_world =
-                    shader_draw_world(
-                        engine,
-                        engine.meshes[draw.item.mesh.value]);
-                const std::array<float, 16> shader_wvp =
-                    shader_world_view_projection(
-                        pass_matrices.view_projection, shader_world);
-                const auto shader_wv = shader_world_view(
-                    pass_matrices.view, shader_world);
-                ShaderPassMatrices shader_pass_matrices = pass_matrices;
-                shader_pass_matrices.world = &shader_world;
-                shader_pass_matrices.world_view =
-                    shader_wv ? &*shader_wv : nullptr;
-                shader_pass_matrices.world_view_projection = &shader_wvp;
+                const ShaderDrawMatrices shader_matrices(
+                    engine,
+                    engine.meshes[draw.item.mesh.value],
+                    pass_matrices);
+                const ShaderPassMatrices shader_pass_matrices =
+                    shader_matrices.apply(pass_matrices);
                 const upstream::ShaderVariantInfo& info =
                     upstream::shader_variant_info(draw.item.shader_variant);
+                // The scratch the shared packer fills -- the same
+                // caller-owned shape both backends' draw loops thread
+                // through it, reused here across the two stages.
+                std::vector<float> stage_block_floats;
                 const auto emit_block =
                     [&](
                         const upstream::ShaderVariantStageBlock& block,
                         const char* stage) {
                         if (!block.present) return;
-                        const std::vector<float> floats =
-                            shader_stage_block_floats(
-                                block, shader_pass_matrices, material);
+                        shader_stage_block_floats(
+                            block,
+                            shader_pass_matrices,
+                            material,
+                            stage_block_floats);
                         write_float_block(
                             json,
                             stage,
                             0,
                             info.name,
-                            floats.data(),
-                            floats.size());
+                            stage_block_floats.data(),
+                            stage_block_floats.size());
                     };
                 emit_block(info.vertex, "vertex");
                 emit_block(info.fragment, "fragment");

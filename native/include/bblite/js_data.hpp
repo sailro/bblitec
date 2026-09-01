@@ -716,22 +716,104 @@ struct ValueHash {
     }
 };
 
+/**
+ * The container shell Map and Set share: insertion-ordered slots, an
+ * unordered index from a key into them, the erase that soft-deletes
+ * under a live iterator, and the iterator surface over the slots. The
+ * derived containers keep only their own entry shape and lookup API —
+ * Map indexes `std::pair<K, V>` by the pair's first, Set indexes the
+ * value by itself — and both hand the key to `insert` explicitly, so
+ * the shell needs no key projection.
+ */
+template <typename EntryT, typename KeyT>
+class IndexedInsertionOrdered {
+  public:
+    using Slot = InsertionOrderedSlot<EntryT>;
+    using Iterator = InsertionOrderedIterator<EntryT, false>;
+    using ConstIterator = InsertionOrderedIterator<EntryT, true>;
+
+    [[nodiscard]] bool has(const KeyT& key) const {
+        return find(key) != storage_->index.end();
+    }
+    [[nodiscard]] bool erase(const KeyT& key) {
+        const auto entry = find(key);
+        if (entry == storage_->index.end()) return false;
+        const auto slot = entry->second;
+        storage_->index.erase(entry);
+        if (storage_->iterator_count > 0) {
+            slot->active = false;
+        } else {
+            storage_->entries.erase(slot);
+        }
+        return true;
+    }
+    [[nodiscard]] Iterator begin() {
+        return Iterator(
+            storage_,
+            storage_->entries.begin(),
+            storage_->entries.end());
+    }
+    [[nodiscard]] Iterator end() {
+        return Iterator(
+            storage_,
+            storage_->entries.end(),
+            storage_->entries.end());
+    }
+    [[nodiscard]] ConstIterator begin() const {
+        const auto& entries = storage_->entries;
+        return ConstIterator(
+            storage_, entries.cbegin(), entries.cend());
+    }
+    [[nodiscard]] ConstIterator end() const {
+        const auto& entries = storage_->entries;
+        return ConstIterator(
+            storage_, entries.cend(), entries.cend());
+    }
+    [[nodiscard]] std::size_t size() const {
+        return storage_->index.size();
+    }
+
+  protected:
+    using OrderedStorage = InsertionOrderedStorage<EntryT>;
+    struct Storage : OrderedStorage {
+        std::unordered_map<
+            KeyT,
+            typename OrderedStorage::Slots::iterator,
+            ValueHash<KeyT>>
+            index;
+    };
+
+    [[nodiscard]] auto find(const KeyT& key) const {
+        return storage_->index.find(key);
+    }
+    /** Append a not-yet-present entry and index it under `key`. */
+    void insert(const KeyT& key, const EntryT& entry) {
+        storage_->entries.push_back(Slot{entry});
+        storage_->index.emplace(
+            key,
+            std::prev(storage_->entries.end()));
+    }
+
+    std::shared_ptr<Storage> storage_ =
+        std::make_shared<Storage>();
+};
+
 template <typename K, typename V>
-class Map {
+class Map : public IndexedInsertionOrdered<std::pair<K, V>, K> {
+  private:
+    using Base = IndexedInsertionOrdered<std::pair<K, V>, K>;
+    using Base::find;
+    using Base::insert;
+    using Base::storage_;
+
   public:
     using Entry = std::pair<K, V>;
-    using Slot = InsertionOrderedSlot<Entry>;
-    using Iterator = InsertionOrderedIterator<Entry, false>;
-    using ConstIterator = InsertionOrderedIterator<Entry, true>;
 
     Map() = default;
     Map(std::initializer_list<Entry> entries) {
         for (const Entry& entry : entries) set(entry.first, entry.second);
     }
 
-    [[nodiscard]] bool has(const K& key) const {
-        return find(key) != storage_->index.end();
-    }
     [[nodiscard]] typename MapGetResult<V>::Type get(const K& key) const {
         const auto entry = find(key);
         return entry == storage_->index.end()
@@ -763,70 +845,12 @@ class Map {
     Map& set(const K& key, const V& value) {
         const auto entry = find(key);
         if (entry == storage_->index.end()) {
-            storage_->entries.push_back(
-                Slot{Entry{key, value}});
-            storage_->index.emplace(
-                key,
-                std::prev(storage_->entries.end()));
+            insert(key, Entry{key, value});
         } else {
             entry->second->value.second = value;
         }
         return *this;
     }
-    [[nodiscard]] bool erase(const K& key) {
-        const auto entry = find(key);
-        if (entry == storage_->index.end()) return false;
-        const auto slot = entry->second;
-        storage_->index.erase(entry);
-        if (storage_->iterator_count > 0) {
-            slot->active = false;
-        } else {
-            storage_->entries.erase(slot);
-        }
-        return true;
-    }
-    [[nodiscard]] Iterator begin() {
-        return Iterator(
-            storage_,
-            storage_->entries.begin(),
-            storage_->entries.end());
-    }
-    [[nodiscard]] Iterator end() {
-        return Iterator(
-            storage_,
-            storage_->entries.end(),
-            storage_->entries.end());
-    }
-    [[nodiscard]] ConstIterator begin() const {
-        const auto& entries = storage_->entries;
-        return ConstIterator(
-            storage_, entries.cbegin(), entries.cend());
-    }
-    [[nodiscard]] ConstIterator end() const {
-        const auto& entries = storage_->entries;
-        return ConstIterator(
-            storage_, entries.cend(), entries.cend());
-    }
-    [[nodiscard]] std::size_t size() const {
-        return storage_->index.size();
-    }
-
-  private:
-    using OrderedStorage = InsertionOrderedStorage<Entry>;
-    struct Storage : OrderedStorage {
-        std::unordered_map<
-            K,
-            typename OrderedStorage::Slots::iterator,
-            ValueHash<K>>
-            index;
-    };
-
-    [[nodiscard]] auto find(const K& key) const {
-        return storage_->index.find(key);
-    }
-
-    std::shared_ptr<Storage> storage_ =
-        std::make_shared<Storage>();
 };
 
 /** Immediate snapshot of JavaScript Map.prototype.values iteration order. */
@@ -848,11 +872,14 @@ template <typename K, typename V>
 }
 
 template <typename T>
-class Set {
+class Set : public IndexedInsertionOrdered<T, T> {
+  private:
+    using Base = IndexedInsertionOrdered<T, T>;
+    using Base::insert;
+    using Base::storage_;
+
   public:
-    using Slot = InsertionOrderedSlot<T>;
-    using Iterator = InsertionOrderedIterator<T, false>;
-    using ConstIterator = InsertionOrderedIterator<T, true>;
+    using Slot = typename Base::Slot;
 
     Set() = default;
     Set(std::initializer_list<T> values) {
@@ -862,29 +889,11 @@ class Set {
         for (const T& value : values) add(value);
     }
 
-    [[nodiscard]] bool has(const T& value) const {
-        return find(value) != storage_->index.end();
-    }
     Set& add(const T& value) {
-        if (!has(value)) {
-            storage_->entries.push_back(Slot{value});
-            storage_->index.emplace(
-                value,
-                std::prev(storage_->entries.end()));
+        if (!this->has(value)) {
+            insert(value, value);
         }
         return *this;
-    }
-    [[nodiscard]] bool erase(const T& value) {
-        const auto entry = find(value);
-        if (entry == storage_->index.end()) return false;
-        const auto slot = entry->second;
-        storage_->index.erase(entry);
-        if (storage_->iterator_count > 0) {
-            slot->active = false;
-        } else {
-            storage_->entries.erase(slot);
-        }
-        return true;
     }
     void clear() {
         storage_->index.clear();
@@ -896,48 +905,6 @@ class Set {
             storage_->entries.clear();
         }
     }
-    [[nodiscard]] Iterator begin() {
-        return Iterator(
-            storage_,
-            storage_->entries.begin(),
-            storage_->entries.end());
-    }
-    [[nodiscard]] Iterator end() {
-        return Iterator(
-            storage_,
-            storage_->entries.end(),
-            storage_->entries.end());
-    }
-    [[nodiscard]] ConstIterator begin() const {
-        const auto& entries = storage_->entries;
-        return ConstIterator(
-            storage_, entries.cbegin(), entries.cend());
-    }
-    [[nodiscard]] ConstIterator end() const {
-        const auto& entries = storage_->entries;
-        return ConstIterator(
-            storage_, entries.cend(), entries.cend());
-    }
-    [[nodiscard]] std::size_t size() const {
-        return storage_->index.size();
-    }
-
-  private:
-    using OrderedStorage = InsertionOrderedStorage<T>;
-    struct Storage : OrderedStorage {
-        std::unordered_map<
-            T,
-            typename OrderedStorage::Slots::iterator,
-            ValueHash<T>>
-            index;
-    };
-
-    [[nodiscard]] auto find(const T& value) const {
-        return storage_->index.find(value);
-    }
-
-    std::shared_ptr<Storage> storage_ =
-        std::make_shared<Storage>();
 };
 
 template <typename T>

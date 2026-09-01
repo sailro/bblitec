@@ -163,7 +163,7 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:frame-graph": ["src/pal_sdl_gpu_frame_graph.cpp"],
     "effect:wrapper": [],
     "effect:task": [],
-    "renderer:pbr": ["src/pal_sdl_gpu.cpp"],
+    "renderer:scene": ["src/pal_sdl_gpu.cpp"],
     "renderer:transmission": [],
     "material:pbr-linear-image-processing": [],
     "renderer:fog": [],

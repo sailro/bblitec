@@ -822,7 +822,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "(the frame-graph pass into a RenderTarget)",
         consumers: CMAKE,
     },
-    "renderer:pbr": {
+    "renderer:scene": {
         provenance:
             "src/material/pbr/pbr-template.ts (fragments composed by the " +
             "pin itself) + the pinned frame-graph renderer plan",

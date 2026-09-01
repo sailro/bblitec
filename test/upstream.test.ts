@@ -17,6 +17,7 @@ import { LightLowerer } from "../src/lowering/light-lowerer.js";
 import { GeometryOutputLowerer } from "../src/lowering/geometry-output-lowerer.js";
 import { RenderTargetLowerer } from "../src/lowering/render-target-lowerer.js";
 import { pinnedSurfaceHeader } from "../src/lowering/pinned-surface.js";
+import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { pinnedDepthStateHeader } from "../src/lowering/pinned-depth-state.js";
 import { pinnedInverseImageProcessingHeader } from "../src/lowering/pinned-inverse-image-processing.js";
 import {
@@ -745,14 +746,24 @@ test("generates GLB framing validation from upstream constants", () => {
         adapter.source,
         /glTF primitive index exceeds its vertex count/,
     );
-    assert.match(adapter.source, /linear_determinant/);
+    // The mirrored-basis predicate reads the SHARED pinned fold — the same
+    // emission the run-time watcher calls — never a loader-local expansion.
+    assert.match(
+        adapter.source,
+        /const double determinant =\s*upstream::pinned_mat4_determinant3\(matrix\);/,
+    );
+    assert.doesNotMatch(adapter.source, /linear_determinant/);
+    // The raw world multiplies come from the shared emitted pair; only the
+    // RH->LH negating wrappers stay loader-local.
+    assert.match(adapter.source, /upstream::transform_position\(/);
+    assert.doesNotMatch(adapter.source, /transform_point_raw/);
     assert.match(
         adapter.source,
         /record\.clockwise_front_face/,
     );
     assert.match(
         adapter.source,
-        /determinant < 0\.0f &&\s*!clockwise_front_face/,
+        /determinant < 0\.0 &&\s*!clockwise_front_face/,
     );
     assert.match(adapter.source, /geometry\.flat_normals = true/);
     assert.match(adapter.source, /vertex\.local_position = local_position/);
@@ -962,6 +973,16 @@ test("generates the Babylon loader adapter from pinned scene semantics", () => {
     assert.match(lowered.source, /engine\.reflection_cubes/);
     assert.match(lowered.source, /PrimitiveKind::babylon/);
     assert.match(lowered.source, /create_free_camera/);
+    // The pivot bake applies the world basis through the shared emitted
+    // pair, not a loader-local copy of the multiply.
+    assert.match(
+        lowered.source,
+        /upstream::transform_position\(\n\s*local_matrix, source_position\)/,
+    );
+    assert.doesNotMatch(
+        lowered.source,
+        /Vec3 transform_point\(/,
+    );
 });
 
 test("generates engine API wrappers over the PAL", () => {
@@ -1287,6 +1308,43 @@ test("emits the pinned surface sample count for every scene shape", () => {
         /inline std::uint32_t preferred_sample_count\(\) \{\s*return 1u;/,
     );
     assert.match(singleSampleHeader, pinnedProvenance());
+});
+
+test("emits the world-basis pair and pinned determinant once for every scene shape", () => {
+    const header = pinnedWorldTransformHeader(new LoweringContext());
+    // The float pair, term for term the pinned vertex stage's multiply:
+    // rows read down a column-major basis column, translation only on the
+    // position arm. Inline, because the PAL and both loaders include this
+    // from separate translation units.
+    assert.match(
+        header,
+        /inline Vec3 transform_position\(\n    const std::array<float, 16>& world,\n    Vec3 value\)/,
+    );
+    assert.match(
+        header,
+        /world\[0\] \* value\.x \+ world\[4\] \* value\.y \+ world\[8\] \* value\.z \+\n            world\[12\]/,
+    );
+    assert.match(
+        header,
+        /inline Vec3 transform_direction\(\n    const std::array<float, 16>& world,\n    Vec3 value\)/,
+    );
+    assert.match(
+        header,
+        /world\[2\] \* value\.x \+ world\[6\] \* value\.y \+ world\[10\] \* value\.z,\n    \};/,
+    );
+    // The determinant is the pin's own fold — double, expanded along the
+    // first basis COLUMN (m[0], m[1], m[2] cofactors joined by +), which is
+    // what makes the load-time and run-time mirror answers round alike.
+    assert.match(
+        header,
+        /inline double pinned_mat4_determinant3\(\n    const std::array<float, 16>& m\)/,
+    );
+    assert.match(
+        header,
+        /m\[static_cast<std::size_t>\(5\.0\)\]\) \* static_cast<double>\(m\[static_cast<std::size_t>\(10\.0\)\]\)/,
+    );
+    assert.match(header, pinnedProvenance());
+    assert.match(header, /namespace bbl::upstream \{/);
 });
 
 test("emits the pinned depth convention and anchors both projection writers", () => {

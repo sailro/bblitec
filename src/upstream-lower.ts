@@ -28,6 +28,7 @@ import {
     shadowFactorySource,
 } from "./lowering/shadow-lowerer.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
+import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
@@ -80,7 +81,10 @@ import {
     effectStageStems,
 } from "./lowering/effect-lowerer.js";
 import { pinnedEffectVariantsHeader } from "./pinned-effect-cpp.js";
-import { GeneratedTree } from "./generated-tree.js";
+import {
+    compiledShaderArtifactExtensions,
+    GeneratedTree,
+} from "./generated-tree.js";
 import {
     reachedGeneratedSources,
     reachesSharedSpriteAtlasHeader,
@@ -784,6 +788,16 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 options.msaaSamples ?? 4,
             ),
         );
+        // The float world-basis multiplies restated from the pinned WGSL
+        // vertex stages, and the pin's own mirrored-basis determinant.
+        // Always emitted, because the consumers sit on both sides of the
+        // generated/PAL boundary: the PAL's CPU vertex bake compiles for
+        // every scene shape, and both geometry loaders bake node worlds
+        // through the same pair.
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_world_transform.hpp",
+            pinnedWorldTransformHeader(new LoweringContext(this.store)),
+        );
         // The pin's own inverse image processing, translated whole from its
         // declaration and cross-checked against the forward curve, so the
         // linear-frame clear color both backends build calls a generated
@@ -1143,12 +1157,28 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
              * this repository authors or specializes.
              */
             family?: ShaderFamily;
+            /**
+             * Further compiled stems this one deployed file also serves:
+             * the shader compiler runs its offline pipeline once per
+             * declared stem, at that stem's own entry point, so a module
+             * carrying both entry points deploys one text instead of two
+             * identical copies. Each stem still gets its own register
+             * compaction and `.slots` sidecar.
+             */
+            alsoStages?: ReadonlyArray<{
+                stem: string;
+                entryPoint: string;
+            }>;
         }> = [];
         if (features.includes("effect:wrapper")) {
-            // One module per descriptor, deployed twice because both entry
-            // points live in it -- the same shape the post-process passes
-            // take, and for the same reason: the pin builds one shader module
-            // and names a stage in each half of the pipeline descriptor.
+            // One module per descriptor, both entry points in it: the pin
+            // builds one shader module and names a stage in each half of
+            // the pipeline descriptor. The text deploys ONCE, under the
+            // fragment stem the Dawn renderer loads the module by, and
+            // declares the vertex stem beside it -- the shader compiler
+            // still runs once per stem, so SDL_GPU keeps both compiled
+            // stems, each with its own register compaction and `.slots`
+            // sidecar.
             const effects = new EffectLowerer(context);
             const uniformEffects = options.effects.some(
                 (effect) => effect.family === "uniform-effect",
@@ -1164,14 +1194,18 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 provenances.add(provenance);
                 const wgsl = lowerer.composeModule(effect.fragment);
                 const stems = effectStageStems(index);
-                for (const stem of [stems.vertexStem, stems.fragmentStem]) {
-                    composedShaders.push({
-                        output: `upstream/shaders/${stem}.native.wgsl`,
-                        data: `// ${provenance}
+                composedShaders.push({
+                    output: `upstream/shaders/${stems.fragmentStem}.native.wgsl`,
+                    data: `// ${provenance}
 ${wgsl}`,
-                        family: "effect",
-                    });
-                }
+                    family: "effect",
+                    alsoStages: [
+                        {
+                            stem: stems.vertexStem,
+                            entryPoint: SHADER_FAMILIES.effect.vertex,
+                        },
+                    ],
+                });
             }
             const provenance = [...provenances].join(" ");
             this.tree.write(
@@ -1551,7 +1585,7 @@ ${wgsl}`,
                     "makeBillboardWgsl,makeBillboardBasisWgsl,buildBillboardSystemUbo",
             });
         }
-        if (features.includes("renderer:pbr")) {
+        if (features.includes("renderer:scene")) {
             const renderer = new RendererLowerer(context);
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
@@ -1790,18 +1824,23 @@ ${wgsl}`,
                     })),
                 ),
             ];
-            // Both stages of a pass live in one composed module: Tint takes
-            // one entry point per file, so the same text is deployed twice and
-            // each copy is compiled at the stage its name selects. The text is
-            // the pin's own, in the pin's own groups, which is why the
+            // Both stages of a pass live in one composed module: the pin
+            // builds one shader module and names a stage in each half of
+            // the pipeline descriptor. The text deploys ONCE, under the
+            // fragment stem the Dawn backend loads, and declares the
+            // vertex stem beside it — Tint still takes one entry point
+            // per compile, so the shader compiler runs twice over this
+            // one file and SDL_GPU keeps both compiled stems, each with
+            // its own register compaction and `.slots` sidecar. The text
+            // is the pin's own, in the pin's own groups, which is why the
             // register remap treats it exactly like a composed variant.
             //
-            // A module is identified by that text rather than by the pass that
-            // reached it: two blur passes differing only in `direction` -- a
-            // uniform, not a define -- compose the same text, and deploying it
-            // twice would compile it twice and build a second pipeline from it.
-            // Each pass keeps its own record either way; only the module is
-            // shared.
+            // A module is identified by that text rather than by the pass
+            // that reached it: two blur passes differing only in
+            // `direction` -- a uniform, not a define -- compose the same
+            // text, and deploying it twice would compile it twice and
+            // build a second pipeline from it. Each pass keeps its own
+            // record either way; only the module is shared.
             const postProcessProvenance = context.provenance(
                 "src/frame-graph/post-process-task.ts",
                 "getShaderModule",
@@ -1811,14 +1850,19 @@ ${wgsl}`,
                 if (postProcessModules.has(composed.wgsl)) continue;
                 const index = postProcessModules.size;
                 postProcessModules.set(composed.wgsl, index);
-                for (const stage of ["vert", "frag"] as const) {
-                    composedShaders.push({
-                        output: `upstream/shaders/postprocess-${index}.${stage}.native.wgsl`,
-                        data: `// ${postProcessProvenance}
+                composedShaders.push({
+                    output: `upstream/shaders/postprocess-${index}.frag.native.wgsl`,
+                    data: `// ${postProcessProvenance}
 ${composed.wgsl}`,
-                        family: "postProcess",
-                    });
-                }
+                    family: "postProcess",
+                    alsoStages: [
+                        {
+                            stem: `postprocess-${index}.vert`,
+                            entryPoint:
+                                SHADER_FAMILIES.postProcess.vertex,
+                        },
+                    ],
+                });
             }
             this.tree.write(
                 "upstream/include/bblite/upstream/post_process_shaders.hpp",
@@ -2310,9 +2354,6 @@ ${shadow.blurFragmentWgsl}`,
             // composed families read, so a node-only scene hoists them here
             // exactly as a Standard-only scene hoists them into its own
             // header.
-            // A node graph declares its own mesh block, but the per-pass
-            // scene and lights blocks are the same ones the other two
-            // composed families read, so a node-only scene hoists them.
             const sharedNodeMirrors =
                 (options.pinnedVariants ?? []).length > 0 ||
                     (options.pinnedStandardVariants ?? []).length > 0
@@ -2327,38 +2368,47 @@ ${shadow.blurFragmentWgsl}`,
                 ) + sharedNodeMirrors,
             );
             for (const variant of options.nodeVariants!) {
-                // One module carries both stages, so it deploys twice --
-                // once per entry point, the way a composed post-process
-                // pass does. The `node-` prefix is what makes
-                // tools/compile-shaders.ps1 take the pin's own group
-                // scheme through the register remap and publish the
-                // `.slots` sidecar the SDL PAL binds against.
-                for (
-                    const stem of [variant.vertexStem, variant.fragmentStem]
-                ) {
-                    composedShaders.push({
-                        output: `upstream/shaders/${stem}.native.wgsl`,
-                        data: variant.composed.wgsl,
-                        family: "node",
-                    });
-                }
-                // A caster is a second module of the same graph, so it
-                // deploys the same way: twice, once per entry point.
+                // One module carries both stages and deploys ONCE, under
+                // the fragment stem both PALs load the module by, with
+                // the vertex stem declared beside it -- the shader
+                // compiler still runs once per stem, so SDL_GPU keeps
+                // both compiled stems, each with its own register
+                // compaction and `.slots` sidecar. The `node-` prefix is
+                // what makes tools/compile-shaders.ps1 take the pin's
+                // own group scheme through the register remap.
+                composedShaders.push({
+                    output:
+                        `upstream/shaders/${variant.fragmentStem}.native.wgsl`,
+                    data: variant.composed.wgsl,
+                    family: "node",
+                    alsoStages: [
+                        {
+                            stem: variant.vertexStem,
+                            entryPoint: SHADER_FAMILIES.node.vertex,
+                        },
+                    ],
+                });
+                // A caster is a second module of the same graph, loaded
+                // the same way, so it deploys the same way: once, under
+                // its own fragment stem.
                 const caster = variant.composed.caster;
                 if (caster) {
                     const stems = nodeCasterStageStems(
                         variant.index,
                         caster.kind,
                     );
-                    for (
-                        const stem of [stems.vertexStem, stems.fragmentStem]
-                    ) {
-                        composedShaders.push({
-                            output: `upstream/shaders/${stem}.native.wgsl`,
-                            data: caster.wgsl,
-                            family: "node",
-                        });
-                    }
+                    composedShaders.push({
+                        output:
+                            `upstream/shaders/${stems.fragmentStem}.native.wgsl`,
+                        data: caster.wgsl,
+                        family: "node",
+                        alsoStages: [
+                            {
+                                stem: stems.vertexStem,
+                                entryPoint: SHADER_FAMILIES.node.vertex,
+                            },
+                        ],
+                    });
                 }
             }
         }
@@ -2378,6 +2428,22 @@ ${shadow.blurFragmentWgsl}`,
             }
             for (const shader of distinctShaders.values()) {
                 this.tree.write(shader.output, shader.data);
+                // A declared extra stem's offline artifacts have no WGSL
+                // of their own; record them as this run's so the prune
+                // keeps them exactly as long as their module lives.
+                const directory = shader.output.slice(
+                    0,
+                    shader.output.lastIndexOf("/") + 1,
+                );
+                for (const stage of shader.alsoStages ?? []) {
+                    for (
+                        const extension of compiledShaderArtifactExtensions
+                    ) {
+                        this.tree.keep(
+                            `${directory}${stage.stem}${extension}`,
+                        );
+                    }
+                }
             }
             this.tree.write(
                 "upstream/shaders/composition.json",
@@ -2386,7 +2452,12 @@ ${shadow.blurFragmentWgsl}`,
                         modules: [...distinctShaders.values()]
                             .filter(({ output }) =>
                                 output.endsWith(".wgsl"))
-                            .map(({ output, data, family }) => ({
+                            .map(({
+                                output,
+                                data,
+                                family,
+                                alsoStages,
+                            }) => ({
                                 output,
                                 sha256: createHash("sha256")
                                     .update(data)
@@ -2395,6 +2466,9 @@ ${shadow.blurFragmentWgsl}`,
                                     output,
                                     family ?? "owned",
                                 ),
+                                ...(alsoStages
+                                    ? { alsoStages }
+                                    : {}),
                             })),
                     },
                     null,

@@ -40,7 +40,7 @@ test("compiles the Babylon Lite primitives example", () => {
         "material:standard",
         "mesh:box",
         "mesh:ground",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.deepEqual(result.manifest.assets, []);
     assert.deepEqual(result.manifest.runtimeSources, [
@@ -510,7 +510,7 @@ test("compiles pinned Standard material morph targets", () => {
         "material:standard",
         "mesh:morph-targets",
         "mesh:sphere",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.match(
         result.cpp,
@@ -9814,7 +9814,7 @@ test("compiles pinned scene 213 GridMaterial options", () => {
     });
 
     assert.ok(result.manifest.features.includes("material:grid"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.ok(
         result.manifest.generatedSources.includes(
             "upstream/src/material_grid.cpp",
@@ -9874,7 +9874,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
         "background:skybox",
         "light:hemispheric",
         "loader:gltf",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
@@ -9953,7 +9953,7 @@ test("compiles Babylon Lite scene 10 PBR rough sphere", () => {
         "material:pbr",
         "mesh:sphere",
         "texture:file",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.deepEqual(result.manifest.runtimeSources, [
         "src/pal.cpp",
@@ -9999,7 +9999,7 @@ test("compiles Babylon Lite scene 8 HDR glass sphere", () => {
         "material:pbr",
         "mesh:sphere",
         "texture:file",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.deepEqual(
         result.manifest.assets.map(({ source, kind, faceSize }) => ({
@@ -10132,7 +10132,7 @@ test("compiles Babylon Lite scene 53 depth-hosted per-instance-z sprites", () =>
         "sprite:2d",
         "sprite:2d-depth-host",
         "renderer:sprite",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.match(
         result.cpp,
@@ -10480,7 +10480,7 @@ test("compiles Babylon Lite scene 273 runtime material-family addition", () => {
         "mesh:box",
         "mesh:ground",
         "texture:file",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.match(result.cpp, /\.fixed_delta_ms = 16\.0f/);
     assert.match(result.cpp, /bbl::on_before_render/);
@@ -10529,7 +10529,7 @@ test("compiles Babylon Lite scene 267 Standard vertex colors", () => {
         "material:standard",
         "material:standard-vertex-colors",
         "mesh:from-data",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     // The RGBA colors ride the ninth createMeshFromData slot, after the
     // three optional typed arrays the scene skips with `undefined`.
@@ -10570,7 +10570,7 @@ test("compiles Babylon Lite scene 268 orthographic camera", () => {
         "light:hemispheric",
         "material:standard",
         "mesh:box",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.match(
         result.cpp,
@@ -10619,7 +10619,7 @@ test("compiles Babylon Lite scene 13 PBR spheres grid", () => {
         "background:ground",
         "light:hemispheric",
         "loader:gltf",
-        "renderer:pbr",
+        "renderer:scene",
     ]);
     assert.deepEqual(
         result.manifest.assets.map(({ source, kind }) => ({ source, kind })),
@@ -10653,7 +10653,7 @@ test("compiles Babylon Lite scene 32 unlit glTF", () => {
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
     assert.match(result.cpp, /UnlitTest\.glb/);
 });
@@ -10665,7 +10665,7 @@ test("compiles Babylon Lite scene 168 mirrored winding", () => {
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.match(result.cpp, /MirroredDoubleSided\.glb/);
     assert.match(result.cpp, /\.clear_color = bbl::Color4\{0\.05f, 0\.06f, 0\.09f, 1\.0f\}/);
 });
@@ -10677,7 +10677,7 @@ test("compiles Babylon Lite scene 257 negative scale", () => {
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.match(
         result.cpp,
         /std::sqrt\(800\.0\)/,
@@ -10692,7 +10692,7 @@ test("compiles Babylon Lite scene 266 negative scale spheres", () => {
     });
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.match(result.cpp, /NegativeScaleTest\.glb/);
     assert.match(
         result.cpp,
@@ -10708,7 +10708,7 @@ test("compiles Babylon Lite scene 274 alpha to coverage", () => {
 
     assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("mesh:plane"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.match(result.cpp, /bbl::create_shader_material/);
     assert.match(result.cpp, /bbl::set_alpha_to_coverage/);
     assert.match(result.cpp, /bbl::create_plane/);
@@ -10733,7 +10733,7 @@ test("compiles Babylon Lite scene 163 shader alpha cutout", () => {
     assert.ok(result.manifest.features.includes("camera:arc-rotate"));
     assert.ok(result.manifest.features.includes("material:shader"));
     assert.ok(result.manifest.features.includes("mesh:plane"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.deepEqual(result.manifest.shaderVariants, ["circular-cutout"]);
     assert.deepEqual(result.manifest.customShaderPrograms, []);
     assert.match(
@@ -11281,7 +11281,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
         "loader:babylon",
         "material:standard",
         "frame-graph:resources",
-        "renderer:pbr",
+        "renderer:scene",
         "renderer:geometry-output",
     ]);
     assert.equal(result.manifest.assets[0]?.kind, "babylon");
@@ -11339,7 +11339,7 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
             "upstream/src/frame_graph_context.cpp",
         ),
     );
-    assert.ok(!result.manifest.features.includes("renderer:pbr"));
+    assert.ok(!result.manifest.features.includes("renderer:scene"));
     assert.ok(!result.manifest.features.includes("renderer:geometry-output"));
     assert.doesNotMatch(result.cmake, /pal_sdl_gpu\.cpp/);
     assert.match(result.cpp, /bbl::create_frame_graph_context/);
@@ -11394,7 +11394,7 @@ test("compiles animated and skinned glTF scenes", () => {
             { fileName: sourcePath },
         );
         assert.ok(result.manifest.features.includes("loader:gltf"));
-        assert.ok(result.manifest.features.includes("renderer:pbr"));
+        assert.ok(result.manifest.features.includes("renderer:scene"));
         assert.equal(result.manifest.assets[0]?.kind, "gltf");
     }
 });
@@ -11448,7 +11448,7 @@ test("compiles Babylon Lite scene 249 vertex alpha clip", () => {
     assert.match(asset?.source ?? "", /VertexColorAlphaClipTest\.gltf$/);
     assert.equal(asset?.output.endsWith(".glb"), true);
     assert.ok(result.manifest.features.includes("loader:gltf"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
 });
 
 test("compiles Babylon Lite scene 7 camera target assignment", () => {
@@ -11532,7 +11532,7 @@ test("compiles Babylon Lite scene 216 PBR fog", () => {
         fileName: "corpus/babylon-lite/lab/lite/src/lite/scene216.ts",
     });
     assert.ok(result.manifest.features.includes("renderer:fog"));
-    assert.ok(result.manifest.features.includes("renderer:pbr"));
+    assert.ok(result.manifest.features.includes("renderer:scene"));
     assert.match(
         result.cpp,
         /bbl::set_scene_fog\(v_scene, 3\.0f, 0\.0f, 12\.0f, 60\.0f, bbl::Color3\{0\.7f, 0\.75f, 0\.82f\}\)/,
@@ -11907,7 +11907,7 @@ const frameYieldFile = {
     fileName: "corpus/babylon-lite/lab/lite/src/lite/frame-yield.ts",
 };
 
-test("erases a single-frame yield", () => {
+test("re-queues a frame yield inside the hoisted continuation", () => {
     const result = compileSource(
         frameYieldScene(
             "    await new Promise<void>((r) => requestAnimationFrame(() => r()));",
@@ -11915,9 +11915,16 @@ test("erases a single-frame yield", () => {
         frameYieldFile,
     );
     assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
+    // The yield sits after `startEngine`, where the statements around it
+    // already run at a frame boundary -- so it re-queues the rest of the
+    // continuation to the NEXT boundary instead of erasing to nothing.
+    assert.match(
+        result.cpp,
+        /bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{\s*bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{/,
+    );
 });
 
-test("erases a zero-argument arrow helper for one bounded frame yield", () => {
+test("re-queues a zero-argument arrow helper for one bounded frame yield", () => {
     const result = compileSource(
         frameYieldScene("    await nextFrame();").replace(
             "async function main(): Promise<void> {",
@@ -11929,6 +11936,119 @@ async function main(): Promise<void> {`,
     );
 
     assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise|nextFrame/);
+    assert.match(
+        result.cpp,
+        /bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{\s*bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{/,
+    );
+});
+
+test("runs the statements after a re-queued yield a frame later", () => {
+    // Scene 129's shape: the pick and its dependent mutation follow
+    // `await splat.firstSortReady` and one frame yield. The statements
+    // after the yield must land inside the NESTED continuation -- the next
+    // frame's drain, after that frame's own uploads -- not beside the ones
+    // before it.
+    const result = compileSource(
+        frameYieldScene(
+            `    scene.clearColor = { r: 1, g: 0, b: 0, a: 1 };
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    scene.clearColor = { r: 0, g: 1, b: 0, a: 1 };`,
+        ),
+        frameYieldFile,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{[^]*?clear_color[^]*?bbl::defer_start_continuation\(v_engine, \[&\]\(\) \{[^]*?clear_color/,
+    );
+});
+
+test("re-queues once per yield so two yields park two frames out", () => {
+    // Scene 271 writ small: consecutive yields are "let two frames
+    // elapse", which is two nested boundaries, not zero.
+    const result = compileSource(
+        frameYieldScene(
+            `    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));`,
+        ),
+        frameYieldFile,
+    );
+    assert.equal(
+        (result.cpp.match(/bbl::defer_start_continuation\(/g) ?? [])
+            .length,
+        3,
+    );
+});
+
+test("still erases a frame yield before the loop exists", () => {
+    // Before `startEngine` the entry body runs ahead of the first frame's
+    // own work, so the original claim holds and the yield erases to
+    // nothing -- no continuation, no re-queue.
+    const result = compileSource(`import {
+    createArcRotateCamera,
+    createBox,
+    createEngine,
+    createSceneContext,
+    registerScene,
+    startEngine,
+} from "babylon-lite";
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(0, 1, 8, { x: 0, y: 0, z: 0 });
+    createBox(engine, 2);
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    await registerScene(scene);
+    await startEngine(engine);
+}
+main().catch(console.error);
+`,
+        frameYieldFile,
+    );
+    assert.doesNotMatch(result.cpp, /requestAnimationFrame/);
+    assert.doesNotMatch(result.cpp, /defer_start_continuation/);
+});
+
+test("refuses a frame yield nested in a block after startEngine", () => {
+    // The re-queue is a cut between statements of the entry body; inside a
+    // block there is no statement boundary the rest of the continuation
+    // could be parked behind, and erasing it there would run the following
+    // statements a frame early.
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene(
+                    `    if (canvas.clientWidth > 0) {
+        await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }`,
+                ),
+                frameYieldFile,
+            ),
+        /needs the yield to be a statement of the entry body/,
+    );
+});
+
+test("refuses a frame yield inside a helper body inlined after startEngine", () => {
+    // A helper's body lowers per call site, so a yield in one inlined
+    // after startEngine sits inside the hoisted continuation exactly as
+    // an entry-block yield does -- and erasing it there would run the
+    // statements after it a frame early. Same refusal as the block case;
+    // this used to erase silently.
+    assert.throws(
+        () =>
+            compileSource(
+                frameYieldScene("    await settle(scene);").replace(
+                    "async function main(): Promise<void> {",
+                    `async function settle(target: SceneContext): Promise<void> {
+    target.clearColor = { r: 0, g: 1, b: 0, a: 1 };
+    await new Promise<void>((r) => requestAnimationFrame(() => r()));
+}
+async function main(): Promise<void> {`,
+                ),
+                frameYieldFile,
+            ),
+        /needs the yield to be a statement of the entry body/,
+    );
 });
 
 test("registers pre-start application animation loops before rendering", () => {

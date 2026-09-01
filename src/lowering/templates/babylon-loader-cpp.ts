@@ -17,6 +17,7 @@ export function babylonLoaderCpp(
     return `// ${provenance}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
 
 #include <algorithm>
 #include <array>
@@ -141,27 +142,6 @@ std::array<float, 16> matrix_or_identity(
         }
     }
     return result;
-}
-
-Vec3 transform_point(const std::array<float, 16>& matrix, Vec3 value) {
-    return Vec3{
-        value.x * matrix[0] + value.y * matrix[4] +
-            value.z * matrix[8] + matrix[12],
-        value.x * matrix[1] + value.y * matrix[5] +
-            value.z * matrix[9] + matrix[13],
-        value.x * matrix[2] + value.y * matrix[6] +
-            value.z * matrix[10] + matrix[14],
-    };
-}
-
-Vec3 transform_direction(
-    const std::array<float, 16>& matrix,
-    Vec3 value) {
-    return Vec3{
-        value.x * matrix[0] + value.y * matrix[4] + value.z * matrix[8],
-        value.x * matrix[1] + value.y * matrix[5] + value.z * matrix[9],
-        value.x * matrix[2] + value.y * matrix[6] + value.z * matrix[10],
-    };
 }
 
 Vec3 rotate(Vec3 value, Vec3 rotation) {
@@ -557,7 +537,8 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                         number_at(positions, index * 3 + 2, 0.0f),
                     };
                     const Vec3 local_position =
-                        transform_point(local_matrix, source_position);
+                        upstream::transform_position(
+                            local_matrix, source_position);
                     const Vec3 source_normal{
                         number_at(normals, index * 3, 0.0f),
                         number_at(normals, index * 3 + 1, 1.0f),
@@ -571,7 +552,8 @@ ${lightMeshLists ? `    // A light names the meshes it lights, or the ones it sk
                         mesh_rotation,
                         mesh_scaling);
                     vertex.normal = transform_mesh_direction(
-                        transform_direction(local_matrix, source_normal),
+                        upstream::transform_direction(
+                            local_matrix, source_normal),
                         mesh_rotation,
                         mesh_scaling);
                     if (uvs) {

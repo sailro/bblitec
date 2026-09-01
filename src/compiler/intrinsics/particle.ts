@@ -674,7 +674,7 @@ export function compileParticleIntrinsic(
             context.reachFeature("particle:node", call);
             // A billboard system is a scene renderable, so a scene of
             // nothing but particles still compiles the scene renderer.
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             // The call is named by its own request index, not by the
             // set's: which systems it walks is what the bake observed.
             context.emit(

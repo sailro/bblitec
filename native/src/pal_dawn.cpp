@@ -174,7 +174,7 @@ struct DawnDrawState {
     WGPUBuffer uv_transform_uniforms = nullptr;
     WGPUBindGroup group = nullptr;
     /** The variant, times two plus the Standard unfilterable-emissive bit. */
-    std::size_t group_key = std::numeric_limits<std::size_t>::max();
+    std::size_t group_key = npos;
     /** The pinned arm's vertex choice; `pinned_draw_conventions` states it. */
     bool mirrored_vertices = false;
 };
@@ -470,7 +470,7 @@ struct DawnPostProcessTask {
      * is where that first became reachable -- four passes over three
      * distinct programs.
      */
-    std::size_t program = std::numeric_limits<std::size_t>::max();
+    std::size_t program = npos;
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
 };
@@ -2989,6 +2989,12 @@ void create_frame_graph_textures(
         return;
     }
     state.release_frame_graph_textures();
+#if BBLITE_SHADOW_RECEIVERS
+    // Every shadow map was just released with the other targets, so the
+    // render gate's "already rendered" sentinels no longer describe a
+    // texture that exists: each generator's next frame must render.
+    state.shadow_refresh.invalidate_rendered_maps();
+#endif
     state.frame_graph_width = width;
     state.frame_graph_height = height;
     state.render_targets.resize(engine.render_targets.size());
@@ -4022,7 +4028,7 @@ void write_pinned_geometry_task(
                 draw,
                 static_cast<std::size_t>(task.geometry.shader_index),
                 &geometry_key);
-            if (variant == std::numeric_limits<std::size_t>::max()) {
+            if (variant == npos) {
                 dawn_error(
                     ("PBR draw for mesh " +
                      std::to_string(draw.item.mesh.value) +
@@ -4738,11 +4744,14 @@ WGPUBindGroup pbr_shadow_group_for(
 /**
  * The per-frame half: the generators' matrices and their receiver blocks.
  *
- * `renderPcfShadowMap` recomputes the light matrix when the light moved and
- * re-uploads the receiver UBO with it; the caster pass then renders through
- * the biased copy. Nothing here decides when — the record's own values are
- * rebuilt each frame, which is the same result for a static light and the
- * right one for a moving one.
+ * When something decides here: the shared walk runs the pin's render gate
+ * ahead of each fit, so a static generator's matrices — and this visitor's
+ * block — keep their last-render values, the visitor is skipped outright,
+ * and the task loop below skips the caster pass against the gate's `due`
+ * verdict. On a due frame
+ * `renderPcfShadowMap`'s rule applies: the light matrix is refit, the
+ * receiver UBO re-uploads when its bytes moved, and the caster pass
+ * renders through the biased copy.
  */
 void write_shadow_generators(
     DawnState& state,
@@ -5319,7 +5328,7 @@ void write_standard_geometry_task(
                 engine,
                 draw,
                 static_cast<std::size_t>(task.geometry.shader_index));
-            if (variant == std::numeric_limits<std::size_t>::max()) {
+            if (variant == npos) {
                 dawn_error(
                     ("Standard draw for mesh " +
                      std::to_string(draw.item.mesh.value) +
@@ -6375,11 +6384,16 @@ WGPURenderPipeline node_variant_pipeline(
     if (!state.node_vertex_modules[slot]) {
         const upstream::NodeVariantStems stems =
             pal::node_variant_stems(slot);
+        // Both entry points live in one composed module, deployed once
+        // under the fragment stem -- the vertex stem is an `alsoStages`
+        // declaration carrying only compiled artifacts -- so the vertex
+        // handle loads the fragment stem's file too. Two handles stay:
+        // the teardown's `release_variant_family` releases one per table.
+        const std::string module_file(stems.fragment);
         state.node_vertex_modules[slot] =
-            load_wgsl_module(state, std::string(stems.vertex).c_str());
-        state.node_fragment_modules[slot] = load_wgsl_module(
-            state,
-            std::string(stems.fragment).c_str());
+            load_wgsl_module(state, module_file);
+        state.node_fragment_modules[slot] =
+            load_wgsl_module(state, module_file);
     }
     VariantVertexAttributes inputs;
     // A node graph declaring the thin-instance columns would need a second
@@ -7684,40 +7698,15 @@ void save_dawn_geometry_id_buffer(
 }
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
-/**
- * The program a post-process pass draws with, built once per distinct one.
- *
- * A pass is identified as a drawing by its deployed module, the pipeline state
- * its output implies, and the shape of its bind group; which textures fill
- * that shape and what its uniform block holds stay per pass. A composite's
- * chain repeats the first and varies the second, so depth of field's six
- * blurs share one entry here.
- */
-std::size_t post_process_program(
+/** Builds the entry `post_process_program` below found missing. */
+DawnPostProcessProgram build_post_process_program(
     DawnState& state,
     const upstream::PostProcessShaderInfo& info,
     WGPUTextureFormat format,
     std::uint32_t samples,
     std::uint32_t alpha_mode,
-    std::size_t extra_textures) {
-    const std::uint32_t uniform_size =
-        (info.uniform_byte_length + 15u) & ~15u;
-    for (std::size_t index = 0;
-         index < state.post_process_programs.size();
-         ++index) {
-        const DawnPostProcessProgram& program =
-            state.post_process_programs[index];
-        if (
-            program.module_index == info.module_index &&
-            program.format == format &&
-            program.samples == samples &&
-            program.alpha_mode == alpha_mode &&
-            program.extra_textures == extra_textures &&
-            program.uniform_binding == info.uniform_binding &&
-            program.uniform_size == uniform_size) {
-            return index;
-        }
-    }
+    std::size_t extra_textures,
+    std::uint32_t uniform_size) {
     DawnPostProcessProgram program;
     program.module_index = info.module_index;
     program.format = format;
@@ -7726,8 +7715,9 @@ std::size_t post_process_program(
     program.extra_textures = extra_textures;
     program.uniform_binding = info.uniform_binding;
     program.uniform_size = uniform_size;
-    // Both stages live in one composed module; the two deployed files carry
-    // the same text, so either loads it.
+    // Both stages live in one composed module, deployed once under the
+    // fragment stem (the vertex stem is an alsoStages declaration carrying
+    // only compiled artifacts), so the fragment file is the module.
     program.module = load_wgsl_module(
         state,
         "postprocess-" + std::to_string(info.module_index) + ".frag");
@@ -7800,8 +7790,50 @@ std::size_t post_process_program(
     if (!program.pipeline) {
         dawn_error("post-process pipeline creation failed.");
     }
-    state.post_process_programs.push_back(program);
-    return state.post_process_programs.size() - 1;
+    return program;
+}
+
+/**
+ * The program a post-process pass draws with, built once per distinct one.
+ *
+ * A pass is identified as a drawing by its deployed module, the pipeline state
+ * its output implies, and the shape of its bind group; which textures fill
+ * that shape and what its uniform block holds stay per pass. A composite's
+ * chain repeats the first and varies the second, so depth of field's six
+ * blurs share one entry here. The find-or-create walk is the shared
+ * `find_or_create_program`; the key stays this backend's own -- its layout
+ * bakes in the bind-group shape SDL_GPU's key never needs.
+ */
+std::size_t post_process_program(
+    DawnState& state,
+    const upstream::PostProcessShaderInfo& info,
+    WGPUTextureFormat format,
+    std::uint32_t samples,
+    std::uint32_t alpha_mode,
+    std::size_t extra_textures) {
+    const std::uint32_t uniform_size =
+        (info.uniform_byte_length + 15u) & ~15u;
+    return find_or_create_program(
+        state.post_process_programs,
+        [&](const DawnPostProcessProgram& program) {
+            return program.module_index == info.module_index &&
+                program.format == format &&
+                program.samples == samples &&
+                program.alpha_mode == alpha_mode &&
+                program.extra_textures == extra_textures &&
+                program.uniform_binding == info.uniform_binding &&
+                program.uniform_size == uniform_size;
+        },
+        [&] {
+            return build_post_process_program(
+                state,
+                info,
+                format,
+                samples,
+                alpha_mode,
+                extra_textures,
+                uniform_size);
+        });
 }
 
 /**
@@ -7850,7 +7882,7 @@ void record_post_process_pass(
     const std::uint32_t output_height = extent.output_height;
     const std::uint32_t source_width = extent.source_width;
     const std::uint32_t source_height = extent.source_height;
-    if (gpu.program == std::numeric_limits<std::size_t>::max()) {
+    if (gpu.program == npos) {
         gpu.program = post_process_program(
             state,
             info,
@@ -8924,7 +8956,15 @@ bool run_dawn_engine(Engine& engine) {
             }
             return textures;
         };
-        if (material && material->shader_material) {
+        // A node graph's declared images take the same per-MATERIAL cache
+        // the shader family uses -- keyed by handle, and a material is
+        // exactly one family -- so two meshes sharing one graph decode and
+        // upload its images once, as the SDL backend does. Every other
+        // family's `shader_textures` list is empty, so its per-mesh upload
+        // stays the no-op it always was.
+        if (
+            material &&
+            (material->shader_material || material->node_material)) {
             mesh.shared_shader_textures =
                 find_shared_shader_material_textures(
                     state.shared_shader_material_textures,
@@ -9943,42 +9983,11 @@ bool run_dawn_engine(Engine& engine) {
         }
 
 #if BBLITE_HAS_SPLATS
-        // The clouds are built lazily inside the frame loop, so a pick at
-        // the first frame boundary may arrive before any exist -- and the
-        // sort's GPU-side order buffer is written by the frame's upload,
-        // which runs after the deferred queue. `await splat.firstSortReady`
-        // is what the pin's own scene waits for, so the pick brings both
-        // current itself; the upload is idempotent.
-        if (state.splat_passes.empty()) {
-            for (const SplatMeshHandle handle : scene.splat_meshes) {
-                state.splat_passes.push_back(create_dawn_splat_pass(
-                    state.device,
-                    state.queue,
-                    state.frame_color_format,
-                    WGPUTextureFormat_Depth24PlusStencil8,
-                    state.sample_count,
-                    engine,
-                    handle));
-            }
-        }
-        // The cloud pass wants the two matrices unmultiplied, where every
-        // other pick draw wants the product. Declared here, with their only
-        // consumer, so a picking scene that reaches no splat still compiles.
-        const std::array<float, 16> pick_view =
-            upstream::build_view_matrix(
-                upstream::camera_world_matrix(camera));
-        const std::array<float, 16> pick_projection =
-            upstream::build_scene_projection(camera, aspect);
-        for (DawnSplatPass& splat : state.splat_passes) {
-            upload_dawn_splat_pass(
-                state.queue,
-                engine,
-                splat,
-                pick_view,
-                pick_projection,
-                static_cast<float>(width),
-                static_cast<float>(height));
-        }
+        // The clouds and their sorted order buffers are the frame loop's:
+        // its upload phase creates each pass and brings the sort current
+        // before the drain a pick can arrive on, and a scene that picks
+        // sooner than one elapsed frame yields sooner than the pin's own
+        // `firstSortReady` scene does. The pick only reads.
         if (!state.splat_passes.empty() && !state.pick_cloud_pipeline) {
             state.pick_cloud_color_layout =
                 create_dawn_pick_scene_layout(state.device);
@@ -10226,6 +10235,10 @@ bool run_dawn_engine(Engine& engine) {
     CameraPointerState pointer_state;
     CameraTraceState camera_trace_state;
     PlatformInputReplay input_replay;
+    // Caller-owned scratch for the custom-shader stage blocks: the packer
+    // fills it in place, so the per-draw buffer writes reuse one
+    // allocation across draws and frames.
+    std::vector<float> shader_block_scratch;
     // The shared drain owns the per-event contract; the scene loop only
     // adds its camera-controls dispatch, which rides the hook so every
     // event the scene receives also reaches the camera -- and none does
@@ -10281,7 +10294,11 @@ bool run_dawn_engine(Engine& engine) {
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
 #endif
-        const double updated = monotonic_milliseconds();
+        // The phase stamps below feed only the CPU profile, so with
+        // profiling off they cost nothing; `benchmark_start` above stays
+        // unconditional because the benchmark bracket reads it.
+        const double updated =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
         std::size_t profile_transformed_meshes = 0;
         std::size_t profile_transformed_vertices = 0;
         trace_dynamic_frame(engine, delta_ms, frame);
@@ -10617,7 +10634,8 @@ bool run_dawn_engine(Engine& engine) {
             dawn_mesh.gpu_world_transform =
                 mesh.gpu_world_transform;
         }
-        const double uploaded = monotonic_milliseconds();
+        const double uploaded =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
         update_camera(camera);
         trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(
@@ -10811,9 +10829,7 @@ bool run_dawn_engine(Engine& engine) {
                         // naming the mesh, matching the SDL_GPU backend.
                         const std::size_t variant =
                             standard_variant_for_draw(scene, engine, draw);
-                        if (
-                            variant ==
-                            std::numeric_limits<std::size_t>::max()) {
+                        if (variant == npos) {
                             dawn_error(
                                 ("Standard draw for mesh " +
                                  std::to_string(draw.item.mesh.value) +
@@ -10904,26 +10920,15 @@ bool run_dawn_engine(Engine& engine) {
                                 shader_info =
                                     upstream::shader_variant_info(
                                         draw.item.shader_variant);
-                            const std::array<float, 16> shader_world =
-                                shader_draw_world(
-                                    engine,
-                                    engine.meshes[
-                                        draw.item.mesh.value]);
-                            const std::array<float, 16> shader_wvp =
-                                shader_world_view_projection(
-                                    pass_matrices.view_projection,
-                                    shader_world);
-                            const auto shader_wv =
-                                shader_world_view(
-                                    pass_matrices.view,
-                                    shader_world);
-                            ShaderPassMatrices shader_pass_matrices =
-                                pass_matrices;
-                            shader_pass_matrices.world = &shader_world;
-                            shader_pass_matrices.world_view =
-                                shader_wv ? &*shader_wv : nullptr;
-                            shader_pass_matrices
-                                .world_view_projection = &shader_wvp;
+                            const ShaderDrawMatrices shader_matrices(
+                                engine,
+                                engine.meshes[
+                                    draw.item.mesh.value],
+                                pass_matrices);
+                            const ShaderPassMatrices
+                                shader_pass_matrices =
+                                    shader_matrices.apply(
+                                        pass_matrices);
                             // A block that is exactly the shared scene
                             // matrix binds the frame's own buffer and
                             // needs no write; everything else -- custom
@@ -10941,18 +10946,17 @@ bool run_dawn_engine(Engine& engine) {
                                     block_is_shared_scene_matrix(block)) {
                                     return;
                                 }
-                                const std::vector<float>
-                                    block_floats =
-                                        shader_stage_block_floats(
-                                            block,
-                                            shader_pass_matrices,
-                                            material);
+                                shader_stage_block_floats(
+                                    block,
+                                    shader_pass_matrices,
+                                    material,
+                                    shader_block_scratch);
                                 wgpuQueueWriteBuffer(
                                     state.queue,
                                     buffer,
                                     0,
-                                    block_floats.data(),
-                                    block_floats.size() *
+                                    shader_block_scratch.data(),
+                                    shader_block_scratch.size() *
                                         sizeof(float));
                             };
                             write_stage_block(
@@ -10980,11 +10984,9 @@ bool run_dawn_engine(Engine& engine) {
                                 scene,
                                 engine,
                                 draw,
-                                std::numeric_limits<std::size_t>::max(),
+                                npos,
                                 &pinned_key);
-                        if (
-                            variant ==
-                            std::numeric_limits<std::size_t>::max()) {
+                        if (variant == npos) {
                             dawn_error(
                                 ("PBR draw for mesh " +
                                  std::to_string(draw.item.mesh.value) +
@@ -11246,7 +11248,13 @@ bool run_dawn_engine(Engine& engine) {
                 // `updateShadowCameraBase` receives.
                 if (
                     task.render.shadow_generator.value <
-                    engine.shadow_generators.size()) {
+                        engine.shadow_generators.size() &&
+                    // A gated frame runs no caster pass, so nothing reads
+                    // these blocks — and the generator's matrices they are
+                    // written from are unchanged anyway. The pin's skipped
+                    // `render*ShadowMap` writes nothing either.
+                    state.shadow_refresh.gates[
+                        task.render.shadow_generator.value].due) {
                     const ShadowGeneratorRecord& generator =
                         engine.shadow_generators[
                             task.render.shadow_generator.value];
@@ -11329,7 +11337,8 @@ bool run_dawn_engine(Engine& engine) {
             }
         }
 
-        const double written = monotonic_milliseconds();
+        const double written =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
         WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
         if (
@@ -11341,7 +11350,8 @@ bool run_dawn_engine(Engine& engine) {
         }
         WGPUTextureView surface_view =
             wgpuTextureCreateView(surface_texture.texture, nullptr);
-        const double acquired = monotonic_milliseconds();
+        const double acquired =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
 
         WGPUCommandEncoder encoder =
             wgpuDeviceCreateCommandEncoder(state.device, nullptr);
@@ -11474,8 +11484,7 @@ bool run_dawn_engine(Engine& engine) {
                             draw.item.material.value);
                     if (
                         standard_entry == mesh.standard_states.end() ||
-                        standard_entry->second.group_key ==
-                            std::numeric_limits<std::size_t>::max()) {
+                        standard_entry->second.group_key == npos) {
                         dawn_error(
                             ("Standard draw for mesh " +
                              std::to_string(draw.item.mesh.value) +
@@ -12112,6 +12121,17 @@ bool run_dawn_engine(Engine& engine) {
                 if (
                     task.render.shadow_generator.value <
                         engine.shadow_generators.size()) {
+                    // The pin's render gate: `renderEsmShadowMap` /
+                    // `renderPcfShadowMap` return before the caster pass
+                    // and both blur passes when nothing moved since the
+                    // last render, and the map textures persist — the
+                    // receiver keeps sampling last render's bit-identical
+                    // content. The verdict was written onto the gate by
+                    // `refresh_shadow_generators` earlier this frame.
+                    if (!state.shadow_refresh.gates[
+                            task.render.shadow_generator.value].due) {
+                        continue;
+                    }
                     if (!target_record.has_depth || !target.depth) {
                         throw std::runtime_error(
                             "Shadow render task has no depth attachment.");
@@ -12825,10 +12845,7 @@ bool run_dawn_engine(Engine& engine) {
                                         static_cast<std::size_t>(
                                             task.geometry.shader_index),
                                         &geometry_key);
-                                if (
-                                    variant ==
-                                    std::numeric_limits<
-                                        std::size_t>::max()) {
+                                if (variant == npos) {
                                     dawn_error(
                                         ("PBR draw for mesh " +
                                          std::to_string(
@@ -12893,10 +12910,7 @@ bool run_dawn_engine(Engine& engine) {
                                         draw,
                                         static_cast<std::size_t>(
                                             task.geometry.shader_index));
-                                if (
-                                    variant ==
-                                    std::numeric_limits<
-                                        std::size_t>::max()) {
+                                if (variant == npos) {
                                     dawn_error(
                                         ("Standard draw for mesh " +
                                          std::to_string(
@@ -13391,7 +13405,10 @@ bool run_dawn_engine(Engine& engine) {
         }
         finish_frame(engine);
         ++frame;
-        const double end = monotonic_milliseconds();
+        // Profile-only too: this backend's benchmark sample above reads its
+        // own `monotonic_milliseconds()` inline.
+        const double end =
+            cpu_profile ? monotonic_milliseconds() : 0.0;
         const long completed_frame = frame - 1;
         if (cpu_profile && completed_frame % 30 == 0) {
             std::size_t draw_commands =

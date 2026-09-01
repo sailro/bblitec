@@ -52,7 +52,7 @@ struct PostProcessProgram {
 };
 
 struct PostProcessPass {
-    std::size_t program = std::numeric_limits<std::size_t>::max();
+    std::size_t program = npos;
     std::vector<int> texture_sources;
     std::vector<float> uniforms;
 };
@@ -270,20 +270,13 @@ SDL_GPUTexture* source_texture(
     return target_texture(state, engine, source.target, swapchain, true);
 }
 
-std::size_t post_process_program(
+/** Builds the entry `post_process_program` below found missing. */
+PostProcessProgram build_post_process_program(
     State& state,
     std::uint32_t module,
     SDL_GPUTextureFormat format,
     SDL_GPUSampleCount samples,
     std::uint32_t alpha_mode) {
-    for (std::size_t index = 0; index < state.programs.size(); ++index) {
-        const PostProcessProgram& found = state.programs[index];
-        if (
-            found.module == module && found.format == format &&
-            found.samples == samples && found.alpha_mode == alpha_mode) {
-            return index;
-        }
-    }
     PostProcessProgram program;
     program.module = module;
     program.format = format;
@@ -328,8 +321,27 @@ std::size_t post_process_program(
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }
-    state.programs.push_back(std::move(program));
-    return state.programs.size() - 1;
+    return program;
+}
+
+// The find-or-create walk is the shared `find_or_create_program`; only
+// the key equality is this driver's.
+std::size_t post_process_program(
+    State& state,
+    std::uint32_t module,
+    SDL_GPUTextureFormat format,
+    SDL_GPUSampleCount samples,
+    std::uint32_t alpha_mode) {
+    return find_or_create_program(
+        state.programs,
+        [&](const PostProcessProgram& found) {
+            return found.module == module && found.format == format &&
+                found.samples == samples && found.alpha_mode == alpha_mode;
+        },
+        [&] {
+            return build_post_process_program(
+                state, module, format, samples, alpha_mode);
+        });
 }
 
 void record_post_process(
@@ -373,7 +385,7 @@ void record_post_process(
             SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
                 SDL_GPU_TEXTUREUSAGE_SAMPLER);
     }
-    if (gpu.program == std::numeric_limits<std::size_t>::max()) {
+    if (gpu.program == npos) {
         gpu.program = post_process_program(
             state,
             info.module_index,

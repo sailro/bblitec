@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { sourceLocation } from "./source-location.js";
 import {
     doubleLiteral,
     sanitizeCppIdentifier,
@@ -173,6 +174,8 @@ import {
     type HandleCollectionTarget,
 } from "./compiler/handle-collections.js";
 import {
+    aliasedMutationScan,
+    type AliasedMutationScan,
     parameterIsReadOnly,
     recursiveStorageEscapes,
     resolveFunctionDeclaration,
@@ -3894,7 +3897,7 @@ class Compiler
     private refuseUiWithoutPresentation(): void {
         if (
             !this.features.has("ui:rml") ||
-            this.features.has("renderer:pbr")
+            this.features.has("renderer:scene")
         ) {
             return;
         }
@@ -10317,6 +10320,77 @@ class Compiler
         return this.browserErasure.frameDrainCondition(expression);
     }
 
+    /**
+     * The line `hoistEngineContinuation` cuts the continuation at. Spelled
+     * as a C++-invalid statement so a marker that ever escaped the hoist
+     * would refuse to build rather than ship silently; `renderCpp` also
+     * fails generation if one survives.
+     */
+    private static readonly frameYieldRequeueMarker =
+        "__bblite_frame_yield_requeue__;";
+
+    /**
+     * A frame yield lowered after `startEngine` sits inside the hoisted
+     * continuation, which `finish_frame` drains at the END of a frame --
+     * after that frame's uploads and render. Erasing the yield there would
+     * run the statements after it at the same boundary as the ones before
+     * it, so "one more frame has drawn" would be a claim about nothing.
+     * Instead the continuation is cut here: `hoistEngineContinuation`
+     * turns the marker into a nested `defer_start_continuation`, whose
+     * body the conductor runs at the NEXT frame's drain -- the queue is
+     * moved out before draining, so a callback queued during a drain
+     * always waits a full frame. That makes the yield (and the
+     * `firstSortReady` barrier a splat scene pairs it with) truthful by
+     * construction. Before the loop exists the yield stays erased: entry
+     * code runs before the first frame's own work, which is the original
+     * claim, still true there.
+     */
+    public emitFrameYieldRequeue(expression: ts.Expression): void {
+        const mark = this.engineStartMark;
+        if (!mark) {
+            return;
+        }
+        const enclosingFunction = (
+            node: ts.Node,
+        ): ts.Node | undefined => {
+            let current: ts.Node | undefined = node.parent;
+            while (current && !ts.isFunctionLike(current)) {
+                current = current.parent;
+            }
+            return current;
+        };
+        const boundaryRefusal =
+            "A frame yield after startEngine re-queues the rest of " +
+            "the continuation to the next frame boundary, which " +
+            "needs the yield to be a statement of the entry body " +
+            "itself; inside a block there is no statement " +
+            "boundary to cut at.";
+        const entry = enclosingFunction(mark.node);
+        if (!entry || enclosingFunction(expression) !== entry) {
+            // A helper's body lowers per call site, so a yield reaching
+            // here after the mark is landing inside the hoisted
+            // continuation exactly as an entry-block one does -- and the
+            // erasure this branch used to keep would run the statements
+            // after it at the SAME frame boundary as the ones before it.
+            // Refused like the block case: there is no entry-body
+            // statement the rest of the continuation could be parked
+            // behind.
+            this.fail(expression, boundaryRefusal);
+        }
+        // The re-queue is a cut between statements, so the yield must BE a
+        // statement of the entry body -- inside a block there is no line
+        // the rest of the continuation could be parked behind.
+        const body = (entry as ts.FunctionLikeDeclaration).body;
+        let statement: ts.Node | undefined = expression;
+        while (statement && statement.parent !== body) {
+            statement = statement.parent;
+        }
+        if (!statement || !ts.isExpressionStatement(statement)) {
+            this.fail(expression, boundaryRefusal);
+        }
+        this.emit(Compiler.frameYieldRequeueMarker);
+    }
+
     public lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined {
@@ -12028,18 +12102,12 @@ class Compiler
     public reachFeature(feature: Feature, site?: ts.Node): void {
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
-            const file = site.getSourceFile();
-            const position = file.getLineAndCharacterOfPosition(
-                site.getStart(file),
-            );
+            const { file, line } = sourceLocation(site);
             const fileName =
                 file === this.sourceFile
                     ? this.options.fileName
                     : file.fileName;
-            this.featureSites.set(
-                feature,
-                `${fileName}:${position.line + 1}`,
-            );
+            this.featureSites.set(feature, `${fileName}:${line}`);
         }
     }
 
@@ -12073,7 +12141,7 @@ class Compiler
         scene.defaultRenderTaskEmitted = true;
         this.defaultRenderTaskAdapted = true;
         const engine = this.requireEngine(scene, node);
-        this.reachFeature("renderer:pbr", node);
+        this.reachFeature("renderer:scene", node);
         this.reachFeature("renderer:geometry-output", node);
         this.reachFeature("frame-graph:resources", node);
         const target =
@@ -12262,7 +12330,8 @@ class Compiler
      * same statements emitted in place would run after the capture and
      * decide nothing. They are the browser's continuation, and the frame
      * conductor already has the boundary it wants: the deferred-callback
-     * queue `advance_frame` drains.
+     * queue `finish_frame` drains at the end of each frame, after that
+     * frame's uploads and render.
      */
     private engineStartMark:
         | {
@@ -12301,6 +12370,13 @@ class Compiler
      * starts. A scene whose body ends at `startEngine` -- every scene that
      * shipped before this contract -- has an empty continuation and emits
      * exactly what it emitted before.
+     *
+     * A frame-yield marker in the tail cuts it: the statements after the
+     * yield become a nested `defer_start_continuation`, queued while the
+     * conductor is draining and therefore run at the NEXT frame's drain --
+     * one elapsed frame per yield, with `pending_start_continuations` held
+     * above zero until the innermost part has run, so a capture cannot
+     * land before the whole continuation has.
      */
     private hoistEngineContinuation(): void {
         const mark = this.engineStartMark;
@@ -12377,13 +12453,32 @@ class Compiler
             }
             return `${leading}static ${declaration}`;
         });
-        this.body.splice(
-            index,
-            0,
-            `${indent}bbl::defer_start_continuation(${mark.engine}, [&]() {`,
-            ...persistentTail.map((line) => `    ${line}`),
-            `${indent}});`,
-        );
+        // Cut the tail at each frame-yield marker. Building from the
+        // innermost part outward nests each later part inside the one
+        // before it, so a part's statics stay lexically visible to
+        // everything after its yield. The outer hoist is part 0's own
+        // wrap, so the loop runs down to it and the deferred-callback
+        // shape is emitted in exactly one place.
+        const parts: string[][] = [[]];
+        for (const line of persistentTail) {
+            if (line.trim() === Compiler.frameYieldRequeueMarker) {
+                parts.push([]);
+            } else {
+                parts.at(-1)!.push(line);
+            }
+        }
+        let nested: string[] = [];
+        for (let part = parts.length - 1; part >= 0; part -= 1) {
+            nested = [
+                `${indent}bbl::defer_start_continuation(` +
+                    `${mark.engine}, [&]() {`,
+                ...[...parts[part]!, ...nested].map(
+                    (line) => `    ${line}`,
+                ),
+                `${indent}});`,
+            ];
+        }
+        this.body.splice(index, 0, ...nested);
     }
 
     /**
@@ -12406,6 +12501,20 @@ class Compiler
 
     private renderCpp(features: Feature[]): string {
         this.hoistEngineContinuation();
+        if (
+            this.body.some(
+                (line) =>
+                    line.trim() ===
+                    Compiler.frameYieldRequeueMarker,
+            )
+        ) {
+            this.failAtFile(
+                "A frame-yield re-queue marker survived outside the " +
+                    "hoisted continuation; the frame boundary it parks " +
+                    "the rest of the continuation behind was never " +
+                    "emitted.",
+            );
+        }
         this.markUnreadNumericLocals();
         return renderMainCpp({
             features,
@@ -12432,17 +12541,13 @@ class Compiler
     }
 
     public fail(node: ts.Node, message: string): never {
-        const file = node.getSourceFile();
-        const position =
-            file.getLineAndCharacterOfPosition(
-                node.getStart(file),
-            );
+        const { file, line, character } = sourceLocation(node);
         throw new CompileError(
             file === this.sourceFile
                 ? this.options.fileName
                 : file.fileName,
-            position.line + 1,
-            position.character + 1,
+            line,
+            character,
             message,
         );
     }
@@ -12450,93 +12555,4 @@ class Compiler
     private failAtFile(message: string): never {
         throw new CompileError(this.options.fileName, 1, 1, message);
     }
-}
-
-/** The tracked-alias queries a mutation walk's per-kind clauses consult. */
-interface AliasedMutationScan {
-    /** Whether `node` is an identifier naming a tracked alias. */
-    readonly namesAlias: (node: ts.Node) => boolean;
-    /** Whether any identifier in the subtree names a tracked alias. */
-    readonly containsAlias: (node: ts.Node) => boolean;
-    /** Track one more alias; a new symbol queues another pass. */
-    readonly addAlias: (symbol: ts.Symbol | undefined) => void;
-}
-
-/**
- * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
- *
- * Seeds the tracked set with the declared identifier's symbol, then rewalks
- * the whole source file until a pass adds no alias: a variable declaration
- * whose initializer `aliasingInitializer` accepts extends the set (queueing
- * another pass), and the first node `mutates` accepts ends the scan. What
- * counts as an alias-creating initializer and as a mutation site is the
- * per-kind half the callers keep — arrays and plain objects recognize
- * writes differently — and `mutates` may itself extend the set through
- * `addAlias` (the object walk follows call arguments into parameters).
- */
-function aliasedMutationScan(
-    identifier: ts.Identifier,
-    valueSymbol: (identifier: ts.Identifier) => ts.Symbol | undefined,
-    walk: {
-        readonly aliasingInitializer: (
-            initializer: ts.Expression,
-            scan: AliasedMutationScan,
-        ) => boolean;
-        readonly mutates: (
-            node: ts.Node,
-            scan: AliasedMutationScan,
-        ) => boolean;
-    },
-): boolean {
-    const initial = valueSymbol(identifier);
-    if (!initial) return false;
-    const aliases = new Set<ts.Symbol>([initial]);
-    const source = identifier.getSourceFile();
-    let changed = true;
-    const scan: AliasedMutationScan = {
-        namesAlias: (node) =>
-            ts.isIdentifier(node) && aliases.has(valueSymbol(node)!),
-        containsAlias: (node) => {
-            let found = false;
-            const visit = (candidate: ts.Node): void => {
-                if (found) return;
-                if (scan.namesAlias(candidate)) {
-                    found = true;
-                    return;
-                }
-                ts.forEachChild(candidate, visit);
-            };
-            visit(node);
-            return found;
-        },
-        addAlias: (symbol) => {
-            if (symbol && !aliases.has(symbol)) {
-                aliases.add(symbol);
-                changed = true;
-            }
-        },
-    };
-    while (changed) {
-        changed = false;
-        let mutated = false;
-        const visit = (node: ts.Node): void => {
-            if (mutated) return;
-            if (walk.mutates(node, scan)) {
-                mutated = true;
-                return;
-            }
-            if (
-                ts.isVariableDeclaration(node) &&
-                ts.isIdentifier(node.name) &&
-                node.initializer &&
-                walk.aliasingInitializer(node.initializer, scan)
-            ) {
-                scan.addAlias(valueSymbol(node.name));
-            }
-            ts.forEachChild(node, visit);
-        };
-        ts.forEachChild(source, visit);
-        if (mutated) return true;
-    }
-    return false;
 }

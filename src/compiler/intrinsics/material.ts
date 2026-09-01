@@ -289,7 +289,7 @@ export function compileMaterialIntrinsic(
             );
             context.expectSameEngine(baseColor, orm, call);
             context.reachFeature("material:pbr", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             const linearImageProcessing =
                 transmission !== "0.0f" ||
                 thickness !== "0.0f" ||
@@ -411,7 +411,7 @@ export function compileMaterialIntrinsic(
                 call.arguments[1]!,
             );
             context.expectSameEngine(scene, engine, call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             context.reachFeature("renderer:transmission", call);
             context.reachFeature(
                 "material:pbr-linear-image-processing",
@@ -447,7 +447,7 @@ export function compileMaterialIntrinsic(
                       "true",
                   ];
             context.reachFeature("material:grid", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "material",
                 cpp:
@@ -470,7 +470,7 @@ export function compileMaterialIntrinsic(
             );
             const engineCpp = context.requireEngine(source, call);
             context.reachFeature("material:no-color-view", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             if (
                 importedName === "createStandardNoColorMaterialView"
             ) {
@@ -568,7 +568,7 @@ export function compileMaterialIntrinsic(
                     call.arguments[0]!,
                 );
             context.reachFeature("material:shader", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             let materialCpp =
                 `bbl::remember_scene_material(${engine}, ` +
                 `${materialSlot}u, ` +
@@ -643,7 +643,7 @@ export function compileMaterialIntrinsic(
                 far: plane("far"),
             });
             context.reachFeature("material:shader", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "material",
                 cpp:
@@ -1179,7 +1179,7 @@ export function compileMaterialIntrinsic(
             const engine =
                 context.requireDefaultEngine(call);
             context.reachFeature("material:standard", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "material",
                 cpp: `bbl::create_standard_material(${engine})`,
@@ -1206,7 +1206,7 @@ export function compileMaterialIntrinsic(
                 call.arguments[2],
             );
             context.reachFeature("material:node", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             // The textures travel under the names the call keyed them by,
             // because that is the join the pin performs: a declared binding
             // reads `options.textures?.[tb._name]`, and which pair a name
@@ -1243,7 +1243,7 @@ export function compileMaterialIntrinsic(
             context.expectKind(material, "material", call.arguments[0]!);
             context.reachFeature("material:standard", call);
             context.reachFeature("material:standard-uv-transform", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return {
                 kind: "void",
                 cpp:
@@ -1284,7 +1284,7 @@ export function compileMaterialIntrinsic(
             context.expectArgumentCount(call, 0, 0);
             context.reachFeature("material:standard", call);
             context.reachFeature("material:standard-vertex-colors", call);
-            context.reachFeature("renderer:pbr", call);
+            context.reachFeature("renderer:scene", call);
             return { kind: "void", cpp: "" };
         }
 

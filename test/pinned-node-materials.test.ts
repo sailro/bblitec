@@ -166,7 +166,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
     try {
         emitUpstreamGenerated(
             output,
-            ["core", "backend:sdl", "material:node", "renderer:pbr"],
+            ["core", "backend:sdl", "material:node", "renderer:scene"],
             options,
         );
         const capabilities = readFileSync(

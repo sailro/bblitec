@@ -58,6 +58,7 @@ export function lowerMat4Determinant3(
     context: LoweringContext,
     calls?: ReadonlyMap<string, (args: readonly string[]) => string>,
     cppName = "pinned_mat4_determinant3",
+    inline = false,
 ): string {
     return lowerPinnedFunction(
         context,
@@ -67,6 +68,7 @@ export function lowerMat4Determinant3(
         {
             cppName,
             returns: "double",
+            ...(inline ? { inline } : {}),
             ...(calls ? { calls } : {}),
         },
     );

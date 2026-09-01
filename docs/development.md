@@ -243,6 +243,37 @@ does not cover and what would force the general shape. A capability that
 compiles away entirely still owes a `docs/fidelity.md` contract explaining why
 the folded form and the pinned form agree.
 
+## Adding a lowerer and its curated fixture
+
+The shortest correct path through the machinery above, for a new Babylon
+capability:
+
+1. **Read first**: the family's page under the pinned clone's
+   `docs/lite/architecture/`, then the pinned source it drifts from.
+   Decide fold-versus-execute by the rule in the repository instructions —
+   fold when the *shape* is the contract, execute when the *value* is.
+2. **The lowerer** is one focused module, `src/lowering/<family>-lowerer.ts`,
+   owning the pinned declarations it lowers: anchor every formula with
+   shape assertions against the pinned AST (see `pinned-trs.ts` for a
+   small fold, `pinned-function-lowerer.ts` for the general translator),
+   and refuse everything outside the reached slice by name through the
+   context's fail path.
+3. **Reach it where the pin does**: an intrinsic in
+   `src/compiler/intrinsics/*` keyed by resolved import symbol calls the
+   lowerer; the same call site is the activation trigger — `reachFeature`
+   there, a `featureSources` row if the feature selects a new translation
+   unit, and the unit's row in `src/feature-activation.ts`.
+4. **Tests before the fixture**: the pinned-anchor contract in
+   `test/upstream.test.ts`, the emission in `test/compiler.test.ts`, and a
+   `test/compiler-architecture.test.ts` row for any new lives-once
+   invariant.
+5. **The fixture**: copy the corpus scene byte-for-byte and pin it in
+   `upstream/babylon-lite-corpus.json`; register it; capture the golden;
+   set thresholds by measure-then-tighten; add the 320x180 preview and the
+   status row (the table in "What a registered scene owns" lists every
+   file). Then the validation matrix, `/simplify` before the sweep, and
+   the manual orbit.
+
 ## Updating Babylon Lite
 
 The repository supports one pinned upstream version. Source-located semantic
@@ -513,6 +544,14 @@ cmake -S native -B native\build-scene1-release `
   -DBBLITE_GENERATED_DIR="$PWD\generated\scene1"
 cmake --build native\build-scene1-release --config Release
 ```
+
+`native/CMakePresets.json` carries the same shapes as presets for manual
+and IDE configures — `dev`/`dev-sdl`/`dev-dawn` and the two minimal
+`min-sdl`/`min-dawn` forms — parameterized by `VCPKG_ROOT` and
+`BBLITE_GENERATED_DIR` in the environment (`cmake --preset min-sdl -S
+native` after setting both; pass `-B` to override the per-preset build
+directory). The scene command keeps its own discovery and does not read
+them.
 
 Ninja is the default everywhere. On Windows the scene command locates Visual
 Studio, the latest MSVC toolset, the Windows SDK, the bundled CMake, vcpkg,
@@ -825,6 +864,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_CPU_PROFILE=1` | print SDL startup/frame phase timings and Bullet work counters without changing the scene: body/dynamic/active/moving counts, speed envelope, manifolds, cumulative contact stabilizations, pending re-adds, solver time, convex mass tuples, and applied-impulse data |
 | `BBLITE_AUDIO_CAPTURE=<path.wav>` | in a build configured with `BBLITE_AUDIO_CAPTURE=ON`, render the scene's audio graph offline instead of opening a device and write 32-bit float WAV; a build without that capability refuses the variable rather than silently ignoring it |
 | `BBLITE_AUDIO_CAPTURE_SECONDS=<t>` | how long to render for `BBLITE_AUDIO_CAPTURE` (default 1.0) |
+| `BBLITE_AUDIO_LOG=trace\|debug\|info\|error` | lower LabSound's log threshold for a diagnostic run; the default is warnings and errors only |
 | `BBLITE_BUILD_STAMP_OUT=<path>` | write the digest of the sources this executable was built from |
 
 Controls: ArcRotate follows the pin's pointer-only surface—left-drag orbit,
@@ -1154,6 +1194,21 @@ SDL_GPU and a Dawn number for every scene. Without the pinned Dawn library,
 run `scene -- parity all` and treat the Dawn column as unmeasured.
 `status:verify` compares every published pair and its severity colour against
 the reports the run wrote: the table is checked data, not prose.
+
+`npm run corpus:verify` re-derives every digest in
+`upstream/babylon-lite-corpus.json` — and the independent `sourceSha256`
+copies in `reference/exact-corpus-manifest.json` — from where the bytes came
+from, because those digests are otherwise self-referential: a corpus file
+edited together with its digest passes every hash suite. Rows without a
+third-party `origin` are fetched from the Babylon Lite tree at the pinned
+commit, rows with one from the pinned origin URL, and rows whose origin is a
+release archive are matched by content against the archive's members (one
+level of `.pak` containers included, which is where the LibreQuake files
+live). It sits beside `status:verify` rather than in `npm test` because the
+published package ships no `lab/` sources — the comparison needs the network,
+though every fetch lands in the download cache so a repeat run is cheap, and
+`--offline` reports uncached rows as unverifiable instead of failing. Run it
+when corpus files or their manifests change, and after any upstream bump.
 
 Do not run generation and native builds concurrently. Do not build multiple
 CMake trees concurrently against the same vcpkg installation.

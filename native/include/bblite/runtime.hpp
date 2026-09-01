@@ -2565,6 +2565,20 @@ struct ShadowGeneratorRecord {
     std::array<float, 16> caster_view_projection{};
     /** The `ShadowTask` inputs `setShadowTaskCasterMeshes` registered. */
     std::vector<MeshHandle> caster_meshes;
+    /**
+     * Bumped by every `set_shadow_task_caster_meshes`. The pin rebuilds a
+     * generator's task state when the caster ARRAY it is handed is a new
+     * one (`existing._casterMeshes === casterMeshes` in the ensure hooks),
+     * and a fresh state's `_last*Version` sentinels force the next render;
+     * this counter is that identity change, read by the render gate.
+     */
+    std::uint64_t caster_list_version = 0;
+    /**
+     * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
+     * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /
+     * `renderCsmShadowMap` each test it first).
+     */
+    bool force_refresh_every_frame = false;
     /** The depth-only render task the task state built for this map. */
     TaskHandle task{};
     /** Source/view pairs retained while a dynamic caster list is filtered. */
@@ -2710,8 +2724,11 @@ struct Engine {
      */
     std::vector<std::function<void()>> deferred_callbacks;
     /**
-     * Entry-code continuations waiting for the initial render boundary.
-     * A measured capture cannot precede code after `await startEngine`.
+     * Entry-code continuations waiting for a render boundary. A measured
+     * capture cannot precede code after `await startEngine`, and a frame
+     * yield inside that continuation re-queues its remainder as a nested
+     * continuation -- one elapsed frame per yield -- so the count stays
+     * above zero until the innermost part has run.
      */
     std::uint32_t pending_start_continuations = 0;
     /** Browser one-shot timers with non-zero delays. */
@@ -3779,6 +3796,12 @@ struct EsmDirectionalShadowOptions {
     double ortho_min_z = 1.0;
     double ortho_max_z = 10000.0;
     /**
+     * `cfg.forceRefreshEveryFrame ?? false`: disables the pinned
+     * render-gate so the map re-renders every frame (break-meshes, whose
+     * physics-driven pieces the map must track).
+     */
+    bool force_refresh_every_frame = false;
+    /**
      * Which row of the generated resource table is this generator's.
      * Generation composed one row per ESM factory call, in reach order, so
      * the ordinal is a compile-time value like the three above it.
@@ -3793,9 +3816,11 @@ struct EsmDirectionalShadowOptions {
  * projects into — a directional light has no position to project from, so
  * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
  * takes. `normalBias` and `forceRefreshEveryFrame` are unreached on the two
- * PCF factories and refuse by name; the ESM and CSM factories accept
- * `forceRefreshEveryFrame` as a generation-checked no-op (break-meshes
- * reaches it — native refreshes every reached shadow task per frame).
+ * PCF factories and refuse by name — generation anchors each factory's
+ * `?? false` default, so a pin that changes what those factories carry
+ * refuses here rather than drifting silently; the ESM and CSM factories
+ * carry `forceRefreshEveryFrame` into the record, where it disables the
+ * pinned render gate (break-meshes reaches it).
  */
 struct PcfDirectionalShadowOptions {
     // No initialisers: generation writes every field from the factory's own
@@ -3820,6 +3845,8 @@ struct CsmDirectionalShadowOptions {
     double csm_lambda;
     double bias;
     double darkness;
+    /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
+    bool force_refresh_every_frame;
 };
 
 ShadowGeneratorHandle create_pcf_spotlight_shadow_generator(

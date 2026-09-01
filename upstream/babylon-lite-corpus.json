@@ -3278,6 +3278,7 @@
         },
         {
           "upstreamPath": "lab/public/freeciv/mercator-1569.LICENSE.txt",
+            "generatedBy": "scripts/fetch-freeciv.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/mercator-1569.LICENSE.txt",
           "sha256": "1a86ed21750cd279c27ea001799808c516b8b32aa46c8d4d50eac9123312ed9e"
         },

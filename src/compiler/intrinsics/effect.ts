@@ -521,7 +521,7 @@ export function compileEffectIntrinsic(
             context.reachFeature("effect:wrapper", call);
             context.reachFeature("effect:task", call);
             context.reachFeature(
-                scene ? "renderer:pbr" : "renderer:frame-graph",
+                scene ? "renderer:scene" : "renderer:frame-graph",
                 call,
             );
             return {

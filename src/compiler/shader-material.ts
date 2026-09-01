@@ -8,6 +8,7 @@
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
     isShaderSystemMatrix,
     lowerWgslShaderProgram,
@@ -37,9 +38,10 @@ import type {
  * What `createShaderMaterial` accepts as a WGSL identifier
  * (`assertIdentifier` in `src/material/shader/shader-material.ts`). It is
  * the rule behind both the sampler and the define refusal, so it is stated
- * once.
+ * once. WGSL identifiers share the C++ spelling, so the pattern itself
+ * is the shared export.
  */
-const WGSL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const WGSL_IDENTIFIER = cppIdentifierPattern;
 
 /**
  * How many sampler pairs a shader material may declare.

@@ -22,6 +22,31 @@ import {
 import { createHash } from "node:crypto";
 import { basename, dirname, join, relative, resolve } from "node:path";
 
+/**
+ * Every artifact extension `tools/compile-shaders.ps1` derives from one
+ * `.native.wgsl` stem. The pruning rule below and every keep-alive for a
+ * stem another module declares consume this one list, so a new offline
+ * artifact kind cannot be pruned by half the consumers.
+ */
+export const compiledShaderArtifactExtensions = [
+    ".dxil",
+    ".hlsl",
+    ".msl",
+    ".spv",
+    ".slots",
+    ".tint-reflection.txt",
+] as const;
+
+const compiledShaderArtifactPattern = new RegExp(
+    `^(.*/shaders/)([^/]+?)(?:${
+        compiledShaderArtifactExtensions
+            .map((extension) =>
+                extension.replace(/[.\\]/g, "\\$&"),
+            )
+            .join("|")
+    })$`,
+);
+
 export class GeneratedTree {
     private readonly written = new Set<string>();
 
@@ -90,10 +115,7 @@ export class GeneratedTree {
      * intermediates, and `shader-compiler.json` records the target/toolchain.
      */
     private isLiveShaderArtifact(key: string): boolean {
-        const match =
-            /^(.*\/shaders\/)([^/]+?)\.(?:dxil|hlsl|msl|spv|slots|tint-reflection\.txt)$/.exec(
-                key,
-            );
+        const match = compiledShaderArtifactPattern.exec(key);
         if (match) {
             return this.written.has(
                 `${match[1]}${match[2]}.native.wgsl`,

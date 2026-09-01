@@ -57,6 +57,18 @@ struct SplatPass {
     std::vector<std::uint32_t> cpu_order;
     std::vector<float> order_floats;
     std::array<float, 4> depth_transform{};
+    /**
+     * The cloud's world, composed once per frame by `upload_splat_pass`
+     * and read back by `record_splat_pass` -- the same single composition
+     * the Dawn upload makes for both its sort gate and its UBO write. A
+     * cache on the pass rather than on the record, because the record
+     * deliberately carries none (`SplatMeshRecord` re-derives live), and
+     * refreshed unconditionally each upload rather than version-gated,
+     * because the record carries no transform version to gate on. The
+     * frame loop uploads every pass before any pass records, so the draw
+     * always reads this frame's composition.
+     */
+    std::array<float, 16> world{};
 };
 
 inline SplatPass create_splat_pass(
@@ -213,8 +225,11 @@ inline void upload_splat_pass(
     const std::array<float, 16>& view) {
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
 
+    // Composed once here for both the sort gate and the draw's uniforms,
+    // exactly as the Dawn upload composes it once for both.
+    pass.world = upstream::build_splat_world(record);
     if (!upstream::splat_sort_dirty(
-            upstream::build_splat_world(record),
+            pass.world,
             view,
             pass.depth_transform)) {
         return;
@@ -254,7 +269,8 @@ inline void record_splat_pass(
     upstream::SplatUniforms uniforms;
     upstream::write_splat_uniforms(
         uniforms,
-        upstream::build_splat_world(record),
+        // This frame's composition, stashed by `upload_splat_pass` above.
+        pass.world,
         view,
         projection,
         width,

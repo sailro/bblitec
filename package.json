@@ -43,6 +43,7 @@
     "simplify:verify": "npm run build && node dist/src/verify-simplify.js",
     "simplify:record": "npm run build && node dist/src/verify-simplify.js --path",
     "status:verify": "npm run build && node dist/src/verify-status.js",
+    "corpus:verify": "npm run build && node dist/src/verify-corpus.js",
     "lint:exports": "ts-prune -p tsconfig.json"
   },
   "devDependencies": {

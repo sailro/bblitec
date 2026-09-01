@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import { emitParticleAliveGuard } from "./particle-buffer.js";
 import {
     isHandleKind,
@@ -150,6 +151,15 @@ export interface StatementLoweringContext {
     ): ts.Expression | undefined;
     unwrap(expression: ts.Expression): ts.Expression;
     isFrameYield(expression: ts.Expression): boolean;
+    /**
+     * A frame yield lowered AFTER `startEngine` sits inside the hoisted
+     * continuation, so "the frame's own work has already run" only stays
+     * true if the statements after it wait for the NEXT frame boundary.
+     * Emits the marker `hoistEngineContinuation` turns into a nested
+     * re-queue; before the loop exists it emits nothing and the yield
+     * stays erased.
+     */
+    emitFrameYieldRequeue(expression: ts.Expression): void;
     isBoundedNestedFrameYield(
         expression: ts.Expression,
     ): boolean;
@@ -2285,7 +2295,7 @@ export class StatementLowerer {
             elements.some(
                 (element) =>
                     element.kind !== kind ||
-                    !/^[A-Za-z_][A-Za-z0-9_]*$/.test(
+                    !cppIdentifierPattern.test(
                         element.cpp,
                     ),
             )
@@ -2858,6 +2868,7 @@ export class StatementLowerer {
                         "frame the scene asks for, not a count of them.",
                 );
             }
+            context.emitFrameYieldRequeue(unwrapped);
             return;
         }
         if (ts.isCallExpression(unwrapped)) {
@@ -2891,8 +2902,10 @@ export class StatementLowerer {
             return;
         }
         if (context.isFrameYield(unwrapped)) {
-            // One frame's work has already happened by the time this
-            // runtime reaches the statement after it. A LOOP of these is a
+            // Before the frame loop exists, one frame's work has already
+            // happened by the time this runtime reaches the statement after
+            // it, so the yield erases; inside the hoisted continuation the
+            // re-queue below keeps that claim true. A LOOP of these is a
             // different claim -- "let N frames elapse" -- and erasing each
             // iteration would silently turn it into none, so it refuses.
             if (frameYieldInsideLoop(unwrapped)) {
@@ -2903,6 +2916,7 @@ export class StatementLowerer {
                         "frame the scene asks for, not a count of them.",
                 );
             }
+            context.emitFrameYieldRequeue(unwrapped);
             return;
         }
         // `await <barrier property>` -- a read whose only meaning is the

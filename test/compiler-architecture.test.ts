@@ -668,7 +668,7 @@ test("composes registered sprite renderers over scene output", () => {
     );
     assert.match(
         sprites,
-        /GpuBufferUploadBatch\* buffer_uploads = nullptr/,
+        /GpuBufferUploadBatch& buffer_uploads\) \{/,
     );
     assert.match(dawn, /#include "pal_dawn_sprite\.hpp"/);
     assert.doesNotMatch(dawn, /reject_uncomposed_sprites\(engine\)/);
@@ -736,7 +736,7 @@ test("keeps depth-hosted sprite buffers growable, paused while hidden, and inser
     );
     assert.match(
         sdlUpload,
-        /dirty_begin[\s\S]{0,900}buffer_uploads->update\(\s*gpu\.instances,\s*offset,\s*data,\s*bytes\)/,
+        /dirty_begin[\s\S]{0,900}buffer_uploads\.update\(\s*gpu\.instances,\s*offset,\s*data,\s*bytes\)/,
     );
     assert.match(
         dawnUpload,
@@ -869,6 +869,81 @@ test("keeps scene-less sprite render targets and renderer registration live", ()
         /WGPUTextureUsage_RenderAttachment \|\s*WGPUTextureUsage_TextureBinding/,
     );
     assert.match(dawn, /resize_dawn_surface\(state, engine\.options\)/);
+});
+
+test("gates the scene-less offscreen readback arm on a requested capture", () => {
+    const sdlSprite = source("native/src/pal_sdl_gpu_sprite.cpp");
+    const sdlEffect = source("native/src/pal_sdl_gpu_effect.cpp");
+    const dawnSprite = source("native/src/pal_dawn_sprite.cpp");
+    const dawnEffect = source("native/src/pal_dawn_effect.cpp");
+
+    // A swapchain texture cannot be read back, so a capture run renders
+    // offscreen and blits; a run without a capture draws straight into
+    // the swapchain and never pays for the readback texture or the blit.
+    for (const driver of [sdlSprite, sdlEffect]) {
+        assert.match(
+            driver,
+            /const bool capture_run = captures\.requested\(\);/,
+        );
+        assert.match(
+            driver,
+            /if \(capture_run\) \{\s*SDL_GPUBlitInfo blit\{\};/,
+        );
+    }
+    assert.match(
+        sdlSprite,
+        /capture_run &&\s*\(color_width != width \|\| color_height != height\)/,
+    );
+    assert.match(
+        sdlSprite,
+        /SDL_GPUTexture\* target = capture_run \? color : swapchain;/,
+    );
+    assert.match(
+        sdlEffect,
+        /capture_run \? resolve : swapchain;/,
+    );
+    // The multisampled arm resolves into the frame's destination, which
+    // is the swapchain itself on a live run -- the pin's own arm.
+    assert.match(
+        sdlEffect,
+        /color_target\.resolve_texture = destination;/,
+    );
+    // The Dawn drivers never had the offscreen arm: they render into the
+    // surface view and copy the surface texture out for a capture.
+    assert.match(dawnSprite, /WGPUTextureView target_view = surface_view;/);
+    assert.match(
+        dawnEffect,
+        /color_attachment\.view = samples > 1 \? msaa_view : surface_view;/,
+    );
+    for (const driver of [dawnSprite, dawnEffect]) {
+        assert.match(driver, /begin_dawn_surface_capture\(/);
+    }
+});
+
+test("batches the scene-less sprite driver's dirty-span uploads", () => {
+    const driver = source("native/src/pal_sdl_gpu_sprite.cpp");
+    const shared = source("native/src/pal_sdl_gpu_shared.hpp");
+    const sprite = source("native/src/pal_sdl_gpu_sprite.hpp");
+
+    // One run-lifetime batch: dirty spans stage into one copy pass and
+    // one submit per frame, not a transfer buffer and submit per layer.
+    assert.match(driver, /GpuBufferUploadBatch buffer_uploads\(device\);/);
+    assert.match(
+        driver,
+        /upload_sprite_pass\(\s*device, engine, pass, delta_ms, buffer_uploads\);[\s\S]{0,80}buffer_uploads\.submit\(\);/,
+    );
+    // The batch's transfer buffer persists across submits (cycled on
+    // map, released by the destructor), so a per-frame writer stops
+    // paying a create/release per frame.
+    assert.match(shared, /~GpuBufferUploadBatch\(\)/);
+    assert.match(
+        shared,
+        /SDL_MapGPUTransferBuffer\(device_, transfer_, true\)/,
+    );
+    // Every caller stages into a run-lifetime batch: the parameter is a
+    // reference, so a batch-less one-shot arm cannot quietly come back.
+    assert.doesNotMatch(sprite, /GpuBufferUploadBatch immediate\(/);
+    assert.doesNotMatch(sprite, /GpuBufferUploadBatch\*/);
 });
 
 test("projects offscreen sprite passes against the canvas extent", () => {
@@ -1129,6 +1204,35 @@ test("runs post-start RAF callbacks only after the engine render", () => {
     }
 });
 
+test("parks a re-queued continuation for the next frame's drain", () => {
+    const pal = source("native/src/pal.cpp");
+    const sdl = source("native/src/pal_sdl_gpu.cpp");
+    const dawn = source("native/src/pal_dawn.cpp");
+
+    // The queue is moved out before draining, so a nested
+    // `defer_start_continuation` queued DURING a drain -- the emitted form
+    // of a frame yield inside the hoisted continuation -- runs at the next
+    // frame's boundary rather than in the same one. This is the boundary
+    // that makes `firstSortReady` plus one yield a real barrier.
+    assert.match(
+        pal,
+        /void run_deferred_callbacks\(Engine& engine\)[\s\S]{0,700}due\.swap\(engine\.deferred_callbacks\);/,
+    );
+
+    // Because the barrier is real, each cloud's sort has ONE writer per
+    // backend: the frame loop's upload phase, which runs before the drain
+    // a pick can arrive on. A second call site inside a pick path would be
+    // the compensation this contract deleted growing back.
+    assert.equal(
+        (sdl.match(/upload_splat_pass\(/g) ?? []).length,
+        1,
+    );
+    assert.equal(
+        (dawn.match(/upload_dawn_splat_pass\(/g) ?? []).length,
+        1,
+    );
+});
+
 test("keeps SpriteFx elapsed time at JavaScript number precision", () => {
     for (const path of [
         "native/src/pal_sdl_gpu_sprite.hpp",
@@ -1375,10 +1479,11 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
     assert.match(shared, /inline std::vector<GpuVertex> local_vertices\(/);
     assert.match(shared, /rematch_render_meshes\(/);
     assert.match(shared, /inline std::array<float, 16> shader_draw_world\(/);
-    assert.match(
-        shared,
-        /inline std::array<float, 16> shader_world_view_projection\(/,
-    );
+    // The per-draw world/world-view/world-view-projection lanes are one
+    // shared record; both backends and the capture writer construct it
+    // instead of composing their own products (capture-equivalence.test.ts
+    // carries the full contract).
+    assert.match(shared, /struct ShaderDrawMatrices \{/);
     assert.match(
         shared,
         /case upstream::ShaderSystemMatrix::world_view_projection:[\s\S]{0,180}return false;/,
@@ -1395,18 +1500,23 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
         assert.match(backend, /shared_shader_material_textures/);
         assert.match(backend, /shared_shader_textures->users/);
         assert.match(backend, /prune_shared_shader_material_textures/);
-        assert.match(backend, /shader_draw_world\(/);
-        assert.match(backend, /shader_world_view_projection\(/);
+        assert.match(backend, /ShaderDrawMatrices shader_matrices\(/);
+        assert.match(backend, /shader_matrices\.apply\(/);
         assert.match(
             backend,
             /item\.material_kind ==\s*upstream::RenderMaterialKind::shader[\s\S]{0,300}transform_version = mesh\.transform_version;[\s\S]{0,80}continue;/,
         );
     }
-    assert.match(capture, /shader_draw_world\(\s*engine,\s*engine\.meshes\[/);
-    assert.match(capture, /shader_world_view\(\s*pass_matrices\.view/);
     assert.match(
         capture,
-        /shader_stage_block_floats\(\s*block, shader_pass_matrices, material\)/,
+        /ShaderDrawMatrices shader_matrices\(\s*engine,\s*engine\.meshes\[/,
+    );
+    assert.match(capture, /shader_matrices\.apply\(pass_matrices\)/);
+    // The capture packs the block through the same caller-owned-scratch
+    // shape both backends' draw loops thread through the shared packer.
+    assert.match(
+        capture,
+        /shader_stage_block_floats\(\s*block,\s*shader_pass_matrices,\s*material,\s*stage_block_floats\)/,
     );
 
     // Local/shared geometry does not make the per-draw instance streams

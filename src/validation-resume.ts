@@ -9,6 +9,7 @@ import {
     writeFileSync,
 } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
+import { compiledShaderArtifactExtensions } from "./generated-tree.js";
 
 export interface ValidationSceneInput {
     id: string;
@@ -89,7 +90,9 @@ function metadataFingerprint(
 
 function isCompiledShaderOutput(path: string): boolean {
     return (
-        /\.(?:dxil|spv|hlsl|msl|slots|tint-reflection\.txt)$/.test(path) ||
+        compiledShaderArtifactExtensions.some((extension) =>
+            path.endsWith(extension),
+        ) ||
         path === "shader-compiler.json" ||
         path.endsWith("/shader-compiler.json")
     );

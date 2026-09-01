@@ -22,6 +22,15 @@ export function doubleLiteral(value: number): string {
 }
 
 /**
+ * A whole string that is exactly one C++ identifier.
+ *
+ * The one spelling every consumer shares — emitted-C++ identifier checks
+ * and WGSL identifier refusals alike, since the two grammars agree on
+ * `[A-Za-z_][A-Za-z0-9_]*`.
+ */
+export const cppIdentifierPattern = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
  * A string as a C++ literal.
  *
  * JSON's escaping is C++'s for everything a scene can carry, except the two

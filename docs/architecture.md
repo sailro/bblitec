@@ -308,7 +308,9 @@ Each scene records:
 - `upstream/shaders/variant-*.native.wgsl`: the pin's own composed PBR
   (`variant-`) and Standard (`variant-std-`) stages, verbatim
 - `upstream/shaders/postprocess-*.native.wgsl`: the composed post-process
-  modules, deployed once per entry point. Indexed by the module rather than
+  modules, deployed once per module under the fragment stem, with the
+  vertex stem declared beside it for the per-stem offline compiles.
+  Indexed by the module rather than
   by the pass: two passes whose composed text is identical -- a blur pair
   differing only in its `direction` uniform -- share one
 - `upstream/shaders/*.slots`: per stage, the register each block kept after

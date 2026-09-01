@@ -93,7 +93,7 @@ function reachRenderer(
     context: EngineIntrinsicContext,
     call: ts.CallExpression,
 ): void {
-    context.reachFeature("renderer:pbr", call);
+    context.reachFeature("renderer:scene", call);
     context.reachFeature("renderer:geometry-output", call);
 }
 

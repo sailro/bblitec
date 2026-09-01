@@ -12,6 +12,10 @@ import { dirname, relative, resolve, sep } from "node:path";
 import { floatLiteral } from "../cpp-literals.js";
 import { readAssetBytesSync } from "./asset-bytes-sync.js";
 import { resolveBundledAsset } from "./assets.js";
+import {
+    jsonToValue,
+    type JsonValuePolicy,
+} from "./json-value.js";
 import type { CompileAsset, Value } from "./types.js";
 
 export interface StaticFetchContext {
@@ -397,54 +401,24 @@ export function staticFetchProperty(
     return undefined;
 }
 
+/**
+ * This lane's whole policy for the shared converter: a fetched document
+ * keeps only the per-kind static fields (its numbers land in the default
+ * float sinks, so they render float), and the historical finite guard
+ * stays even though JSON.parse cannot trip it.
+ */
+const staticFetchJsonPolicy: JsonValuePolicy = {
+    numberLiteral: floatLiteral,
+    nullCpp: "",
+    staticMetadata: false,
+    nonFiniteMessage: "JSON numeric values must be finite.",
+    unsupportedMessage: "Fetched JSON contains an unsupported value.",
+};
+
 function jsonValue(
     context: StaticFetchContext,
     value: unknown,
     node: ts.Node,
 ): Value {
-    if (value === null) {
-        return { kind: "json-null", cpp: "" };
-    }
-    if (typeof value === "boolean") {
-        return { kind: "boolean", cpp: value ? "true" : "false" };
-    }
-    if (typeof value === "number") {
-        if (!Number.isFinite(value)) {
-            context.fail(node, "JSON numeric values must be finite.");
-        }
-        return {
-            kind: "number",
-            cpp: floatLiteral(value),
-            staticNumber: value,
-        };
-    }
-    if (typeof value === "string") {
-        return {
-            kind: "string",
-            cpp: context.cppString(value),
-            staticString: value,
-        };
-    }
-    if (Array.isArray(value)) {
-        return {
-            kind: "tuple",
-            cpp: "",
-            tupleElements: value.map((entry) =>
-                jsonValue(context, entry, node),
-            ),
-        };
-    }
-    if (typeof value === "object") {
-        return {
-            kind: "record",
-            cpp: "",
-            recordProperties: Object.fromEntries(
-                Object.entries(value).map(([name, entry]) => [
-                    name,
-                    jsonValue(context, entry, node),
-                ]),
-            ),
-        };
-    }
-    context.fail(node, "Fetched JSON contains an unsupported value.");
+    return jsonToValue(context, staticFetchJsonPolicy, value, node);
 }

@@ -23,6 +23,7 @@
 #include "pal_runtime_trace.hpp"
 
 #include "LabSound/core/AudioContext.h"
+#include "LabSound/extended/Logging.h"
 #include "LabSound/core/AudioDevice.h"
 #include "LabSound/core/AudioParam.h"
 #include "LabSound/core/GainNode.h"
@@ -393,6 +394,17 @@ AudioContextHandle audio_create_context()
     }
 #endif
     const std::uint32_t id = next_context_id();
+
+    // LabSound ships rxi's logger at TRACE, which floods stderr from the
+    // graph-update thread. Warnings and errors still surface; the lower
+    // levels are opt-in diagnostics.
+    const std::string log_level = environment_variable("BBLITE_AUDIO_LOG");
+    log_set_level(
+        log_level == "trace"       ? LOGLEVEL_TRACE
+            : log_level == "debug" ? LOGLEVEL_DEBUG
+            : log_level == "info"  ? LOGLEVEL_INFO
+            : log_level == "error" ? LOGLEVEL_ERROR
+                                   : LOGLEVEL_WARN);
 
     ContextRecord record;
 
