@@ -62,7 +62,22 @@ const STATEMENT_KINDS: ReadonlyArray<
   ["if statement", ts.isIfStatement],
   ["for statement", ts.isForStatement],
   ["expression statement", ts.isExpressionStatement],
+  ["return statement", ts.isReturnStatement],
 ];
+
+/**
+ * A statement's kind, as an inventory row names it.
+ *
+ * One projection for every statement-kind inventory below, so the `"other
+ * statement"` fallback the refusal message prints is stated once: two copies
+ * can disagree about a kind the table has no entry for, which is exactly the
+ * case an inventory exists to notice.
+ */
+function statementKind(statement: ts.Statement): string {
+  return (
+    STATEMENT_KINDS.find(([, is]) => is(statement))?.[0] ?? "other statement"
+  );
+}
 
 /**
  * `_buildShapeParams`'s prelude scalars, as (the pin's name, the emitted
@@ -703,7 +718,19 @@ ${segment("CYLINDER")}`;
         );
       }
     }
-    this.assertStepWorldInventory();
+    for (const [
+      symbolName,
+      restated,
+      kinds,
+    ] of PhysicsLowerer.inventoryContracts) {
+      this.assertInventory(
+        this.pinnedDeclaration(symbolName),
+        symbolName,
+        restated,
+        kinds,
+        statementKind,
+      );
+    }
     this.assertStaticFrictionDefault();
     for (const [symbolName, callees] of PhysicsLowerer.orderContracts) {
       const declaration = this.pinnedDeclaration(symbolName);
@@ -769,17 +796,34 @@ ${segment("CYLINDER")}`;
   }
 
   /**
-   * `_stepWorld`'s own statement inventory, kind by kind and in order.
+   * Every pinned body the emitted translation unit restates WHOLE, with
+   * the statement inventory that keeps the contracts above complete.
    *
-   * The emitted `step_world` restates the whole body, so the shape and
-   * order contracts above are complete only while the body has exactly
-   * these statements: an arm upstream ADDS is invisible to every
-   * per-expression check, and this is what makes it refuse generation
-   * naming the count instead of shipping a frame with a missing phase.
+   * The two kinds of contract above assert that a shape is PRESENT and
+   * that calls happen in an ORDER. Neither can see a statement the pin
+   * ADDS: a new expression leaves every shape it looks for where it was,
+   * and `orderContracts` walks with a cursor that skips anything between
+   * two ordered calls. So a body restated statement by statement into
+   * C++ needs its statement count pinned as well, or an added arm is
+   * dropped from the emitted copy in silence.
+   *
+   * That is not hypothetical. 1.26.0 added
+   * `body._massPropertiesTransform?.(massProps)` to `setPhysicsBodyMass`
+   * -- a hook only the unlowered `lockPhysicsBodyRotationAxes` installs,
+   * so the emitted copy is still faithful -- and every shape and order
+   * contract in this file passed. It added the identical line to
+   * `setPhysicsBodyMassProperties`, which this port does not lower at
+   * all. The next such line lands in a body that IS restated.
+   *
+   * A row is `[symbol, what restates it, the kinds in the pin's order]`,
+   * driven by one loop, so guarding a further body is a row rather than a
+   * method -- and the set of guarded bodies reads beside the set of
+   * restated ones.
    */
-  private assertStepWorldInventory(): void {
-    this.assertInventory(
-      this.pinnedDeclaration("_stepWorld"),
+  private static readonly inventoryContracts: ReadonlyArray<
+    readonly [string, string, readonly string[]]
+  > = [
+    [
       "_stepWorld",
       "the emitted step_world restates the whole body",
       [
@@ -802,11 +846,85 @@ ${segment("CYLINDER")}`;
         // the after-step hooks
         "if statement",
       ],
-      (statement) =>
-        STATEMENT_KINDS.find(([, is]) => is(statement))?.[0] ??
-        "other statement",
-    );
-  }
+    ],
+    [
+      "createPhysicsAggregate",
+      "create_physics_aggregate restates all four phases inline",
+      [
+        // const motionType = options.mass === 0 ? STATIC : DYNAMIC;
+        "variable statement",
+        // let shape = options.shape;
+        "variable statement",
+        // the primitive-shape build, and its refusal
+        "if statement",
+        // const body = createPhysicsBody(...);
+        "variable statement",
+        // setPhysicsBodyShape(world, body, shape);
+        "expression statement",
+        // const friction = options.friction ?? 0.2;
+        "variable statement",
+        // const restitution = options.restitution ?? 0.2;
+        "variable statement",
+        // setPhysicsShapeMaterial(world, shape, friction, restitution);
+        "expression statement",
+        // the mass phase, gated on `options.mass > 0`
+        "if statement",
+        // return { body, shape };
+        "return statement",
+      ],
+    ],
+    [
+      "createPhysicsBody",
+      "the emitted body factory restates the whole body",
+      [
+        // const { _hknp: hknp, _hkWorld: hkWorld } = world;
+        "variable statement",
+        // const hkBody = hknp.HP_Body_Create()[1];
+        "variable statement",
+        // const hkMotion = <the three-arm motion-type mapping>;
+        "variable statement",
+        // hknp.HP_Body_SetMotionType(hkBody, hkMotion);
+        "expression statement",
+        // the body record itself
+        "variable statement",
+        // the floating-origin arm against add-then-transform
+        "if statement",
+        // world._bodies.push(body);
+        "expression statement",
+        // return body;
+        "return statement",
+      ],
+    ],
+    [
+      "setPhysicsShapeMaterial",
+      "the emitted aggregate restates the material write",
+      [
+        // const combines = world._hknp.MaterialCombine;
+        "variable statement",
+        // the five-term material array
+        "variable statement",
+        // world._hknp.HP_Shape_SetMaterial(shape._hkShape, material);
+        "expression statement",
+      ],
+    ],
+    [
+      "setPhysicsBodyMass",
+      "two emitted sites restate the mass phase",
+      [
+        // const massProps = <shape-derived or isotropic fallback>;
+        "variable statement",
+        // massProps[1] = mass;
+        "expression statement",
+        // the optional centre-of-mass override (no reached caller passes one)
+        "if statement",
+        // body._massPropertiesTransform?.(massProps) -- installed only by
+        // the unlowered `lockPhysicsBodyRotationAxes`, so a no-op here
+        "expression statement",
+        // hknp.HP_Body_SetMassProperties(body._hkBody, massProps);
+        "expression statement",
+      ],
+    ],
+  ];
 
   /**
    * The prelude's own declaration inventory, in the pin's order.
@@ -842,13 +960,14 @@ ${segment("CYLINDER")}`;
   /**
    * A pinned body's own top-level inventory, in the pin's order.
    *
-   * Two bodies here are restated whole rather than translated statement by
-   * statement, and for both the per-expression contracts above are
-   * complete only while the body still has exactly these statements: an
-   * arm the pin ADDS is invisible to every one of them. `project` is what
-   * each caller compares -- a statement kind for the frame loop, a
-   * declaration name for the shape prelude -- and returning undefined
-   * skips a statement the inventory does not describe.
+   * Each body it is called for is restated whole rather than translated
+   * statement by statement, and for each the per-expression contracts
+   * above are complete only while the body still has exactly these
+   * statements: an arm the pin ADDS is invisible to every one of them.
+   * `project` is what a caller compares -- a statement kind for the
+   * `inventoryContracts` rows, a declaration name for the shape prelude
+   * -- and returning undefined skips a statement the inventory does not
+   * describe.
    */
   private assertInventory(
     declaration: ts.FunctionDeclaration,

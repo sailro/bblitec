@@ -300,7 +300,7 @@ re-synced: cross-check the changed file list against `src\scene-registry.ts`.
 
 ### 2. Move the pin
 
-Four locations carry a pin and move together:
+Five locations carry a pin and move together:
 
 | File | What it holds |
 | --- | --- |
@@ -308,6 +308,26 @@ Four locations carry a pin and move together:
 | `upstream\babylon-lite-corpus.json` | its *own* `version` and `sourceVersion`, beside all adopted source and asset digests |
 | `package.json` + lock | the dependency, via `npm install` |
 | `README.md` | the only prose copy of the pair |
+| `reference\exact-corpus-manifest.json` | its own `sourceVersion`, and the golden provenance the pin reaches through the browser module |
+
+The fifth is the one that fails last and reads like a broken bump: the capture
+module embeds the pin in curated asset URLs — the BRDF LUT's URL carries the
+source commit — so `moduleSha256` moves for most scenes even though nothing
+about them changed. It has a writer, and the writer is the point:
+
+```powershell
+npm run corpus:manifest -- --previous-version 1.25.0 --previous-commit <old-sha>
+npm run corpus:manifest -- --previous-version 1.25.0 --previous-commit <old-sha> --write
+```
+
+Rewriting that column by hand would launder a real change into the provenance
+record, since a digest that moved because the SCENE moved is indistinguishable
+from pin churn once the new value is written. So the previous pin is a required
+argument: every moved digest must be EXPLAINED — reverting the version and
+commit has to reproduce the committed value — and the two columns a bump may
+not touch refuse instead. `referenceSha256` is the golden's own bytes, and a
+golden that moved is a behaviour change to investigate (step 4); `capturedAt`
+records when the goldens were captured, not when the file was written.
 
 An application's files may also come from outside the upstream repository.
 Those rows carry an `origin` URL naming the separately pinned download; the
@@ -334,7 +354,8 @@ catalog covers registered scenes, support modules, and adopted applications.
 
 ### 3. Fix the compatibility report
 
-`npm run test:upstream` reports the failures. They sort into three kinds:
+`npm run test:upstream` reports the failures. They sort into the kinds below —
+and the last two are the ones to read for, because they report nothing:
 
 - **Moved contracts.** A lowerer asserts an expression the upstream refactor
   relocated. Check whether the *semantics* moved or only the shape: if the
@@ -382,6 +403,22 @@ catalog covers registered scenes, support modules, and adopted applications.
   members (`assertComposerDependencies` in `src\pinned-pbr-variants.ts`), so
   an added, removed or renamed dependency fails naming it. When a bump adds a
   bag like that, give it the same check rather than trusting the values.
+
+- **A statement ADDED to a body this port restates whole.** The other quiet
+  kind, and new at 1.26.0. Where a pinned body is translated statement by
+  statement into C++, the contracts guarding it assert that a shape is
+  PRESENT and that calls happen in an ORDER — and an added statement moves
+  neither: every shape stays where it was, and an order contract walking with
+  a cursor skips whatever sits between two ordered calls. 1.26.0 added
+  `body._massPropertiesTransform?.(massProps)` to `setPhysicsBodyMass`, which
+  `create_physics_aggregate` and `set_physics_body_mass` both restate, and
+  every physics contract still passed. It was faithful only because the hook's
+  one installer (`lockPhysicsBodyRotationAxes`) is unlowered. **The fix is the
+  general one: pin the statement COUNT of every body the port restates whole**
+  — `inventoryContracts` in `src\lowering\physics-lowerer.ts`, one row per
+  body, so guarding a further one is a row rather than a method. When a bump
+  adds a statement to such a body, that count is what refuses. Other lowerers
+  restate bodies with no count guard yet; `TODO.md` carries the list.
 
 ### Read the release notes, not only the log
 

@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.25.0",
+  "version": "1.26.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "286525f8041dd9adc72b2c9962e8bff4d9aeb764",
+  "sourceVersion": "69c8588f39454f94b6c1657193672cee9f03ee0e",
   "scenes": [
     {
       "id": "scene1",
@@ -1688,6 +1688,11 @@
       "upstreamPath": "lab/lite/src/lite/scene304.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene304.ts",
       "sha256": "c5e727d1e15968ef6ff1f786f7dc7672c9ecc3d68e5fc4847e0dcdc5d49df2d7"
+    },
+    {
+      "upstreamPath": "lab/lite/src/lite/scene305.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene305.ts",
+      "sha256": "fe2ce5f8d300fee9ebbec91e2854af94bd4721bee8c8c79a50ebcde87a523509"
     }
   ],
   "applications": [

@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, sep } from "node:path";
 import test from "node:test";
-import { suiteBrowserModule } from "../src/capture-suite-reference.js";
+import { suiteBrowserModuleDigest } from "../src/capture-suite-reference.js";
 import {
     getScene,
     scenes,
@@ -240,18 +240,12 @@ test("keeps exact-source corpus references immutable", () => {
             reference.reference,
             scene.parity.reference.path,
         );
-        const moduleDigest = createHash("sha256")
-            .update(
-                suiteBrowserModule(
-                    scene.source,
-                    undefined,
-                    scene.parity.referenceTimeSeconds,
-                    scene.parity
-                        .referenceAnimationGroups,
-                    scene.parity.referenceFrame,
-                ),
-            )
-            .digest("hex");
+        const moduleDigest = suiteBrowserModuleDigest(
+            scene.source,
+            scene.parity.referenceTimeSeconds,
+            scene.parity.referenceAnimationGroups,
+            scene.parity.referenceFrame,
+        );
         assert.equal(
             moduleDigest,
             reference.moduleSha256,
