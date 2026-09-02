@@ -650,6 +650,8 @@ export interface CompiledShaderProgram {
    */
   defines: CompiledShaderDefine[];
   needAlphaBlending: boolean;
+  /** The pin's fixed-function blend equation when alpha blending is enabled. */
+  blendMode: "alpha" | "additive";
   needAlphaTesting: boolean;
   backFaceCulling: boolean;
   depthWrite: boolean;
@@ -1382,6 +1384,8 @@ export interface Value {
   dataType?: DataType;
   /** The expression returns existing mutable storage, not a JS value copy. */
   borrowedData?: true;
+  /** The C++ spelling is an lvalue that can bind to a mutable reference. */
+  nativeLvalue?: true;
   /** The data expression is already a native std::vector, not a JS Array. */
   nativeVectorData?: true;
   /** The expression creates an owning data container at this read. */
@@ -1709,6 +1713,8 @@ export interface Value {
   staticBoolean?: boolean;
   /** Materialized mutable parameter; static caller facts cannot fold branches. */
   parameterBinding?: boolean;
+  /** A local the emitter materialized as a native variable; reads go through it. */
+  nativeBinding?: true;
   /** A value bound by a native runtime iteration, not a static unroll. */
   runtimeIteration?: true;
   staticString?: string;
@@ -1751,6 +1757,8 @@ export interface Value {
    * rather than its value, so each read re-evaluates it.
    */
   recordGetters?: Record<string, ts.GetAccessorDeclaration>;
+  /** Class properties declared with `set`; assignment evaluates the body. */
+  recordSetters?: Record<string, ts.SetAccessorDeclaration>;
   /**
    * The scope chain in force where a record carrying methods or
    * getters was built. A record can outlive the scope its state

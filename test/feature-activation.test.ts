@@ -364,6 +364,7 @@ function familyInputs(): FeatureActivationInputs {
         samplers: [],
         defines: [],
         needAlphaBlending: false,
+        blendMode: "alpha",
         needAlphaTesting: false,
         backFaceCulling: true,
         depthWrite: true,

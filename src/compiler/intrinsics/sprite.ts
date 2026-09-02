@@ -281,12 +281,9 @@ function property(
  * `PixelsTexture2DOptions`, as the record the generated factory resolves
  * against the pin's own defaults.
  *
- * Only the four sampler fields are lowered, which is what the corpus
- * reaches through both of its routes — `addressMode*` for a tiling data
- * texture (scenes 231, 282) and the `nearest` filters for a procedural
- * sprite (282, 283, 284, 301). `srgb` selects `rgba8unorm-srgb`, which
- * changes how the texel decodes rather than how it is sampled, and no
- * reached call passes it.
+ * The four sampler fields keep their pinned string literals. `srgb` is the
+ * separate format bit: it selects `rgba8unorm-srgb`, changing how a sampled
+ * texel decodes rather than how it is filtered or addressed.
  */
 function pixelsSamplerOptions(
     context: SpriteIntrinsicContext,
@@ -304,6 +301,16 @@ function pixelsSamplerOptions(
     for (const [field, value] of Object.entries(
         options?.recordProperties ?? {},
     )) {
+        if (field === "srgb") {
+            if (value.kind !== "boolean" || value.staticBoolean === undefined) {
+                context.fail(
+                    expression,
+                    "createTexture2DFromPixels srgb must be a boolean literal.",
+                );
+            }
+            named[field] = value.staticBoolean ? "true" : "false";
+            continue;
+        }
         if (
             ![
                 "addressModeU",
@@ -315,7 +322,7 @@ function pixelsSamplerOptions(
             context.fail(
                 expression,
                 `createTexture2DFromPixels '${field}' is not lowered; ` +
-                    "the reached slice is the four sampler overrides.",
+                    "the reached slice is its sampler and sRGB options.",
             );
         }
         if (value.staticString === undefined) {
@@ -629,7 +636,7 @@ export function compileSpriteIntrinsic(
                 ? `${cppType}{}`
                 : `${cppType}{std::nullopt}`;
             const hitValue = referenceBacked
-                ? `std::make_shared<${hitType}Data>(${hitType}Data{${fieldInitializers}})`
+                ? `bbl::js::make_ref<${hitType}Data>(${hitType}Data{${fieldInitializers}})`
                 : `${cppType}{${hitType}{${fieldInitializers}}}`;
             const layerList = dataLayers
                 ? spriteLayerVectorCpp(layers)
@@ -1655,10 +1662,10 @@ export function compileSpriteIntrinsic(
                 call.arguments[3]!,
                 "double",
             );
-            // The pin's sampler overrides. Each travels as "named, and this
+            // The pin's sampler and format overrides. Each travels as "named, and this
             // value", because the factory resolves `?? default` where
-            // upstream resolves it. `srgb` picks a second texture format and
-            // no reached call passes one, so it refuses by name.
+            // upstream resolves it. `srgb` travels as the raw-pixel texture's
+            // format bit and is preserved by every material/backend consumer.
             const sampler = pixelsSamplerOptions(
                 context,
                 call.arguments[4],

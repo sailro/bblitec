@@ -1078,6 +1078,10 @@ std::string take_intrinsic_min_width(std::string& style) {
     return take_css_declaration(style, "--bbl-intrinsic-min-width");
 }
 
+std::string take_crosshair_color(std::string& style) {
+    return take_css_declaration(style, "--bbl-crosshair");
+}
+
 bool is_inline_level(Rml::Style::Display display) {
     return
         display == Rml::Style::Display::Inline ||
@@ -1444,6 +1448,7 @@ struct ProjectedUiElement {
     std::string resolved_style;
     std::string grid_children_style;
     std::string intrinsic_min_width;
+    std::string crosshair_color;
     bool text_wrapped = false;
     bool click_listener_attached = false;
     std::unordered_map<std::string, bool> event_listeners_attached;
@@ -1660,8 +1665,19 @@ public:
         Rml::Vector2i& texture_dimensions,
         const Rml::String& source) override {
         Rml::FileInterface* files = Rml::GetFileInterface();
-        const Rml::FileHandle file = files->Open(source);
-        if (!file) return {};
+        Rml::FileHandle file = files->Open(source);
+        if (
+            !file &&
+            !source.empty() &&
+            source.front() != '/' &&
+            source.front() != '\\' &&
+            source.find("..") == Rml::String::npos &&
+            source.find(":") == Rml::String::npos) {
+            file = files->Open(asset_path(source));
+        }
+        if (!file) {
+            return {};
+        }
         files->Seek(file, 0, SEEK_END);
         const std::size_t size = files->Tell(file);
         files->Seek(file, 0, SEEK_SET);
@@ -1677,7 +1693,9 @@ public:
             SDL_IOFromConstMem(encoded.data(), static_cast<int>(size)),
             true,
             extension.c_str());
-        if (!surface) return {};
+        if (!surface) {
+            return {};
+        }
         if (surface->format != SDL_PIXELFORMAT_RGBA32) {
             SDL_Surface* converted =
                 SDL_ConvertSurface(surface, SDL_PIXELFORMAT_RGBA32);
@@ -2232,14 +2250,25 @@ struct UiRmlRuntime {
             }
         }
         source = project_css(std::move(source));
-        if (source == projected_style_sheet_source) return;
-        projected_style_sheet_source = source;
-        if (source.empty()) {
-            document->SetStyleSheetContainer(nullptr);
-        } else {
-            document->SetStyleSheetContainer(
-                Rml::Factory::InstanceStyleSheetString(source));
+        if (
+            source == projected_style_sheet_source &&
+            document->GetStyleSheetContainer()) {
+            return;
         }
+        projected_style_sheet_source = source;
+        // Inline decorators still need a StyleSheet instance to resolve
+        // their registered instancers. Keep an empty container when no
+        // reached <style> element contributes keyframes.
+        const std::string style_sheet_source = source.empty()
+            ? "body {}"
+            : source;
+        auto style_sheet =
+            Rml::Factory::InstanceStyleSheetString(style_sheet_source);
+        if (!style_sheet) {
+            throw std::runtime_error(
+                "RmlUi could not create the retained UI stylesheet.");
+        }
+        document->SetStyleSheetContainer(std::move(style_sheet));
     }
 
     static bool has_class(
@@ -2368,6 +2397,24 @@ struct UiRmlRuntime {
         parent.AppendChild(std::move(wrapper));
     }
 
+    void append_crosshair(
+        ProjectedUiElement& projected,
+        Rml::Element& parent,
+        const std::string& color) {
+        // Use the same ordinary retained bar markup as the Doom HUD. The
+        // compiler marker only bridges CSS layered-background syntax into a
+        // representation RmlUi supports; rendering stays on the established
+        // inner-RML path rather than adding a crosshair renderer primitive.
+        parent.SetInnerRML(
+            "<div style=\"position:absolute;left:10px;top:0;"
+            "width:2px;height:22px;background-color:" + color +
+            ";\"></div>"
+            "<div style=\"position:absolute;left:0;top:10px;"
+            "width:22px;height:2px;background-color:" + color +
+            ";\"></div>");
+        projected.crosshair_color = color;
+    }
+
     void attach_listeners(
         ProjectedUiElement& projected,
         UiElementHandle handle) {
@@ -2422,6 +2469,8 @@ struct UiRmlRuntime {
             take_intrinsic_min_width(projected.resolved_style);
         projected.grid_children_style =
             take_grid_children_style(projected.resolved_style);
+        projected.crosshair_color =
+            take_crosshair_color(projected.resolved_style);
         projected.gradient_text_style =
             take_gradient_text_style(projected.resolved_style);
         if (!projected.resolved_style.empty()) {
@@ -2441,6 +2490,18 @@ struct UiRmlRuntime {
                 *raw,
                 record.text,
                 projected.text_wrapped);
+        }
+        if (!projected.crosshair_color.empty()) {
+            if (
+                !record.text.empty() || !record.inner_rml.empty() ||
+                !record.children.empty()) {
+                throw std::runtime_error(
+                    "A retained crosshair cannot also carry source content.");
+            }
+            append_crosshair(
+                projected,
+                *raw,
+                projected.crosshair_color);
         }
         projected.text = record.text;
         projected.inner_rml = record.inner_rml;
@@ -2515,6 +2576,10 @@ struct UiRmlRuntime {
             take_intrinsic_min_width(resolved_style);
         const std::string grid_children_style =
             take_grid_children_style(resolved_style);
+        const std::string crosshair_color =
+            take_crosshair_color(resolved_style);
+        const bool crosshair_changed =
+            projected.crosshair_color != crosshair_color;
         const GradientTextStyle gradient_text_style =
             take_gradient_text_style(resolved_style);
         const bool gradient_text_style_changed =
@@ -2569,6 +2634,7 @@ struct UiRmlRuntime {
             projected.text != record.text ||
             projected.inner_rml != record.inner_rml ||
             projected.text_wrapped != text_wrapped ||
+            crosshair_changed ||
             gradient_text_style_changed) {
             // The lowered surface currently models either text or element
             // children, matching every reached scene. Keep the owning element
@@ -2598,10 +2664,23 @@ struct UiRmlRuntime {
                     record.text,
                     text_wrapped);
             }
+            if (!crosshair_color.empty()) {
+                if (
+                    !record.text.empty() || !record.inner_rml.empty() ||
+                    !record.children.empty()) {
+                    throw std::runtime_error(
+                        "A retained crosshair cannot also carry source content.");
+                }
+                append_crosshair(
+                    projected,
+                    raw,
+                    crosshair_color);
+            }
             projected.text = record.text;
             projected.inner_rml = record.inner_rml;
             projected.text_wrapped = text_wrapped;
         }
+        projected.crosshair_color = crosshair_color;
         projected.gradient_text_style = gradient_text_style;
 
         attach_listeners(projected, handle);

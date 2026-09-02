@@ -737,6 +737,17 @@ void audio_connect(AudioNodeHandle source, AudioNodeHandle destination)
         require_node(record, destination), require_node(record, source), 0, 0);
 }
 
+void audio_connect_param(AudioNodeHandle source, AudioParamHandle destination)
+{
+    if (context_of(source.value) != context_of(destination.node.value)) {
+        throw std::runtime_error(
+            "Audio nodes and parameters from different contexts cannot be connected.");
+    }
+    ContextRecord& record = require_context(context_of(source.value));
+    record.context->connectParam(
+        require_param(destination), require_node(record, source), 0);
+}
+
 void audio_disconnect(AudioNodeHandle node)
 {
     ContextRecord& record = require_context(context_of(node.value));

@@ -60,6 +60,8 @@ import {
     bakePixelBytes,
     drawSpriteAtlasPng,
     parseExecutedModuleSource,
+    pixelsSourcePrefix,
+    spriteAtlasSourcePrefix,
 } from "./executed-module-assets.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
@@ -350,12 +352,14 @@ async function materializeAsset(
         return;
     }
 
-    // The two asset kinds a scene module produces rather than fetches: same
-    // execution, one decoder each for what the export returned.
+    // The two source prefixes a scene module produces rather than fetches:
+    // same execution, one decoder each for what the export returned. The
+    // `pixels` kind can also name already-baked inline bytes (the fetched
+    // Canvas2D atlas), so kind alone is not an execution contract.
     const bake =
-        asset.kind === "pixels"
+        asset.source.startsWith(pixelsSourcePrefix)
             ? bakePixelBytes
-            : asset.kind === "sprite-atlas"
+            : asset.source.startsWith(spriteAtlasSourcePrefix)
               ? drawSpriteAtlasPng
               : undefined;
     if (bake) {

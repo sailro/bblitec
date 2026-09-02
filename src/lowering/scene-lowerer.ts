@@ -396,6 +396,20 @@ void set_transform_node_scaling(
     mark_transform_node_dirty(engine, node);
 }
 
+void set_transform_node_rotation(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 rotation) {
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    record.rotation = rotation;
+    // The pinned Euler proxy writes its quaternion source of truth. The
+    // record expresses that same selection by composing the Euler lane when
+    // this flag is false; pinnedTrsComposition performs eulerToQuat from the
+    // upstream function before the matrix write.
+    record.has_rotation_quaternion = false;
+    mark_transform_node_dirty(engine, node);
+}
+
 void set_transform_node_rotation_quaternion(
     Engine& engine,
     TransformNodeHandle node,
@@ -972,10 +986,30 @@ Scene create_scene_context(Engine& engine) {
 void add_to_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     if (mesh.value >= scene.engine->meshes.size()) throw std::runtime_error("Invalid mesh handle.");
+    if (scene.engine->meshes[mesh.value].geometry_reclaimed) {
+        throw std::runtime_error(
+            "Mesh '" + scene.engine->meshes[mesh.value].name +
+            "' was removed from the scene and its geometry reclaimed; "
+            "re-adding a removed mesh is outside the reached subset.");
+    }
     scene.meshes.push_back(mesh);
     ++scene.render_topology_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
+}
+
+// The pin stores no TransformNode list on SceneContext: adding one walks its
+// public children and registers the meshes beneath it. The reached voxel mob
+// roots contain mesh children directly, already parented by the source.
+void add_to_scene(Scene& scene, TransformNodeHandle node) {
+    require_scene_engine(scene);
+    if (node.value >= scene.engine->transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    for (const MeshHandle child :
+         scene.engine->transform_nodes[node.value].children) {
+        add_to_scene(scene, child);
+    }
 }
 
 // A static glTF mesh normally bakes its node world into each vertex. Once
@@ -1044,6 +1078,33 @@ void set_mesh_rotation_quaternion(
     }
 }
 
+// The pin's removeFromScene drops the mesh from the scene list and lets the
+// JavaScript collector free its arrays once nothing else holds them. A
+// streaming world retires meshes continuously -- a voxel chunk mesh is a
+// megabyte of vertices, and one sprint retires hundreds -- so the removal
+// frees the CPU geometry here, when no other mesh record shares it. The
+// handle stays valid; only a later add_to_scene of the same mesh refuses.
+void reclaim_unshared_geometry(Engine& engine, MeshHandle mesh) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    const std::uint32_t geometry = record.geometry;
+    if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
+        return;
+    }
+    for (std::size_t index = 0; index < engine.meshes.size(); ++index) {
+        if (index != mesh.value && engine.meshes[index].geometry == geometry) {
+            return;
+        }
+    }
+    ModelGeometry& retired = engine.geometries[geometry];
+    retired.vertices = {};
+    retired.bind_vertices = {};
+    retired.indices = {};
+    retired.morph_positions = {};
+    retired.morph_normals = {};
+    retired.morph_tangents = {};
+    record.geometry_reclaimed = true;
+}
+
 // src/scene/scene-remove.ts removeFromScene: drop the mesh from the
 // scene list and mark the topology dirty (the pinned helper is
 // idempotent — removing a mesh the scene never held is a no-op). The
@@ -1060,7 +1121,9 @@ void remove_from_scene(Scene& scene, MeshHandle mesh) {
     if (found == scene.meshes.end()) return;
     scene.meshes.erase(found);
     ++scene.render_topology_version;
+    reclaim_unshared_geometry(*scene.engine, mesh);
 }
+
 
 // Light removal is a topology mutation rather than a light-record disposal:
 // handles stay stable in the engine, while the scene list and receiver render
@@ -1299,6 +1362,12 @@ void on_pointer_down(
     Engine& engine,
     std::function<void()> callback) {
     engine.pointer_down_callbacks.push_back(std::move(callback));
+}
+
+void on_canvas_click(
+    Engine& engine,
+    std::function<void()> callback) {
+    engine.canvas_click_callbacks.push_back(std::move(callback));
 }
 
 void on_mouse_down(

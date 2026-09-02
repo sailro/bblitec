@@ -26,6 +26,7 @@ export type HandleKind =
   | "sprite-layer"
   | "sprite-atlas"
   | "texture"
+  | "transform-node"
   | "skeleton"
   | "bone"
   | "navigation-obstacle";
@@ -43,6 +44,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   "sprite-layer": "bbl::Sprite2DLayerHandle",
   "sprite-atlas": "bbl::SpriteAtlasHandle",
   texture: "bbl::StoredTexture",
+  "transform-node": "bbl::TransformNodeHandle",
   skeleton: "bbl::SkeletonHandle",
   bone: "bbl::BoneHandle",
   "navigation-obstacle": "bbl::pal::NavObstacleHandle",
@@ -66,6 +68,9 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Sprite2DLayer: "sprite-layer",
   SpriteAtlas: "sprite-atlas",
   Texture2D: "texture",
+  // TransformNode is a pure alias for the pin's SceneNode interface.
+  SceneNode: "transform-node",
+  TransformNode: "transform-node",
   Skeleton: "skeleton",
   Bone: "bone",
   ObstacleHandle: "navigation-obstacle",
@@ -158,6 +163,17 @@ function declaredInBabylonLite(symbol: ts.Symbol): boolean {
       .getSourceFile()
       .fileName.replace(/\\/g, "/")
       .includes("@babylonjs/lite/"),
+  );
+}
+
+/**
+ * The pin's scene-graph shape: a node owns `children: SceneNode[]` and a
+ * `worldMatrix`. SceneNode and every camera interface carry both.
+ */
+function isSceneGraphNode(type: ts.Type): boolean {
+  return (
+    type.getProperty("children") !== undefined &&
+    type.getProperty("worldMatrix") !== undefined
   );
 }
 
@@ -425,6 +441,7 @@ export class DataTypeRegistry {
   public constructor(
     private readonly checker: ts.TypeChecker,
     private readonly fail: Fail,
+    private readonly assetRootsReachable: () => boolean = () => false,
   ) {}
 
   /**
@@ -606,7 +623,23 @@ export class DataTypeRegistry {
       ? pinnedHandleTypes[type.symbol.name]
       : undefined;
     if (pinnedHandle && declaredInBabylonLite(type.symbol!)) {
+      if (pinnedHandle === "transform-node" && this.assetRootsReachable()) {
+        // TransformNode has two native representations: a node the scene
+        // created (a bbl::TransformNodeHandle) and an imported asset's
+        // synthetic root, which native loading folds into the asset record
+        // rather than allocating a node. A program that can mint the second
+        // keeps every TransformNode-typed record compile-time, where either
+        // may sit; only a program that cannot gets the handle.
+        return undefined;
+      }
       return { kind: "handle", handle: pinnedHandle };
+    }
+    if (type.symbol && declaredInBabylonLite(type.symbol) && isSceneGraphNode(type)) {
+      // A pinned scene-graph entity outside the handle table (Camera's
+      // subtypes) is an engine value the compiler models by kind, not plain
+      // data; its `children: SceneNode[]` member must not turn it into a
+      // struct now that SceneNode itself has a handle.
+      return undefined;
     }
     const objectType = type as ts.ObjectType;
     if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
@@ -1105,8 +1138,9 @@ export class DataTypeRegistry {
       if (!mappedValue) {
         return undefined;
       }
+      const optional = (property.flags & ts.SymbolFlags.Optional) !== 0;
       const mapped: DataType = this.markStoredObjectReferences(
-        (property.flags & ts.SymbolFlags.Optional) !== 0 &&
+        optional &&
           mappedValue.kind !== "optional"
           ? { kind: "optional", inner: mappedValue }
           : mappedValue,
@@ -1114,10 +1148,16 @@ export class DataTypeRegistry {
       fields.push({
         name: sanitizeIdentifier(property.name),
         type: mapped,
+        ...(optional && mapped.kind !== "optional"
+          ? { defaultWhenMissing: true }
+          : {}),
       });
     }
     const key = `${fields
-      .map((field) => `${field.name}:${this.typeKey(field.type)}`)
+      .map(
+        (field) =>
+          `${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}`,
+      )
       .join(",")}`;
     const existing = this.structsByKey.get(key);
     if (existing && !this.referenceStructNames.has(provisionalName)) {
@@ -1744,7 +1784,7 @@ export class DataTypeRegistry {
       }
       lines.push(
         `struct ${name}Data;`,
-        `using ${name} = std::shared_ptr<${name}Data>;`,
+        `using ${name} = bbl::js::Ref<${name}Data>;`,
         "",
       );
     }

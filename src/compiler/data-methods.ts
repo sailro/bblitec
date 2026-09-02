@@ -171,20 +171,66 @@ export function compileDataMethodCall(
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
                 lowerer.compileStaticContainer(ownerExpression))
-              : ts.isPropertyAccessExpression(ownerExpression) &&
-                  ts.isIdentifier(
-                      lowerer.context.unwrap(ownerExpression.expression),
-                  ) &&
-                  lowerer.context.lookupOptional(
-                      lowerer.context.unwrap(
-                          ownerExpression.expression,
-                      ) as ts.Identifier,
-                  )?.kind === "record"
+              : (ts.isPropertyAccessExpression(ownerExpression) ||
+                    ts.isElementAccessExpression(ownerExpression)) &&
+                  lowerer.plainDataOwnerChain(ownerExpression)
                 ? lowerer.context.compileValue(ownerExpression)
               : ts.isStringLiteralLike(ownerExpression) ||
                   ts.isTemplateExpression(ownerExpression)
                 ? lowerer.context.compileValue(ownerExpression)
                 : undefined;
+    const tupleOwnerElements = dynamicOwner?.kind === "tuple"
+        ? (dynamicOwner.tupleElements ?? [])
+        : dynamicOwner?.kind === "data" &&
+            dynamicOwner.dataType?.kind === "tuple"
+          ? Array.from(
+                { length: dynamicOwner.dataType.arity },
+                (_unused, index) => ({
+                    kind: "number" as const,
+                    cpp: `${dynamicOwner.cpp}[${index}]`,
+                    dataType: { kind: "number" as const },
+                }),
+            )
+          : undefined;
+    if (tupleOwnerElements && dynamicOwner && method === "map") {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(
+                call,
+                "Tuple Array.map requires exactly one callback.",
+            );
+        }
+        const callback = lowerer.context.unwrap(call.arguments[0]!);
+        if (
+            !ts.isIdentifier(callback) &&
+            !ts.isArrowFunction(callback) &&
+            !ts.isFunctionExpression(callback)
+        ) {
+            lowerer.context.fail(
+                callback,
+                "Tuple Array.map requires a local function or function literal callback.",
+            );
+        }
+        return {
+            kind: "tuple",
+            cpp: "",
+            tupleElements: tupleOwnerElements.map((element, index) =>
+                lowerer.context.compileCallbackWithValues(
+                    callback,
+                    [
+                        element,
+                        {
+                            kind: "number",
+                            cpp: `${index}.0`,
+                            staticNumber: index,
+                            dataType: { kind: "number" },
+                        },
+                        dynamicOwner,
+                    ],
+                    call,
+                ),
+            ),
+        };
+    }
     const owner =
         lowerer.compileDataPath(
             callee.expression,
@@ -277,6 +323,18 @@ export function compileDataMethodCall(
     }
     if (dataType?.kind === "map") {
         lowerer.context.reachJsData();
+        if (method === "clear") {
+            if (call.arguments.length !== 0) {
+                lowerer.context.fail(
+                    call,
+                    "Map.clear expects no arguments.",
+                );
+            }
+            return {
+                kind: "void",
+                cpp: `${narrowed.cpp}.clear()`,
+            };
+        }
         if (method === "has" || method === "get" || method === "delete") {
             if (call.arguments.length !== 1) {
                 lowerer.context.fail(
@@ -742,6 +800,41 @@ export function compileDataMethodCall(
                 dataType: { kind: "string" },
             };
         }
+    }
+    if (
+        dataType?.kind === "vector" &&
+        method === "next" &&
+        narrowed.freshData &&
+        ts.isCallExpression(ownerExpression)
+    ) {
+        if (call.arguments.length !== 0) {
+            lowerer.context.fail(
+                call,
+                "Map iterator next expects no arguments.",
+            );
+        }
+        const values = lowerer.context.allocateTemporaryCppName(
+            "map_iterator_values",
+        );
+        lowerer.context.emit(`auto ${values} = ${narrowed.cpp};`);
+        lowerer.registerLocal(values, "owned");
+        const found = `!${values}.empty()`;
+        const first = `bbl::js::array_at_or_default(${values}, 0.0)`;
+        return {
+            kind: "record",
+            cpp: "",
+            recordProperties: {
+                value: {
+                    ...lowerer.leafValue(first, dataType.element),
+                    optionalFoundCpp: found,
+                },
+                done: {
+                    kind: "boolean",
+                    cpp: `!(${found})`,
+                    dataType: { kind: "boolean" },
+                },
+            },
+        };
     }
     if (method === "indexOf" || method === "includes") {
         // Readonly arrays and materialized constants reach this

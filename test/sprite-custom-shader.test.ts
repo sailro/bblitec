@@ -193,20 +193,10 @@ test("refuses pixels that generation cannot produce", () => {
     );
 });
 
-test("refuses the pixel format option the texture slot cannot carry", () => {
-    // The four sampler overrides lower; `srgb` picks a second texture
-    // format and no reached call passes one, so it refuses by name rather
-    // than being dropped on the way to the texture.
-    assert.throws(
-        () =>
-            compileSource(
+test("preserves the sRGB format for raw-pixel shader textures", () => {
+    const result = compileSource(
                 "import {\n    createEngine,\n    createSprite2DCustomShader,\n    createSprite2DLayer,\n    createSpriteRenderer,\n    createTexture2DFromPixels,\n    loadSpriteAtlas,\n    registerSpriteRenderer,\n    startEngine,\n} from \"babylon-lite\";\nimport { getCutoutSpriteAtlasDataUrl } from \"../corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-cutout\";\nimport { buildColormapPalette } from \"../corpus/babylon-lite/lab/lite/src/_shared/palette-remap\";\n\nasync function main(): Promise<void> {\n    const canvas = document.getElementById(\"renderCanvas\") as HTMLCanvasElement;\n    const engine = await createEngine(canvas);\n    const atlas = await loadSpriteAtlas(engine, getCutoutSpriteAtlasDataUrl(), {\n        gridSize: [32, 32],\n        sampling: \"nearest\",\n    });\n    const paletteTexture = createTexture2DFromPixels(\n        engine, buildColormapPalette(), 256, 1, { srgb: true });\n    const customShader = createSprite2DCustomShader({\n        fragment: \"return textureSample(paletteTex, paletteSamp, in.uv);\",\n        extraTextures: [{ name: \"palette\", texture: paletteTexture }],\n    });\n    const layer = createSprite2DLayer(atlas, { capacity: 4, depth: \"none\", customShader });\n    const sr = createSpriteRenderer(engine, { layers: [layer] });\n    registerSpriteRenderer(sr);\n    await startEngine(engine);\n}\nmain();",
-                { fileName: "examples/options.ts" },
-            ),
-        (error: unknown) => {
-            assert.ok(error instanceof CompileError);
-            assert.match(error.message, /'srgb' is not lowered/);
-            return true;
-        },
+        { fileName: "examples/options.ts" },
     );
+    assert.match(result.cpp, /PixelsTextureOptions\{[^\n]*true\}/);
 });

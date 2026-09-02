@@ -325,6 +325,8 @@ struct DawnMesh {
 
 /** One exact local-space shader geometry retained across topology rebuilds. */
 struct DawnSharedShaderGeometry {
+    SharedGeometryIdentity identity;
+    // Kept only below `shared_geometry_bytes_kept_below` vertices.
     std::vector<GpuVertex> vertices;
     std::vector<std::uint32_t> indices;
     WGPUBuffer vertex_buffer = nullptr;
@@ -5703,7 +5705,10 @@ DawnPipeline& pipeline_for(
     if (
         traits.transparent ||
         (shader_info && shader_info->alpha_blending)) {
-        blend = blend_state_from(transparent_blend);
+        blend = blend_state_from(
+            shader_info && shader_info->additive_blending
+                ? shader_additive_blend
+                : transparent_blend);
         color_target.blend = &blend;
     }
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
@@ -8632,15 +8637,24 @@ bool run_dawn_engine(Engine& engine) {
                 geometry.indices.data(),
                 geometry.indices.size() * sizeof(std::uint32_t));
 #else
+            const SharedGeometryIdentity identity =
+                shared_geometry_identity(vertices, geometry.indices);
             mesh.shared_geometry = find_shared_shader_geometry(
                 state.shared_shader_geometries,
+                identity,
                 vertices,
                 geometry.indices);
             if (!mesh.shared_geometry) {
+                const bool keep_bytes = shared_geometry_keeps_bytes(vertices);
                 auto created = std::make_unique<DawnSharedShaderGeometry>(
                     DawnSharedShaderGeometry{
-                        .vertices = vertices,
-                        .indices = geometry.indices,
+                        .identity = identity,
+                        .vertices = keep_bytes
+                            ? vertices
+                            : std::vector<GpuVertex>{},
+                        .indices = keep_bytes
+                            ? geometry.indices
+                            : std::vector<std::uint32_t>{},
                     });
                 created->vertex_buffer = create_buffer(
                     state,

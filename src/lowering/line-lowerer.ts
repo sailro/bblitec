@@ -133,6 +133,7 @@ export class LineLowerer {
             samplers: [],
             defines: [],
             needAlphaBlending,
+            blendMode: "alpha",
             needAlphaTesting: false,
             backFaceCulling: false,
             useThinInstances: options.useThinInstances,

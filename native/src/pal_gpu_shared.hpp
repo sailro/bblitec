@@ -1335,18 +1335,74 @@ inline std::vector<GpuVertex> local_vertices(
 }
 #endif
 
+/**
+ * What identifies one immutable shader-geometry upload in a backend cache.
+ *
+ * The cache exists so short-lived custom-shader meshes that repeat one
+ * geometry -- particles, falling blocks, mob parts -- share a buffer. It
+ * used to keep a CPU copy of every cached geometry to compare against,
+ * which for a streaming voxel world meant a copy of every chunk mesh held
+ * for the whole time the mesh was drawn, hundreds of megabytes that never
+ * matched anything. A 64-bit content hash beside the two counts is the
+ * identity now; the bytes are kept only for a small geometry, where an
+ * exact compare confirms the hash and where sharing actually happens.
+ */
+struct SharedGeometryIdentity {
+    std::size_t vertex_count = 0;
+    std::size_t index_count = 0;
+    std::uint64_t hash = 0;
+};
+
+/** Below this many vertices a cached geometry also keeps its bytes. */
+inline constexpr std::size_t shared_geometry_bytes_kept_below = 4096;
+
+inline std::uint64_t fnv1a_append(
+    std::uint64_t hash,
+    const void* data,
+    std::size_t size) {
+    const auto* bytes = static_cast<const std::uint8_t*>(data);
+    for (std::size_t index = 0; index < size; ++index) {
+        hash ^= bytes[index];
+        hash *= 1099511628211ull;
+    }
+    return hash;
+}
+
+inline SharedGeometryIdentity shared_geometry_identity(
+    const std::vector<GpuVertex>& vertices,
+    const std::vector<std::uint32_t>& indices) {
+    std::uint64_t hash = 14695981039346656037ull;
+    hash = fnv1a_append(
+        hash, vertices.data(), vertices.size() * sizeof(GpuVertex));
+    hash = fnv1a_append(
+        hash, indices.data(), indices.size() * sizeof(std::uint32_t));
+    return {vertices.size(), indices.size(), hash};
+}
+
+inline bool shared_geometry_keeps_bytes(const std::vector<GpuVertex>& vertices) {
+    return vertices.size() < shared_geometry_bytes_kept_below;
+}
+
 /** Find an exact immutable shader-geometry upload in a backend cache. */
 template <typename SharedGeometry>
 inline SharedGeometry* find_shared_shader_geometry(
     const std::vector<std::unique_ptr<SharedGeometry>>& cache,
+    const SharedGeometryIdentity& identity,
     const std::vector<GpuVertex>& vertices,
     const std::vector<std::uint32_t>& indices) {
     const auto found = std::find_if(
         cache.begin(),
         cache.end(),
         [&](const std::unique_ptr<SharedGeometry>& candidate) {
-            return candidate->vertices.size() == vertices.size() &&
-                candidate->indices == indices &&
+            if (candidate->identity.vertex_count != identity.vertex_count ||
+                candidate->identity.index_count != identity.index_count ||
+                candidate->identity.hash != identity.hash) {
+                return false;
+            }
+            // A kept copy confirms the hash byte for byte; a geometry too
+            // large to keep is matched on the hash alone.
+            if (candidate->vertices.empty() && !vertices.empty()) return true;
+            return candidate->indices == indices &&
                 (vertices.empty() ||
                  std::memcmp(
                      candidate->vertices.data(),
@@ -4316,7 +4372,7 @@ inline float geometry_clear_component(GeometryTextureType type) {
 }
 
 /**
- * The two blend-factor tuples the corpus reaches, stated once. A
+ * The three blend-factor tuples the corpus reaches, stated once. A
  * transparent draw blends colour src-alpha over one-minus-src-alpha and
  * accumulates alpha at one; the pinned background ground rides one over
  * one-minus-src-alpha on both lanes. The operation is always add. Every
@@ -4329,6 +4385,15 @@ inline constexpr BlendFactors transparent_blend{
     BlendFactor::one_minus_src_alpha,
     BlendFactor::one,
     BlendFactor::one_minus_src_alpha,
+};
+
+// ShaderMaterial blendMode "additive": color src-alpha + destination,
+// alpha source + destination, exactly as the pin's shader pipeline states it.
+inline constexpr BlendFactors shader_additive_blend{
+    BlendFactor::src_alpha,
+    BlendFactor::one,
+    BlendFactor::one,
+    BlendFactor::one,
 };
 
 inline constexpr BlendFactors ground_blend{

@@ -82,7 +82,18 @@ class ModuleInitializerPlanner {
                 ),
             ),
         );
-        if (mutatingModules.size === 0) {
+        const mutableStateModules = new Set(
+            projectModules.filter((file) =>
+                this.moduleHasObservedMutableState(
+                    file,
+                    observedState,
+                ),
+            ),
+        );
+        if (
+            mutatingModules.size === 0 &&
+            mutableStateModules.size === 0
+        ) {
             return [];
         }
 
@@ -105,19 +116,47 @@ class ModuleInitializerPlanner {
         return projectModules.filter(
             (file) =>
                 mutatingModules.has(file) ||
+                mutableStateModules.has(file) ||
                 [...(stateByModule.get(file) ?? [])].some(
                     (symbol) => mutatedState.has(symbol),
                 ),
         );
     }
 
-    /** Native storage declared by one project module, exported or private. */
+    /**
+     * A `let`/`var` read or written by an exported callable is module storage,
+     * even when its initializer is only `null` or another side-effect-free
+     * value. JavaScript creates that storage once before the callable can run;
+     * leaving the module on the lazy/static path would instead make the
+     * callable's reads look like unbound browser values.
+     */
+    private moduleHasObservedMutableState(
+        file: ts.SourceFile,
+        observedState: ReadonlySet<ts.Symbol>,
+    ): boolean {
+        for (const symbol of this.moduleVariableSymbols(file, "mutable")) {
+            if (observedState.has(symbol)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Native storage declared by one project module, exported or private:
+     * every variable, or only the `let`/`var` ones.
+     */
     private moduleVariableSymbols(
         file: ts.SourceFile,
+        subset: "all" | "mutable" = "all",
     ): Set<ts.Symbol> {
         const result = new Set<ts.Symbol>();
         for (const statement of file.statements) {
-            if (!ts.isVariableStatement(statement)) {
+            if (
+                !ts.isVariableStatement(statement) ||
+                (subset === "mutable" &&
+                    (statement.declarationList.flags &
+                        ts.NodeFlags.Const) !==
+                        0)
+            ) {
                 continue;
             }
             for (const declaration of statement.declarationList

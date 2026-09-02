@@ -90,6 +90,10 @@ struct PlatformKeyboardEvent {
     std::string code{};
     std::string key{};
     bool repeat = false;
+    bool shift_key = false;
+    bool ctrl_key = false;
+    bool alt_key = false;
+    bool meta_key = false;
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
@@ -103,12 +107,19 @@ struct PlatformMouseEvent {
     double delta_y = 0.0;
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-/** Stable identity for one node in the scene-created, browser-neutral UI IR. */
+/**
+ * Stable identity for one node in the scene-created, browser-neutral UI IR.
+ * The handle is declared outside the UI feature guard because a materialized
+ * module may hold an empty `std::optional<UiElementHandle>` (a browser-only
+ * `let element: HTMLCanvasElement | null = null` whose writers the bake
+ * erased) in a scene that never reaches the UI runtime; only the UI records
+ * below need the feature.
+ */
 struct UiElementHandle {
     std::uint32_t value = invalid_handle;
 };
 
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 /** Last computed retained-layout box exposed as DOMRect's reached surface. */
 struct UiClientRect {
     double left = 0.0;
@@ -1111,6 +1122,8 @@ struct PixelsTexture {
     SharedTextureBytes rgba;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /** Whether the RGBA8 bytes are sampled through the sRGB format view. */
+    bool srgb = false;
     /** Object identity shared by copies bound into sprite descriptors. */
     std::uint64_t identity = 0;
     /** Incremented whenever a reached queue write replaces the texels. */
@@ -1322,6 +1335,14 @@ struct MeshRecord {
     bool live_imported_transform = false;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
+    /**
+     * Whether `removeFromScene` reclaimed the geometry behind `geometry`.
+     * The pin lets the JavaScript collector drop a retired mesh's arrays;
+     * here the removal frees them when no other mesh shares the geometry,
+     * and a later `addToScene` of the same mesh refuses by name rather than
+     * drawing nothing.
+     */
+    bool geometry_reclaimed = false;
     // Before renderer startup a clone records the runtime handle of its
     // source mesh here. The renderer uses that link while assigning stable
     // creation-order composition rows, then keeps it for clone provenance.
@@ -2770,6 +2791,9 @@ struct Engine {
     std::vector<std::function<void(const PlatformKeyboardEvent&)>>
         key_up_callbacks;
     std::vector<std::function<void()>> pointer_down_callbacks;
+    std::vector<std::function<void()>> canvas_click_callbacks;
+    /** Primary-button canvas press awaiting its matching in-canvas release. */
+    bool canvas_click_armed = false;
     std::vector<std::function<void(const PlatformMouseEvent&)>>
         mouse_down_callbacks;
     std::vector<std::function<void(const PlatformMouseEvent&)>>
@@ -3286,7 +3310,6 @@ Engine create_engine(EngineOptions options);
 Scene create_scene_context(Engine& engine);
 FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
-
 MeshHandle create_box(Engine& engine, BoxOptions options);
 MeshHandle create_ground(Engine& engine, GroundOptions options);
 /**
@@ -3729,6 +3752,10 @@ void set_transform_node_scaling(
     Engine& engine,
     TransformNodeHandle node,
     Vec3 scaling);
+void set_transform_node_rotation(
+    Engine& engine,
+    TransformNodeHandle node,
+    Vec3 rotation);
 void set_transform_node_rotation_quaternion(
     Engine& engine,
     TransformNodeHandle node,
@@ -3917,6 +3944,7 @@ void add_render_task_mesh(
     MaterialHandle material);
 
 void add_to_scene(Scene& scene, MeshHandle mesh);
+void add_to_scene(Scene& scene, TransformNodeHandle node);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
 void add_asset_entities(Scene& scene, AssetHandle asset);
@@ -3946,6 +3974,9 @@ void on_key_up(
     Engine& engine,
     std::function<void(const PlatformKeyboardEvent&)> callback);
 void on_pointer_down(
+    Engine& engine,
+    std::function<void()> callback);
+void on_canvas_click(
     Engine& engine,
     std::function<void()> callback);
 void on_mouse_down(
@@ -4332,8 +4363,8 @@ void set_billboard_shader_params(
  * Each field carries a "was it named" flag rather than a default, because
  * upstream resolves `options.x ?? default` inside the factory itself — so
  * the defaults live in the generated factory, read off the pin's own
- * expression, and nothing here restates one. `srgb` is the fifth option and
- * is refused at generation: no reached call passes it.
+ * expression, and nothing here restates one. `srgb` is a format bit rather
+ * than sampler state, and defaults to the pin's false.
  */
 struct PixelsTextureOptions {
     TextureFilter min_filter{};
@@ -4344,6 +4375,7 @@ struct PixelsTextureOptions {
     bool has_address_u = false;
     TextureAddressMode address_v{};
     bool has_address_v = false;
+    bool srgb = false;
 };
 
 PixelsTexture create_texture_2d_from_pixels(
@@ -4476,6 +4508,8 @@ double set_timeout(
     Engine& engine,
     std::function<void()> callback,
     double delay_ms);
+/** Browser `clearTimeout`; an unknown id is a no-op. */
+void clear_timeout(Engine& engine, double id);
 /** Browser `setInterval`; callbacks are serviced by the frame conductor. */
 double set_interval(
     Engine& engine,

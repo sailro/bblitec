@@ -66,7 +66,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Compressed geometry](#compressed-geometry) | Compile | Draco and meshopt decoded, quantized accessors rewritten, sparse accessors materialized, to ordinary geometry |
 | [Compressed textures](#compressed-textures) | Compile → Run | which container to fetch, and a Basis file transcoded, at generation; the container parsed and its blocks uploaded at load |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
-| [Drawn and computed assets](#drawn-and-computed-assets) | Compile | canvas2D sprite atlases executed and baked to PNG, computed pixel buffers baked to RGBA |
+| [Drawn and computed assets](#drawn-and-computed-assets) | Compile | Canvas2D sprite and fetched-tile atlases executed and baked, computed pixel buffers baked to RGBA |
 | [Shader pipeline](#shader-pipeline) | Compile → Run | composed and specialized at generation; compiled offline for SDL_GPU, in-process by Dawn |
 | [Engine, scene, and frame loop](#engine-scene-and-frame-loop) | Run | registration, fixed delta, before-render callbacks, frame gates |
 | [Cameras and input](#cameras-and-input) | Run | ArcRotate/Free, default framing, orthographic opt-in, SDL controls |
@@ -136,6 +136,10 @@ analyzable entry file against one engine.
   spreads retain JavaScript's last-write-wins semantics; readonly numeric
   tables, tuples, destructuring, object spread, and constant arrays
   materialized on demand.
+  `Map` and `Set` preserve insertion order through mutation; the reached
+  surface includes `get`/`set`/`has`/`delete`/`clear`, map values iterators,
+  set iteration, and `size`. `Object.keys` materializes source-ordered record
+  keys, including records whose values were written through computed names.
   Resource handles are storable inside data. Const locals bind container
   elements as aliases; function-valued parameters inline, while function
   fields stored in plain-data records become native closures over their
@@ -400,7 +404,8 @@ scene input.
 An asset a scene module *produces* rather than fetches is executed at
 generation: the module is served from a local server, its zero-argument
 export is called in headless Chromium, and what it returned is baked. Two
-kinds reach this — a drawn sprite atlas, and a computed pixel buffer.
+kinds reach this — a drawn sprite atlas, a fetched Canvas2D atlas, and a
+computed pixel buffer.
 
 **Why the atlas is compile time:** there is no file to download and no
 formula to port — its canvas2D pixels are a browser rasterizer's
@@ -409,6 +414,14 @@ antialiasing rather than an expression
 Recorded per scene as `drawn-sprite-atlas`. The frame grid is **not** baked
 with it — see
 [the boundary table](#where-the-boundary-falls-inside-a-family).
+
+**Why a fetched Canvas2D atlas is compile time:** Voxel Sandbox fetches 43
+tracked Kenney tile PNGs, draws them into a bounded canvas, and reads the
+resulting bytes with `getImageData`. Generation executes that exact path in
+headless Chromium and packages the RGBA result, keyed by the entry module and
+every tile digest. The original PNGs also remain packaged at their logical
+root paths because the retained hotbar selects ten of them at run time.
+Recorded as `fetched-canvas-atlas`.
 
 **Why a pixel buffer is compile time**, a larger adaptation recorded
 separately as `computed-pixel-buffer`: those bytes *are* an expression, so
@@ -773,6 +786,13 @@ mesh assigned `mesh.parent = node` composes its world through it —
 `createWorldMatrixState` resolves it. Upstream a `TransformNode` is a pure
 alias for `SceneNode`, so a node's local matrix is the same
 `composeTrsLocalMatrix` a mesh's is and one emitted composition serves both.
+
+A record field typed `TransformNode` lowers to a `bbl::TransformNodeHandle`
+only in a program that never spells `container.entities[0]`. An imported
+asset's synthetic root is folded into the asset record rather than allocated
+as a node, so the one TypeScript type has two native representations; where
+both could flow into the same field the record stays compile-time, as it did
+before nodes had a handle (`src/compiler/data-types.ts`).
 
 Two halves stay apart because the pin keeps them apart: writing
 `child.parent` registers the child for invalidation and drives the
@@ -1558,9 +1578,9 @@ the body controls and query options not listed above.
 
 `createAudioEngineAsync` and `createSoundSourceAsync` keep the Lite engine's
 bus and lifecycle boundary while the scene builds the reached Web Audio graph:
-gain, oscillator and buffer-source nodes, connection/disconnection, loop and
-playback-rate state, starts/stops, one-shot `onended`, and live `AudioParam`
-values and schedules. Encoded Ogg clips reached through a generation-known
+gain, oscillator, biquad-filter, and buffer-source nodes,
+connection/disconnection, loop and playback-rate state, starts/stops,
+one-shot `onended`, and live `AudioParam` values and schedules. Encoded Ogg clips reached through a generation-known
 `fetch`/`decodeAudioData` helper are packaged with the scene and decoded by
 LabSound/libnyquist at the context's sample rate. `AudioBuffer` channel data is
 retained as a mutable borrowed float span.
@@ -1955,7 +1975,16 @@ custom-shader meshes reuse exact local geometry while their per-entry
 transforms and material values remain independent. Their texture/sampler pairs
 are owned once by the material rather than re-uploaded for every replacement;
 reference counts retire geometry as soon as no draw uses it, so repeated
-replacement does not turn the reuse cache into an ever-growing search.
+replacement does not turn the reuse cache into an ever-growing search. That
+cache identifies a geometry by its vertex and index counts and a content
+hash, and keeps the bytes themselves only below a few thousand vertices --
+where a repeated particle or debris cube is confirmed byte for byte and where
+sharing happens -- so a streaming world's unique chunk meshes cost it nothing.
+
+`removeFromScene` also frees the retired mesh's CPU geometry when no other
+mesh shares it, which is what the pin's collector does once nothing holds the
+arrays; a later `addToScene` of that same mesh refuses by name rather than
+drawing an empty buffer.
 
 ### Diagnostics and capture
 

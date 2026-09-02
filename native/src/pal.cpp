@@ -2,6 +2,7 @@
 #include <bblite/runtime.hpp>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
@@ -10,10 +11,18 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <string_view>
 #include <vector>
 #include <utility>
 
-#include <SDL3/SDL_filesystem.h>
+#include <SDL3/SDL.h>
+
+#include "pal_platform_events.hpp"
+
+#if defined(_WIN32)
+#include "pal_win32_text.hpp"
+#include <commdlg.h>
+#endif
 
 namespace bbl {
 
@@ -70,6 +79,18 @@ double set_timeout(
         std::move(callback),
     });
     return static_cast<double>(id);
+}
+
+void clear_timeout(Engine& engine, double id) {
+    if (!std::isfinite(id) || id < 0.0) {
+        return;
+    }
+    const auto native_id = static_cast<std::uint64_t>(id);
+    std::erase_if(
+        engine.timeout_callbacks,
+        [native_id](const Engine::TimeoutCallback& timeout) {
+            return timeout.id == native_id;
+        });
 }
 
 void run_timeout_callbacks(Engine& engine) {
@@ -151,6 +172,112 @@ namespace bbl::pal {
 
 std::string environment_variable(const char* name);
 
+namespace {
+
+#if defined(_WIN32)
+
+// A modal dialog takes the mouse; leave pointer lock the way the browser
+// host does before its picker opens, through the one transition every
+// other release (Escape, focus loss) already goes through.
+void release_pointer_lock_for_dialog(Engine& engine) {
+    if (!engine.pointer_locked && !engine.pointer_lock_requested) return;
+    SDL_Window* window = SDL_GetKeyboardFocus();
+    if (!window) window = SDL_GetMouseFocus();
+    engine.pointer_lock_requested = false;
+    sync_pointer_lock(window, engine);
+}
+
+std::wstring wide_or_throw(std::string_view value, const char* what) {
+    auto wide = utf8_to_wide(value);
+    if (!wide) {
+        throw std::runtime_error(
+            std::string("Unable to convert ") + what + " to UTF-16.");
+    }
+    return std::move(*wide);
+}
+
+std::optional<std::string> choose_windows_file(
+    const FileDialogOptions& options,
+    bool save) {
+    std::array<wchar_t, 32768> path{};
+    if (save) {
+        const std::wstring suggested =
+            wide_or_throw(options.suggested_name, "the suggested file name");
+        std::copy_n(
+            suggested.begin(),
+            std::min(suggested.size(), path.size() - 1),
+            path.begin());
+    }
+    const std::wstring title = wide_or_throw(options.title, "the dialog title");
+    const std::wstring filter_name =
+        wide_or_throw(options.filter_name, "the dialog filter");
+    const std::wstring filter_pattern =
+        wide_or_throw(options.filter_pattern, "the dialog filter");
+    const std::wstring default_extension =
+        wide_or_throw(options.default_extension, "the default extension");
+    std::wstring filter = filter_name;
+    filter.push_back(L'\0');
+    filter.append(filter_pattern);
+    filter.push_back(L'\0');
+    filter.push_back(L'\0');
+
+    OPENFILENAMEW dialog{};
+    dialog.lStructSize = sizeof(dialog);
+    dialog.hwndOwner = GetActiveWindow();
+    dialog.lpstrFilter = filter.c_str();
+    dialog.lpstrFile = path.data();
+    dialog.nMaxFile = static_cast<DWORD>(path.size());
+    dialog.lpstrTitle = title.c_str();
+    dialog.lpstrDefExt = default_extension.c_str();
+    dialog.Flags = OFN_EXPLORER | OFN_HIDEREADONLY |
+        OFN_NOCHANGEDIR | OFN_PATHMUSTEXIST |
+        (save ? OFN_OVERWRITEPROMPT : OFN_FILEMUSTEXIST);
+
+    const BOOL accepted = save
+        ? GetSaveFileNameW(&dialog)
+        : GetOpenFileNameW(&dialog);
+    if (accepted) {
+        auto utf8 = wide_to_utf8(path.data());
+        if (!utf8) {
+            throw std::runtime_error(
+                "Unable to convert the selected path to UTF-8.");
+        }
+        return std::move(*utf8);
+    }
+    const DWORD error = CommDlgExtendedError();
+    if (error == 0) return std::nullopt;
+    throw std::runtime_error(
+        "Native file dialog failed with common-dialog error " +
+        std::to_string(error) + ".");
+}
+
+#endif
+
+std::optional<std::string> choose_file(
+    Engine& engine,
+    const FileDialogOptions& options,
+    bool save) {
+    const std::string override_path = environment_variable(
+        save
+            ? "BBLITE_FILE_DIALOG_SAVE_PATH"
+            : "BBLITE_FILE_DIALOG_OPEN_PATH");
+    if (!override_path.empty()) return override_path;
+#if defined(_WIN32)
+    release_pointer_lock_for_dialog(engine);
+    return choose_windows_file(options, save);
+#else
+    // No picker on this host yet. Refuse by name rather than writing to the
+    // working directory behind a dialog nothing showed -- a degraded path
+    // nothing measures is the shape this repository does not take.
+    static_cast<void>(engine);
+    throw std::runtime_error(
+        "The native file dialog '" + options.title +
+        "' is not implemented on this platform.");
+#endif
+}
+
+} // namespace
+
 // Every scene reaches the engine through here, so this is where the
 // executable reports which sources it was built from. bblitec sets
 // BBLITE_BUILD_STAMP_OUT before a measured run and refuses the result
@@ -178,6 +305,18 @@ Engine create_engine(EngineOptions options) {
     engine.canvas_client_width = engine.options.width;
     engine.canvas_client_height = engine.options.height;
     return engine;
+}
+
+std::optional<std::string> choose_save_file(
+    Engine& engine,
+    const FileDialogOptions& options) {
+    return choose_file(engine, options, true);
+}
+
+std::optional<std::string> choose_open_file(
+    Engine& engine,
+    const FileDialogOptions& options) {
+    return choose_file(engine, options, false);
 }
 
 std::vector<std::uint8_t> read_binary_file(const std::string& path) {

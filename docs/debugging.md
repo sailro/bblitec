@@ -527,7 +527,8 @@ These are the diagnostic ones:
 | `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
 | `BBLITE_RUNTIME_TRACE=1` | print input dispatch, camera changes and dynamic scene-membership rebuilds |
-| `BBLITE_INPUT_REPLAY=<actions>` | replay one deterministic input action per frame through the ordinary callbacks |
+| `BBLITE_INPUT_REPLAY=<actions>` | replay one deterministic keyboard (optionally `Ctrl+`), mouse-button/client-boundary, `MouseMoveRight`, wheel, or `WindowClose` action per frame through the ordinary callbacks |
+| `BBLITE_FILE_DIALOG_SAVE_PATH=<path>` / `BBLITE_FILE_DIALOG_OPEN_PATH=<path>` | supply an exact save/open path without displaying the native dialog |
 | `BBLITE_CAPTURE_UI=0` | canvas-only screenshots (retained UI omitted) for attribution |
 | `BBLITE_PHYSICS_TRACE=1` | per-step body trajectories, which are what grade the substituted solver |
 | `BBLITE_CPU_PROFILE=1` | startup/frame phase timings and Bullet work counters |

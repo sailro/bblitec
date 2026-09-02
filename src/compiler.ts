@@ -17,6 +17,7 @@ import {
 } from "./compiler/assignments.js";
 import {
     registerAsset,
+    registerUiImageAsset,
     probePixelsAsset,
     registerSpriteAtlasAsset,
     resolveBundledAsset,
@@ -32,6 +33,7 @@ import {
     type BrowserErasureContext,
 } from "./compiler/browser-erasure.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
+import { bakeFetchedCanvasAtlas } from "./compiler/fetched-canvas-atlas.js";
 import {
     compileEnvironmentOptions,
     compileDdsEnvironmentOptions,
@@ -111,6 +113,11 @@ import {
 import { reachLinearDepthMaterialProgram } from "./compiler/linear-depth-material.js";
 import type { LinearDepthMaterialOptions } from "./lowering/linear-depth-lowerer.js";
 import {
+    PinnedShaderText,
+    type ShaderTextBinding,
+    type ShaderTextContext,
+} from "./lowering/pinned-shader-text.js";
+import {
     shaderThinInstanceLanes,
     compileShaderMaterialOptions,
     compileShaderUniformComponents,
@@ -182,6 +189,7 @@ import {
     writesThroughTrackedRoot,
     resolveFunctionDeclaration,
     rootIdentifier,
+    tryResolveFunctionDeclaration,
     type SupportedFunction,
     type UserFunctionContext,
     UserFunctionLowerer,
@@ -277,6 +285,14 @@ const CANVAS_SIZE_AXES = new Map<string, CanvasSizeProperty>([
     ["height", { axis: "height", client: false }],
     ["clientWidth", { axis: "width", client: true }],
     ["clientHeight", { axis: "height", client: true }],
+]);
+
+const KEY_EVENT_FIELDS = new Map<string, string>([
+    ["repeat", "repeat"],
+    ["shiftKey", "shift_key"],
+    ["ctrlKey", "ctrl_key"],
+    ["altKey", "alt_key"],
+    ["metaKey", "meta_key"],
 ]);
 
 export class CompileError extends Error {
@@ -375,8 +391,10 @@ class Compiler
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     public imageDecodeReached = false;
     public jsRandomReached = false;
+    public voxelFileStorageReached = false;
     /** Whether a scene threw one of its own preconditions. */
     public throwReached = false;
+    private assetRootsReachableAnswer: boolean | undefined;
     private readonly staticConstants = new Map<
         ts.Symbol,
         ts.Expression
@@ -526,6 +544,7 @@ class Compiler
         this.dataTypes = new DataTypeRegistry(
             checker,
             (node, message) => this.fail(node, message),
+            () => this.assetRootsReachable(),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -1845,9 +1864,11 @@ class Compiler
                 ts.isObjectLiteralExpression(initializer) ||
                 ts.isArrayLiteralExpression(initializer);
             // A const local bound to a composite value or to a composite
-            // element/member binds a reference, so writes through it reach
-            // the same storage as a JavaScript object binding.
-            // `let` keeps the copy: a reference cannot be reseated.
+            // element/member aliases the same JavaScript object. Most JS
+            // runtime wrappers preserve that identity when copied; the
+            // remaining value-backed native representations need a C++
+            // reference. `let` keeps a copy because its binding can be
+            // reseated.
             const aliases =
                 !constructs &&
                 declaration.parent !== undefined &&
@@ -1871,6 +1892,13 @@ class Compiler
                 // bound by reference; the source language would not let
                 // it be written through either.
                 !narrowed.readOnly;
+            const wrapperCopiesIdentity =
+                narrowed.dataType.kind === "vector" ||
+                narrowed.dataType.kind === "map" ||
+                narrowed.dataType.kind === "set" ||
+                narrowed.dataType.kind === "arraybuffer" ||
+                narrowed.dataType.kind === "dataview" ||
+                narrowed.dataType.kind === "u8array";
             const optionalFoundCpp =
                 narrowed.optionalFoundCpp === undefined
                     ? undefined
@@ -1895,7 +1923,7 @@ class Compiler
                 ? "auto"
                 : this.dataTypes.cppType(narrowed.dataType);
             this.emit(
-                `${localType}${aliases || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
+                `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
             );
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
@@ -1978,9 +2006,12 @@ class Compiler
         this.emit(sharedPrimitive
             ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
             : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`);
-        const stored = {
+        // Either spelling reads through the emitted variable, so a static
+        // value the initializer carried must not fold past it.
+        const stored: Value = {
             ...value,
             cpp: sharedPrimitive ? `(*${cppName})` : cppName,
+            nativeBinding: true,
         };
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
@@ -2988,6 +3019,29 @@ class Compiler
             });
             return;
         }
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "vector"
+        ) {
+            const temporary =
+                this.allocateTemporaryCppName("destructure_vector");
+            this.emit(`const auto& ${temporary} = ${value.cpp};`);
+            const storedVector: Value = {
+                ...value,
+                cpp: temporary,
+            };
+            bindings.forEach((element, index) => {
+                bindElement(
+                    element,
+                    this.dataLowerer.readVectorBindingElement(
+                        storedVector,
+                        index,
+                        declaration.initializer!,
+                    ),
+                );
+            });
+            return;
+        }
         this.fail(
             declaration.initializer,
             "Array destructuring requires a tuple-producing initializer.",
@@ -3510,6 +3564,7 @@ class Compiler
         "background",
         "background-color",
         "border",
+        "border-color",
         "border-radius",
         "bottom",
         "color",
@@ -3775,6 +3830,17 @@ class Compiler
                 .trim()
                 .toLowerCase();
             if (property.length === 0) return;
+            if (property === "mix-blend-mode") {
+                if (literalValue !== "difference") {
+                    this.uiStyleRefusal(
+                        site,
+                        property,
+                        "only the reached difference-mode crosshair is accepted as a recorded degradation",
+                    );
+                }
+                this.uiDegradedStyleProperties.add(property);
+                return;
+            }
             if (Compiler.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
                 this.uiDegradedStyleProperties.add(property);
                 return;
@@ -4234,6 +4300,16 @@ class Compiler
                 /\binset\s*:\s*0(?:px)?\s*;?/gi,
                 "top:0;right:0;bottom:0;left:0;",
             )
+            // The reached voxel HUD spells its crosshair as two centred,
+            // non-repeating background gradients. RmlUi gradients cover the
+            // entire decorator box and cannot express CSS background sizing,
+            // so preserve this exact shape as private PAL metadata. The PAL
+            // materializes the vertical and horizontal bars as retained
+            // children while the parent continues to own position/opacity.
+            .replace(
+                /\bbackground\s*:\s*linear-gradient\(\s*(#[0-9a-f]{3,8}|[a-z][a-z0-9-]*)\s*,\s*\1\s*\)\s+center\s*\/\s*2px\s+22px\s+no-repeat\s*,\s*linear-gradient\(\s*\1\s*,\s*\1\s*\)\s+center\s*\/\s*22px\s+2px\s+no-repeat\s*;?/gi,
+                "--bbl-crosshair:$1;",
+            )
             // RmlUi exposes CSS image gradients through its decorator
             // property. The shared render recorder implements the resulting
             // shader callback once for every PAL graphics backend.
@@ -4241,11 +4317,22 @@ class Compiler
                 /\bbackground\s*:\s*((?:repeating-)?(?:linear|radial|conic)-gradient\([^;]*\))\s*;?/gi,
                 "decorator:$1;",
             )
+            // A browser background can combine a fallback colour with a
+            // runtime-selected root-relative image. RmlUi exposes the image
+            // through its decorator, while generation packages the closed
+            // source image directory at the same logical paths.
+            .replace(
+                /\bbackground\s*:\s*([^;]*?)\s+url\(\s*["']?__BBLITE_UI_STYLE_(\d+)__["']?\s*\)\s+center\s*\/\s*cover\s*;?/gi,
+                (_match, color, index) =>
+                    `background-color:${String(color).trim()};` +
+                    `decorator:image("__BBLITE_UI_ASSET_${String(index)}__" cover);`,
+            )
             // RmlUi exposes the colour property explicitly rather than the
             // browser background shorthand used by the reached HUDs.
             .replace(/\bbackground\s*:/gi, "background-color:")
             .replace(/\bbackdrop-filter\s*:[^;]*;?/gi, "")
             .replace(/\bbox-shadow\s*:[^;]*;?/gi, "")
+            .replace(/\bmix-blend-mode\s*:[^;]*;?/gi, "")
             // RmlUi's border shorthand is `width color`; it deliberately
             // omits CSS border-style because every non-zero border is solid.
             // Translate the ordinary browser spelling instead of letting the
@@ -4560,21 +4647,27 @@ class Compiler
                 source,
                 expression,
             );
-            const chunks = lowered.split(/(__BBLITE_UI_STYLE_\d+__)/g);
-            const parts = ["std::string()"];
+            const chunks = lowered.split(
+                /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
+            );
+            const parts: string[] = [];
             for (const chunk of chunks) {
                 if (!chunk) continue;
-                const marker = chunk.match(/^__BBLITE_UI_STYLE_(\d+)__$/);
+                const marker = chunk.match(
+                    /^__BBLITE_UI_(STYLE|ASSET)_(\d+)__$/,
+                );
                 if (!marker) {
                     parts.push(this.cppString(chunk));
                     continue;
                 }
-                parts.push(this.uiTemplateSubstitutionCpp(
-                    substitutions[Number(marker[1])]!,
+                const substitution = this.uiTemplateSubstitutionCpp(
+                    substitutions[Number(marker[2])]!,
                     "Native UI cssText",
-                ));
+                );
+                parts.push(substitution);
             }
-            return parts.join(" + ");
+            this.reachJsData();
+            return `bbl::js::concat(${parts.join(", ")})`;
         }
         this.fail(
             expression,
@@ -4636,7 +4729,7 @@ class Compiler
         }
         const lowered = this.lowerUiMarkupLiteral(source);
         const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
-        const parts = ["std::string()"];
+        const parts: string[] = [];
         for (const chunk of chunks) {
             if (!chunk) continue;
             const marker = chunk.match(/^__BBLITE_UI_MARKUP_(\d+)__$/);
@@ -4650,7 +4743,8 @@ class Compiler
                 true,
             ));
         }
-        return parts.join(" + ");
+        this.reachJsData();
+        return `bbl::js::concat(${parts.join(", ")})`;
     }
 
     public emitUiPropertyAssignment(
@@ -5102,6 +5196,19 @@ class Compiler
             }
         }
         if (
+            expression.name.text === "body" &&
+            ts.isIdentifier(ownerExpression) &&
+            ownerExpression.text === "document" &&
+            this.isDefaultLibraryIdentifier(ownerExpression)
+        ) {
+            return {
+                kind: "ui-element",
+                cpp: "",
+                uiRoot: true,
+                truthinessCpp: "true",
+            };
+        }
+        if (
             expression.name.text === "hidden" &&
             ts.isIdentifier(ownerExpression) &&
             ownerExpression.text === "document" &&
@@ -5212,10 +5319,11 @@ class Compiler
             return { kind: "json-null", cpp: "std::nullopt" };
         }
         if (owner.kind === "platform-keyboard-event") {
-            if (property === "repeat") {
+            const field = KEY_EVENT_FIELDS.get(property);
+            if (field) {
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.repeat`,
+                    cpp: `${owner.cpp}.${field}`,
                 };
             }
             if (property === "code") {
@@ -5405,7 +5513,10 @@ class Compiler
                 }
                 this.fail(
                     expression,
-                    `Static record has no property '${property}'.`,
+                    `Static record has no property '${property}' ` +
+                        `(fields: ${Object.keys(owner.recordProperties ?? {}).join(", ") || "none"}; ` +
+                        `getters: ${Object.keys(owner.recordGetters ?? {}).join(", ") || "none"}; ` +
+                        `class: ${owner.classDeclaration?.name?.text ?? "none"}).`,
                 );
             }
             if (owner.optionalFoundCpp === undefined) {
@@ -6683,10 +6794,13 @@ class Compiler
             if (foldedBoolean) {
                 return foldedBoolean;
             }
-            const typed =
-                this.dataLowerer.equalityComparison(
-                    unwrapped,
-                );
+            // The data equality path has to inspect both operands before it
+            // can decide whether it owns the comparison. Calls emit as they
+            // are inspected, so discard a declined probe and let the numeric
+            // path below perform JavaScript's one evaluation for real.
+            const typed = this.probeEmission(() =>
+                this.dataLowerer.equalityComparison(unwrapped),
+            );
             if (typed) {
                 return typed;
             }
@@ -6816,7 +6930,10 @@ class Compiler
             // expressions that compose them, so another pair here is both
             // unnecessary and diagnosed by clang-cl's
             // -Wparentheses-equality for `if ((a == b))`.
-            return `${this.compileNumber(unwrapped.left, "double")} ${operator} ${this.compileNumber(unwrapped.right, "double")}`;
+            // Both operands were already compiled above to inspect static
+            // values and string identity. Reuse them: compiling their ASTs
+            // again would duplicate call-shaped numeric operands.
+            return `${this.castNumber(leftValue, "double")} ${operator} ${this.castNumber(rightValue, "double")}`;
         }
         if (
             ts.isIdentifier(unwrapped) ||
@@ -7761,6 +7878,48 @@ class Compiler
         );
         const body = declaration?.body;
         if (
+            declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            body &&
+            ts.isBlock(body)
+        ) {
+            const parameters = new Map<string, ShaderTextBinding>();
+            let allStatic = true;
+            declaration.parameters.forEach((parameter, index) => {
+                if (!ts.isIdentifier(parameter.name)) {
+                    allStatic = false;
+                    return;
+                }
+                const argument =
+                    resolved.arguments[index] ?? parameter.initializer;
+                if (!argument) {
+                    return;
+                }
+                const value = this.compileValue(
+                    this.alwaysUsedParameterDefault(argument) ?? argument,
+                );
+                const binding: ShaderTextBinding | undefined =
+                    value.staticString ??
+                    value.staticBoolean ??
+                    value.staticNumber;
+                if (binding === undefined) {
+                    allStatic = false;
+                    return;
+                }
+                parameters.set(parameter.name.text, binding);
+            });
+            if (allStatic) {
+                const source = new PinnedShaderText(
+                    this.applicationShaderTextContext(),
+                ).evaluateDeclaration(
+                    declaration.getSourceFile().fileName,
+                    declaration,
+                    parameters,
+                );
+                return { source, dynamicUniforms: [] };
+            }
+        }
+        if (
             !declaration ||
             !body ||
             ts.isBlock(body) ||
@@ -7838,6 +7997,116 @@ class Compiler
                     components: [this.compileNumber(argument)],
                 },
             ],
+        };
+    }
+
+    /** Source navigation for bounded shader builders declared by the app. */
+    private applicationShaderTextContext(): ShaderTextContext {
+        const sourceFile = (modulePath: string): ts.SourceFile => {
+            const file = this.program.getSourceFile(modulePath) ??
+                this.sourceFiles().find(
+                    (candidate) => candidate.fileName === modulePath,
+                );
+            if (!file) {
+                this.fail(
+                    this.sourceFile,
+                    `Shader builder module '${modulePath}' is not in the compilation program.`,
+                );
+            }
+            return file;
+        };
+        const unwrapExpression = (expression: ts.Expression): ts.Expression =>
+            this.unwrap(expression);
+        const propertyPath = (
+            expression: ts.Expression,
+        ): string[] | undefined => {
+            const node = unwrapExpression(expression);
+            if (ts.isIdentifier(node)) return [node.text];
+            if (!ts.isPropertyAccessExpression(node)) return undefined;
+            const owner = propertyPath(node.expression);
+            return owner ? [...owner, node.name.text] : undefined;
+        };
+        const moduleScopeConstant = (
+            file: ts.SourceFile,
+            name: string,
+        ): ts.Expression | undefined => {
+            for (const statement of file.statements) {
+                if (
+                    !ts.isVariableStatement(statement) ||
+                    (statement.declarationList.flags & ts.NodeFlags.Const) === 0
+                ) {
+                    continue;
+                }
+                for (const declaration of statement.declarationList.declarations) {
+                    if (
+                        ts.isIdentifier(declaration.name) &&
+                        declaration.name.text === name &&
+                        declaration.initializer
+                    ) {
+                        return declaration.initializer;
+                    }
+                }
+            }
+            return undefined;
+        };
+        return {
+            sourceFile,
+            contractError: (node, message) => this.fail(node, message),
+            hasNode: (root, predicate) => {
+                let found = false;
+                const visit = (node: ts.Node): void => {
+                    if (found) return;
+                    if (predicate(node)) {
+                        found = true;
+                        return;
+                    }
+                    ts.forEachChild(node, visit);
+                };
+                visit(root);
+                return found;
+            },
+            functionDeclaration: (modulePath, symbolName) => {
+                const file = sourceFile(modulePath);
+                const declaration = file.statements.find(
+                    (statement): statement is ts.FunctionDeclaration =>
+                        ts.isFunctionDeclaration(statement) &&
+                        statement.name?.text === symbolName &&
+                        statement.body !== undefined,
+                );
+                if (!declaration) {
+                    this.fail(
+                        file,
+                        `Expected shader builder function '${symbolName}' with a body.`,
+                    );
+                }
+                return { file, declaration };
+            },
+            propertyPath,
+            moduleOfImport: (modulePath, importedName) => {
+                const file = sourceFile(modulePath);
+                for (const statement of file.statements) {
+                    if (
+                        !ts.isImportDeclaration(statement) ||
+                        !statement.importClause?.namedBindings ||
+                        !ts.isNamedImports(statement.importClause.namedBindings)
+                    ) {
+                        continue;
+                    }
+                    const imported = statement.importClause.namedBindings.elements.find(
+                        (element) => element.name.text === importedName,
+                    );
+                    if (!imported) continue;
+                    const symbol = this.checker.getSymbolAtLocation(imported.name);
+                    const target = symbol &&
+                        (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                        ? this.checker.getAliasedSymbol(symbol)
+                        : symbol;
+                    return target?.declarations?.[0]?.getSourceFile().fileName;
+                }
+                return undefined;
+            },
+            moduleScopeConstant,
+            unwrapExpression,
         };
     }
 
@@ -7956,6 +8225,35 @@ class Compiler
         return this.program.getSourceFiles();
     }
 
+    /**
+     * Whether any reached module can mint an imported asset's synthetic
+     * root: the pin spells it `container.entities[0]`, the one access
+     * `assetRootElementAccess` answers. The data-type registry asks this
+     * once, before it gives `TransformNode` a native handle.
+     */
+    public assetRootsReachable(): boolean {
+        this.assetRootsReachableAnswer ??= this.sourceFiles().some(
+            (file) => {
+                if (file.isDeclarationFile) return false;
+                let found = false;
+                const visit = (node: ts.Node): void => {
+                    if (found) return;
+                    if (
+                        ts.isPropertyAccessExpression(node) &&
+                        node.name.text === "entities"
+                    ) {
+                        found = true;
+                        return;
+                    }
+                    ts.forEachChild(node, visit);
+                };
+                visit(file);
+                return found;
+            },
+        );
+        return this.assetRootsReachableAnswer;
+    }
+
     public reachThrow(): void {
         this.throwReached = true;
     }
@@ -8029,6 +8327,83 @@ class Compiler
 
     public reachJsData(): void {
         this.jsDataReached = true;
+    }
+
+    public reachVoxelFileStorage(): void {
+        this.voxelFileStorageReached = true;
+    }
+
+    /** Native host-file-dialog adapter for the pinned voxel save/load module. */
+    public compileVoxelFileCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        // Every identifier call passes through here; the two names decide
+        // before the declaration is resolved.
+        const name = callee.text;
+        if (name !== "saveToFile" && name !== "loadFromFile") {
+            return undefined;
+        }
+        const declaration = tryResolveFunctionDeclaration(
+            this.checker,
+            callee,
+        );
+        if (!declaration) {
+            return undefined;
+        }
+        const fileName = declaration
+            .getSourceFile()
+            .fileName.replace(/\\/g, "/");
+        if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
+            return undefined;
+        }
+        this.reachVoxelFileStorage();
+        this.reachJsData();
+        if (name === "saveToFile") {
+            this.expectArgumentCount(call, 1, 1);
+            const parameter = declaration.parameters[0];
+            if (!parameter) {
+                this.fail(call, "Voxel save is missing its SaveData parameter.");
+            }
+            const dataType = this.dataTypes.markStoredObjectReferences(
+                this.dataTypes.requireFromTsType(
+                    this.checker.getTypeAtLocation(parameter),
+                    parameter,
+                    "Voxel save parameter",
+                ),
+            );
+            return {
+                kind: "boolean",
+                cpp:
+                    `bbl::js::save_voxel_world(${this.requireDefaultEngine(call)}, ` +
+                    `${this.dataLowerer.compileForSink(call.arguments[0]!, dataType)})`,
+                dataType: { kind: "boolean" },
+            };
+        }
+        this.expectArgumentCount(call, 0, 0);
+        const signature = this.checker.getResolvedSignature(call);
+        const promised = signature
+            ? this.checker.getReturnTypeOfSignature(signature)
+            : undefined;
+        const awaited = promised
+            ? this.checker.getAwaitedType(promised)
+            : undefined;
+        const mapped = awaited
+            ? this.dataTypes.fromTsType(awaited, call)
+            : undefined;
+        if (!mapped) {
+            this.fail(
+                call,
+                "Voxel load result must be a SaveData value or null.",
+            );
+        }
+        const stored =
+            this.dataTypes.markStoredObjectReferences(mapped);
+        return this.dataValue(
+            `bbl::js::load_voxel_world<${this.dataTypes.cppType(stored)}>` +
+                `(${this.requireDefaultEngine(call)})`,
+            stored,
+        );
     }
 
     public reachImageDecode(): void {
@@ -8136,6 +8511,16 @@ class Compiler
         return value?.kind === "record"
             ? value
             : undefined;
+    }
+
+    public compileRecordSetter(
+        owner: Value,
+        setter: ts.SetAccessorDeclaration,
+        value: ts.Expression,
+    ): void {
+        this.withRecordScopes(owner, () =>
+            this.classLowerer.compileSetter(owner, setter, value),
+        );
     }
 
     /**
@@ -8276,6 +8661,25 @@ class Compiler
         return value;
     }
 
+    /** Predeclare an optional plain-data class field at JavaScript undefined. */
+    public bindUninitializedClassDataField(
+        name: ts.Identifier,
+    ): Value | undefined {
+        const dataType = this.dataLowerer.dataTypeAt(name);
+        if (dataType?.kind !== "optional") {
+            return undefined;
+        }
+        const cppName = this.allocateTemporaryCppName(
+            `class_field_${name.text}`,
+        );
+        this.emit(`${this.dataTypes.cppType(dataType)} ${cppName}{};`);
+        this.dataLowerer.registerLocal(cppName, "owned");
+        const value = this.dataLowerer.leafValue(cppName, dataType);
+        value.nativeLvalue = true;
+        this.defineVariable(name, value);
+        return value;
+    }
+
     /** Predeclare optional storage for a resource-valued expression. */
     public bindOptionalResourceValue(
         name: ts.Identifier,
@@ -8355,6 +8759,7 @@ class Compiler
             cppName,
             dataType,
         );
+        value.nativeLvalue = true;
         this.defineVariable(name, value);
         return value;
     }
@@ -8448,7 +8853,8 @@ class Compiler
      */
     public probeEmission<T>(
         probe: () => T,
-        answered: (result: T) => boolean,
+        answered: (result: T) => boolean = (result) =>
+            result !== undefined,
     ): T {
         const start = this.body.length;
         const result = probe();
@@ -8560,6 +8966,36 @@ class Compiler
     }
 
     /** How many lines the body stream holds, for a caller that may undo. */
+
+    /**
+     * One native accessor per materialized compile-time table: a record
+     * read under a run-time key lowers to a lookup in a `bbl::js::Map`
+     * built from the record's entries, and every function reading the same
+     * record used to carry its own function-local copy of that map -- five
+     * 23-entry block registries in the voxel demo. The map is keyed by its
+     * full initializer text, so two reads that materialize the same table
+     * at the same types share one definition, and a read whose entries
+     * emitted helper lines at the call site keeps its inline form.
+     */
+    private readonly staticRecordAccessors = new Map<string, string>();
+
+    public staticRecordAccessor(
+        mapType: string,
+        entries: readonly string[],
+    ): string {
+        const initializer = `${mapType} values{${entries.join(", ")}};`;
+        const existing = this.staticRecordAccessors.get(initializer);
+        if (existing) return existing;
+        const name = `bbl_static_table_${this.staticRecordAccessors.size}`;
+        this.registerNativeFunction(`${mapType}& ${name}();`, [
+            `${mapType}& ${name}() {`,
+            `    static ${initializer}`,
+            `    return values;`,
+            `}`,
+        ]);
+        this.staticRecordAccessors.set(initializer, name);
+        return name;
+    }
 
     public registerNativeFunction(
         prototype: string,
@@ -9405,6 +9841,13 @@ class Compiler
 
             const element = this.uiElementValue(callee.expression);
             if (
+                element?.uiTag === "image-bitmap" &&
+                callee.name.text === "close"
+            ) {
+                this.expectArgumentCount(call, 0, 0);
+                return { kind: "void", cpp: "" };
+            }
+            if (
                 element?.uiCanvas &&
                 !element.uiCanvasContext &&
                 callee.name.text === "getContext"
@@ -9473,6 +9916,49 @@ class Compiler
                         return invocation("fill", 0);
                     case "stroke":
                         return invocation("stroke", 0);
+                    case "getImageData": {
+                        this.expectArgumentCount(call, 4, 4);
+                        const sourceText = call.getSourceFile().text;
+                        if (
+                            !sourceText.includes("createImageBitmap") ||
+                            !sourceText.includes("ctx.drawImage") ||
+                            !sourceText.includes("ctx.getImageData")
+                        ) {
+                            this.fail(
+                                call,
+                                "Retained Canvas2D getImageData is lowered only for the bounded fetched-atlas bake.",
+                            );
+                        }
+                        const atlas = bakeFetchedCanvasAtlas(
+                            call.getSourceFile().fileName,
+                        );
+                        for (const image of atlas.images) {
+                            registerUiImageAsset(
+                                this,
+                                image.source,
+                                image.logicalPath,
+                            );
+                        }
+                        const asset = this.registerAsset(
+                            `data:application/octet-stream;base64,${Buffer.from(atlas.pixels).toString("base64")}`,
+                            "pixels",
+                        );
+                        this.reachJsData();
+                        return {
+                            kind: "record",
+                            cpp: "",
+                            recordProperties: {
+                                data: {
+                                    kind: "data",
+                                    cpp:
+                                        `bbl::js::U8Array(bbl::js::ArrayBuffer(` +
+                                        `bbl::pal::read_binary_file(bbl::asset_path(` +
+                                        `${this.cppString(asset.output)}))))`,
+                                    dataType: { kind: "u8array" },
+                                },
+                            },
+                        };
+                    }
                     case "putImageData": {
                         this.expectArgumentCount(call, 3, 3);
                         const imageData = this.unwrap(call.arguments[0]!);
@@ -9529,6 +10015,9 @@ class Compiler
                                 "Retained Canvas2D drawImage source must be a retained UI element; " +
                                     `received ${source.kind}.`,
                             );
+                        }
+                        if (source.uiTag === "image-bitmap") {
+                            return { kind: "void", cpp: "" };
                         }
                         this.expectSameEngine(element, source, call);
                         const sourceText = this.unwrap(
@@ -9865,6 +10354,16 @@ class Compiler
                     kind: "void",
                     cpp:
                         `bbl::clear_interval(${engine}, ` +
+                        `${this.compileNumber(call.arguments[0]!, "double")})`,
+                };
+            }
+            if (callee.text === "clearTimeout") {
+                this.expectArgumentCount(call, 1, 1);
+                const engine = this.requireDefaultEngine(call);
+                return {
+                    kind: "void",
+                    cpp:
+                        `bbl::clear_timeout(${engine}, ` +
                         `${this.compileNumber(call.arguments[0]!, "double")})`,
                 };
             }
@@ -10205,6 +10704,12 @@ class Compiler
             );
             return true;
         }
+        if (target === "canvas" && event === "click") {
+            this.emit(
+                `bbl::on_canvas_click(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
+            );
+            return true;
+        }
         if (
             (target === "window" || target === "canvas") &&
             (event === "mousedown" ||
@@ -10236,8 +10741,12 @@ class Compiler
             return true;
         }
         if (
-            (target === "window" || target === "canvas") &&
-            (event === "pointermove" || event === "wheel")
+            ((target === "window" ||
+                target === "document" ||
+                target === "canvas") &&
+                (event === "pointermove" || event === "mousemove")) ||
+            ((target === "window" || target === "canvas") &&
+                event === "wheel")
         ) {
             const parameter =
                 this.allocateTemporaryCppName("mouse_event");
@@ -10258,7 +10767,7 @@ class Compiler
                 once,
             );
             this.emit(
-                `bbl::on_mouse_${event === "pointermove" ? "move" : "wheel"}(${engine}, ${lambda});`,
+                `bbl::on_mouse_${event === "wheel" ? "wheel" : "move"}(${engine}, ${lambda});`,
             );
             return true;
         }
@@ -10819,17 +11328,20 @@ class Compiler
         }
         if (
             owner.kind === "camera" &&
-            expression.name.text === "target"
+            (expression.name.text === "position" ||
+                expression.name.text === "target")
         ) {
             // Not a field but three of them: the record this synthesizes
-            // is what makes `camera.target.x` and destructuring it read
-            // the same components.
+            // is what makes `camera.position.x`, `camera.target.x`, and
+            // destructuring either vector read the same components.
             const record = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
+            const vector = expression.name.text;
             const component = (
                 name: "x" | "y" | "z",
             ): Value => ({
                 kind: "number",
-                cpp: `${record}.target.${name}`,
+                cpp: `${record}.${vector}.${name}`,
+                dataType: { kind: "number" },
                 ...(owner.engineCpp
                     ? { engineCpp: owner.engineCpp }
                     : {}),
@@ -11203,18 +11715,58 @@ class Compiler
         identifier: ts.Identifier,
         argument: ts.Expression,
     ): void {
+        this.bindParameterValue(
+            identifier,
+            this.compileClassParameterValue(identifier, argument),
+        );
+    }
+
+    public compileClassParameterValue(
+        identifier: ts.Identifier,
+        argument: ts.Expression,
+    ): Value {
         let dataType =
             this.dataLowerer.dataTypeAt(identifier);
         if (dataType?.kind === "struct") {
             dataType = this.dataTypes.markStoredObjectReferences(dataType);
         }
         if (!dataType || dataType.kind === "handle") {
-            const actual = this.compileValue(argument);
-            this.bindParameterValue(
-                identifier,
-                actual,
-            );
-            return;
+            return this.compileValue(argument);
+        }
+        if (dataType.kind === "function") {
+            const unwrappedCallback = this.unwrap(argument);
+            const bound = ts.isIdentifier(unwrappedCallback)
+                ? this.lookupOptional(unwrappedCallback)
+                : undefined;
+            const declaration = !bound && ts.isIdentifier(unwrappedCallback)
+                ? tryResolveFunctionDeclaration(
+                      this.checker,
+                      unwrappedCallback,
+                  )
+                : undefined;
+            const callback = declaration
+                ? ({
+                      kind: "callback",
+                      cpp: "",
+                      callbackDeclaration: declaration,
+                      callbackRecordOwner: {
+                          kind: "record",
+                          cpp: "",
+                          recordScopes: [
+                              ...this.variableScopes,
+                          ],
+                      },
+                  } satisfies Value)
+                : this.compileValue(argument);
+            if (callback.kind === "callback") {
+                // An inlined class method can carry a local callback as
+                // compiler metadata and inline each invocation directly.
+                // Materializing std::function here adds type erasure to hot
+                // loops even though the callback never crossed a runtime
+                // storage boundary. If the method actually stores it, that
+                // later function-typed sink still performs materialization.
+                return callback;
+            }
         }
         const unwrapped = this.unwrap(argument);
         if (
@@ -11239,18 +11791,14 @@ class Compiler
                 // the actual array/object shape so a parameter that reads or
                 // writes a subset of fields shares the caller's JavaScript
                 // object instead of projecting and copying it.
-                this.bindParameterValue(identifier, actual);
-                return;
+                return actual;
             }
         }
         const cpp = this.dataLowerer.compileForSink(
             argument,
             dataType,
         );
-        this.bindParameterValue(
-            identifier,
-            this.dataLowerer.leafValue(cpp, dataType),
-        );
+        return this.dataLowerer.leafValue(cpp, dataType);
     }
 
     /** Materialize scalar members when a compile-time value escapes. */
@@ -11637,6 +12185,7 @@ class Compiler
             ...value,
             cpp: cppName,
             ...(parameter ? { parameterBinding: true } : {}),
+            ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
                 ? {
                       staticElementsOwner:
@@ -12419,6 +12968,14 @@ class Compiler
     }
 
     public reachFeature(feature: Feature, site?: ts.Node): void {
+        // Every raw Web Audio node/asset feature is implemented by the same
+        // engine PAL and can only be reached through one of its contexts.
+        // Record that dependency even when the creating call lives in a
+        // deferred platform callback that is lowered after another audio
+        // callback first reaches a node family.
+        if (feature.startsWith("audio:") && feature !== "audio:engine") {
+            this.reachFeature("audio:engine", site);
+        }
         this.features.add(feature);
         if (site !== undefined && !this.featureSites.has(feature)) {
             const { file, line } = sourceLocation(site);
@@ -12860,6 +13417,7 @@ class Compiler
                 this.nativeFunctionDefinitions,
             staticNativeDeclarations:
                 this.staticNativeDeclarations,
+            voxelFileStorageReached: this.voxelFileStorageReached,
             body: this.body,
         });
     }

@@ -7,6 +7,7 @@
 // reach order, which is the generated variant table's index order, and
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
+import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -33,6 +34,7 @@ import type {
     SceneMeshManifest,
     Value,
 } from "./types.js";
+import { tupleComponents } from "./data-types.js";
 
 /**
  * What `createShaderMaterial` accepts as a WGSL identifier
@@ -116,11 +118,12 @@ export function compileShaderMaterialOptions(
             "samplers",
             "defines",
             "needAlphaBlending",
+            "blendMode",
             "needAlphaTesting",
             "backFaceCulling",
             "depthWrite",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, defines, alpha state, culling, and depthWrite only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, defines, alpha state and blend mode, culling, and depthWrite only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -144,15 +147,22 @@ export function compileShaderMaterialOptions(
     const vertexSource = compiledVertex.source;
     const fragmentSource = compiledFragment.source;
     const attributes = compileStaticStringArray(context, attributesExpression);
-    const { signatures: declaredUniforms, defaults: uniformDefaults } =
-        compileShaderUniformSignatures(context, uniformsExpression);
-    const dynamicUniforms = [
+    const {
+        signatures: declaredUniforms,
+        defaults: uniformDefaults,
+        dynamicDefaults,
+    } = compileShaderUniformSignatures(context, uniformsExpression);
+    const dynamicSourceUniforms = [
         ...compiledVertex.dynamicUniforms,
         ...compiledFragment.dynamicUniforms,
     ];
     const uniforms = [
         ...declaredUniforms,
-        ...dynamicUniforms.map(({ name, type }) => `${name}:${type}`),
+        ...dynamicSourceUniforms.map(({ name, type }) => `${name}:${type}`),
+    ];
+    const dynamicInitializers = [
+        ...dynamicSourceUniforms,
+        ...dynamicDefaults,
     ];
     // `createShaderMaterial` asserts one namespace across the uniform,
     // sampler and define names it generates, so the set is built once here
@@ -178,6 +188,16 @@ export function compileShaderMaterialOptions(
         context.objectProperty(object, "needAlphaBlending"),
         false,
     );
+    const blendModeExpression = context.objectProperty(object, "blendMode");
+    const blendMode = blendModeExpression
+        ? context.compileStaticString(blendModeExpression)
+        : "alpha";
+    if (blendMode !== "alpha" && blendMode !== "additive") {
+        context.fail(
+            blendModeExpression ?? object,
+            `Shader material blendMode must be 'alpha' or 'additive', received '${blendMode}'.`,
+        );
+    }
     const needAlphaTesting = compileOptionalStaticBoolean(
         context,
         context.objectProperty(object, "needAlphaTesting"),
@@ -201,6 +221,7 @@ export function compileShaderMaterialOptions(
             stringArraysEqual(samplers, program.samplers ?? []) &&
             definesEqual(defines, program.defines ?? []) &&
             needAlphaBlending === program.needAlphaBlending &&
+            blendMode === (program.blendMode ?? "alpha") &&
             needAlphaTesting === program.needAlphaTesting &&
             backFaceCulling === program.backFaceCulling &&
             depthWrite === program.depthWrite
@@ -216,6 +237,7 @@ export function compileShaderMaterialOptions(
                     samplers,
                     defines,
                     needAlphaBlending,
+                    blendMode,
                     needAlphaTesting,
                     backFaceCulling,
                     depthWrite,
@@ -246,6 +268,7 @@ export function compileShaderMaterialOptions(
                     samplers: [...(program.samplers ?? [])],
                     defines: [...(program.defines ?? [])],
                     needAlphaBlending: program.needAlphaBlending,
+                    blendMode: program.blendMode ?? "alpha",
                     needAlphaTesting: program.needAlphaTesting,
                     backFaceCulling: program.backFaceCulling,
                     depthWrite: program.depthWrite,
@@ -316,6 +339,7 @@ export function compileShaderMaterialOptions(
         samplers,
         defines,
         needAlphaBlending,
+        blendMode,
         needAlphaTesting,
         backFaceCulling,
         depthWrite,
@@ -342,16 +366,9 @@ export function compileShaderMaterialOptions(
                 `Shader uniform default '${entry.name}' has no typed declaration.`,
             );
         }
-        const componentCount =
-            declared.endsWith(":f32")
-                ? 1
-                : declared.endsWith(":vec2<f32>")
-                    ? 2
-                    : declared.endsWith(":vec3<f32>")
-                        ? 3
-                        : declared.endsWith(":vec4<f32>")
-                            ? 4
-                            : 0;
+        const componentCount = declaredVectorComponents(
+            declared.slice(declared.indexOf(":") + 1),
+        );
         if (componentCount === 0) {
             context.fail(
                 uniformsExpression,
@@ -369,9 +386,9 @@ export function compileShaderMaterialOptions(
     const valueLayout = shaderUniformValueLayout(uniforms);
     return {
         ...reached,
-        ...(dynamicUniforms.length > 0
+        ...(dynamicInitializers.length > 0
             ? {
-                  dynamicUniforms: dynamicUniforms.map(
+                  dynamicUniforms: dynamicInitializers.map(
                       ({ name, components }) => ({
                           offset: valueLayout.get(name)!.offset,
                           components,
@@ -527,9 +544,14 @@ function compileShaderUniformSignatures(
 ): {
     signatures: string[];
     defaults: CompiledShaderUniformDefault[];
+    dynamicDefaults: Array<{ name: string; components: string[] }>;
 } {
     const array = context.expectStaticArrayLiteral(expression);
     const defaults: CompiledShaderUniformDefault[] = [];
+    const dynamicDefaults: Array<{
+        name: string;
+        components: string[];
+    }> = [];
     const signatures = array.elements.map((element) => {
         const resolved = context.resolveStaticExpression(element);
         if (
@@ -569,6 +591,7 @@ function compileShaderUniformSignatures(
             );
         }
         const uniformName = context.compileStaticString(name);
+        const uniformType = context.compileStaticString(type);
         const defaultExpression = context.objectProperty(
             resolved,
             "defaultValue",
@@ -576,16 +599,40 @@ function compileShaderUniformSignatures(
         if (defaultExpression) {
             const resolvedDefault =
                 context.resolveStaticExpression(defaultExpression);
-            const values = ts.isArrayLiteralExpression(resolvedDefault)
-                ? resolvedDefault.elements.map((entry) =>
-                      expectStaticNumber(context, entry),
-                  )
-                : [expectStaticNumber(context, resolvedDefault)];
-            defaults.push({ name: uniformName, values });
+            const componentCount = declaredVectorComponents(uniformType);
+            if (componentCount === 0) {
+                context.fail(
+                    type,
+                    `Shader uniform default '${uniformName}' has an unsupported type.`,
+                );
+            }
+            const candidates = ts.isArrayLiteralExpression(resolvedDefault)
+                ? [...resolvedDefault.elements]
+                : [resolvedDefault];
+            const staticValues = candidates.map((entry) =>
+                staticNumber(context, entry),
+            );
+            if (
+                candidates.length === componentCount &&
+                staticValues.every(
+                    (value): value is number => value !== undefined,
+                )
+            ) {
+                defaults.push({ name: uniformName, values: staticValues });
+            } else {
+                dynamicDefaults.push({
+                    name: uniformName,
+                    components: compileShaderUniformComponents(
+                        context,
+                        defaultExpression,
+                        componentCount,
+                    ),
+                });
+            }
         }
-        return `${uniformName}:${context.compileStaticString(type)}`;
+        return `${uniformName}:${uniformType}`;
     });
-    return { signatures, defaults };
+    return { signatures, defaults, dynamicDefaults };
 }
 
 /**
@@ -771,6 +818,13 @@ export function compileShaderUniformComponents(
             (element) => element.cpp,
         );
     }
+    if (
+        value.kind === "data" &&
+        value.dataType?.kind === "tuple" &&
+        value.dataType.arity === count
+    ) {
+        return tupleComponents(value.cpp, count);
+    }
     context.fail(
         expression,
         `Expected a ${count}-component array value.`,
@@ -790,6 +844,33 @@ function expectStaticNumber(
     context: ShaderMaterialContext,
     expression: ts.Expression,
 ): number {
+    const value = staticNumber(context, expression);
+    if (value === undefined) {
+        context.fail(
+            context.resolveStaticExpression(expression),
+            "Expected a static numeric literal.",
+        );
+    }
+    return value;
+}
+
+/**
+ * The scalar or vector float types a custom uniform default may fill, as a
+ * component count -- zero for anything else, so the caller names the type.
+ */
+function declaredVectorComponents(type: string): number {
+    return type === "f32" ||
+        type === "vec2<f32>" ||
+        type === "vec3<f32>" ||
+        type === "vec4<f32>"
+        ? typeComponents(type)
+        : 0;
+}
+
+function staticNumber(
+    context: ShaderMaterialContext,
+    expression: ts.Expression,
+): number | undefined {
     const resolved = context.resolveStaticExpression(expression);
     if (ts.isNumericLiteral(resolved)) {
         return Number(resolved.text);
@@ -801,7 +882,8 @@ function expectStaticNumber(
     ) {
         return -Number(resolved.operand.text);
     }
-    context.fail(resolved, "Expected a static numeric literal.");
+    const value = context.compileValue(expression);
+    return value.staticNumber;
 }
 
 function stringArraysEqual(left: string[], right: string[]): boolean {

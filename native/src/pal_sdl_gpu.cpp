@@ -292,6 +292,8 @@ struct GpuMesh {
 
 /** One exact local-space shader geometry shared by every matching draw. */
 struct SharedShaderGeometry {
+    SharedGeometryIdentity identity;
+    // Kept only below `shared_geometry_bytes_kept_below` vertices.
     std::vector<GpuVertex> vertices;
     std::vector<std::uint32_t> indices;
     SDL_GPUBuffer* vertex_buffer = nullptr;
@@ -6626,7 +6628,10 @@ bool run_gpu_engine(Engine& engine) {
                     color_target;
                 if (info.alpha_blending) {
                     shader_target.blend_state =
-                        blend_state_from(transparent_blend);
+                        blend_state_from(
+                            info.additive_blending
+                                ? shader_additive_blend
+                                : transparent_blend);
                 }
                 SDL_GPUGraphicsPipelineCreateInfo shader_pipeline_info =
                     pipeline_info;
@@ -7543,15 +7548,25 @@ bool run_gpu_engine(Engine& engine) {
                     geometry.indices.data(),
                     geometry.indices.size() * sizeof(std::uint32_t));
 #else
+                const SharedGeometryIdentity identity =
+                    shared_geometry_identity(vertices, geometry.indices);
                 gpu_mesh.shared_geometry = find_shared_shader_geometry(
                     state.shared_shader_geometries,
+                    identity,
                     vertices,
                     geometry.indices);
                 if (!gpu_mesh.shared_geometry) {
+                    const bool keep_bytes =
+                        shared_geometry_keeps_bytes(vertices);
                     auto created = std::make_unique<SharedShaderGeometry>(
                         SharedShaderGeometry{
-                            .vertices = vertices,
-                            .indices = geometry.indices,
+                            .identity = identity,
+                            .vertices = keep_bytes
+                                ? vertices
+                                : std::vector<GpuVertex>{},
+                            .indices = keep_bytes
+                                ? geometry.indices
+                                : std::vector<std::uint32_t>{},
                         });
                     created->vertex_buffer = upload_mesh_buffer(
                         SDL_GPU_BUFFERUSAGE_VERTEX,

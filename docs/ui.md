@@ -69,6 +69,8 @@ projected to RmlUi. Compatibility lowering covers:
 - regular and weighted platform font faces;
 - `position: fixed`, `inset`, positioned `calc()`, and density units;
 - reached `font` and background shorthands;
+- runtime-selected, root-relative `background: <color> url(...) center/cover`
+  images, packaged at their reviewed logical paths;
 - fractional `rgba()` alpha;
 - linear and radial decorators, rounded borders, text effects, text shadows
   (glyph effects -- not box shadows), and per-glyph gradient text;
@@ -95,6 +97,10 @@ Each GPU backend owns upload, caches, pipelines, multisample targets, and final
 composition. CSS and Canvas geometry render into a transparent UI layer at the
 scene sample count, resolve once, and premultiplied-alpha composite over the
 single-sample scene. Glyph atlases retain filtered sampling.
+Inline image decorators resolve relative URLs through the scene's packaged
+asset directory. The projector keeps a minimal stylesheet container even when
+the page supplies only inline styles, because RmlUi's decorator instancers are
+owned by that container.
 
 The UI path is integrated into the scene and sprite-only presentation loops.
 The standalone fullscreen-effect and frame-graph drivers render no UI on
@@ -133,12 +139,17 @@ The accepted divergences below are also recorded in the
 - Tags and attribute names are static. Text, attribute values, and reached
   individual style properties may be runtime values; runtime style values
   flow to the projection unvalidated, while static property names are
-  enforced at generation.
-- Style properties outside the reviewed surface refuse at generation. Four
+  enforced at generation. This includes dynamic `border-color` writes used
+  to mark selected retained-UI controls.
+- Style properties outside the reviewed surface refuse at generation. Five
   reached properties are accepted with a recorded degradation and no native
   rendering: `backdrop-filter` (and its `-webkit-` twin), `box-shadow`
   (the recorder exposes no render layers; the PAL filters dynamic writes
-  identically), and `font-variant-numeric`. Four reached hints are accepted
+  identically), `font-variant-numeric`, and the voxel sandbox crosshair's
+  exact `mix-blend-mode:difference` (other blend modes still refuse). The
+  crosshair's reviewed two-layer gradient shape itself projects to the same
+  retained bar markup used by Doom; only the difference blend is degraded.
+  Four reached hints are accepted
   as inert: `will-change`, `touch-action`, `user-select`, and
   `image-rendering` (canvas sampling intent rides the retained blit
   commands instead). "Shadows" in the supported surface means text shadows:

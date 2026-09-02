@@ -357,3 +357,46 @@ fn mainFragment(input: VertexOutput) -> @location(0) vec4<f32> {
     assert.match(fragment, /shaderUniforms\.cameraPosition/);
     assert.doesNotMatch(fragment, /shaderSystem\.cameraPosition/);
 });
+
+test("aligns a custom vec3 after a scalar in WGSL uniform storage", () => {
+    const program = lowerWgslShaderProgram({
+        name: "aligned-custom-uniforms",
+        vertexSource: `struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+        };
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+            var out: VertexOutput;
+            out.position = vec4<f32>(input.position, 1.0);
+            return out;
+        }`,
+        fragmentSource: `@fragment fn mainFragment() -> @location(0) vec4<f32> {
+            return vec4<f32>(shaderUniforms.offset * shaderUniforms.scale + shaderUniforms.tint, shaderUniforms.radius);
+        }`,
+        attributes: ["position"],
+        uniforms: [
+            "scale:f32",
+            "offset:vec3<f32>",
+            "tint:vec3<f32>",
+            "radius:f32",
+        ],
+        needAlphaBlending: false,
+        needAlphaTesting: false,
+        backFaceCulling: false,
+        depthWrite: true,
+    });
+
+    const fragment = program.reflection.uniformBlocks.find(
+        ({ stage }) => stage === "fragment",
+    );
+    assert.ok(fragment);
+    assert.equal(fragment.size, 48);
+    assert.deepEqual(
+        fragment.members.map(({ name, offset }) => ({ name, offset })),
+        [
+            { name: "scale", offset: 0 },
+            { name: "offset", offset: 16 },
+            { name: "tint", offset: 32 },
+            { name: "radius", offset: 44 },
+        ],
+    );
+});

@@ -201,6 +201,63 @@ test("a nested static index loop past the product budget folds an identical body
     );
 });
 
+test("a large data-only static nest keeps its outer loop native", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const data: number[] = [];
+            for (let x = 0; x < 16; x++) {
+                for (let y = 0; y < 16; y++) {
+                    for (let z = 0; z < 96; z++) {
+                        data.push(1);
+                    }
+                }
+            }
+            if (data.length === 0) {
+                throw new Error("empty");
+            }
+        }
+    `);
+
+    // The 24,576-cell Cartesian walk exceeds the static-nest ceiling, so
+    // its outer layers stay native instead of duplicating their generated
+    // body; the 96-iteration leaf already exceeds the per-loop ceiling.
+    assert.match(
+        result.cpp,
+        /for \(; v_block\d+_x < 16\.0; v_block\d+_x\+\+\) \{/,
+    );
+    assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
+});
+
+test("small data loops nested under a native loop remain native", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const data: number[] = [];
+            for (let y = 0; y < 96; y++) {
+                for (let z = 0; z < 16; z++) {
+                    for (let x = 0; x < 16; x++) {
+                        data.push(1);
+                    }
+                }
+            }
+            if (data.length === 0) {
+                throw new Error("empty");
+            }
+        }
+    `);
+
+    // The 96-iteration outer loop is native by the per-loop ceiling. Its
+    // smaller children execute under runtime control and remain native too,
+    // leaving one body rather than 256 generated copies.
+    assert.equal(result.cpp.match(/for \(;/g)?.length, 3);
+    assert.equal(result.cpp.match(/push_back\(1\.0\);/g)?.length, 1);
+});
+
 test("a nested index body folding its indices into constants stays unrolled", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";

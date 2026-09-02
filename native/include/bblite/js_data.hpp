@@ -25,6 +25,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <unordered_map>
 #include <utility>
@@ -81,6 +82,81 @@ class ArrayBuffer {
   private:
     std::shared_ptr<std::vector<std::uint8_t>> bytes_;
 };
+
+/**
+ * A JavaScript object reference: the plain-data records a scene declares
+ * are shared by identity, and this is the handle that shares them.
+ *
+ * It is `std::shared_ptr` without the atomics. Compiled scene logic runs
+ * on the one frame thread -- the audio device and the physics solver never
+ * touch a scene record -- so every interlocked increment a `shared_ptr`
+ * copy performed was paid for a race that cannot happen, and a voxel
+ * mesher that reads a chunk record per block query spent a fifth of its
+ * time in them. The count and the object share one allocation, as
+ * `make_shared` fuses them; there is no weak reference and no aliasing
+ * constructor because no generated code needs either.
+ */
+template <typename T>
+class Ref {
+  public:
+    using element_type = T;
+
+    Ref() = default;
+    Ref(const Ref& other) : block_(other.block_) {
+        if (block_) ++block_->count;
+    }
+    Ref(Ref&& other) noexcept : block_(other.block_) {
+        other.block_ = nullptr;
+    }
+    Ref& operator=(const Ref& other) {
+        Ref copy(other);
+        swap(copy);
+        return *this;
+    }
+    Ref& operator=(Ref&& other) noexcept {
+        Ref moved(std::move(other));
+        swap(moved);
+        return *this;
+    }
+    ~Ref() { reset(); }
+
+    void swap(Ref& other) noexcept { std::swap(block_, other.block_); }
+    void reset() {
+        if (block_ && --block_->count == 0) delete block_;
+        block_ = nullptr;
+    }
+    [[nodiscard]] T* get() const {
+        return block_ ? std::addressof(block_->value) : nullptr;
+    }
+    [[nodiscard]] T& operator*() const { return block_->value; }
+    [[nodiscard]] T* operator->() const { return std::addressof(block_->value); }
+    explicit operator bool() const { return block_ != nullptr; }
+
+    [[nodiscard]] friend bool operator==(const Ref& left, const Ref& right) {
+        return left.block_ == right.block_;
+    }
+
+  private:
+    struct Block {
+        std::size_t count;
+        T value;
+    };
+
+    template <typename U, typename... Args>
+    friend Ref<U> make_ref(Args&&... args);
+
+    explicit Ref(Block* block) : block_(block) {}
+
+    Block* block_ = nullptr;
+};
+
+template <typename T, typename... Args>
+[[nodiscard]] Ref<T> make_ref(Args&&... args) {
+    return Ref<T>(new typename Ref<T>::Block{
+        std::size_t{1},
+        T(std::forward<Args>(args)...),
+    });
+}
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
 class U8Array {
@@ -287,8 +363,14 @@ class Array {
     [[nodiscard]] const T& front() const { return values_->front(); }
     [[nodiscard]] T& back() { return values_->back(); }
     [[nodiscard]] const T& back() const { return values_->back(); }
-    void push_back(const T& value) { values_->push_back(value); }
-    void push_back(T&& value) { values_->push_back(std::move(value)); }
+    void push_back(const T& value) {
+        reserve_for_push();
+        values_->push_back(value);
+    }
+    void push_back(T&& value) {
+        reserve_for_push();
+        values_->push_back(std::move(value));
+    }
     void pop_back() { values_->pop_back(); }
     void reserve(std::size_t count) {
         if constexpr (!std::is_same_v<T, bool>) {
@@ -313,6 +395,20 @@ class Array {
     }
 
   private:
+    // A JavaScript array literal that then grows a few elements -- the
+    // per-face corner and light lists a voxel mesher builds -- would
+    // otherwise pay std::vector's 1, 2, 3, 4 growth ladder: one heap
+    // allocation per push for the first four pushes. Start at a small
+    // fixed capacity instead, so a short-lived list is one allocation.
+    static constexpr std::size_t initial_push_capacity = 8;
+    void reserve_for_push() {
+        if constexpr (!std::is_same_v<T, bool>) {
+            if (values_->capacity() == 0) {
+                values_->reserve(initial_push_capacity);
+            }
+        }
+    }
+
     std::shared_ptr<Storage> values_;
 };
 
@@ -560,13 +656,24 @@ struct MapGetResult<Nullable<T>> {
     }
 };
 
-/** A nullable JavaScript object is already an empty/shared pointer. */
+/**
+ * A nullable JavaScript object is already an empty/shared reference. The
+ * lookup hands back a reference into the map's own slot, as the Nullable
+ * arm above already does for plain values: a caller that keeps the object
+ * copies it into a typed local, while an optional chain that reads one
+ * field and drops it -- `defs[id]?.flag`, the hottest lookup a block
+ * registry serves -- binds the reference and pays no refcount traffic.
+ * The slot is a list node, so the reference outlives every insertion.
+ */
 template <typename T>
-struct MapGetResult<std::shared_ptr<T>> {
-    using Type = std::shared_ptr<T>;
+struct MapGetResult<Ref<T>> {
+    using Type = const Ref<T>&;
 
-    [[nodiscard]] static Type missing() { return {}; }
-    [[nodiscard]] static Type found(std::shared_ptr<T>& value) {
+    [[nodiscard]] static Type missing() {
+        static const Ref<T> empty;
+        return empty;
+    }
+    [[nodiscard]] static Type found(Ref<T>& value) {
         return value;
     }
 };
@@ -704,12 +811,20 @@ class InsertionOrderedIterator {
     BaseIterator end_;
 };
 
+template <typename T>
+inline constexpr bool is_ref_v = false;
+template <typename T>
+inline constexpr bool is_ref_v<Ref<T>> = true;
+
 /** Insertion-ordered JavaScript Map and Set containers. */
 template <typename T>
 struct ValueHash {
     [[nodiscard]] std::size_t operator()(const T& value) const noexcept {
         if constexpr (requires { value.value; }) {
             return std::hash<decltype(value.value)>{}(value.value);
+        } else if constexpr (is_ref_v<T>) {
+            // An object keys a Set or Map by identity.
+            return std::hash<const void*>{}(value.get());
         } else {
             return std::hash<T>{}(value);
         }
@@ -739,6 +854,7 @@ class IndexedInsertionOrdered {
         const auto entry = find(key);
         if (entry == storage_->index.end()) return false;
         const auto slot = entry->second;
+        storage_->invalidate_lookup();
         storage_->index.erase(entry);
         if (storage_->iterator_count > 0) {
             slot->active = false;
@@ -746,6 +862,17 @@ class IndexedInsertionOrdered {
             storage_->entries.erase(slot);
         }
         return true;
+    }
+    void clear() {
+        storage_->invalidate_lookup();
+        storage_->index.clear();
+        if (storage_->iterator_count > 0) {
+            for (Slot& entry : storage_->entries) {
+                entry.active = false;
+            }
+        } else {
+            storage_->entries.clear();
+        }
     }
     [[nodiscard]] Iterator begin() {
         return Iterator(
@@ -776,19 +903,47 @@ class IndexedInsertionOrdered {
   protected:
     using OrderedStorage = InsertionOrderedStorage<EntryT>;
     struct Storage : OrderedStorage {
-        std::unordered_map<
+        using Index = std::unordered_map<
             KeyT,
             typename OrderedStorage::Slots::iterator,
-            ValueHash<KeyT>>
-            index;
+            ValueHash<KeyT>>;
+        Index index;
+        // The last lookup, kept beside the shared storage: hot JavaScript
+        // Map readers query the same key repeatedly (a voxel mesher reads
+        // one chunk's blocks thousands of times in a row), and a repeated
+        // key then costs a compare instead of a hash and a probe. Every
+        // mutation that can invalidate an unordered-map iterator clears it
+        // through `invalidate_lookup`, the one place that knows both halves.
+        mutable std::optional<KeyT> cached_key;
+        mutable std::optional<typename Index::const_iterator> cached_index;
+        void invalidate_lookup() {
+            cached_key.reset();
+            cached_index.reset();
+        }
     };
 
-    [[nodiscard]] auto find(const KeyT& key) const {
-        return storage_->index.find(key);
+    /**
+     * Find `key`, remembering the answer for the next lookup unless the
+     * caller is about to change it: a writer's own miss is invalidated by
+     * the insert that follows, so recording it would only copy the key.
+     */
+    [[nodiscard]] auto find(const KeyT& key, bool remember = true) const {
+        if (storage_->cached_key.has_value() &&
+            std::equal_to<KeyT>{}(*storage_->cached_key, key)) {
+            return *storage_->cached_index;
+        }
+        const auto& index = storage_->index;
+        const auto entry = index.find(key);
+        if (remember) {
+            storage_->cached_key = key;
+            storage_->cached_index = entry;
+        }
+        return entry;
     }
     /** Append a not-yet-present entry and index it under `key`. */
     void insert(const KeyT& key, const EntryT& entry) {
         storage_->entries.push_back(Slot{entry});
+        storage_->invalidate_lookup();
         storage_->index.emplace(
             key,
             std::prev(storage_->entries.end()));
@@ -843,7 +998,7 @@ class Map : public IndexedInsertionOrdered<std::pair<K, V>, K> {
         return entry->second->value.second;
     }
     Map& set(const K& key, const V& value) {
-        const auto entry = find(key);
+        const auto entry = find(key, false);
         if (entry == storage_->index.end()) {
             insert(key, Entry{key, value});
         } else {
@@ -875,6 +1030,7 @@ template <typename T>
 class Set : public IndexedInsertionOrdered<T, T> {
   private:
     using Base = IndexedInsertionOrdered<T, T>;
+    using Base::find;
     using Base::insert;
     using Base::storage_;
 
@@ -890,20 +1046,10 @@ class Set : public IndexedInsertionOrdered<T, T> {
     }
 
     Set& add(const T& value) {
-        if (!this->has(value)) {
+        if (find(value, false) == storage_->index.end()) {
             insert(value, value);
         }
         return *this;
-    }
-    void clear() {
-        storage_->index.clear();
-        if (storage_->iterator_count > 0) {
-            for (Slot& entry : storage_->entries) {
-                entry.active = false;
-            }
-        } else {
-            storage_->entries.clear();
-        }
     }
 };
 
@@ -963,21 +1109,115 @@ template <std::size_t N>
     return tuple.clone();
 }
 
-// Primitive number interpolation for JavaScript template strings. The
-// finite path uses the shortest round-trippable spelling supplied by
-// `to_chars`; the exceptional spellings follow ECMAScript rather than the
-// implementation-defined C library names.
-[[nodiscard]] inline std::string number_to_string(double value) {
+/**
+ * Primitive number spelling for JavaScript string interpolation, written
+ * into a caller's buffer. The finite path uses the shortest round-trippable
+ * spelling supplied by `to_chars`, with an integer fast path for the
+ * coordinates and ids a scene keys its maps by; the exceptional spellings
+ * follow ECMAScript rather than the implementation-defined C library names.
+ * This is the one formatter, shared by `number_to_string` and `concat`, so a
+ * key built either way spells the same text.
+ */
+using NumberTextBuffer = std::array<char, 64>;
+
+[[nodiscard]] inline std::string_view format_number(
+    double value,
+    NumberTextBuffer& buffer) {
     if (std::isnan(value)) return "NaN";
     if (value == std::numeric_limits<double>::infinity()) return "Infinity";
     if (value == -std::numeric_limits<double>::infinity()) return "-Infinity";
-    if (value == 0.0) return "0";
-    char buffer[64];
+    constexpr double int32_min = -2147483648.0;
+    constexpr double int32_limit = 2147483648.0;
+    if (value >= int32_min && value < int32_limit) {
+        const auto integer = static_cast<std::int32_t>(value);
+        if (static_cast<double>(integer) == value) {
+            // Integer coordinates and ids are repeatedly interpolated into
+            // JavaScript string keys. A small direct-mapped working set per
+            // execution thread keeps those pure conversions from rerunning
+            // to_chars in hot Map/Set loops; a collision only replaces an
+            // entry and never affects the returned spelling.
+            struct CachedIntegerText {
+                std::int32_t value = 0;
+                std::uint8_t length = 0;
+                bool valid = false;
+                std::array<char, 12> text{};
+            };
+            static thread_local std::array<CachedIntegerText, 32> cache;
+            auto& entry = cache[static_cast<std::uint32_t>(integer) & 31u];
+            if (!entry.valid || entry.value != integer) {
+                const auto converted = std::to_chars(
+                    entry.text.data(),
+                    entry.text.data() + entry.text.size(),
+                    integer);
+                assert(converted.ec == std::errc{});
+                entry.value = integer;
+                entry.length = static_cast<std::uint8_t>(
+                    converted.ptr - entry.text.data());
+                entry.valid = true;
+            }
+            return std::string_view(entry.text.data(), entry.length);
+        }
+    }
     const auto converted = std::to_chars(
-        buffer, buffer + sizeof(buffer), value,
+        buffer.data(), buffer.data() + buffer.size(), value,
         std::chars_format::general);
     assert(converted.ec == std::errc{});
-    return std::string(buffer, converted.ptr);
+    return std::string_view(
+        buffer.data(),
+        static_cast<std::size_t>(converted.ptr - buffer.data()));
+}
+
+[[nodiscard]] inline std::string number_to_string(double value) {
+    NumberTextBuffer buffer;
+    return std::string(format_number(value, buffer));
+}
+
+/**
+ * JavaScript string concatenation, `a + b + c` and a template literal
+ * alike, built in one buffer. The operand-at-a-time `std::string +` chain
+ * this replaces made a temporary per operator, and a number operand went
+ * through a `std::string` of its own before it was appended; here each
+ * number is spelled straight into the result. A concatenation is not
+ * sequenced in C++ either way, so this changes nothing about evaluation
+ * order.
+ */
+/**
+ * A number operand of a concatenation. The wrapper is explicit so that a
+ * boolean, which JavaScript spells "true"/"false", can never reach the
+ * number formatter through an implicit conversion.
+ */
+struct NumberPart {
+    explicit NumberPart(double value) : value(value) {}
+    double value;
+};
+
+inline void concat_append(std::string& target, std::string_view part) {
+    target.append(part);
+}
+inline void concat_append(std::string& target, NumberPart part) {
+    NumberTextBuffer buffer;
+    target.append(format_number(part.value, buffer));
+}
+
+[[nodiscard]] inline std::size_t concat_size(std::string_view part) {
+    return part.size();
+}
+[[nodiscard]] inline std::size_t concat_size(NumberPart) {
+    // Counted as nothing on purpose: the reservation below exists so a
+    // long text with a number in it grows once rather than per operand,
+    // while a short key such as "-3,12" must stay inside the small-string
+    // buffer -- reserving for a worst-case integer spelling would push
+    // every such key onto the heap, which measured slower than the chain
+    // this replaces.
+    return 0;
+}
+
+template <typename... Parts>
+[[nodiscard]] inline std::string concat(const Parts&... parts) {
+    std::string result;
+    result.reserve((std::size_t{0} + ... + concat_size(parts)));
+    (concat_append(result, parts), ...);
+    return result;
 }
 
 // Runtime Number.prototype.toFixed for retained UI values. JavaScript falls
@@ -1061,17 +1301,19 @@ relative_slice_bounds(
     return value;
 }
 
+/** The six characters JavaScript's own trim and number parsing skip. */
+[[nodiscard]] inline bool is_ascii_whitespace(char value) {
+    return value == ' ' || value == '\t' || value == '\n' ||
+        value == '\r' || value == '\f' || value == '\v';
+}
+
 [[nodiscard]] inline std::string string_trim(const std::string& value) {
-    const auto whitespace = [](unsigned char character) {
-        return character == ' ' || character == '\t' || character == '\n' ||
-            character == '\r' || character == '\f' || character == '\v';
-    };
     std::size_t begin = 0;
-    while (begin < value.size() && whitespace(static_cast<unsigned char>(value[begin]))) {
+    while (begin < value.size() && is_ascii_whitespace(value[begin])) {
         ++begin;
     }
     std::size_t end = value.size();
-    while (end > begin && whitespace(static_cast<unsigned char>(value[end - 1]))) {
+    while (end > begin && is_ascii_whitespace(value[end - 1])) {
         --end;
     }
     return value.substr(begin, end - begin);
@@ -1158,14 +1400,12 @@ relative_slice_bounds(
     const char* begin = value.c_str();
     char* end = nullptr;
     const double parsed = std::strtod(begin, &end);
-    while (*end == ' ' || *end == '\t' || *end == '\n' || *end == '\r' ||
-           *end == '\f' || *end == '\v') {
+    while (is_ascii_whitespace(*end)) {
         ++end;
     }
     if (end == begin) {
         for (const char character : value) {
-            if (character != ' ' && character != '\t' && character != '\n' &&
-                character != '\r' && character != '\f' && character != '\v') {
+            if (!is_ascii_whitespace(character)) {
                 return std::numeric_limits<double>::quiet_NaN();
             }
         }
@@ -1174,6 +1414,35 @@ relative_slice_bounds(
     return *end == '\0'
         ? parsed
         : std::numeric_limits<double>::quiet_NaN();
+}
+
+/** JavaScript `parseInt(value, 10)` for the reached decimal-string form. */
+[[nodiscard]] inline double parse_int_decimal(
+    const std::string& value) {
+    std::size_t index = 0;
+    while (index < value.size() && is_ascii_whitespace(value[index])) {
+        ++index;
+    }
+    bool negative = false;
+    if (index < value.size() &&
+        (value[index] == '+' || value[index] == '-')) {
+        negative = value[index] == '-';
+        ++index;
+    }
+    double parsed = 0.0;
+    bool found_digit = false;
+    while (
+        index < value.size() &&
+        value[index] >= '0' && value[index] <= '9') {
+        found_digit = true;
+        parsed = parsed * 10.0 +
+            static_cast<double>(value[index] - '0');
+        ++index;
+    }
+    if (!found_digit) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    return negative ? -parsed : parsed;
 }
 
 [[nodiscard]] inline std::string string_from_char_code(double value) {
@@ -1442,10 +1711,19 @@ template <typename T>
 [[nodiscard]] inline bool array_has_index(
     const T& values,
     double index) {
-    return std::isfinite(index) &&
-        index >= 0.0 &&
-        std::floor(index) == index &&
-        index < static_cast<double>(values.size());
+    // Range-check before conversion so NaN, infinities, negatives and values
+    // too large for this container never reach the cast. Comparing the cast
+    // back to the source is the integer test, avoiding std::floor in every
+    // dynamic typed-array read while retaining JavaScript index semantics.
+    if (!(index >= 0.0 &&
+          index < static_cast<double>(values.size()))) {
+        return false;
+    }
+    // Signed on purpose: the range check above already bounds the value
+    // below 2^63, and a double-to-signed conversion is one instruction
+    // where the unsigned form needs a branch around the high half.
+    const auto native = static_cast<std::int64_t>(index);
+    return static_cast<double>(native) == index;
 }
 
 template <typename T>
@@ -1616,13 +1894,19 @@ using I32Array = std::vector<std::int32_t>;
 
 // ECMAScript ToUint32: modulo 2^32 with truncation toward zero.
 [[nodiscard]] inline std::uint32_t to_uint32(double value) {
-    if (!std::isfinite(value)) {
-        return 0u;
+    // Almost every reached conversion is already within int64 range. C++
+    // truncates floating-to-integer conversion toward zero, and conversion
+    // from signed int64 to uint32 is defined modulo 2^32, which together are
+    // exactly ECMAScript ToUint32 for this range. Keep fmod only for the rare
+    // finite values outside it; NaN and infinities still become zero.
+    constexpr double int64_min = -9223372036854775808.0;
+    constexpr double int64_limit = 9223372036854775808.0;
+    if (value >= int64_min && value < int64_limit) {
+        return static_cast<std::uint32_t>(
+            static_cast<std::int64_t>(value));
     }
+    if (!std::isfinite(value)) return 0u;
     const double truncated = std::trunc(value);
-    if (truncated >= 0.0 && truncated < 4294967296.0) {
-        return static_cast<std::uint32_t>(truncated);
-    }
     const double wrapped = std::fmod(truncated, 4294967296.0);
     return static_cast<std::uint32_t>(
         wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped);
@@ -1635,40 +1919,85 @@ using I32Array = std::vector<std::int32_t>;
               static_cast<std::int64_t>(value) - 0x100000000ll);
 }
 
+/**
+ * Bitwise expression intermediates stay in their specified 32-bit lane.
+ *
+ * JavaScript exposes a Number at an assignment/call boundary, so both wrappers
+ * convert to double there. Nested operations consume the bits directly instead
+ * of converting an exact int32 to double and immediately running ToUint32 on it
+ * again. This is representation-only: signed bitwise results and unsigned
+ * right-shift results retain their distinct JavaScript numeric values.
+ */
+struct SignedBitwiseNumber {
+    std::uint32_t bits = 0;
+    [[nodiscard]] operator double() const {
+        return static_cast<double>(uint32_as_int32(bits));
+    }
+};
+
+struct UnsignedBitwiseNumber {
+    std::uint32_t bits = 0;
+    [[nodiscard]] operator double() const {
+        return static_cast<double>(bits);
+    }
+};
+
+template <typename Lane>
+    requires requires(const Lane& lane) {
+        { lane.bits } -> std::convertible_to<std::uint32_t>;
+    }
+[[nodiscard]] inline std::uint32_t to_uint32(Lane lane) {
+    return lane.bits;
+}
+
 // ECMAScript Math.imul: multiply the two ToUint32 values modulo 2^32,
 // then expose the low word as a signed 32-bit JavaScript number. Unsigned
 // multiplication gives the specified wrap without relying on signed overflow.
-[[nodiscard]] inline double math_imul(double left, double right) {
-    return static_cast<double>(uint32_as_int32(
-        to_uint32(left) * to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber math_imul(
+    Left left,
+    Right right) {
+    return {to_uint32(left) * to_uint32(right)};
 }
 
-[[nodiscard]] inline double bitwise_not(double value) {
-    return static_cast<double>(uint32_as_int32(~to_uint32(value)));
+template <typename Value>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_not(Value value) {
+    return {~to_uint32(value)};
 }
 
-[[nodiscard]] inline double bitwise_and(double left, double right) {
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) & to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_and(
+    Left left,
+    Right right) {
+    return {to_uint32(left) & to_uint32(right)};
 }
 
-[[nodiscard]] inline double bitwise_or(double left, double right) {
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) | to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_or(
+    Left left,
+    Right right) {
+    return {to_uint32(left) | to_uint32(right)};
 }
 
-[[nodiscard]] inline double bitwise_xor(double left, double right) {
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) ^ to_uint32(right)));
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber bitwise_xor(
+    Left left,
+    Right right) {
+    return {to_uint32(left) ^ to_uint32(right)};
 }
 
-[[nodiscard]] inline double shift_left(double left, double right) {
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber shift_left(
+    Left left,
+    Right right) {
     const std::uint32_t count = to_uint32(right) & 31u;
-    return static_cast<double>(
-        uint32_as_int32(to_uint32(left) << count));
+    return {to_uint32(left) << count};
 }
 
-[[nodiscard]] inline double shift_right(double left, double right) {
+template <typename Left, typename Right>
+[[nodiscard]] inline SignedBitwiseNumber shift_right(
+    Left left,
+    Right right) {
     const std::uint32_t count = to_uint32(right) & 31u;
     const std::uint32_t value = to_uint32(left);
     const std::uint32_t shifted = count == 0u
@@ -1677,12 +2006,15 @@ using I32Array = std::vector<std::int32_t>;
               ((value & 0x80000000u) != 0u
                   ? (~std::uint32_t{0} << (32u - count))
                   : 0u);
-    return static_cast<double>(uint32_as_int32(shifted));
+    return {shifted};
 }
 
-[[nodiscard]] inline double shift_right_unsigned(double left, double right) {
+template <typename Left, typename Right>
+[[nodiscard]] inline UnsignedBitwiseNumber shift_right_unsigned(
+    Left left,
+    Right right) {
     const std::uint32_t count = to_uint32(right) & 31u;
-    return static_cast<double>(to_uint32(left) >> count);
+    return {to_uint32(left) >> count};
 }
 
 [[nodiscard]] inline std::uint16_t to_uint16(double value) {
@@ -1783,7 +2115,9 @@ template <typename Values>
 
 template <typename Values>
 [[nodiscard]] inline U32Array u32_array_from(const Values& values) {
-    return typed_array_from_values<U32Array>(values, to_uint32);
+    return typed_array_from_values<U32Array>(values, [](double value) {
+        return to_uint32(value);
+    });
 }
 
 template <typename Values>

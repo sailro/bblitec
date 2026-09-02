@@ -35,11 +35,18 @@ export interface ClassLoweringContext {
         identifier: ts.Identifier,
         argument: ts.Expression,
     ): void;
+    compileClassParameterValue(
+        identifier: ts.Identifier,
+        argument: ts.Expression,
+    ): Value;
     bindClassField(
         name: ts.Identifier,
         initializer: ts.Expression,
     ): void;
     bindNullableClassField(
+        name: ts.Identifier,
+    ): Value | undefined;
+    bindUninitializedClassDataField(
         name: ts.Identifier,
     ): Value | undefined;
     bindOptionalResourceValue(
@@ -465,10 +472,35 @@ export class ClassLowerer {
         declaration: ts.ClassDeclaration,
     ): Value {
         this.rejectUnsupportedMembers(declaration);
+        const constructorDeclaration =
+            declaration.members.find(
+                ts.isConstructorDeclaration,
+            );
+        if (!constructorDeclaration && (expression.arguments?.length ?? 0) > 0) {
+            this.context.fail(
+                expression,
+                `Class '${declaration.name?.text ?? "?"}' has no constructor accepting arguments.`,
+            );
+        }
+        // JavaScript evaluates every explicit constructor argument in the
+        // caller before the new instance becomes `this` and before instance
+        // field initializers run. Preserve that ordering for arguments such
+        // as `new Child(this)` inside another constructor.
+        const evaluatedArguments = constructorDeclaration
+            ? this.compileClassArguments(
+                  constructorDeclaration,
+                  expression.arguments ?? [],
+                  "constructor",
+              )
+            : [];
         const fields: Record<string, Value> = {};
         const getters: Record<
             string,
             ts.GetAccessorDeclaration
+        > = {};
+        const setters: Record<
+            string,
+            ts.SetAccessorDeclaration
         > = {};
         for (const member of declaration.members) {
             if (
@@ -477,12 +509,19 @@ export class ClassLowerer {
             ) {
                 getters[member.name.text] = member;
             }
+            if (
+                ts.isSetAccessorDeclaration(member) &&
+                ts.isIdentifier(member.name)
+            ) {
+                setters[member.name.text] = member;
+            }
         }
         const instance: Value = {
             kind: "record",
             cpp: "",
             recordProperties: fields,
             recordGetters: getters,
+            recordSetters: setters,
         };
         // Constructor bodies may call another method on `this`. Make the
         // declaration discoverable as soon as the instance record exists,
@@ -515,6 +554,38 @@ export class ClassLowerer {
                         );
                     if (nullable) {
                         fields[member.name.text] = nullable;
+                    } else {
+                        const data =
+                            this.context.bindUninitializedClassDataField(
+                                member.name,
+                            );
+                        if (data) {
+                            fields[member.name.text] = data;
+                            continue;
+                        }
+                        const declared =
+                            this.context.checker.getTypeAtLocation(
+                                member.name,
+                            );
+                        const members =
+                            (declared.flags & ts.TypeFlags.Union) !== 0
+                                ? (declared as ts.UnionType).types
+                                : [declared];
+                        if (
+                            members.some(
+                                (candidate) =>
+                                    candidate.getCallSignatures().length > 0,
+                            )
+                        ) {
+                            // An optional callback is compile-time wiring. Keep
+                            // its initial absence on the instance record so a
+                            // later property assignment can install the reached
+                            // function and an optional call can dispatch it.
+                            fields[member.name.text] = {
+                                kind: "json-null",
+                                cpp: "",
+                            };
+                        }
                     }
                     continue;
                 }
@@ -538,15 +609,13 @@ export class ClassLowerer {
                         );
                 }
             }
-            const constructorDeclaration =
-                declaration.members.find(
-                    ts.isConstructorDeclaration,
-                );
             if (constructorDeclaration) {
                 this.bindParameters(
                     constructorDeclaration,
                     expression.arguments ?? [],
                     fields,
+                    false,
+                    evaluatedArguments,
                 );
                 for (const statement of constructorDeclaration
                     .body?.statements ?? []) {
@@ -558,6 +627,32 @@ export class ClassLowerer {
             this.context.popScope();
         }
         return instance;
+    }
+
+    /** Evaluate explicit class-call arguments while the caller owns `this`. */
+    private compileClassArguments(
+        declaration:
+            | ts.ConstructorDeclaration
+            | ts.MethodDeclaration
+            | ts.SetAccessorDeclaration,
+        argumentList: readonly ts.Expression[],
+        callable: "constructor" | "method" | "setter",
+    ): Value[] {
+        return argumentList.map((argument, index) => {
+            const parameter = declaration.parameters[index];
+            if (!parameter || !ts.isIdentifier(parameter.name)) {
+                this.context.fail(
+                    argument,
+                    parameter
+                        ? "Class parameters must be plain identifiers."
+                        : `Class ${callable} received too many arguments.`,
+                );
+            }
+            return this.context.compileClassParameterValue(
+                parameter.name,
+                argument,
+            );
+        });
     }
 
     /**
@@ -689,13 +784,24 @@ export class ClassLowerer {
                     `Method '${methodName}' cannot select a compile-time record through an early value return.`,
                 );
             }
+            const argumentValues = this.compileClassArguments(
+                method,
+                call.arguments,
+                "method",
+            );
             this.context.pushScope(
                 this.context.allocateUserFunctionPrefix(),
             );
             const previousThis = this.context.activeThis();
             this.context.defineThis(instance);
             try {
-                this.bindParameters(method, call.arguments);
+                this.bindParameters(
+                    method,
+                    call.arguments,
+                    undefined,
+                    false,
+                    argumentValues,
+                );
                 for (const statement of leading) {
                     this.context.emitStatement(statement);
                 }
@@ -720,13 +826,24 @@ export class ClassLowerer {
                 returnType,
             );
         }
+        const argumentValues = this.compileClassArguments(
+            method,
+            call.arguments,
+            "method",
+        );
         this.context.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
-            this.bindParameters(method, call.arguments);
+            this.bindParameters(
+                method,
+                call.arguments,
+                undefined,
+                false,
+                argumentValues,
+            );
             const result = returnsVoid
                 ? undefined
                 : `bbl_class_${this.context.allocateUserFunctionPrefix()}result`;
@@ -757,6 +874,45 @@ export class ClassLowerer {
                       requiresExplicitDiscard: true,
                   }
                 : { kind: "void", cpp: "" };
+        } finally {
+            this.context.defineThis(previousThis);
+            this.context.popScope();
+        }
+    }
+
+    /** Inline a class setter with `this` bound to its compile-time instance. */
+    public compileSetter(
+        instance: Value,
+        setter: ts.SetAccessorDeclaration,
+        value: ts.Expression,
+    ): void {
+        if (!setter.body || setter.parameters.length !== 1) {
+            this.context.fail(
+                setter,
+                "A reached class setter requires one parameter and a body.",
+            );
+        }
+        const argumentValue = this.compileClassArguments(
+            setter,
+            [value],
+            "setter",
+        )[0]!;
+        this.context.pushScope(
+            this.context.allocateUserFunctionPrefix(),
+        );
+        const previousThis = this.context.activeThis();
+        this.context.defineThis(instance);
+        try {
+            this.bindParameters(
+                setter,
+                [value],
+                undefined,
+                false,
+                [argumentValue],
+            );
+            for (const statement of setter.body.statements) {
+                this.context.emitStatement(statement);
+            }
         } finally {
             this.context.defineThis(previousThis);
             this.context.popScope();
@@ -1032,13 +1188,24 @@ export class ClassLowerer {
         }
         if (descriptors.length === 0) return undefined;
 
+        const argumentValues = this.compileClassArguments(
+            method,
+            call.arguments,
+            "method",
+        );
         this.context.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
         const previousThis = this.context.activeThis();
         this.context.defineThis(instance);
         try {
-            this.bindParameters(method, call.arguments);
+            this.bindParameters(
+                method,
+                call.arguments,
+                undefined,
+                false,
+                argumentValues,
+            );
             const properties: Record<string, Value> = {};
             for (const descriptor of descriptors) {
                 const output = this.context.bindOptionalResourceValue(
@@ -1120,14 +1287,51 @@ export class ClassLowerer {
      * Binds a method or constructor parameter list to its arguments by
      * declaring locals, so the inlined body reads them by name.
      */
+    /** The symbols a body spreads into an object literal, one walk per body. */
+    private spreadParameterSymbols(
+        declaration:
+            | ts.ConstructorDeclaration
+            | ts.MethodDeclaration
+            | ts.SetAccessorDeclaration,
+    ): Set<ts.Symbol> {
+        const cached = this.spreadSymbolsByDeclaration.get(declaration);
+        if (cached) return cached;
+        const symbols = new Set<ts.Symbol>();
+        const visit = (node: ts.Node): void => {
+            if (ts.isFunctionLike(node)) return;
+            if (ts.isSpreadAssignment(node)) {
+                const spread = this.context.unwrap(node.expression);
+                if (ts.isIdentifier(spread)) {
+                    const symbol =
+                        this.context.checker.getSymbolAtLocation(spread);
+                    if (symbol) symbols.add(symbol);
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const statement of declaration.body?.statements ?? []) {
+            visit(statement);
+        }
+        this.spreadSymbolsByDeclaration.set(declaration, symbols);
+        return symbols;
+    }
+
+    private readonly spreadSymbolsByDeclaration = new WeakMap<
+        ts.Node,
+        Set<ts.Symbol>
+    >();
+
     private bindParameters(
         declaration:
             | ts.ConstructorDeclaration
-            | ts.MethodDeclaration,
+            | ts.MethodDeclaration
+            | ts.SetAccessorDeclaration,
         argumentList: readonly ts.Expression[],
         parameterProperties?: Record<string, Value>,
         preserveStaticRecords = false,
+        evaluatedArguments?: readonly Value[],
     ): void {
+        const spreadParameters = this.spreadParameterSymbols(declaration);
         declaration.parameters.forEach((parameter, index) => {
             if (!ts.isIdentifier(parameter.name)) {
                 this.context.fail(
@@ -1138,6 +1342,10 @@ export class ClassLowerer {
             const argument =
                 argumentList[index] ??
                 parameter.initializer;
+            const evaluatedArgument =
+                index < argumentList.length
+                    ? evaluatedArguments?.[index]
+                    : undefined;
             if (!argument) {
                 if (parameter.questionToken) {
                     const parameterType =
@@ -1194,13 +1402,26 @@ export class ClassLowerer {
             // The declared parameter type is the sink. A compile-time
             // object record passed to a struct parameter must materialize
             // as that struct before constructor field wiring observes it.
-            const staticRecord = preserveStaticRecords
-                ? this.context.compileValue(argument)
-                : undefined;
+            const parameterSymbol = this.context.checker.getSymbolAtLocation(
+                parameter.name,
+            );
+            const spreadUse =
+                parameterSymbol !== undefined &&
+                spreadParameters.has(parameterSymbol);
+            const staticRecord = evaluatedArgument?.kind === "record"
+                ? evaluatedArgument
+                : preserveStaticRecords || spreadUse
+                  ? this.context.compileValue(argument)
+                  : undefined;
             if (staticRecord?.kind === "record") {
                 this.context.bindParameterValue(
                     parameter.name,
                     staticRecord,
+                );
+            } else if (evaluatedArgument) {
+                this.context.bindParameterValue(
+                    parameter.name,
+                    evaluatedArgument,
                 );
             } else {
                 this.context.bindClassParameterValue(
@@ -1236,12 +1457,6 @@ export class ClassLowerer {
             );
         }
         for (const member of declaration.members) {
-            if (ts.isSetAccessorDeclaration(member)) {
-                this.context.fail(
-                    member,
-                    "Class setters are outside the supported subset.",
-                );
-            }
             if (
                 !ts.isMethodDeclaration(member) &&
                 (ts.getCombinedModifierFlags(

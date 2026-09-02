@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -10,6 +11,14 @@ struct EngineOptions;
 }
 
 namespace bbl::pal {
+
+struct FileDialogOptions {
+    std::string title;
+    std::string suggested_name;
+    std::string filter_name;
+    std::string filter_pattern;
+    std::string default_extension;
+};
 
 Engine create_engine(EngineOptions options);
 void run_engine(Engine& engine);
@@ -25,6 +34,12 @@ std::string join_path(const std::string& root, const std::string& relative_path)
 std::string parent_path(const std::string& path);
 std::string executable_directory();
 std::string environment_variable(const char* name);
+std::optional<std::string> choose_save_file(
+    Engine& engine,
+    const FileDialogOptions& options);
+std::optional<std::string> choose_open_file(
+    Engine& engine,
+    const FileDialogOptions& options);
 double monotonic_milliseconds();
 // Browser-facing `performance.now()`. In ordinary runs this is the same
 // monotonic clock; fixed-delta captures advance it deterministically.

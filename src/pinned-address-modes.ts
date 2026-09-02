@@ -53,11 +53,17 @@ export function pixelsTextureOptionsCpp(
         }
         return `bbl::${mapped}, true`;
     };
+    const srgb = named.srgb ?? "false";
+    if (srgb !== "true" && srgb !== "false") {
+        fail(
+            `createTexture2DFromPixels srgb '${srgb}' is not a boolean literal.`,
+        );
+    }
     return (
         `bbl::PixelsTextureOptions{${field("minFilter", textureFilterByPin)}, ` +
         `${field("magFilter", textureFilterByPin)}, ` +
         `${field("addressModeU", addressModeByPin)}, ` +
-        `${field("addressModeV", addressModeByPin)}}`
+        `${field("addressModeV", addressModeByPin)}, ${srgb}}`
     );
 }
 

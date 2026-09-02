@@ -138,7 +138,7 @@ function valueIsPlainLeaf(
         ...Object.keys(expectedRecord),
     ]);
     for (const key of keys) {
-        if (key === "dataType") continue;
+        if (key === "dataType" || key === "nativeLvalue") continue;
         if (actualRecord[key] !== expectedRecord[key]) {
             return false;
         }
@@ -545,7 +545,8 @@ export class NativeFunctionLowerer {
             const bound = properties[field.name];
             if (
                 !bound ||
-                !cppIdentifierPattern.test(bound.cpp)
+                (!cppIdentifierPattern.test(bound.cpp) &&
+                    !bound.nativeLvalue)
             ) {
                 return undefined;
             }

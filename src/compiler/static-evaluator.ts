@@ -861,7 +861,15 @@ export class StaticEvaluator {
         // JavaScript double, so writing it out is the same value the pin
         // holds, and a float sink then gets the one rounding the pinned
         // `Float32Array` store performs.
-        if (value.staticNumber !== undefined) {
+        // A materialized binding reads through its native variable, as the
+        // identifier arm of `compileNumber` already does: folding its
+        // static value here would leave the emitted local unread, which the
+        // warning-as-error native build refuses.
+        if (
+            value.staticNumber !== undefined &&
+            !value.parameterBinding &&
+            !value.nativeBinding
+        ) {
             return precision === "float"
                 ? cppFloatLiteral(value.staticNumber)
                 : cppDoubleLiteral(value.staticNumber);

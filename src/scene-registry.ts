@@ -3377,6 +3377,26 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+    {
+        id: "minecraft",
+        name: "Voxel Sandbox",
+        source: "corpus/babylon-lite/lab/lite/src/demos/minecraft.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Voxel Sandbox",
+        // The browser and both native backends agree on the voxel canvas to
+        // within one byte in one pixel (MAD rounds to 0.000). The remaining
+        // 1.414 full-page floor is retained-UI layout/font rasterization;
+        // SDL_GPU and Dawn are pixel-identical, so one gate pair covers both.
+        parity: {
+            referenceFrame: 180,
+            maxFullMad: 1.5,
+            maxForegroundMad: 1.5,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            backgroundColor: [179, 209, 235],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
 ];
 
 /**
