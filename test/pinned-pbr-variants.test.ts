@@ -48,6 +48,12 @@ test("registers every PBR extension the pin owns", async () => {
         "subsurface",
         "unlit",
         "uv-transform",
+        // Baked vertex animation. Upstream `attachVat` self-registers it,
+        // so the shared renderable never imports it; registering it here is
+        // inert for every scene that never bakes one -- its `frag` returns
+        // null without MSH_VAT and its `bind` returns the binding index
+        // unchanged.
+        "vat",
     ]);
 });
 

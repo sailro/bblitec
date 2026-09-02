@@ -1897,6 +1897,57 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene42",
+        name: "Scene 42 - Physics Clone Pre-Step",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene42.ts",
+        title: "Babylon Lite Native - Physics Clone Pre-Step",
+        parity: {
+            // The pin's own spec serves this scene at `?captureFrame=300`;
+            // both sides read the same query and both freeze themselves.
+            referenceSearch: "?captureFrame=300",
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "310",
+            },
+            // Exact on both backends. The spec's pose is 300 steps, by
+            // which everything has come to rest -- so unlike its siblings
+            // this physics scene carries no solver residual at all, and
+            // its ceiling is an ordinary renderer one.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene45",
+        name: "Scene 45 - Physics Collision Filtering",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene45.ts",
+        title: "Babylon Lite Native - Physics Collision Filtering",
+        parity: {
+            // The pin's own spec serves this scene at `?captureAfter=3`,
+            // which `readCaptureAfterFrames` rounds to 180 physics steps
+            // and where the scene raises `captureReady` and stops its own
+            // engine. Both sides read the same query and both freeze.
+            referenceSearch: "?captureAfter=3",
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "190",
+            },
+            // MEASURED 0.808/1.831, identical on both backends. The
+            // residual is the substituted solver's CONTACT RESPONSE: both
+            // spheres sit 10 px -- 0.13 world units -- lower than the
+            // golden's, under a pixel apart horizontally. It grows with
+            // simulated time rather than closing; a probe at
+            // `?captureAfter=8` measures 1.573/2.231, so this gate is tied
+            // to the pin's own pose and a later one would need a bigger
+            // number. Sphere 1 also takes an off-centre impulse, which
+            // spins it. See docs/fidelity.md#physics-contract.
+            maxFullMad: 0.9,
+            maxForegroundMad: 2.0,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene43",
         name: "Scene 43 - Parametric Proximity Path",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene43.ts",
@@ -2818,6 +2869,64 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene218",
+        name: "Scene 218 - VAT Shark",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene218.ts",
+        title: "Babylon Lite Native - VAT Shark",
+        parity: {
+            // The scene freezes only under ?seekTime: with no query the
+            // baked clock free-runs and the two sides drift apart. The
+            // pin's own spec pins 1.0 -- the integer frame 60, which the
+            // bake holds at full precision.
+            referenceSearch: "?seekTime=1.0",
+            referenceTimeSeconds: 1,
+            // Past the scene's own `frameCount === 10` freeze, so the
+            // native run reaches the lowered callback that writes the
+            // instance parameters rather than screenshotting frame 0 and
+            // leaving the pose entirely to the folded-query seek. Both
+            // sides then hold the same instance texture at capture. The
+            // measurement is the same either way; this is what makes it
+            // evidence about the emitted freeze.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "12",
+            },
+            // Scene 11's residual, because a baked row IS the live palette:
+            // a baked pose reproduces the live one rather than approximating
+            // it, so the shark's skinned residual carries over unchanged.
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.3,
+            backgroundColor: [36, 36, 41],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene219",
+        name: "Scene 219 - Instanced VAT Shark",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene219.ts",
+        title: "Babylon Lite Native - Instanced VAT Shark",
+        parity: {
+            // One identity thin instance, so the instanced VAT path
+            // computes instance * mesh.world * skin and lands on scene
+            // 218's pose exactly -- measured bit-identical on both backends.
+            referenceSearch: "?seekTime=1.0",
+            referenceTimeSeconds: 1,
+            // Past the scene's own `frameCount === 10` freeze, so the
+            // native run reaches the lowered callback that writes the
+            // instance parameters rather than screenshotting frame 0 and
+            // leaving the pose entirely to the folded-query seek. Both
+            // sides then hold the same instance texture at capture. The
+            // measurement is the same either way; this is what makes it
+            // evidence about the emitted freeze.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "12",
+            },
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.3,
+            backgroundColor: [36, 36, 41],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene220",
         name: "Scene 220 - Quantized Duck",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene220.ts",
@@ -2877,6 +2986,28 @@ const sceneInputs: readonly SceneInput[] = [
             // on both backends, which is what says the overlay's own depth
             // clear, its own light set and every quaternion the pinned
             // math produces all agree with the browser.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene224",
+        name: "Scene 224 - Bounding Box Gizmo",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene224.ts",
+        title: "Babylon Lite Native - Bounding Box Gizmo",
+        parity: {
+            // The display-gizmo family's last widget and its only cage: 55
+            // handles laid out every frame from the attached transform
+            // node's world rotation and the bounds of its five parented
+            // cubes in the frame that rotation removes. Exact on both
+            // backends, which is what says the pinned layout, the
+            // rotation-removed bounds walk over the main scene's own
+            // meshes, and the zero-alpha body box all agree with the
+            // browser. No referenceSearch: the scene's `?nocam` branch is
+            // false here, so `attachControl` is reached and folds, and the
+            // native demo keeps its orbit.
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],

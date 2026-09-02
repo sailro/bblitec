@@ -407,6 +407,36 @@ export function compilePhysicsIntrinsic(
       };
     }
 
+    case "setPhysicsBodyPreStep": {
+      // `(body, enabled)`: no world travels with the pin's call either,
+      // because a pinned body carries its own `_world`.
+      context.expectArgumentCount(call, 2, 2);
+      const body = context.compileValue(call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[0]!);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_pre_step(` +
+          `${body.cpp}, ${context.compileBoolean(call.arguments[1]!)})`,
+      };
+    }
+
+    case "setPhysicsShapeFilterCollideMask": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const shape = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(shape, "physics-shape", call.arguments[1]!);
+      context.expectSameEngine(world, shape, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_shape_filter_collide_mask(` +
+          `${world.cpp}, ${shape.cpp}, ` +
+          `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[2]!, "double")}))`,
+      };
+    }
+
     case "getPhysicsBodyLinearVelocity": {
       context.expectArgumentCount(call, 2, 2);
       const world = context.compileValue(call.arguments[0]!);

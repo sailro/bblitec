@@ -28,6 +28,8 @@ const noFeatures: MaterialTextureSlotFeatures = {
     occlusionUv2: false,
     standardBump: false,
     standardReflection: false,
+    vat: false,
+    vatInstances: false,
     clusteredLights: false,
 };
 
@@ -123,6 +125,8 @@ test("extension rows append in the pinned registration order", () => {
             standardBump: true,
             standardReflection: true,
             clusteredLights: true,
+            vat: true,
+            vatInstances: true,
         },
         [],
         "test",

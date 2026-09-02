@@ -812,11 +812,14 @@ inline const TextureData* material_slot_texture(
             return standard_material
                 ? &material.reflection_texture
                 : nullptr;
-        // Scene-owned resources carry no record field.
+        // Scene-owned resources carry no record field. The two VAT rows
+        // are the mesh's own, like the bone palette beside them.
         case Source::environment_cube:
         case Source::brdf_lut:
         case Source::scene_color:
         case Source::bone_palette:
+        case Source::vat_palette:
+        case Source::vat_instance_params:
         case Source::clustered_lights:
         case Source::clustered_cells:
         case Source::clustered_indices:
@@ -2934,6 +2937,19 @@ inline bool pinned_variant_skeleton(std::size_t variant) {
 }
 
 /**
+ * Whether a variant deforms from a BAKED vertex-animation texture.
+ *
+ * The key carries the composed fragment ids, so this reads the same way
+ * the skeleton test above does. The two are mutually exclusive by
+ * construction: `_computeMeshFeatures` writes MSH_VAT where it would have
+ * written MSH_HAS_SKELETON, never both.
+ */
+inline bool pinned_variant_vat(std::size_t variant) {
+    return upstream::pbr_variants[variant].key.find("vat") !=
+        std::string_view::npos;
+}
+
+/**
  * The key one PBR draw composes under.
  *
  * Split from the lookup for the reason the Standard family's own key is: a
@@ -3021,6 +3037,17 @@ inline PinnedVariantKey pinned_variant_key(
     // this idempotent OR covers both origins with one rule.
     if (draw.item.mesh.value < engine.meshes.size()) {
         const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        // `_computeMeshFeatures` writes MSH_VAT INSTEAD of
+        // MSH_HAS_SKELETON for a baked mesh -- attachVat dropped the live
+        // skeleton -- so this is a swap on the static row rather than an
+        // OR beside it. Generation composed the swapped row.
+        if (record.has_vat) {
+            key.mesh_features &=
+                ~static_cast<std::size_t>(
+                    upstream::pinned_msh_has_skeleton);
+            key.mesh_features |=
+                static_cast<std::size_t>(upstream::pinned_msh_vat);
+        }
         if (pinned_record_instanced(record)) {
             key.mesh_features |= upstream::pinned_msh_has_thin_instances;
             // `_computeMeshFeatures` nests this under the pool and reads the
@@ -3203,19 +3230,52 @@ struct PinnedDrawConventions {
     bool skeleton_draw;
     bool world_from_palette;
     bool mirrored_vertices;
+    /**
+     * A baked draw. Its texture rows ARE the palettes the live path
+     * uploads -- mirror-conjugated the same way, because the bake copies
+     * `bone_matrices` unchanged -- so it rides the skinned arm's world and
+     * vertex conventions exactly. What it does NOT share is the per-frame
+     * palette upload: `attachVat` dropped the live skeleton.
+     */
+    bool vat_draw;
+    /** Identity world with the mirrored buffer: the skinned arm, either
+     *  live or baked. */
+    bool identity_world;
 };
 
 inline PinnedDrawConventions pinned_draw_conventions(
     std::size_t variant,
     const MeshRecord& record) {
     const bool skeleton_draw = pinned_variant_skeleton(variant);
+    const bool vat_draw = pinned_variant_vat(variant);
     const bool world_from_palette =
-        !skeleton_draw && !record.bone_matrices.empty();
+        !skeleton_draw && !vat_draw && !record.bone_matrices.empty();
     return PinnedDrawConventions{
         skeleton_draw,
         world_from_palette,
-        skeleton_draw || world_from_palette,
+        skeleton_draw || vat_draw || world_from_palette,
+        vat_draw,
+        skeleton_draw || vat_draw,
     };
+}
+
+/**
+ * The baked texture's shape: the bone palette's own row, `frame_count`
+ * rows tall. Both backends size and fill from this; only the upload
+ * mechanics stay per API.
+ */
+struct VatTextureLayout {
+    std::uint32_t width;
+    std::uint32_t height;
+    std::uint32_t row_bytes;
+    std::uint32_t bytes;
+};
+
+inline VatTextureLayout vat_texture_layout(
+    std::uint32_t bones,
+    std::uint32_t frames) {
+    const std::uint32_t width = bones * 4u;
+    return VatTextureLayout{width, frames, width * 16u, width * 16u * frames};
 }
 
 /**

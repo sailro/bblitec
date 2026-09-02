@@ -515,6 +515,26 @@ export function compileMeshIntrinsic(
             const source = context.compileValue(
                 call.arguments[0]!,
             );
+            if (source.kind === "mesh") {
+                // The pin's own `"_gpu" in src` arm: a mesh routes to
+                // cloneMeshNode. The clone is a second wrapper over the
+                // source's geometry, so it needs a scene-mesh identity of
+                // its own -- everything a scene later writes to it (its
+                // name, its material, its transform) must land on the
+                // clone rather than on the mesh it was taken from.
+                const engine = context.requireEngine(source, call);
+                const sceneMeshIndex = context.recordSceneMesh(
+                    "mesh-clone",
+                );
+                return {
+                    kind: "mesh",
+                    sceneMeshIndex,
+                    cpp:
+                        `bbl::clone_mesh_node(${engine}, ` +
+                        `${source.cpp})`,
+                    engineCpp: engine,
+                };
+            }
             if (source.kind !== "asset-root") {
                 context.fail(
                     call.arguments[0]!,
@@ -712,7 +732,11 @@ export function compileMeshIntrinsic(
             // mesh holds the reference; here the array needs a name whose
             // lifetime is the frame loop, so one that arrives as a
             // temporary is bound to a local first. A block-scoped local
-            // would not outlive its block, so that refuses instead.
+            // does not outlive its block, so it refuses -- unless its
+            // initializer is a compile-time constant, which the arm below
+            // promotes to a static pool instead. Scene 219 sets its thin
+            // instances from a literal identity matrix inside the setup
+            // block, and that pool is what gives it a frame-loop lifetime.
             const matricesArgument = context.unwrap(
                 call.arguments[1]!,
             );
@@ -723,17 +747,30 @@ export function compileMeshIntrinsic(
                 );
             let matrices = matricesExpression;
             if (!ts.isIdentifier(matricesArgument)) {
-                if (!context.isEntryBodyScope()) {
+                // A block-scoped local would not outlive its block, so a
+                // nested call site needs storage whose lifetime is at
+                // least the frame loop's. A pool of COMPILE-TIME
+                // constants can have it: bound as a static local it is
+                // initialized once, lives for the program, and its
+                // address never moves -- which is exactly the alias
+                // `setThinInstances` adopts. Anything else still refuses,
+                // because a static initializer would freeze the first
+                // evaluation of a run-time expression.
+                const constantPool =
+                    !context.isEntryBodyScope() &&
+                    staticFloatArrayArgument(context, matricesArgument);
+                if (!context.isEntryBodyScope() && !constantPool) {
                     context.fail(
                         call.arguments[1]!,
-                        "setThinInstances takes a named Float32Array binding inside a block; the mesh keeps referencing it for the whole frame loop.",
+                        "setThinInstances takes a named Float32Array binding, or a constant one, inside a block; the mesh keeps referencing it for the whole frame loop.",
                     );
                 }
                 matrices = context.allocateTemporaryCppName(
                     "thin_instances",
                 );
                 context.emit(
-                    `bbl::js::F32Array ${matrices} = ${matricesExpression};`,
+                    `${constantPool ? "static " : ""}bbl::js::F32Array ` +
+                        `${matrices} = ${matricesExpression};`,
                 );
             }
             const count = context.compileNumber(
@@ -1927,4 +1964,31 @@ export function compileMeshIntrinsic(
         default:
             return undefined;
     }
+}
+
+/**
+ * Whether `new Float32Array([...])` names only compile-time constants.
+ *
+ * The question a static binding turns on: a pool of literals is the same
+ * bytes on every evaluation, so binding it once is the whole of its
+ * meaning; a pool built from run-time values is not.
+ */
+function staticFloatArrayArgument(
+    context: MeshIntrinsicContext,
+    argument: ts.Expression,
+): boolean {
+    const literal = ts.isNewExpression(argument) &&
+        argument.arguments?.length === 1
+        ? context.resolveStaticExpression(argument.arguments[0]!)
+        : context.resolveStaticExpression(argument);
+    if (!ts.isArrayLiteralExpression(literal)) return false;
+    return literal.elements.every((element) => {
+        const resolved = context.resolveStaticExpression(element);
+        return (
+            ts.isNumericLiteral(resolved) ||
+            (ts.isPrefixUnaryExpression(resolved) &&
+                resolved.operator === ts.SyntaxKind.MinusToken &&
+                ts.isNumericLiteral(resolved.operand))
+        );
+    });
 }

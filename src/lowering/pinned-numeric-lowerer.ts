@@ -250,6 +250,18 @@ export interface PinnedNumericScope {
         /** What the element name and its member paths resolve to. */
         bindings: ReadonlyMap<string, PinnedBinding>;
     } | undefined;
+    /**
+     * How a `{ x, y, z }` object literal spells the native record it is.
+     *
+     * The pin passes small positional records around by value -- a point
+     * handed to a placement callback, a direction folded into a rotation --
+     * and the translator has no types, so which native struct one becomes
+     * is the caller's to name. Absent, an object literal refuses by name
+     * exactly as it did before this option existed. The member ORDER is
+     * the pin's own and is checked: a literal whose members are not `x`,
+     * `y`, `z` in that order fails rather than being reordered silently.
+     */
+    vec3Literal?: (x: string, y: string, z: string) => string;
 }
 
 /**
@@ -1538,7 +1550,40 @@ export class PinnedNumericLowerer {
         if (ts.isBinaryExpression(node)) {
             return this.binary(node);
         }
+        if (
+            ts.isObjectLiteralExpression(node) &&
+            this.scope.vec3Literal
+        ) {
+            return this.vec3Literal(node, this.scope.vec3Literal);
+        }
         return this.fail(node, "expression");
+    }
+
+    /** `{ x, y, z }` -- the pin's own positional record, as the caller spells it. */
+    private vec3Literal(
+        node: ts.ObjectLiteralExpression,
+        spell: (x: string, y: string, z: string) => string,
+    ): string {
+        const lanes = ["x", "y", "z"];
+        if (node.properties.length !== lanes.length) {
+            this.fail(node, "record literal arity");
+        }
+        const components = node.properties.map((property, lane) => {
+            if (
+                !ts.isIdentifier(property.name ?? node) ||
+                (property.name as ts.Identifier).text !== lanes[lane]
+            ) {
+                this.fail(property, `record lane '${lanes[lane]}'`);
+            }
+            if (ts.isShorthandPropertyAssignment(property)) {
+                return this.expression(property.name);
+            }
+            if (!ts.isPropertyAssignment(property)) {
+                this.fail(property, "record member");
+            }
+            return this.expression(property.initializer);
+        });
+        return spell(components[0]!, components[1]!, components[2]!);
     }
 
     /** One property read off a binding the pin treats as optional. */
@@ -1758,6 +1803,19 @@ export class PinnedNumericLowerer {
             if (method && receiver) {
                 return method(receiver.cpp, args);
             }
+            // `edges[ei]!.place(...)` -- the receiver is an ELEMENT of a
+            // bound list rather than a name. The element resolves through
+            // the same owner lookup a read does, so a method on one
+            // reaches the caller's spelling exactly as a method on a named
+            // buffer does.
+            const element = this.unwrap(callee.expression);
+            if (
+                method &&
+                ts.isElementAccessExpression(element) &&
+                this.elementOwner(element)
+            ) {
+                return method(this.elementAccess(element), args);
+            }
         }
         const name = ts.isPropertyAccessExpression(callee)
             ? `${callee.expression.getText(this.file)}.${callee.name.text}`
@@ -1836,6 +1894,20 @@ export class PinnedNumericLowerer {
                     `(${this.expression(node.left)} != ` +
                     `${this.expression(node.right)})`
                 );
+            case ts.SyntaxKind.AmpersandToken:
+                // A mask over an integral loop counter (`corner & 1` picks
+                // one AABB corner's axis, and the bounding-box cage's
+                // octant signs read the same way). Through the same helper
+                // the `|` arm below uses, for the reason its comment gives:
+                // JavaScript coerces both sides with ToInt32, and a bare
+                // `static_cast<std::int32_t>` of an out-of-range double is
+                // not that. Not gated -- it is ToInt32 for every caller,
+                // and putting it behind an opt-in refused fifteen scenes
+                // that had always lowered.
+                return (
+                    `bbl::js::bitwise_and(${this.expression(node.left)}, ` +
+                    `${this.expression(node.right)})`
+                );
             case ts.SyntaxKind.BarBarToken:
                 if (this.scope.booleanOr) {
                     return (
@@ -1855,18 +1927,6 @@ export class PinnedNumericLowerer {
                 return (
                     `bbl::js::or_number(${this.expression(node.left)}, ` +
                     `${this.expression(node.right)})`
-                );
-            case ts.SyntaxKind.AmpersandToken:
-                // A mask over an integral loop counter (`corner & 1` picks
-                // one AABB corner's axis). JavaScript coerces both sides to
-                // int32 before masking, so the emitted form says that
-                // rather than relying on either side already being one --
-                // every other numeric local here is a double.
-                return (
-                    `(static_cast<std::int32_t>(` +
-                    `${this.expression(node.left)}) & ` +
-                    `static_cast<std::int32_t>(` +
-                    `${this.expression(node.right)}))`
                 );
             case ts.SyntaxKind.AmpersandAmpersandToken:
                 if (this.scope.booleanAnd) {

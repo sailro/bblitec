@@ -61,6 +61,7 @@ import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
+import { VatLowerer } from "./lowering/vat-lowerer.js";
 import {
     sharedUpstreamStore,
     UpstreamSourceStore,
@@ -703,6 +704,15 @@ class GeneratedSourceWriter {
 #define BBLITE_GPU_MORPH_STORAGE ${gpuMorphStorage ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
+// Baked vertex animation. Reached at bakeVat, which is the pin's own
+// dynamic-import trigger for the whole chunk: a scene that never bakes
+// compiles neither the bake nor the per-mesh VAT texture behind it.
+// The instanced half is separate because only a scene that ALSO thin-
+// instances the baked mesh allocates the per-instance params texture.
+#define BBLITE_VAT ${features.includes("mesh:vat") ? 1 : 0}
+#define BBLITE_VAT_INSTANCES ${
+    features.includes("mesh:vat-instances") ? 1 : 0
+}
 #define BBLITE_MATERIAL_CLEARCOAT ${options.clearcoat ? 1 : 0}
 #define BBLITE_MATERIAL_SHEEN ${options.sheen ? 1 : 0}
 #define BBLITE_MATERIAL_IRIDESCENCE ${options.iridescence ? 1 : 0}
@@ -847,6 +857,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     standardReflection,
                     clusteredLights:
                         pbrBindingNames.has("clusteredLights"),
+                    vat: pbrBindingNames.has("vatSampler"),
+                    vatInstances: pbrBindingNames.has("vatInstanceTex"),
                 },
                 options.pinnedVariants ?? [],
                 "src/pinned-pbr-variant-cpp.ts materialTextureSlotsHeader",
@@ -871,6 +883,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 ),
                 transformNodes: features.includes("mesh:transform-node"),
                 mirroredMeshes: features.includes("mesh:mirrored"),
+                vat: features.includes("mesh:vat"),
             }),
             generated,
         );
@@ -1087,6 +1100,15 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 generated,
             );
         }
+        if (features.includes("mesh:vat")) {
+            this.writeSource(
+                "upstream/src/vat.cpp",
+                new VatLowerer(context).lower({
+                    instances: features.includes("mesh:vat-instances"),
+                }),
+                generated,
+            );
+        }
         if (features.includes("loader:gltf")) {
             const gltf = new GltfLowerer(context);
             this.writeSource(
@@ -1107,6 +1129,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     managedGroups: features.includes(
                         "animation:managed-groups",
                     ),
+                    vat: features.includes("mesh:vat"),
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
                     nonTrianglePrimitives:

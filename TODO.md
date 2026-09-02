@@ -174,7 +174,21 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   a stride anchor and no body contract), `src/lowering/audio-lowerer.ts` (whose
   own doc claims a body "is exactly these two statements" and checks two
   presences), and `src/lowering/pinned-frame-atlas.ts` /
-  `pinned-grid-atlas.ts`. Two frictions before it generalizes: the helper has
+  `pinned-grid-atlas.ts`. `src/lowering/vat-lowerer.ts` is the newest: it
+  calls `functionDeclaration(VAT_MODULE, "prepareVatMany")` and
+  `"attachVat"` under a comment stating the params layout those bodies
+  write, but `functionDeclaration` only checks a symbol exists and has a
+  body -- an upstream reorder of the UBO lanes compiles clean and renders a
+  different pose. Its sibling two lines above shows the right depth
+  (`assertExpressionShape` on the frame-count formula, and now on its frame
+  rate too). Related duplication on the same seam:
+  `compileAssetSkinnedDescendantSearch` and `isAssetSkinnedDescendantSearch`
+  in `src/compiler/handle-collections.ts` are ~120 lines cloned from the
+  name-search pair beside them; a shared `emitAssetMeshSearch(root, engine,
+  label, predicateCpp)` plus a parameterised matcher collapses most of it,
+  and leaves one copy of the shadow-name and walk-body logic instead of two
+  that must stay in step.
+  Two frictions before it generalizes: the helper has
   to move onto `LoweringContext` beside the other shared contract checks, and
   each body needs its inventory READ from the pin once rather than guessed —
   a wrong row is a refusal on the next bump, not a silent pass, but it still
@@ -251,8 +265,8 @@ leading candidates at this pin:
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
-`createUtilityLayer` 5 (221, 222 and 223 shipped; 224 wants
-`createBoundingBoxGizmo` and 49 is a physics scene), the GPU
+`createUtilityLayer` 5 (221, 222, 223 and 224 shipped; 49 is a physics
+scene), the GPU
 picker 5 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses
 by design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
 also need two `_shared` modules the corpus does not carry).
@@ -299,9 +313,9 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (17 scenes):**
+**Integrate first (15 scenes):**
 91, 113-115, 121-124,
-140, 149, 218, 219,
+140, 149,
 231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
 and splats, and deterministic picking (113-115). Every navigation scene
@@ -316,8 +330,8 @@ own entry below, and for 302 a definite-assignment `let set` in the
 capability table above -- behind which sit the moving-emitter provider and
 an `isLocal` node-particle system.
 
-**Defer (22 scenes):** 41, 42, 45-49, 102-106, 153, 164, 180, 181,
-209, 224, 225, 227, 228, 272.
+**Defer (19 scenes):** 41, 46-49, 102-106, 153, 164, 180, 181,
+209, 225, 227, 228, 272.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
   full and 0.28 foreground, identical on both backends. The composed fragment
@@ -701,32 +715,6 @@ an `isLocal` node-particle system.
   drifts from the pinned source (the deleted `_floatingOriginOffset` mirror,
   the thin-instance stream that is precision-only, not offset-subtracting)
   the source decides.
-- [ ] Scenes 218, 219: vertex animation textures. Three contracts sit in
-  front of the subsystem, each compile-probed rather than inferred:
-  `findSkinned`'s recursive first-skinned search over a glTF root
-  (`m.skeleton`, the reported blocker), `groups.length` on a container's
-  animation-group collection, and a nullable handle binding
-  (`let h: VatHandle | null = null` then a guarded assignment, read through
-  `h?.play`/`h?.update` in the render callback) -- today that assignment
-  reports "Assignment operator '=' is not supported for json-null". The
-  first wants neither flatten matcher: both leave DFS order unclaimed while
-  `findSkinned` returns the FIRST hit, so the template is
-  `compileAssetDescendantNameSearch` with a `requireUniqueAssetSkinnedMesh`
-  sibling -- shark.glb carries exactly one skinned mesh, which makes order
-  irrelevant rather than claimed.
-  Behind them `bakeVat`/`attachVat` are a subsystem this port does not have
-  at all: a baked `rgba32float` texture of `boneCount*4 x totalFrames`
-  (2,099 rows for shark.glb, about 4 MB), a 32-byte vertex-visible settings
-  block, and for 219 a per-instance params texture read by instance index.
-  Sized at 1,500-1,700 lines across the compiler, the lowering templates,
-  `runtime.hpp` and BOTH PALs. The shader half is nearly free -- registering
-  `material/pbr/fragments/vat-fragment.js` composes it from the pin, gated on
-  `MSH_VAT`, and is inert for every other scene -- so the cost is the native
-  bake and the two new per-mesh GPU resources. Do not re-derive the bake:
-  natively it is `go_to_frame` per frame, copying `MeshRecord::bone_matrices`
-  into the row, and that formula is already ported and gated by scene 11.
-  Neither scene can be measured without a registry entry: both freeze only
-  under `?seekTime`, and upstream's own specs pin `?seekTime=1.0`.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
@@ -812,17 +800,27 @@ an `isLocal` node-particle system.
 These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
-- [ ] Scenes 41-43, 45-49, 102-106, 209: finish the physics lane. **Scenes
-  40, 44, 100 and 101 are integrated and published** -- 40 the sphere drop,
-  100 the same drop with a registered collision event, 44 the sleeping
-  towers and 101 the trigger volume, each frozen at the pin's own capture
-  query and measured on both
-  backends. What remains is one capability per scene, and none of it is
+- [ ] Scenes 41, 46-49, 102-106, 209: finish the physics lane. **Scenes
+  40, 42, 44, 45, 100 and 101 are integrated and published** -- 40 the sphere
+  drop, 100 the same drop with a registered collision event, 44 the sleeping
+  towers, 101 the trigger volume, 42 the cloned pre-stepped pair and 45 the
+  collision filter masks, each frozen at the pin's own capture query and
+  measured on both backends. What remains is one capability per scene, and none of it is
   shared plumbing any more.
+  - **Three duplications the lane accumulated**, all on the lines the mask
+    pair touches: `intrinsics/physics.ts:424-438` is a 15-line copy of
+    `:394-408` with one string changed, `physics-lowerer.ts:2094-2101`
+    copies `:2085-2092`, and `pal_physics_bullet.cpp:1135-1145` copies
+    `:1123-1133` including the dirty-marking loop (one
+    `mark_shape_bodies_dirty(shape)` leaves both at three lines). Their
+    neighbour `physics_shape_set_trigger` already grew a change guard that
+    neither mask setter has. In the same lines, the emitted comment at
+    `physics-lowerer.ts:1858` names an `assertStepGate` that does not
+    exist anywhere in `src/` -- either write it or stop claiming it, now
+    that `world_step_seconds` doubles the unasserted surface it covers.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
-    an aggregate `radius`/`extents` (42, 45, and both want more besides --
-    `cloneTransformNode` and `applyPhysicsBodyForce`);
+    an aggregate `radius`/`extents` (46-49 and 102-106 reach it too);
     an unresolved variable (46);
     `createPhysicsViewer`/`showPhysicsBody` (47 -- its container flatten
     folds now, so the debug-wireframe family is what is left, and behind it
@@ -882,56 +880,53 @@ earlier compiler error.
   animation manager options past `engine`.
 - [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
   wheel handling. First blocker: reached `void` expression statements.
-- [ ] Scene 224: add the bounding-box widget. First blocker:
-  `createBoundingBoxGizmo`. Scenes 221, 222 and 223 ship the rest of the
-  family -- the utility layer as a swapchain overlay, the camera and light
-  displays, the four single editors, the three composites and the
-  local-coordinate follow -- and `attachControl`'s deferral bag now folds
-  from the pinned predicates rather than blocking anything.
-  Sized against `src/gizmo/bounding-box-gizmo.ts` (1,038 lines): 56 meshes
-  laid out every frame from the AABB and the node's world rotation, an
-  attach target that is a TRANSFORM NODE rather than a mesh (a second attach
-  kind), and `computeBoundsRecursive` walking the attached subtree PLUS the
-  main scene's meshes filtered by a parent-chain test, since the scene
-  parents its cubes without populating `.children`. Four capabilities sit
-  outside the family and gate all of it: a Standard `emissiveColor` lane
-  (the widget material is `diffuseColor` + `emissiveColor` +
-  `disableLighting`, which is how it renders flat), `mat4FromQuat`,
-  `computeAabb`, and the transform-node attach. Its `?nocam` query branch
-  also folds differently between the ad-hoc and the registered path.
-  - **Collapse the four widget builders when the shape settles.** They
-    share a preamble and a tail -- the colour read is character-identical
-    four times, and the emitted signature, root and return block repeats
-    with three substitutions -- and two per-widget tables already exist
-    (`EDIT_MODULES` and the intrinsic's `editGizmos`) that could drive one
-    builder, worth about 90-100 lines. Left until 222 and 224 land, because
-    the composites and the bounds walk are what decide which part is
-    genuinely shared.
-  - **Lower the three transcribed gizmo bodies.** `gizmo-lowerer.ts` reads
-    the pin's constants and factory option objects out of its AST, but
+- [ ] Tidy the gizmo family now that all four of its scenes ship (221, 222,
+  223, 224). Three items, all on the same lines:
+  - **Collapse the widget builders.** The four editors share a preamble and
+    a tail -- the colour read is character-identical four times, and the
+    emitted signature, root and return block repeats with three
+    substitutions -- and two per-widget tables already exist (`EDIT_MODULES`
+    and the intrinsic's `editGizmos`) that could drive one builder, worth
+    about 90-100 lines. Scene 224 settled which part is genuinely shared:
+    the cage has its own record, its own material pair and no follow at all,
+    so the collapse is the four editors plus the two display gizmos, not all
+    seven.
+  - **Lower the three transcribed bodies.** `gizmo-lowerer.ts` reads the
+    pin's constants and factory option objects out of its AST, but
     `buildHemisphereMesh`, `lineDefsForLevel` and
     `buildFrustumWireframe`/`buildFrustumEdge` are transcribed into the
     emitted C++ instead, along with the placement literals their callers
-    pass. Every construct in them -- `for`, `if`, `Math.*`, `push` onto a
-    grown list -- is one `lowerPinnedFunction` already handles, and the
-    file uses it four times for the quaternion helpers. Until they are
-    lowered, an upstream edit to a widget's geometry compiles clean and
-    draws a different shape, which is the one thing the rest of the file is
-    built to prevent.
+    pass. Every construct in them is one `lowerPinnedFunction` already
+    handles, and the bounding-box cage showed the translator reaches further
+    still -- a `for...of` over a bracketed pair, a method on an element of a
+    bound list, and a `{x, y, z}` record literal, which between them carried
+    the pin's whole `layout` body. Until they are lowered, an upstream edit
+    to a widget's geometry compiles clean and draws a different shape.
+  - **Two more ungated blocks on the same pass, both measured.** Scene 224
+    carries 25,710 B of camera/light gizmo it cannot call -- 36% of its
+    `gizmo.cpp` -- and `reachesBoundingBox()`/`reachesEditGizmos()` in the
+    same file are the pattern for a `reachesDisplayGizmos()` twin. And
+    `clone_mesh_node` (1,734 B) is emitted into all 239 trees for one
+    caller, scene 42: `scene_core.cpp` is listed with `features: []`, so it
+    needs a `mesh:clone` feature, the same shape as the `vat` option this
+    wave added to the glTF loader. 412,692 B of the two together.
+  - **The cage's bounds walk allocates twice per frame** and its `seen()`
+    is a linear `std::find`, so the walk is O(V squared) -- 30 comparisons
+    for scene 224's subtree, but ~500k/frame at 1,000 meshes. Hoist
+    `visited`/`pending` into the record and `clear()` them (which keeps
+    capacity, where `= {}` would not), and replace `seen()` with a
+    per-mesh stamp.
+  - **`optionDefaultTuple` is a byte-for-byte copy of `optionDefault`**
+    (21 identical lines); extracting `nullishRight(declaration, member)`
+    leaves both as three-liners. Same file, same pass.
   - **Gate the swapchain overlay behind a `BBLITE_HAS_*` define, and give a
     layer one record instead of three parallel arrays.** `features.cmake`
-    already carries `gizmo:utility-layer`, and
-    [CMakeLists](native/CMakeLists.txt) already has ten such gates, but the
-    overlay has none: 519 lines of PAL compile into all 231 scenes and one
-    of them can reach it. In the same lines, a layer is stored as
-    `overlay_plans` + `overlay_topology_versions` + `overlay_meshes` and
-    then recovered from `registered_scenes[layer + 1]`, so every consumer
-    re-derives that offset (five sites), re-checks a double bound (six) and
-    re-tests a null the registration path cannot produce (six). One
-    `OverlayLayer { Scene*, RenderPlan, topology_version }` removes all of
-    it, and removes the desync the dead null check would cause if it ever
-    fired -- the build loop compacts on it while every consumer indexes
-    uncompacted. Both belong on the same pass over those lines.
+    already carries `gizmo:utility-layer` and CMakeLists already has ten
+    such gates, but the overlay has none: 519 lines of PAL compile into
+    every scene and only the gizmo scenes reach it. In the same lines, a
+    layer is stored as three parallel vectors and then recovered from
+    `registered_scenes[layer + 1]`, so every consumer re-derives that
+    offset. Both belong on one pass over those lines.
 - [ ] Scene 225: add geospatial camera controls; the scene reaches
   `attachGeospatialControls` even though its reference frame is a static pose.
   First blocker: `createGeospatialCamera`.

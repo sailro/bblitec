@@ -138,6 +138,20 @@ struct GpuMesh {
     // layout.
     SDL_GPUTexture* pinned_bone_texture = nullptr;
     std::uint32_t pinned_bone_count = 0;
+#if BBLITE_VAT
+    // The baked vertex-animation texture: the bone palette's own row,
+    // frameCount rows tall. Uploaded once -- the bake is settled before the
+    // first frame -- and the per-instance params beside it, re-uploaded on
+    // the record's own version.
+    SDL_GPUTexture* pinned_vat_texture = nullptr;
+    std::uint32_t pinned_vat_bones = 0;
+    std::uint32_t pinned_vat_frames = 0;
+#if BBLITE_VAT_INSTANCES
+    SDL_GPUTexture* pinned_vat_instance_texture = nullptr;
+    std::uint32_t pinned_vat_instance_texels = 0;
+    std::uint64_t pinned_vat_instance_version = 0;
+#endif
+#endif
     // The instance matrices in Babylon's own convention, for the pin's
     // thin-instance arm. `pinned_instance_matrices` states the conversion.
     SDL_GPUBuffer* pinned_instances = nullptr;
@@ -2003,6 +2017,28 @@ PinnedResource pinned_resource_for(
                     mesh.pinned_bone_texture,
                     state.pinned_bone_sampler};
             }
+#if BBLITE_VAT
+            // The baked palette and its per-instance params ride the same
+            // split: both are the MESH's textures, both are textureLoaded,
+            // and this backend still pairs a sampler with every binding --
+            // the nearest-clamp one the bone palette already uses.
+            if (
+                slot->source ==
+                upstream::MaterialTextureSource::vat_palette) {
+                return {
+                    mesh.pinned_vat_texture,
+                    state.pinned_bone_sampler};
+            }
+#if BBLITE_VAT_INSTANCES
+            if (
+                slot->source ==
+                upstream::MaterialTextureSource::vat_instance_params) {
+                return {
+                    mesh.pinned_vat_instance_texture,
+                    state.pinned_bone_sampler};
+            }
+#endif
+#endif
         }
     }
 #if BBLITE_PBR_SHADOWS
@@ -2246,6 +2282,84 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     return state.pinned_pipelines.emplace(key, pipeline).first->second;
 }
 
+/** One rgba32float upload through this backend's copy pass. */
+void upload_pinned_float_texture(
+    GpuState& state,
+    SDL_GPUTexture* texture,
+    const float* data,
+    std::uint32_t width,
+    std::uint32_t height,
+    std::uint32_t bytes) {
+    SDL_GPUTransferBufferCreateInfo transfer_info{};
+    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
+    transfer_info.size = bytes;
+    SDL_GPUTransferBuffer* transfer =
+        SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
+    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
+    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
+    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
+    std::memcpy(mapped, data, bytes);
+    SDL_UnmapGPUTransferBuffer(state.device, transfer);
+    SDL_GPUCommandBuffer* command =
+        SDL_AcquireGPUCommandBuffer(state.device);
+    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
+    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
+    SDL_GPUTextureTransferInfo source{transfer, 0, width, height};
+    SDL_GPUTextureRegion destination{
+        texture, 0, 0, 0, 0, 0, width, height, 1};
+    SDL_UploadToGPUTexture(copy, &source, &destination, true);
+    SDL_EndGPUCopyPass(copy);
+    if (!SDL_SubmitGPUCommandBuffer(command)) {
+        gpu_error("SDL_SubmitGPUCommandBuffer");
+    }
+    SDL_ReleaseGPUTransferBuffer(state.device, transfer);
+}
+
+SDL_GPUTexture* create_pinned_float_texture(
+    GpuState& state,
+    std::uint32_t width,
+    std::uint32_t height,
+    const char* label) {
+    SDL_GPUTextureCreateInfo texture_info{};
+    texture_info.type = SDL_GPU_TEXTURETYPE_2D;
+    texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
+    texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
+    texture_info.width = width;
+    texture_info.height = height;
+    texture_info.layer_count_or_depth = 1;
+    texture_info.num_levels = 1;
+    texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    SDL_GPUTexture* texture =
+        SDL_CreateGPUTexture(state.device, &texture_info);
+    if (!texture) gpu_error(label);
+    return texture;
+}
+
+/**
+ * The nearest-clamp sampler every palette row is read through.
+ *
+ * The palettes are `textureLoad`ed, but this backend still pairs a sampler
+ * with each binding, so the live palette and the baked one share this one.
+ */
+void ensure_pinned_bone_sampler(GpuState& state) {
+    if (state.pinned_bone_sampler) return;
+    SDL_GPUSamplerCreateInfo sampler_info{};
+    sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
+    sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
+    sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
+    sampler_info.address_mode_u =
+        SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.address_mode_v =
+        SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    sampler_info.address_mode_w =
+        SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
+    state.pinned_bone_sampler =
+        SDL_CreateGPUSampler(state.device, &sampler_info);
+    if (!state.pinned_bone_sampler) {
+        gpu_error("SDL_CreateGPUSampler pinned bone palette");
+    }
+}
+
 /**
  * The bone palette as the pin's own texture.
  *
@@ -2266,69 +2380,101 @@ void write_pinned_bone_texture(
         static_cast<std::uint32_t>(record.bone_matrices.size());
     if (bones == 0) return;
     const BonePaletteLayout palette = bone_palette_layout(bones);
-    if (!state.pinned_bone_sampler) {
-        SDL_GPUSamplerCreateInfo sampler_info{};
-        sampler_info.min_filter = SDL_GPU_FILTER_NEAREST;
-        sampler_info.mag_filter = SDL_GPU_FILTER_NEAREST;
-        sampler_info.mipmap_mode = SDL_GPU_SAMPLERMIPMAPMODE_NEAREST;
-        sampler_info.address_mode_u =
-            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        sampler_info.address_mode_v =
-            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        sampler_info.address_mode_w =
-            SDL_GPU_SAMPLERADDRESSMODE_CLAMP_TO_EDGE;
-        state.pinned_bone_sampler =
-            SDL_CreateGPUSampler(state.device, &sampler_info);
-        if (!state.pinned_bone_sampler) {
-            gpu_error("SDL_CreateGPUSampler pinned bone palette");
-        }
-    }
+    ensure_pinned_bone_sampler(state);
     if (mesh.pinned_bone_count != bones) {
         if (mesh.pinned_bone_texture) {
             SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
         }
-        SDL_GPUTextureCreateInfo texture_info{};
-        texture_info.type = SDL_GPU_TEXTURETYPE_2D;
-        texture_info.format = SDL_GPU_TEXTUREFORMAT_R32G32B32A32_FLOAT;
-        texture_info.usage = SDL_GPU_TEXTUREUSAGE_SAMPLER;
-        texture_info.width = palette.width;
-        texture_info.height = palette.height;
-        texture_info.layer_count_or_depth = 1;
-        texture_info.num_levels = 1;
-        texture_info.sample_count = SDL_GPU_SAMPLECOUNT_1;
-        mesh.pinned_bone_texture =
-            SDL_CreateGPUTexture(state.device, &texture_info);
-        if (!mesh.pinned_bone_texture) {
-            gpu_error("SDL_CreateGPUTexture pinned bone palette");
-        }
+        mesh.pinned_bone_texture = create_pinned_float_texture(
+            state,
+            palette.width,
+            palette.height,
+            "SDL_CreateGPUTexture pinned bone palette");
         mesh.pinned_bone_count = bones;
     }
-    SDL_GPUTransferBufferCreateInfo transfer_info{};
-    transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-    transfer_info.size = palette.bytes;
-    SDL_GPUTransferBuffer* transfer =
-        SDL_CreateGPUTransferBuffer(state.device, &transfer_info);
-    if (!transfer) gpu_error("SDL_CreateGPUTransferBuffer");
-    void* mapped = SDL_MapGPUTransferBuffer(state.device, transfer, false);
-    if (!mapped) gpu_error("SDL_MapGPUTransferBuffer");
-    std::memcpy(mapped, record.bone_matrices.data(), palette.bytes);
-    SDL_UnmapGPUTransferBuffer(state.device, transfer);
-    SDL_GPUCommandBuffer* command =
-        SDL_AcquireGPUCommandBuffer(state.device);
-    if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
-    SDL_GPUCopyPass* copy = SDL_BeginGPUCopyPass(command);
-    SDL_GPUTextureTransferInfo source{
-        transfer, 0, palette.width, palette.height};
-    SDL_GPUTextureRegion destination{
-        mesh.pinned_bone_texture, 0, 0, 0, 0, 0,
-        palette.width, palette.height, 1};
-    SDL_UploadToGPUTexture(copy, &source, &destination, true);
-    SDL_EndGPUCopyPass(copy);
-    if (!SDL_SubmitGPUCommandBuffer(command)) {
-        gpu_error("SDL_SubmitGPUCommandBuffer");
-    }
-    SDL_ReleaseGPUTransferBuffer(state.device, transfer);
+    upload_pinned_float_texture(
+        state,
+        mesh.pinned_bone_texture,
+        record.bone_matrices.data()->data(),
+        palette.width,
+        palette.height,
+        palette.bytes);
 }
+
+#if BBLITE_VAT
+/**
+ * The baked VAT as the pin's own texture.
+ *
+ * `bakeVat` stacks one palette row per animation frame into an
+ * rgba32float texture of `boneCount * 4` texels by `frameCount` rows --
+ * byte for byte what the live path uploads as its one-row palette, which
+ * is why VAT(frame N) reproduces the live pose. The bake is settled before
+ * the first frame, so this uploads once; only the per-instance params can
+ * change afterwards and they carry their own version.
+ */
+void write_pinned_vat_texture(
+    GpuState& state,
+    GpuMesh& mesh,
+    const MeshRecord& record,
+    const Engine& engine) {
+    if (!record.has_vat) return;
+    if (record.vat.bake >= engine.vat_bakes.size()) return;
+    const VatBakeRecord& bake = engine.vat_bakes[record.vat.bake];
+    if (bake.bone_count == 0 || bake.frame_count == 0) return;
+    ensure_pinned_bone_sampler(state);
+    const VatTextureLayout layout =
+        vat_texture_layout(bake.bone_count, bake.frame_count);
+    if (
+        mesh.pinned_vat_bones != bake.bone_count ||
+        mesh.pinned_vat_frames != bake.frame_count) {
+        if (mesh.pinned_vat_texture) {
+            SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
+        }
+        mesh.pinned_vat_texture = create_pinned_float_texture(
+            state,
+            layout.width,
+            layout.height,
+            "SDL_CreateGPUTexture pinned VAT");
+        mesh.pinned_vat_bones = bake.bone_count;
+        mesh.pinned_vat_frames = bake.frame_count;
+        upload_pinned_float_texture(
+            state,
+            mesh.pinned_vat_texture,
+            bake.data.data(),
+            layout.width,
+            layout.height,
+            layout.bytes);
+    }
+#if BBLITE_VAT_INSTANCES
+    const VatData& vat = record.vat;
+    if (vat.instance_texels == 0) return;
+    if (mesh.pinned_vat_instance_texels != vat.instance_texels) {
+        if (mesh.pinned_vat_instance_texture) {
+            SDL_ReleaseGPUTexture(
+                state.device,
+                mesh.pinned_vat_instance_texture);
+        }
+        mesh.pinned_vat_instance_texture = create_pinned_float_texture(
+            state,
+            vat.instance_texels,
+            1u,
+            "SDL_CreateGPUTexture pinned VAT instances");
+        mesh.pinned_vat_instance_texels = vat.instance_texels;
+        mesh.pinned_vat_instance_version = 0;
+    }
+    if (mesh.pinned_vat_instance_version != vat.instance_version) {
+        upload_pinned_float_texture(
+            state,
+            mesh.pinned_vat_instance_texture,
+            vat.instance_params.data(),
+            vat.instance_texels,
+            1u,
+            vat.instance_texels * 16u);
+        mesh.pinned_vat_instance_version = vat.instance_version;
+    }
+#endif
+}
+#endif
 
 /**
  * Draws one PBR command through the pin's own composed stages.
@@ -2383,8 +2529,8 @@ void draw_pinned_variant(
         upstream::pbr_variants[pinned_variant];
     const MeshRecord& pinned_record =
         engine.meshes[item.mesh.value];
-    // `pinned_draw_conventions` states the skinned and
-    // palette-world contract these three booleans carry.
+    // `pinned_draw_conventions` states the skinned, baked and
+    // palette-world contract these booleans carry.
     const PinnedDrawConventions conventions =
         pinned_draw_conventions(
             pinned_variant,
@@ -2394,7 +2540,7 @@ void draw_pinned_variant(
             scene,
             engine,
             pinned_draw_world(
-                conventions.skeleton_draw,
+                conventions.identity_world,
                 conventions.world_from_palette,
                 variant_entry.uses_local_position,
                 pinned_record,
@@ -2429,6 +2575,16 @@ void draw_pinned_variant(
         if (block == "material") {
             return {pinned_material.data(), pinned_material.size()};
         }
+#if BBLITE_VAT
+        // The pin's 32-byte vertex-visible VAT settings: params then clock,
+        // written by play/update on the record itself.
+        if (block == "vat") {
+            return {
+                pinned_record.vat.settings.data(),
+                pinned_record.vat.settings.size() * sizeof(float),
+            };
+        }
+#endif
         if (block == "gp") {
             // The geometry-params block: previous view-projection and
             // camera near/far, built by the geometry task's caller.
@@ -4987,6 +5143,24 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         mesh.pinned_bone_texture = nullptr;
         mesh.pinned_bone_count = 0;
     }
+#if BBLITE_VAT
+    if (mesh.pinned_vat_texture) {
+        SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
+        mesh.pinned_vat_texture = nullptr;
+        mesh.pinned_vat_bones = 0;
+        mesh.pinned_vat_frames = 0;
+    }
+#if BBLITE_VAT_INSTANCES
+    if (mesh.pinned_vat_instance_texture) {
+        SDL_ReleaseGPUTexture(
+            state.device,
+            mesh.pinned_vat_instance_texture);
+        mesh.pinned_vat_instance_texture = nullptr;
+        mesh.pinned_vat_instance_texels = 0;
+        mesh.pinned_vat_instance_version = 0;
+    }
+#endif
+#endif
     // Aliased to `instances` for thin-instanced meshes, owned otherwise.
     if (mesh.pinned_instances && mesh.pinned_instances != mesh.instances) {
         SDL_ReleaseGPUBuffer(state.device, mesh.pinned_instances);
@@ -8522,9 +8696,21 @@ bool run_gpu_engine(Engine& engine) {
                         streamed[draw.item_index] = true;
                         const std::size_t palette_variant =
                             pinned_variant_for_draw(scene, engine, draw);
-                        if (
-                            palette_variant == npos ||
-                            !pinned_variant_skeleton(palette_variant)) {
+                        if (palette_variant == npos) continue;
+#if BBLITE_VAT
+                        // A baked draw streams its own texture here for
+                        // the same reason a live one does: a copy pass
+                        // cannot open inside a render pass.
+                        if (pinned_variant_vat(palette_variant)) {
+                            write_pinned_vat_texture(
+                                state,
+                                state.meshes[draw.item_index],
+                                engine.meshes[draw.item.mesh.value],
+                                engine);
+                            continue;
+                        }
+#endif
+                        if (!pinned_variant_skeleton(palette_variant)) {
                             continue;
                         }
                         write_pinned_bone_texture(

@@ -1364,6 +1364,23 @@ class Compiler
                 cppType: "bbl::MeshHandle",
             };
         }
+        // `let handle: VatHandle | null = null` then a guarded assignment
+        // inside the "did the asset carry a skinned mesh and clips" arm:
+        // the shape both VAT scenes are written in.
+        if (name === "VatHandle") {
+            return {
+                kind: "vat-handle",
+                cppType: "bbl::VatHandle",
+            };
+        }
+        // `let swim: VatClip | null = null` then the guarded row read: the
+        // per-instance scene's shape for holding one clip's row block.
+        if (name === "VatClip") {
+            return {
+                kind: "vat-clip",
+                cppType: "bbl::VatClipRow",
+            };
+        }
         if (name?.endsWith("Node")) {
             return {
                 kind: "audio-node",
@@ -5593,6 +5610,27 @@ class Compiler
                     ? owner.optionalFoundCpp
                     : `(${owner.optionalFoundCpp} && ${value.optionalFoundCpp})`;
             return { ...value, optionalFoundCpp: present };
+        }
+        // `baked.clips`: the bake's own row map. It carries the bake and
+        // nothing else, so the name lookup that follows is the native row
+        // read rather than a generation-time table.
+        if (owner.kind === "vat-bake" && property === "clips") {
+            return {
+                kind: "vat-clip-map",
+                cpp: owner.cpp,
+                ...(owner.engineCpp !== undefined
+                    ? { engineCpp: owner.engineCpp }
+                    : {}),
+            };
+        }
+        // A container's own handle collection, read without the `?? []`
+        // guard the nullish resolver already claims. Asked before the
+        // failure below rather than in `readOwnerProperty`, because the
+        // collection concept resolves the owner itself.
+        if (owner.kind === "asset") {
+            const collection =
+                this.handleCollections.resolveCollectionRead(expression);
+            if (collection) return collection;
         }
         const resolved = this.readOwnerProperty(owner, expression);
         if (resolved) {
@@ -11370,6 +11408,23 @@ class Compiler
         }
         if (owner.kind === "record") {
             return undefined;
+        }
+        // A handle collection's size. The concept's other operations are
+        // its loop and its searches; this is the same native vector read
+        // through its one remaining JavaScript member, which is how both
+        // VAT scenes ask whether the file carried any clips at all.
+        if (
+            owner.kind === "handle-collection" &&
+            owner.handleCollection &&
+            expression.name.text === "length"
+        ) {
+            return {
+                kind: "number",
+                cpp:
+                    "static_cast<double>(" +
+                    `${owner.handleCollection.containerCpp}.size())`,
+                engineCpp: owner.handleCollection.engineCpp,
+            };
         }
         if (owner.kind === "data") {
             const dataProperty =

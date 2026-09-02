@@ -26,6 +26,11 @@ function lower(
         calls: ReadonlyMap<string, (args: readonly string[]) => string>;
         tupleCalls: ReadonlyMap<string, number>;
         recordCalls: ReadonlyMap<string, readonly string[]>;
+        methods: ReadonlyMap<
+            string,
+            (receiver: string, args: readonly string[]) => string
+        >;
+        vec3Literal: (x: string, y: string, z: string) => string;
     }> = {},
 ): string {
     const file = ts.createSourceFile(
@@ -39,6 +44,8 @@ function lower(
         calls: extra.calls ?? new Map(),
         ...(extra.tupleCalls ? { tupleCalls: extra.tupleCalls } : {}),
         ...(extra.recordCalls ? { recordCalls: extra.recordCalls } : {}),
+        ...(extra.methods ? { methods: extra.methods } : {}),
+        ...(extra.vec3Literal ? { vec3Literal: extra.vec3Literal } : {}),
     });
     return file.statements
         .flatMap((statement) => lowerer.statement(statement, ""))
@@ -282,3 +289,86 @@ test("stores a byte through the spec's ToUint8 rather than a cast", () => {
     );
     assert.match(emitted, /bbl::js::to_uint8\(300\.0\)/);
 });
+
+// The pin passes small positional records around by value -- a point handed
+// to a placement callback -- and the translator has no types, so which
+// native struct one becomes is the caller's to name. Absent, it refuses,
+// which is what it did before the option existed.
+test("spells a positional record literal the way the caller names it", () => {
+    const emitted = lower(
+        "const p = place({ x: a, y: 0, z: a });",
+        [["a", { cpp: "a", type: "scalar" }]],
+        {
+            calls: new Map([
+                ["place", (args) => `place(${args.join(", ")})`],
+            ]),
+            vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+        },
+    );
+    assert.match(emitted, /place\(Vec3d\{a, 0\.0, a\}\)/);
+});
+
+test("refuses a record literal whose lanes are not the pin's own order", () => {
+    assert.throws(
+        () => lower(
+            "const p = place({ x: a, z: a, y: a });",
+            [["a", { cpp: "a", type: "scalar" }]],
+            {
+                calls: new Map([
+                    ["place", (args) => `place(${args.join(", ")})`],
+                ]),
+                vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+            },
+        ),
+        /record lane 'y'/,
+    );
+});
+
+test("refuses a record literal when the caller named no spelling", () => {
+    assert.throws(
+        () => lower("const p = place({ x: 1, y: 2, z: 3 });", [], {
+            calls: new Map([
+                ["place", (args) => `place(${args.join(", ")})`],
+            ]),
+        }),
+        /Unsupported pinned expression/,
+    );
+});
+
+// A method called on an ELEMENT of a bound list, which is how the pinned
+// bounding-box layout reaches each handle's placement callback.
+test("reaches a method on an element of a bound list", () => {
+    const emitted = lower(
+        "edges[0]!.place(a);",
+        [
+            ["edges", { cpp: "record.edges", type: "scalar" }],
+            ["a", { cpp: "a", type: "scalar" }],
+        ],
+        {
+            methods: new Map([
+                [
+                    "place",
+                    (receiver, args) =>
+                        `place_edge(${receiver}, ${args.join(", ")})`,
+                ],
+            ]),
+        },
+    );
+    assert.match(
+        emitted,
+        /place_edge\(record\.edges\[static_cast<std::size_t>\(0\.0\)\], a\)/,
+    );
+});
+
+// JavaScript's `&` is ToInt32 on both sides and this translator's scalars
+// are doubles, so the narrowing goes through the same runtime helper the
+// `|` arm uses rather than through a bare cast, which is not ToInt32 for a
+// double outside int32 range. Ungated: every caller of `&` wants ToInt32.
+test("narrows both sides of a bit test the way ToInt32 does", () => {
+    const emitted = lower(
+        "const sx = i & 4 ? 1 : -1;",
+        [["i", { cpp: "i", type: "scalar" }]],
+    );
+    assert.match(emitted, /bbl::js::bitwise_and\(i, 4\.0\)/);
+});
+

@@ -344,6 +344,10 @@ export function compileAdaptations(
                 "gizmo:axis-scale",
                 "gizmo:plane-drag",
                 "gizmo:plane-rotation",
+                // The bounding-box cage splits the same way: everything
+                // it draws is generated, and the drag half it hangs on
+                // those same meshes is not reached.
+                "gizmo:bounding-box",
             ] as const satisfies readonly Feature[]
         ).some((feature) => features.includes(feature))
     ) {
@@ -382,10 +386,21 @@ export function compileAdaptations(
                 "gizmos already use where the pin makes an invisible " +
                 "zero-height cylinder for the same purpose, and that the " +
                 "pinned root IS invisible is itself asserted -- it is what " +
-                "makes the substitution sound.",
+                "makes the substitution sound. The BOUNDING-BOX cage " +
+                "splits the same way and builds no collider of its own: " +
+                "its drag hangs on the handles it already draws, so what " +
+                "is absent there is the hover material nothing assigns " +
+                "outside a drag callback, the disposer list, the " +
+                "per-rotator world axis only the rotation drag rotates " +
+                "around, and the local bounding diagonal only that drag " +
+                "divides by. Its root is the same transform-node " +
+                "substitution, asserted the same way, and generation also " +
+                "asserts the pin's own zero extents on the cylinder it " +
+                "stands in for.",
             risk: "medium",
             validation: [
                 "scenes 221 and 222 parity against the browser golden, which draws the same widgets before any pointer event",
+                "scene 224 parity against the same golden for the bounding-box cage, which the browser lays out before any pointer event too",
                 "generation fails when a pinned collider mesh, sector quad or widget root stops being hidden at build time",
             ],
         });

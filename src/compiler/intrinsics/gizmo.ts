@@ -638,6 +638,124 @@ function compileEditGizmoAttach(
     };
 }
 
+/**
+ * The bounding-box gizmo's options, in the order the generated factory
+ * takes them.
+ *
+ * All four are members the pinned factory defaults through a `??` and all
+ * four change what the cage DRAWS -- the material colour, the wireframe
+ * tube diameter, the corner arm size (which the pin also multiplies into
+ * the arm length) and the rotation bar length (which sets its thickness).
+ * Each travels as the pin's own optional so the default stays in the
+ * generated body, where the lowerer reads it out of the coalesce.
+ */
+const boundingBoxOptions: readonly {
+    name: string;
+    kind: "number" | "boolean";
+}[] = [
+    { name: "color", kind: "number" },
+    { name: "edgeThickness", kind: "number" },
+    { name: "scaleBoxSize", kind: "number" },
+    { name: "rotationAnchorSize", kind: "number" },
+];
+
+/** `createBoundingBoxGizmo(engine, layer, options?)`. */
+function compileBoundingBoxGizmo(
+    context: GizmoIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 3);
+    const engine = context.compileValue(call.arguments[0]!);
+    const layer = context.compileValue(call.arguments[1]!);
+    context.expectKind(engine, "engine", call.arguments[0]!);
+    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    context.expectSameEngine(engine, layer, call);
+    const options = call.arguments[2]
+        ? context.expectObjectLiteral(call.arguments[2])
+        : undefined;
+    if (options) {
+        validateObjectProperties(
+            context,
+            options,
+            boundingBoxOptions.map(({ name }) => name),
+            "createBoundingBoxGizmo options support " +
+                `${boundingBoxOptions
+                    .map(({ name }) => name)
+                    .join(", ")}: those are the members the pinned ` +
+                "BoundingBoxGizmoOptions declares.",
+        );
+    }
+    const supplied = boundingBoxOptions.map((option) =>
+        compileGizmoOption(
+            context,
+            "createBoundingBoxGizmo",
+            option,
+            options
+                ? context.objectProperty(options, option.name)
+                : undefined,
+        ),
+    );
+    context.reachFeature("gizmo:bounding-box", call);
+    // What the pinned body's own factory calls build: the wireframe
+    // edges are cylinders, and every handle -- corner arms, rotation
+    // bars, face cubes and the invisible body -- is a box. Reached here
+    // because that is where the pin reaches them.
+    context.reachFeature("mesh:box", call);
+    context.reachFeature("mesh:cylinder", call);
+    // The cage's own root, which stands in for the pin's invisible
+    // zero-extent cylinder the way every other widget's root does.
+    context.reachFeature("mesh:transform-node", call);
+    return {
+        kind: "bounding-box-gizmo",
+        cpp:
+            `bbl::create_bounding_box_gizmo(` +
+            `${engine.cpp}, ${layer.cpp}` +
+            `${supplied.map((argument) => `, ${argument}`).join("")})`,
+        engineCpp: engine.cpp,
+    };
+}
+
+/**
+ * `attachBoundingBoxGizmoToNode(gizmo, node)`.
+ *
+ * The pinned parameter is a `SceneNode`, which upstream is one type over
+ * both a mesh and a transform node. This port keeps them in separate
+ * tables, and what the attach binds is read back by two things -- the
+ * node's world matrix and the parent-chain test that decides which of the
+ * main scene's meshes the bounds walk folds in -- so the record carries
+ * one identity. A mesh target refuses by name rather than being bound to
+ * a handle both readers would misread.
+ */
+function compileBoundingBoxAttach(
+    context: GizmoIntrinsicContext,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const gizmo = context.compileValue(call.arguments[0]!);
+    const node = context.compileValue(call.arguments[1]!);
+    context.expectKind(gizmo, "bounding-box-gizmo", call.arguments[0]!);
+    if (node.kind !== "transform-node") {
+        context.fail(
+            call.arguments[1]!,
+            "attachBoundingBoxGizmoToNode binds a transform node here, " +
+                `received ${node.kind}. The pinned parameter is a ` +
+                "SceneNode, which upstream covers a mesh as well; this " +
+                "port keeps the two in separate tables and the bounds " +
+                "walk tests each candidate mesh's parent chain against " +
+                "the bound handle, so a mesh target would need its own " +
+                "identity in the record and its own arm in both readers.",
+        );
+    }
+    context.expectSameEngine(gizmo, node, call);
+    return {
+        kind: "void",
+        cpp:
+            `bbl::attach_bounding_box_gizmo_to_node(` +
+            `${context.requireEngine(gizmo, call)}, ` +
+            `${gizmo.cpp}, ${node.cpp})`,
+    };
+}
+
 export function compileGizmoIntrinsic(
     context: GizmoIntrinsicContext,
     importedName: string,
@@ -667,6 +785,12 @@ export function compileGizmoIntrinsic(
         }
     }
     switch (importedName) {
+        case "createBoundingBoxGizmo":
+            return compileBoundingBoxGizmo(context, call);
+
+        case "attachBoundingBoxGizmoToNode":
+            return compileBoundingBoxAttach(context, call);
+
         case "createUtilityLayer": {
             context.expectArgumentCount(call, 2, 3);
             refuseOptions(context, call, 2, "createUtilityLayer");

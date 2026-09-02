@@ -246,6 +246,24 @@ struct DawnMesh {
     bool pinned_mirrored_vertices = false;
     WGPUTextureView pinned_bone_view = nullptr;
     std::uint32_t pinned_bone_count = 0;
+#if BBLITE_VAT
+    // The baked vertex-animation texture and the 32-byte settings block
+    // beside it. The bake is settled before the first frame so the texture
+    // uploads once; the settings ride the record's own version, because
+    // `update` writes them every frame the scene advances the clock.
+    WGPUTexture pinned_vat_texture = nullptr;
+    WGPUTextureView pinned_vat_view = nullptr;
+    std::uint32_t pinned_vat_bones = 0;
+    std::uint32_t pinned_vat_frames = 0;
+    WGPUBuffer pinned_vat_settings = nullptr;
+    std::uint64_t pinned_vat_settings_version = 0;
+#if BBLITE_VAT_INSTANCES
+    WGPUTexture pinned_vat_instance_texture = nullptr;
+    WGPUTextureView pinned_vat_instance_view = nullptr;
+    std::uint32_t pinned_vat_instance_texels = 0;
+    std::uint64_t pinned_vat_instance_version = 0;
+#endif
+#endif
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -1215,6 +1233,34 @@ struct DawnState : DawnDevice {
             }
             mesh.pinned_bone_view = nullptr;
             mesh.pinned_bone_texture = nullptr;
+#if BBLITE_VAT
+            if (mesh.pinned_vat_view) {
+                wgpuTextureViewRelease(mesh.pinned_vat_view);
+            }
+            if (mesh.pinned_vat_texture) {
+                wgpuTextureRelease(mesh.pinned_vat_texture);
+            }
+            if (mesh.pinned_vat_settings) {
+                wgpuBufferRelease(mesh.pinned_vat_settings);
+            }
+            mesh.pinned_vat_view = nullptr;
+            mesh.pinned_vat_texture = nullptr;
+            mesh.pinned_vat_settings = nullptr;
+            mesh.pinned_vat_bones = 0;
+            mesh.pinned_vat_frames = 0;
+#if BBLITE_VAT_INSTANCES
+            if (mesh.pinned_vat_instance_view) {
+                wgpuTextureViewRelease(mesh.pinned_vat_instance_view);
+            }
+            if (mesh.pinned_vat_instance_texture) {
+                wgpuTextureRelease(mesh.pinned_vat_instance_texture);
+            }
+            mesh.pinned_vat_instance_view = nullptr;
+            mesh.pinned_vat_instance_texture = nullptr;
+            mesh.pinned_vat_instance_texels = 0;
+            mesh.pinned_vat_instance_version = 0;
+#endif
+#endif
 #endif
             if (mesh.material_uniforms) {
                 wgpuBufferRelease(mesh.material_uniforms);
@@ -3749,6 +3795,19 @@ PinnedResource pinned_resource_for(
                 return PinnedResource{mesh.views[0], mesh.samplers[0]};
             case upstream::MaterialTextureSource::bone_palette:
                 return PinnedResource{mesh.pinned_bone_view, nullptr};
+#if BBLITE_VAT
+            // The baked palette and its per-instance params: the mesh's
+            // own textures, textureLoaded like the live palette, so no
+            // sampler on this backend either.
+            case upstream::MaterialTextureSource::vat_palette:
+                return PinnedResource{mesh.pinned_vat_view, nullptr};
+#if BBLITE_VAT_INSTANCES
+            case upstream::MaterialTextureSource::vat_instance_params:
+                return PinnedResource{
+                    mesh.pinned_vat_instance_view,
+                    nullptr};
+#endif
+#endif
 #if defined(BBLITE_HAS_CLUSTERED_LIGHTS) && BBLITE_HAS_CLUSTERED_LIGHTS
             // The clustered field's three, from the container the scene
             // holds. Each is `textureLoad`ed, so none carries a sampler at
@@ -3769,6 +3828,24 @@ PinnedResource pinned_resource_for(
          std::string(name) + "'.")
             .c_str());
     return PinnedResource{};
+}
+
+WGPUTexture create_pinned_float_texture(
+    DawnState& state,
+    std::uint32_t width,
+    std::uint32_t height,
+    const char* failure) {
+    WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
+    descriptor.dimension = WGPUTextureDimension_2D;
+    descriptor.size = {width, height, 1};
+    descriptor.format = WGPUTextureFormat_RGBA32Float;
+    descriptor.usage =
+        WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
+    descriptor.mipLevelCount = 1;
+    descriptor.sampleCount = 1;
+    WGPUTexture texture = wgpuDeviceCreateTexture(state.device, &descriptor);
+    if (!texture) dawn_error(failure);
+    return texture;
 }
 
 /**
@@ -3795,19 +3872,11 @@ void write_pinned_bone_texture(
         if (mesh.pinned_bone_texture) {
             wgpuTextureRelease(mesh.pinned_bone_texture);
         }
-        WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
-        descriptor.dimension = WGPUTextureDimension_2D;
-        descriptor.size = {palette.width, palette.height, 1};
-        descriptor.format = WGPUTextureFormat_RGBA32Float;
-        descriptor.usage =
-            WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-        descriptor.mipLevelCount = 1;
-        descriptor.sampleCount = 1;
-        mesh.pinned_bone_texture =
-            wgpuDeviceCreateTexture(state.device, &descriptor);
-        if (!mesh.pinned_bone_texture) {
-            dawn_error("pinned bone texture creation failed.");
-        }
+        mesh.pinned_bone_texture = create_pinned_float_texture(
+            state,
+            palette.width,
+            palette.height,
+            "pinned bone texture creation failed.");
         mesh.pinned_bone_view =
             wgpuTextureCreateView(mesh.pinned_bone_texture, nullptr);
         mesh.pinned_bone_count = bones;
@@ -3826,6 +3895,130 @@ void write_pinned_bone_texture(
         &layout,
         &extent);
 }
+
+#if BBLITE_VAT
+/** One rgba32float upload of `height` rows through the queue. */
+void write_pinned_float_texture(
+    DawnState& state,
+    WGPUTexture texture,
+    const float* data,
+    const VatTextureLayout& layout) {
+    WGPUTexelCopyTextureInfo destination = WGPU_TEXEL_COPY_TEXTURE_INFO_INIT;
+    destination.texture = texture;
+    WGPUTexelCopyBufferLayout copy = WGPU_TEXEL_COPY_BUFFER_LAYOUT_INIT;
+    copy.bytesPerRow = layout.row_bytes;
+    copy.rowsPerImage = layout.height;
+    WGPUExtent3D extent{layout.width, layout.height, 1};
+    wgpuQueueWriteTexture(
+        state.queue,
+        &destination,
+        data,
+        layout.bytes,
+        &copy,
+        &extent);
+}
+
+/**
+ * The baked VAT as the pin's own texture, plus the settings block the
+ * vertex stage reads its row range and clock from.
+ *
+ * The texture is `bakeVat`'s output byte for byte -- one live palette row
+ * per animation frame -- so this uploads it once and then only follows the
+ * settings and per-instance versions the handle's writers bump.
+ */
+void write_pinned_vat_texture(
+    DawnState& state,
+    DawnMesh& mesh,
+    const MeshRecord& record,
+    const Engine& engine) {
+    if (!record.has_vat) return;
+    if (record.vat.bake >= engine.vat_bakes.size()) return;
+    const VatBakeRecord& bake = engine.vat_bakes[record.vat.bake];
+    if (bake.bone_count == 0 || bake.frame_count == 0) return;
+    const VatTextureLayout layout =
+        vat_texture_layout(bake.bone_count, bake.frame_count);
+    if (
+        mesh.pinned_vat_bones != bake.bone_count ||
+        mesh.pinned_vat_frames != bake.frame_count) {
+        if (mesh.pinned_vat_view) {
+            wgpuTextureViewRelease(mesh.pinned_vat_view);
+        }
+        if (mesh.pinned_vat_texture) {
+            wgpuTextureRelease(mesh.pinned_vat_texture);
+        }
+        mesh.pinned_vat_texture = create_pinned_float_texture(
+            state,
+            layout.width,
+            layout.height,
+            "pinned VAT texture creation failed.");
+        mesh.pinned_vat_view =
+            wgpuTextureCreateView(mesh.pinned_vat_texture, nullptr);
+        mesh.pinned_vat_bones = bake.bone_count;
+        mesh.pinned_vat_frames = bake.frame_count;
+        write_pinned_float_texture(
+            state,
+            mesh.pinned_vat_texture,
+            bake.data.data(),
+            layout);
+    }
+    if (!mesh.pinned_vat_settings) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = sizeof(float) * 8;
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        mesh.pinned_vat_settings =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!mesh.pinned_vat_settings) {
+            dawn_error("pinned VAT settings buffer creation failed.");
+        }
+        mesh.pinned_vat_settings_version = 0;
+    }
+    if (mesh.pinned_vat_settings_version != record.vat.settings_version) {
+        wgpuQueueWriteBuffer(
+            state.queue,
+            mesh.pinned_vat_settings,
+            0,
+            record.vat.settings.data(),
+            sizeof(float) * 8);
+        mesh.pinned_vat_settings_version = record.vat.settings_version;
+    }
+#if BBLITE_VAT_INSTANCES
+    const VatData& vat = record.vat;
+    if (vat.instance_texels == 0) return;
+    if (mesh.pinned_vat_instance_texels != vat.instance_texels) {
+        if (mesh.pinned_vat_instance_view) {
+            wgpuTextureViewRelease(mesh.pinned_vat_instance_view);
+        }
+        if (mesh.pinned_vat_instance_texture) {
+            wgpuTextureRelease(mesh.pinned_vat_instance_texture);
+        }
+        mesh.pinned_vat_instance_texture = create_pinned_float_texture(
+            state,
+            vat.instance_texels,
+            1u,
+            "pinned VAT instance texture creation failed.");
+        mesh.pinned_vat_instance_view = wgpuTextureCreateView(
+            mesh.pinned_vat_instance_texture,
+            nullptr);
+        mesh.pinned_vat_instance_texels = vat.instance_texels;
+        mesh.pinned_vat_instance_version = 0;
+    }
+    if (mesh.pinned_vat_instance_version != vat.instance_version) {
+        write_pinned_float_texture(
+            state,
+            mesh.pinned_vat_instance_texture,
+            vat.instance_params.data(),
+            // One row of `texels` rgba32float texels, two per instance.
+            VatTextureLayout{
+                vat.instance_texels,
+                1u,
+                vat.instance_texels * 16u,
+                vat.instance_texels * 16u});
+        mesh.pinned_vat_instance_version = vat.instance_version;
+    }
+#endif
+}
+#endif
 
 /**
  * The group-1 bind group for one variant of a mesh: the given mesh and
@@ -3890,6 +4083,21 @@ WGPUBindGroup build_pinned_draw_group(
                         "container's params buffer.");
                 }
                 group_entry.size = sizeof(std::uint32_t) * 8;
+                entries.push_back(group_entry);
+                continue;
+            }
+#endif
+#if BBLITE_VAT
+            // The pin's 32-byte VAT settings: params then clock, written
+            // on the mesh's own buffer by play/update.
+            if (binding.name == "vat") {
+                group_entry.buffer = mesh.pinned_vat_settings;
+                if (!group_entry.buffer) {
+                    dawn_error(
+                        "a baked draw reached the encode before its VAT "
+                        "settings block.");
+                }
+                group_entry.size = sizeof(float) * 8;
                 entries.push_back(group_entry);
                 continue;
             }
@@ -11299,6 +11507,19 @@ bool run_dawn_engine(Engine& engine) {
                                     draw_mesh,
                                     variant_record);
                             }
+#if BBLITE_VAT
+                            // Before the bind group is built: the settings
+                            // buffer it names has to exist by then, and a
+                            // cached group keeps the same buffer while the
+                            // clock is rewritten in place.
+                            if (conventions.vat_draw) {
+                                write_pinned_vat_texture(
+                                    state,
+                                    draw_mesh,
+                                    variant_record,
+                                    engine);
+                            }
+#endif
                             DawnDrawState& pinned_state =
                                 ensure_pinned_draw_bindings(
                                     state,
@@ -11318,7 +11539,7 @@ bool run_dawn_engine(Engine& engine) {
                                 engine,
                                 draw,
                                 variant,
-                                conventions.skeleton_draw,
+                                conventions.identity_world,
                                 conventions.world_from_palette,
                                 pinned_state.mesh_uniforms,
                                 pinned_state.material_uniforms);

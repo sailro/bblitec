@@ -62,6 +62,9 @@ import {
     glbJsonText,
     type JsonObject,
 } from "../gltf-document.js";
+// The same reader the material arms key their skinned mesh features by, so
+// "which meshes of this file are skinned" has one answer in the compiler.
+import { skinnedMeshIndices } from "../pinned-mesh-features.js";
 
 /**
  * One engine handle collection an expression names.
@@ -664,6 +667,38 @@ export class HandleCollections {
         const asset =
             owner.kind === "asset" &&
             owner.asset?.kind === "gltf"
+                ? owner.asset
+                : undefined;
+        return {
+            kind: "handle-collection",
+            cpp: "",
+            engineCpp: target.engineCpp,
+            handleCollection: {
+                ...target,
+                ...(asset ? { asset } : {}),
+            },
+        };
+    }
+
+    /**
+     * `<container>.animationGroups` read WITHOUT the `?? []` guard.
+     *
+     * Upstream the member is optional, so a scene either defaults it or
+     * reads it through `?.`; both spellings name the same native container,
+     * which is the rule the nullish resolver above already states. Reading
+     * the bare property answers with the same collection value rather than
+     * inventing a second representation of it -- a file with no animations
+     * leaves the loader's vector empty, which is what the guarded arm's
+     * empty literal stands for.
+     */
+    public resolveCollectionRead(
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined {
+        const resolved = this.resolveExpressionTarget(expression);
+        if (!resolved) return undefined;
+        const { target, owner } = resolved;
+        const asset =
+            owner.kind === "asset" && owner.asset?.kind === "gltf"
                 ? owner.asset
                 : undefined;
         return {
@@ -1397,6 +1432,129 @@ export class HandleCollections {
     }
 
     /**
+     * The VAT scenes' `findSkinned(root)`: the first mesh of an imported
+     * glTF root that carries a skeleton.
+     *
+     * Its sibling above searches by NAME, and a name can sit on several
+     * flattened records, so that one has to reason about which hierarchy
+     * branch the source walk reaches first. This one selects on a property
+     * the loader records per mesh, and generation refuses unless the
+     * materialized file carries EXACTLY ONE skinned primitive -- so the
+     * emitted loop's first hit is the DFS's first hit whatever order the
+     * flat table is in. Order is made irrelevant rather than claimed.
+     */
+    public compileAssetSkinnedDescendantSearch(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        if (call.arguments.length !== 1) return undefined;
+        // A plain symbol lookup, NOT resolveFunctionDeclaration, unlike the
+        // name search beside it. That one gates on `callee.text ===
+        // "findNode"` first, so it only ever resolves the call it is
+        // about; this one matches on shape and has no name to gate on, so
+        // it runs for every one-argument call in the scene. Going through
+        // the strict resolver would make an ordinary generic, generator or
+        // rest-parameter helper fail HERE -- while merely being asked
+        // whether it is a skinned search -- rather than at the
+        // user-function path that owns that diagnostic. Asking the checker
+        // directly has no failure path, and every one of those shapes is
+        // rejected by the predicate below anyway.
+        const symbol = this.context.checker.getSymbolAtLocation(callee);
+        if (!symbol) return undefined;
+        const target =
+            (symbol.flags & ts.SymbolFlags.Alias) !== 0
+                ? this.context.checker.getAliasedSymbol(symbol)
+                : symbol;
+        const declaration = target.declarations?.find(
+            (candidate): candidate is ts.FunctionDeclaration =>
+                ts.isFunctionDeclaration(candidate) && !!candidate.body,
+        );
+        if (
+            !declaration ||
+            !isAssetSkinnedDescendantSearch(declaration)
+        ) {
+            return undefined;
+        }
+        const root = this.context.compileValue(call.arguments[0]!);
+        if (root.kind !== "asset-root") return undefined;
+        if (!root.asset || root.asset.kind !== "gltf") {
+            this.context.fail(
+                call.arguments[0]!,
+                "The first-skinned descendant search requires a materialized glTF root.",
+            );
+        }
+        this.requireUniqueAssetSkinnedMesh(root.asset, call);
+        const engine = this.context.requireEngine(root, call);
+        const result = this.context.allocateTemporaryCppName(
+            "asset_skinned_match",
+        );
+        const found = this.context.allocateTemporaryCppName(
+            "asset_skinned_found",
+        );
+        const item = this.context.allocateTemporaryCppName(
+            "asset_skinned_mesh",
+        );
+        this.context.emit(`bbl::MeshHandle ${result}{};`);
+        this.context.emit(`[[maybe_unused]] bool ${found} = false;`);
+        this.context.emit(
+            `for (const bbl::MeshHandle ${item} : ` +
+                `${engine}.assets[${root.cpp}.value].meshes) {`,
+        );
+        this.context.increaseIndent();
+        this.context.emit(
+            `if (${engine}.meshes[${item}.value].skinned) {`,
+        );
+        this.context.increaseIndent();
+        this.context.emit(`${result} = ${item};`);
+        this.context.emit(`${found} = true;`);
+        this.context.emit("break;");
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        this.context.decreaseIndent();
+        this.context.emit("}");
+        return {
+            kind: "mesh",
+            cpp: result,
+            engineCpp: engine,
+            optionalFoundCpp: found,
+        };
+    }
+
+    /**
+     * Proves the flat native mesh table can stand for the first-skinned DFS
+     * hit: the file carries exactly one skinned primitive, so there is one
+     * record to find and nothing about traversal order to claim. A file with
+     * several skinned meshes refuses -- the source walk's first hit is a
+     * hierarchy fact the flattened table does not carry -- and one with none
+     * refuses too, because the scene's own guard would then be reasoning
+     * about a search this port could never satisfy.
+     */
+    private requireUniqueAssetSkinnedMesh(
+        asset: CompileAsset,
+        node: ts.Node,
+    ): void {
+        const document = this.readAssetDocument(asset, node);
+        const skinnedMeshes = skinnedMeshIndices(document);
+        const meshes = asRecords(document.meshes);
+        let skinned = 0;
+        for (const meshIndex of skinnedMeshes) {
+            skinned += asRecords(meshes[meshIndex]?.primitives).length;
+        }
+        if (skinned === 0) {
+            this.context.fail(
+                node,
+                `Asset '${asset.output}' carries no skinned mesh; the first-skinned descendant search has nothing to resolve.`,
+            );
+        }
+        if (skinned > 1) {
+            this.context.fail(
+                node,
+                `Asset '${asset.output}' carries ${skinned} skinned mesh records; the source DFS's first hit is not proven by the flat native table.`,
+            );
+        }
+    }
+
+    /**
      * Proves that the flattened native mesh table can stand for the DFS hit.
      * A transform-only node has no mesh handle, a multi-primitive node has
      * several, and two matching records do not prove which hierarchy branch
@@ -2101,6 +2259,178 @@ function isAssetDescendantNameSearch(
     if (!ts.isReturnStatement(miss!) || !miss.expression) {
         return false;
     }
+    const missValue = unwrapWalkExpression(miss.expression);
+    return (
+        missValue.kind === ts.SyntaxKind.NullKeyword ||
+        (ts.isIdentifier(missValue) && missValue.text === "undefined")
+    );
+}
+
+/**
+ * Proves scenes 218 and 219's recursive first-skinned DFS exactly:
+ *
+ *     const m = node as unknown as Mesh;
+ *     if (m.skeleton) {
+ *         return m;
+ *     }
+ *     for (const c of (node.children ?? []) as TransformNode[]) {
+ *         const hit = findSkinned(c);
+ *         if (hit) {
+ *             return hit;
+ *         }
+ *     }
+ *     return null;
+ *
+ * The self arm tests a PROPERTY the loader records per mesh rather than a
+ * caller-supplied name, so the search has one closed shape and no
+ * parameter. Any extra predicate, side effect, traversal order or fallback
+ * stays an ordinary user function and is refused at the asset-root call
+ * site by the inliner, exactly as the name search's sibling is.
+ */
+function isAssetSkinnedDescendantSearch(
+    declaration: ts.FunctionDeclaration,
+): boolean {
+    if (
+        !declaration.name ||
+        !declaration.body ||
+        declaration.asteriskToken ||
+        declaration.modifiers?.some(
+            (modifier) =>
+                modifier.kind === ts.SyntaxKind.AsyncKeyword,
+        ) ||
+        declaration.typeParameters?.length ||
+        declaration.parameters.length !== 1 ||
+        !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        !!declaration.parameters[0]!.dotDotDotToken ||
+        !!declaration.parameters[0]!.initializer ||
+        !!declaration.parameters[0]!.questionToken ||
+        declaration.body.statements.length !== 4
+    ) {
+        return false;
+    }
+    const root = declaration.parameters[0]!.name as ts.Identifier;
+    if (
+        new Set([declaration.name.text, root.text, "undefined"]).size !== 3
+    ) {
+        return false;
+    }
+    const [alias, selfArm, walk, miss] = declaration.body.statements;
+
+    // `const m = node as unknown as Mesh;` -- the cast the source needs
+    // because a SceneNode has no `skeleton` member. It carries no runtime
+    // meaning, so the alias is just another name for the parameter.
+    const aliasDeclaration = singleConstDeclaration(alias!);
+    if (
+        !aliasDeclaration ||
+        !ts.isVariableStatement(alias!) ||
+        (alias.declarationList.flags & ts.NodeFlags.Const) === 0 ||
+        !isIdentifierRead(aliasDeclaration.initializer, root) ||
+        aliasDeclaration.name.text === declaration.name.text ||
+        aliasDeclaration.name.text === "undefined"
+    ) {
+        return false;
+    }
+    const self = aliasDeclaration.name;
+
+    if (!ts.isIfStatement(selfArm!) || !!selfArm.elseStatement) {
+        return false;
+    }
+    if (
+        !isPropertyReadOf(
+            unwrapWalkExpression(selfArm.expression),
+            self,
+            "skeleton",
+        ) ||
+        !isIdentifierRead(
+            singleReturnExpression(selfArm.thenStatement),
+            self,
+        )
+    ) {
+        return false;
+    }
+
+    // `(node.children ?? [])`: the same nullish default the collection
+    // concept already treats as "the loader's own container, possibly
+    // empty" -- either arm walks the same descendants.
+    if (
+        !ts.isForOfStatement(walk!) ||
+        !ts.isVariableDeclarationList(walk.initializer) ||
+        (walk.initializer.flags & ts.NodeFlags.Const) === 0 ||
+        walk.initializer.declarations.length !== 1
+    ) {
+        return false;
+    }
+    const walked = unwrapWalkExpression(walk.expression);
+    const children =
+        ts.isBinaryExpression(walked) &&
+        walked.operatorToken.kind ===
+            ts.SyntaxKind.QuestionQuestionToken &&
+        ts.isArrayLiteralExpression(
+            unwrapWalkExpression(walked.right),
+        ) &&
+        (unwrapWalkExpression(walked.right) as ts.ArrayLiteralExpression)
+                .elements.length === 0
+            ? unwrapWalkExpression(walked.left)
+            : walked;
+    if (!isPropertyReadOf(children, root, "children")) return false;
+
+    const childDeclaration = walk.initializer.declarations[0]!;
+    if (
+        !ts.isIdentifier(childDeclaration.name) ||
+        childDeclaration.initializer
+    ) {
+        return false;
+    }
+    const child = childDeclaration.name;
+    if (
+        [declaration.name, root, self].some(
+            (identifier) => identifier.text === child.text,
+        ) ||
+        child.text === "undefined"
+    ) {
+        return false;
+    }
+    const loopStatements = walkBodyStatements(walk);
+    if (loopStatements.length !== 2) return false;
+
+    const hit = singleConstDeclaration(loopStatements[0]!);
+    if (
+        !hit ||
+        !ts.isVariableStatement(loopStatements[0]!) ||
+        (loopStatements[0]!.declarationList.flags &
+            ts.NodeFlags.Const) === 0 ||
+        [declaration.name, root, self, child].some(
+            (identifier) => identifier.text === hit.name.text,
+        ) ||
+        hit.name.text === "undefined"
+    ) {
+        return false;
+    }
+    const recursive = unwrapWalkExpression(hit.initializer);
+    if (
+        !ts.isCallExpression(recursive) ||
+        recursive.arguments.length !== 1 ||
+        !isIdentifierRead(recursive.expression, declaration.name) ||
+        !isIdentifierRead(recursive.arguments[0], child)
+    ) {
+        return false;
+    }
+
+    const hitArm = loopStatements[1];
+    if (
+        !hitArm ||
+        !ts.isIfStatement(hitArm) ||
+        !!hitArm.elseStatement ||
+        !isIdentifierRead(hitArm.expression, hit.name) ||
+        !isIdentifierRead(
+            singleReturnExpression(hitArm.thenStatement),
+            hit.name,
+        )
+    ) {
+        return false;
+    }
+
+    if (!ts.isReturnStatement(miss!) || !miss.expression) return false;
     const missValue = unwrapWalkExpression(miss.expression);
     return (
         missValue.kind === ts.SyntaxKind.NullKeyword ||

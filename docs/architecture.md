@@ -100,6 +100,8 @@ Primary source ownership:
 | `src/lowering/linear-depth-lowerer.ts` | `createLinearDepthMaterial`, folded from the factory that builds it — stages, declarations and fixed-function state |
 | `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's parser lowered to C++, its format table, and the suffix selection and URL rewrite generation folds |
 | `src/basis-transcode.ts` | the pinned Basis and KTX2 loaders run in headless Chromium, each packaged as a KTX1 container |
+| `src/lowering/vat-lowerer.ts` | the baked vertex-animation subsystem from `vat/vat-baker.ts`: the bake loop over each clip's frames, the 32-byte settings block `play`/`update` write, the per-instance params expansion, and the deterministic frozen pose a measured seek asks for |
+| `src/compiler/intrinsics/vat.ts` | which VAT calls a scene reached — `bakeVat`/`attachVat` are the pin's own opt-in — and the three writers a `VatHandle` carries |
 | `src/lowering/sprite-animation-lowerer.ts` | the sprite frame stepper and its delay normalisation, lowered from their own pinned declarations, plus the tagged target the two families share |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/pinned-picking-shaders.ts` | the two modules a GPU pick draws through, composed by running the pin's own builders |
