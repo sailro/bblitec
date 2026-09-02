@@ -1,5 +1,6 @@
 import {
     dirname,
+    relative,
     resolve,
     sep,
 } from "node:path";
@@ -9,6 +10,7 @@ import { isBabylonModule } from "./symbols.js";
 import { LoweringContext } from "../lowering/context.js";
 import {
     findRepositoryRoot,
+    repositoryRelativePath,
     sharedUpstreamStore,
 } from "../upstream-source.js";
 
@@ -113,6 +115,16 @@ export interface CompilerProgram {
     program: ts.Program;
     checker: ts.TypeChecker;
     sourceFile: ts.SourceFile;
+    /**
+     * Every file the program read from inside the repository -- the entry,
+     * the modules it imports, and any repository-local declaration file --
+     * as sorted, forward-slash paths relative to the repository root. The
+     * pinned package under `node_modules` is excluded: its identity is the
+     * lock file's, not a path's. This is the input list generation records
+     * so a later run can prove the scene's sources unchanged without
+     * building the program again.
+     */
+    localFiles: string[];
 }
 
 export function createCompilerProgram(
@@ -220,9 +232,21 @@ export function createCompilerProgram(
     if (!sourceFile) {
         throw new Error(`Unable to create TypeScript program for '${fileName}'.`);
     }
+    const nodeModules = `${sep}node_modules${sep}`;
+    const localFiles = program
+        .getSourceFiles()
+        .map((file) => resolve(file.fileName))
+        .filter(
+            (path) =>
+                !path.includes(nodeModules) &&
+                !relative(repositoryRoot, path).startsWith(".."),
+        )
+        .map((path) => repositoryRelativePath(repositoryRoot, path))
+        .sort();
     return {
         program,
         checker: program.getTypeChecker(),
         sourceFile,
+        localFiles,
     };
 }

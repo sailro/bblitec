@@ -51,6 +51,11 @@ import {
     payloadOrphans,
     readCacheConfiguration,
 } from "./build-stamp.js";
+import {
+    generationIsCurrent,
+    recordGeneration,
+    refreshBuildStamp,
+} from "./generation-stamp.js";
 import { runGeometryOutputDiagnostics } from "./geometry-output-diagnostics.js";
 // The instrumented capture, the diff/uniforms readers and the compose
 // report are imported per subcommand rather than here: their chains pull
@@ -83,6 +88,7 @@ import {
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
     hostOfflineShaderTarget,
+    type OfflineShaderTarget,
 } from "./build-options.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import {
@@ -92,11 +98,12 @@ import {
     type WindowsBuildTools,
 } from "./development-tools.js";
 import {
+    contentFingerprint,
+    hashEntries,
     readValidationCheckpoint,
-    validationCompileInput,
-    validationCompileOutput,
+    shaderDirectoryFingerprints,
+    toolIdentity,
     validationShaderInput,
-    validationShaderOutput,
     writeValidationCheckpoint,
 } from "./validation-resume.js";
 import { runConcurrently } from "./run-concurrently.js";
@@ -203,55 +210,86 @@ async function runBuffered(
     }
 }
 
+/** The bblitec invocation for a scene: its entry, its output and the
+ *  options its registry entry declares. */
+function compilerArguments(scene: SceneDefinition): string[] {
+    const arguments_ = [
+        resolve("dist/src/cli.js"),
+        scene.source,
+        "--out",
+        scene.output,
+        "--title",
+        scene.title,
+    ];
+    if (scene.parity?.referenceSearch !== undefined) {
+        arguments_.push("--search", scene.parity.referenceSearch);
+    }
+    if (scene.nativeHostUi !== undefined) {
+        arguments_.push("--host-ui", scene.nativeHostUi);
+    }
+    if (
+        scene.parity?.attribution?.drawIds ||
+        scene.parity?.attribution?.triangleClusters
+    ) {
+        arguments_.push("--id-diagnostics");
+    }
+    return arguments_;
+}
+
+/** `--cold`: regenerate, recompile shaders and reconfigure regardless of
+ *  what the records say. */
+function coldBuild(): boolean {
+    return process.env.BBLITE_COLD_BUILD === "1";
+}
+
 async function compile(idOrSource: string): Promise<void> {
     const selected = idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
-    const compilerArguments = (
-        scene: (typeof scenes)[number],
-    ): string[] => {
-        const arguments_ = [
-            resolve("dist/src/cli.js"),
-            scene.source,
-            "--out",
-            scene.output,
-            "--title",
-            scene.title,
-        ];
-        if (scene.parity?.referenceSearch !== undefined) {
-            arguments_.push("--search", scene.parity.referenceSearch);
+    // A scene whose recorded inputs are unchanged is not generated again:
+    // its tree already holds what the compiler would write. What a hit
+    // still owes is the build stamp, which follows the native sources the
+    // input digest does not cover (`src/generation-stamp.ts`).
+    const cold = coldBuild();
+    const stale: SceneDefinition[] = [];
+    let refreshedStamps = 0;
+    for (const scene of selected) {
+        if (!cold && generationIsCurrent(scene, compilerArguments(scene))) {
+            if (refreshBuildStamp(scene.output)) refreshedStamps += 1;
+        } else {
+            stale.push(scene);
         }
-        if (scene.nativeHostUi !== undefined) {
-            arguments_.push("--host-ui", scene.nativeHostUi);
-        }
-        if (
-            scene.parity?.attribution?.drawIds ||
-            scene.parity?.attribution?.triangleClusters
-        ) {
-            arguments_.push("--id-diagnostics");
-        }
-        return arguments_;
-    };
-    if (selected.length === 1) {
-        run(process.execPath, compilerArguments(selected[0]!));
-        return;
     }
+    const upToDate = selected.length - stale.length;
+    if (upToDate > 0) {
+        console.log(
+            `compile: ${upToDate} of ${selected.length} scene(s) up to date` +
+                (refreshedStamps > 0
+                    ? `, ${refreshedStamps} build stamp(s) refreshed.`
+                    : "."),
+        );
+    }
+    if (stale.length === 0) return;
     // Each scene is a separate Node process writing to its own output
     // directory, so there is nothing to serialize -- the sequential loop
     // spent two minutes running one interpreter at a time. Node is far
-    // lighter than MSVC, so this is bounded by threads alone.
+    // lighter than MSVC, so this is bounded by threads alone. A single
+    // scene keeps its output on the console.
     const inFlight =
         concurrencyOverride("BBLITE_PARALLEL_COMPILES") ??
         availableParallelism();
-    console.log(
-        `Compiling ${selected.length} scenes, ${inFlight} at a time.`,
-    );
+    if (stale.length > 1) {
+        console.log(`Compiling ${stale.length} scenes, ${inFlight} at a time.`);
+    }
     await runConcurrently(
-        selected,
+        stale,
         inFlight,
         (scene) => scene.id,
         (scene) =>
-            runBuffered({}, (run) =>
-                run(process.execPath, compilerArguments(scene)),
-            ),
+            runBuffered({ buffer: stale.length > 1 }, async (run) => {
+                const arguments_ = compilerArguments(scene);
+                const startedAt = Date.now();
+                await run(process.execPath, arguments_);
+                recordGeneration(scene, arguments_, startedAt);
+            }),
         { completed: "compiled" },
     );
 }
@@ -436,23 +474,81 @@ function sceneUsesNativeFeature(
     );
 }
 
-/**
- * Serializes CMake configure steps while builds run in parallel.
- *
- * Configuring is where vcpkg runs, and concurrent vcpkg use is
- * unreliable -- it shares a download and binary cache across otherwise
- * independent build directories. Compiling and linking touch nothing
- * shared, so only this step needs the lock, and it is rare: a warm tree
- * skips configure entirely, so the queue is usually empty.
- */
-let configureLock: Promise<unknown> = Promise.resolve();
+/** One vcpkg manifest install: where it lands, for which triplet, with
+ *  which of the manifest's features. */
+interface VcpkgManifestInstall {
+    installedDirectory: string;
+    triplet: string;
+    features: readonly string[];
+}
 
-function serializeConfigure<T>(body: () => Promise<T>): Promise<T> {
-    const next = configureLock.then(body, body);
-    // Keep the chain alive even when one configure fails, or every
-    // configure queued behind it would inherit that rejection.
-    configureLock = next.catch(() => undefined);
-    return next;
+/**
+ * The install every development tree links against: the full manifest
+ * feature set (`developmentVcpkgFeatures`) under the shared root.
+ */
+function developmentVcpkgInstall(): VcpkgManifestInstall {
+    return {
+        installedDirectory: resolve(
+            process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
+                join("artifacts", "vcpkg-installed"),
+            DEVELOPMENT_VCPKG_INSTALL,
+        ),
+        triplet: "x64-windows",
+        features: developmentVcpkgFeatures(
+            readFileSync(resolve("native", "vcpkg.json"), "utf8"),
+        ),
+    };
+}
+
+/**
+ * The one vcpkg run a population build makes.
+ *
+ * Every development tree consumes the same install, so the manifest is
+ * installed there once -- before any tree configures, and only when what
+ * it is built from moved -- and each configure is then told not to run
+ * vcpkg at all (`VCPKG_MANIFEST_INSTALL=OFF`). A configure no longer
+ * touches anything shared, so trees configure beside each other instead
+ * of through a lock: the serialized manifest check was what made a cold
+ * population, or a `CMakeLists.txt` edit, cost 229 vcpkg invocations one
+ * after another. The install is keyed on its inputs rather than
+ * re-verified per tree: the manifest, the registry configuration, the
+ * overlay ports, the feature set, the triplet and the vcpkg executable.
+ */
+function installVcpkgManifest(
+    vcpkgExecutable: string,
+    install: VcpkgManifestInstall,
+    environment: NodeJS.ProcessEnv,
+): void {
+    const stampPath = join(install.installedDirectory, ".bblite-install-stamp");
+    const stamp = hashEntries([
+        "vcpkg-install v1",
+        `triplet ${install.triplet}`,
+        `features ${install.features.join(";")}`,
+        `vcpkg ${toolIdentity(vcpkgExecutable)}`,
+        `manifest ${contentFingerprint([
+            resolve("native", "vcpkg.json"),
+            resolve("native", "vcpkg-configuration.json"),
+            resolve("native", "vcpkg-overlay-ports"),
+        ])}`,
+    ]);
+    if (
+        existsSync(stampPath) &&
+        readFileSync(stampPath, "utf8").trim() === stamp
+    ) {
+        return;
+    }
+    run(
+        vcpkgExecutable,
+        [
+            "install",
+            `--x-manifest-root=${resolve("native")}`,
+            `--x-install-root=${install.installedDirectory}`,
+            `--triplet=${install.triplet}`,
+            ...install.features.map((feature) => `--x-feature=${feature}`),
+        ],
+        environment,
+    );
+    writeFileSync(stampPath, `${stamp}\n`);
 }
 
 /** A positive-integer environment override, rejected loudly if malformed. */
@@ -528,6 +624,8 @@ function buildConcurrency(): {
 async function buildScenes(
     selected: readonly (typeof scenes)[number][],
 ): Promise<void> {
+    const { vcpkg, tools, environment } = buildSetup();
+    if (vcpkg) installVcpkgManifest(tools.vcpkg!, vcpkg.install, environment);
     if (selected.length === 1) {
         await runSceneBuild(selected[0]!, undefined, false);
         return;
@@ -695,8 +793,7 @@ interface SharedBuildSetup {
         | {
               root: string;
               toolchain: string;
-              installedDirectory: string;
-              manifestFeatures: string;
+              install: VcpkgManifestInstall;
           }
         | undefined;
 }
@@ -777,16 +874,7 @@ function buildSetup(): SharedBuildSetup {
             : {
                   root: tools.vcpkgRoot!,
                   toolchain: tools.vcpkgToolchain!,
-                  installedDirectory: join(
-                      resolve(
-                          process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
-                              join("artifacts", "vcpkg-installed"),
-                      ),
-                      DEVELOPMENT_VCPKG_INSTALL,
-                  ),
-                  manifestFeatures: developmentVcpkgFeatures(
-                      readFileSync(resolve("native", "vcpkg.json"), "utf8"),
-                  ).join(";"),
+                  install: developmentVcpkgInstall(),
               };
     const environment: NodeJS.ProcessEnv = {
         ...(windows?.environment ?? process.env),
@@ -879,10 +967,7 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
                 ? { path: tools.powershell }
                 : { problem: "pwsh was not found" }),
         });
-        const target = hostOfflineShaderTarget(
-            process.platform,
-            process.env.BBLITE_SHADER_TARGET,
-        );
+        const target = shaderTarget();
         if (target !== "metal") {
             checks.push({
                 label: "DXC",
@@ -992,24 +1077,7 @@ function runDevelopmentSetup(): void {
         );
     }
     const environment = setupEnvironment(tools);
-    const manifestFeatures = developmentVcpkgFeatures(
-        readFileSync(resolve("native", "vcpkg.json"), "utf8"),
-    );
-    run(
-        tools.vcpkg!,
-        [
-            "install",
-            `--x-manifest-root=${resolve("native")}`,
-            `--x-install-root=${resolve(
-                process.env.BBLITE_VCPKG_INSTALLED_ROOT ??
-                    join("artifacts", "vcpkg-installed"),
-                DEVELOPMENT_VCPKG_INSTALL,
-            )}`,
-            "--triplet=x64-windows",
-            ...manifestFeatures.map((feature) => `--x-feature=${feature}`),
-        ],
-        environment,
-    );
+    installVcpkgManifest(tools.vcpkg!, developmentVcpkgInstall(), environment);
     const pinnedDxc = resolve(
         "tools",
         "shader-compiler",
@@ -1152,18 +1220,19 @@ async function runSceneBuild(
     if (vcpkg) {
         configureArguments.push(
             `-DCMAKE_TOOLCHAIN_FILE=${vcpkg.toolchain}`,
-            `-DVCPKG_INSTALLED_DIR=${vcpkg.installedDirectory}`,
-            `-DVCPKG_MANIFEST_FEATURES=${vcpkg.manifestFeatures}`,
+            `-DVCPKG_INSTALLED_DIR=${vcpkg.install.installedDirectory}`,
+            `-DVCPKG_MANIFEST_FEATURES=${vcpkg.install.features.join(";")}`,
+            // The shared install is made current once per population run
+            // (`ensureDevelopmentVcpkgInstall`); a configure runs no vcpkg.
+            "-DVCPKG_MANIFEST_INSTALL=OFF",
         );
     }
     // Configure only when the cache does not already hold exactly what
     // this invocation would set — or when a configure input
     // (CMakeLists.txt, vcpkg.json, the scene's features.cmake) is newer
     // than the cache. The generator would re-run CMake for the latter
-    // itself, but inside the parallel build stage and outside the vcpkg
-    // configure lock; treating it as a cache mismatch keeps every
-    // configure — and therefore every vcpkg manifest install — inside
-    // `serializeConfigure`.
+    // itself, inside the build; configuring it here keeps the output
+    // attributed to the step that ran.
     await runBuffered(
         { buffer: captureOutput, label: `--- ${scene.id}\n` },
         async (run) => {
@@ -1181,9 +1250,7 @@ async function runSceneBuild(
                     scene.output,
                 )
             ) {
-                await serializeConfigure(() =>
-                    run(cmake, configureArguments, environment),
-                );
+                await run(cmake, configureArguments, environment);
             }
             pruneDeployedOrphans(scene);
             await run(
@@ -1208,10 +1275,7 @@ async function runSceneBuild(
 
 function compileShaders(sceneId?: string): void {
     const setup = buildSetup();
-    const target = hostOfflineShaderTarget(
-        process.platform,
-        process.env.BBLITE_SHADER_TARGET,
-    );
+    const target = shaderTarget();
     const arguments_ = [
         "-File",
         "tools/compile-shaders.ps1",
@@ -1227,6 +1291,82 @@ function compileShaders(sceneId?: string): void {
     );
 }
 
+/** One validation stage: the work, and optionally the record that lets a
+ *  repeat skip it. */
+interface Stage {
+    name: string;
+    body: () => Promise<void>;
+    reusable?: () => boolean;
+    record?: () => void;
+}
+
+/** Runs a stage unless its record says the work is already done; returns
+ *  whether it was skipped. A finished stage records itself. */
+async function runStage(stage: Stage): Promise<boolean> {
+    if (stage.reusable?.()) return true;
+    await stage.body();
+    stage.record?.();
+    return false;
+}
+
+/** The one offline shader format this host compiles, or the override. */
+function shaderTarget(): OfflineShaderTarget {
+    return hostOfflineShaderTarget(
+        process.platform,
+        process.env["BBLITE_SHADER_TARGET"],
+    );
+}
+
+function validationCheckpointPath(sceneId: string | undefined): string {
+    return resolve("artifacts", "validate", `${sceneId ?? "all"}.json`);
+}
+
+/**
+ * The shader stage, shared by `process` and `validate`: it runs
+ * `tools/compile-shaders.ps1` over the WGSL generation wrote, and is
+ * skipped when that WGSL, the target, the tools and the script are what
+ * the record was written from and its products are still on disk. Keyed on
+ * the shader sources rather than the whole generated tree, so a build-stamp
+ * refresh after a PAL edit does not re-run it.
+ */
+function shaderStage(selected: readonly SceneDefinition[]): Stage {
+    const setup = buildSetup();
+    const single = selected.length === 1 ? selected[0]! : undefined;
+    const checkpointPath = validationCheckpointPath(single?.id);
+    // The digests `reusable` took, reused by `record`: the sources are
+    // generation's outputs and cannot move while the shader compiler runs.
+    let input: string | undefined;
+    const digest = (): { input: string; products: string } => {
+        const { sources, products } = shaderDirectoryFingerprints(selected);
+        return {
+            input: validationShaderInput(sources, shaderTarget(), setup.tools),
+            products,
+        };
+    };
+    return {
+        name: "shaders",
+        reusable: (): boolean => {
+            if (coldBuild()) return false;
+            const current = digest();
+            input = current.input;
+            const checkpoint = readValidationCheckpoint(checkpointPath);
+            return (
+                checkpoint.shaders?.input === current.input &&
+                checkpoint.shaders.output === current.products
+            );
+        },
+        body: async () => compileShaders(single?.id),
+        record: (): void => {
+            const checkpoint = readValidationCheckpoint(checkpointPath);
+            checkpoint.shaders = {
+                input: input ?? digest().input,
+                output: shaderDirectoryFingerprints(selected).products,
+            };
+            writeValidationCheckpoint(checkpointPath, checkpoint);
+        },
+    };
+}
+
 async function processScene(idOrSource: string): Promise<void> {
     requireDevelopmentPreflight({
         browser: true,
@@ -1234,14 +1374,16 @@ async function processScene(idOrSource: string): Promise<void> {
         rmlUi: idOrSource === "all",
         shaders: true,
     });
+    const selected =
+        idOrSource === "all" ? scenes : [resolveScene(idOrSource)];
+    await compile(idOrSource);
+    if (await runStage(shaderStage(selected))) {
+        console.log("shaders: up to date (sources, tools and products unchanged).");
+    }
     if (idOrSource === "all") {
-        await compile("all");
-        compileShaders();
         await buildScenes(scenes);
         return;
     }
-    await compile(idOrSource);
-    compileShaders(resolveScene(idOrSource).id);
     await build(idOrSource);
 }
 
@@ -1883,63 +2025,11 @@ async function runValidate(idOrSource: string): Promise<void> {
     const setup = buildSetup();
     const differential = setup.backend === "BOTH";
     const selectedScenes = scene ? [scene] : scenes;
-    const checkpointPath = resolve(
-        "artifacts",
-        "validate",
-        `${scene?.id ?? "all"}.json`,
-    );
-    const checkpoint = readValidationCheckpoint(checkpointPath);
-    const compileInput = validationCompileInput(
-        selectedScenes,
-        resolveBrowserPath(),
-    );
-    const target = hostOfflineShaderTarget(
-        process.platform,
-        process.env.BBLITE_SHADER_TARGET,
-    );
-    const compileIsReusable = (): boolean =>
-        checkpoint.compile?.input === compileInput &&
-        checkpoint.compile.output === validationCompileOutput(selectedScenes);
-    const shaderInput = (): string =>
-        validationShaderInput(
-            validationCompileOutput(selectedScenes),
-            target,
-            setup.tools,
-        );
-    const shadersAreReusable = (): boolean =>
-        checkpoint.shaders?.input === shaderInput() &&
-        checkpoint.shaders.output === validationShaderOutput(selectedScenes);
-    const stages: Array<{
-        name: string;
-        body: () => Promise<void>;
-        record?: () => void;
-        reusable?: () => boolean;
-    }> = [
-        {
-            name: "compile",
-            body: () => compile(idOrSource),
-            reusable: compileIsReusable,
-            record: () => {
-                checkpoint.compile = {
-                    input: compileInput,
-                    output: validationCompileOutput(selectedScenes),
-                };
-                delete checkpoint.shaders;
-                writeValidationCheckpoint(checkpointPath, checkpoint);
-            },
-        },
-        {
-            name: "shaders",
-            body: async () => compileShaders(scene?.id),
-            reusable: shadersAreReusable,
-            record: () => {
-                checkpoint.shaders = {
-                    input: shaderInput(),
-                    output: validationShaderOutput(selectedScenes),
-                };
-                writeValidationCheckpoint(checkpointPath, checkpoint);
-            },
-        },
+    const stages: Stage[] = [
+        // Generation keeps its own per-scene records and `compile` skips a
+        // current scene itself, so the stage carries no checkpoint.
+        { name: "compile", body: () => compile(idOrSource) },
+        shaderStage(selectedScenes),
         {
             name: "build",
             body: () => buildScenes(scene ? [scene] : scenes),
@@ -1988,14 +2078,12 @@ async function runValidate(idOrSource: string): Promise<void> {
         const seconds = (): string =>
             ((Date.now() - started) / 1000).toFixed(1);
         try {
-            if (stage.reusable?.()) {
+            if (await runStage(stage)) {
                 console.log(
                     `validate: ${stage.name} resumed (inputs and outputs unchanged).`,
                 );
                 continue;
             }
-            await stage.body();
-            stage.record?.();
             console.log(`validate: ${stage.name} ok (${seconds()}s).`);
         } catch (error) {
             failures.push(stage.name);
@@ -2345,8 +2433,8 @@ async function main(): Promise<void> {
         return;
     }
     if (command === "compile" && id) {
-        parseFlags(rest, {}, "compile");
-        await compile(id);
+        parseFlags(rest, { boolean: ["--cold"] }, "compile");
+        await withColdBuild(rest, () => compile(id));
         return;
     }
     if (command === "build" && id) {

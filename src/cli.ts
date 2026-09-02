@@ -2,6 +2,7 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
     CompileAsset,
     CompileError,
@@ -48,7 +49,7 @@ import { glbJsonText } from "./gltf-document.js";
 // modules (the HDR one transitively loads the browser harness), so a static
 // import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
-import { parseDataUrl } from "./data-url.js";
+import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
     buildStampHeader,
@@ -63,7 +64,11 @@ import {
     pixelsSourcePrefix,
     spriteAtlasSourcePrefix,
 } from "./executed-module-assets.js";
-import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
+import {
+    findRepositoryRoot,
+    readUpstreamPin,
+    repositoryRelativePath,
+} from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
 import { downloadCached } from "./asset-download-cache.js";
 import {
@@ -314,6 +319,27 @@ function readNativeHostUi(path: string): NativeHostUi {
     };
 }
 
+/**
+ * The repository file an asset source names, or undefined for the sources
+ * that are not files: a pinned URL is fetched, a data URL carries its own
+ * bytes, and a `generated:` source is produced. One classification for
+ * the materializer and for the manifest's input list, so a source read
+ * from disk is always a source the generation record can see.
+ */
+function localAssetPath(
+    source: string,
+    inputPath: string,
+): string | undefined {
+    if (
+        /^https?:\/\//i.test(source) ||
+        source.startsWith("generated:") ||
+        isDataUrl(source)
+    ) {
+        return undefined;
+    }
+    return resolve(dirname(inputPath), source);
+}
+
 async function assetBytes(
     source: string,
     inputPath: string,
@@ -322,10 +348,9 @@ async function assetBytes(
     // nothing to read: materializing one is a decode.
     const inline = parseDataUrl(source);
     if (inline) return inline.bytes;
-    if (!/^https?:\/\//i.test(source)) {
-        return new Uint8Array(
-            readFileSync(resolve(dirname(inputPath), source)),
-        );
+    const local = localAssetPath(source, inputPath);
+    if (local !== undefined) {
+        return new Uint8Array(readFileSync(local));
     }
     return downloadCached(source);
 }
@@ -1260,6 +1285,27 @@ ${imageCodecLines}
 )
 `,
     );
+    // The reached-file list: the program's files (recorded by the
+    // compiler) plus what this run read beside them -- the host-UI
+    // companion and every asset materialized from a repository path. A
+    // remote asset is pinned by URL and a data URL carries its bytes in the
+    // source, so neither is a file to list. `scene -- compile` skips a
+    // scene whose listed inputs are unchanged, so a read added here that
+    // is not listed is a read that skip cannot see.
+    const repositoryRoot = findRepositoryRoot(
+        dirname(fileURLToPath(import.meta.url)),
+    );
+    const listInput = (path: string): void => {
+        result.manifest.inputs.push(
+            repositoryRelativePath(repositoryRoot, path),
+        );
+    };
+    if (options.hostUi) listInput(options.hostUi);
+    for (const asset of result.manifest.assets) {
+        const local = localAssetPath(asset.source, inputPath);
+        if (local !== undefined) listInput(local);
+    }
+    result.manifest.inputs = [...new Set(result.manifest.inputs)].sort();
     tree.write(
         "manifest.json",
         `${JSON.stringify(result.manifest, null, 2)}\n`,

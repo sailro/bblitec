@@ -52,11 +52,15 @@ export class GeneratedTree {
 
     public constructor(public readonly root: string) {}
 
-    /** Write a file only when its bytes differ from what is on disk. */
+    /**
+     * Write a file only when its bytes differ from what is on disk.
+     * Returns whether it wrote, which is the one fact a caller refreshing
+     * a derived file wants to report.
+     */
     public write(
         relativePath: string,
         data: string | Uint8Array,
-    ): void {
+    ): boolean {
         const path = resolve(this.root, relativePath);
         this.written.add(this.key(path));
         const bytes =
@@ -64,10 +68,11 @@ export class GeneratedTree {
                 ? Buffer.from(data, "utf8")
                 : Buffer.from(data);
         if (this.matches(path, bytes)) {
-            return;
+            return false;
         }
         mkdirSync(dirname(path), { recursive: true });
         writeFileSync(path, bytes);
+        return true;
     }
 
     /** Record a file this run produced through another writer. */

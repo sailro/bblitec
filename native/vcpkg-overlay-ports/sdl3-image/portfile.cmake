@@ -31,6 +31,25 @@ vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
         ${FEATURE_OPTIONS}
+        # bblitec decodes PNG, JPEG and WebP -- the three image types
+        # generation can name in BBLITE_IMAGE_CODECS (src/cli.ts,
+        # `optionalImageCodecs`) -- and nothing else. The port builds every
+        # dependency-free format in by default, and a static executable
+        # keeps the SVG, XPM and BMP decoders it never calls (127 KiB of
+        # SDL_image in a 2.3 MB scene 1 executable, 81 of them formats no
+        # scene reaches). Everything but the feature-driven three is off.
+        -DSDLIMAGE_ANI=OFF
+        -DSDLIMAGE_BMP=OFF
+        -DSDLIMAGE_GIF=OFF
+        -DSDLIMAGE_LBM=OFF
+        -DSDLIMAGE_PCX=OFF
+        -DSDLIMAGE_PNM=OFF
+        -DSDLIMAGE_QOI=OFF
+        -DSDLIMAGE_SVG=OFF
+        -DSDLIMAGE_TGA=OFF
+        -DSDLIMAGE_XCF=OFF
+        -DSDLIMAGE_XPM=OFF
+        -DSDLIMAGE_XV=OFF
         -DCMAKE_FIND_PACKAGE_PREFER_CONFIG=OFF
         -DSDLIMAGE_BACKEND_IMAGEIO=OFF
         -DSDLIMAGE_BACKEND_STB=OFF

@@ -88,9 +88,10 @@ question, and the flags each takes, are in [debugging](debugging.md#the-ladder).
 scene owns; `--all` additionally removes owned build trees.
 `validate` chains compile, shaders, build, parity and the status check
 with one summary line per stage, preserving every artifact on failure. A retry
-resumes the compile and shader stages only when their input fingerprint and
-on-disk outputs still match the completed stage; changed or missing inputs run
-the stage again.
+skips what is already done: generation per scene through its own record (see
+[Build identity](#build-identity)), and the shader stage when its sources,
+tools and products still match the completed run; changed or missing inputs
+run the stage again.
 
 
 Several compilations launch headless Chromium to run pinned code — an HDR
@@ -614,20 +615,32 @@ Warnings in the first-party `bblite_native` target are errors under MSVC,
 clang-cl, Clang, and GCC. Imported dependency headers remain system headers and
 dependency build warnings do not inherit the first-party error policy.
 
-Scenes build several at a time with their CMake *configure* steps serialized,
-because that is where vcpkg runs and concurrent vcpkg use is unreliable.
-Every development scene shares one full install at
-`artifacts\vcpkg-installed\development-full`, its feature list derived from
-every feature key in `native\vcpkg.json` — so a new manifest feature joins the
-reusable set automatically and one scene cannot reconcile another's packages
-away. Compiling and linking touch nothing shared, and a warm tree skips
-configure entirely, so the lock is normally uncontended.
+Scenes build several at a time, and vcpkg runs once per population build
+rather than once per configure. Every development scene shares one full
+install at `artifacts\vcpkg-installed\development-full`, its feature list
+derived from every feature key in `native\vcpkg.json` — so a new manifest
+feature joins the reusable set automatically and one scene cannot reconcile
+another's packages away. The install is made current before the first tree
+configures, keyed on the manifest, the registry configuration, the overlay
+ports, the feature set and the vcpkg executable (`.bblite-install-stamp`
+beside it), and every tree then configures with
+`VCPKG_MANIFEST_INSTALL=OFF`: a configure touches nothing shared, so trees
+configure beside each other. The serialized per-tree manifest check this
+replaces was the cost of a cold population and of every `CMakeLists.txt`
+edit — some 230 vcpkg invocations one after another.
 `BBLITE_VCPKG_INSTALLED_ROOT` relocates the disposable cache. Shipping does
 not use the superset: its static tree carries only the selected
 scene/backend's reached dependencies.
 
 How many scenes run at once is configurable per stage; see
 [Build switches](#build-switches).
+
+Objects are per tree and cannot be shared across scenes: the two GPU PAL
+units include the per-scene render-plan and variant headers, so their
+preprocessed text differs in four scenes of five (179 distinct texts for
+`pal_dawn.cpp` over 228 trees, 175 for `pal_sdl_gpu.cpp` over 213), and
+the units that do collapse are the small ones the precompiled header
+already makes cheap.
 
 A directory first configured without vcpkg is detected from its CMake cache
 and replaced before configuration. `VCPKG_ROOT` overrides the checkout
@@ -752,6 +765,7 @@ combination):
 | `BBLITE_LABSOUND_DIR` | `artifacts/tools/labsound` | installed pinned LabSound root (`tools/build-labsound.ps1`); required only by a scene reaching `audio:engine` |
 | `BBLITE_RMLUI_DIR` | `artifacts/tools/rmlui` | installed pinned RmlUi root (`tools/build-rmlui.ps1`); required only by a scene reaching `ui:rml`, which points it at `artifacts/tools/rmlui-static` in a mini build |
 | `BBLITE_AUDIO_CAPTURE` | development: `ON`; `BBLITE_MINSIZE`: `OFF` | offline WAV capture capability; the only audio route that links libnyquist/codecs and ships their notices |
+| `BBLITE_PCH` | `ON`; `BBLITE_MINSIZE`: `OFF` | precompile the stable native headers (`runtime.hpp`, `js_data.hpp`, `ts_runtime.hpp`, SDL, the standard library) once per build tree. A small generated translation unit spends 83% of its compile parsing them and the two GPU PAL units about a third, so per-scene compile CPU falls 34-41% (clang-cl, scene 1: 29.5 s to 17.4 s over its objects, the 2.2 s precompile included); the ~48 MB `.pch` doubles a tree's disk footprint |
 | `BBLITE_MINSIZE` | `OFF` | size-first compilation (MSVC `/O1 /Ob1 /GL`; clang-cl `/clang:-Oz /clang:-flto`; non-MSVC Clang `-Oz -flto`; `-Os` elsewhere), whole-program optimization and dead-stripping plus a `/MAP` linker map for `tools/map-size-report.mjs` on Windows |
 | `VCPKG_TARGET_TRIPLET` | `x64-windows` | `x64-windows-static` folds SDL/image/codec dependencies into the executable |
 | `CMAKE_MSVC_RUNTIME_LIBRARY` | toolchain | pass `MultiThreaded$<$<CONFIG:Debug>:Debug>` with the static triplet; vcpkg does not flip the project's own CRT |
@@ -794,6 +808,18 @@ incremental rebuild leaves most scenes with one or two dirty translation
 units — a second job per scene has nothing to do while a second scene always
 does.
 
+What the population loop costs, measured on the same host over the 229
+registered scenes with the machine otherwise idle (`process all`, warm
+trees, clang-cl, both backends):
+
+| Edit | Wall |
+| --- | ---: |
+| nothing (generation, shaders and build all skipped) | 6.0 s |
+| one PAL translation unit (`pal_dawn.cpp`): stamps refreshed, one object and one link per scene | 82 s |
+| a header every unit includes (`runtime.hpp`): every object, behind each tree's precompiled header | 351 s |
+| one scene, one PAL translation unit (`process scene1`) | 5.2 s |
+
+
 Measurement is the one stage whose default is a flat number rather than a
 function of the machine, because GPU memory does not bind it. Each scene
 creates a GPU device, a swapchain and its own textures, which samples at
@@ -813,8 +839,29 @@ byte-identical differential reports, so raising it on a known machine is safe.
 second dynamic demo variant: every published demo ZIP is aggressively trimmed
 to one scene and one backend, uses the static CRT and exact static
 dependencies, and enables whole-program size optimization and dead stripping.
-The current static examples are 2.3 MB for Scene 1 SDL_GPU, 7.7 MB for Scene 1
-Dawn, and 2.5 MB for the Bullet-backed Scene 40 SDL_GPU executable.
+The measured executables (MSVC, `/O1 /GL`, static CRT, the trimmed
+dependencies below):
+
+| Scene | SDL_GPU | Dawn | What it carries beyond the renderer |
+| --- | ---: | ---: | --- |
+| 1 | 1,939,456 | 7,205,888 | glTF, environment, image codecs |
+| tetris | 5,662,208 | 10,783,232 | retained UI (RmlUi, FreeType), audio (LabSound), transmission |
+| voxel sandbox | 4,377,088 | | retained UI, audio nodes, generated textures |
+| racer | 7,065,600 | | retained UI, physics (Bullet), decoded audio, geometry output |
+| platformer | 4,954,624 | | sprite renderer, retained UI, audio |
+
+The demos are the shapes that exercise every static-link seam (UI, audio,
+physics), so a shipping change is measured on them, not on scene 1 alone.
+Where the bytes go, per the map: half of scene 1's SDL_GPU executable is
+SDL and the static CRT; tetris's generated program alone is 1.6 MB, its
+`main` 810 KiB of code beside baked geometry stored as `std::array<double>`;
+the Dawn shape's extra 5 MB is Tint (IR and core 1.56 MB, WGSL reader and
+resolver 685 KiB, HLSL writer 274 KiB) and Dawn's frontend and D3D12
+backend (1.45 MB), with every other Tint writer, backend, SPIR-V validation
+and the built DXC already off — the compiler is the payload. MSVC `/O1 /GL`
+is the shipping compiler by measurement: clang-cl `-Oz` with LTO linked
+scene 1 7 KB larger. Attribute a change with `tools/map-size-report.mjs`
+before claiming it.
 
 Build the trimmed dependencies once:
 
@@ -835,6 +882,19 @@ because `SDL_AUDIO=OFF` leaves no device to open. Build the separate
 feature-compatible install with `build-sdl-min.ps1 -EnableAudio`; it is written
 to `artifacts\tools\sdl-min-audio`, and the scene's mini configure must pass
 that directory as `BBLITE_SDL_DIR`.
+Both trimmed installs carry the two overlay-port patches the development SDL
+carries, plus one of their own that the development SDL does not:
+`static-no-dynapi.patch` turns SDL's dynamic-API jump table off. The table
+references every public entry point, so a static link kept every
+subsystem's code alive through `/OPT:REF` — the surface blitters, YUV
+conversion, the gamepad tables, audio conversion and `SDL_render` all
+survived in a scene that reaches none of them, 869 KiB of SDL in scene 1's
+2.3 MB executable. The table only routed each call to the same
+implementation, so behaviour is unchanged; the map report is what shows the
+difference. The SDL_image the static triplet installs is the overlay port
+with every dependency-free format off (SVG, XPM, BMP, GIF, TGA and the
+rest): generation names only PNG, JPEG and WebP in `BBLITE_IMAGE_CODECS`,
+and those three stay feature-driven.
 Scenes reaching `audio:engine` also point `BBLITE_LABSOUND_DIR` at the separate
 `artifacts\tools\labsound-static` install. The ordinary development LabSound
 build uses the dynamic CRT and is deliberately rejected by a mini build.
@@ -853,7 +913,16 @@ still arrives through the tree's own vcpkg `ui` manifest feature under the
 `x64-windows-static` triplet, because the artifact records
 `Freetype::Freetype` as a link interface rather than embedding it, and
 fonts come from the OS at run time (DirectWrite here), so no font files or
-freetype variant enter `artifacts\tools`.
+freetype variant enter `artifacts\tools`. The headers it compiles against
+do decide the linkage, though: vcpkg's dynamic freetype install rewrites
+`public-macros.h` so every `FT_EXPORT` is `__declspec(dllimport)`, and an
+archive compiled against the development install references `__imp_FT_*`
+that no static executable can resolve. `-StaticRuntime` therefore installs
+the manifest's `ui` feature for `x64-windows-static` once, under
+`artifacts\vcpkg-installed\shipping-static` (vcpkg from `VCPKG_ROOT` or
+`-Vcpkg`; re-installed when the manifest or registry configuration is newer
+than the headers), compiles against those headers, and refuses a
+`-FreetypeRoot` whose headers spell `dllimport`.
 `build-dawn-min.ps1` builds the monolithic static, D3D12-only,
 FXC-only Dawn: the package ships no compiler DLLs and resolves
 `d3dcompiler_47.dll` from the executable directory or System32, with
@@ -1169,6 +1238,23 @@ longer emits, so an unchanged scene rebuilds nothing. `scene -- process`
 reconfigures only when the CMake cache differs from the values it would pass or
 a configure input is newer than CMake's `CMakeFiles/cmake.check_cache`
 generation marker. `--cold` forces the configure regardless.
+
+Generation itself is skipped for a scene whose inputs are unchanged. Every
+generation lists the repository files it read in `manifest.json` (`inputs`:
+the entry, its imports, the host-UI companion, local assets), and
+`scene -- compile` records under `artifacts/generation-stamps/` a digest over
+those files, the compiler (`dist/.build-stamp`), the pinned package, the pins
+under `upstream/`, the CLI arguments, `CHROME_PATH`/`BBLITE_BAKE_CACHE`, the
+browser the bakes run in and Node's version, beside a digest of the size and
+mtime of everything it wrote. A later run with both digests unchanged runs no
+compiler and only recomputes the build stamp, which follows the native
+sources the input digest does not cover. Inputs are keyed by size and mtime
+like the outputs; a record carries its input list, so a check parses no
+manifest. Anything the record cannot vouch for is a miss: a
+manifest without an input list, a file edited under `generated/` (the
+shader compiler's own products and the stamp pair excepted), an input
+edited while the compiler ran. `compile --cold`, and `process --cold`,
+regenerate regardless.
 
 ## Proving a change moved nothing
 

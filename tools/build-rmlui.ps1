@@ -31,6 +31,9 @@ param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
     [string]$FreetypeRoot = "",
+    # Only the -StaticRuntime artifact needs vcpkg, to install the
+    # static-triplet FreeType headers it compiles against (see below).
+    [string]$Vcpkg = $(if ($env:VCPKG_ROOT) { Join-Path $env:VCPKG_ROOT "vcpkg.exe" } else { "" }),
     [switch]$StaticRuntime,
     [string]$CMake = $env:CMAKE_COMMAND
 )
@@ -57,10 +60,54 @@ if (-not $FreetypeRoot) {
     } else {
         Join-Path $root "artifacts\vcpkg-installed"
     }
-    $FreetypeRoot = Join-Path $installedRoot "development-full\x64-windows"
+    if ($StaticRuntime) {
+        # The headers decide the linkage, not the consumer: vcpkg's dynamic
+        # freetype install patches public-macros.h to spell every FT_EXPORT
+        # as __declspec(dllimport), so an archive compiled against the
+        # development (x64-windows) headers references __imp_FT_* and can
+        # never link into the static shipping executable. The static
+        # artifact therefore compiles against a static-triplet install of
+        # the same manifest, made once here and reused; the ui feature is
+        # what brings freetype in.
+        $staticRoot = Join-Path $installedRoot "shipping-static"
+        $FreetypeRoot = Join-Path $staticRoot "x64-windows-static"
+        $headers = Join-Path $FreetypeRoot "include\ft2build.h"
+        $manifestMoved = (Test-Path $headers) -and (
+            @("native\vcpkg.json", "native\vcpkg-configuration.json") |
+                Where-Object {
+                    (Get-Item (Join-Path $root $_)).LastWriteTimeUtc -gt
+                        (Get-Item $headers).LastWriteTimeUtc
+                }
+        ).Count -gt 0
+        if (-not (Test-Path $headers) -or $manifestMoved) {
+            if (-not $Vcpkg -or -not (Test-Path $Vcpkg)) {
+                throw "vcpkg was not found for the static FreeType install. Set VCPKG_ROOT (or pass -Vcpkg), or pass -FreetypeRoot at an x64-windows-static vcpkg install carrying freetype."
+            }
+            & $Vcpkg install `
+                "--x-manifest-root=$(Join-Path $root 'native')" `
+                "--x-install-root=$staticRoot" `
+                --triplet=x64-windows-static `
+                --x-feature=ui
+            if ($LASTEXITCODE -ne 0) {
+                throw "vcpkg could not install the static-triplet manifest for the RmlUi static artifact."
+            }
+        }
+    } else {
+        $FreetypeRoot = Join-Path $installedRoot "development-full\x64-windows"
+    }
 }
 if (-not (Test-Path (Join-Path $FreetypeRoot "include\ft2build.h"))) {
     throw "FreeType headers were not found at $FreetypeRoot. Run 'npm run dev:setup' (which installs the development vcpkg manifest), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype."
+}
+if ($StaticRuntime) {
+    # vcpkg's port rewrites the `#elif` guarding the dllimport attribute to a
+    # literal 1 (dynamic) or 0 (static); the static header still carries the
+    # attribute, in the dead arm, so the test is the live arm.
+    $macros = Join-Path $FreetypeRoot "include\freetype\config\public-macros.h"
+    $macrosText = if (Test-Path $macros) { Get-Content $macros -Raw } else { "" }
+    if ($macrosText -match '(?m)^#elif 1\s*$\s*#define FT_PUBLIC_FUNCTION_ATTRIBUTE\s+__declspec\( dllimport \)') {
+        throw "FreeType headers at $FreetypeRoot spell FT_EXPORT as dllimport (a dynamic-triplet install); a static artifact compiled against them cannot link. Pass -FreetypeRoot at an x64-windows-static install."
+    }
 }
 $pin = Get-Content (Join-Path $root "upstream\rmlui.json") -Raw |
     ConvertFrom-Json

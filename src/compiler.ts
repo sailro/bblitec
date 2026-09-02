@@ -328,7 +328,9 @@ export function compileSource(source: string, options: CompileOptions = {}): Com
             : {}),
         },
     );
-    return compiler.compile();
+    const result = compiler.compile();
+    result.manifest.inputs = frontend.localFiles;
+    return result;
 }
 
 class Compiler
@@ -645,6 +647,10 @@ class Compiler
                 : {}),
             manifest: {
                 source: this.options.fileName,
+                // The compiler's half of the reached-file list is the
+                // program's, filled in by `compileSource`; generation
+                // appends the files it reads beside the program.
+                inputs: [],
                 features,
                 ...(this.engineMsaaSamples !== undefined
                     ? { engineMsaaSamples: this.engineMsaaSamples }

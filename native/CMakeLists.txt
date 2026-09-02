@@ -1019,4 +1019,50 @@ if(BBLITE_MINSIZE)
     endif()
 endif()
 
+# Precompiled header. Every translation unit parses runtime.hpp, js_data.hpp
+# and their standard-library closure before its own text; a small generated
+# unit spends most of its compile there (docs/development.md carries the
+# measurement). Precompiling that set once per tree removes the parse from
+# every unit; the generated headers stay out, since they change with every
+# generation. Off for the one-off shipping shape, whose 48 MB precompile
+# would serve a single build.
+if(BBLITE_MINSIZE)
+    set(BBLITE_PCH_DEFAULT OFF)
+else()
+    set(BBLITE_PCH_DEFAULT ON)
+endif()
+option(
+    BBLITE_PCH
+    "Precompile the stable native headers once per build tree"
+    ${BBLITE_PCH_DEFAULT}
+)
+if(BBLITE_PCH)
+    # The four repository headers bring the standard library they use; the
+    # rest are what the PAL units include beyond them.
+    set(
+        BBLITE_PCH_HEADERS
+        <bblite/pal.hpp>
+        <bblite/pal_image.hpp>
+        <bblite/runtime.hpp>
+        <bblite/ts_runtime.hpp>
+        <SDL3/SDL.h>
+        <chrono>
+        <cstdio>
+        <cstring>
+        <filesystem>
+        <fstream>
+        <iomanip>
+        <iostream>
+        <sstream>
+        <stdexcept>
+    )
+    if(BBLITE_BACKEND_SDL_GPU)
+        list(APPEND BBLITE_PCH_HEADERS <SDL3/SDL_gpu.h>)
+    endif()
+    if(BBLITE_BACKEND_DAWN)
+        list(APPEND BBLITE_PCH_HEADERS <webgpu/webgpu.h>)
+    endif()
+    target_precompile_headers(bblite_native PRIVATE ${BBLITE_PCH_HEADERS})
+endif()
+
 message(STATUS "Babylon Lite native features: ${BBLITE_RUNTIME_FEATURES}")

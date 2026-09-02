@@ -14,8 +14,6 @@ import { compiledShaderArtifactExtensions } from "./generated-tree.js";
 export interface ValidationSceneInput {
     id: string;
     output: string;
-    source: string;
-    title: string;
 }
 
 interface CompletedStage {
@@ -23,8 +21,12 @@ interface CompletedStage {
     output: string;
 }
 
+/**
+ * The shader stage's reuse record. Generation's own currency is answered
+ * per scene by `src/generation-stamp.ts`, so this checkpoint carries the
+ * one stage that has no record of its own.
+ */
 export interface ValidationCheckpoint {
-    compile?: CompletedStage;
     shaders?: CompletedStage;
     version: 1;
 }
@@ -42,11 +44,12 @@ function filesUnder(path: string): string[] {
     return files;
 }
 
-function hashEntries(entries: readonly string[]): string {
+export function hashEntries(entries: readonly string[]): string {
     return createHash("sha256").update(entries.join("\n")).digest("hex");
 }
 
-function contentFingerprint(paths: readonly string[]): string {
+/** SHA-256 over the bytes of every file under each path, missing paths included. */
+export function contentFingerprint(paths: readonly string[]): string {
     const entries: string[] = [];
     const roots = [...new Set(paths.map((path) => resolve(path)))].sort();
     for (const root of roots) {
@@ -65,30 +68,57 @@ function contentFingerprint(paths: readonly string[]): string {
     return hashEntries(entries);
 }
 
-function metadataFingerprint(
+/** A file's identity without reading it: its path, size and mtime. */
+export function toolIdentity(path: string | undefined): string {
+    if (!path || !existsSync(path)) return "missing";
+    const stat = statSync(path);
+    return `${resolve(path)}\t${stat.size}\t${stat.mtimeMs}`;
+}
+
+/**
+ * SHA-256 over size and mtime of every file under each root that `include`
+ * accepts: whether a set of outputs is still the set a run wrote, without
+ * reading them.
+ */
+export function metadataFingerprint(
     roots: readonly string[],
     include: (relativePath: string) => boolean,
 ): string {
-    const entries: string[] = [];
+    return metadataFingerprints(roots, [include])[0]!;
+}
+
+/**
+ * One walk, several digests: each predicate selects the files its digest
+ * covers, so two views of one directory tree cost one `readdir` pass.
+ */
+export function metadataFingerprints(
+    roots: readonly string[],
+    includes: readonly ((relativePath: string) => boolean)[],
+): string[] {
+    const entries: string[][] = includes.map(() => []);
     const uniqueRoots = [
         ...new Set(roots.map((path) => resolve(path))),
     ].sort();
     for (const root of uniqueRoots) {
         if (!existsSync(root)) {
-            entries.push(`${root}\tmissing`);
+            for (const list of entries) list.push(`${root}\tmissing`);
             continue;
         }
         for (const file of filesUnder(root).sort()) {
             const path = relative(root, file).replaceAll("\\", "/");
-            if (!include(path)) continue;
-            const stat = statSync(file);
-            entries.push(`${root}/${path}\t${stat.size}\t${stat.mtimeMs}`);
+            let identity: string | undefined;
+            includes.forEach((include, index) => {
+                if (!include(path)) return;
+                identity ??= `${root}/${path}\t${toolIdentity(file).split("\t").slice(1).join("\t")}`;
+                entries[index]!.push(identity);
+            });
         }
     }
-    return hashEntries(entries);
+    return entries.map(hashEntries);
 }
 
-function isCompiledShaderOutput(path: string): boolean {
+/** A file `tools/compile-shaders.ps1` owns inside a generated tree. */
+export function isCompiledShaderOutput(path: string): boolean {
     return (
         compiledShaderArtifactExtensions.some((extension) =>
             path.endsWith(extension),
@@ -98,62 +128,14 @@ function isCompiledShaderOutput(path: string): boolean {
     );
 }
 
-/** Inputs whose bytes determine generated scene output. */
-export function validationCompileInput(
-    scenes: readonly ValidationSceneInput[],
-    browserPath: string,
-    repositoryRoot = process.cwd(),
-): string {
-    const sourceDirectories = scenes.map((scene) =>
-        dirname(resolve(scene.source)),
-    );
-    const browser = statSync(browserPath);
-    const content = contentFingerprint([
-        resolve(repositoryRoot, "dist", ".build-stamp"),
-        resolve(repositoryRoot, "package-lock.json"),
-        resolve(repositoryRoot, "upstream"),
-        ...sourceDirectories,
-    ]);
-    return hashEntries([
-        content,
-        `${resolve(browserPath)}\t${browser.size}\t${browser.mtimeMs}`,
-        ...scenes.map((scene) =>
-            JSON.stringify({
-                id: scene.id,
-                output: resolve(scene.output),
-                source: resolve(scene.source),
-                title: scene.title,
-            }),
-        ),
-        `CHROME_PATH=${process.env.CHROME_PATH ?? ""}`,
-        `BBLITE_BAKE_CACHE=${process.env.BBLITE_BAKE_CACHE ?? ""}`,
-    ]);
-}
-
-/** Generated files owned by compilation, excluding shader-derived outputs. */
-export function validationCompileOutput(
-    scenes: readonly ValidationSceneInput[],
-): string {
-    return metadataFingerprint(
-        scenes.map((scene) => scene.output),
-        (path) => !isCompiledShaderOutput(path),
-    );
-}
-
-function toolIdentity(path: string | undefined): string {
-    if (!path || !existsSync(path)) return "missing";
-    const stat = statSync(path);
-    return `${resolve(path)}\t${stat.size}\t${stat.mtimeMs}`;
-}
-
 export function validationShaderInput(
-    compileOutput: string,
+    shaderSources: string,
     target: string,
     tools: { dxc: string | undefined; tint: string | undefined },
     repositoryRoot = process.cwd(),
 ): string {
     return hashEntries([
-        compileOutput,
+        shaderSources,
         target,
         toolIdentity(tools.dxc),
         toolIdentity(tools.tint),
@@ -163,14 +145,20 @@ export function validationShaderInput(
     ]);
 }
 
-/** Target compiler products, excluding the WGSL sources from generation. */
-export function validationShaderOutput(
+/**
+ * The two digests of the shader directories, from one walk: what the
+ * shader compiler reads (every file it did not itself write -- narrower
+ * than the whole generated tree on purpose, so a build-stamp refresh after
+ * a PAL edit does not re-run the stage) and what it produced.
+ */
+export function shaderDirectoryFingerprints(
     scenes: readonly ValidationSceneInput[],
-): string {
-    return metadataFingerprint(
+): { sources: string; products: string } {
+    const [sources, products] = metadataFingerprints(
         scenes.map((scene) => resolve(scene.output, "upstream", "shaders")),
-        isCompiledShaderOutput,
+        [(path) => !isCompiledShaderOutput(path), isCompiledShaderOutput],
     );
+    return { sources: sources!, products: products! };
 }
 
 export function readValidationCheckpoint(
@@ -189,12 +177,17 @@ export function readValidationCheckpoint(
     }
 }
 
+/** Write a JSON record atomically: a reader never sees a partial file. */
+export function writeJsonRecord(path: string, value: unknown): void {
+    mkdirSync(dirname(path), { recursive: true });
+    const temporary = `${path}.${process.pid}.tmp`;
+    writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`);
+    renameSync(temporary, path);
+}
+
 export function writeValidationCheckpoint(
     path: string,
     checkpoint: ValidationCheckpoint,
 ): void {
-    mkdirSync(dirname(path), { recursive: true });
-    const temporary = `${path}.${process.pid}.tmp`;
-    writeFileSync(temporary, `${JSON.stringify(checkpoint, null, 2)}\n`);
-    renameSync(temporary, path);
+    writeJsonRecord(path, checkpoint);
 }

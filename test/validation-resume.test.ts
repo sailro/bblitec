@@ -6,10 +6,8 @@ import test from "node:test";
 
 import {
     readValidationCheckpoint,
-    validationCompileInput,
-    validationCompileOutput,
+    shaderDirectoryFingerprints,
     validationShaderInput,
-    validationShaderOutput,
     writeValidationCheckpoint,
 } from "../src/validation-resume.js";
 
@@ -18,20 +16,13 @@ function write(path: string, contents: string): void {
     writeFileSync(path, contents);
 }
 
-test("validation resume keys generation and shaders independently", (t) => {
+test("the shader stage keys its sources and its products apart", (t) => {
     const root = mkdtempSync(join(tmpdir(), "bblitec-resume-"));
     t.after(() => rmSync(root, { recursive: true, force: true }));
-    const source = resolve(root, "corpus/scene/index.ts");
     const output = resolve(root, "generated/scene");
-    const browser = resolve(root, "browser.exe");
     const dxc = resolve(root, "dxc.exe");
     const tint = resolve(root, "tint.exe");
-    write(source, "export const scene = 1;\n");
-    write(resolve(root, "dist/.build-stamp"), "compiler-v1\n");
-    write(resolve(root, "package-lock.json"), "{}\n");
-    write(resolve(root, "upstream/pin.json"), "{}\n");
     write(resolve(root, "tools/compile-shaders.ps1"), "# compiler\n");
-    write(browser, "browser");
     write(dxc, "dxc");
     write(tint, "tint");
     write(resolve(output, "main.cpp"), "int main() {}\n");
@@ -39,32 +30,31 @@ test("validation resume keys generation and shaders independently", (t) => {
         resolve(output, "upstream/shaders/pbr.frag.native.wgsl"),
         "@fragment fn main() {}\n",
     );
-    const scenes = [{ id: "scene", output, source, title: "Scene" }];
+    const scenes = [{ id: "scene", output }];
 
-    const input = validationCompileInput(scenes, browser, root);
-    assert.equal(validationCompileInput(scenes, browser, root), input);
-    write(source, "export const scene = 2;\n");
-    assert.notEqual(validationCompileInput(scenes, browser, root), input);
-
-    const generated = validationCompileOutput(scenes);
+    const before = shaderDirectoryFingerprints(scenes);
     write(resolve(output, "upstream/shaders/pbr.frag.dxil"), "DXBC");
+    const withProduct = shaderDirectoryFingerprints(scenes);
     assert.equal(
-        validationCompileOutput(scenes),
-        generated,
-        "shader products do not invalidate generation",
+        withProduct.sources,
+        before.sources,
+        "a shader product does not move the sources digest",
     );
-    const shaderOutput = validationShaderOutput(scenes);
+    assert.notEqual(withProduct.products, before.products);
     write(resolve(output, "upstream/shaders/pbr.frag.dxil"), "DXBC-longer");
-    assert.notEqual(validationShaderOutput(scenes), shaderOutput);
+    assert.notEqual(
+        shaderDirectoryFingerprints(scenes).products,
+        withProduct.products,
+    );
 
     const shaderInput = validationShaderInput(
-        generated,
+        before.sources,
         "d3d12",
         { dxc, tint },
         root,
     );
     assert.notEqual(
-        validationShaderInput(generated, "all", { dxc, tint }, root),
+        validationShaderInput(before.sources, "all", { dxc, tint }, root),
         shaderInput,
     );
 });
@@ -76,14 +66,10 @@ test("validation checkpoints are atomic and malformed files restart cleanly", (t
     assert.deepEqual(readValidationCheckpoint(path), { version: 1 });
     const checkpoint = {
         version: 1 as const,
-        compile: { input: "input", output: "output" },
+        shaders: { input: "shader-input", output: "shader-output" },
     };
     writeValidationCheckpoint(path, checkpoint);
     assert.deepEqual(readValidationCheckpoint(path), checkpoint);
-    writeValidationCheckpoint(path, {
-        ...checkpoint,
-        shaders: { input: "shader-input", output: "shader-output" },
-    });
     assert.equal(readValidationCheckpoint(path).shaders?.input, "shader-input");
     writeFileSync(path, "not json");
     assert.deepEqual(readValidationCheckpoint(path), { version: 1 });
