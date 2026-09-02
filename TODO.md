@@ -238,8 +238,8 @@ leading candidates at this pin:
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
-`createUtilityLayer` 5 (223 shipped; the four editing gizmos are deferred
-behind pointer picking and drag routing), the GPU
+`createUtilityLayer` 5 (221 and 223 shipped; 222, 224 and 49 are deferred
+behind `attachControl`'s options bag), the GPU
 picker 5 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses
 by design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
 also need two `_shared` modules the corpus does not carry).
@@ -255,7 +255,7 @@ list.
 | --- | --- | --- |
 | 186 | `corners.flat` | opt-in PBR local cubemap blending |
 | 187 | `createSmaaPostProcessTask` | SMAA |
-| 302 | an unresolved `SCENE302_CLEAR_COLOR` from the shared module the corpus does not carry | node particles with a moving emitter |
+| 302 | a definite-assignment `let set` declared then assigned in a `try` | node particles with a moving emitter |
 | 303 | `enableSprite2DYSort` | renderer-native Sprite2D Y-sort |
 | 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
 | 305 | `normalizeNodeParticleGraph` | NPE Teleport/LocalVariable graph plumbing |
@@ -286,8 +286,8 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (19 scenes):**
-86, 91, 112-115, 121-124,
+**Integrate first (18 scenes):**
+86, 91, 113-115, 121-124,
 140, 149, 218, 219,
 231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
@@ -295,16 +295,16 @@ and splats, and deterministic picking (113-115). Every navigation scene
 the corpus carries is now integrated, as are the cascaded-shadow pair,
 the billboard pick and the display gizmos.
 
-One scene left this list without a line of compiler work: **73** imports
-`lab/lite/src/shared/scene73-nme.ts`, which exists upstream at the pinned
-commit and was never staged into the corpus, so it neither compiles nor
-captures. **302** has the same missing-module problem with
-`scene302-npe-moving-emitter.ts` and was never on this list; staging both
-is the whole of their first blocker, and what is behind it is measured in
-their own entries.
+**73** and **302** each imported a `lab/lite/src/shared/` module that
+existed upstream at the pin and had never been staged here, so neither
+compiled nor captured for a reason no sweep would report. Both are staged
+now and both reach ordinary compiler blockers: `viewport` for 73, in its
+own entry below, and for 302 a definite-assignment `let set` in the
+capability table above -- behind which sit the moving-emitter provider and
+an `isLocal` node-particle system.
 
-**Defer (25 scenes):** 41, 42, 45-49, 101-106, 153, 164, 180, 181,
-209, 221, 222, 224, 225, 227, 228, 272.
+**Defer (24 scenes):** 41, 42, 45-49, 101-106, 153, 164, 180, 181,
+209, 222, 224, 225, 227, 228, 272.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
   full and 0.28 foreground, identical on both backends. The composed fragment
@@ -568,9 +568,7 @@ their own entries.
     near-duplicate branch for a task with its own camera. A cascaded
     generator now renders several light-space passes per light, which is
     where that branch stopped being proportionate.
-- [ ] Scene 73: stage `lab/lite/src/shared/scene73-nme.ts` into the corpus
-  (it is upstream at the pin and absent here, so the scene cannot compile or
-  capture), then support camera viewports. Two arrangements of the container
+- [ ] Scene 73: support camera viewports. Two arrangements of the container
   flatten are now proven -- the worklist and the recursive visitor, gated by
   `regression-imported-mesh-walk` -- but scene 73 writes a third, a recursive
   arrow closure reading `children` into a local, so it needs either that
@@ -582,14 +580,6 @@ their own entries.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.
 - [ ] Scene 91: support `initializeCsg2Async`.
-- [ ] Scene 112: `addDdsEnvironmentBackground`, then `KHR_texture_basisu`.
-  Each KTX2 image transcodes at generation as a `.basis` file already does,
-  packaged as the KTX1 container the runtime reads, so the generated glTF
-  loader sniffs that magic and fills `TextureData::compressed` instead of
-  decoding. `uploadKtx2Texture2D` takes sRGB per call and caches by
-  `index:sRGB`, so an image feeding both a base-colour and a linear slot
-  transcodes twice. Its six materials share one packed `OcclusionRoughMetal`
-  image, so the loader's `OffscreenCanvas` ORM composite is not reached.
 - [ ] Scenes 113 and 114: past the frame-yield contract, which now unrolls
   their `waitFrames(4)`, each wants one thing already sized above — 113
   `enableDetailedPicking`/`getPickedNormal` plus the N-ary `Math.hypot` the
@@ -684,8 +674,32 @@ their own entries.
   drifts from the pinned source (the deleted `_floatingOriginOffset` mirror,
   the thin-instance stream that is precision-only, not offset-subtracting)
   the source decides.
-- [ ] Scenes 218, 219: recursion (`findSkinned`) carries the reported non-final
-  return, and vertex-animation textures (`VatHandle`/`VatClip`) sit behind it.
+- [ ] Scenes 218, 219: vertex animation textures. Three contracts sit in
+  front of the subsystem, each compile-probed rather than inferred:
+  `findSkinned`'s recursive first-skinned search over a glTF root
+  (`m.skeleton`, the reported blocker), `groups.length` on a container's
+  animation-group collection, and a nullable handle binding
+  (`let h: VatHandle | null = null` then a guarded assignment, read through
+  `h?.play`/`h?.update` in the render callback) -- today that assignment
+  reports "Assignment operator '=' is not supported for json-null". The
+  first wants neither flatten matcher: both leave DFS order unclaimed while
+  `findSkinned` returns the FIRST hit, so the template is
+  `compileAssetDescendantNameSearch` with a `requireUniqueAssetSkinnedMesh`
+  sibling -- shark.glb carries exactly one skinned mesh, which makes order
+  irrelevant rather than claimed.
+  Behind them `bakeVat`/`attachVat` are a subsystem this port does not have
+  at all: a baked `rgba32float` texture of `boneCount*4 x totalFrames`
+  (2,099 rows for shark.glb, about 4 MB), a 32-byte vertex-visible settings
+  block, and for 219 a per-instance params texture read by instance index.
+  Sized at 1,500-1,700 lines across the compiler, the lowering templates,
+  `runtime.hpp` and BOTH PALs. The shader half is nearly free -- registering
+  `material/pbr/fragments/vat-fragment.js` composes it from the pin, gated on
+  `MSH_VAT`, and is inert for every other scene -- so the cost is the native
+  bake and the two new per-mesh GPU resources. Do not re-derive the bake:
+  natively it is `go_to_frame` per frame, copying `MeshRecord::bone_matrices`
+  into the row, and that formula is already ported and gated by scene 11.
+  Neither scene can be measured without a registry entry: both freeze only
+  under `?seekTime`, and upstream's own specs pin `?seekTime=1.0`.
 - [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
   `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
   imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
@@ -825,11 +839,38 @@ earlier compiler error.
   animation manager options past `engine`.
 - [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
   wheel handling. First blocker: reached `void` expression statements.
-- [ ] Scenes 221, 222, 224: add pointer-driven gizmo picking and drag routing.
-  First blockers: mesh names (221) and `attachControl`'s options bag (222,
-  224, and 49 in the physics lane -- one contract for all three). Scene 223
-  ships the family's foundation: the utility layer as a swapchain overlay,
-  and the camera and light widgets.
+- [ ] Scenes 222, 224: add the composite gizmo assemblies and the
+  bounding-box widget. First blocker for both, and for 49 in the physics
+  lane -- one contract for all three -- is `attachControl`'s options bag of
+  camera-deferral callbacks, which have no meaning without pointer input, so
+  the open question is whether they erase or refuse. Behind it 222 wants
+  `createPositionGizmo` and 224 `createBoundingBoxGizmo`. Scenes 223 and 221
+  ship the family's foundation and its four single widgets: the utility
+  layer as a swapchain overlay, the camera and light displays, and the
+  axis-drag, axis-scale, plane-drag and plane-rotation editors.
+  - **222** is mostly wiring: the three composites are 3-7 of the shipped
+    widgets plus a record, and `thickness`/`tessellation`/`uniformScaling`
+    are already live parameters in the emitted builders and only need
+    serving rather than refusing. Its one genuinely new mechanism is the
+    local-coordinate follow arm -- the scene sets
+    `setPositionGizmoLocalCoordinates(..., true)` at load, so a STILL
+    capture exercises it -- which wants `transformDirectionByWorld` and
+    `quatMul` lowered beside the `rotationQuatFromMatrix` already present.
+  - **224** is two to three times that. Past `attachControl` and a
+    `?nocam` query branch (whose fold differs between the ad-hoc and the
+    registered path) sits `computeBoundsRecursive` over the attached node's
+    whole subtree with a pre-transform, then twelve edge cylinders, six face
+    anchors and eight three-box corners placed from that AABB, rebuilt
+    whenever the bounds move. The static geometry is mechanical; the bounds
+    walk and the rebuild are the work.
+  - **Collapse the four widget builders when the shape settles.** They
+    share a preamble and a tail -- the colour read is character-identical
+    four times, and the emitted signature, root and return block repeats
+    with three substitutions -- and two per-widget tables already exist
+    (`EDIT_MODULES` and the intrinsic's `editGizmos`) that could drive one
+    builder, worth about 90-100 lines. Left until 222 and 224 land, because
+    the composites and the bounds walk are what decide which part is
+    genuinely shared.
   - **Lower the three transcribed gizmo bodies.** `gizmo-lowerer.ts` reads
     the pin's constants and factory option objects out of its AST, but
     `buildHemisphereMesh`, `lineDefsForLevel` and
@@ -997,3 +1038,22 @@ Both backends stay long-term as mutually validating implementations;
 - [ ] Reduce the release payload further: trim the Dawn DLL set through Dawn
   build options (a DXC-less build changes rendering, so the compiler stays),
   ship only the CRT DLLs the exe imports, and evaluate packed native assets.
+  - **The KTX2 transcode is now the largest asset weight in the tree**, and
+    two measured costs ride it. Scene 112 packages 30.72 MB of source
+    `.ktx2` into a 74.5 MB GLB, so both scale with the asset rather than
+    the scene. First, `transcodeTexture` replays through `cachedJsonBake`,
+    so a WARM compile pays a parse and a base64 decode -- 549 ms of replay
+    plus 126 ms of `writeKtx1` for fifteen images, about 28% of a 2.44 s
+    warm `packageGltf`; caching the assembled KTX1 through `cachedBake`
+    loses nothing (the container carries its own format, extents and level
+    sizes) and shrinks the cache from 102.5 MB to 71.3 MB. Second, the
+    emitted loader materializes a full copy of the container range per slot
+    only to hand it to `parse_ktx1`, which copies every level out again --
+    117 MB for scene 112; a `std::span` overload and a view at the call
+    site removes it. The KTX2 sampler is also the one pinned fact on that
+    path that is re-derived rather than read: `ktx2SamplerIndex`
+    transcribes the four glTF enums from a prose reading of `makeSampler`,
+    where the same code reads `srgbFormat`'s switch off the pin. A table
+    beside `srgbGpuFormat` mapping the pin's sampler descriptor to glTF
+    enums would make an upstream filter change fail generation instead of
+    silently repackaging.

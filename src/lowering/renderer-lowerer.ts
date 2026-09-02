@@ -1398,7 +1398,8 @@ GridUniforms build_grid_uniforms(
 BackgroundPlan build_background_plan(const EnvironmentState& environment);
 BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
-    const CameraRecord& camera);
+    const CameraRecord& camera,
+    bool linear_image_processing);
 SkyboxPlan build_skybox_plan(const EnvironmentState& environment);
 SkyboxVertexUniforms build_skybox_vertex_uniforms(
     const EnvironmentState& environment,
@@ -1478,6 +1479,21 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             orthoWriter,
             multiplyWriter,
         } = inputs;
+        // Both background fragments wrap their image processing in the pin's
+        // `scene.vImageInfos.w >= 0.0`, and that lane is
+        // `+scene.imageProcessing.toneMappingEnabled`
+        // (`scene-uniforms-pack.ts`). `transmission.ts`'s
+        // `executeRenderTaskLinear` sets that property to a NEGATIVE value for
+        // the duration of the retargeted linear pass, which is what closes the
+        // gate: a background drawn into the linear target leaves its exposure,
+        // tone map and contrast to the trailing image-processing task. So the
+        // lane carries the pin's own packed value rather than a constant, and
+        // the negative is read off the pin rather than typed here.
+        const linearToneMapping = this.pinnedLinearToneMappingFlag();
+        const imageProcessingGate =
+            `linear_image_processing\n            ? ` +
+            `${this.context.floatLiteral(linearToneMapping)}\n            ` +
+            `: (environment.tone_mapping_enabled ? 1.0f : 0.0f)`;
         return `// ${this.context.provenance(
                 renderTaskModule,
                 "buildBindings",
@@ -2572,7 +2588,8 @@ ${backgroundGeometry.groundVertexRows}
 
 BackgroundUniforms build_background_uniforms(
     const EnvironmentState& environment,
-    const CameraRecord& camera) {
+    const CameraRecord& camera,
+    bool linear_image_processing) {
     const Vec3 eye = camera_basis(camera).eye;
     BackgroundUniforms result;
     result.primary_color_alpha = {
@@ -2593,7 +2610,12 @@ BackgroundUniforms build_background_uniforms(
         eye.z,
         environment.exposure,
     };
-    result.image_parameters = {environment.contrast, 1.0f, 0.0f, 0.0f};
+    result.image_parameters = {
+        environment.contrast,
+        ${imageProcessingGate},
+        0.0f,
+        0.0f,
+    };
     return result;
 }
 
@@ -2654,8 +2676,8 @@ SkyboxUniforms build_skybox_uniforms(
     result.image_parameters = {
         environment.contrast,
         environment.skybox_uses_environment ? 1.0f : 0.0f,
-        environment.tone_mapping_enabled ? 1.0f : 0.0f,
-        linear_image_processing ? 1.0f : 0.0f,
+        ${imageProcessingGate},
+        0.0f,
     };
     return result;
 }
@@ -2771,6 +2793,7 @@ ${pinnedFogInfosPacking()}    };
     public lowerShaders(options: {
         ground: boolean;
         skybox: boolean;
+        ddsEnvironment?: boolean;
         imageSkybox?: boolean;
         solidSkybox?: boolean;
         transmission?: boolean;
@@ -2856,8 +2879,9 @@ ${pinnedFogInfosPacking()}    };
             // Both variants carry the pin's fragment; the pin itself selects
             // noise by composing WGSL_DITHER or WGSL_NO_DITHER in front of
             // the same body, so the undithered file is the pin's zero-noise
-            // arm rather than an edited body. The PALs load the dithered
-            // file for the ground, as upstream's enableNoise default does.
+            // arm rather than an edited body. Which one a backend loads is
+            // the environment's own `enable_noise`, read through the shared
+            // `background_ground_fragment` selector.
             result.push({
                 output:
                     "upstream/shaders/background-ground.frag.native.wgsl",
@@ -2885,12 +2909,13 @@ ${pinnedFogInfosPacking()}    };
                 "buildDdsSkyboxRenderable",
                 `${backgroundHdrModule}#buildHdrSkyboxRenderable, the modules' own ddsSkyboxFragSrc/skyboxHdrFragSrc with shader/wgsl-helpers.ts WGSL_DITHER`,
             );
-            // One file per pinned arm, under the names the PALs select
-            // between on `skybox_uses_environment`: the undithered file is
-            // the environment-cubemap (HDR) fragment — the pin composes no
-            // dither for it — and the dithered file is the DDS fragment,
-            // whose image-processing block is the pin's own single
-            // high-contrast arm.
+            // One file per pinned arm, under the names the shared
+            // `background_skybox_fragment` selector picks between on
+            // `skybox_uses_environment` and `enable_noise`: the
+            // environment-cubemap (HDR) fragment, which the pin composes no
+            // dither for, and the DDS fragment in both its dithered and
+            // undithered forms — scene 112 is the corpus scene that asks
+            // for the second.
             result.push({
                 output:
                     "upstream/shaders/background-skybox-dds.vert.native.wgsl",
@@ -2913,9 +2938,27 @@ ${pinnedFogInfosPacking()}    };
                 data: backgroundSkyboxFragmentWgsl(
                     skyboxProvenance,
                     pinnedSkybox,
-                    true,
+                    "dds",
                 ),
             });
+            // The DDS fragment's own zero-noise arm: the same body with
+            // the pin's WGSL_NO_DITHER in front of it, exactly as the
+            // ground pair above. Only `addDdsEnvironmentBackground` can
+            // ask for it -- `loadEnvironment` never clears `enableNoise`,
+            // whose pinned default is true -- so a scene that does not
+            // reach that entry point can never select this variant and
+            // does not carry its four compiled outputs.
+            if (options.ddsEnvironment) {
+                result.push({
+                    output:
+                        "upstream/shaders/background-skybox-dds.frag.native.wgsl",
+                    data: backgroundSkyboxFragmentWgsl(
+                        skyboxProvenance,
+                        pinnedSkybox,
+                        "dds-no-dither",
+                    ),
+                });
+            }
         }
         if (options.solidSkybox) {
             const pinned = this.pinnedSolidSkyboxSource();
@@ -4631,6 +4674,48 @@ ${lifted.fragmentBody}
      *   8-corner triangulation covers the identical cube surface, over
      *   which the sampled direction interpolates identically per face.
      */
+    /**
+     * What `executeRenderTaskLinear` writes over `toneMappingEnabled` while
+     * the retargeted linear pass runs.
+     *
+     * The value itself is the contract: every image-processing tail upstream
+     * is gated on `scene.vImageInfos.w >= 0.0`, and this assignment is the
+     * only thing that ever puts a negative there. Reading it keeps the port
+     * from asserting a sign the pin could change.
+     */
+    private pinnedLinearToneMappingFlag(): number {
+        const file = this.context.sourceFile(transmissionFrameGraphModule);
+        // Scoped to the one function that retargets the pass, not the
+        // module: a second negative write elsewhere in `transmission.ts`
+        // would otherwise be able to answer for this one, and walking the
+        // whole file costs 44x what walking the declaration does.
+        const linearPass = this.context.functionDeclaration(
+            transmissionFrameGraphModule,
+            "executeRenderTaskLinear",
+        ).declaration;
+        const assignment = this.context.findNodes(
+            linearPass,
+            (node): node is ts.BinaryExpression =>
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isPropertyAccessExpression(node.left) &&
+                node.left.name.text === "toneMappingEnabled" &&
+                ts.isPrefixUnaryExpression(node.right) &&
+                node.right.operator === ts.SyntaxKind.MinusToken,
+        )[0];
+        if (!assignment) {
+            this.context.contractError(
+                file,
+                "Pinned transmission no longer writes a negative " +
+                    "toneMappingEnabled for the linear pass.",
+            );
+        }
+        return -this.context.numericValue(
+            (assignment.right as ts.PrefixUnaryExpression).operand,
+            file,
+        );
+    }
+
     private pinnedBackgroundGeometry(): {
         groundVertexRows: string;
         groundIndexRow: string;

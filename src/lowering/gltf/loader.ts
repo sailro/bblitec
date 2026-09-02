@@ -70,6 +70,12 @@ export interface GltfLoaderOptions {
     animatedWorldBounds?: boolean;
     animationPointerMaterials?: boolean;
     assetTransmission?: boolean;
+    /**
+     * Any reached asset carries images the packager transcoded to a KTX1
+     * container (`KHR_texture_basisu`). The loader then parses them through
+     * the pin's own `parseKtx1` instead of handing bytes to an image codec.
+     */
+    compressedImages?: boolean;
     materialSpecular?: boolean;
     /** The `KHR_materials_variants` name a scene selected, or "". */
     selectedMaterialVariant?: string;

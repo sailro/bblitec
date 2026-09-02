@@ -376,7 +376,14 @@ Neither loader's sampler options are lowered, because the reached calls pass
 none. A `loadKtxTexture2D` whose suffixes are not an array literal fails at
 generation, as does a KTX file whose `glInternalFormat` is outside the pin's
 table. KTX2 — the container `KHR_texture_basisu` redirects a glTF texture to —
-needs the pin's second decoder and is unreached.
+is resolved the same way and at the same place, but inside the glTF packager
+rather than beside a texture call: each redirected image is transcoded by the
+pin's own `loadKtx2Texture2D`, written back into the GLB as a KTX1 container,
+and the extension is dropped, so the generated loader reads it through the one
+compressed-texture parser. Recorded as `executed-ktx2-transcode`; the standalone
+`loadKtx2Texture2D` texture call is unreached by any corpus scene, and so is
+the extension's ORM composite and its `KHR_materials_specular` pair, each
+refused by name. Scene 112 gates the slice.
 
 ### Environment compilation
 
@@ -1599,9 +1606,12 @@ carries its own render plan, its own uploaded meshes and its own scene and
 lights blocks, because a draw command indexes a plan and a layer's lights are
 not the base scene's.
 
-`createCameraGizmo` and `createLightGizmo` are display only: no pointer
-interaction is reached, and the drag, rotation and bounding-box gizmos are
-not integrated. What each builds is the pinned body's own tree -- the camera
+`createCameraGizmo` and `createLightGizmo` are display only, and so is
+every widget below: no pointer interaction is reached anywhere in the
+family, and the bounding-box gizmo and the three composite assemblies
+(`createPositionGizmo`, `createRotationGizmo`, `createScaleGizmo`) are not
+integrated at all.
+What each builds is the pinned body's own tree -- the camera
 body is BJS `_CreateCameraMesh` (a box and three cylinders under a
 distance-scaled node) plus a twelve-cylinder frustum wireframe sized from the
 attached camera's fov, near and far; a light gizmo is one of four per-type
@@ -1627,12 +1637,47 @@ and a `PointLight` no `direction` -- so the generated follow asks the
 record's kind exactly where the pin asks `if (pos)` / `if (dir)`, and scene
 223 places its hemispheric gizmo by hand for that reason.
 
-Each factory's options bag refuses rather than being half-served: a colour,
-a light intensity or a `displayFrustum: false` would change what the
-generated unit builds, and the unit is emitted from the pin's own defaults.
+The four EDITING widgets -- `createAxisDragGizmo`, `createAxisScaleGizmo`,
+`createPlaneDragGizmo` and `createPlaneRotationGizmo` -- reach the same
+layer, the same material builder and the same follow, and each builds the
+geometry its own pinned module builds: an arrow (cone plus tube), a cube on
+a tube, a square card, a torus ring. Their orientation is the pin's own
+quaternion arithmetic, lowered rather than restated: the drag and rotation
+widgets take `lookAtQuat`'s shortest-arc rotation onto the axis, and the
+scale widget takes `directionToQuat`'s yaw-and-pitch `setDirection`
+convention instead, because a scale cube is not roll-symmetric. Every
+geometric constant travels as the pin's own expression over a live
+`thickness` and `tessellation` rather than as a folded number.
+
+**The drag half is not reached, and what only a drag can show is not
+built.** This runtime has no pointer-input contract, so
+`createPointerDrag`/`registerPointerDrag` bind nothing; the parts whose
+only consumer is that drag are therefore absent -- the invisible collider
+meshes that give a widget its pick region, the hover and disabled materials
+`setMeshesMaterial` installs from the drag callbacks, and the rotation
+gizmo's "camembert" sector quad. None of them is drawn before a pointer
+event upstream either. For the meshes generation asserts that against the
+pin -- each is hidden at build time in the pinned body, so an upstream
+change that made one show fails generation by name. The two extra materials
+carry no such assertion: the pinned body assigns neither to a mesh before a
+drag, so nothing references them and nothing is emitted. A widget's root is the
+transform node the camera and light gizmos already use, where the pin makes
+an invisible zero-height cylinder for the same purpose. Recorded as
+`display-only-editing-gizmo` in each scene's `fidelity.json`.
+
+Each factory's options bag refuses rather than being half-served: a light
+intensity or a `displayFrustum: false` would change what the generated unit
+builds, and the unit is emitted from the pin's own defaults. An editing
+widget serves two members -- its axis (`dragAxis`, `dragPlaneNormal`,
+`planeNormal`) and `color`, both scene values its builder takes as
+parameters -- and refuses the rest by name: `thickness` and `tessellation`
+change geometry emitted from the pinned defaults, and `hoverColor`,
+`disableColor`, `rotationColor`, `sensitivity` and `uniformScaling` name a
+material or a strength only a drag installs.
 A layer that grows or loses a renderable after the frame loop starts refuses
 too -- the base scene has a plan-rematching path and a layer does not.
-Scene 223 gates the family at 0.000 on both backends.
+Scene 223 gates the display half at 0.000 on both backends and scene 221 the
+editing half.
 
 ### Physics
 

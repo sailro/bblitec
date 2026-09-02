@@ -1746,7 +1746,8 @@ inline void write_render_capture(
 #endif
     if (scene.environment.has_ground) {
         const upstream::BackgroundUniforms background =
-            upstream::build_background_uniforms(scene.environment, camera);
+            upstream::build_background_uniforms(
+                scene.environment, camera, scene.transmission_enabled);
         write_uniform_block(
             json, "fragment", 0, "BackgroundUniforms", background);
     }

@@ -281,6 +281,7 @@ export function gltfLoaderCpp(
         selectedMaterialVariant = "",
         gltfCameras = false,
         boneControl = false,
+        compressedImages = false,
     } = options;
     // The scene selected a variant, so the loader resolves each mapped
     // primitive's material. `JSON.stringify` is the C++ string literal: the
@@ -296,7 +297,7 @@ export function gltfLoaderCpp(
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
-#include <bblite/upstream/pinned_world_transform.hpp>
+${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
 #include <algorithm>
@@ -1191,7 +1192,20 @@ TextureData image_data(
             "glTF image exceeds BIN chunk.");
     }
     const std::string mime_type =
-        string_or(image, "mimeType");
+        string_or(image, "mimeType");${compressedImages ? `
+    // A KTX2 image the packager transcoded: what is embedded is the KTX1
+    // container the pin's own \`parseKtx1\` reads, so the blocks are taken
+    // as they are and nothing is decoded. \`uploadCompressed\` gives every
+    // KTX2 texture \`invertY: true\`, which is a texture-object property
+    // rather than an upload flip, so the record carries it here.
+    if (mime_type == "image/ktx") {
+        result.compressed = upstream::parse_ktx1(
+            std::vector<std::uint8_t>(
+                buffer.bytes().begin() + start,
+                buffer.bytes().begin() + end));
+        result.uv_invert_y = true;
+        return result;
+    }` : ""}
     // The codec set the build links is decided by scanning these same
     // materialized assets, so a media type listed here is always one the
     // executable can decode: an asset carrying WebP is what put the WebP
@@ -1325,12 +1339,24 @@ TextureData texture_data(
     }
 ${lowered.samplerMapping}
     const std::size_t image_index = texture_image_index(texture);
-    result.bytes = image_data(
+    // The whole payload, because a slot's image can be either an encoded
+    // file or a container's blocks: TextureData::has_image is the one
+    // predicate that answers for both, and copying only the encoded bytes
+    // here would silently drop every compressed slot.
+    // Non-const, and the mip chain MOVES: compressed is a vector of
+    // per-level byte vectors, so copy-assigning it duplicates every block
+    // -- 117 MB for a fifteen-image KTX2 asset, on top of the copy the
+    // parse already made. bytes is shared-pointer backed, so its
+    // assignment is a refcount either way.
+    TextureData payload = image_data(
         buffer,
         container,
         views,
         images,
-        image_index).bytes;
+        image_index);
+    result.bytes = payload.bytes;
+    result.compressed = std::move(payload.compressed);
+    result.uv_invert_y = payload.uv_invert_y;
     return result;
 }
 

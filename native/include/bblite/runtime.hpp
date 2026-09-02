@@ -319,6 +319,20 @@ struct LightGizmoHandle {
 };
 
 /**
+ * The four EDITING widgets share one handle and one record.
+ *
+ * Upstream gives each its own module because each builds different
+ * geometry and applies a different drag; what the record holds is the
+ * same for all four -- the layer, the root the follow drives, the one
+ * material the built meshes carry, and the attached node. The generation
+ * side keeps them apart, so an axis-drag handle cannot reach a rotation
+ * gizmo's attach call.
+ */
+struct EditGizmoHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+/**
  * Which collection a pick resolved into.
  *
  * Upstream `PickingInfo.pickedMesh` is one object reference whatever was
@@ -2906,6 +2920,27 @@ struct LightGizmoRecord {
     LightKind built_kind = LightKind::hemispheric;
 };
 
+/**
+ * One editing widget (`src/gizmo/axis-drag-gizmo.ts` and its three
+ * siblings), as its follow reads it.
+ *
+ * `attachFollowTarget` copies the attached node's world translation onto
+ * the root every frame and scales the root by the gizmo's projected depth
+ * along the utility camera's forward axis times the widget's own scale
+ * ratio -- which is the pinned `1 / 3` each factory passes, read from the
+ * pin rather than restated. Those three fields are the whole record: the
+ * layer and the material a pinned gizmo object also holds are consumed
+ * where they are built and never read back, so neither is stored, and
+ * neither is the pin's `drag.enabled` -- nothing reads it while pointer
+ * drag is unreached, and the scene that reaches it will add it back with
+ * a reader.
+ */
+struct EditGizmoRecord {
+    TransformNodeHandle root{};
+    MeshHandle attached_node{};
+    double scale_ratio = 1.0;
+};
+
 struct Engine {
     EngineOptions options{};
     /** Logical CSS-pixel extent exposed by renderCanvas.clientWidth/Height. */
@@ -3094,6 +3129,7 @@ struct Engine {
     std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
     std::vector<CameraGizmoRecord> camera_gizmos;
     std::vector<LightGizmoRecord> light_gizmos;
+    std::vector<EditGizmoRecord> edit_gizmos;
     /**
      * The live renderer's pick pass.
      *
@@ -3206,6 +3242,13 @@ struct EnvironmentState {
     bool has_solid_skybox = false;
     bool background_enabled_by_default = false;
     bool skybox_uses_environment = false;
+    // `enableNoise`, which both background builders take and default to
+    // true: the pin composes WGSL_DITHER or WGSL_NO_DITHER in front of the
+    // same ground and DDS-skybox fragment bodies and keys its pipeline
+    // cache on the flag, so it selects between the two generated variants
+    // here. `loadEnvironment` never passes it; only
+    // `addDdsEnvironmentBackground` does.
+    bool enable_noise = true;
     float ground_size = 15.0f;
     float skybox_size = 20.0f;
     std::uint32_t skybox_width = 0;
@@ -3501,6 +3544,17 @@ struct HdrEnvironmentOptions {
     Vec3 skybox_position{};
 };
 
+// src/material/pbr/background-dds-environment.ts: the DDS skybox and the
+// ground, reached without the .env loader that usually builds them. The
+// module takes no skip flags -- both renderables are unconditional -- so
+// what crosses is the two URLs, the requested size and the noise flag.
+struct DdsEnvironmentBackgroundOptions {
+    std::string ground_texture_url;
+    std::string skybox_url;
+    float skybox_size = 0.0f;
+    bool enable_noise = true;
+};
+
 // A prefiltered DDS cubemap arrives compiled into the same environment
 // package an HDR source produces, so the loader needs only the two paths.
 struct DdsEnvironmentOptions {
@@ -3666,6 +3720,9 @@ void set_bone_visible(
     bool visible);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
+void add_dds_environment_background(
+    Scene& scene,
+    DdsEnvironmentBackgroundOptions options);
 void load_hdr_environment(Scene& scene, HdrEnvironmentOptions options);
 void load_dds_environment(Scene& scene, DdsEnvironmentOptions options);
 MaterialHandle create_standard_material(Engine& engine);
@@ -4013,6 +4070,37 @@ void attach_light_gizmo_to_light(
     Engine& engine,
     LightGizmoHandle gizmo,
     LightHandle light);
+// The four editing widgets. Each takes the axis its pinned body orients
+// its root onto, and the colour as the pin's own optional -- the
+// `?? [0.5, 0.5, 0.5]` behind it stays in the generated body, where the
+// pin writes it. Both arrive as `Vec3d` because both are plain JavaScript
+// numbers upstream: the builder's own arithmetic runs at that width and
+// narrows once, at the store. All four share one attach call because the
+// pin's four attach bodies are identical, which generation asserts.
+EditGizmoHandle create_axis_drag_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    Vec3d drag_axis,
+    std::optional<Vec3d> color);
+EditGizmoHandle create_axis_scale_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    Vec3d drag_axis,
+    std::optional<Vec3d> color);
+EditGizmoHandle create_plane_drag_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    Vec3d drag_plane_normal,
+    std::optional<Vec3d> color);
+EditGizmoHandle create_plane_rotation_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    Vec3d plane_normal,
+    std::optional<Vec3d> color);
+void attach_gizmo_to_node(
+    Engine& engine,
+    EditGizmoHandle gizmo,
+    MeshHandle node);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // The spot cone angle is an accessor upstream rather than a field: its setter

@@ -323,11 +323,13 @@ engine bit for bit. On a scene whose background is otherwise flat it is the
 whole residual: scene 6 attributes 0.314 to the background without it.
 
 The fork is upstream's. `background-ground.ts` and `background-dds-skybox.ts`
-prefix it behind their shared `enableNoise` (default `true`, unset by every
-corpus scene), `background-solid-skybox.ts` prefixes it unconditionally, and
-`background-hdr-skybox.ts` — the environment-cubemap arm — composes none. One
-generated fragment serves the DDS and environment skyboxes, so each PAL picks
-the dithered variant except under `skybox_uses_environment`. Dithering the
+prefix it behind their shared `enableNoise` (default `true`; scene 112 is the
+one corpus scene that passes `false`), `background-solid-skybox.ts` prefixes
+it unconditionally, and `background-hdr-skybox.ts` — the environment-cubemap
+arm — composes none. So the ground has two generated fragments and the
+skybox three, and a backend picks between them on the environment's own
+`skybox_uses_environment` and `enable_noise` through one shared selector
+rather than choosing per backend. Dithering the
 environment arm puts ±1 on roughly half the background pixels of scenes 8 and
 21: 0.129 to 0.343 and 0.330 to 0.537 full MAD.
 
@@ -1303,6 +1305,45 @@ returns, and the GL enum it is stored under is the pin's own table read
 backwards. Recorded per scene as `executed-basis-transcode`, with the drawn atlas's
 tradeoff. Scene 36's Mustang transcodes to `bc7-rgba-unorm` at 768x512 with
 one level, which is what the browser uploads.
+
+**`KHR_texture_basisu` is resolved away at packaging, like the geometry
+extensions.** The extension redirects five material slots to a KTX2 image and
+uploads each through `uploadKtx2Texture2D`, which fetches the Babylon KTX2
+decoder from a CDN — the same browser-and-device question the `.basis` arm
+answers, so the same answer applies. `gltf-packager.ts` runs the pin's own
+`loadKtx2Texture2D` in headless Chromium per image, writes what it uploaded
+back into the GLB as a KTX1 container under `image/ktx`, points the texture at
+it with an ordinary `source`, and drops the extension from the document — so
+the loader that ships sees an asset whose images happen to carry blocks, and
+`image_data` fills `TextureData::compressed` through the same generated
+`parseKtx1` the `.ktx` path uses. Three things are decided at packaging
+because the pin decides them per upload rather than per image: sRGB selects
+the container's GL enum through `ktx2-loader.ts`'s own `srgbFormat` table (the
+transcode itself is colour-space-agnostic, so an image reached at both spaces
+is refused rather than packaged once); the sampler is written as the glTF
+enums for `makeSampler`, because the extension's textures never pass through
+`makeSamplerFor`; and each level's captured extent is block-padded, because
+`uploadCompressed` pads its copy extent where `basis-loader.ts` does not.
+`uploadCompressed` also sets the texture-object `invertY`, which the record
+carries as `uv_invert_y`. Recorded per scene as `executed-ktx2-transcode`.
+Scene 112's Flight Helmet transcodes fifteen 2048x2048 images to
+`bc7-rgba-unorm`, five of them under the sRGB enum, and its six materials
+share one packed `OcclusionRoughMetal` image per material set — so the
+extension's `OffscreenCanvas` ORM composite is never reached, and a document
+that would reach it is refused by name.
+
+**A background drawn into the transmission pass's linear target leaves its
+image processing to the trailing task.** Both background fragments wrap
+exposure, tone mapping and contrast in the pin's `scene.vImageInfos.w >= 0.0`,
+and that lane is `+scene.imageProcessing.toneMappingEnabled` — which
+`transmission.ts`'s `executeRenderTaskLinear` sets to `-1` for the duration of
+the retargeted pass. So the plan writes the pin's own packed value into the
+ground's `imageParameters.y` and the skybox's `imageParameters.z` rather than
+a constant, and the gate closes exactly where upstream closes it. Nothing
+measured this until scene 112, the first scene to reach a DDS background and
+scene transmission together: with the gate held open, its sky and ground were
+processed twice and every background pixel sat about 59 levels bright while
+every model pixel was already byte-exact.
 
 **A texture-object `invertY` is a UV-block flip, and the two compressed
 loaders disagree about it.** `Texture2D.invertY` states that the texel data

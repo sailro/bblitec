@@ -1,8 +1,10 @@
 /**
  * A Basis Universal texture, transcoded at generation.
  *
- * `basis-loader.ts` is the one texture loader that cannot be a load-time
- * fold. Its transcoder is a JavaScript+WebAssembly module the page fetches
+ * Two containers reach the same transcoder: a `.basis` file through
+ * `basis-loader.ts`, and a `.ktx2` image through `ktx2-loader.ts` — which is
+ * what `KHR_texture_basisu` redirects a glTF texture to. Neither can be a
+ * load-time fold: the transcoder is a JavaScript+WebAssembly module the page fetches
  * from a CDN and injects with a `<script>` tag, so the native runtime would
  * have to carry a decompressor it has no other use for — the reason Draco
  * and meshopt are decoded at generation too. And the format it transcodes
@@ -55,6 +57,49 @@ interface CapturedTranscode {
 }
 
 /**
+ * One pinned entry point that ends at a transcode, and how the page calls it.
+ *
+ * The two differ only in which container the pin reads: everything after the
+ * call — the transcoder it injects, the priority list it walks, and the
+ * blocks it writes — is the same code, so the capture, the bake key and the
+ * KTX1 packaging are shared and only this row is per format.
+ */
+interface PinnedTranscodeLoader {
+    /** The pinned index-module export the page imports. */
+    entryExport: string;
+    /** The call, as the pin's own signature spells it. */
+    call: (servedPath: string) => string;
+    /** The bake-cache kind, and the name refusals use. */
+    kind: string;
+    /** The served path the page fetches, extension included. */
+    servedPath: string;
+}
+
+const basisLoader: PinnedTranscodeLoader = {
+    entryExport: "loadBasisTexture2D",
+    call: (path) => `loadBasisTexture2D(engine, ${JSON.stringify(path)})`,
+    kind: "basis-transcode",
+    servedPath: "/basis-source.basis",
+};
+
+/**
+ * The KTX2 arm, which `KHR_texture_basisu` redirects a glTF texture to.
+ *
+ * `sRGB` is passed false because it is not a transcode input at all:
+ * `uploadKtx2Texture2D` decodes the same blocks either way and uses the flag
+ * only to pick `srgbFormat(...)` over the row `getCompressedFormat` returned.
+ * So one bake serves both, and which of the two GL enums the packaged
+ * container states follows the slot that reached the image.
+ */
+const ktx2Loader: PinnedTranscodeLoader = {
+    entryExport: "loadKtx2Texture2D",
+    call: (path) =>
+        `loadKtx2Texture2D(engine, ${JSON.stringify(path)}, false)`,
+    kind: "ktx2-transcode",
+    servedPath: "/ktx2-source.ktx2",
+};
+
+/**
  * The page module: create the pin's own engine, watch the one texture the
  * loader creates, and hand back its descriptor and every level it wrote.
  *
@@ -63,8 +108,8 @@ interface CapturedTranscode {
  * first. Bytes cross as base64 for the reason the executed-module runner
  * gives: a number per byte turns a megabyte into ten seconds of JSON.
  */
-function transcodeModule(url: string): string {
-    return `import { createEngine, loadBasisTexture2D } from ${JSON.stringify(pinnedBrowserEntryUrl)};
+function transcodeModule(loader: PinnedTranscodeLoader, url: string): string {
+    return `import { createEngine, ${loader.entryExport} } from ${JSON.stringify(pinnedBrowserEntryUrl)};
 
 ${pageBase64Script}
 window.__transcodeBasis = async () => {
@@ -96,7 +141,7 @@ window.__transcodeBasis = async () => {
         return writeTexture(destination, data, layout, size);
     };
     try {
-        await loadBasisTexture2D(engine, ${JSON.stringify(url)});
+        await ${loader.call(url)};
     } finally {
         device.createTexture = createTexture;
         queue.writeTexture = writeTexture;
@@ -117,7 +162,8 @@ window.__transcodeBasis = async () => {
 `;
 }
 
-export async function transcodeBasisTexture(
+async function transcodeTexture(
+    loader: PinnedTranscodeLoader,
     url: string,
     bytes: Uint8Array,
 ): Promise<TranscodedBasisTexture> {
@@ -128,7 +174,7 @@ export async function transcodeBasisTexture(
     // payload is exactly the JSON that crossed the page boundary.
     const captured = await cachedJsonBake<CapturedTranscode>(
         {
-            kind: "basis-transcode",
+            kind: loader.kind,
             version: "1",
             module: moduleIdentity(import.meta.url),
             browser: true,
@@ -140,11 +186,10 @@ export async function transcodeBasisTexture(
             // the loopback origin: the bytes come from the same download
             // cache every other asset uses, and the CDN is asked only
             // for the transcoder.
-            const servedPath = "/basis-source.basis";
             const server = createSuiteSceneServer(
-                transcodeModule(servedPath),
+                transcodeModule(loader, loader.servedPath),
                 {
-                    virtualAssets: { [servedPath]: bytes },
+                    virtualAssets: { [loader.servedPath]: bytes },
                 },
             );
             return (await runPageGlobal(server, "__transcodeBasis", {
@@ -172,6 +217,22 @@ export async function transcodeBasisTexture(
     };
 }
 
+/** A `.basis` file, through `basis-loader.ts`. */
+export async function transcodeBasisTexture(
+    url: string,
+    bytes: Uint8Array,
+): Promise<TranscodedBasisTexture> {
+    return transcodeTexture(basisLoader, url, bytes);
+}
+
+/** A `.ktx2` image, through `ktx2-loader.ts`. */
+export async function transcodeKtx2Texture(
+    url: string,
+    bytes: Uint8Array,
+): Promise<TranscodedBasisTexture> {
+    return transcodeTexture(ktx2Loader, url, bytes);
+}
+
 /**
  * The transcoded chain as a KTX1 container.
  *
@@ -189,19 +250,32 @@ export function writeKtx1(
     magic: readonly number[],
     glInternalFormat: number,
     header: KtxHeaderLayout,
+    blockSize?: { width: number; height: number },
 ): Uint8Array {
     // KTX1 stores no per-level size, so a reader recovers each level by
     // halving — which is what the pin's own parser does. Checking the
     // transcode against that here is what keeps the container expressible.
+    //
+    // What each level's captured extent IS differs by loader, so the
+    // expectation follows the one that produced it: `basis-loader.ts`
+    // passes the level's own size to `writeTexture`, while both KTX
+    // loaders pass the block-padded copy extent, where a 2x2 tail mip
+    // occupies one whole 4x4 block. A block size is therefore given for a
+    // capture of the padded arm and withheld for the other, rather than
+    // the check weakening to accept either.
+    const padExtent = (size: number, block: number): number =>
+        blockSize ? Math.ceil(size / block) * block : size;
     let expectedWidth = texture.width;
     let expectedHeight = texture.height;
     for (const [level, mip] of texture.mips.entries()) {
-        if (mip.width !== expectedWidth || mip.height !== expectedHeight) {
+        const width = padExtent(expectedWidth, blockSize?.width ?? 1);
+        const height = padExtent(expectedHeight, blockSize?.height ?? 1);
+        if (mip.width !== width || mip.height !== height) {
             throw new Error(
                 `Basis: transcoded level ${level} is ${mip.width}x` +
                     `${mip.height}, where a KTX1 chain halving from ` +
                     `${texture.width}x${texture.height} reaches ` +
-                    `${expectedWidth}x${expectedHeight}.`,
+                    `${width}x${height}.`,
             );
         }
         expectedWidth = Math.max(1, expectedWidth >> 1);

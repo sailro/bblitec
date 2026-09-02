@@ -37,6 +37,7 @@ import { bakeFetchedCanvasAtlas } from "./compiler/fetched-canvas-atlas.js";
 import {
     compileEnvironmentOptions,
     compileDdsEnvironmentOptions,
+    compileDdsEnvironmentBackgroundOptions,
     compileHdrEnvironmentOptions,
     type AssetOptionContext,
 } from "./compiler/intrinsics/asset-options.js";
@@ -6154,6 +6155,17 @@ class Compiler
         expression: ts.Expression,
     ): string {
         return compileDdsEnvironmentOptions(this, expression);
+    }
+
+    public compileDdsEnvironmentBackgroundOptions(
+        expression: ts.Expression,
+    ): {
+        groundTextureUrl: string;
+        skyboxUrl: string;
+        skyboxSize: string;
+        enableNoise: boolean;
+    } {
+        return compileDdsEnvironmentBackgroundOptions(this, expression);
     }
 
     public referenceSearch(): string {

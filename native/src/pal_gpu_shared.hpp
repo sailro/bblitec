@@ -88,6 +88,29 @@ inline std::string sprite_fragment_shader_name(
     return "sprite_custom_" + std::to_string(program) + ".frag";
 }
 
+/**
+ * Which background fragment a scene's environment selects.
+ *
+ * The pin keys its own background pipeline cache on
+ * `enableNoise ? WGSL_DITHER : WGSL_NO_DITHER`, and the skybox adds a third
+ * arm for the environment-sampled body. Stated here rather than at each
+ * backend's pipeline build, because both backends must land on the same
+ * fragment for the same environment and, since these names stopped being
+ * constants, nothing else stops them drifting apart.
+ */
+inline const char* background_ground_fragment(
+    const EnvironmentState& environment) {
+    return environment.enable_noise ? "background-ground-dither.frag"
+                                    : "background-ground.frag";
+}
+
+inline const char* background_skybox_fragment(
+    const EnvironmentState& environment) {
+    if (environment.skybox_uses_environment) return "background-skybox.frag";
+    return environment.enable_noise ? "background-skybox-dither.frag"
+                                    : "background-skybox-dds.frag";
+}
+
 #if BBLITE_FLOATING_ORIGIN
 /**
  * The scene's active camera, whose world translation IS the floating-origin

@@ -235,9 +235,11 @@ function takeBackgroundFragment(
  * - `scene.vImageInfos.x` (exposure) -> `uniforms.cameraExposure.w`
  * - `scene.vImageInfos.y` (contrast) -> `uniforms.imageParameters.x`
  * - `scene.vImageInfos.w` (+toneMappingEnabled, the pin's own packing) ->
- *   `uniforms.imageParameters.y`, which the plan writes as 1.0 — so the
- *   pinned `>= 0.0` gate holds exactly as it does upstream, where the packed
- *   flag is 0 or 1.
+ *   `uniforms.imageParameters.y`, carrying the pin's packed value rather
+ *   than a constant. That lane is NEGATIVE for the retargeted linear pass
+ *   (`executeRenderTaskLinear` writes -1), which is what closes the pinned
+ *   `>= 0.0` gate and stops a transmissive scene processing its background
+ *   twice.
  *
  * The world matrix in the pin's mesh block belongs to its vertex stage; the
  * native ground renders through the shared model vertex stage, so the
@@ -413,9 +415,10 @@ function ddsSkyboxShell(
     pinned: PinnedBackgroundSkyboxSource,
     taken: TakenBackgroundFragment,
     body: string,
+    dither: boolean,
 ): string {
     return `// ${provenance}
-${pinned.dither.dither.trim()}
+${(dither ? pinned.dither.dither : pinned.dither.noDither).trim()}
 
 @group(2) @binding(0) var ${taken.texture}: texture_cube<f32>;
 @group(2) @binding(1) var ${taken.sampler}: sampler;
@@ -455,8 +458,10 @@ function skyboxDirection(parameter: string): readonly [string, string] {
 }
 
 /**
- * The pinned DDS skybox fragment (`ddsSkyboxFragSrc`), the arm the PALs load
- * as `background-skybox-dither.frag`. Its image-processing block is the pin's
+ * The pinned DDS skybox fragment (`ddsSkyboxFragSrc`), emitted as
+ * `background-skybox-dither.frag` and `background-skybox-dds.frag` -- one
+ * body, the pin's dither composed in front of it or not. Its
+ * image-processing block is the pin's
  * own: tone mapping is unconditional inside the gate, the contrast fold
  * carries only the high arm (`mix(a, f, contrast-1.0)`) — the transcription
  * this replaces carried both arms, which diverged below contrast 1.0 — and
@@ -465,13 +470,14 @@ function skyboxDirection(parameter: string): readonly [string, string] {
  * Re-homing: `mesh.primaryColor` -> `uniforms.primaryColorExposure.rgb`,
  * `mesh.exposureLinear` -> `.a`, `mesh.contrast` ->
  * `uniforms.imageParameters.x`, and `scene.vImageInfos.w`
- * (+toneMappingEnabled upstream, 0 or 1) -> `uniforms.imageParameters.z`,
- * the plan's tone-mapping flag — the pinned `>= 0.0` gate holds for both
- * values on both sides.
+ * (+toneMappingEnabled upstream) -> `uniforms.imageParameters.z`, carrying
+ * the pin's packed value: 0 or 1 ordinarily, and -1 for the retargeted
+ * linear pass, which is the value that closes the pinned `>= 0.0` gate.
  */
 function ddsSkyboxFragmentWgsl(
     provenance: string,
     pinned: PinnedBackgroundSkyboxSource,
+    dither: boolean,
 ): string {
     const taken = takeBackgroundFragment(
         pinned.ddsFragment,
@@ -494,7 +500,7 @@ function ddsSkyboxFragmentWgsl(
         "DDS skybox fragment",
     );
     assertFullyRehomed(body, "DDS skybox fragment");
-    return ddsSkyboxShell(provenance, pinned, taken, body);
+    return ddsSkyboxShell(provenance, pinned, taken, body, dither);
 }
 
 /**
@@ -535,19 +541,21 @@ function hdrSkyboxFragmentWgsl(
 }
 
 /**
- * One generated fragment per pinned skybox arm, under the filenames the PALs
- * already select between: `background-skybox.frag` is the environment-cubemap
- * (HDR) arm and `background-skybox-dither.frag` the DDS arm, keyed on
- * `skybox_uses_environment` exactly as before.
+ * One generated fragment per pinned skybox arm, under the filenames
+ * `background_skybox_fragment` selects between:
+ * `background-skybox.frag` is the environment-cubemap (HDR) arm, and the DDS
+ * arm has two -- `background-skybox-dither.frag` and
+ * `background-skybox-dds.frag` -- because the pin composes its dither in
+ * front of one body and a scene may switch it off.
  */
 export function backgroundSkyboxFragmentWgsl(
     provenance: string,
     pinned: PinnedBackgroundSkyboxSource,
-    dither = false,
+    arm: "hdr" | "dds" | "dds-no-dither" = "hdr",
 ): string {
-    return dither
-        ? ddsSkyboxFragmentWgsl(provenance, pinned)
-        : hdrSkyboxFragmentWgsl(provenance, pinned);
+    return arm === "hdr"
+        ? hdrSkyboxFragmentWgsl(provenance, pinned)
+        : ddsSkyboxFragmentWgsl(provenance, pinned, arm === "dds");
 }
 
 // ---------------------------------------------------------------------------

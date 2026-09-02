@@ -1,0 +1,88 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "A refusal was BROADER than the pin: the packager refused a material whose metallic-roughness OR occlusion slot used KHR_texture_basisu, citing an OffscreenCanvas ORM composite. The pin's `uploadOrmTexture` takes its single-image arm unless BOTH indices are present and differ -- `stripBasisuTexture` fills a slot only when that slot uses the extension -- so a basisu MR beside an ordinary PNG occlusion never reaches the composite upstream. Verified against the pinned body and narrowed to `&&`; the refusal now refuses what upstream cannot load and nothing else.",
+      "applied": true
+    },
+    {
+      "summary": "Resolving KHR_texture_basisu away at packaging hands its five slots back to the CORE material mapper, and three of their inputs are read differently there: the pinned `applyMaterial` writes `occlusionStrength: 1.0` whatever the document authored, forwards `texCoord` for occlusion alone, and composes no `KHR_texture_transform` because `prepareBasisuMaterials` deleted the textureInfo first. None was inspected, refused or documented, and FlightHelmetKTX uses none of the three, so scene 112 measured clean over a latent divergence. All three now refuse by name in the per-slot loop.",
+      "applied": true
+    },
+    {
+      "summary": "`assertHidden` was a whole-subtree scan, so two of the assertions the `display-only-editing-gizmo` adaptation leans on were satisfied by the wrong occurrence: `createPlaneRotationGizmo` hides `rotationDisplayPlane` a second time inside its `onDragEnd` callback, and `buildScaleArrow` hides `head` in the `centered` arm this port drops. Deleting the build-time hide upstream would have left generation passing while the port silently omitted a now-drawn mesh. The walk stops at nested functions and takes the same scoped roots the emitter uses, so each assertion anchors the occurrence the port depends on.",
+      "applied": true
+    },
+    {
+      "summary": "All four pinned factories write `root.visible = false`, and nothing asserted it -- while that invisibility is the entire premise of substituting a TransformNode for the pin's zero-height cylinder root, which is the one substitution the adaptation names. Asserted now, in the loop that already walks the four factories.",
+      "applied": true
+    },
+    {
+      "summary": "The adaptation record and two docs claimed generation asserts the hover and disabled MATERIALS are unassigned; `assertHidden`/`assertColliderArm` cover meshes only. That string ships into every scene's `fidelity.json` as evidence. All three now state what is asserted and what merely follows from the pinned body, and the intrinsic header points at the record rather than restating it a third time.",
+      "applied": true
+    },
+    {
+      "summary": "Both PALs restated the pin's own background pipeline-cache key by hand -- a three-arm `skybox_uses_environment ? ... : enable_noise ? ... : ...` written byte-identically in each. Before this branch those names were constants and could not drift. `pal_gpu_shared.hpp` already owned the shape (`sprite_fragment_shader_name`), so both now call `background_ground_fragment` / `background_skybox_fragment`, and the three filenames appear in exactly one file.",
+      "applied": true
+    },
+    {
+      "summary": "The four editing widgets were emitted unconditionally: scene 223, which reaches only the utility layer and the two display gizmos, carried 13,285 bytes -- 28% of `gizmo.cpp` -- that it cannot call. The four `gizmo:*` features already existed and were already reached at the intrinsic; nothing consulted them at emission. The lowerer now takes the feature list and scene 223's unit drops from 46,823 to 36,406 bytes, while scene 221 keeps the whole of it.",
+      "applied": true
+    },
+    {
+      "summary": "The DDS skybox's no-dither variant was emitted for every skybox scene -- 8,412 bytes each across nine trees -- while only `addDdsEnvironmentBackground` can clear `enable_noise` (`loadEnvironment` never touches it and the pinned default is true). Gated on `background:dds-environment`: scene 112 emits it, an ordinary skybox scene does not.",
+      "applied": true
+    },
+    {
+      "summary": "The emitted glTF loader bound its texture payload as `const`, turning `result.compressed = payload.compressed` into a deep copy of every mip level where the previous line moved -- measured at 117 MB for scene 112's fifteen images, on top of the copy the parse already makes. One word: the chain moves again.",
+      "applied": true
+    },
+    {
+      "summary": "`pinnedLinearToneMappingFlag` walked all 641 lines of `transmission.ts` for one assignment (0.263 ms against 0.006 ms scoped, times 216 scenes), and a second negative write anywhere in that module could have answered for the linear pass. Scoped to `executeRenderTaskLinear`'s own declaration, the way the sibling reader eight lines away already does; a duplicate `transmissionModule` constant declared eight lines below its twin is gone with it.",
+      "applied": true
+    },
+    {
+      "summary": "The anchor test asserting the transmission gate hard-coded `-1.0f` -- the exact constant `pinnedLinearToneMappingFlag` was written NOT to restate, so a pin that changed the value would have failed the test where the lowerer would have adapted. It captures the negative instead and asserts the shape plus that both fragments carry the same one.",
+      "applied": true
+    },
+    {
+      "summary": "Comments and docs that described the bug this branch fixed still stated the pre-fix behaviour: two doc blocks in `shader-builtins-background.ts` said the lane is written as the constant 1.0 and that the pinned `>= 0.0` gate 'holds for both values on both sides'; `docs/fidelity.md`'s Background section said `enableNoise` is 'unset by every corpus scene' (scene 112 passes false, which is why the no-dither variants exist) and described one skybox fragment where there are now three; two emission comments in `renderer-lowerer.ts` and two in `shader-builtins-background.ts` described the old selection. All corrected.",
+      "applied": true
+    },
+    {
+      "summary": "Register and source-map drift: `feature-activation.ts` still listed basisu among the pin-only loader extensions this port refuses -- a string emitted into every scene's `feature-activation.json` -- after the branch removed it from that list; `docs/architecture.md`, which the instructions call the complete source map, described `gizmo-lowerer.ts` as the display-gizmo family after it doubled to carry four editing widgets, and `basis-transcode.ts` as the Basis loader after it grew a second pinned entry point. `TODO.md` still listed scenes 112 and 221 on the integrate-first and defer lists after both shipped. All corrected, and a shell-quoting artifact (`extension'''s`) in features.md with them.",
+      "applied": true
+    },
+    {
+      "summary": "Smaller shared spellings: the packager re-typed `dropExtension` verbatim from the geometry passes, including the empty-`extensionsRequired` rule, so the two extension-resolving passes could disagree -- now one exported helper; a write-only `EditGizmoRecord::enabled` field and its assignment are gone; the `Math.hypot` spelling map was layered by hand twice in one file (five repo-wide) and is now `pinnedNumericMathCallsWithHypot`, carrying the reason once; and the KTX2 sampler dedup compared serialized JSON, so a document spelling the same four enums in another key order would have gained a duplicate -- it compares fields now.",
+      "applied": true
+    },
+    {
+      "summary": "REJECTED after checking the pin: one angle reported that the gizmo family now has three hand-written copies of `attachFollowTarget` and that two contradict it, since the editing follow uses projected depth while the camera and light follows use Euclidean `Math.hypot`. The pin does exactly that. `camera-gizmo.ts` passes `null` for `scaleRatio` -- so `attachFollowTarget` scales nothing -- and does its own `Math.hypot(cw[12]-wm[12], ...)` scaling in `onAfterFollow`; `light-gizmo.ts` bypasses `attachFollowTarget` entirely with a raw before-render and its own hypot over `root.position`. Three follows is three pinned behaviours, and the reported difference in which matrix each reads is also the pin's. No change made.",
+      "applied": true
+    },
+    {
+      "summary": "The four editing-widget builders share a preamble and tail -- the colour read is character-identical four times, and the emitted signature/root/return block repeats with three substitutions -- and the branch already carries two per-widget tables (`EDIT_MODULES` and the intrinsic's `editGizmos`) that could drive one builder. About 90-100 lines.",
+      "applied": false,
+      "blockedBy": "collapsing them means merging the two tables across the intrinsic/lowerer boundary and rewriting the four bodies that scene 221 measures at 0.000 on both backends; it is a refactor of a family that is still growing (222 and 224 add composites and a bounds walk that will change what the shared part is), so the shape should be settled by the scenes that need it rather than guessed now",
+      "filedIn": "TODO.md, on the scenes 222/224 entry, which already carries what those two scenes add to the family"
+    },
+    {
+      "summary": "`ktx2SamplerIndex` transcribes the glTF sampler enums from a prose reading of the pin's `makeSampler` rather than reading them off it -- the one pinned fact in the KTX2 work that is re-derived, where the same stream reads `srgbFormat`'s switch and asserts `addDdsEnvironmentBackground`'s call list.",
+      "applied": false,
+      "blockedBy": "reading `makeSampler` means a fifth reader in `CompressedTextureLowerer` over a pinned function whose two arms return WebGPU sampler descriptors rather than glTF enums, so the mapping between the two vocabularies has to be stated somewhere regardless; doing it as a table beside `srgbGpuFormat` is right but is its own contract, not a cleanup of this diff",
+      "filedIn": "TODO.md, on the release-payload entry beside the other two measured KTX2 items"
+    },
+    {
+      "summary": "Two measured costs on the KTX2 path: the transcode replays through JSON plus base64 rather than caching the assembled container (549 ms of replay plus 126 ms of `writeKtx1` for fifteen images, ~28% of a warm `packageGltf`, and a 102.5 MB cache carrying 76.9 MB of blocks), and the emitted loader materializes a full copy of the container range per slot only to hand it to `parse_ktx1`, which copies every level out again (117 MB for scene 112).",
+      "applied": false,
+      "blockedBy": "the first changes the cache key and entry shape for a bake whose byte-stability is the contract scene 112 rests on, and the second adds a `std::span` overload to a generated header; both want their own measurement of a cold and warm compile across the corpus rather than riding a scene-integration branch",
+      "filedIn": "TODO.md, on the release-payload entry, with both measurements"
+    }
+  ]
+}

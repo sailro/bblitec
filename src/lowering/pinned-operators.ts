@@ -121,6 +121,28 @@ export function pinnedNumericMathCalls(): Map<
 }
 
 /**
+ * The same map, plus `Math.hypot` as the pin's own variadic helper.
+ *
+ * `<cmath>`'s `hypot` is two- or three-argument and rounds differently from
+ * JavaScript's, so a lowering that reaches `Math.hypot` at all must spell it
+ * as `bbl::js::hypot_js`, which takes the whole list. Every caller that
+ * lowers a pinned body doing vector length or normalization needs exactly
+ * this pair, so the reason lives here rather than beside each `new Map`.
+ */
+export function pinnedNumericMathCallsWithHypot(): Map<
+    string,
+    (args: readonly string[]) => string
+> {
+    const calls = pinnedNumericMathCalls();
+    calls.set(
+        "Math.hypot",
+        (args: readonly string[]): string =>
+            `bbl::js::hypot_js({${args.join(", ")}})`,
+    );
+    return calls;
+}
+
+/**
  * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the
  * node is not such a call.
  */

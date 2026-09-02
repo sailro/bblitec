@@ -5,6 +5,10 @@ import {
     lowerShPrescaleCpp,
 } from "./gltf-lowerer.js";
 
+/** The DDS background composite, reached without the `.env` loader. */
+const DDS_BACKGROUND_MODULE =
+    "src/material/pbr/background-dds-environment.ts";
+
 interface EnvironmentConstants {
     magic: number[];
     coefficientNames: string[];
@@ -336,7 +340,21 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
         };
     }
 
-    public lowerLoaderAdapter(): LoweredSource {
+    /**
+     * The `.env` loader and the DDS background composite, in one unit.
+     *
+     * They are two entry points into the same pair of pinned builders --
+     * `buildGroundRenderable` and `buildDdsSkyboxRenderable` -- and they
+     * share every derivation the port needs to reach them: the world-bounds
+     * walk, `computeSceneSize`, and the DDS header the skybox plan reads.
+     * Emitting them apart would state each of those twice, so which
+     * functions this unit carries follows the features the scene reached
+     * rather than the file boundary upstream draws between the two modules.
+     */
+    public lowerLoaderAdapter(options: {
+        loadEnvironment: boolean;
+        ddsBackground: boolean;
+    }): LoweredSource {
         const modulePath = "src/loader-env/load-env.ts";
         const symbolName = "loadEnvironment";
         const { file, declaration } =
@@ -389,15 +407,28 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                 "Expected the pinned solid-skybox condition (skyboxIsDds || skyboxIsEnv || skipSkybox).",
             );
         }
+        const background = options.ddsBackground
+            ? this.readDdsBackgroundContract()
+            : undefined;
         return {
             modulePath,
-            symbolName,
+            symbolName: [
+                options.loadEnvironment ? symbolName : undefined,
+                background ? "addDdsEnvironmentBackground" : undefined,
+            ]
+                .filter((name): name is string => name !== undefined)
+                .join(","),
             header: "",
-            source: `// ${this.context.provenance(modulePath, symbolName)}
+            source: `// ${this.context.provenance(
+                modulePath,
+                symbolName,
+                background
+                    ? `${DDS_BACKGROUND_MODULE}#addDdsEnvironmentBackground`
+                    : undefined,
+            )}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
-#include <bblite/upstream/env_parse.hpp>
-#include <bblite/upstream/renderer_plan.hpp>
+${options.loadEnvironment ? "#include <bblite/upstream/env_parse.hpp>\n" : ""}#include <bblite/upstream/renderer_plan.hpp>
 
 #include <algorithm>
 #include <array>
@@ -459,8 +490,150 @@ std::uint32_t read_u32(const std::vector<std::uint8_t>& bytes, std::size_t offse
         (static_cast<std::uint32_t>(bytes[offset + 3]) << 24);
 }
 
-} // namespace
+// The DDS cube a background skybox draws from, as both entry points read
+// it: src/material/pbr/background-dds-skybox.ts uploads the container's own
+// mip chain, so what the record keeps is the header that upload walks.
+void read_dds_skybox(
+    EnvironmentState& environment,
+    const std::string& skybox_url) {
+    environment.skybox_texture.bytes =
+        pal::read_binary_file(skybox_url);
+    const std::vector<std::uint8_t>& dds = environment.skybox_texture.bytes;
+    if (dds.size() < 128 || read_u32(dds, 0) != 0x20534444u) {
+        throw std::runtime_error("Background skybox is not a valid DDS file.");
+    }
+    environment.skybox_width = read_u32(dds, 16);
+    environment.skybox_mip_count = std::max(read_u32(dds, 28), 1u);
+    environment.skybox_data_offset =
+        read_u32(dds, 84) == 808540228u ? 148u : 128u;
+    environment.has_skybox = true;
+    environment.background_enabled_by_default = true;
+    environment.skybox_uses_environment = false;
+}
 
+// src/material/pbr/scene-size.ts computeSceneSize over
+// src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Both run
+// in JavaScript doubles over Float32Array boxes, and the box is
+// re-derived as a centre plus a per-row abs-coefficient radius
+// rather than taken as min/max -- which returns the same bounds
+// through an identity world matrix only because every term of
+// that round-trip is exact in double. Accumulating in float
+// instead moved the root by one ULP, and the background dither
+// seeds on the world position it places, so the whole ground
+// decorrelated.
+//
+// Every caller runs it from a deferred builder because upstream computes it
+// inside one: the bounds are the scene's at build time, not at load time.
+void apply_scene_size(Scene& scene, double requested_skybox_size) {
+    std::array<double, 3> bounds_min{
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+        std::numeric_limits<double>::infinity(),
+    };
+    std::array<double, 3> bounds_max{
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+        -std::numeric_limits<double>::infinity(),
+    };
+    for (const MeshHandle handle : scene.meshes) {
+        if (handle.value >= scene.engine->meshes.size()) continue;
+        const MeshRecord& mesh =
+            scene.engine->meshes[handle.value];
+        if (mesh.geometry >=
+            scene.engine->geometries.size()) {
+            continue;
+        }
+        const ModelGeometry& geometry =
+            scene.engine->geometries[mesh.geometry];
+        const std::array<float, 16> world =
+            upstream::mesh_world_matrix(*scene.engine, mesh);
+        expand_world_aabb_for_box(
+            bounds_min,
+            bounds_max,
+            geometry.bounds_min,
+            geometry.bounds_max,
+            world);
+    }
+    scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
+    scene.environment.skybox_size =
+        static_cast<float>(requested_skybox_size);
+    scene.environment.ground_position = Vec3{};
+    scene.environment.skybox_position = Vec3{};
+    if (!std::isfinite(bounds_min[0])) return;
+    const double dx = bounds_max[0] - bounds_min[0];
+    const double dy = bounds_max[1] - bounds_min[1];
+    const double dz = bounds_max[2] - bounds_min[2];
+    const double diagonal =
+        std::sqrt(dx * dx + dy * dy + dz * dz);
+    double ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
+    double skybox_size = requested_skybox_size;
+    if (
+        scene.camera.value < scene.engine->cameras.size() &&
+        scene.engine->cameras[scene.camera.value].kind ==
+            CameraKind::arc_rotate) {
+        const CameraRecord& camera =
+            scene.engine->cameras[scene.camera.value];
+        if (
+            camera.upper_radius_limit &&
+            *camera.upper_radius_limit != 0.0) {
+            ground_size = *camera.upper_radius_limit *
+                ${this.context.doubleLiteral(sceneSize.cameraRadiusScale)};
+            skybox_size = ground_size;
+        }
+    }
+    if (diagonal > ground_size) {
+        ground_size = diagonal * ${this.context.doubleLiteral(sceneSize.diagonalScale)};
+        skybox_size = ground_size;
+    }
+    ground_size *= ${this.context.doubleLiteral(sceneSize.groundScale)};
+    skybox_size *= ${this.context.doubleLiteral(sceneSize.skyboxScale)};
+    scene.environment.ground_size =
+        static_cast<float>(ground_size);
+    scene.environment.skybox_size =
+        static_cast<float>(skybox_size);
+    scene.environment.ground_position = Vec3{
+        static_cast<float>(bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
+        static_cast<float>(bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)}),
+        static_cast<float>(bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
+    };
+    scene.environment.skybox_position =
+        scene.environment.ground_position;
+}
+
+} // namespace
+${
+    background
+        ? `
+// ${this.context.provenance(
+              DDS_BACKGROUND_MODULE,
+              "addDdsEnvironmentBackground",
+          )}
+//
+// Both renderables are unconditional here because the pinned module pushes
+// both from its one deferred builder and takes no skip flags. Its
+// \`${background.sceneSizeCall}\` is the sizing the .env loader's own builder
+// runs, so both entry points share it, and \`enableNoise\` selects between the
+// two generated fragment variants exactly as the pin's pipeline-cache key
+// does.
+void add_dds_environment_background(
+    Scene& scene,
+    DdsEnvironmentBackgroundOptions options) {
+    scene.environment.ground_texture.bytes =
+        pal::read_binary_file(options.ground_texture_url);
+    scene.environment.has_ground = true;
+    read_dds_skybox(scene.environment, options.skybox_url);
+    scene.environment.enable_noise = options.enable_noise;
+    const float requested_skybox_size = options.skybox_size;
+    scene.deferred_builders.push_back(
+        [&scene, requested_skybox_size]() {
+            apply_scene_size(
+                scene,
+                static_cast<double>(requested_skybox_size));
+        });
+}
+`
+        : ""
+}${options.loadEnvironment ? `
 void load_environment(Scene& scene, EnvironmentOptions options) {
     upstream::ParsedEnvironment parsed =
         upstream::parse_env_file(pal::read_binary_file(options.environment_url));
@@ -497,118 +670,91 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
         scene.environment.background_enabled_by_default = true;
         scene.environment.skybox_uses_environment = true;
     } else if (!options.skybox_url.empty()) {
-        scene.environment.skybox_texture.bytes =
-            pal::read_binary_file(options.skybox_url);
-        const std::vector<std::uint8_t>& dds = scene.environment.skybox_texture.bytes;
-        if (dds.size() < 128 || read_u32(dds, 0) != 0x20534444u) {
-            throw std::runtime_error("Background skybox is not a valid DDS file.");
-        }
-        scene.environment.skybox_width = read_u32(dds, 16);
-        scene.environment.skybox_mip_count = std::max(read_u32(dds, 28), 1u);
-        scene.environment.skybox_data_offset =
-            read_u32(dds, 84) == 808540228u ? 148u : 128u;
-        scene.environment.has_skybox = true;
-        scene.environment.background_enabled_by_default =
-            true;
-        scene.environment.skybox_uses_environment = false;
+        read_dds_skybox(scene.environment, options.skybox_url);
     }
     const float requested_skybox_size =
         options.skybox_size > 0.0f ? options.skybox_size : ${this.context.floatLiteral(sceneSize.skyboxDefault)};
     scene.deferred_builders.push_back(
         [&scene, requested_skybox_size]() {
-            // src/material/pbr/scene-size.ts computeSceneSize over
-            // src/mesh/mesh-world-bounds.ts expandWorldAabbForMesh. Both run
-            // in JavaScript doubles over Float32Array boxes, and the box is
-            // re-derived as a centre plus a per-row abs-coefficient radius
-            // rather than taken as min/max -- which returns the same bounds
-            // through an identity world matrix only because every term of
-            // that round-trip is exact in double. Accumulating in float
-            // instead moved the root by one ULP, and the background dither
-            // seeds on the world position it places, so the whole ground
-            // decorrelated.
-            std::array<double, 3> bounds_min{
-                std::numeric_limits<double>::infinity(),
-                std::numeric_limits<double>::infinity(),
-                std::numeric_limits<double>::infinity(),
-            };
-            std::array<double, 3> bounds_max{
-                -std::numeric_limits<double>::infinity(),
-                -std::numeric_limits<double>::infinity(),
-                -std::numeric_limits<double>::infinity(),
-            };
-            for (const MeshHandle handle : scene.meshes) {
-                if (handle.value >= scene.engine->meshes.size()) continue;
-                const MeshRecord& mesh =
-                    scene.engine->meshes[handle.value];
-                if (mesh.geometry >=
-                    scene.engine->geometries.size()) {
-                    continue;
-                }
-                const ModelGeometry& geometry =
-                    scene.engine->geometries[mesh.geometry];
-                const std::array<float, 16> world =
-                    upstream::mesh_world_matrix(*scene.engine, mesh);
-                expand_world_aabb_for_box(
-                    bounds_min,
-                    bounds_max,
-                    geometry.bounds_min,
-                    geometry.bounds_max,
-                    world);
-            }
-            scene.environment.ground_size = ${this.context.floatLiteral(sceneSize.groundDefault)};
-            scene.environment.skybox_size =
-                requested_skybox_size;
-            scene.environment.ground_position = Vec3{};
-            scene.environment.skybox_position = Vec3{};
-            if (!std::isfinite(bounds_min[0])) return;
-            const double dx = bounds_max[0] - bounds_min[0];
-            const double dy = bounds_max[1] - bounds_min[1];
-            const double dz = bounds_max[2] - bounds_min[2];
-            const double diagonal =
-                std::sqrt(dx * dx + dy * dy + dz * dz);
-            double ground_size = ${this.context.doubleLiteral(sceneSize.groundDefault)};
-            double skybox_size =
-                static_cast<double>(requested_skybox_size);
-            if (
-                scene.camera.value < scene.engine->cameras.size() &&
-                scene.engine->cameras[scene.camera.value].kind ==
-                    CameraKind::arc_rotate) {
-                const CameraRecord& camera =
-                    scene.engine->cameras[scene.camera.value];
-                if (
-                    camera.upper_radius_limit &&
-                    *camera.upper_radius_limit != 0.0) {
-                    ground_size = *camera.upper_radius_limit *
-                        ${this.context.doubleLiteral(sceneSize.cameraRadiusScale)};
-                    skybox_size = ground_size;
-                }
-            }
-            if (diagonal > ground_size) {
-                ground_size = diagonal * ${this.context.doubleLiteral(sceneSize.diagonalScale)};
-                skybox_size = ground_size;
-            }
-            ground_size *= ${this.context.doubleLiteral(sceneSize.groundScale)};
-            skybox_size *= ${this.context.doubleLiteral(sceneSize.skyboxScale)};
-            scene.environment.ground_size =
-                static_cast<float>(ground_size);
-            scene.environment.skybox_size =
-                static_cast<float>(skybox_size);
-            scene.environment.ground_position = Vec3{
-                static_cast<float>(bounds_min[0] + dx * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
-                static_cast<float>(bounds_min[1] - ${this.context.doubleLiteral(sceneSize.rootDrop)}),
-                static_cast<float>(bounds_min[2] + dz * ${this.context.doubleLiteral(sceneSize.rootHalf)}),
-            };
-            scene.environment.skybox_position =
-                scene.environment.ground_position;
+            apply_scene_size(
+                scene,
+                static_cast<double>(requested_skybox_size));
         });
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
     scene.environment.tone_mapping_enabled = true;
 }
-
+` : ""}
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * The pinned DDS background composite's own shape, before it is emitted.
+     *
+     * `addDdsEnvironmentBackground` is a composite rather than a builder: it
+     * calls `computeSceneSize` and pushes the same two renderables the `.env`
+     * loader's builder pushes, with `enableNoise` threaded into both. Each of
+     * those is a claim about the pin that the emitted body depends on, so
+     * each is checked here rather than assumed.
+     */
+    private readDdsBackgroundContract(): { sceneSizeCall: string } {
+        const { file, declaration } =
+            this.context.functionDeclaration(
+                DDS_BACKGROUND_MODULE,
+                "addDdsEnvironmentBackground",
+            );
+        for (const called of [
+            "computeSceneSize",
+            "buildDdsSkyboxRenderable",
+            "buildGroundRenderable",
+        ]) {
+            if (!this.context.hasCall(declaration, called)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected addDdsEnvironmentBackground to call ${called}.`,
+                );
+            }
+        }
+        // Both renderables take the flag, so a port that dropped it from
+        // either would dither half a background. `?? true` is the pin's own
+        // default and is what makes the `.env` loader's noise-on arm the
+        // same value this one carries when the scene omits it.
+        if (
+            !this.context.hasNode(
+                declaration,
+                (node) =>
+                    ts.isVariableDeclaration(node) &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "enableNoise" &&
+                    node.initializer?.getText(file).trim() ===
+                        "options.enableNoise ?? true",
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                "Expected the pinned enableNoise default (options.enableNoise ?? true).",
+            );
+        }
+        for (const builder of [
+            "buildDdsSkyboxRenderable",
+            "buildGroundRenderable",
+        ]) {
+            const call = this.context.callExpression(declaration, builder);
+            const last = call.arguments[call.arguments.length - 1];
+            if (last?.getText(file).trim() !== "enableNoise") {
+                this.context.contractError(
+                    call,
+                    `Expected ${builder} to take enableNoise last.`,
+                );
+            }
+        }
+        const sceneSize = this.context.callExpression(
+            declaration,
+            "computeSceneSize",
+        );
+        return { sceneSizeCall: sceneSize.getText(file).replace(/\s+/g, " ") };
     }
 
     public lowerDdsLoaderAdapter(): LoweredSource {

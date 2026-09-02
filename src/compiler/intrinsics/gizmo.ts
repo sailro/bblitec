@@ -9,11 +9,22 @@
 // the main scene by reference and forwarded every frame, as upstream
 // forwards it.
 //
-// Both gizmos are display only in the reached slice. What each attach call
-// does at generation is bind the target; the geometry it builds is the
-// pin's own lazy build, emitted in the generated family unit.
+// The camera and light gizmos are display only in the reached slice. What
+// each attach call does at generation is bind the target; the geometry it
+// builds is the pin's own lazy build, emitted in the generated family unit.
+//
+// The four EDITING widgets -- axis drag, axis scale, plane drag, plane
+// rotation -- reach the same layer and the same follow, and their drag is
+// the one half that does not: this runtime has no pointer-input contract,
+// so `createPointerDrag`/`registerPointerDrag` reach nothing, and every
+// part of a pinned widget whose only consumer is a drag (the invisible
+// collider arrows, the hover and disabled materials, the rotation
+// "camembert" sector) is not built. What is asserted, and where, is stated
+// once on the `display-only-editing-gizmo` adaptation in
+// `src/compiler/adaptations.ts`.
 import ts from "typescript";
-import type { Value } from "../types.js";
+import { validateObjectProperties } from "../option-helpers.js";
+import type { Feature, Value, ValueKind } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface GizmoIntrinsicContext extends IntrinsicCallContext {
@@ -21,6 +32,18 @@ export interface GizmoIntrinsicContext extends IntrinsicCallContext {
     requireDefaultEngine(node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     fail(node: ts.Node, message: string): never;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    expectObjectLiteral(
+        expression: ts.Expression,
+    ): ts.ObjectLiteralExpression;
+    objectProperty(
+        object: ts.ObjectLiteralExpression,
+        name: string,
+    ): ts.Expression | undefined;
+    propertyName(name: ts.PropertyName): string | undefined;
 }
 
 /**
@@ -49,11 +72,172 @@ function refuseOptions(
     }
 }
 
+/**
+ * One editing widget, as the factory and its attach call need to see it.
+ *
+ * The four differ in three things and share everything else: the options
+ * member naming the widget's axis, the mesh factories the pinned body
+ * calls, and the value kind that keeps one widget's attach call from
+ * accepting another's handle.
+ */
+interface EditGizmoShape {
+    /** The pinned factory, for the refusal wording. */
+    factory: string;
+    /** The pinned attach call this widget's handle belongs to. */
+    attach: string;
+    kind: ValueKind;
+    /** The generated native factory. */
+    cppFactory: string;
+    /** `dragAxis`, `dragPlaneNormal` or `planeNormal`. */
+    axis: string;
+    feature: Feature;
+    /** What the pinned body's own mesh factories build. */
+    meshFeatures: readonly Feature[];
+}
+
+const editGizmos: readonly EditGizmoShape[] = [
+    {
+        factory: "createAxisDragGizmo",
+        attach: "attachAxisDragGizmoToNode",
+        kind: "axis-drag-gizmo",
+        cppFactory: "bbl::create_axis_drag_gizmo",
+        axis: "dragAxis",
+        feature: "gizmo:axis-drag",
+        meshFeatures: ["mesh:cylinder"],
+    },
+    {
+        factory: "createAxisScaleGizmo",
+        attach: "attachAxisScaleGizmoToNode",
+        kind: "axis-scale-gizmo",
+        cppFactory: "bbl::create_axis_scale_gizmo",
+        axis: "dragAxis",
+        feature: "gizmo:axis-scale",
+        meshFeatures: ["mesh:box", "mesh:cylinder"],
+    },
+    {
+        factory: "createPlaneDragGizmo",
+        attach: "attachPlaneDragGizmoToNode",
+        kind: "plane-drag-gizmo",
+        cppFactory: "bbl::create_plane_drag_gizmo",
+        axis: "dragPlaneNormal",
+        feature: "gizmo:plane-drag",
+        meshFeatures: ["mesh:plane"],
+    },
+    {
+        factory: "createPlaneRotationGizmo",
+        attach: "attachPlaneRotationGizmoToNode",
+        kind: "plane-rotation-gizmo",
+        cppFactory: "bbl::create_plane_rotation_gizmo",
+        axis: "planeNormal",
+        feature: "gizmo:plane-rotation",
+        meshFeatures: ["mesh:torus"],
+    },
+];
+
+/**
+ * `create<Widget>Gizmo(engine, layer, options)`.
+ *
+ * Two members are served and the rest refuse by name. The axis is the
+ * widget's whole orientation, and the colour is a material value the
+ * generated builder takes as a parameter -- both are what the scene says
+ * rather than what the unit builds. Every other member changes geometry
+ * the unit emits from the pinned factory's own defaults (`thickness`,
+ * `tessellation`), or names a material or a strength only a pointer drag
+ * installs (`hoverColor`, `disableColor`, `rotationColor`, `sensitivity`,
+ * `uniformScaling`) -- and pointer drag is not reached.
+ */
+function compileEditGizmo(
+    context: GizmoIntrinsicContext,
+    shape: EditGizmoShape,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 3, 3);
+    const engine = context.compileValue(call.arguments[0]!);
+    const layer = context.compileValue(call.arguments[1]!);
+    context.expectKind(engine, "engine", call.arguments[0]!);
+    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    context.expectSameEngine(engine, layer, call);
+    const options = context.expectObjectLiteral(call.arguments[2]!);
+    validateObjectProperties(
+        context,
+        options,
+        [shape.axis, "color"],
+        `${shape.factory} options support ${shape.axis} and color. ` +
+            "The rest either change geometry the generated widget " +
+            "builds from the pinned factory's own defaults, or name a " +
+            "material or a strength only a pointer drag installs, and " +
+            "pointer interaction is not reached.",
+    );
+    const axisExpression = context.objectProperty(options, shape.axis);
+    if (!axisExpression) {
+        context.fail(
+            options,
+            `${shape.factory} requires ${shape.axis}: the pinned body ` +
+                "orients its root onto it, and there is no default.",
+        );
+    }
+    const colorExpression = context.objectProperty(options, "color");
+    context.reachFeature(shape.feature, call);
+    // The layer's own hosting: every widget hangs off a transform node
+    // parented under nothing and carrying the meshes below it.
+    context.reachFeature("mesh:transform-node", call);
+    context.reachFeature("mesh:parenting", call);
+    for (const feature of shape.meshFeatures) {
+        context.reachFeature(feature, call);
+    }
+    return {
+        kind: shape.kind,
+        cpp:
+            `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}, ` +
+            `${context.compileVec3(axisExpression, "double")}, ` +
+            // Optional rather than defaulted here: the pin's own
+            // `options.color ?? [0.5, 0.5, 0.5]` stays in the generated
+            // body, where the lowerer reads the default out of that
+            // coalesce instead of this file restating it.
+            `${
+                colorExpression
+                    ? `std::optional<bbl::Vec3d>{` +
+                      `${context.compileVec3(colorExpression, "double")}}`
+                    : "std::optional<bbl::Vec3d>{}"
+            })`,
+        engineCpp: engine.cpp,
+    };
+}
+
+/** `attach<Widget>GizmoToNode(gizmo, node)`. */
+function compileEditGizmoAttach(
+    context: GizmoIntrinsicContext,
+    shape: EditGizmoShape,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const gizmo = context.compileValue(call.arguments[0]!);
+    const node = context.compileValue(call.arguments[1]!);
+    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
+    context.expectKind(node, "mesh", call.arguments[1]!);
+    context.expectSameEngine(gizmo, node, call);
+    return {
+        kind: "void",
+        cpp:
+            `bbl::attach_gizmo_to_node(` +
+            `${context.requireEngine(gizmo, call)}, ` +
+            `${gizmo.cpp}, ${node.cpp})`,
+    };
+}
+
 export function compileGizmoIntrinsic(
     context: GizmoIntrinsicContext,
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    for (const shape of editGizmos) {
+        if (importedName === shape.factory) {
+            return compileEditGizmo(context, shape, call);
+        }
+        if (importedName === shape.attach) {
+            return compileEditGizmoAttach(context, shape, call);
+        }
+    }
     switch (importedName) {
         case "createUtilityLayer": {
             context.expectArgumentCount(call, 2, 3);

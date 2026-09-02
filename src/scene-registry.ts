@@ -2792,6 +2792,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene221",
+        name: "Scene 221 - Pointer Drags",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene221.ts",
+        title: "Babylon Lite Native - Pointer Drags",
+        parity: {
+            // The editing half of the display-gizmo family: four widgets on
+            // one utility layer, each following its own cube. Exact on both
+            // backends, which is what says the pinned lookAt and
+            // setDirection quaternions, the per-widget scale ratio and the
+            // double-sided plane card all agree with the browser.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene223",
         name: "Scene 223 - Camera And Light Gizmos",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
@@ -3324,6 +3341,23 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.002,
             backgroundColor: [6, 8, 11],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene112",
+        name: "Scene 112 - Flight Helmet KTX2",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene112.ts",
+        title: "Babylon Lite Native - Flight Helmet KTX2",
+        parity: {
+            // Fifteen KHR_texture_basisu images transcoded at packaging and
+            // uploaded as BC7 blocks, over a DDS background reached without
+            // the .env loader. Measured 0.000 / 0.001 on both backends,
+            // every differing pixel within seven counts and all of them on
+            // the model; the background is exact.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [53, 53, 82],
             backgroundThreshold: 30,
         },
     },

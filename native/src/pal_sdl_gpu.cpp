@@ -6290,7 +6290,7 @@ bool run_gpu_engine(Engine& engine) {
         SDL_GPUShader* background_fragment_shader = use_ground
             ? load_shader(
                   state.device,
-                  "background-ground-dither.frag",
+                  pal::background_ground_fragment(scene.environment),
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
                   1,
@@ -6309,9 +6309,7 @@ bool run_gpu_engine(Engine& engine) {
         SDL_GPUShader* skybox_fragment_shader = use_skybox
             ? load_shader(
                   state.device,
-                  scene.environment.skybox_uses_environment
-                      ? "background-skybox.frag"
-                      : "background-skybox-dither.frag",
+                  pal::background_skybox_fragment(scene.environment),
                   SDL_GPU_SHADERSTAGE_FRAGMENT,
                   1,
                   1,
@@ -9061,7 +9059,8 @@ bool run_gpu_engine(Engine& engine) {
                     const upstream::BackgroundUniforms background =
                         upstream::build_background_uniforms(
                             scene.environment,
-                            task_camera);
+                            task_camera,
+                            scene.transmission_enabled);
                     SDL_BindGPUGraphicsPipeline(
                         task_pass,
                         state.background_pipeline);
@@ -11285,7 +11284,10 @@ bool run_gpu_engine(Engine& engine) {
                     sizeof(ground_deformation));
 #endif
                 const upstream::BackgroundUniforms background =
-                    upstream::build_background_uniforms(scene.environment, camera);
+                    upstream::build_background_uniforms(
+                        scene.environment,
+                        camera,
+                        transmission_enabled);
                 SDL_BindGPUGraphicsPipeline(pass, state.background_pipeline);
                 SDL_PushGPUFragmentUniformData(
                     command,

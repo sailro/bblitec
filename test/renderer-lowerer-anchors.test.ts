@@ -649,3 +649,30 @@ test("re-lowering emits byte-identical renderer text", () => {
         ),
     );
 });
+
+test("closes the background image-processing gate for the linear pass", () => {
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan({
+        background: true,
+    });
+    // Both background fragments wrap their processing in the pin's
+    // `scene.vImageInfos.w >= 0.0`, and that lane is
+    // `+scene.imageProcessing.toneMappingEnabled` — which
+    // executeRenderTaskLinear sets negative for the retargeted linear pass.
+    // The ground reads it from imageParameters.y and the skybox from .z, so
+    // both carry the packed value rather than a constant.
+    // The NEGATIVE is not spelled here: `pinnedLinearToneMappingFlag`
+    // reads it off `executeRenderTaskLinear`, so a pin that changed the
+    // value still lowers and a test pinning it would fail where the
+    // lowerer would not. What is asserted is the shape -- a negative for
+    // the linear pass, the packed flag otherwise -- and that both
+    // fragments carry the same one.
+    const gate =
+        /linear_image_processing\s*\r?\n\s*\? (-[0-9.]+f)\s*\r?\n\s*: \(environment\.tone_mapping_enabled \? 1\.0f : 0\.0f\)/g;
+    const gates = [...plan.source.matchAll(gate)];
+    assert.equal(gates.length, 2);
+    assert.equal(gates[0]![1], gates[1]![1]);
+    assert.match(
+        plan.source,
+        /BackgroundUniforms build_background_uniforms\([\s\S]*?bool linear_image_processing\)/,
+    );
+});

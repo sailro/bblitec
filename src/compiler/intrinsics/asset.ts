@@ -24,6 +24,13 @@ interface CompiledEnvironmentOptions {
     skipGround: boolean;
 }
 
+interface CompiledDdsEnvironmentBackgroundOptions {
+    groundTextureUrl: string;
+    skyboxUrl: string;
+    skyboxSize: string;
+    enableNoise: boolean;
+}
+
 interface CompiledHdrEnvironmentOptions {
     faceSize: number;
     useCubemapSkybox: boolean;
@@ -55,6 +62,9 @@ export interface AssetIntrinsicContext
     compileDdsEnvironmentOptions(
         expression: ts.Expression,
     ): string;
+    compileDdsEnvironmentBackgroundOptions(
+        expression: ts.Expression,
+    ): CompiledDdsEnvironmentBackgroundOptions;
     registerAsset(
         source: string,
         kind: CompileAsset["kind"],
@@ -859,6 +869,49 @@ export function compileAssetIntrinsic(
                     `${skyboxUsesEnvironment ? "true" : "false"}, ` +
                     `${solidSkybox ? "true" : "false"}, ` +
                     `${options.skipGround ? "false" : "true"}})`,
+            };
+        }
+
+        case "addDdsEnvironmentBackground": {
+            // src/material/pbr/background-dds-environment.ts: the two
+            // renderables `loadEnvironment`'s deferred builder can push,
+            // reached without it. The module takes no skip flags, so both
+            // arms are unconditional and both background features are
+            // reached here.
+            context.expectArgumentCount(call, 2, 2);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            const options =
+                context.compileDdsEnvironmentBackgroundOptions(
+                    call.arguments[1]!,
+                );
+            const groundAsset = context.registerAsset(
+                options.groundTextureUrl,
+                "texture",
+            );
+            const skyboxAsset = context.registerAsset(
+                options.skyboxUrl,
+                "texture",
+            );
+            context.reachFeature("background:dds-environment", call);
+            context.reachFeature("background:ground", call);
+            context.reachFeature("background:skybox", call);
+            if (scene.sceneEnvironmentState!.rotationSet) {
+                context.fail(
+                    call,
+                    "Loading a visible environment skybox after setEnvironmentRotation requires native skybox rotation support.",
+                );
+            }
+            scene.sceneEnvironmentState!.hasTexturedSkybox = true;
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::add_dds_environment_background(${scene.cpp}, ` +
+                    `bbl::DdsEnvironmentBackgroundOptions{` +
+                    `bbl::asset_path(${context.cppString(groundAsset.output)}), ` +
+                    `bbl::asset_path(${context.cppString(skyboxAsset.output)}), ` +
+                    `${options.skyboxSize}, ` +
+                    `${options.enableNoise ? "true" : "false"}})`,
             };
         }
 

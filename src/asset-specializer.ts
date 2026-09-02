@@ -50,6 +50,8 @@ interface GltfSpecialization {
         dispersionReached: boolean;
         /** The packaged document carries converted Gaussian-splat clouds. */
         gaussianSplats: boolean;
+        /** Packaging transcoded this asset's KHR_texture_basisu images. */
+        compressedImages: boolean;
     };
 }
 
@@ -210,6 +212,13 @@ const supportedExtensions = new Set<string>([
     // Resolved by the same module through the pin's own hooks; a survivor is
     // refused by name beside the sparse one, below.
     GAUSSIAN_SPLATTING_EXTENSION,
+    // Resolved at packaging (gltf-packager.ts): every redirected KTX2 image
+    // is transcoded by the pin's own loader and written back as the KTX1
+    // container the generated loader parses, the texture takes an ordinary
+    // `source`, and the packaged document drops the extension. Listed for the
+    // same reason as the geometry extensions above -- a direct
+    // `specializeGltf` call over a pre-packaging asset still sees it.
+    "KHR_texture_basisu",
 ]);
 
 /** Metadata-only extensions with no rendering effect on either side. */
@@ -227,7 +236,6 @@ const pinOnlyExtensions = new Set<string>([
     "KHR_materials_pbrSpecularGlossiness",
     "KHR_materials_anisotropy",
     "KHR_materials_diffuse_transmission",
-    "KHR_texture_basisu",
 ]);
 
 /**
@@ -690,6 +698,7 @@ export function specializeGltf(
             eightInfluenceSkinning,
             dispersionReached,
             gaussianSplats: hasGaussianSplats(document),
+            compressedImages: hasCompressedImages(document),
         },
     };
 }
@@ -715,6 +724,26 @@ function hasGaussianSplats(document: JsonRecord): boolean {
  */
 export function gltfHasGaussianSplats(path: string): boolean {
     return hasGaussianSplats(parseGlbJson(path));
+}
+
+/**
+ * Whether packaging left transcoded KTX1 containers on this document.
+ *
+ * `KHR_texture_basisu` is resolved at generation like the geometry
+ * extensions are, so what the loader ships against is the container rather
+ * than the extension — which packaging drops. `texture:compressed` selects
+ * the generated `parseKtx1` translation unit and only the runtime feature
+ * list can do that, so an asset carrying one joins the feature after
+ * materialization, exactly as its punctual lights join `light:*`.
+ */
+export function gltfHasCompressedImages(path: string): boolean {
+    return hasCompressedImages(parseGlbJson(path));
+}
+
+function hasCompressedImages(document: JsonRecord): boolean {
+    return asRecords(document.images).some(
+        (image) => image.mimeType === "image/ktx",
+    );
 }
 
 export interface AssetSpecializationFeatures {
@@ -756,6 +785,8 @@ export interface AssetSpecializationFeatures {
     occlusionUv2: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
     eightInfluenceSkinning: boolean;
+    /** Any asset carries transcoded KHR_texture_basisu images. */
+    compressedImages: boolean;
     /**
      * Any asset carries Gaussian-splat clouds. The asset alone decides: no
      * scene API reaches the extension, as none reaches the spec-gloss
@@ -794,6 +825,7 @@ export function emitAssetSpecializations(
             occlusionUv2: false,
             eightInfluenceSkinning: false,
             gaussianSplats: false,
+            compressedImages: false,
         };
     }
     let nextDrawId = 1;
@@ -905,6 +937,9 @@ export function emitAssetSpecializations(
         eightInfluenceSkinning: specializations.some(
             (specialization) =>
                 specialization.features.eightInfluenceSkinning,
+        ),
+        compressedImages: specializations.some(
+            (specialization) => specialization.features.compressedImages,
         ),
         gaussianSplats: specializations.some(
             (specialization) => specialization.features.gaussianSplats,

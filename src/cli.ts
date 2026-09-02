@@ -73,6 +73,7 @@ import {
 } from "./pinned-material-arms.js";
 import {
     emitAssetSpecializations,
+    gltfHasCompressedImages,
     gltfHasGaussianSplats,
 } from "./asset-specializer.js";
 import {
@@ -735,6 +736,41 @@ async function main(): Promise<void> {
             ],
         });
     }
+    if (specializationFeatures.compressedImages) {
+        // The same tradeoff the `.basis` arm records, reached through a glTF
+        // instead of a texture call: `uploadKtx2Texture2D` is the one glTF
+        // image path whose bytes the browser produces, so it is executed at
+        // generation rather than folded.
+        result.manifest.adaptations.push({
+            id: "executed-ktx2-transcode",
+            category: "asset-materialization",
+            sourceSemantics:
+                "KHR_texture_basisu redirects a material slot to a KTX2 " +
+                "image, and uploadKtx2Texture2D fetches the Babylon KTX2 " +
+                "decoder from a CDN at run time, transcodes to the first " +
+                "compressed format the device reports, and uploads the mip " +
+                "chain it produced.",
+            nativeSemantics:
+                "Packaging runs the pin's own loader in headless Chromium " +
+                "and writes what it uploaded back into the glTF as the KTX1 " +
+                "container the runtime's one compressed-texture reader " +
+                "parses, so the extension is resolved away like the " +
+                "geometry extensions and the loader that ships sees an " +
+                "ordinary asset. The decoder is a WebAssembly module the " +
+                "page injects with a script tag, and the target format is a " +
+                "device question both the reference and the compiled " +
+                "backends answer with BC7 on D3D12. sRGB is not a transcode " +
+                "input -- it selects the container's GL enum -- so an image " +
+                "reached at both colour spaces is refused rather than " +
+                "packaged once.",
+            risk: "medium",
+            validation: [
+                "scene 112 parity against the browser golden, which " +
+                    "transcodes the same images at load",
+                "byte-stable across repeated compilations",
+            ],
+        });
+    }
     tree.keep("upstream/gltf-specialization.json");
     if (specializationFeatures.imageBasedLighting) {
         const brdfAsset: CompileAsset = {
@@ -875,6 +911,13 @@ async function main(): Promise<void> {
         // feature the way its punctual lights join `light:*`.
         if (gltfHasGaussianSplats(assetPath)) {
             assetFeatures.push("loader:splat" as Feature);
+        }
+        // KHR_texture_basisu resolves to a KTX1 container at packaging for
+        // the same reason, and the generated loader reads it through the
+        // pin's own `parseKtx1` -- which `texture:compressed` is what
+        // emits.
+        if (gltfHasCompressedImages(assetPath)) {
+            assetFeatures.push("texture:compressed" as Feature);
         }
         for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
@@ -1102,6 +1145,10 @@ async function main(): Promise<void> {
         // No scene API reaches KHR_gaussian_splatting, so the asset alone
         // decides -- the shape the spec-gloss workflow replacement takes.
         gaussianSplats: specializationFeatures.gaussianSplats,
+        // KHR_texture_basisu likewise: packaging leaves KTX1 containers on
+        // the document, and only the asset says whether the loader reads
+        // one.
+        compressedImages: specializationFeatures.compressedImages,
         // Both halves of the same lane: an asset's KHR_node_visibility
         // materializes the cascade at load, and scene code writes the same
         // per-mesh boolean directly. Either reaches the render-plan skip
