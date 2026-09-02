@@ -585,6 +585,7 @@ class Compiler
                     expression.pos,
                 ),
             () => this.reachJsData(),
+            (value, arity) => this.bindDataTuple(value, arity),
         );
     }
 
@@ -1536,6 +1537,18 @@ class Compiler
         }
         if (!ts.isIdentifier(declaration.name)) {
             this.fail(declaration.name, "Only identifier variable declarations are supported.");
+        }
+        // An empty `Mesh[]` and the entity loop that fills it are one
+        // construct — the recursive-visitor spelling of a container
+        // flatten — so the pair is answered here, before the declaration
+        // could become a runtime vector this port does not materialize.
+        const flattened =
+            this.handleCollections.assetRecursiveFlattenDeclaration(
+                declaration,
+            );
+        if (flattened) {
+            this.defineVariable(declaration.name, flattened);
+            return;
         }
         const declarationSymbol = this.symbols.valueSymbol(
             declaration.name,
@@ -3005,10 +3018,9 @@ class Compiler
             value.kind === "data" &&
             value.dataType?.kind === "tuple"
         ) {
-            const temporary =
-                this.allocateTemporaryCppName("tuple");
-            this.emit(
-                `const ${this.dataTypes.cppType(value.dataType)} ${temporary} = ${value.cpp};`,
+            const temporary = this.bindDataTuple(
+                value,
+                value.dataType.arity,
             );
             bindings.forEach((element, index) => {
                 bindElement(element, {
@@ -9311,6 +9323,14 @@ class Compiler
         );
     }
 
+    /**
+     * Whether a driver loop was already folded into the collection binding
+     * its declaration carries — the recursive-visitor flatten's second half.
+     */
+    public isFoldedFlattenLoop(statement: ts.Statement): boolean {
+        return this.handleCollections.isFoldedFlattenLoop(statement);
+    }
+
     /** An imported root's flattened descendants — the concept's walk target. */
     public assetRootChildrenIterationTarget(
         expression: ts.Expression,
@@ -11106,6 +11126,33 @@ class Compiler
         this.emit(Compiler.frameYieldRequeueMarker);
     }
 
+    /**
+     * A module-level `const`'s own initializer, for a reader that may only
+     * answer from an immutable binding.
+     *
+     * `staticConstants` deliberately admits the ENTRY file's `let` and `var`
+     * too -- the emitter deletes each one as it reaches its declaration, so
+     * a later read resolves through the value path instead. That ordering is
+     * right for the emitter and wrong for anything asking speculatively, so
+     * this asks the DECLARATION whether it is const rather than trusting the
+     * map.
+     */
+    public constantInitializer(
+        identifier: ts.Identifier,
+    ): ts.Expression | undefined {
+        const symbol = this.symbols.valueSymbol(identifier);
+        const declaration = symbol?.declarations?.[0];
+        if (
+            !declaration ||
+            !ts.isVariableDeclaration(declaration) ||
+            !ts.isVariableDeclarationList(declaration.parent) ||
+            (declaration.parent.flags & ts.NodeFlags.Const) === 0
+        ) {
+            return undefined;
+        }
+        return this.resolveStaticExpression(identifier);
+    }
+
     public lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined {
@@ -11906,6 +11953,32 @@ class Compiler
         const cppName = this.allocateTemporaryCppName(label);
         this.emit(`const ${cppType} ${cppName} = ${value.cpp};`);
         return { ...value, cpp: cppName };
+    }
+
+    /**
+     * A plain-data tuple given a native home, so its lanes can be indexed.
+     *
+     * `tupleComponents` reads its base once per lane, which is wrong for
+     * any expression carrying an effect -- a scene-local call above all,
+     * since the inliner emits its body where the call sits and evaluating
+     * it three times would run that body three times. Every reader that
+     * indexes a tuple whose expression is not free to repeat binds it
+     * here, which is the tuple-shaped case of the rule
+     * `pinValueToTemporary` above states.
+     */
+    public bindDataTuple(
+        value: Value,
+        arity: number,
+        label = "tuple",
+    ): string {
+        const cppName = this.allocateTemporaryCppName(label);
+        this.emit(
+            `const ${this.dataTypes.cppType({
+                kind: "tuple",
+                arity,
+            })} ${cppName} = ${value.cpp};`,
+        );
+        return cppName;
     }
 
     /** Materialize scalar members when a compile-time record escapes. */

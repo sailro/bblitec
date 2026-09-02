@@ -173,6 +173,15 @@ text, so `params.get`/`params.has` answer from the pin's own parser.
 because a navigation parameter is not module text and two goldens captured at
 different poses would otherwise share a provenance.
 
+A folded query value carries into ordinary arithmetic, because a module
+constant is generation-known too. Scene 44 reads the step its capture is
+pinned at as `Math.round(seconds * PHYSICS_FPS)` and scene 156 its elapsed
+milliseconds as a subtraction against a module constant; both fold to a
+literal rather than reaching the emitted program, and the emitted value is
+the same IEEE-754 double either way. The constant is resolved through the
+compiler's own static resolver, so one naming a handle or a factory call
+still answers nothing and the expression stays where it was.
+
 ### Depth
 
 **The reached slice renders under one convention, and it is the pin's.**

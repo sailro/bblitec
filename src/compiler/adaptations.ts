@@ -396,6 +396,15 @@ export function compileAdaptations(
                     "apex for the reached coefficient",
                 "both GPU backends render the byte-identical frame from " +
                     "the identical simulated pose",
+                "an aggregate's `startAsleep` sleeps in Bullet the way " +
+                    "`HP_World_AddBody`'s third argument sleeps in " +
+                    "Havok, and wakes on the same contact: scene 44's " +
+                    "two towers, frozen at the pin's own " +
+                    "`?captureAfter=5` (physics step 300, one second " +
+                    "after the dropped box wakes the sleeping tower, so " +
+                    "the pose is mid-collapse), measure 0.007 full / " +
+                    "0.047 region against the browser golden, " +
+                    "identically on both backends",
             ],
         });
     }

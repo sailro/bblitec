@@ -433,7 +433,18 @@ void flush_pending_readds(WorldEntry& world_entry, std::uint32_t world) {
             world_entry.world->addRigidBody(entry.body.get());
         }
         entry.in_world = true;
-        if (!entry.start_asleep) {
+        if (entry.start_asleep) {
+            // `HP_World_AddBody(world, body, startsAsleep)`: the body joins
+            // the world deactivated and stays put until something wakes it.
+            // Bullet has no add-time flag, and a fresh body is ACTIVE_TAG,
+            // so the state is written here -- at the deferred insertion,
+            // which is after the transform, shape and mass writes that each
+            // call `activate`. The intent is consumed rather than kept, so
+            // a later re-add (a shape or mass change) cannot put a running
+            // body back to sleep.
+            entry.start_asleep = false;
+            entry.body->setActivationState(ISLAND_SLEEPING);
+        } else {
             entry.body->activate(true);
         }
     }

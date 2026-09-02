@@ -313,6 +313,23 @@ export function readHandleCollection(
 }
 
 const propertyRules: readonly PropertyRule[] = [
+  // --- Display gizmos -------------------------------------------------
+  // `gizmo.root` is the node the per-frame follow drives, and the one
+  // member the reached slice reads: scene 223 places the hemispheric
+  // gizmo by hand because a HemisphericLight has no position for the
+  // follow to copy.
+  {
+    owner: "camera-gizmo",
+    property: "root",
+    value: "transform-node",
+    record: ["camera_gizmos", "root"],
+  },
+  {
+    owner: "light-gizmo",
+    property: "root",
+    value: "transform-node",
+    record: ["light_gizmos", "root"],
+  },
   {
     owner: "physics-aggregate",
     property: "body",

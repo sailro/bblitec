@@ -238,7 +238,8 @@ leading candidates at this pin:
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
-`createUtilityLayer` 5 (223 integrates first; the rest are deferred), the GPU
+`createUtilityLayer` 5 (223 shipped; the four editing gizmos are deferred
+behind pointer picking and drag routing), the GPU
 picker 5 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses
 by design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
 also need two `_shared` modules the corpus does not carry).
@@ -285,16 +286,24 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (21 scenes):**
-73, 86, 91, 112-115, 121-124,
+**Integrate first (19 scenes):**
+86, 91, 112-115, 121-124,
 140, 149, 218, 219,
-223, 231, 241, 261, 275, 300.
+231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
-and splats, deterministic picking (113-115), and display-only
-gizmos (223). Every navigation scene the corpus carries is now
-integrated, as are the cascaded-shadow pair and the billboard pick.
+and splats, and deterministic picking (113-115). Every navigation scene
+the corpus carries is now integrated, as are the cascaded-shadow pair,
+the billboard pick and the display gizmos.
 
-**Defer (26 scenes):** 41, 42, 44-49, 101-106, 153, 164, 180, 181,
+One scene left this list without a line of compiler work: **73** imports
+`lab/lite/src/shared/scene73-nme.ts`, which exists upstream at the pinned
+commit and was never staged into the corpus, so it neither compiles nor
+captures. **302** has the same missing-module problem with
+`scene302-npe-moving-emitter.ts` and was never on this list; staging both
+is the whole of their first blocker, and what is behind it is measured in
+their own entries.
+
+**Defer (25 scenes):** 41, 42, 45-49, 101-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
@@ -559,14 +568,17 @@ integrated, as are the cascaded-shadow pair and the billboard pick.
     near-duplicate branch for a task with its own camera. A cascaded
     generator now renders several light-space passes per light, which is
     where that branch stopped being proportionate.
-- [ ] Scenes 47, 164: what each still wants now that the shadow generators,
-  the heightmap ground and the PBR receiver ship — 47 `createCapsule` and
-  the physics family, and 164 the ESM generator's remaining options.
-- [ ] Scene 73: support camera viewports, then its container flatten. The
-  flatten is written as a recursive closure rather than the worklist the
-  lowering proves, so it needs either a second arrangement of the same
-  contracts or the walk evaluated over the document's node tree at
-  generation, which would accept any pure spelling.
+- [ ] Scene 73: stage `lab/lite/src/shared/scene73-nme.ts` into the corpus
+  (it is upstream at the pin and absent here, so the scene cannot compile or
+  capture), then support camera viewports. Two arrangements of the container
+  flatten are now proven -- the worklist and the recursive visitor, gated by
+  `regression-imported-mesh-walk` -- but scene 73 writes a third, a recursive
+  arrow closure reading `children` into a local, so it needs either that
+  third arrangement or the walk evaluated over the document's node tree at
+  generation, which would accept any pure spelling. Behind those: two
+  `SceneContext`s on one engine rendered into split camera viewports, and
+  `parseNodeMaterialFromSnippet` with a per-class `blockLoader` of dynamic
+  imports.
 - [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
   behind its `createMeshFromData`.
 - [ ] Scene 91: support `initializeCsg2Async`.
@@ -759,27 +771,36 @@ integrated, as are the cascaded-shadow pair and the billboard pick.
 These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
-- [ ] Scenes 41-49, 101-106, 209: finish the physics lane. **Scenes 40 and
-  100 are integrated and published** -- 40 the sphere drop and 100 the same
-  drop with a registered collision event, both frozen at the pin's own
-  `?captureFrame=120` and measured on both backends. What remains is one
-  capability per scene, and none of it is shared plumbing any more.
+- [ ] Scenes 41-43, 45-49, 101-106, 209: finish the physics lane. **Scenes
+  40, 44 and 100 are integrated and published** -- 40 the sphere drop, 100
+  the same drop with a registered collision event, and 44 the sleeping
+  towers, each frozen at the pin's own capture query and measured on both
+  backends. What remains is one capability per scene, and none of it is
+  shared plumbing any more.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
     an aggregate `radius`/`extents` (42, 45, and both want more besides --
     `cloneTransformNode` and `applyPhysicsBodyForce`);
-    a Color3 shape (44); an unresolved variable (46);
-    `createGroundFromHeightMap` (47); `createPhysicsBody` (48); a
-    four-argument call (49);
+    an unresolved variable (46);
+    `createPhysicsViewer`/`showPhysicsBody` (47 -- its container flatten
+    folds now, so the debug-wireframe family is what is left, and behind it
+    a height-field shape and a switch-assigned `let mesh`);
+    `createPhysicsBody` (48); `attachControl`'s options bag (49, which is
+    also a gizmo scene);
     `createPhysicsShape` (101, 102); a `new Map` with no concrete type
-    arguments (103); an unsupported
-    constructor expression (104, 105); `PhysicsMotionType` read as a value
+    arguments (103); the owner-name grouping in `buildOwnerMap` (104, 105 --
+    a native mesh record carries its own `scene_node_name`, not its nearest
+    non-mesh ancestor's, so the guards have no folded arrangement; both die
+    on `createPhysicsCharacterController` regardless);
+    `PhysicsMotionType` read as a value
     into an array (106); and engine options (209, behind large-world
     rendering).
   - **Extend the aggregate options past the three that are lowered.** The
     pin's own `_buildShapeParams` resolves `radius`, `extents`, `center`,
     `pointA` and `pointB` as explicit overrides of the bounds-derived
-    value, each through the same `??` the lowered ones use. Swept across
+    value, each through the same `??` the lowered ones use; `startAsleep`
+    landed with scene 44, and `pointA`/`pointB` is one of the two things
+    scene 106 wants beside its first blocker. Swept across
     the corpus: `mass` 18, `extents` 7, `restitution` 6, `radius` 4,
     `friction` 4, `pointA`/`pointB`/`center` 1 each. Adding them is small
     and faithful, and lands no scene on its own, which is why it is filed
@@ -795,7 +816,7 @@ earlier compiler error.
     differs most.
   - **Beyond the reached slice**, each refusing by name: mesh and
     convex-hull shapes (the pin's own `MeshAccumulator`), container shapes,
-    the `startAsleep` and `isTriggerShape` options, `disposePhysics`, and
+    the `isTriggerShape` option, `disposePhysics`, and
     every body control past creation (impulse, velocity, motion-type
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
@@ -805,7 +826,35 @@ earlier compiler error.
 - [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
   wheel handling. First blocker: reached `void` expression statements.
 - [ ] Scenes 221, 222, 224: add pointer-driven gizmo picking and drag routing.
-  First blockers: mesh names (221) and four-argument calls (222, 224).
+  First blockers: mesh names (221) and `attachControl`'s options bag (222,
+  224, and 49 in the physics lane -- one contract for all three). Scene 223
+  ships the family's foundation: the utility layer as a swapchain overlay,
+  and the camera and light widgets.
+  - **Lower the three transcribed gizmo bodies.** `gizmo-lowerer.ts` reads
+    the pin's constants and factory option objects out of its AST, but
+    `buildHemisphereMesh`, `lineDefsForLevel` and
+    `buildFrustumWireframe`/`buildFrustumEdge` are transcribed into the
+    emitted C++ instead, along with the placement literals their callers
+    pass. Every construct in them -- `for`, `if`, `Math.*`, `push` onto a
+    grown list -- is one `lowerPinnedFunction` already handles, and the
+    file uses it four times for the quaternion helpers. Until they are
+    lowered, an upstream edit to a widget's geometry compiles clean and
+    draws a different shape, which is the one thing the rest of the file is
+    built to prevent.
+  - **Gate the swapchain overlay behind a `BBLITE_HAS_*` define, and give a
+    layer one record instead of three parallel arrays.** `features.cmake`
+    already carries `gizmo:utility-layer`, and
+    [CMakeLists](native/CMakeLists.txt) already has ten such gates, but the
+    overlay has none: 519 lines of PAL compile into all 231 scenes and one
+    of them can reach it. In the same lines, a layer is stored as
+    `overlay_plans` + `overlay_topology_versions` + `overlay_meshes` and
+    then recovered from `registered_scenes[layer + 1]`, so every consumer
+    re-derives that offset (five sites), re-checks a double bound (six) and
+    re-tests a null the registration path cannot produce (six). One
+    `OverlayLayer { Scene*, RenderPlan, topology_version }` removes all of
+    it, and removes the desync the dead null check would cause if it ever
+    fired -- the build loop compacts on it while every consumer indexes
+    uncompacted. Both belong on the same pass over those lines.
 - [ ] Scene 225: add geospatial camera controls; the scene reaches
   `attachGeospatialControls` even though its reference frame is a static pose.
   First blocker: `createGeospatialCamera`.

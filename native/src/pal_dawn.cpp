@@ -874,6 +874,18 @@ struct DawnState : DawnDevice {
     // own group 0.
     WGPUBuffer pinned_geometry_scene_uniforms = nullptr;
     WGPUBindGroup pinned_geometry_frame_group = nullptr;
+    // One swapchain overlay layer's own group 0. A layer is a second
+    // scene: its lights are not the base scene's, so unlike a render
+    // task it needs its own lights buffer beside its own scene block --
+    // a queue write cannot be re-issued between two passes of one
+    // command buffer, which is why the buffers are per layer rather
+    // than rewritten.
+    struct OverlayFrame {
+        WGPUBuffer scene_uniforms = nullptr;
+        WGPUBuffer lights_uniforms = nullptr;
+        WGPUBindGroup frame_group = nullptr;
+    };
+    std::vector<OverlayFrame> overlay_frames;
 #endif
     WGPUShaderModule ground_module = nullptr;
     WGPURenderPipeline ground_pipeline = nullptr;
@@ -972,6 +984,13 @@ struct DawnState : DawnDevice {
     std::array<WGPURenderPipeline, 2> id_pipelines{};
     std::array<WGPURenderPipeline, 2> cluster_pipelines{};
     std::vector<DawnMesh> meshes;
+    /**
+     * The uploaded meshes of every swapchain overlay layer.
+     *
+     * A draw command indexes its own PLAN, so a layer cannot share the
+     * base scene's array; each keeps its own beside its own plan.
+     */
+    std::vector<std::vector<DawnMesh>> overlay_meshes;
     std::vector<std::unique_ptr<DawnSharedShaderGeometry>>
         shared_shader_geometries;
     std::vector<std::unique_ptr<DawnSharedShaderMaterialTextures>>
@@ -1276,6 +1295,12 @@ struct DawnState : DawnDevice {
     }
 
     void release_meshes() {
+        for (std::vector<DawnMesh>& layer : overlay_meshes) {
+            for (DawnMesh& overlay_mesh : layer) {
+                release_mesh(overlay_mesh);
+            }
+        }
+        overlay_meshes.clear();
         for (DawnMesh& mesh : meshes) {
             release_mesh(mesh);
         }
@@ -1500,6 +1525,18 @@ struct DawnState : DawnDevice {
             wgpuBindGroupRelease(pinned_geometry_frame_group);
         }
         if (pinned_frame_group) wgpuBindGroupRelease(pinned_frame_group);
+        for (OverlayFrame& overlay : overlay_frames) {
+            if (overlay.frame_group) {
+                wgpuBindGroupRelease(overlay.frame_group);
+            }
+            if (overlay.lights_uniforms) {
+                wgpuBufferRelease(overlay.lights_uniforms);
+            }
+            if (overlay.scene_uniforms) {
+                wgpuBufferRelease(overlay.scene_uniforms);
+            }
+        }
+        overlay_frames.clear();
         if (pinned_geometry_scene_uniforms) {
             wgpuBufferRelease(pinned_geometry_scene_uniforms);
         }
@@ -3481,7 +3518,12 @@ WGPUBindGroup pinned_frame_group_over(
     DawnState& state,
     WGPUBuffer& scene_uniforms,
     WGPUBindGroup& group,
-    const char* what) {
+    const char* what,
+    // A swapchain overlay layer is the one caller whose LIGHTS are not
+    // the frame's: it is a second scene with its own light list, and a
+    // queue write cannot be re-issued between two passes of one command
+    // buffer. Every other caller leaves this null and shares the frame's.
+    WGPUBuffer lights_override = nullptr) {
     if (group) return group;
     ensure_pinned_frame_buffers(state);
     if (!scene_uniforms) {
@@ -3503,7 +3545,8 @@ WGPUBindGroup pinned_frame_group_over(
     entries[0].size = sizeof(upstream::SceneUniforms);
     entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
     entries[1].binding = 1;
-    entries[1].buffer = state.pinned_lights_uniforms;
+    entries[1].buffer =
+        lights_override ? lights_override : state.pinned_lights_uniforms;
     entries[1].size =
         16 + upstream::pinned_max_lights * sizeof(upstream::LightEntry);
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
@@ -3540,6 +3583,35 @@ WGPUBindGroup task_pinned_frame_group(
         task.pinned_scene_uniforms,
         task.pinned_frame_group,
         "render task frame");
+}
+
+/**
+ * Group 0 for one swapchain overlay layer: its own scene block AND its own
+ * lights, because a layer is a second scene rather than a second camera on
+ * this one.
+ */
+WGPUBindGroup overlay_frame_group(
+    DawnState& state,
+    DawnState::OverlayFrame& overlay) {
+    if (!overlay.lights_uniforms) {
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.size = static_cast<std::uint64_t>(
+            16 + upstream::pinned_max_lights *
+                     sizeof(upstream::LightEntry));
+        descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        overlay.lights_uniforms =
+            wgpuDeviceCreateBuffer(state.device, &descriptor);
+        if (!overlay.lights_uniforms) {
+            dawn_error("overlay lights buffer creation failed.");
+        }
+    }
+    return pinned_frame_group_over(
+        state,
+        overlay.scene_uniforms,
+        overlay.frame_group,
+        "swapchain overlay frame",
+        overlay.lights_uniforms);
 }
 
 /** Group 0 for the geometry tasks: their scene block beside the shared
@@ -8641,6 +8713,15 @@ bool run_dawn_engine(Engine& engine) {
     cpu_startup_mark("environment-background");
 
     upstream::RenderPlan render_plan;
+    // Every scene registered after the first is a swapchain overlay layer,
+    // which is the pin's own trigger (scene/swapchain-overlay.ts): a later
+    // scene on the same surface keeps the base scene's colour and clears
+    // only its own depth. Each layer owns a plan because a draw command
+    // indexes one.
+    std::vector<upstream::RenderPlan> overlay_plans;
+    // What each layer's plan was built against; a layer that changes its
+    // renderables afterwards is refused rather than drawn stale.
+    std::vector<std::uint64_t> overlay_topology_versions;
     std::uint64_t synced_render_topology_version =
         scene.render_topology_version;
     std::uint64_t synced_visibility_epoch =
@@ -9099,6 +9180,34 @@ bool run_dawn_engine(Engine& engine) {
         for (const upstream::RenderItem& item : render_plan.items) {
             state.meshes.push_back(upload_render_item(item));
         }
+        // No clear before the fill: `rebuild_meshes` runs once, and the
+        // three containers are empty when it does. A defensive clear would
+        // also be the wrong one -- `DawnMesh` is a bag of raw WebGPU
+        // handles with no destructor, so dropping the overlay meshes that
+        // way leaks every buffer `release_meshes` exists to release.
+        for (
+            std::size_t layer = 1;
+            layer < engine.registered_scenes.size();
+            ++layer) {
+            Scene* overlay_scene = engine.registered_scenes[layer];
+            if (!overlay_scene) continue;
+            upstream::RenderPlan overlay_plan =
+                upstream::build_render_plan(*overlay_scene, engine);
+            validate_render_plan_items(overlay_plan);
+            std::vector<DawnMesh> overlay_layer_meshes;
+            overlay_layer_meshes.reserve(overlay_plan.items.size());
+            for (const upstream::RenderItem& item : overlay_plan.items) {
+                overlay_layer_meshes.push_back(upload_render_item(item));
+            }
+            overlay_plans.push_back(std::move(overlay_plan));
+            state.overlay_meshes.push_back(
+                std::move(overlay_layer_meshes));
+            overlay_topology_versions.push_back(
+                overlay_scene->render_topology_version);
+        }
+#if BBLITE_PINNED_MATERIALS
+        state.overlay_frames.resize(overlay_plans.size());
+#endif
         cpu_startup_mark("mesh-uploads");
         initialize_render_tasks();
         cpu_startup_mark("draw-lists-ready");
@@ -10499,16 +10608,23 @@ bool run_dawn_engine(Engine& engine) {
         // version, so both writes are unconditional, exactly as the
         // per-draw pushes are. The per-draw material blocks stay with
         // their draws in `write_material_uniforms` below.
+        // One scene's plan synced against the meshes uploaded for it. A
+        // swapchain overlay layer is a second (plan, mesh array) pair, so
+        // this takes them rather than closing over the base scene's.
+        const auto sync_plan_meshes =
+            [&](
+                const upstream::RenderPlan& sync_plan,
+                std::vector<DawnMesh>& sync_meshes) {
         for (
             std::size_t index = 0;
-            index < render_plan.items.size() &&
-            index < state.meshes.size();
+            index < sync_plan.items.size() &&
+            index < sync_meshes.size();
             ++index) {
             const upstream::RenderItem& item =
-                render_plan.items[index];
+                sync_plan.items[index];
             const MeshRecord& mesh =
                 engine.meshes[item.mesh.value];
-            DawnMesh& dawn_mesh = state.meshes[index];
+            DawnMesh& dawn_mesh = sync_meshes[index];
             // Grid and shader-variant vertex stages own no
             // deformation or instancing uniforms.
             // Both writes below are unconditional -- bone palettes and
@@ -10731,6 +10847,17 @@ bool run_dawn_engine(Engine& engine) {
             dawn_mesh.gpu_world_transform =
                 mesh.gpu_world_transform;
         }
+        };
+        sync_plan_meshes(render_plan, state.meshes);
+        for (
+            std::size_t layer = 0;
+            layer < overlay_plans.size() &&
+            layer < state.overlay_meshes.size();
+            ++layer) {
+            sync_plan_meshes(
+                overlay_plans[layer],
+                state.overlay_meshes[layer]);
+        }
         const double uploaded =
             cpu_profile ? monotonic_milliseconds() : 0.0;
         update_camera(camera);
@@ -10888,6 +11015,49 @@ bool run_dawn_engine(Engine& engine) {
             engine,
             camera,
             matrix);
+#if BBLITE_PINNED_MATERIALS
+        // Each overlay layer's own scene and lights blocks, written into
+        // its own buffers. A queue write lands before the whole command
+        // buffer runs, so the base scene's blocks cannot simply be
+        // rewritten between the two passes.
+        for (
+            std::size_t layer = 0;
+            layer < overlay_plans.size() &&
+            layer < state.overlay_frames.size();
+            ++layer) {
+            Scene* overlay_scene = engine.registered_scenes[layer + 1u];
+            if (!overlay_scene) continue;
+            DawnState::OverlayFrame& overlay =
+                state.overlay_frames[layer];
+            overlay_frame_group(state, overlay);
+            const CameraRecord& overlay_camera =
+                overlay_scene->camera.value < engine.cameras.size()
+                    ? engine.cameras[overlay_scene->camera.value]
+                    : camera;
+            const upstream::SceneUniforms overlay_scene_block =
+                pinned_scene_block(
+                    *overlay_scene,
+                    engine,
+                    overlay_camera,
+                    upstream::build_view_projection(
+                        overlay_camera,
+                        aspect));
+            wgpuQueueWriteBuffer(
+                state.queue,
+                overlay.scene_uniforms,
+                0,
+                &overlay_scene_block,
+                sizeof(overlay_scene_block));
+            const std::vector<std::uint8_t> overlay_lights =
+                pinned_lights_block(*overlay_scene, engine);
+            wgpuQueueWriteBuffer(
+                state.queue,
+                overlay.lights_uniforms,
+                0,
+                overlay_lights.data(),
+                overlay_lights.size());
+        }
+#endif
 #if BBLITE_SHADOW_RECEIVERS
         // The shadow generators' matrices and their receiver blocks, before
         // the caster pass reads the first and the receiving draws read the
@@ -10907,6 +11077,17 @@ bool run_dawn_engine(Engine& engine) {
         // cascade -- 2,412 redundant queue writes per frame on scene 214,
         // whose 201 casters draw four times. SDL_GPU's palette sweep
         // already dedupes its own half this way.
+        // Which scene the pass being written and recorded belongs to, and
+        // the meshes uploaded for it. The base scene goes first; a
+        // swapchain overlay layer repoints these before its own write and
+        // its own pass, because the walk is the same one and only the
+        // scene it reads its light selection and its uploaded meshes from
+        // changes.
+        // Every reader is a material-variant draw, so a build that
+        // composes no variants at all -- a splat-only scene, say -- sets
+        // this and never reads it.
+        [[maybe_unused]] const Scene* pass_scene = &scene;
+        std::vector<DawnMesh>* pass_meshes = &state.meshes;
         const auto write_material_uniforms =
             [&](
                 const upstream::RenderDrawList& list,
@@ -10914,7 +11095,7 @@ bool run_dawn_engine(Engine& engine) {
                 const bool pass_dependent_only = false) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
-                    DawnMesh& draw_mesh = state.meshes[draw.item_index];
+                    DawnMesh& draw_mesh = (*pass_meshes)[draw.item_index];
                     const bool grid_draw =
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::grid;
@@ -10936,7 +11117,7 @@ bool run_dawn_engine(Engine& engine) {
                         // block is retired, so an unresolved draw errors
                         // naming the mesh, matching the SDL_GPU backend.
                         const std::size_t variant =
-                            standard_variant_for_draw(scene, engine, draw);
+                            standard_variant_for_draw(*pass_scene, engine, draw);
                         if (variant == npos) {
                             dawn_error(
                                 ("Standard draw for mesh " +
@@ -10969,7 +11150,7 @@ bool run_dawn_engine(Engine& engine) {
                                  : 0);
                         write_standard_draw_blocks(
                             state,
-                            scene,
+                            *pass_scene,
                             engine,
                             draw,
                             variant,
@@ -10997,7 +11178,7 @@ bool run_dawn_engine(Engine& engine) {
                                 upstream::node_variants.at(variant));
                         write_node_mesh_block(
                             state,
-                            scene,
+                            *pass_scene,
                             engine,
                             draw,
                             node_state);
@@ -11012,7 +11193,7 @@ bool run_dawn_engine(Engine& engine) {
                                 draw.item);
                         wgpuQueueWriteBuffer(
                             state.queue,
-                            state.meshes[draw.item_index]
+                            (*pass_meshes)[draw.item_index]
                                 .material_uniforms,
                             0,
                             &fragment,
@@ -11089,7 +11270,7 @@ bool run_dawn_engine(Engine& engine) {
                         pal::PinnedVariantKey pinned_key;
                         const std::size_t variant =
                             pinned_variant_for_draw(
-                                scene,
+                                *pass_scene,
                                 engine,
                                 draw,
                                 npos,
@@ -11135,7 +11316,7 @@ bool run_dawn_engine(Engine& engine) {
                                 conventions.mirrored_vertices;
                             write_pinned_draw_blocks(
                                 state,
-                                scene,
+                                *pass_scene,
                                 engine,
                                 draw,
                                 variant,
@@ -11156,6 +11337,48 @@ bool run_dawn_engine(Engine& engine) {
             render_plan.draw_lists.opaque, frame_pass_matrices);
         write_material_uniforms(
             render_plan.draw_lists.transparent, frame_pass_matrices);
+        // The same write phase for each swapchain overlay layer, over the
+        // layer's own draw lists and its own uploaded meshes.
+        for (
+            std::size_t layer = 0;
+            layer < overlay_plans.size() &&
+            layer < state.overlay_meshes.size();
+            ++layer) {
+            Scene* overlay_scene = engine.registered_scenes[layer + 1u];
+            if (!overlay_scene) continue;
+            const CameraRecord& overlay_camera =
+                overlay_scene->camera.value < engine.cameras.size()
+                    ? engine.cameras[overlay_scene->camera.value]
+                    : camera;
+            const std::array<float, 16> overlay_matrix =
+                upstream::build_view_projection(overlay_camera, aspect);
+            const std::array<float, 16> overlay_view =
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(overlay_camera));
+            const std::array<float, 16> overlay_projection =
+                upstream::build_scene_projection(overlay_camera, aspect);
+            const std::array<float, 4> overlay_camera_position =
+                shader_camera_position(
+                    *overlay_scene,
+                    engine,
+                    overlay_camera);
+            ShaderPassMatrices overlay_pass_matrices{
+                overlay_matrix.data(),
+                &overlay_view,
+                &overlay_projection};
+            overlay_pass_matrices.camera_position =
+                &overlay_camera_position;
+            pass_scene = overlay_scene;
+            pass_meshes = &state.overlay_meshes[layer];
+            write_material_uniforms(
+                overlay_plans[layer].draw_lists.opaque,
+                overlay_pass_matrices);
+            write_material_uniforms(
+                overlay_plans[layer].draw_lists.transparent,
+                overlay_pass_matrices);
+            pass_scene = &scene;
+            pass_meshes = &state.meshes;
+        }
         if (state.skybox_enabled) {
             const std::array<float, 16> skybox_view_projection =
                 upstream::build_skybox_view_projection(
@@ -11522,8 +11745,8 @@ bool run_dawn_engine(Engine& engine) {
             (void)esm_shadow_index;
             for (const upstream::RenderDrawCommand& draw :
                  list.commands) {
-                if (draw.item_index >= state.meshes.size()) continue;
-                DawnMesh& mesh = state.meshes[draw.item_index];
+                if (draw.item_index >= (*pass_meshes).size()) continue;
+                DawnMesh& mesh = (*pass_meshes)[draw.item_index];
 #if BBLITE_PBR_VARIANTS > 0
                 // Babylon's own composed stages for this draw. Everything
                 // else -- the Standard path, the shader materials, the node
@@ -11596,7 +11819,7 @@ bool run_dawn_engine(Engine& engine) {
                         pal::pbr_variant_receives_shadows(variant)
                             ? pbr_shadow_group_for(
                                   state,
-                                  scene,
+                                  *pass_scene,
                                   engine,
                                   variant)
                             : nullptr);
@@ -11681,7 +11904,7 @@ bool run_dawn_engine(Engine& engine) {
                         mesh.indices,
                         mesh.index_count,
                         receives
-                            ? standard_shadow_group_for(state, scene, engine, variant)
+                            ? standard_shadow_group_for(state, *pass_scene, engine, variant)
                             : nullptr);
                     continue;
                 }
@@ -11723,7 +11946,7 @@ bool run_dawn_engine(Engine& engine) {
                         }
                         node_state.group = build_node_draw_group(
                             state,
-                            scene,
+                            *pass_scene,
                             engine,
                             mesh,
                             node_state,
@@ -11844,7 +12067,14 @@ bool run_dawn_engine(Engine& engine) {
             };
         } else if (state.multisampled()) {
             color_attachment.resolveTarget = surface_view;
-            color_attachment.storeOp = WGPUStoreOp_Discard;
+            // An overlay layer composites onto this pass's multisample
+            // texture, so it has to survive the pass -- the pin's own
+            // overlay rule: "both scenes must use the base task's MSAA
+            // colour texture before the overlay can load its pixels and
+            // resolve the composited result" (swapchain-overlay.ts).
+            color_attachment.storeOp = overlay_plans.empty()
+                ? WGPUStoreOp_Discard
+                : WGPUStoreOp_Store;
             color_attachment.clearValue = WGPUColor{
                 scene.clear_color.r,
                 scene.clear_color.g,
@@ -12147,6 +12377,94 @@ bool run_dawn_engine(Engine& engine) {
 #endif
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
+        // The swapchain overlay layers: one pass each on the same colour
+        // attachment with a FRESH depth buffer. `createUtilityLayer`
+        // states the contract -- the overlay keeps NORMAL depth testing
+        // among its own meshes and never tests against the base scene's,
+        // so a gizmo body still occludes its own back faces while sitting
+        // in front of everything below it.
+        for (
+            std::size_t layer = 0;
+            layer < overlay_plans.size() &&
+            layer < state.overlay_meshes.size();
+            ++layer) {
+            Scene* overlay_scene = engine.registered_scenes[layer + 1u];
+            if (!overlay_scene) continue;
+            if (
+                layer < overlay_topology_versions.size() &&
+                overlay_scene->render_topology_version !=
+                    overlay_topology_versions[layer]) {
+                dawn_error(
+                    "A swapchain overlay layer changed its renderables "
+                    "after the frame loop started; this port plans a layer "
+                    "once.");
+            }
+            WGPURenderPassColorAttachment overlay_color =
+                WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+            overlay_color.view = color_attachment.view;
+            overlay_color.resolveTarget = color_attachment.resolveTarget;
+            overlay_color.loadOp = WGPULoadOp_Load;
+            overlay_color.storeOp = color_attachment.storeOp;
+            WGPURenderPassDepthStencilAttachment overlay_depth{};
+            overlay_depth.view = state.depth_view;
+            overlay_depth.depthLoadOp = WGPULoadOp_Clear;
+            overlay_depth.depthStoreOp = WGPUStoreOp_Discard;
+            overlay_depth.depthClearValue = upstream::pinned_depth_clear;
+            overlay_depth.stencilLoadOp = WGPULoadOp_Clear;
+            overlay_depth.stencilStoreOp = WGPUStoreOp_Discard;
+            WGPURenderPassDescriptor overlay_descriptor =
+                WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+            overlay_descriptor.colorAttachmentCount = 1;
+            overlay_descriptor.colorAttachments = &overlay_color;
+            overlay_descriptor.depthStencilAttachment = &overlay_depth;
+            WGPURenderPassEncoder overlay_pass =
+                wgpuCommandEncoderBeginRenderPass(
+                    encoder,
+                    &overlay_descriptor);
+            WGPURenderPipeline overlay_bound_pipeline = nullptr;
+            pass_scene = overlay_scene;
+            pass_meshes = &state.overlay_meshes[layer];
+            WGPUBindGroup overlay_group = nullptr;
+#if BBLITE_PINNED_MATERIALS
+            if (layer < state.overlay_frames.size()) {
+                overlay_group = overlay_frame_group(
+                    state,
+                    state.overlay_frames[layer]);
+            }
+#endif
+            for (
+                const upstream::RenderStage stage :
+                overlay_plans[layer].stages) {
+                switch (stage) {
+                    case upstream::RenderStage::opaque:
+                        draw_list_into(
+                            overlay_pass,
+                            overlay_plans[layer].draw_lists.opaque,
+                            state.sample_count,
+                            overlay_bound_pipeline,
+                            true,
+                            overlay_group);
+                        break;
+                    case upstream::RenderStage::transparent:
+                        draw_list_into(
+                            overlay_pass,
+                            overlay_plans[layer].draw_lists.transparent,
+                            state.sample_count,
+                            overlay_bound_pipeline,
+                            true,
+                            overlay_group);
+                        break;
+                    default:
+                        // A utility layer carries no environment, so its
+                        // plan reaches no background stage.
+                        break;
+                }
+            }
+            wgpuRenderPassEncoderEnd(overlay_pass);
+            wgpuRenderPassEncoderRelease(overlay_pass);
+            pass_scene = &scene;
+            pass_meshes = &state.meshes;
+        }
         if (transmission) {
             encode_image_processing(
                 state,

@@ -47,6 +47,10 @@ import {
     type PickingIntrinsicContext,
 } from "./picking.js";
 import {
+    compileGizmoIntrinsic,
+    type GizmoIntrinsicContext,
+} from "./gizmo.js";
+import {
     compileParticleIntrinsic,
     type ParticleIntrinsicContext,
 } from "./particle.js";
@@ -100,6 +104,7 @@ export interface IntrinsicContext
         ShadowIntrinsicContext,
         SkeletonIntrinsicContext,
         SpriteIntrinsicContext,
+        GizmoIntrinsicContext,
         EffectIntrinsicContext {}
 
 /**
@@ -144,6 +149,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileNavigationIntrinsic,
     compileAudioIntrinsic,
     compilePickingIntrinsic,
+    compileGizmoIntrinsic,
 ];
 
 /**

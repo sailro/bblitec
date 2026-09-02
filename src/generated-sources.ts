@@ -271,6 +271,12 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["picking:gpu"],
     },
     {
+        // One unit for the display-gizmo family: the utility layer plus
+        // both gizmo builders, which the layer's own feature gates.
+        source: "upstream/src/gizmo.cpp",
+        features: ["gizmo:utility-layer"],
+    },
+    {
         source: "upstream/src/shadow.cpp",
         // Spread rather than spelled: the row and `reachesShadowGenerator`
         // are the same predicate, and a filter added to one list has to

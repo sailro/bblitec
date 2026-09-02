@@ -983,6 +983,15 @@ struct GpuState {
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
     std::vector<GpuMesh> meshes;
+    /**
+     * The uploaded meshes of every swapchain overlay layer, one array per
+     * scene registered after the first.
+     *
+     * `RenderDrawCommand::item_index` indexes a PLAN, so an overlay's
+     * meshes cannot share the base scene's array: each layer keeps its own,
+     * parallel to its own render plan.
+     */
+    std::vector<std::vector<GpuMesh>> overlay_meshes;
 #if BBLITE_PBR_VARIANTS > 0
     /**
      * Which meshes this frame's bone-palette sweep has already streamed.
@@ -5093,6 +5102,12 @@ void release(GpuState& state) {
     for (GpuMesh& mesh : state.meshes) {
         release_gpu_mesh(state, mesh);
     }
+    for (std::vector<GpuMesh>& layer : state.overlay_meshes) {
+        for (GpuMesh& mesh : layer) {
+            release_gpu_mesh(state, mesh);
+        }
+    }
+    state.overlay_meshes.clear();
     release_all_shared(
         state.shared_shader_geometries,
         [&](SharedShaderGeometry& geometry) {
@@ -7990,6 +8005,38 @@ bool run_gpu_engine(Engine& engine) {
         for (const upstream::RenderItem& item : render_plan.items) {
             state.meshes.push_back(upload_render_item(item));
         }
+        // Swapchain overlay layers: every scene registered after the first.
+        // `configureSwapchainOverlayScene` is the pin's own trigger -- a
+        // later scene sharing the surface keeps the base scene's colour and
+        // clears only its own depth -- so registration order is what makes
+        // a layer, exactly as it does upstream. Each layer owns a plan and
+        // an uploaded mesh array because a draw command indexes its plan.
+        std::vector<upstream::RenderPlan> overlay_plans;
+        // What each layer's plan was built against. A layer that grows or
+        // loses a renderable after the loop starts is refused by name
+        // rather than drawn from a stale plan: the base scene has a
+        // rematching path for that and a layer does not.
+        std::vector<std::uint64_t> overlay_topology_versions;
+        for (
+            std::size_t layer = 1;
+            layer < engine.registered_scenes.size();
+            ++layer) {
+            Scene* overlay_scene = engine.registered_scenes[layer];
+            if (!overlay_scene) continue;
+            upstream::RenderPlan overlay_plan =
+                upstream::build_render_plan(*overlay_scene, engine);
+            validate_render_plan_items(overlay_plan);
+            std::vector<GpuMesh> overlay_layer_meshes;
+            overlay_layer_meshes.reserve(overlay_plan.items.size());
+            for (const upstream::RenderItem& item : overlay_plan.items) {
+                overlay_layer_meshes.push_back(upload_render_item(item));
+            }
+            overlay_plans.push_back(std::move(overlay_plan));
+            state.overlay_meshes.push_back(
+                std::move(overlay_layer_meshes));
+            overlay_topology_versions.push_back(
+                overlay_scene->render_topology_version);
+        }
         cpu_startup_mark("mesh-uploads");
         std::vector<upstream::RenderDrawLists> task_draw_lists(
             engine.frame_tasks.size());
@@ -8157,16 +8204,25 @@ bool run_gpu_engine(Engine& engine) {
                     frame_buffer_uploads);
             }
 #endif
+            // One scene's plan synced against the meshes uploaded for it.
+            // A swapchain overlay layer is a second (plan, mesh array)
+            // pair, so this takes them rather than closing over the base
+            // scene's -- the per-frame republish is the same work either
+            // way.
+            const auto sync_plan_meshes =
+                [&](
+                    const upstream::RenderPlan& sync_plan,
+                    std::vector<GpuMesh>& sync_meshes) {
             for (
                 std::size_t index = 0;
-                index < render_plan.items.size() &&
-                index < state.meshes.size();
+                index < sync_plan.items.size() &&
+                index < sync_meshes.size();
                 ++index) {
                 const upstream::RenderItem& item =
-                    render_plan.items[index];
+                    sync_plan.items[index];
                 const MeshRecord& mesh =
                     engine.meshes[item.mesh.value];
-                GpuMesh& gpu_mesh = state.meshes[index];
+                GpuMesh& gpu_mesh = sync_meshes[index];
 #if BBLITE_GPU_INSTANCING
                 if (
                     mesh.thin_instanced &&
@@ -8331,6 +8387,17 @@ bool run_gpu_engine(Engine& engine) {
                     mesh.transform_version;
                 gpu_mesh.gpu_world_transform =
                     mesh.gpu_world_transform;
+            }
+            };
+            sync_plan_meshes(render_plan, state.meshes);
+            for (
+                std::size_t layer = 0;
+                layer < overlay_plans.size() &&
+                layer < state.overlay_meshes.size();
+                ++layer) {
+                sync_plan_meshes(
+                    overlay_plans[layer],
+                    state.overlay_meshes[layer]);
             }
             bool topology_updated = false;
             if (
@@ -10527,9 +10594,13 @@ bool run_gpu_engine(Engine& engine) {
             color_info.load_op = SDL_GPU_LOADOP_CLEAR;
             // Resolve opaque color for transmission sampling while preserving
             // the multisample attachment so transmissive draws can resume it.
+            // An overlay layer preserves it for the same reason the pin's own
+            // overlay does: "both scenes must use the base task's MSAA colour
+            // texture before the overlay can load its pixels and resolve the
+            // composited result" (scene/swapchain-overlay.ts).
             color_info.store_op =
                 multisampled
-                    ? transmission_enabled
+                    ? transmission_enabled || !overlay_plans.empty()
                         ? SDL_GPU_STOREOP_RESOLVE_AND_STORE
                         : SDL_GPU_STOREOP_RESOLVE
                     : SDL_GPU_STOREOP_STORE;
@@ -10797,13 +10868,26 @@ bool run_gpu_engine(Engine& engine) {
                     shader_variant,
                     "main dispatch");
             };
+            // Which scene the pass being recorded belongs to. The base
+            // scene records first and a swapchain overlay layer repoints
+            // these before its own pass: the draw walk is the same one,
+            // and what changes is the scene it reads its light selection,
+            // its plan and its uploaded meshes from.
+            // Which scene the pass being recorded belongs to: the base
+            // scene, or the overlay layer whose own plan is being drawn.
+            // Every reader is a material-variant draw, so a build that
+            // composes no variants at all -- a splat-only scene, say --
+            // sets it and never reads it.
+            [[maybe_unused]] const Scene* pass_scene = &scene;
+            const std::vector<GpuMesh>* pass_meshes = &state.meshes;
+            const std::array<float, 16>* pass_matrix = &matrix;
 #if BBLITE_PINNED_MATERIALS
             // The frame's scene and lights blocks, once per frame rather
             // than per draw — the same hoist the Dawn backend's
             // write_pinned_frame_blocks already makes.
-            const upstream::SceneUniforms pass_scene_block =
+            upstream::SceneUniforms pass_scene_block =
                 pinned_scene_block(scene, engine, camera, matrix);
-            const std::vector<std::uint8_t> pass_lights_block =
+            std::vector<std::uint8_t> pass_lights_block =
                 pinned_lights_block(scene, engine);
 #endif
             const auto draw_render_list =
@@ -10814,12 +10898,12 @@ bool run_gpu_engine(Engine& engine) {
                     list.commands) {
                     if (
                         draw.item_index >=
-                        state.meshes.size()) {
+                        (*pass_meshes).size()) {
                         continue;
                     }
                     const upstream::RenderItem& item = draw.item;
                     const GpuMesh& mesh =
-                        state.meshes[draw.item_index];
+                        (*pass_meshes)[draw.item_index];
                     const MaterialRecord* material =
                         item.material.value <
                                 engine.materials.size()
@@ -10886,7 +10970,7 @@ bool run_gpu_engine(Engine& engine) {
                         item.material_kind ==
                             upstream::RenderMaterialKind::pbr
                             ? pinned_variant_for_draw(
-                                  scene,
+                                  *pass_scene,
                                   engine,
                                   draw,
                                   npos,
@@ -10913,7 +10997,7 @@ bool run_gpu_engine(Engine& engine) {
                             state,
                             command,
                             pass,
-                            scene,
+                            *pass_scene,
                             engine,
                             pass_scene_block,
                             pass_lights_block,
@@ -10957,7 +11041,7 @@ bool run_gpu_engine(Engine& engine) {
                         StandardVariantKey standard_key;
                         const std::size_t standard_variant =
                             standard_variant_for_draw(
-                                scene,
+                                *pass_scene,
                                 engine,
                                 draw,
                                 npos,
@@ -10976,7 +11060,7 @@ bool run_gpu_engine(Engine& engine) {
                             state,
                             command,
                             pass,
-                            scene,
+                            *pass_scene,
                             engine,
                             pass_scene_block,
                             pass_lights_block,
@@ -11009,7 +11093,7 @@ bool run_gpu_engine(Engine& engine) {
                             state,
                             command,
                             pass,
-                            scene,
+                            *pass_scene,
                             engine,
                             pass_scene_block,
                             pass_lights_block,
@@ -11104,8 +11188,8 @@ bool run_gpu_engine(Engine& engine) {
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 0,
-                                matrix.data(),
-                                sizeof(matrix));
+                                pass_matrix->data(),
+                                sizeof(*pass_matrix));
                             scene_matrix_bound = true;
                         }
 #if BBLITE_GPU_DEFORMATION
@@ -11136,7 +11220,7 @@ bool run_gpu_engine(Engine& engine) {
                                 instance_parent_draw_world(
                                     engine.meshes[
                                         item.mesh.value],
-                                    scene,
+                                    *pass_scene,
                                     engine);
                             SDL_PushGPUVertexUniformData(
                                 command,
@@ -11366,6 +11450,92 @@ bool run_gpu_engine(Engine& engine) {
             draw_billboards(BillboardDepthMode::transparent);
 #endif
             SDL_EndGPURenderPass(pass);
+            // Held across the loop rather than declared inside it, so
+            // `pass_matrix` never names a local that has gone out of scope
+            // by the time the frame is done with it. Restoring the three
+            // pass pointers afterwards would be the other fix, but nothing
+            // reads them again, and the writes would be unused in every
+            // build whose material-variant blocks are compiled out.
+            std::array<float, 16> overlay_matrix{};
+            // The swapchain overlay layers. Each is its own render pass on
+            // the same colour attachment with a FRESH depth buffer, which is
+            // what `createUtilityLayer` documents: the overlay scene keeps
+            // normal depth testing among its own meshes and never tests
+            // against the base scene's, so a gizmo body occludes its own
+            // back faces while sitting in front of everything below it.
+            for (
+                std::size_t layer = 0;
+                layer < overlay_plans.size() &&
+                layer < state.overlay_meshes.size();
+                ++layer) {
+                Scene* overlay_scene =
+                    engine.registered_scenes[layer + 1u];
+                if (!overlay_scene) continue;
+                if (
+                    layer < overlay_topology_versions.size() &&
+                    overlay_scene->render_topology_version !=
+                        overlay_topology_versions[layer]) {
+                    gpu_error(
+                        "A swapchain overlay layer changed its renderables "
+                        "after the frame loop started; this port plans a "
+                        "layer once.");
+                }
+                CameraRecord& overlay_camera =
+                    overlay_scene->camera.value < engine.cameras.size()
+                        ? engine.cameras[overlay_scene->camera.value]
+                        : camera;
+                overlay_matrix = upstream::build_view_projection(
+                    overlay_camera,
+                    aspect);
+                pass_scene = overlay_scene;
+                pass_meshes = &state.overlay_meshes[layer];
+                pass_matrix = &overlay_matrix;
+#if BBLITE_PINNED_MATERIALS
+                pass_scene_block = pinned_scene_block(
+                    *overlay_scene,
+                    engine,
+                    overlay_camera,
+                    overlay_matrix);
+                pass_lights_block =
+                    pinned_lights_block(*overlay_scene, engine);
+#endif
+                color_info.load_op = SDL_GPU_LOADOP_LOAD;
+                depth_info.load_op = SDL_GPU_LOADOP_CLEAR;
+                depth_info.clear_depth = upstream::pinned_depth_clear;
+                pass = SDL_BeginGPURenderPass(
+                    command,
+                    &color_info,
+                    1,
+                    &depth_info);
+                SDL_PushGPUVertexUniformData(
+                    command,
+                    0,
+                    overlay_matrix.data(),
+                    sizeof(overlay_matrix));
+                scene_matrix_bound = true;
+                for (
+                    const upstream::RenderStage stage :
+                    overlay_plans[layer].stages) {
+                    switch (stage) {
+                        case upstream::RenderStage::opaque:
+                            draw_render_list(
+                                overlay_plans[layer].draw_lists.opaque);
+                            break;
+                        case upstream::RenderStage::transparent:
+                            draw_render_list(
+                                overlay_plans[layer]
+                                    .draw_lists.transparent);
+                            break;
+                        default:
+                            // A utility layer carries no environment, so
+                            // its plan reaches no background stage; a plan
+                            // that grew one would need its own resources
+                            // rather than the base scene's.
+                            break;
+                    }
+                }
+                SDL_EndGPURenderPass(pass);
+            }
             SDL_GPUTexture* visible_color =
                 capture_frame ? state.color : swapchain;
             if (transmission_enabled) {

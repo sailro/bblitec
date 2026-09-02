@@ -62,6 +62,7 @@ export interface StatementLoweringContext {
     assetRootChildrenIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
+    isFoldedFlattenLoop(statement: ts.Statement): boolean;
     handleCollectionIterationTarget(
         expression: ts.Expression,
     ): HandleCollectionTarget | undefined;
@@ -93,6 +94,11 @@ export interface StatementLoweringContext {
         answered: (result: T) => boolean,
     ): T;
     allocateTemporaryCppName(label: string): string;
+    bindDataTuple(
+        value: Value,
+        arity: number,
+        label?: string,
+    ): string;
     emitVariableDeclaration(
         declaration: ts.VariableDeclaration,
     ): void;
@@ -567,6 +573,12 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.Statement,
     ): void {
+        if (context.isFoldedFlattenLoop(statement)) {
+            // The declaration above it already answered with the
+            // container's flattened meshes; the loop that filled the list
+            // is the other half of that one construct.
+            return;
+        }
         if (ts.isVariableStatement(statement)) {
             for (const declaration of statement
                 .declarationList.declarations) {
@@ -3398,13 +3410,10 @@ export class StatementLowerer {
                     `${label} spreads a value that is not a ${arity}-element numeric tuple.`,
                 );
             }
-            const binding = context.allocateTemporaryCppName(
-                "spread",
+            return tupleComponents(
+                context.bindDataTuple(value, arity, "spread"),
+                arity,
             );
-            context.emit(
-                `const bbl::js::Tuple<${arity}> ${binding} = ${value.cpp};`,
-            );
-            return tupleComponents(binding, arity);
         }
         if (call.arguments.length !== arity) {
             context.fail(

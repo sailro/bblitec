@@ -19,6 +19,7 @@ import { PhysicsLowerer } from "./lowering/physics-lowerer.js";
 import { AudioLowerer } from "./lowering/audio-lowerer.js";
 import { NavigationLowerer } from "./lowering/navigation-lowerer.js";
 import { PickingLowerer } from "./lowering/picking-lowerer.js";
+import { GizmoLowerer } from "./lowering/gizmo-lowerer.js";
 import { TubeLowerer } from "./lowering/factory/tube.js";
 import { pinnedDepthStateHeader } from "./lowering/pinned-depth-state.js";
 import {
@@ -2187,6 +2188,18 @@ ${shadow.blurFragmentWgsl}`,
                         refusalReachedFrom(options.featureSites, paired),
                 );
             }
+        }
+        if (features.includes("gizmo:utility-layer")) {
+            // One unit for the whole family: the layer, both gizmos and
+            // the pinned quaternion helpers they share. A scene reaching
+            // only the layer still gets the two builders, which cost
+            // nothing it does not call -- the same shape the mesh
+            // factories unit takes.
+            this.writeSource(
+                "upstream/src/gizmo.cpp",
+                new GizmoLowerer(context).lower(),
+                generated,
+            );
         }
         if (features.includes("picking:gpu")) {
             this.writeSource(

@@ -104,6 +104,7 @@ Primary source ownership:
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/pinned-picking-shaders.ts` | the two modules a GPU pick draws through, composed by running the pin's own builders |
 | `src/lowering/picking-lowerer.ts` | the picker's bookkeeping; every answer belongs to the backend that owns the buffers |
+| `src/lowering/gizmo-lowerer.ts` | the display-gizmo family from `src/gizmo/*`: the utility layer, the camera and light widgets, and the per-frame follow that reads the attached record |
 | `src/lowering/physics-lowerer.ts` | the rigid-body family from `havok.ts`: the step gate, the four frame phases, the aggregate ordering and `_buildShapeParams`' shape sizing |
 | `src/compiler/intrinsics/physics.ts` | which physics calls a scene reached, and the erased solver module its `await HavokPhysics(...)` produced |
 | `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted |

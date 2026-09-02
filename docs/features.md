@@ -974,6 +974,18 @@ selection — every node under the container's entities, collecting the ones
 the loader made mesh records for — and deliberately not its order, since a
 worklist reaches siblings in the reverse of document order.
 
+Two arrangements of that walk are proven, because the corpus writes both:
+the worklist, seeded from `entities` and drained (scenes 149, 229), and the
+recursive visitor — a `"_gpu"` type guard, a `children` type guard, and a
+function that pushes and recurses — driven by an empty `Mesh[]` and the
+entity loop that fills it (scenes 41, 47, 104, 105). The pair is one
+construct, so the declaration and its driver loop are read together and
+answered once; reading them apart has no lowering, since neither a runtime
+`Mesh[]` nor a hierarchy walk over a resolved-away tree exists natively.
+`regression-imported-mesh-walk` gates the recursive arrangement by painting
+every walked mesh with one scene-created material, so a renderable the walk
+missed keeps its own and shows.
+
 A loaded material has no scene-side record for the composer to read, so the
 fact is kept on the container and its document composes the unlit arm. That
 widening is sound only where the walk demonstrably reaches every renderable,
@@ -1568,6 +1580,60 @@ a value this port cannot fill.
 [fidelity](fidelity.md#picking-contract) carries the two contracts the port
 owns, and the family's remaining arms are in `TODO.md`.
 
+### Display gizmos
+
+`createUtilityLayer(engine, scene)` is a SECOND `SceneContext` over the same
+engine: its own clear colour, its own light, and the main scene's camera
+shared by reference and forwarded every frame. `registerUtilityLayer` then
+registers it after the main scene, and that ORDER is the whole mechanism --
+upstream's `configureSwapchainOverlayScene` treats the surface's last
+rendering context as the base, so a later scene keeps the base's colour and
+clears only its own depth. Both backends do exactly that: every scene
+registered after the first is recorded as an overlay pass on the same colour
+attachment (multisample colour stored rather than discarded, so a layer
+draws over what the base pass left; each pass still resolves, and the last
+resolve is the composite) with a freshly cleared depth buffer. Depth testing
+inside a layer stays normal, which is what lets a solid gizmo body occlude
+its own back faces while sitting in front of everything below it. Each layer
+carries its own render plan, its own uploaded meshes and its own scene and
+lights blocks, because a draw command indexes a plan and a layer's lights are
+not the base scene's.
+
+`createCameraGizmo` and `createLightGizmo` are display only: no pointer
+interaction is reached, and the drag, rotation and bounding-box gizmos are
+not integrated. What each builds is the pinned body's own tree -- the camera
+body is BJS `_CreateCameraMesh` (a box and three cylinders under a
+distance-scaled node) plus a twelve-cylinder frustum wireframe sized from the
+attached camera's fov, near and far; a light gizmo is one of four per-type
+widgets, selected by the attached light's own type. The three module constants and
+every factory's option object are read out of the pinned AST rather than
+restated, so a reordered or retyped factory call fails generation by name,
+and the quaternion helpers that orient every node (`quatFromBjsEuler`,
+`rotateVec3ByQuat`, `directionToQuat`, and the decomposition behind
+`rotationQuatFromMatrix`) are lowered from `src/gizmo/gizmo-math.ts` itself.
+Three pinned bodies are the exception and are transcribed rather than
+lowered -- the hemisphere builder and level table behind a light widget's
+rings, and the frustum wireframe behind the camera one -- so an upstream
+edit to one of those shapes compiles clean and draws a different widget.
+Every construct in them is one the pinned-function lowerer already handles,
+which makes it a gap rather than a limit; [TODO](../TODO.md) carries it.
+
+The follow is per-frame native behaviour over live records, because that is
+what it reads: the attached camera's world matrix, the attached light's
+position and direction, and the utility scene's own camera for the distance
+scaling. Which of the position and direction arms a light gizmo takes is the
+light TYPE's answer upstream -- a `HemisphericLight` declares no `position`
+and a `PointLight` no `direction` -- so the generated follow asks the
+record's kind exactly where the pin asks `if (pos)` / `if (dir)`, and scene
+223 places its hemispheric gizmo by hand for that reason.
+
+Each factory's options bag refuses rather than being half-served: a colour,
+a light intensity or a `displayFrustum: false` would change what the
+generated unit builds, and the unit is emitted from the pin's own defaults.
+A layer that grows or loses a renderable after the frame loop starts refuses
+too -- the base scene has a plan-rematching path and a layer does not.
+Scene 223 gates the family at 0.000 on both backends.
+
 ### Physics
 
 Rigid-body simulation, and the one family whose numbers are not the pin's.
@@ -1590,7 +1656,10 @@ The reached slice: `createHavokWorld` with an explicit or defaulted gravity;
 `createPhysicsAggregate` over the four primitive shapes that
 `createPrimitivePhysicsShapeHandle` builds without a mesh (sphere, box,
 capsule, cylinder), plus mesh-derived convex hulls with child geometry;
-`mass`, `friction`, `restitution`, fixed-timestep writes, motion-type and mass
+`mass`, `friction`, `restitution`, `startAsleep` — the pin hands that last one
+straight to `HP_World_AddBody`'s third argument, so the body joins the world
+deactivated and stays at its authored pose until a contact wakes it —
+fixed-timestep writes, motion-type and mass
 changes, world-space impulses and central forces, linear-velocity reads,
 collision membership masks, per-body collision-event enablement and deferred
 STARTED/CONTINUED/FINISHED callbacks, filtered raycasts, and

@@ -1094,6 +1094,12 @@ struct PhysicsAggregateOptions {
     pal::PhysicsShapeHandle shape{};
     js::Nullable<double> radius{};
     js::Nullable<Vec3d> extents{};
+    /**
+     * \`createPhysicsBody(world, node, motionType, options.startAsleep)\`,
+     * whose parameter defaults to \`false\` -- so an omitted option is that
+     * default rather than a nullable this factory settles again.
+     */
+    bool start_asleep = false;
 };
 
 /**
@@ -1733,7 +1739,8 @@ PhysicsAggregate create_physics_aggregate(
     body.handle = pal::physics_body_create();
     pal::physics_body_set_motion_type(
         body.handle, pinned_motion_type(body.motion_type));
-    pal::physics_world_add_body(world.handle, body.handle, false);
+    pal::physics_world_add_body(
+        world.handle, body.handle, options.start_asleep);
     sync_node_to_body(engine, body, false);
 
     // \`setPhysicsBodyShape\`, then the material, then the mass. The order

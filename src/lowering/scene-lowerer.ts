@@ -462,6 +462,35 @@ void set_mesh_transform_parent(
     }
 }
 
+// The same trigger one level up. mark_transform_node_dirty already
+// recurses into parented_nodes, and transform_node_world already
+// composes record.parent; this is the write that links the two, so a
+// node hung under another follows it exactly as a mesh does.
+void set_transform_node_parent(
+    Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle parent) {
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    if (record.parent.value == parent.value) return;
+    if (record.parent.value < engine.transform_nodes.size()) {
+        std::vector<TransformNodeHandle>& old_children =
+            engine.transform_nodes[record.parent.value].parented_nodes;
+        old_children.erase(
+            std::remove(old_children.begin(), old_children.end(), node),
+            old_children.end());
+    }
+    record.parent = parent;
+    mark_transform_node_dirty(engine, node);
+    if (parent.value < engine.transform_nodes.size()) {
+        std::vector<TransformNodeHandle>& new_children =
+            engine.transform_nodes[parent.value].parented_nodes;
+        if (std::find(new_children.begin(), new_children.end(), node) ==
+            new_children.end()) {
+            new_children.push_back(node);
+        }
+    }
+}
+
 void push_transform_node_child(
     Engine& engine,
     TransformNodeHandle node,

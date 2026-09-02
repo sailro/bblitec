@@ -152,6 +152,11 @@ struct CameraHandle {
 
 struct TransformNodeHandle {
     std::uint32_t value = invalid_handle;
+
+    // The same identity a MeshHandle carries, for the same reason: the
+    // parent setter's child registry looks a node up by the id it is.
+    [[nodiscard]] bool operator==(
+        const TransformNodeHandle&) const = default;
 };
 
 struct AssetHandle {
@@ -289,6 +294,27 @@ struct ClusteredLightContainerHandle {
 };
 
 struct GpuPickerHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+/**
+ * The gizmo family's handles.
+ *
+ * `createUtilityLayer` builds a SECOND SceneContext over the same engine
+ * and registers it after the main one, which is what makes both backends
+ * record it as a swapchain overlay layer. The two display gizmos are
+ * records rather than plain locals because their per-frame follow reads
+ * live state the scene keeps mutating.
+ */
+struct UtilityLayerHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct CameraGizmoHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+struct LightGizmoHandle {
     std::uint32_t value = invalid_handle;
 };
 
@@ -2838,6 +2864,48 @@ struct UiIdStyleRule {
 };
 #endif
 
+// `UtilityLayerRecord` holds a Scene by value, and Scene is defined after
+// Engine; the engine keeps them behind unique_ptr, whose element type may
+// be incomplete here and is complete wherever the engine is destroyed.
+struct UtilityLayerRecord;
+
+/**
+ * `CameraGizmo` (src/gizmo/camera-gizmo.ts), display only.
+ *
+ * The root follows the attached camera's world translation and rotation
+ * every frame; the body node carries the distance scaling separately
+ * because the frustum edges are built in literal world units.
+ */
+struct CameraGizmoRecord {
+    /** The layer that built it, which its per-frame follow reads back. */
+    UtilityLayerHandle layer{};
+    TransformNodeHandle root{};
+    MaterialHandle material{};
+    MaterialHandle frustum_material{};
+    CameraHandle attached_camera{};
+    TransformNodeHandle body_outer{};
+    bool frustum_built = false;
+};
+
+/**
+ * `LightGizmo` (src/gizmo/light-gizmo.ts), display only.
+ *
+ * Which of the position and direction arms the per-frame follow takes is
+ * the light TYPE's answer upstream -- a HemisphericLight declares no
+ * `position` and a PointLight no `direction` -- so the generated follow
+ * asks the record's kind exactly where the pin asks `if (pos)`/`if (dir)`.
+ */
+struct LightGizmoRecord {
+    /** The layer that built it, which its per-frame follow reads back. */
+    UtilityLayerHandle layer{};
+    TransformNodeHandle root{};
+    MaterialHandle material{};
+    LightHandle attached_light{};
+    bool built = false;
+    /** The light TYPE the widget below `root` was built for. */
+    LightKind built_kind = LightKind::hemispheric;
+};
+
 struct Engine {
     EngineOptions options{};
     /** Logical CSS-pixel extent exposed by renderCanvas.clientWidth/Height. */
@@ -3019,6 +3087,14 @@ struct Engine {
     std::vector<ShadowGeneratorRecord> shadow_generators;
     std::vector<GpuPickerRecord> gpu_pickers;
     /**
+     * The utility layers this engine holds. Pointer-stable because
+     * `registerScene` publishes the address of the scene inside one, and
+     * every gizmo follow callback captures it.
+     */
+    std::vector<std::unique_ptr<UtilityLayerRecord>> utility_layers;
+    std::vector<CameraGizmoRecord> camera_gizmos;
+    std::vector<LightGizmoRecord> light_gizmos;
+    /**
      * The live renderer's pick pass.
      *
      * A pick renders the scene into a one-pixel target and reads it back,
@@ -3199,6 +3275,18 @@ struct Scene {
     float fog_start = 0.0f;
     float fog_end = 0.0f;
     Color3 fog_color{};
+};
+
+/**
+ * `UtilityLayer` (src/gizmo/utility-layer.ts): a second SceneContext over
+ * the same engine, sharing the main scene's camera by reference and
+ * carrying its own light so gizmo materials are lit independently of the
+ * scene beneath them. Held by pointer-stable storage because the scene's
+ * address is what `registerScene` publishes.
+ */
+struct UtilityLayerRecord {
+    Scene scene;
+    Scene* main_scene = nullptr;
 };
 
 /** A scene-less rendering context that owns only an ordered task graph. */
@@ -3893,10 +3981,38 @@ void set_mesh_transform_parent(
     Engine& engine,
     MeshHandle mesh,
     TransformNodeHandle parent);
+// The same setter one level up: a transform node hung under another one.
+// `transform_node_world` already composes the chain, and
+// `mark_transform_node_dirty` already recurses into `parented_nodes`; this
+// is the write that fills that list, so a node moved under a parent
+// re-bakes the meshes beneath it.
+void set_transform_node_parent(
+    Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle parent);
 void push_transform_node_child(
     Engine& engine,
     TransformNodeHandle node,
     MeshHandle child);
+// src/gizmo/*: the display-gizmo family. Every one of these is generated
+// into upstream/src/gizmo.cpp from the pinned modules that declare it.
+UtilityLayerHandle create_utility_layer(Engine& engine, Scene& main_scene);
+void register_utility_layer(Engine& engine, UtilityLayerHandle layer);
+Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer);
+CameraGizmoHandle create_camera_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer);
+void attach_camera_gizmo_to_camera(
+    Engine& engine,
+    CameraGizmoHandle gizmo,
+    CameraHandle camera);
+LightGizmoHandle create_light_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer);
+void attach_light_gizmo_to_light(
+    Engine& engine,
+    LightGizmoHandle gizmo,
+    LightHandle light);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // The spot cone angle is an accessor upstream rather than a field: its setter

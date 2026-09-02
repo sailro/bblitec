@@ -55,6 +55,11 @@ export interface SpriteIntrinsicContext
         expression: ts.Expression,
     ): { cpp: string; source: string } | undefined;
     allocateTemporaryCppName(label: string): string;
+    bindDataTuple(
+        value: Value,
+        arity: number,
+        label?: string,
+    ): string;
     compileSpriteAtlas(expression: ts.Expression): Value;
     /** One layer or system built without a custom shader, so with the stock program. */
     recordPlainSpriteProgram(family: "sprite" | "billboard"): void;
@@ -451,13 +456,12 @@ function tupleOption(
         );
     }
     if (isDataTuple(value, arity)) {
-        const local = context.allocateTemporaryCppName(
-            `sprite_${name}`,
+        // Bound before its lanes are read, because `tupleComponents` reads
+        // the base once per lane -- the rule `bindDataTuple` states.
+        return tupleComponents(
+            context.bindDataTuple(value, arity, `sprite_${name}`),
+            arity,
         );
-        context.emit(
-            `const bbl::js::Tuple<${arity}> ${local} = ${value.cpp};`,
-        );
-        return tupleComponents(local, arity);
     }
     return context.fail(
         node,

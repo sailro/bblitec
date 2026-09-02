@@ -46,6 +46,14 @@ type NarrowOptional = (
     value: Value,
     expression: ts.Expression,
 ) => Value;
+/**
+ * A plain-data tuple given a native home, as the name of the local it
+ * landed in. `Compiler.bindDataTuple` owns the rule.
+ */
+type BindDataTuple = (
+    value: Value,
+    arity: number,
+) => string;
 
 const bitwiseFunctions = new Map<ts.SyntaxKind, string>([
     [ts.SyntaxKind.AmpersandToken, "bitwise_and"],
@@ -87,6 +95,7 @@ export class StaticEvaluator {
         private readonly fail: Fail,
         private readonly onAwait: OnAwait,
         private readonly onJsData: () => void,
+        private readonly bindDataTuple: BindDataTuple,
     ) {}
 
     /**
@@ -1420,13 +1429,22 @@ export class StaticEvaluator {
      * annotation is data rather than a compile-time table, so its element
      * arrives as a `bbl::js::Tuple<3>`. The components round at the sink,
      * which is where the pin's own `Float32Array` store rounds them.
+     *
+     * A scene-local helper *returning* that annotation lands here too, and
+     * it is the one source that is not free to repeat: `tupleComponents`
+     * indexes its base once per component, and the inliner has just
+     * emitted the call's body where the call sits. So a call is bound to a
+     * native local first, which is the same rule `setCallComponents`
+     * (`statements.ts`) already applies to a spread of one.
      */
     private dataTupleComponents(
         expression: ts.Expression,
         length: number,
         precision: "float" | "double" = "float",
     ): string[] | undefined {
+        const call = ts.isCallExpression(expression);
         if (
+            !call &&
             !ts.isIdentifier(expression) &&
             !ts.isElementAccessExpression(expression) &&
             !ts.isPropertyAccessExpression(expression)
@@ -1437,7 +1455,11 @@ export class StaticEvaluator {
         if (!isDataTuple(value, length)) {
             return undefined;
         }
-        return tupleComponents(value.cpp, length, precision);
+        return tupleComponents(
+            call ? this.bindDataTuple(value, length) : value.cpp,
+            length,
+            precision,
+        );
     }
 
     private numberValue(
