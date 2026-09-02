@@ -333,6 +333,25 @@ struct EditGizmoHandle {
 };
 
 /**
+ * A composite gizmo: the sub-widget handles the pinned composite holds.
+ *
+ * `gizmo/composite-gizmos.ts` models `PositionGizmo`, `RotationGizmo` and
+ * `ScaleGizmo` as records of already-built sub-gizmos and nothing else --
+ * their `attachedNode` mirror is written and never read back -- so this is
+ * that list. `local_coordinate_count` is how many of the leading entries
+ * the composite's own `set<X>GizmoLocalCoordinates` fans out over: every
+ * one for position and rotation, and every axis handle but the trailing
+ * central uniform one for scale, which BJS keeps world-aligned. Six slots
+ * because the widest composite is the position gizmo's three arrows plus
+ * its three optional planar handles.
+ */
+struct CompositeGizmoHandle {
+    std::array<EditGizmoHandle, 6> parts{};
+    std::uint32_t part_count = 0;
+    std::uint32_t local_coordinate_count = 0;
+};
+
+/**
  * Which collection a pick resolved into.
  *
  * Upstream `PickingInfo.pickedMesh` is one object reference whatever was
@@ -1292,6 +1311,19 @@ struct ModelGeometry {
     VertexSpace vertex_space = VertexSpace::local;
     MeshTopology topology = MeshTopology::triangles;
     bool has_tangents = false;
+    /**
+     * `mesh._gpu.hasUv` / `hasColor`, which `writeAttributeFlags` puts in
+     * the node mesh block's spare lanes for `MeshAttributeExistsBlock`.
+     *
+     * Every vertex carries all five lanes here, so these say what the
+     * SOURCE supplied rather than what the buffer holds: a stream nothing
+     * filled is zeros, and the block's whole job is to substitute its own
+     * fallback for it instead. The uv default is `true` because the pin's
+     * own flag is `hasUv === false ? 0 : 1` — an unset one counts as
+     * present, which is what every procedural factory produces.
+     */
+    bool has_uvs = true;
+    bool has_vertex_colors = false;
     bool flat_normals = false;
     Vec3 bounds_min{};
     Vec3 bounds_max{};
@@ -2928,17 +2960,36 @@ struct LightGizmoRecord {
  * the root every frame and scales the root by the gizmo's projected depth
  * along the utility camera's forward axis times the widget's own scale
  * ratio -- which is the pinned `1 / 3` each factory passes, read from the
- * pin rather than restated. Those three fields are the whole record: the
- * layer and the material a pinned gizmo object also holds are consumed
- * where they are built and never read back, so neither is stored, and
- * neither is the pin's `drag.enabled` -- nothing reads it while pointer
- * drag is unreached, and the scene that reaches it will add it back with
- * a reader.
+ * pin rather than restated. The layer and the material a pinned gizmo
+ * object also holds are consumed where they are built and never read
+ * back, so neither is stored, and neither is the pin's `drag.enabled` --
+ * nothing reads it while pointer drag is unreached, and the scene that
+ * reaches it will add it back with a reader.
+ *
+ * The four fields after those are the pin's LOCAL-COORDINATE arm, which a
+ * composite scene reaches at load: every widget keeps its own
+ * `useLocalCoordinates` flag and the local-frame axis it was built on,
+ * and the follow re-orients the root from the attached node's world
+ * matrix while the flag is set. `orientation` is which of the pin's two
+ * re-orientations the widget uses -- the three that take a shortest-arc
+ * `lookAtQuat` of the transformed axis, and the scale widget, whose cube
+ * is not roll-symmetric and which therefore composes the node's world
+ * rotation onto the orientation baked at creation.
  */
+enum class GizmoLocalOrientation : std::uint8_t {
+    look_at_world_axis,
+    compose_baked_rotation,
+};
+
 struct EditGizmoRecord {
     TransformNodeHandle root{};
     MeshHandle attached_node{};
     double scale_ratio = 1.0;
+    bool use_local_coordinates = false;
+    Vec3d local_axis{0.0, 0.0, 1.0};
+    std::array<double, 4> baked_rotation{0.0, 0.0, 0.0, 1.0};
+    GizmoLocalOrientation orientation =
+        GizmoLocalOrientation::look_at_world_axis;
 };
 
 struct Engine {
@@ -3318,6 +3369,17 @@ struct Scene {
     float fog_start = 0.0f;
     float fog_end = 0.0f;
     Color3 fog_color{};
+    /**
+     * `scene.clipPlane` as its own scene-UBO lane.
+     *
+     * The pin holds `ClipPlane | null` and registers `writeClipPlaneUbo`
+     * only once `setClipPlane` runs, so a scene that never clips leaves
+     * float offsets 88-91 at the zero `_packSceneUniforms` left there.
+     * The zero vector is that same state: `dot(worldPosition, vec4(0))`
+     * is zero, and the pinned `ClipPlanesBlock` discards on a strictly
+     * positive distance — so the absent case needs no second flag.
+     */
+    Vec4 clip_plane{};
 };
 
 /**
@@ -3674,6 +3736,10 @@ void prepare_imported_mesh_quaternion_write(
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh);
 /** Keep a runtime-moving mesh subtree local and publish its draw world. */
 void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh);
+/** The same one level up, recursing into both of a node's child arms. */
+void mark_transform_node_runtime_transform(
+    Engine& engine,
+    TransformNodeHandle node);
 /** Install a mesh quaternion in the coordinate basis its vertices use. */
 void set_mesh_rotation_quaternion(
     Engine& engine,
@@ -4071,22 +4137,27 @@ void attach_light_gizmo_to_light(
     LightGizmoHandle gizmo,
     LightHandle light);
 // The four editing widgets. Each takes the axis its pinned body orients
-// its root onto, and the colour as the pin's own optional -- the
-// `?? [0.5, 0.5, 0.5]` behind it stays in the generated body, where the
-// pin writes it. Both arrive as `Vec3d` because both are plain JavaScript
-// numbers upstream: the builder's own arithmetic runs at that width and
-// narrows once, at the store. All four share one attach call because the
-// pin's four attach bodies are identical, which generation asserts.
+// its root onto, and every option the pin defaults through a `??` as the
+// pin's own optional -- the `?? [0.5, 0.5, 0.5]`, `?? 1` and `?? 32`
+// behind them stay in the generated body, where the pin writes them.
+// Colours and thicknesses arrive as `double` because they are plain
+// JavaScript numbers upstream: the builder's own arithmetic runs at that
+// width and narrows once, at the store. All four share one attach call
+// because the pin's four attach bodies are identical, which generation
+// asserts.
 EditGizmoHandle create_axis_drag_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
     Vec3d drag_axis,
-    std::optional<Vec3d> color);
+    std::optional<Vec3d> color,
+    std::optional<double> thickness);
 EditGizmoHandle create_axis_scale_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
     Vec3d drag_axis,
-    std::optional<Vec3d> color);
+    std::optional<Vec3d> color,
+    std::optional<double> thickness,
+    std::optional<bool> uniform_scaling);
 EditGizmoHandle create_plane_drag_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
@@ -4096,11 +4167,46 @@ EditGizmoHandle create_plane_rotation_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
     Vec3d plane_normal,
-    std::optional<Vec3d> color);
+    std::optional<Vec3d> color,
+    std::optional<double> tessellation,
+    std::optional<double> thickness);
 void attach_gizmo_to_node(
     Engine& engine,
     EditGizmoHandle gizmo,
     MeshHandle node);
+// `useLocalCoordinates` on one widget: the flag the pin's follow reads to
+// decide whether the root tracks the attached node's world rotation.
+void set_edit_gizmo_local_coordinates(
+    Engine& engine,
+    EditGizmoHandle gizmo,
+    bool use_local);
+// The three composites (`src/gizmo/composite-gizmos.ts`). Each builds its
+// sub-widgets through the four factories above with the axis, colour and
+// option values its own pinned body passes, so nothing about a composite
+// is spelled outside the pin. The two entry points below them are the
+// pin's own fan-outs, which is all a composite record is for.
+CompositeGizmoHandle create_position_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    std::optional<bool> planar_enabled,
+    std::optional<double> thickness);
+CompositeGizmoHandle create_rotation_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    std::optional<double> tessellation,
+    std::optional<double> thickness);
+CompositeGizmoHandle create_scale_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    std::optional<double> thickness);
+void attach_composite_gizmo_to_node(
+    Engine& engine,
+    CompositeGizmoHandle gizmo,
+    MeshHandle node);
+void set_composite_gizmo_local_coordinates(
+    Engine& engine,
+    CompositeGizmoHandle gizmo,
+    bool use_local);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // The spot cone angle is an accessor upstream rather than a field: its setter
@@ -4835,6 +4941,7 @@ void set_scene_fog(
     float start,
     float end,
     Color3 color);
+void set_scene_clip_plane(Scene& scene, Vec4 plane);
 void start_engine(Engine& engine);
 /** `stopEngine`: no further frame submits. */
 void stop_engine(Engine& engine);

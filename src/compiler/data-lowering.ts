@@ -42,6 +42,7 @@ const mathUnaryCalls: ReadonlyMap<string, string> = new Map([
     ["trunc", "std::trunc"],
 ]);
 
+
 /**
  * The array methods that change a container's length.
  *
@@ -4183,10 +4184,16 @@ export class DataLowerer {
                 dataType,
             };
         }
+        // A single argument that is itself an array is never the length
+        // overload, so this precedes the sized fallback below. Both sources
+        // convert element by element where the kinds differ -- what
+        // `%TypedArray%(typedArray)` does, and what `${prefix}_array_from`
+        // already applies to a `number[]` -- so one arm serves both.
         if (
             staticSource?.kind === "data" &&
-            staticSource.dataType?.kind === "vector" &&
-            staticSource.dataType.element.kind === "number"
+            (isTypedArrayType(staticSource.dataType) ||
+                (staticSource.dataType?.kind === "vector" &&
+                    staticSource.dataType.element.kind === "number"))
         ) {
             return {
                 kind: "data",

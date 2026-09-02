@@ -645,6 +645,22 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/gizmo/plane-rotation-gizmo.ts",
         consumers: CMAKE,
     },
+    // The three composites, one row per pinned factory in the one module
+    // that declares all three. Each row gates only its own assembly: the
+    // widgets it builds are the four rows above, reached where its pinned
+    // body calls them.
+    "gizmo:position": {
+        provenance: "src/gizmo/composite-gizmos.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:rotation": {
+        provenance: "src/gizmo/composite-gizmos.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:scale": {
+        provenance: "src/gizmo/composite-gizmos.ts",
+        consumers: CMAKE,
+    },
     "shadow:esm": {
         provenance: "src/shadow/esm-directional-shadow-generator.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
@@ -849,6 +865,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "createPrimitivePhysicsShapeHandle",
         consumers: CMAKE,
     },
+    "physics:trigger": {
+        provenance:
+            "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +
+            "onPhysicsTrigger (upstream keeps the trigger path in its own " +
+            "module so a scene that imports neither pays nothing for it)",
+        consumers: CMAKE,
+    },
     "sprite:billboard-custom-shader": {
         provenance:
             "src/sprite/billboard-custom-shader.ts + src/sprite/custom-shader-core.ts",
@@ -921,6 +944,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/shader/wgsl-fog.ts (scene fog state in scene-core.ts)",
         consumers: ["features.cmake", "variant table"],
+    },
+    "renderer:clip-plane": {
+        provenance:
+            "src/scene/scene-ubo-extras.ts (setClipPlane and its " +
+            "writeClipPlaneUbo scene-UBO contributor)",
+        consumers: CMAKE,
     },
     "renderer:geometry-output": {
         provenance: "src/frame-graph/geometry-renderer-task.ts",

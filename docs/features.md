@@ -81,7 +81,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
-| [Physics](#physics) | Run | rigid bodies, primitive and convex-hull shapes, one fixed step per frame — over a substituted solver |
+| [Physics](#physics) | Run | rigid bodies, primitive and convex-hull shapes, trigger volumes, one fixed step per frame — over a substituted solver |
 | [Audio](#audio) | Compile → Run | packaged encoded clips decoded into Web Audio buffers; the reached graph and parameters run over a substituted engine |
 | [Shadows](#shadows) | Compile → Run | the receiver fragment composed per shadow-casting light at generation; the caster pass, the map and the comparison sampling at run time |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
@@ -750,6 +750,16 @@ builds at the call site is bound to a name first, because the pool keeps
 referencing it for the whole frame loop; one built inside a block refuses,
 since the binding would not outlive it.
 
+`createMeshFromData`'s four optional streams — uvs, uv2s, tangents, colours —
+may be settled at generation or at run time. A call that omits one, or writes
+a literal `undefined`, is settled where it stands; one that hands over a value
+the data model holds as `Float32Array | undefined` is settled by the run-time
+call, and an empty array is the absent stream either way. What generation then
+loses is the attribute set, which is exactly what the Standard and PBR variant
+keys are built from — so such a mesh accepts a node material, whose
+`MeshAttributeExistsBlock` reads a per-mesh uniform lane, and refuses either
+of the other two families at the assignment that pairs them.
+
 `createGroundFromHeightMap` is the flat ground builder plus the pin's
 displacement pass, both lowered from their own bodies: the grid's Y is
 displaced by the image's weighted luminance, the normals rebuilt from
@@ -1199,11 +1209,19 @@ ordered spreads of fallback and loaded maps; only the completed static key to
 resource snapshot reaches composition. The pair's group-1 allocation belongs
 to the pin's composition ([fidelity](fidelity.md#shader-contract)).
 
-What refuses at generation, naming the block that reached it: clip planes and
-the mesh-attribute test. A graph fetched by snippet id refuses too, because the
-fetch is a network read at page load, and a graph handed an arbitrary
-`blockLoader` refuses because that function is scene code deciding which
-emitter serves each block class. The accepted closed form is a local
+`ClipPlanesBlock` and `MeshAttributeExistsBlock` compose as well, and neither
+declares a resource of its own. The clip plane is a lane of the pin's scene
+block, written from what `setClipPlane` stored; the attribute test reads three
+spare lanes of the per-mesh block, which both backends fill from the mesh
+geometry's own uv, tangent and vertex-colour presence rather than by composing
+a variant per attribute set. Scene 86 draws all three cases from one graph:
+the same material over a mesh with no uv, colour or tangent stream, one with
+uv only, and one with all three.
+
+What refuses at generation, naming the block that reached it: a graph fetched
+by snippet id, because the fetch is a network read at page load, and a graph
+handed an arbitrary `blockLoader`, because that function is scene code
+deciding which emitter serves each block class. The accepted closed form is a local
 one-parameter switch whose string cases return only the `emitter` export of
 pinned `material/node/blocks/*.js` modules and whose default throws.
 Generation validates that whole switch statically, then composes with exactly
@@ -1608,9 +1626,7 @@ not the base scene's.
 
 `createCameraGizmo` and `createLightGizmo` are display only, and so is
 every widget below: no pointer interaction is reached anywhere in the
-family, and the bounding-box gizmo and the three composite assemblies
-(`createPositionGizmo`, `createRotationGizmo`, `createScaleGizmo`) are not
-integrated at all.
+family, and the bounding-box gizmo is the one part not integrated at all.
 What each builds is the pinned body's own tree -- the camera
 body is BJS `_CreateCameraMesh` (a box and three cylinders under a
 distance-scaled node) plus a twelve-cylinder frustum wireframe sized from the
@@ -1665,19 +1681,65 @@ transform node the camera and light gizmos already use, where the pin makes
 an invisible zero-height cylinder for the same purpose. Recorded as
 `display-only-editing-gizmo` in each scene's `fidelity.json`.
 
+The three COMPOSITES -- `createPositionGizmo`, `createRotationGizmo` and
+`createScaleGizmo` -- are folded from `src/gizmo/composite-gizmos.ts`
+statement for statement: resolve the options, build the sub-widgets with
+the axis, colour and thickness the pinned body passes each one, turn
+local-coordinate mode on where the pin turns it on, and return the list.
+A composite is that list and nothing else, so the native record is the
+sub-widget handles plus how many leading entries the pin's own
+`set<X>GizmoLocalCoordinates` fans out over -- all of them for position and
+rotation, and every axis handle but the central uniform one for scale,
+which BJS keeps world-aligned. `wireCrossAxisDisable` is the one statement
+the emitted body drops: it subscribes drag observers that grey the sibling
+axes out, and pointer drag is not reached. The scale composite's uniform
+handle is `buildScaleArrow`'s own `centered` arm -- a `createPolyhedron`
+octahedron at the gizmo origin with no tail and an identity root rotation --
+so a scale composite reaches one mesh family the single widget does not.
+
+**Local-coordinate mode is the follow's second arm**, and a still capture
+exercises it because a composite scene turns it on at load. While the flag
+is set, the widget re-orients its root from the attached node's world
+matrix every frame: the drag and rotation widgets take `lookAtQuat` of
+`transformDirectionByWorld(worldMatrix, localAxis)`, and the scale widget
+composes the node's world rotation onto the orientation baked at creation
+through `quatMul`, because its cube is not roll-symmetric. Both helpers are
+lowered from `src/gizmo/gizmo-math.ts` beside the ones already there. The
+non-local arm writes the baked orientation unconditionally where the pin
+writes it only when its stored world axis has moved -- the same value
+either way, since the guard exists upstream to skip a write rather than to
+hold a different rotation.
+
+**`attachControl`'s camera-deferral options bag folds to nothing.** A
+composite scene passes `shouldHandlePointerDown`, `isExternalDragActive`
+and `isExternalPickPending` so the camera does not orbit while a gizmo is
+being pressed. All three of the pinned predicates behind them
+(`isGizmoInteracting`, `isGizmoDragging`, `isGizmoPickPending`) read a
+module-level dispatcher map that only `registerPointerDrag` fills, and this
+port reaches no pointer-drag registration -- so each returns `false` from
+the pinned body's own early return, and the bag leaves the pinned
+`attachControl` taking exactly the branches it takes with no options at
+all. Generation asserts both halves of that against
+`src/gizmo/pointer-drag.ts`: one writer for the map, one caller for the
+writer. A callback that is not one of those three predicates (optionally
+negated), or one that folds the other way, refuses by name rather than
+compiling a camera that ignores it.
+
 Each factory's options bag refuses rather than being half-served: a light
 intensity or a `displayFrustum: false` would change what the generated unit
 builds, and the unit is emitted from the pin's own defaults. An editing
-widget serves two members -- its axis (`dragAxis`, `dragPlaneNormal`,
-`planeNormal`) and `color`, both scene values its builder takes as
-parameters -- and refuses the rest by name: `thickness` and `tessellation`
-change geometry emitted from the pinned defaults, and `hoverColor`,
-`disableColor`, `rotationColor`, `sensitivity` and `uniformScaling` name a
-material or a strength only a drag installs.
+widget serves its axis (`dragAxis`, `dragPlaneNormal`, `planeNormal`) and
+every member the pinned factory defaults through a `??` that changes what
+it DRAWS -- `color`, `thickness`, `tessellation` and `uniformScaling` --
+each travelling as the pin's own optional so the default behind it stays in
+the generated body. What still refuses by name is `hoverColor`,
+`disableColor`, `rotationColor` and `sensitivity`, which name a material or
+a strength only a drag installs.
 A layer that grows or loses a renderable after the frame loop starts refuses
 too -- the base scene has a plan-rematching path and a layer does not.
-Scene 223 gates the display half at 0.000 on both backends and scene 221 the
-editing half.
+Scene 223 gates the display half at 0.000 on both backends, scene 221 the
+four single widgets, and scene 222 the three composites and the
+local-coordinate follow.
 
 ### Physics
 
@@ -1701,13 +1763,19 @@ The reached slice: `createHavokWorld` with an explicit or defaulted gravity;
 `createPhysicsAggregate` over the four primitive shapes that
 `createPrimitivePhysicsShapeHandle` builds without a mesh (sphere, box,
 capsule, cylinder), plus mesh-derived convex hulls with child geometry;
+`createPhysicsShape` for either one — a primitive from an explicit
+`parameters` bag, or the convex hull of a `mesh` — wired onto a body with
+`createPhysicsBody` and `setPhysicsBodyShape`, where the body follows a mesh
+or a bare transform node exactly as the pin's `SceneNode` does;
 `mass`, `friction`, `restitution`, `startAsleep` — the pin hands that last one
 straight to `HP_World_AddBody`'s third argument, so the body joins the world
 deactivated and stays at its authored pose until a contact wakes it —
 fixed-timestep writes, motion-type and mass
 changes, world-space impulses and central forces, linear-velocity reads,
 collision membership masks, per-body collision-event enablement and deferred
-STARTED/CONTINUED/FINISHED callbacks, filtered raycasts, and
+STARTED/CONTINUED/FINISHED callbacks, filtered raycasts, trigger volumes
+(`setPhysicsShapeIsTrigger` plus an `onPhysicsTrigger` drain reporting the
+pin's own ENTERED/EXITED edges), and
 `onPhysicsAfterStep`. The step registers at
 the *front* of the scene's
 before-render list, as the pin's `unshift` puts it, so a scene reading a
@@ -1726,7 +1794,8 @@ timers while its physics remains live.
 
 Everything else in the pinned physics layer refuses at generation naming
 what it reached: triangle-mesh shapes, containers, heightfields, constraints,
-triggers, the character controller, the debug viewer, floating origin, and
+a shape `rotation` parameter, `onPhysicsTriggerBodies`, the character
+controller, the debug viewer, floating origin, and
 the body controls and query options not listed above.
 
 ### Audio
@@ -2233,6 +2302,11 @@ is the boundaries that belong to no single family.
 - scene fog is ported for PBR, Standard, and image-skybox surfaces; fog
   composed with Grid, custom-shader, environment-ground/DDS-skybox background,
   transmission, or geometry-output surfaces fails explicitly
+- `setClipPlane` stores the scene's one clip plane and both backends pack it
+  into the pin's own scene-block lane. Only a node graph reaching
+  `ClipPlanesBlock` reads that lane; the PBR and Standard fragments carry no
+  clip term, so a scene setting a plane and drawing through them clips
+  nothing, exactly as it does upstream
 - scene-code meshes and PBR materials may interleave glTF loads because their
   recorded load counts reproduce creation-order handles in the variant table;
   `.babylon` interleaving is not represented by that metadata

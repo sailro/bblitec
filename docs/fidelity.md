@@ -1921,6 +1921,10 @@ two — what 100 adds is the collision surface
 (`setPhysicsBodyCollisionEventsEnabled` and an `onPhysicsCollision` handler)
 compiling, running and leaving the frame where 40 leaves it.
 
+Scene 101 carries the lane's largest number for the same reason two bounces
+further on, and its mechanism — a contact *instant* rather than accumulated
+error — is measured out below.
+
 **Why the substitution, and why at this seam.** `createHavokWorld(scene,
 hknp)` takes the solver module as a parameter and the pinned layer calls
 only `HP_*` entry points on it, so upstream already separated its
@@ -2021,6 +2025,44 @@ native 46, reference `?captureFrame=47` — and that one-frame shift is the two
 harnesses' own counters, not the solvers'. No threshold here can be driven toward
 zero, and the one this scene carries gates *this port's* solver.
 
+**Scene 101 is the same substitution two bounces further on, and it costs
+what a second contact costs.** The pin's own spec freezes it at
+`?captureFrame=150`: a unit sphere dropped from `y = 4` onto a perfectly
+elastic ground (restitution 1, combined MAXIMUM against the sphere's default
+0.2), falling through a static trigger sphere of radius 2 on the way down and
+back out through it on the way up.
+
+| | Scene 101 at step 150 |
+| --- | --- |
+| Full / region MAD | 1.102 / 7.144 |
+| Pixels exactly equal | 97.16% full, 82.20% foreground |
+| Where | edges 10.359, interior 6.993, background 0.083 |
+| Displacement | the sphere sits 24.5 px — 0.30 world units — lower than the golden's |
+| SDL_GPU versus Dawn | 0.000, byte-identical |
+
+Everything static is the golden's: the ground, the translucent red trigger
+volume and the background all match, and the whole residual is the ball's own
+disc. What separates the two is *when* each solver bounces. Bullet's
+narrowphase creates the ground contact only once the sphere has penetrated,
+which at 7.67 m/s and a 1/60 step is up to 0.128 of overshoot, so the
+rebound impulse lands about one step late and from below the surface; the
+trace's own per-step pose puts the effective bounce plane at `y ≈ 0.95`
+against the golden's `y ≈ 1.05`. Two bounces multiply that into 0.30 units of
+phase at step 150. Restitution itself is right — the first apex returns to
+`3.998` from `4.000` — and the resting height the degenerate-box sink below
+fixes is right; only the contact instant differs, which is the transient the
+scene 40 row already attributes the substitution to. Bullet has no setting
+that predicts a contact the way Havok's tolerance model does, and the two
+that look as though they should were measured rather than reasoned about:
+`setApplySpeculativeContactRestitution(true)` on the world, and
+`setCcdMotionThreshold`/`setCcdSweptSphereRadius` on the falling body, each
+leave the frame **byte-identical** (1.102 / 7.144, max 204, the same 82.20%
+exact). Both are aimed at a body that would TUNNEL within a step; this one
+penetrates by 0.128 and is found by the ordinary narrow phase, so neither
+arm ever runs. A positive-distance ("speculative") contact also constrains a
+body to *stop* at the surface rather than rebound from it, so raising the
+contact-breaking threshold would remove the bounce rather than advance it.
+
 **The fall is an integrator-order difference, and no setting reaches it.**
 Every `btContactSolverInfo` value named for contact agreement was swept
 against the per-step trace. Three are inert at their defaults — the impact is
@@ -2085,6 +2127,18 @@ fourteen cells of one boombox: centre, inertia and orientation agree with the
 Havok tuple to the hull builders' float tolerance. Discarding the frame put
 every shard's centre at the boombox pivot and turned one downward impulse
 into the wrong torque.
+
+**A trigger volume is a shape flag upstream and an object flag here.**
+`HP_Shape_SetTrigger` marks the SHAPE; Bullet's equivalent,
+`CF_NO_CONTACT_RESPONSE`, belongs to the collision object, so the PAL records
+the flag on the shape and applies it to whichever bodies wear it — in both
+orders, since the pin may flag a shape before or after attaching it. The
+event stream is the same shape as the collision one: Havok reports the two
+EDGES of an overlap, Bullet reports the overlap, so `ENTERED` and `EXITED`
+come from the difference between consecutive steps' trigger-pair sets. A
+trigger pair is one where exactly one side carries the flag, and those pairs
+are excluded from both the collision stream and the contact-rest timer —
+passing through a trigger is not resting on anything.
 
 **Havok's reached body defaults cross the seam.** A fresh reference world
 reports maximum linear/angular speeds `200/100`; a fresh body reports linear

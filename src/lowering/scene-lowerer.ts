@@ -12,6 +12,8 @@ export class SceneLowerer {
   public lowerCore(
     options: {
       fog?: boolean;
+      /** The scene reaches `setClipPlane`. */
+      clipPlane?: boolean;
       /** The scene reaches `enableMirroredMeshes`. */
       mirroredMeshes?: boolean;
       parenting?: boolean;
@@ -30,6 +32,8 @@ export class SceneLowerer {
     const registerName = "registerScene";
     const fogModulePath = "src/scene/scene-ubo-extras.ts";
     const fogName = "setFog";
+    const clipPlaneModulePath = fogModulePath;
+    const clipPlaneName = "setClipPlane";
     const { file, declaration } = this.context.functionDeclaration(
       modulePath,
       createName,
@@ -276,6 +280,77 @@ export class SceneLowerer {
         );
       }
     }
+    if (options.clipPlane) {
+      // `setClipPlane`, the fog setter's sibling in the same module: store
+      // the plane, then register the contributor that writes it. The store
+      // is what the emitted record mirrors, and the registration is what
+      // makes the lane reach the scene UBO at all.
+      const { declaration: setClipPlane } = this.context.functionDeclaration(
+        clipPlaneModulePath,
+        clipPlaneName,
+      );
+      if (
+        !this.context.hasNode(
+          setClipPlane,
+          (node) =>
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+            this.context.propertyPath(node.left)?.join(".") ===
+              "scene.clipPlane" &&
+            ts.isIdentifier(node.right) &&
+            node.right.text === "plane",
+        )
+      ) {
+        this.context.contractError(
+          setClipPlane,
+          "Expected setClipPlane to store the plane on the scene.",
+        );
+      }
+      if (
+        !this.context.hasCall(setClipPlane, "_registerSceneUboContributor")
+      ) {
+        this.context.contractError(
+          setClipPlane,
+          "Expected setClipPlane to register the clip-plane scene-uniform " +
+            "contributor.",
+        );
+      }
+      // The writer's own lanes, asserted as the ORDER they are written in
+      // rather than by their float offsets: the native block is the pin's
+      // `SceneUniforms` mirrored from its WGSL declaration, so the offsets
+      // are already the pin's and what this has to hold is that the four
+      // components go in as `[0], [1], [2], [3]`. A pin that reordered or
+      // grew them refuses here instead of clipping against a permuted
+      // plane.
+      const { declaration: writeClipPlaneUbo } =
+        this.context.functionDeclaration(
+          clipPlaneModulePath,
+          "writeClipPlaneUbo",
+        );
+      const clipPlaneComponents: number[] = [];
+      for (const access of this.context.findNodes(
+        writeClipPlaneUbo,
+        (node): node is ts.ElementAccessExpression =>
+          ts.isElementAccessExpression(node) &&
+          ts.isIdentifier(node.expression) &&
+          node.expression.text === "clipPlane",
+      )) {
+        const index = access.argumentExpression;
+        if (ts.isNumericLiteral(index)) {
+          clipPlaneComponents.push(Number(index.text));
+        }
+      }
+      if (
+        clipPlaneComponents.length !== 4 ||
+        clipPlaneComponents.some((component, at) => component !== at)
+      ) {
+        this.context.contractError(
+          writeClipPlaneUbo,
+          "Expected the clip-plane UBO writer to consume the plane's four " +
+            `components in order, found [${clipPlaneComponents.join(", ")}].`,
+        );
+      }
+    }
     const value = (input: number): string => this.context.floatLiteral(input);
     const meshDirtySource = `
 void mark_mesh_dirty(Engine& engine, MeshHandle mesh) {
@@ -298,6 +373,24 @@ void mark_mesh_runtime_transform(Engine& engine, MeshHandle mesh) {
     ++record.transform_version;
     for (const MeshHandle child : record.parented_meshes) {
         mark_mesh_runtime_transform(engine, child);
+    }
+}
+
+// The same, one level up. A transform node written every frame -- a physics
+// body's pose, say -- invalidates both of its child arms, exactly as
+// mark_transform_node_dirty does: a node parented under it is as stale as
+// a mesh is.
+void mark_transform_node_runtime_transform(
+    Engine& engine,
+    TransformNodeHandle node) {
+    if (node.value >= engine.transform_nodes.size()) return;
+    TransformNodeRecord& record = engine.transform_nodes[node.value];
+    ++record.transform_version;
+    for (const MeshHandle child : record.parented_meshes) {
+        mark_mesh_runtime_transform(engine, child);
+    }
+    for (const TransformNodeHandle child : record.parented_nodes) {
+        mark_transform_node_runtime_transform(engine, child);
     }
 }
 `;
@@ -889,6 +982,18 @@ void set_scene_fog(
 }
 `
       : "";
+    const clipPlaneSource = options.clipPlane
+      ? `
+// ${this.context.provenance(
+          clipPlaneModulePath,
+          `${clipPlaneName}, writeClipPlaneUbo`,
+        )}
+void set_scene_clip_plane(Scene& scene, Vec4 plane) {
+    require_scene_engine(scene);
+    scene.clip_plane = plane;
+}
+`
+      : "";
     // The emitted removal is the pinned mesh arm — removeFromScene
     // dispatches a mesh to removeMeshFromScene, whose scene-list
     // splice plus mutation mark is what the native erase and
@@ -949,7 +1054,7 @@ void set_scene_fog(
       : "";
     return {
       modulePath,
-      symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}`,
+      symbolName: `${createName},${addName},cloneTransformNode,removeFromScene,${beforeName},${disposeName},${registerName}${options.fog ? `,${fogName}` : ""}${options.clipPlane ? `,${clipPlaneName}` : ""}`,
       header: "",
       source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
@@ -1534,7 +1639,7 @@ void enable_scene_transmission(Scene& scene) {
     require_scene_engine(scene);
     scene.transmission_enabled = true;
 }
-${fogSource}${meshDirtySource}${visibilitySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
+${fogSource}${clipPlaneSource}${meshDirtySource}${visibilitySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
 } // namespace bbl
 `,
     };

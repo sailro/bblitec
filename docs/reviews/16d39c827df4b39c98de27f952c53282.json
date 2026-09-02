@@ -1,0 +1,68 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The physics write-back for a transform-node body restated `mark_transform_node_dirty` inline but kept only its `parented_meshes` loop, dropping the `parented_nodes` recursion -- so a transform node parented under a physics-driven one would never have been invalidated. Invisible in scene 101, whose trigger body is STATIC, which is exactly how a copied-and-trimmed helper passes review. There is one `mark_transform_node_runtime_transform` beside its mesh sibling now, walking both arms, declared in `runtime.hpp` so the physics unit can see it.",
+      "applied": true
+    },
+    {
+      "summary": "`docs/fidelity.md` claimed no Bullet setting reaches scene 101's residual. The vendored header carries `setApplySpeculativeContactRestitution`, and `setCcdMotionThreshold`/`setCcdSweptSphereRadius` were never tried either -- so the exhaustion claim rested on a sweep that omitted the two settings aimed at exactly that behaviour. Both were MEASURED rather than argued: each leaves the frame byte-identical (1.102 / 7.144, max 204, 82.20% exact), because both target a body that would TUNNEL within a step while this one penetrates by 0.128 and is found by the ordinary narrow phase. The paragraph now names what was tried and what came back.",
+      "applied": true
+    },
+    {
+      "summary": "A refusal narrower than the pin: `createPhysicsShape(world, { type: SPHERE })` with no `parameters` was rejected as 'requires parameters', but the pin reads `options.parameters ?? {}` and every primitive arm defaults its own members, so upstream builds a unit sphere at the origin and this port would have emitted the same empty bag. The XOR is two plain checks now, and only the direction the pin actually forbids refuses.",
+      "applied": true
+    },
+    {
+      "summary": "`set_edit_gizmo_local_coordinates` was emitted just ABOVE the composite gate its only two callers sit inside -- verified dead in the generated tree: scene223 and scene221 each defined it with zero call sites. Moved inside the gate. Same class as the wave-4 catch, and the reason the rule is now 'after any gating change, compile a scene that reaches none of it'.",
+      "applied": true
+    },
+    {
+      "summary": "The gizmo follow wrote a rotation quaternion every frame per widget whether or not local-coordinate mode was on -- and outside local mode the value written is exactly the `baked_rotation` the root already carries. The cost is not the store: that setter ends in `mark_transform_node_dirty`, which walks the whole subtree, so it was a third full dirty walk per gizmo per frame after position and scale. Moved inside the guard; all three gizmo scenes re-measure at 0.000 on both backends.",
+      "applied": true
+    },
+    {
+      "summary": "The trigger-event diff ran a third full manifold walk every step in every physics world, and default-constructed a `std::unordered_set` per call -- on the Microsoft STL that is a malloc and a free per step even in a scene with no trigger shape at all. The scratch set lives on the world and is swapped-and-cleared now, and a program-wide trigger-shape count skips the walk outright. Verified the edges still fire on scene 101 through its trace: ENTERED at step 27, EXITED at 68, ENTERED at 122.",
+      "applied": true
+    },
+    {
+      "summary": "`SHAPE_PARAMETERS` was declared twice -- once in the intrinsic that fills the struct with designated initializers, once in the lowerer that emits it -- and a comment claimed the order did not matter because the initializers are designated. C++20 requires designated initializers in DECLARATION order, so the order was load-bearing across two copies whose drift would be a generated-code compile error. One exported table now, with the C++ storage derived; the emitted struct is byte-identical. The member-name list a third assertion carried is derived from it too.",
+      "applied": true
+    },
+    {
+      "summary": "`data-lowering.ts` re-derived the seven typed-array kinds as a local set, in a file that already imports `isTypedArrayType` and uses it six times -- the repository's own named anti-pattern, whose helper doc says each site that spelled the disjunction itself was a place a kind could be forgotten. The set is gone and the two adjacent blocks it guarded, which had byte-identical bodies, are one arm.",
+      "applied": true
+    },
+    {
+      "summary": "Documentation corrections: scene 101's mechanism was stated twice in `docs/fidelity.md` -- six measured values in two places, against the file's own convention of a pointer in the intro and the numbers once in the per-scene section; `docs/architecture.md`, which the instructions call the complete source map, still described the gizmo lowerer without its composites or its pointer-drag assertion and the physics lowerer without `havok-trigger.ts`; and `TODO.md`'s defer list said 23 scenes while listing 22.",
+      "applied": true
+    },
+    {
+      "summary": "REJECTED after reading the pin: an angle reported that the three gizmo follows contradict upstream because two use Euclidean distance where the editing follow uses projected depth. The pin does exactly that -- `camera-gizmo.ts` passes `null` for `scaleRatio`, so `attachFollowTarget` scales nothing, and it does its own `Math.hypot` scaling in `onAfterFollow`; `light-gizmo.ts` bypasses the shared follow entirely. Three follows is three pinned behaviours. No change made.",
+      "applied": true
+    },
+    {
+      "summary": "`physics:trigger` reaches CMake and the feature table but gates nothing in the emitted C++: the trigger surface and `create_physics_primitive_shape` ship into every scene reaching `physics:world`, measured at 3,265 bytes of `physics.hpp`+`physics.cpp` across five scenes that call none of it (16,325 B). The branch's own `renderer:clip-plane` and the three composites ARE threaded this way, so the mechanism and the precedent both exist.",
+      "applied": false,
+      "blockedBy": "the physics lowerer emits its whole surface under `physics:world` with no internal feature gates at all, so this is not one gate but the introduction of gating to that emitter -- and the same pass should decide whether `physics:aggregate`, which has the identical shape today, gates too. Doing one and not the other would leave the file inconsistent in a way the next reader has to untangle",
+      "filedIn": "TODO.md, on the physics-lane entry, with the measured bytes"
+    },
+    {
+      "summary": "`create_mesh_from_data` grew 263 bytes for the run-time-optional streams and ships in 138 generated trees while 17 call it -- 31,823 bytes that cannot execute, this branch's single largest emitted contribution. The granularity is pre-existing: `mesh_factories.cpp` is emitted whole whenever ANY mesh-builder feature is reached.",
+      "applied": false,
+      "blockedBy": "splitting `mesh_factories.cpp` per builder feature is a change to how that unit is emitted for every scene in the corpus, not a change this branch introduced; it wants its own neutrality proof over the whole generated tree rather than riding a scene-integration branch",
+      "filedIn": "TODO.md, on the release-payload entry, beside the other measured emitted-output items"
+    },
+    {
+      "summary": "Two remaining shape issues in the run-time-optional stream path: each stream argument is compiled twice (once to probe its type, once for real), and the emitted select `cond ? nullable.value() : F32Array{}` yields a prvalue, so the present stream is copy-constructed before binding to a const reference -- three full vector copies per `createMeshFromData` call in scene 86. The refusal that pairs such a mesh with a non-node material also covers `mesh.material = ...` but not `RenderTask.addMesh(mesh, { material })`.",
+      "applied": false,
+      "blockedBy": "the double compile and the copy both want the optionality question answered from the data model rather than by compiling, which is a change to how `compileTypedArrayArgument` is reached; and moving the refusal to where composition fabricates the mesh row -- which is where it belongs, since it is a predicate over (mesh, material) rather than over one assignment syntax -- touches `compose-pipeline.ts`'s attribute rows for every scene",
+      "filedIn": "TODO.md, on the node-material entry that owns the run-time-stream contract"
+    }
+  ]
+}

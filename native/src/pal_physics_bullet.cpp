@@ -27,6 +27,7 @@
 #include <memory>
 #include <stdexcept>
 #include <unordered_map>
+#include <unordered_set>
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
@@ -94,6 +95,13 @@ struct ShapeEntry {
     ShapeMaterial material{};
     std::uint32_t membership_mask = 0xffffffffu;
     std::uint32_t collide_mask = 0xffffffffu;
+    /**
+     * `HP_Shape_SetTrigger`. Havok flags the SHAPE; Bullet's equivalent --
+     * `CF_NO_CONTACT_RESPONSE` -- is a property of the collision object, so
+     * the flag is recorded here and applied to whichever bodies wear the
+     * shape.
+     */
+    bool is_trigger = false;
 };
 
 struct BodyEntry {
@@ -138,6 +146,25 @@ struct WorldEntry {
     std::uint64_t stabilized_total = 0;
     std::unordered_map<std::uint64_t, ContactSnapshot> previous_contacts;
     std::vector<PhysicsCollisionEvent> collision_events;
+    /**
+     * The trigger pairs that overlapped at the end of the previous step.
+     * Havok reports an ENTERED and an EXITED edge; Bullet reports the
+     * overlap state, so the edges come from the difference between two
+     * consecutive states -- the same shape `previous_contacts` above gives
+     * the collision stream.
+     */
+    std::unordered_set<std::uint64_t> previous_triggers;
+    /**
+     * Scratch for the current step's pairs, kept here rather than built
+     * per call: a default-constructed `unordered_set` allocates its
+     * sentinel on the Microsoft STL, so a fresh one every step was one
+     * malloc and one free per world per step even with no trigger in the
+     * scene. Swapped with `previous_triggers` and cleared, both tables'
+     * buckets survive the frame.
+     */
+    std::unordered_set<std::uint64_t> current_triggers;
+
+    std::vector<PhysicsTriggerEvent> trigger_events;
 };
 
 /**
@@ -226,6 +253,12 @@ void clamp_world_velocities(btDiscreteDynamicsWorld& world) {
     }
 }
 
+/** Whether an object wears the trigger flag `HP_Shape_SetTrigger` sets. */
+bool is_trigger_object(const btCollisionObject* object) {
+    return (object->getCollisionFlags() &
+            btCollisionObject::CF_NO_CONTACT_RESPONSE) != 0;
+}
+
 int stabilize_contacting_bodies(
     WorldEntry& world_entry,
     std::uint32_t world,
@@ -252,6 +285,16 @@ int stabilize_contacting_bodies(
         const btPersistentManifold* manifold =
             world_entry.dispatcher->getManifoldByIndexInternal(
                 manifold_index);
+        // Passing through a trigger volume is not resting on anything, so
+        // it must not count toward the contact-rest timer that puts a body
+        // to sleep.
+        if (
+            is_trigger_object(static_cast<const btCollisionObject*>(
+                manifold->getBody0())) ||
+            is_trigger_object(static_cast<const btCollisionObject*>(
+                manifold->getBody1()))) {
+            continue;
+        }
         bool has_contact = false;
         for (int point_index = 0;
              point_index < manifold->getNumContacts();
@@ -307,6 +350,94 @@ int stabilize_contacting_bodies(
     return stabilized;
 }
 
+/**
+ * `HP_World_GetTriggerEvents`' stream.
+ *
+ * Havok reports the two EDGES of an overlap; Bullet reports the overlap
+ * itself, so this diffs consecutive states the way `collect_collision_events`
+ * does. The pair is a trigger pair when exactly one side is flagged: two
+ * triggers overlapping report nothing upstream either, since a trigger has
+ * no body to intersect against.
+ */
+/**
+ * How many shapes carry the trigger flag, program-wide.
+ *
+ * A shape is not bound to a world, so this cannot be a per-world count --
+ * but a generated program runs one scene, so zero here means no world can
+ * produce a trigger pair and the manifold walk below is skipped outright.
+ * That walk is a THIRD pass over the manifolds the collision stream and the
+ * contact-rest timer already walk, so a physics scene without triggers pays
+ * nothing for the feature.
+ */
+std::size_t& trigger_shape_count() {
+    static std::size_t count = 0;
+    return count;
+}
+
+void collect_trigger_events(WorldEntry& world_entry) {
+    if (trigger_shape_count() == 0) {
+        if (!world_entry.previous_triggers.empty()) {
+            // The last trigger shape was cleared while pairs were open;
+            // their EXITED edges are still owed.
+            world_entry.previous_triggers.clear();
+        }
+        return;
+    }
+    std::unordered_set<std::uint64_t>& current = world_entry.current_triggers;
+    current.clear();
+    const int manifold_count = world_entry.dispatcher->getNumManifolds();
+    for (int manifold_index = 0;
+         manifold_index < manifold_count;
+         ++manifold_index) {
+        const btPersistentManifold* manifold =
+            world_entry.dispatcher->getManifoldByIndexInternal(manifold_index);
+        const auto* object_a = static_cast<const btCollisionObject*>(
+            manifold->getBody0());
+        const auto* object_b = static_cast<const btCollisionObject*>(
+            manifold->getBody1());
+        if (is_trigger_object(object_a) == is_trigger_object(object_b)) {
+            continue;
+        }
+        const int index_a = object_a->getUserIndex();
+        const int index_b = object_b->getUserIndex();
+        if (index_a <= 0 || index_b <= 0) {
+            continue;
+        }
+        bool overlapping = false;
+        for (int point_index = 0;
+             point_index < manifold->getNumContacts();
+             ++point_index) {
+            if (manifold->getContactPoint(point_index).getDistance() <= 0.0) {
+                overlapping = true;
+                break;
+            }
+        }
+        if (!overlapping) {
+            continue;
+        }
+        const std::uint32_t low = static_cast<std::uint32_t>(
+            std::min(index_a, index_b));
+        const std::uint32_t high = static_cast<std::uint32_t>(
+            std::max(index_a, index_b));
+        current.insert((static_cast<std::uint64_t>(low) << 32) | high);
+    }
+
+    world_entry.trigger_events.clear();
+    for (const std::uint64_t key : current) {
+        if (!world_entry.previous_triggers.contains(key)) {
+            world_entry.trigger_events.push_back(
+                PhysicsTriggerEvent{PhysicsTriggerEventType::entered});
+        }
+    }
+    for (const std::uint64_t key : world_entry.previous_triggers) {
+        if (!current.contains(key)) {
+            world_entry.trigger_events.push_back(
+                PhysicsTriggerEvent{PhysicsTriggerEventType::exited});
+        }
+    }
+    world_entry.previous_triggers.swap(current);
+}
+
 void collect_collision_events(WorldEntry& world_entry) {
     std::unordered_map<std::uint64_t, ContactSnapshot> current;
     const int manifold_count = world_entry.dispatcher->getNumManifolds();
@@ -319,6 +450,11 @@ void collect_collision_events(WorldEntry& world_entry) {
             manifold->getBody0());
         const auto* object_b = static_cast<const btCollisionObject*>(
             manifold->getBody1());
+        // A trigger volume reports through the trigger stream and produces
+        // no collision upstream, so it is not a collision here either.
+        if (is_trigger_object(object_a) || is_trigger_object(object_b)) {
+            continue;
+        }
         const int index_a = object_a->getUserIndex();
         const int index_b = object_b->getUserIndex();
         if (
@@ -397,6 +533,20 @@ void collect_collision_events(WorldEntry& world_entry) {
  */
 void mark_body_dirty(BodyEntry& entry) {
     entry.needs_readd = true;
+}
+
+/**
+ * `HP_Shape_SetTrigger` reaching the object that wears the shape. Havok
+ * keeps the flag on the shape; Bullet's `CF_NO_CONTACT_RESPONSE` is the
+ * collision object's, so the two meet here.
+ */
+void apply_trigger_flag(BodyEntry& entry, bool is_trigger) {
+    if (entry.body == nullptr) return;
+    const int flags = entry.body->getCollisionFlags();
+    entry.body->setCollisionFlags(
+        is_trigger
+            ? flags | btCollisionObject::CF_NO_CONTACT_RESPONSE
+            : flags & ~btCollisionObject::CF_NO_CONTACT_RESPONSE);
 }
 
 void flush_pending_readds(WorldEntry& world_entry, std::uint32_t world) {
@@ -645,6 +795,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
     // too before transforms and counters are read.
     clamp_world_velocities(*entry.world);
     collect_collision_events(entry);
+    collect_trigger_events(entry);
     const int stabilized_bodies =
         stabilize_contacting_bodies(entry, world.value, seconds);
     entry.stabilized_total += static_cast<std::uint64_t>(stabilized_bodies);
@@ -730,6 +881,17 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
         std::getenv("BBLITE_PHYSICS_TRACE") != nullptr;
     if (trace) {
         static int step_index = 0;
+        // A trigger event carries no pixels — the pin's own handler for it
+        // writes a dataset flag, which erases — so the trace is the only
+        // place its two edges are observable at all.
+        for (const PhysicsTriggerEvent& event : entry.trigger_events) {
+            std::fprintf(
+                stderr,
+                "[physics] step %d trigger %s\n",
+                step_index,
+                event.type == PhysicsTriggerEventType::entered ? "ENTERED"
+                                                               : "EXITED");
+        }
         const btDiscreteDynamicsWorld& stepped = *entry.world;
         for (int i = 0; i < stepped.getNumCollisionObjects(); ++i) {
             const btVector3 origin = stepped.getCollisionObjectArray()[i]
@@ -750,6 +912,11 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
 const std::vector<PhysicsCollisionEvent>& physics_world_collision_events(
     PhysicsWorldHandle world) {
     return world_at(world).collision_events;
+}
+
+const std::vector<PhysicsTriggerEvent>& physics_world_trigger_events(
+    PhysicsWorldHandle world) {
+    return world_at(world).trigger_events;
 }
 
 PhysicsRaycastResult physics_world_raycast(
@@ -965,6 +1132,26 @@ void physics_shape_set_filter_membership_mask(
     }
 }
 
+void physics_shape_set_trigger(PhysicsShapeHandle shape, bool is_trigger) {
+    ShapeEntry& shape_entry = shape_at(shape);
+    if (shape_entry.is_trigger != is_trigger) {
+        if (is_trigger) {
+            ++trigger_shape_count();
+        } else {
+            --trigger_shape_count();
+        }
+    }
+    shape_entry.is_trigger = is_trigger;
+    // The pin flags the shape before OR after attaching it to a body --
+    // scene 101 flags it first -- so both orders have to land the flag on
+    // the object. `physics_body_set_shape` applies it for the second.
+    for (BodyEntry& body : bodies()) {
+        if (body.shape == shape.value) {
+            apply_trigger_flag(body, is_trigger);
+        }
+    }
+}
+
 // --- Bodies ----------------------------------------------------------
 
 PhysicsBodyHandle physics_body_create() {
@@ -1026,6 +1213,7 @@ void physics_body_set_shape(
     entry.node_from_body = shape_entry.node_from_body;
     entry.body->setCollisionShape(shape_entry.shape.get());
     entry.body->setUserPointer(&shape_entry.material);
+    apply_trigger_flag(entry, shape_entry.is_trigger);
     // The pin writes the node transform before the shape, so the shape's
     // own centre offset was not known then. Re-apply it now.
     write_world_transform(entry, entry.requested);

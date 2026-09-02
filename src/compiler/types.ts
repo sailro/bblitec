@@ -374,6 +374,18 @@ export interface SceneMeshManifest {
   hasUv2?: boolean;
   hasTangents?: boolean;
   hasColors?: boolean;
+  /**
+   * At least one of those streams was handed a value the data model holds
+   * as `Float32Array | undefined`, so which attributes this mesh carries is
+   * a RUN-time answer.
+   *
+   * The three flags above then say only what generation could settle, which
+   * is not enough to compose a Standard or PBR variant for the mesh — those
+   * key on the attribute set. The node family needs no such key (its
+   * `MeshAttributeExistsBlock` reads a per-mesh uniform lane), so the
+   * refusal sits at the material assignment, where the pairing is known.
+   */
+  runtimeStreams?: true;
   /** Whether this exact mesh reaches thin instancing before rendering, or
    *  can acquire it later from a callback. */
   thinInstances?: "always" | "possible";
@@ -1257,6 +1269,13 @@ export type ValueKind =
   | "axis-scale-gizmo"
   | "plane-drag-gizmo"
   | "plane-rotation-gizmo"
+  // The three composites. One native record serves all three, because
+  // the pin's own composite is a list of sub-gizmos and its fan-outs; the
+  // kinds stay apart here so a rotation gizmo cannot be handed to the
+  // scale gizmo's coordinate-mode setter, which upstream's types forbid.
+  | "position-gizmo"
+  | "rotation-gizmo"
+  | "scale-gizmo"
   | "string"
   | "task"
   | "texture"
@@ -1535,6 +1554,14 @@ export interface Value {
    * order, and the scene meshes follow in creation order.
    */
   sceneMeshIndex?: number;
+  /**
+   * This `createMeshFromData` mesh was handed at least one optional
+   * attribute stream whose presence is a run-time answer, so the
+   * attribute set the Standard and PBR variant keys need is not
+   * generation-known. Carried on the value because the refusal belongs at
+   * the material assignment, which is where the pairing exists.
+   */
+  runtimeMeshStreams?: true;
   /**
    * The expression tree a `CsgSolid` value stands for.
    *
@@ -1963,6 +1990,7 @@ export type Feature =
   | "audio:stereo-panner"
   | "physics:world"
   | "physics:aggregate"
+  | "physics:trigger"
   | "scene:remove"
   // GPU picking. One feature, because the pin's own split is by
   // PIPELINE rather than by entry point: the simple pass, the advanced
@@ -1990,6 +2018,13 @@ export type Feature =
   | "gizmo:axis-scale"
   | "gizmo:plane-drag"
   | "gizmo:plane-rotation"
+  // The three composites. Each is a fan-out over the widgets above --
+  // upstream builds them from the same four factories -- so each row
+  // gates only the emitted assembly, and reaches the widget rows its own
+  // pinned body calls.
+  | "gizmo:position"
+  | "gizmo:rotation"
+  | "gizmo:scale"
   // The shadow family, split the way upstream splits it: the filter's own
   // resources and receiver composition (`shadow:pcf`), and the scene-owned
   // frame-graph task that schedules them (`shadow:task`), which
@@ -2028,6 +2063,7 @@ export type Feature =
   | "renderer:transmission"
   | "material:pbr-linear-image-processing"
   | "renderer:fog"
+  | "renderer:clip-plane"
   | "renderer:geometry-output"
   | "renderer:post-process"
   | "renderer:high-precision-matrix"

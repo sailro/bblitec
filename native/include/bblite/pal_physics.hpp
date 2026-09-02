@@ -132,6 +132,30 @@ struct PhysicsCollisionEvent {
     double impulse = 0.0;
 };
 
+/**
+ * `HP_World_GetTriggerEvents`' own two event codes.
+ *
+ * The pin drains the stream by walking the module's heap and reading the
+ * back end's `TRIGGER_ENTERED` / `TRIGGER_EXITED` integers out of each
+ * record. That walk is the back end's, exactly as the collision drain is,
+ * so the surface hands over the decoded pair and the generated side maps
+ * them onto the pin's own `"ENTERED"` / `"EXITED"` strings.
+ */
+enum class PhysicsTriggerEventType {
+    entered,
+    exited,
+};
+
+/**
+ * One drained trigger event. The pin's `PhysicsTriggerInfo` carries only
+ * the type; its `PhysicsTriggerBodyInfo` extension resolves the two
+ * participating bodies, and `onPhysicsTriggerBodies` -- the only reader of
+ * them -- is not reached.
+ */
+struct PhysicsTriggerEvent {
+    PhysicsTriggerEventType type = PhysicsTriggerEventType::entered;
+};
+
 struct PhysicsRaycastResult {
     bool has_hit = false;
     std::array<double, 3> point{};
@@ -156,6 +180,9 @@ void physics_world_add_body(
 void physics_world_step(PhysicsWorldHandle world, double seconds);
 [[nodiscard]] const std::vector<PhysicsCollisionEvent>&
 physics_world_collision_events(PhysicsWorldHandle world);
+/** `HP_World_GetTriggerEvents`, drained into one list per step. */
+[[nodiscard]] const std::vector<PhysicsTriggerEvent>&
+physics_world_trigger_events(PhysicsWorldHandle world);
 [[nodiscard]] PhysicsRaycastResult physics_world_raycast(
     PhysicsWorldHandle world,
     std::array<double, 3> from,
@@ -199,6 +226,14 @@ void physics_shape_set_material(
 void physics_shape_set_filter_membership_mask(
     PhysicsShapeHandle shape,
     std::uint32_t membership_mask);
+/**
+ * `HP_Shape_SetTrigger`. A trigger shape overlaps without producing a
+ * contact response, and the overlaps it does produce are what
+ * `physics_world_trigger_events` reports.
+ */
+void physics_shape_set_trigger(
+    PhysicsShapeHandle shape,
+    bool is_trigger);
 
 // --- Bodies ----------------------------------------------------------
 

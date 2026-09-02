@@ -2858,6 +2858,11 @@ MeshHandle create_mesh_from_data(
     }
     geometry.indices = indices;
     geometry.has_tangents = !tangents.empty();
+    // The optional streams the call left out, as the node family's
+    // writeAttributeFlags reads them: an omitted one is an absent
+    // attribute, not a zero-filled one.
+    geometry.has_uvs = !uvs.empty();
+    geometry.has_vertex_colors = !colors.empty();
     // computeAabb: fold XYZ min/max over the positions buffer; empty input
     // keeps the record's default bounds (the pinned helper returns
     // infinities that createMeshFromData filters through isFinite).

@@ -30,7 +30,21 @@
  * What is deliberately NOT re-derived: the quaternion helpers. Those are
  * lowered from `src/gizmo/gizmo-math.ts` through the shared pinned-function
  * translator, so the arithmetic that orients every gizmo node is the pin's
- * own body rather than a second copy of it.
+ * own body rather than a second copy of it -- including the two the
+ * local-coordinate follow adds, `quatMul` and `transformDirectionByWorld`.
+ *
+ * The three COMPOSITES (`src/gizmo/composite-gizmos.ts`) are folded the
+ * same way, statement for statement: each pinned factory resolves its
+ * options through a `??`, builds sub-widgets with the axis, colour and
+ * option values it passes each one, turns local-coordinate mode on where
+ * the pin turns it on, and returns the list. `wireCrossAxisDisable` is the
+ * one statement dropped, because it subscribes drag observers alone.
+ *
+ * One thing here is asserted rather than emitted: that the pinned gizmo
+ * pointer-drag dispatcher map has exactly one writer, reached from exactly
+ * one place. That is the fact a camera's folded `attachControl` deferral
+ * bag rests on, and it is a statement about the pin, so it is checked
+ * beside the family rather than at the compiler's call site.
  */
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
@@ -48,6 +62,8 @@ import {
     PINNED_DECOMPOSE_ROTATION,
     lowerMat4DecomposeRotation,
 } from "./pinned-mat4-decompose.js";
+import { pinnedMeshOptionFlag } from "../pinned-mesh-defaults.js";
+import { pinnedPolyhedron } from "../pinned-polyhedra.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -60,38 +76,126 @@ const AXIS_DRAG_MODULE = "src/gizmo/axis-drag-gizmo.ts";
 const AXIS_SCALE_MODULE = "src/gizmo/axis-scale-gizmo.ts";
 const PLANE_DRAG_MODULE = "src/gizmo/plane-drag-gizmo.ts";
 const PLANE_ROTATION_MODULE = "src/gizmo/plane-rotation-gizmo.ts";
+const COMPOSITE_MODULE = "src/gizmo/composite-gizmos.ts";
+const POINTER_DRAG_MODULE = "src/gizmo/pointer-drag.ts";
+const POLYHEDRON_MODULE = "src/mesh/create-polyhedron.ts";
+
+/**
+ * Where a folded sub-gizmo call may be broken across lines. The composite
+ * emitter builds one argument list and the statement emitter decides the
+ * indent, because the same call is emitted at two depths.
+ */
+const ARGUMENT_BREAK = "\u0000";
+
+/** One editing widget's module, as everything below it needs to see it. */
+interface EditModule {
+    modulePath: string;
+    /** The pinned factory. */
+    factory: string;
+    /** The pinned attach call. */
+    attach: string;
+    /** `dragAxis`, `dragPlaneNormal` or `planeNormal`. */
+    axis: string;
+    /** The feature row that gates the emitted builder. */
+    feature: string;
+    /** The generated native factory. */
+    cppFactory: string;
+    /**
+     * The optional parameters the generated factory takes after its axis,
+     * by the pin's own option names and in the emitted order. A composite
+     * passes its own values through these, so the order is stated once.
+     */
+    options: readonly string[];
+}
 
 /** The four editing widgets' modules and their factory names. */
-const EDIT_MODULES: readonly (readonly [
-    string,
-    string,
-    string,
-    string,
-])[] = [
-    [
-        AXIS_DRAG_MODULE,
-        "createAxisDragGizmo",
-        "attachAxisDragGizmoToNode",
-        "gizmo:axis-drag",
-    ],
-    [
-        AXIS_SCALE_MODULE,
-        "createAxisScaleGizmo",
-        "attachAxisScaleGizmoToNode",
-        "gizmo:axis-scale",
-    ],
-    [
-        PLANE_DRAG_MODULE,
-        "createPlaneDragGizmo",
-        "attachPlaneDragGizmoToNode",
-        "gizmo:plane-drag",
-    ],
-    [
-        PLANE_ROTATION_MODULE,
-        "createPlaneRotationGizmo",
-        "attachPlaneRotationGizmoToNode",
-        "gizmo:plane-rotation",
-    ],
+const EDIT_MODULES: readonly EditModule[] = [
+    {
+        modulePath: AXIS_DRAG_MODULE,
+        factory: "createAxisDragGizmo",
+        axis: "dragAxis",
+        attach: "attachAxisDragGizmoToNode",
+        feature: "gizmo:axis-drag",
+        cppFactory: "create_axis_drag_gizmo",
+        options: ["color", "thickness"],
+    },
+    {
+        modulePath: AXIS_SCALE_MODULE,
+        factory: "createAxisScaleGizmo",
+        axis: "dragAxis",
+        attach: "attachAxisScaleGizmoToNode",
+        feature: "gizmo:axis-scale",
+        cppFactory: "create_axis_scale_gizmo",
+        options: ["color", "thickness", "uniformScaling"],
+    },
+    {
+        modulePath: PLANE_DRAG_MODULE,
+        factory: "createPlaneDragGizmo",
+        axis: "dragPlaneNormal",
+        attach: "attachPlaneDragGizmoToNode",
+        feature: "gizmo:plane-drag",
+        cppFactory: "create_plane_drag_gizmo",
+        options: ["color"],
+    },
+    {
+        modulePath: PLANE_ROTATION_MODULE,
+        factory: "createPlaneRotationGizmo",
+        axis: "planeNormal",
+        attach: "attachPlaneRotationGizmoToNode",
+        feature: "gizmo:plane-rotation",
+        cppFactory: "create_plane_rotation_gizmo",
+        options: ["color", "tessellation", "thickness"],
+    },
+];
+
+/** One composite gizmo's factory and the fan-outs the pin declares beside it. */
+interface CompositeModule {
+    factory: string;
+    cppFactory: string;
+    feature: string;
+    /** The pinned coordinate-mode fan-out. */
+    setLocal: string;
+    /** The pinned attach fan-out. */
+    attach: string;
+    /**
+     * The options the pinned factory defaults through a `??`, in the order
+     * the generated factory takes them. `pinned` is the pin's own local,
+     * which is also the member it reads.
+     */
+    options: readonly { pinned: string; cpp: string }[];
+}
+
+const COMPOSITE_MODULES: readonly CompositeModule[] = [
+    {
+        factory: "createPositionGizmo",
+        cppFactory: "create_position_gizmo",
+        feature: "gizmo:position",
+        setLocal: "setPositionGizmoLocalCoordinates",
+        attach: "attachPositionGizmoToNode",
+        options: [
+            { pinned: "planarEnabled", cpp: "planar_enabled" },
+            { pinned: "thickness", cpp: "thickness" },
+        ],
+    },
+    {
+        factory: "createRotationGizmo",
+        cppFactory: "create_rotation_gizmo",
+        feature: "gizmo:rotation",
+        setLocal: "setRotationGizmoLocalCoordinates",
+        attach: "attachRotationGizmoToNode",
+        options: [
+            { pinned: "tessellation", cpp: "tessellation" },
+            { pinned: "thickness", cpp: "thickness" },
+        ],
+    },
+    {
+        factory: "createScaleGizmo",
+        cppFactory: "create_scale_gizmo",
+        feature: "gizmo:scale",
+        setLocal: "setScaleGizmoLocalCoordinates",
+        attach: "attachScaleGizmoToNode",
+        options: [{ pinned: "thickness", cpp: "thickness" }],
+    },
 ];
 
 /** One pinned mesh-factory call, as the emitted tree needs to see it. */
@@ -124,7 +228,14 @@ export class GizmoLowerer {
      * reached at the intrinsic; this is the emitter consulting them.
      */
     private reachesEditGizmos(): boolean {
-        return EDIT_MODULES.some(([, , , feature]) =>
+        return EDIT_MODULES.some(({ feature }) =>
+            this.features.includes(feature),
+        );
+    }
+
+    /** The composites this scene reaches, in the pin's own order. */
+    private reachedComposites(): readonly CompositeModule[] {
+        return COMPOSITE_MODULES.filter(({ feature }) =>
             this.features.includes(feature),
         );
     }
@@ -559,6 +670,110 @@ export class GizmoLowerer {
                 returns: this.quatReturn(MATH_MODULE, "quatNormalize"),
             },
         );
+        const quatMul = lowerPinnedFunction(
+            this.context,
+            MATH_MODULE,
+            "quatMul",
+            [
+                { pinned: "ax", kind: "number", cpp: "ax" },
+                { pinned: "ay", kind: "number", cpp: "ay" },
+                { pinned: "az", kind: "number", cpp: "az" },
+                { pinned: "aw", kind: "number", cpp: "aw" },
+                { pinned: "bx", kind: "number", cpp: "bx" },
+                { pinned: "by", kind: "number", cpp: "by" },
+                { pinned: "bz", kind: "number", cpp: "bz" },
+                { pinned: "bw", kind: "number", cpp: "bw" },
+            ],
+            {
+                cppName: "quat_mul",
+                calls,
+                returns: this.quatReturn(MATH_MODULE, "quatMul"),
+            },
+        );
+        // The local-coordinate arm's other half: the world drag axis, from
+        // the attached node's world matrix. The pin reads nine of the
+        // sixteen elements by index and ends in `normalizeVec3`, so the
+        // bindings below are those nine at the width the follow holds them
+        // -- a pin that reached a tenth fails here rather than lowering a
+        // silently different direction.
+        const transformDirectionByWorld = lowerPinnedFunction(
+            this.context,
+            MATH_MODULE,
+            "transformDirectionByWorld",
+            [
+                {
+                    pinned: "wm",
+                    kind: "record",
+                    cpp: "wm",
+                    cppType: "std::array<float, 16>",
+                    annotation: "Mat4",
+                },
+                {
+                    pinned: "dir",
+                    kind: "record",
+                    cpp: "dir",
+                    cppType: "auto",
+                    annotation: "Vec3",
+                },
+            ],
+            {
+                cppName: "transform_direction_by_world",
+                calls: new Map([
+                    ...calls,
+                    [
+                        "normalizeVec3",
+                        (args: readonly string[]): string =>
+                            `normalize_vec3(${args.join(", ")})`,
+                    ],
+                ]),
+                memberBindings: new Map([
+                    ...([0, 1, 2, 4, 5, 6, 8, 9, 10] as const).map(
+                        (index): [string, PinnedBinding] => [
+                            `wm[${index}]`,
+                            {
+                                cpp: `static_cast<double>(wm[${index}])`,
+                                type: "scalar",
+                            },
+                        ],
+                    ),
+                    ["dir.x", { cpp: "dir.x", type: "scalar" as const }],
+                    ["dir.y", { cpp: "dir.y", type: "scalar" as const }],
+                    ["dir.z", { cpp: "dir.z", type: "scalar" as const }],
+                ]),
+                returns: {
+                    type: "Vec3d",
+                    value: (lowerer, expression) => {
+                        const at = this.context.functionDeclaration(
+                            MATH_MODULE,
+                            "transformDirectionByWorld",
+                        ).declaration;
+                        const returned = expression
+                            ? this.context.unwrapExpression(expression)
+                            : undefined;
+                        if (
+                            !returned ||
+                            !ts.isCallExpression(returned) ||
+                            !ts.isIdentifier(returned.expression) ||
+                            returned.expression.text !== "normalizeVec3" ||
+                            returned.arguments.length !== 1
+                        ) {
+                            this.context.contractError(
+                                at,
+                                "Expected pinned transformDirectionByWorld " +
+                                    "to return normalizeVec3 of its own " +
+                                    "combination.",
+                            );
+                        }
+                        return `normalize_vec3(Vec3d{${lowerObjectComponents(
+                            this.context,
+                            lowerer,
+                            returned.arguments[0]!,
+                            ["x", "y", "z"],
+                        ).join(", ")}})`;
+                    },
+                },
+            },
+        );
         const lookAtQuat = lowerPinnedFunction(
             this.context,
             MATH_MODULE,
@@ -595,7 +810,13 @@ export class GizmoLowerer {
             lengthVec3,
             normalizeVec3,
             ...(this.reachesEditGizmos()
-                ? [quatFromAxisAngle, quatNormalize, lookAtQuat]
+                ? [
+                      quatFromAxisAngle,
+                      quatNormalize,
+                      lookAtQuat,
+                      quatMul,
+                      transformDirectionByWorld,
+                  ]
                 : []),
             lowerMat4DecomposeRotation(this.context),
         ].join("\n\n");
@@ -647,13 +868,14 @@ export class GizmoLowerer {
     private bodyScope(
         modulePath: string,
         holder: string,
-        excludeGuard?: string,
+        guardName?: string,
+        mode: "exclude" | "only" = "exclude",
     ): { at: ts.Node; roots: readonly ts.Node[] } {
         const declaration = this.context.functionDeclaration(
             modulePath,
             holder,
         ).declaration;
-        if (!excludeGuard) {
+        if (!guardName) {
             return { at: declaration, roots: [declaration] };
         }
         const statements = declaration.body!.statements;
@@ -661,20 +883,23 @@ export class GizmoLowerer {
             (statement) =>
                 ts.isIfStatement(statement) &&
                 ts.isIdentifier(statement.expression) &&
-                statement.expression.text === excludeGuard,
+                statement.expression.text === guardName,
         );
         if (guarded.length !== 1) {
             this.context.contractError(
                 declaration,
                 `Expected pinned ${holder} to guard exactly one arm on ` +
-                    `'${excludeGuard}'.`,
+                    `'${guardName}'.`,
             );
         }
         return {
             at: declaration,
-            roots: statements.filter(
-                (statement) => statement !== guarded[0],
-            ),
+            roots:
+                mode === "only"
+                    ? [guarded[0]!]
+                    : statements.filter(
+                          (statement) => statement !== guarded[0],
+                      ),
         };
     }
 
@@ -707,6 +932,203 @@ export class GizmoLowerer {
                 `Expected the pinned body to declare '${name}'.`,
             )
         );
+    }
+
+    /**
+     * The widget's own local-frame axis, as the pinned body derives it.
+     *
+     * Two shapes reach this and both are the pin's: a member-wise copy of
+     * the option (`{ x: options.dragAxis.x, ... }`) and a normalization of
+     * it (`normalizeVec3Obj(options.planeNormal)`), the second of which
+     * one widget reaches through a named intermediate. Which one a widget
+     * uses is a difference the follow can see -- the rotation ring's world
+     * normal is normalized where the drag arrow's is not -- so it is read
+     * rather than assumed.
+     */
+    private widgetLocalAxis(
+        modulePath: string,
+        factory: string,
+        local: string,
+        axisMember: string,
+        axisCpp: string,
+        extraVectors: ReadonlyMap<string, string> = new Map(),
+    ): string {
+        const declaration = this.context.functionDeclaration(
+            modulePath,
+            factory,
+        ).declaration;
+        const vectors = new Map<string, string>([
+            [`options.${axisMember}`, axisCpp],
+            ...extraVectors,
+        ]);
+        const scalars = new Map<string, PinnedBinding>();
+        for (const [pinned, cpp] of vectors) {
+            for (const component of ["x", "y", "z"]) {
+                scalars.set(`${pinned}.${component}`, {
+                    cpp: `${cpp}.${component}`,
+                    type: "scalar",
+                });
+            }
+        }
+        const lowerer = new PinnedNumericLowerer(
+            this.context.sourceFile(modulePath),
+            {
+                bindings: scalars,
+                calls: pinnedNumericMathCallsWithHypot(),
+            },
+        );
+        const render = (expression: ts.Expression): string => {
+            const node = this.context.unwrapExpression(expression);
+            const path = ts.isIdentifier(node)
+                ? node.text
+                : this.context.propertyPath(node)?.join(".");
+            const bound = path === undefined ? undefined : vectors.get(path);
+            if (bound) {
+                return bound;
+            }
+            if (
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                (node.expression.text === "normalizeVec3Obj" ||
+                    node.expression.text === "normalizeVec3") &&
+                node.arguments.length === 1
+            ) {
+                return `normalize_vec3(${render(node.arguments[0]!)})`;
+            }
+            if (ts.isObjectLiteralExpression(node)) {
+                return `Vec3d{${lowerObjectComponents(
+                    this.context,
+                    lowerer,
+                    node,
+                    ["x", "y", "z"],
+                ).join(", ")}}`;
+            }
+            return this.context.contractError(
+                node,
+                `Expected pinned ${factory} to derive '${local}' from ` +
+                    `its ${axisMember} option.`,
+            );
+        };
+        return render(this.localInitializer(declaration, local));
+    }
+
+    /**
+     * The root orientation the pin writes in one guarded arm, as four
+     * lowered components.
+     *
+     * `createAxisScaleGizmo` replaces its baked lookAt with the identity
+     * when the handle is the central uniform one, because BJS keeps that
+     * one world-aligned -- so the identity is read out of that arm rather
+     * than spelled in the emitted body.
+     */
+    private rootRotationQuaternion(
+        modulePath: string,
+        factory: string,
+        guardName: string,
+    ): readonly string[] {
+        const { roots } = this.bodyScope(
+            modulePath,
+            factory,
+            guardName,
+            "only",
+        );
+        const lowerer = this.widgetLowerer(modulePath, new Map());
+        let found: ts.CallExpression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "set" &&
+                ts.isPropertyAccessExpression(node.expression.expression) &&
+                node.expression.expression.name.text ===
+                    "rotationQuaternion" &&
+                ts.isIdentifier(node.expression.expression.expression) &&
+                node.expression.expression.expression.text === "root"
+            ) {
+                found = node;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const root of roots) visit(root);
+        if (!found || found.arguments.length !== 4) {
+            this.context.contractError(
+                roots[0]!,
+                `Expected pinned ${factory} to set its root's rotation ` +
+                    `quaternion inside the '${guardName}' arm.`,
+            );
+        }
+        return found.arguments.map((argument) =>
+            lowerer.expression(argument),
+        );
+    }
+
+    /** A pinned mesh factory option that has to be a compile-time number. */
+    private widgetOptionNumber(
+        part: {
+            options: ReadonlyMap<
+                string,
+                { cpp: string; node: ts.Expression }
+            >;
+            at: ts.Node;
+        },
+        name: string,
+    ): number {
+        const value = part.options.get(name);
+        if (!value) {
+            this.context.contractError(
+                part.at,
+                `Expected the pinned mesh factory to declare '${name}'.`,
+            );
+        }
+        return this.context.numericValue(
+            value.node,
+            value.node.getSourceFile(),
+        );
+    }
+
+    /** The boolean form of `optionDefault`, for a `?? false` flag. */
+    private optionDefaultFlag(
+        declaration: ts.Node,
+        member: string,
+    ): string {
+        let found: ts.Expression | undefined;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            const coalesce = ts.isExpression(node)
+                ? this.context.nullishDefault(node)
+                : undefined;
+            if (
+                coalesce &&
+                ts.isPropertyAccessExpression(
+                    this.context.unwrapExpression(coalesce.left),
+                ) &&
+                (
+                    this.context.unwrapExpression(
+                        coalesce.left,
+                    ) as ts.PropertyAccessExpression
+                ).name.text === member
+            ) {
+                found = this.context.unwrapExpression(coalesce.right);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
+        if (
+            !found ||
+            (found.kind !== ts.SyntaxKind.TrueKeyword &&
+                found.kind !== ts.SyntaxKind.FalseKeyword)
+        ) {
+            this.context.contractError(
+                declaration,
+                `Expected the pinned body to default '${member}' to a ` +
+                    "boolean literal through a nullish coalesce.",
+            );
+        }
+        return found.kind === ts.SyntaxKind.TrueKeyword
+            ? "true"
+            : "false";
     }
 
     /** The right side of the pin's own `options.<member> ?? <default>`. */
@@ -844,7 +1266,8 @@ export class GizmoLowerer {
         holder: string,
         local: string,
         lowerer: PinnedNumericLowerer,
-        excludeGuard?: string,
+        guardName?: string,
+        guardMode: "exclude" | "only" = "exclude",
     ): {
         options: ReadonlyMap<string, { cpp: string; node: ts.Expression }>;
         scalar: string | undefined;
@@ -856,7 +1279,8 @@ export class GizmoLowerer {
         const { roots } = this.bodyScope(
             modulePath,
             holder,
-            excludeGuard,
+            guardName,
+            guardMode,
         );
         const initializer = this.context.unwrapExpression(
             this.localInitializer(roots, local),
@@ -975,18 +1399,19 @@ export class GizmoLowerer {
             rotation: readonly string[];
             scaling: readonly string[];
         },
+        indent = "    ",
     ): string {
-        return `    edit_gizmo_mesh(
-        engine,
-        scene,
-        ${factory},
-        material,
-        Vec3d{${part.position.join(", ")}},
-        std::array<double, 3>{${part.rotation.join(", ")}},
-        Vec3{${part.scaling
+        return `${indent}edit_gizmo_mesh(
+${indent}    engine,
+${indent}    scene,
+${indent}    ${factory},
+${indent}    material,
+${indent}    Vec3d{${part.position.join(", ")}},
+${indent}    std::array<double, 3>{${part.rotation.join(", ")}},
+${indent}    Vec3{${part.scaling
             .map((value) => `static_cast<float>(${value})`)
             .join(", ")}},
-        root);`;
+${indent}    root);`;
     }
 
     /**
@@ -1230,10 +1655,16 @@ EditGizmoHandle push_edit_gizmo(
     Scene& scene,
     UtilityLayerHandle layer,
     TransformNodeHandle root,
-    double scale_ratio) {
+    double scale_ratio,
+    Vec3d local_axis,
+    const std::array<double, 4>& baked_rotation,
+    GizmoLocalOrientation orientation) {
     EditGizmoRecord gizmo;
     gizmo.root = root;
     gizmo.scale_ratio = scale_ratio;
+    gizmo.local_axis = local_axis;
+    gizmo.baked_rotation = baked_rotation;
+    gizmo.orientation = orientation;
     engine.edit_gizmos.push_back(gizmo);
     const EditGizmoHandle handle{
         static_cast<std::uint32_t>(engine.edit_gizmos.size() - 1u)};
@@ -1268,6 +1699,50 @@ EditGizmoHandle push_edit_gizmo(
                 static_cast<float>(dist),
                 static_cast<float>(dist),
                 static_cast<float>(dist)});
+        // \`attachFollowTarget\`'s \`onAfterFollow\`: the widget's
+        // local-coordinate arm, which every composite reaches at load.
+        // The three drag and rotation widgets re-take the pin's
+        // shortest-arc \`lookAtQuat\` of the transformed axis; the scale
+        // widget's cube is not roll-symmetric, so it composes the node's
+        // world rotation onto the orientation baked at creation.
+        //
+        // The non-local arm writes that baked orientation unconditionally
+        // where the pin writes it only when its stored world axis has
+        // moved. Outside local mode the value IS baked_rotation, which
+        // edit_gizmo_root already put on the root at creation, so the
+        // write would be a no-op that still costs a full subtree dirty
+        // walk every frame -- a third one, after the position and scale
+        // above. Skipped instead.
+        if (!g.use_local_coordinates) return;
+        std::array<double, 4> rotation = g.baked_rotation;
+        {
+            if (
+                g.orientation ==
+                GizmoLocalOrientation::compose_baked_rotation) {
+                const PinnedQuat node_rotation =
+                    ${PINNED_DECOMPOSE_ROTATION}(wm);
+                rotation = quat_mul(
+                    node_rotation.x,
+                    node_rotation.y,
+                    node_rotation.z,
+                    node_rotation.w,
+                    g.baked_rotation[0],
+                    g.baked_rotation[1],
+                    g.baked_rotation[2],
+                    g.baked_rotation[3]);
+            } else {
+                rotation = look_at_quat(
+                    transform_direction_by_world(wm, g.local_axis));
+            }
+        }
+        set_transform_node_rotation_quaternion(
+            e,
+            g.root,
+            Vec4{
+                static_cast<float>(rotation[0]),
+                static_cast<float>(rotation[1]),
+                static_cast<float>(rotation[2]),
+                static_cast<float>(rotation[3])});
     });
     return handle;
 }`;
@@ -1278,7 +1753,7 @@ EditGizmoHandle push_edit_gizmo(
         // Every one of the four attaches the same way upstream -- bind the
         // node, enable the drag -- so one generated entry point serves all
         // four, and a pin that changed one of the bodies fails here.
-        const attachBodies = EDIT_MODULES.map(([modulePath, , attach]) =>
+        const attachBodies = EDIT_MODULES.map(({ modulePath, attach }) =>
             this.context
                 .functionDeclaration(modulePath, attach)
                 .declaration.body!.getText(
@@ -1306,7 +1781,7 @@ EditGizmoHandle push_edit_gizmo(
         // node for the pin's zero-height cylinder: a root that started
         // drawing would be a mesh this port does not create. Asserted
         // here rather than assumed.
-        for (const [modulePath, factory] of EDIT_MODULES) {
+        for (const { modulePath, factory } of EDIT_MODULES) {
             this.assertHidden(
                 this.context.functionDeclaration(modulePath, factory)
                     .declaration,
@@ -1318,7 +1793,470 @@ EditGizmoHandle push_edit_gizmo(
             this.axisScaleGizmo(),
             this.planeDragGizmo(),
             this.planeRotationGizmo(),
+            ...this.reachedComposites().map((composite) =>
+                this.compositeGizmo(composite),
+            ),
         ].join("\n\n");
+    }
+
+    /**
+     * The pinned fan-out members one composite entry point names, in the
+     * order it names them.
+     *
+     * Both fan-outs are a list of `gizmo.<sub>` reads, and which subs each
+     * one covers is the contract the emitted record's two counts carry --
+     * the attach reaches every sub-gizmo, the coordinate-mode setter
+     * reaches every one but the scale composite's central uniform handle.
+     */
+    private compositeFanOut(
+        symbolName: string,
+        parts: readonly string[],
+    ): readonly string[] {
+        const declaration = this.context.functionDeclaration(
+            COMPOSITE_MODULE,
+            symbolName,
+        ).declaration;
+        const named: string[] = [];
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isPropertyAccessExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "gizmo" &&
+                parts.includes(node.name.text) &&
+                !named.includes(node.name.text)
+            ) {
+                named.push(node.name.text);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
+        return named;
+    }
+
+    /** One sub-widget call inside a pinned composite factory. */
+    private compositeSubGizmo(
+        widget: EditModule,
+        call: ts.CallExpression,
+        lowerer: PinnedNumericLowerer,
+    ): string {
+        if (call.arguments.length !== 3) {
+            this.context.contractError(
+                call,
+                `Expected the pinned composite to call ${widget.factory} ` +
+                    "with an engine, a layer and one options object.",
+            );
+        }
+        const options = this.context.unwrapExpression(call.arguments[2]!);
+        if (!ts.isObjectLiteralExpression(options)) {
+            this.context.contractError(
+                options,
+                `Expected the pinned ${widget.factory} call to take an ` +
+                    "options object literal.",
+            );
+        }
+        const member = (name: string): ts.Expression | undefined => {
+            for (const property of options.properties) {
+                const propertyName =
+                    ts.isPropertyAssignment(property) ||
+                    ts.isShorthandPropertyAssignment(property)
+                        ? this.context.propertyName(property.name)
+                        : undefined;
+                if (propertyName !== name) continue;
+                return ts.isPropertyAssignment(property)
+                    ? property.initializer
+                    : (property.name as ts.Expression);
+            }
+            return undefined;
+        };
+        for (const property of options.properties) {
+            const propertyName =
+                ts.isPropertyAssignment(property) ||
+                ts.isShorthandPropertyAssignment(property)
+                    ? this.context.propertyName(property.name)
+                    : undefined;
+            if (
+                !propertyName ||
+                (propertyName !== widget.axis &&
+                    !widget.options.includes(propertyName))
+            ) {
+                this.context.contractError(
+                    property,
+                    `The pinned composite passes ${widget.factory} an ` +
+                        "option this port does not serve; the generated " +
+                        "widget would ignore it.",
+                );
+            }
+        }
+        const axis = member(widget.axis);
+        if (!axis) {
+            this.context.contractError(
+                options,
+                `Expected the pinned composite to give ${widget.factory} ` +
+                    `its ${widget.axis}.`,
+            );
+        }
+        const supplied = widget.options.map((name) => {
+            const value = member(name);
+            if (name === "color") {
+                return value
+                    ? `std::optional<Vec3d>{Vec3d{${lowerTupleComponents(
+                          this.context,
+                          lowerer,
+                          value,
+                          { arity: 3, at: options },
+                      ).join(", ")}}}`
+                    : "std::optional<Vec3d>{}";
+            }
+            if (name === "uniformScaling") {
+                if (!value) return "std::optional<bool>{}";
+                const flag = this.context.unwrapExpression(value);
+                if (
+                    flag.kind !== ts.SyntaxKind.TrueKeyword &&
+                    flag.kind !== ts.SyntaxKind.FalseKeyword
+                ) {
+                    this.context.contractError(
+                        flag,
+                        "Expected the pinned composite to select the " +
+                            "uniform-scale handle with a boolean literal.",
+                    );
+                }
+                return `std::optional<bool>{${
+                    flag.kind === ts.SyntaxKind.TrueKeyword
+                        ? "true"
+                        : "false"
+                }}`;
+            }
+            return value
+                ? `std::optional<double>{${lowerer.expression(value)}}`
+                : "std::optional<double>{}";
+        });
+        // The argument list is joined on a placeholder the statement
+        // emitter replaces with its own indent, so a sub-gizmo built
+        // inside the optional arm lines up with it.
+        return [
+            `${widget.cppFactory}(`,
+            "engine,",
+            "layer,",
+            `Vec3d{${lowerObjectComponents(
+                this.context,
+                lowerer,
+                axis,
+                ["x", "y", "z"],
+            ).join(", ")}}${supplied.length > 0 ? "," : ")"}`,
+            ...supplied.map(
+                (argument, index) =>
+                    `${argument}${
+                        index === supplied.length - 1 ? ")" : ","
+                    }`,
+            ),
+        ].join(ARGUMENT_BREAK);
+    }
+
+    /**
+     * One composite, folded from the pinned factory that assembles it.
+     *
+     * The composite IS its statement list -- resolve the options, build
+     * the sub-widgets, turn the coordinate mode on where the pin turns it
+     * on, and return the record -- so the emitted body is that list,
+     * statement for statement. `wireCrossAxisDisable` is the one the
+     * emitted body drops: it subscribes drag observers that grey the
+     * sibling axes out, and pointer drag is not reached.
+     */
+    private compositeGizmo(composite: CompositeModule): string {
+        const file = this.context.sourceFile(COMPOSITE_MODULE);
+        const declaration = this.context.functionDeclaration(
+            COMPOSITE_MODULE,
+            composite.factory,
+        ).declaration;
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings: new Map<string, PinnedBinding>([
+                ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                ...composite.options.map(
+                    ({ pinned, cpp }): [string, PinnedBinding] => [
+                        pinned,
+                        { cpp, type: "scalar" },
+                    ],
+                ),
+            ]),
+            calls: pinnedNumericMathCallsWithHypot(),
+        });
+        const prologue: string[] = [];
+        /** The C++ type each option's `value_or` resolves to. */
+        const optionTypes = new Map<string, string>();
+        const parts: {
+            local: string;
+            guard: string | undefined;
+            cpp: string;
+        }[] = [];
+        const tail: string[] = [];
+        for (const statement of declaration.body!.statements) {
+            if (ts.isVariableStatement(statement)) {
+                for (const binding of statement.declarationList
+                    .declarations) {
+                    if (
+                        !ts.isIdentifier(binding.name) ||
+                        !binding.initializer
+                    ) {
+                        this.context.contractError(
+                            binding,
+                            "Expected a pinned composite local to be a " +
+                                "plain named declaration.",
+                        );
+                    }
+                    const local = binding.name.text;
+                    const initializer = this.context.unwrapExpression(
+                        binding.initializer,
+                    );
+                    const coalesce =
+                        this.context.nullishDefault(initializer);
+                    if (coalesce) {
+                        const option = composite.options.find(
+                            ({ pinned }) => pinned === local,
+                        );
+                        if (!option) {
+                            this.context.contractError(
+                                binding,
+                                `The pinned ${composite.factory} defaults ` +
+                                    `an option '${local}' the generated ` +
+                                    "factory does not take.",
+                            );
+                        }
+                        const right = this.context.unwrapExpression(
+                            coalesce.right,
+                        );
+                        const flag =
+                            right.kind === ts.SyntaxKind.TrueKeyword ||
+                            right.kind === ts.SyntaxKind.FalseKeyword;
+                        optionTypes.set(
+                            option.cpp,
+                            flag ? "bool" : "double",
+                        );
+                        prologue.push(
+                            flag
+                                ? `    const bool ${option.cpp} = ` +
+                                      `${option.cpp}_option.value_or(` +
+                                      `${
+                                          right.kind ===
+                                          ts.SyntaxKind.TrueKeyword
+                                              ? "true"
+                                              : "false"
+                                      });`
+                                : `    const double ${option.cpp} = ` +
+                                      `${option.cpp}_option.value_or(` +
+                                      `${this.context.doubleLiteral(
+                                          this.context.numericValue(
+                                              right,
+                                              file,
+                                          ),
+                                      )});`,
+                        );
+                        continue;
+                    }
+                    let guard: string | undefined;
+                    let call = initializer;
+                    if (ts.isConditionalExpression(initializer)) {
+                        if (
+                            !ts.isIdentifier(initializer.condition) ||
+                            this.context.unwrapExpression(
+                                initializer.whenFalse,
+                            ).kind !== ts.SyntaxKind.NullKeyword
+                        ) {
+                            this.context.contractError(
+                                initializer,
+                                "Expected a pinned optional sub-gizmo to " +
+                                    "be one flag selecting the factory or " +
+                                    "null.",
+                            );
+                        }
+                        guard = initializer.condition.text;
+                        call = this.context.unwrapExpression(
+                            initializer.whenTrue,
+                        );
+                    }
+                    const widget =
+                        ts.isCallExpression(call) &&
+                        ts.isIdentifier(call.expression)
+                            ? EDIT_MODULES.find(
+                                  ({ factory }) =>
+                                      factory ===
+                                      (
+                                          call as ts.CallExpression
+                                      ).expression.getText(file),
+                              )
+                            : undefined;
+                    if (!widget || !ts.isCallExpression(call)) {
+                        this.context.contractError(
+                            binding,
+                            `Expected ${composite.factory} to bind each ` +
+                                "local to one of the four pinned editing " +
+                                "widgets.",
+                        );
+                    }
+                    parts.push({
+                        local,
+                        guard,
+                        cpp: this.compositeSubGizmo(
+                            widget,
+                            call,
+                            lowerer,
+                        ),
+                    });
+                }
+                continue;
+            }
+            if (ts.isExpressionStatement(statement)) {
+                const expression = this.context.unwrapExpression(
+                    statement.expression,
+                );
+                if (
+                    ts.isBinaryExpression(expression) &&
+                    expression.operatorToken.kind ===
+                        ts.SyntaxKind.EqualsToken &&
+                    ts.isPropertyAccessExpression(expression.left) &&
+                    expression.left.name.text === "useLocalCoordinates" &&
+                    ts.isIdentifier(expression.left.expression)
+                ) {
+                    const owner = expression.left.expression.text;
+                    const index = parts.findIndex(
+                        ({ local }) => local === owner,
+                    );
+                    const right = this.context.unwrapExpression(
+                        expression.right,
+                    );
+                    if (
+                        index < 0 ||
+                        (right.kind !== ts.SyntaxKind.TrueKeyword &&
+                            right.kind !== ts.SyntaxKind.FalseKeyword)
+                    ) {
+                        this.context.contractError(
+                            expression,
+                            "Expected a pinned composite coordinate-mode " +
+                                "seed to set one of its own sub-gizmos " +
+                                "from a boolean literal.",
+                        );
+                    }
+                    tail.push(
+                        `    set_edit_gizmo_local_coordinates(\n` +
+                            `        engine,\n` +
+                            `        gizmo.parts[${index}],\n` +
+                            `        ${
+                                right.kind === ts.SyntaxKind.TrueKeyword
+                                    ? "true"
+                                    : "false"
+                            });`,
+                    );
+                    continue;
+                }
+                if (
+                    ts.isCallExpression(expression) &&
+                    ts.isIdentifier(expression.expression) &&
+                    expression.expression.text === "wireCrossAxisDisable"
+                ) {
+                    // Drag observers only: the pin subscribes each
+                    // sub-gizmo's `onDragStart`/`onDragEnd` so the other
+                    // axes grey out while one is dragged, and pointer drag
+                    // is not reached.
+                    continue;
+                }
+            }
+            if (ts.isReturnStatement(statement)) {
+                continue;
+            }
+            this.context.contractError(
+                statement,
+                `Expected ${composite.factory} to resolve its options, ` +
+                    "build its sub-gizmos and return them.",
+            );
+        }
+        const locals = parts.map(({ local }) => local);
+        const guarded = parts.filter(({ guard }) => guard !== undefined);
+        const guards = new Set(guarded.map(({ guard }) => guard!));
+        if (
+            guards.size > 1 ||
+            parts.slice(parts.length - guarded.length).length !==
+                guarded.length ||
+            guarded.some(
+                (part, index) =>
+                    parts[parts.length - guarded.length + index] !== part,
+            )
+        ) {
+            this.context.contractError(
+                declaration,
+                `Expected ${composite.factory}'s optional sub-gizmos to ` +
+                    "share one flag and come last.",
+            );
+        }
+        const attached = this.compositeFanOut(composite.attach, locals);
+        if (attached.length !== locals.length) {
+            this.context.contractError(
+                declaration,
+                `Expected ${composite.attach} to reach every sub-gizmo.`,
+            );
+        }
+        const local = this.compositeFanOut(composite.setLocal, locals);
+        if (
+            local.some((name, index) => locals[index] !== name) ||
+            (local.length !== locals.length && guarded.length > 0)
+        ) {
+            this.context.contractError(
+                declaration,
+                `Expected ${composite.setLocal} to reach a leading run of ` +
+                    `${composite.factory}'s own sub-gizmos.`,
+            );
+        }
+        const unguarded = parts.length - guarded.length;
+        const emitPart = (index: number, indent: string): string =>
+            `${indent}gizmo.parts[${index}] = ${parts[index]!.cpp
+                .split(ARGUMENT_BREAK)
+                .join(`\n${indent}    `)};`;
+        const body = [
+            ...prologue,
+            "    CompositeGizmoHandle gizmo;",
+            ...parts
+                .slice(0, unguarded)
+                .map((_, index) => emitPart(index, "    ")),
+            `    gizmo.part_count = ${unguarded}u;`,
+            ...(guarded.length > 0
+                ? [
+                      `    if (${
+                          composite.options.find(
+                              ({ pinned }) => pinned === [...guards][0]!,
+                          )?.cpp ?? [...guards][0]!
+                      }) {`,
+                      ...guarded.map((_, offset) =>
+                          emitPart(unguarded + offset, "        "),
+                      ),
+                      `        gizmo.part_count = ${parts.length}u;`,
+                      "    }",
+                  ]
+                : []),
+            ...tail,
+            local.length === locals.length
+                ? "    gizmo.local_coordinate_count = gizmo.part_count;"
+                : `    gizmo.local_coordinate_count = ${local.length}u;`,
+            "    return gizmo;",
+        ].join("\n");
+        return `// ${this.context.provenance(
+            COMPOSITE_MODULE,
+            composite.factory,
+        )}
+CompositeGizmoHandle ${composite.cppFactory}(
+    Engine& engine,
+    UtilityLayerHandle layer${composite.options
+        .map(
+            ({ cpp, pinned }) =>
+                `,\n    std::optional<${
+                    optionTypes.get(cpp) ??
+                    this.context.contractError(
+                        declaration,
+                        `Expected ${composite.factory} to default ` +
+                            `'${pinned}' through a nullish coalesce.`,
+                    )
+                }> ${cpp}_option`,
+        )
+        .join("")}) {
+${body}
+}`;
     }
 
     private axisDragGizmo(): string {
@@ -1372,15 +2310,19 @@ EditGizmoHandle create_axis_drag_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
     Vec3d drag_axis,
-    std::optional<Vec3d> color) {
+    std::optional<Vec3d> color,
+    std::optional<double> thickness_option) {
     Scene& scene = layer_record(engine, layer).scene;
-    const double thickness = ${this.context.doubleLiteral(thickness)};
+    const double thickness = thickness_option.value_or(${this.context.doubleLiteral(
+        thickness,
+    )});
     const MaterialHandle material = gizmo_material(
         engine, color.value_or(Vec3d{${color.join(", ")}}), false);
+    const std::array<double, 4> baked = look_at_quat(drag_axis);
     const TransformNodeHandle root = edit_gizmo_root(
         engine,
         scene,
-        look_at_quat(drag_axis),
+        baked,
         Vec3{${rootScale
             .map((value) => `static_cast<float>(${value})`)
             .join(", ")}});
@@ -1401,7 +2343,16 @@ ${this.widgetPart(
             AXIS_DRAG_MODULE,
             "createAxisDragGizmo",
             arrow,
-        )});
+        )},
+        ${this.widgetLocalAxis(
+            AXIS_DRAG_MODULE,
+            "createAxisDragGizmo",
+            "localAxis",
+            "dragAxis",
+            "drag_axis",
+        )},
+        baked,
+        GizmoLocalOrientation::look_at_world_axis);
 }`;
     }
 
@@ -1412,6 +2363,10 @@ ${this.widgetPart(
             "createAxisScaleGizmo",
         ).declaration;
         const thickness = this.optionDefault(factory, "thickness", file);
+        const uniformScalingDefault = this.optionDefaultFlag(
+            factory,
+            "uniformScaling",
+        );
         const color = this.context
             .numericTuple(
                 this.context.nullishDefault(
@@ -1450,9 +2405,9 @@ ${this.widgetPart(
             "centered",
         );
         // The uniform-scale handle is the pin's own `centered` arm, and
-        // `uniformScaling` refuses at the factory, so the octahedron below
-        // it is unreachable. Asserted rather than assumed: a pin that
-        // moved the octahedron out from behind that guard fails here.
+        // `uniformScaling` is what selects it. Asserted rather than
+        // assumed: a pin that moved the octahedron out from behind that
+        // guard would change which handle each arm builds.
         const centeredGuard = this.context.hasNode(
             this.context.functionDeclaration(
                 AXIS_SCALE_MODULE,
@@ -1490,6 +2445,56 @@ ${this.widgetPart(
                     "scalar.",
             );
         }
+        // The uniform-scale handle: `buildScaleArrow`'s own `centered`
+        // arm, an octahedron at the gizmo origin with no tail. Read from
+        // that arm rather than the arrow one, which shares its local
+        // names.
+        const uniformHead = this.widgetMesh(
+            AXIS_SCALE_MODULE,
+            "buildScaleArrow",
+            "head",
+            arrow,
+            "centered",
+            "only",
+        );
+        this.assertHidden(
+            this.bodyScope(
+                AXIS_SCALE_MODULE,
+                "buildScaleArrow",
+                "centered",
+                "only",
+            ).roots,
+            "head",
+        );
+        const uniformType = this.widgetOptionNumber(uniformHead, "type");
+        const preset = pinnedPolyhedron(uniformType);
+        const polyhedronRows = (
+            table: readonly (readonly number[])[],
+        ): string =>
+            `{${table
+                .map(
+                    (row) =>
+                        `{${row
+                            .map((value) =>
+                                this.context.doubleLiteral(value),
+                            )
+                            .join(", ")}}`,
+                )
+                .join(", ")}}`;
+        // The pinned octahedron passes no `flat`, so the emitted record
+        // carries `createPolyhedronData`'s own default for it.
+        const uniformFlat = pinnedMeshOptionFlag(
+            POLYHEDRON_MODULE,
+            "createPolyhedronData",
+            "flat",
+        );
+        // The root's own orientation, which the uniform arm replaces with
+        // the identity: BJS keeps the central handle world-aligned.
+        const identityRotation = this.rootRotationQuaternion(
+            AXIS_SCALE_MODULE,
+            "createAxisScaleGizmo",
+            "uniformScaling",
+        );
         return `// ${this.context.provenance(
             AXIS_SCALE_MODULE,
             "createAxisScaleGizmo",
@@ -1498,33 +2503,57 @@ EditGizmoHandle create_axis_scale_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
     Vec3d drag_axis,
-    std::optional<Vec3d> color) {
+    std::optional<Vec3d> color,
+    std::optional<double> thickness_option,
+    std::optional<bool> uniform_scaling_option) {
     Scene& scene = layer_record(engine, layer).scene;
-    const double thickness = ${this.context.doubleLiteral(thickness)};
+    const double thickness = thickness_option.value_or(${this.context.doubleLiteral(
+        thickness,
+    )});
+    const bool uniform_scaling = uniform_scaling_option.value_or(${uniformScalingDefault});
     const MaterialHandle material = gizmo_material(
         engine, color.value_or(Vec3d{${color.join(", ")}}), false);
     // The pin bakes the axis lookAt ONCE through setDirection (yaw and
     // pitch, no roll) rather than the shortest-arc rotation the drag and
     // rotation widgets take: the scale cube is not roll-symmetric.
+    const std::array<double, 4> baked =
+        uniform_scaling
+            ? std::array<double, 4>{${identityRotation.join(", ")}}
+            : direction_to_quat(normalize_vec3(drag_axis));
     const TransformNodeHandle root = edit_gizmo_root(
         engine,
         scene,
-        direction_to_quat(normalize_vec3(drag_axis)),
+        baked,
         Vec3{${rootScale
             .map((value) => `static_cast<float>(${value})`)
             .join(", ")}});
-    const double head_size = ${size};
+    if (uniform_scaling) {
+        const double uniform_size = ${this.widgetOption(uniformHead, "size")};
+${this.widgetPart(
+    "create_polyhedron(engine, PolyhedronOptions{" +
+        "uniform_size, uniform_size, uniform_size, " +
+        `${uniformFlat ? "true" : "false"}, ` +
+        `${polyhedronRows(preset.vertex)}, ` +
+        `${polyhedronRows(preset.face)}})`,
+    uniformHead,
+    "        ",
+)}
+    } else {
+        const double head_size = ${size};
 ${this.widgetPart(
     "create_box(engine, BoxOptions{" +
         "static_cast<float>(head_size), " +
         "static_cast<float>(head_size), " +
         "static_cast<float>(head_size)})",
     head,
+    "        ",
 )}
 ${this.widgetPart(
     `create_cylinder(engine, ${this.widgetCylinder(tail)})`,
     tail,
+    "        ",
 )}
+    }
     return push_edit_gizmo(
         engine,
         scene,
@@ -1534,7 +2563,16 @@ ${this.widgetPart(
             AXIS_SCALE_MODULE,
             "createAxisScaleGizmo",
             arrow,
-        )});
+        )},
+        ${this.widgetLocalAxis(
+            AXIS_SCALE_MODULE,
+            "createAxisScaleGizmo",
+            "localAxis",
+            "dragAxis",
+            "drag_axis",
+        )},
+        baked,
+        GizmoLocalOrientation::compose_baked_rotation);
 }`;
     }
 
@@ -1595,10 +2633,11 @@ EditGizmoHandle create_plane_drag_gizmo(
     Scene& scene = layer_record(engine, layer).scene;
     const MaterialHandle material = gizmo_material(
         engine, color.value_or(Vec3d{${color.join(", ")}}), true);
+    const std::array<double, 4> baked = look_at_quat(drag_plane_normal);
     const TransformNodeHandle root = edit_gizmo_root(
         engine,
         scene,
-        look_at_quat(drag_plane_normal),
+        baked,
         Vec3{${rootScale
             .map((value) => `static_cast<float>(${value})`)
             .join(", ")}});
@@ -1618,7 +2657,16 @@ ${this.widgetPart(
             PLANE_DRAG_MODULE,
             "createPlaneDragGizmo",
             lowerer,
-        )});
+        )},
+        ${this.widgetLocalAxis(
+            PLANE_DRAG_MODULE,
+            "createPlaneDragGizmo",
+            "localNormal",
+            "dragPlaneNormal",
+            "drag_plane_normal",
+        )},
+        baked,
+        GizmoLocalOrientation::look_at_world_axis);
 }`;
     }
 
@@ -1673,18 +2721,30 @@ EditGizmoHandle create_plane_rotation_gizmo(
     Engine& engine,
     UtilityLayerHandle layer,
     Vec3d plane_normal,
-    std::optional<Vec3d> color) {
+    std::optional<Vec3d> color,
+    std::optional<double> tessellation_option,
+    std::optional<double> thickness_option) {
     Scene& scene = layer_record(engine, layer).scene;
-    const double thickness = ${this.context.doubleLiteral(thickness)};
-    const double tessellation = ${this.context.doubleLiteral(
+    const double thickness = thickness_option.value_or(${this.context.doubleLiteral(
+        thickness,
+    )});
+    const double tessellation = tessellation_option.value_or(${this.context.doubleLiteral(
         tessellation,
-    )};
+    )});
     const MaterialHandle material = gizmo_material(
         engine, color.value_or(Vec3d{${color.join(", ")}}), false);
+    const Vec3d initial_normal = ${this.widgetLocalAxis(
+        PLANE_ROTATION_MODULE,
+        "createPlaneRotationGizmo",
+        "initialNormal",
+        "planeNormal",
+        "plane_normal",
+    )};
+    const std::array<double, 4> baked = look_at_quat(plane_normal);
     const TransformNodeHandle root = edit_gizmo_root(
         engine,
         scene,
-        look_at_quat(plane_normal),
+        baked,
         Vec3{${rootScale
             .map((value) => `static_cast<float>(${value})`)
             .join(", ")}});
@@ -1707,8 +2767,115 @@ ${this.widgetPart(
             PLANE_ROTATION_MODULE,
             "createPlaneRotationGizmo",
             lowerer,
-        )});
+        )},
+        ${this.widgetLocalAxis(
+            PLANE_ROTATION_MODULE,
+            "createPlaneRotationGizmo",
+            "localNormal",
+            "planeNormal",
+            "plane_normal",
+            new Map([["initialNormal", "initial_normal"]]),
+        )},
+        baked,
+        GizmoLocalOrientation::look_at_world_axis);
 }`;
+    }
+
+    /**
+     * The one pinned fact a camera's folded `attachControl` options bag
+     * rests on: the three gizmo-state predicates are inert here.
+     *
+     * `isGizmoInteracting`, `isGizmoDragging` and `isGizmoPickPending`
+     * each read a module-level dispatcher map through
+     * `_dispatchers?.get(canvas)` and return a falsy constant when that is
+     * undefined. The map starts null and the only expression that assigns
+     * it is inside `getDispatchers`, whose only caller is
+     * `registerPointerDrag` -- which this port reaches nowhere, because
+     * there is no pointer-input contract to bind a drag to. So the fold
+     * the compiler performs is the pinned body's own value, and this
+     * asserts the two halves of that: one writer for the map, one caller
+     * for the writer.
+     *
+     * Asserted beside the family rather than at the call site because it
+     * is a statement about the pin. A pinned change that gave the map a
+     * second writer would leave the compiler folding a predicate that had
+     * stopped being constant.
+     */
+    private assertPointerDispatchersInert(): void {
+        const file = this.context.sourceFile(POINTER_DRAG_MODULE);
+        const within = (node: ts.Node, holder: string): boolean => {
+            const declaration = this.context.functionDeclaration(
+                POINTER_DRAG_MODULE,
+                holder,
+            ).declaration;
+            return (
+                node.getStart(file) >= declaration.getStart(file) &&
+                node.end <= declaration.end
+            );
+        };
+        const writes: ts.Node[] = [];
+        const readers: ts.Node[] = [];
+        const visit = (node: ts.Node): void => {
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                node.left.text === "_dispatchers"
+            ) {
+                writes.push(node);
+            }
+            if (
+                ts.isCallExpression(node) &&
+                ts.isIdentifier(node.expression) &&
+                node.expression.text === "getDispatchers"
+            ) {
+                readers.push(node);
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(file);
+        if (
+            writes.length === 0 ||
+            writes.some((node) => !within(node, "getDispatchers")) ||
+            readers.length === 0 ||
+            readers.some((node) => !within(node, "registerPointerDrag"))
+        ) {
+            this.context.contractError(
+                this.context.functionDeclaration(
+                    POINTER_DRAG_MODULE,
+                    "registerPointerDrag",
+                ).declaration,
+                "Expected the pinned gizmo pointer dispatcher map to be " +
+                    "filled only by registerPointerDrag: the camera " +
+                    "deferral callbacks fold to the value its three state " +
+                    "predicates return with no dispatcher registered, and " +
+                    "this port registers none.",
+            );
+        }
+        for (const predicate of [
+            "isGizmoInteracting",
+            "isGizmoDragging",
+            "isGizmoPickPending",
+        ]) {
+            const declaration = this.context.functionDeclaration(
+                POINTER_DRAG_MODULE,
+                predicate,
+            ).declaration;
+            if (
+                !this.context.hasNode(
+                    declaration,
+                    (node) =>
+                        ts.isIdentifier(node) &&
+                        node.text === "_dispatchers",
+                )
+            ) {
+                this.context.contractError(
+                    declaration,
+                    `Expected pinned ${predicate} to answer from the ` +
+                        "dispatcher map this port never fills.",
+                );
+            }
+        }
     }
 
     public lower(): LoweredSource {
@@ -1746,14 +2913,30 @@ ${this.widgetPart(
             [LENGTH_MODULE, ["lengthVec3"]],
             [NORMALIZE_MODULE, ["normalizeVec3"]],
             ...EDIT_MODULES.map(
-                ([modulePath, factory, attach]) =>
+                ({ modulePath, factory, attach }) =>
                     [modulePath, [factory, attach]] as const,
             ),
+            // The composites, anchored whole: each scene reaches only the
+            // ones it builds, but the module declares all three factories
+            // and all three fan-outs, so a pin that renamed any of them
+            // fails generation rather than compiling a composite short of
+            // an arm.
+            [
+                COMPOSITE_MODULE,
+                COMPOSITE_MODULES.flatMap(
+                    ({ factory, attach, setLocal }) => [
+                        factory,
+                        attach,
+                        setLocal,
+                    ],
+                ),
+            ] as const,
         ] as const) {
             for (const symbol of symbols) {
                 this.context.functionDeclaration(modulePath, symbol);
             }
         }
+        this.assertPointerDispatchersInert();
         const utilityFile = this.context.sourceFile(UTILITY_MODULE);
         const utility = this.context.functionDeclaration(
             UTILITY_MODULE,
@@ -2707,6 +3890,48 @@ void attach_gizmo_to_node(
     record.attached_node = node;
 }
 
+${
+            this.reachedComposites().length > 0
+                ? `
+// The pin keeps useLocalCoordinates as a plain mutable field on each
+// widget, read by its follow; this is that write. It sits inside the
+// composite gate because the composite fan-out below and the composite
+// factory bodies are its only callers -- a scene reaching the four single
+// widgets alone never sets the mode, and an emitted function nothing calls
+// is a -Werror failure.
+void set_edit_gizmo_local_coordinates(
+    Engine& engine,
+    EditGizmoHandle gizmo,
+    bool use_local) {
+    engine.edit_gizmos[gizmo.value].use_local_coordinates = use_local;
+}
+
+// ${this.context.provenance(
+                      COMPOSITE_MODULE,
+                      "attachPositionGizmoToNode",
+                      "the composite coordinate-mode fan-out beside it",
+                  )}
+void attach_composite_gizmo_to_node(
+    Engine& engine,
+    CompositeGizmoHandle gizmo,
+    MeshHandle node) {
+    for (std::uint32_t i = 0; i < gizmo.part_count; ++i) {
+        attach_gizmo_to_node(engine, gizmo.parts[i], node);
+    }
+}
+
+void set_composite_gizmo_local_coordinates(
+    Engine& engine,
+    CompositeGizmoHandle gizmo,
+    bool use_local) {
+    for (std::uint32_t i = 0; i < gizmo.local_coordinate_count; ++i) {
+        set_edit_gizmo_local_coordinates(
+            engine, gizmo.parts[i], use_local);
+    }
+}
+`
+                : ""
+        }
 } // namespace bbl
 `,
         };

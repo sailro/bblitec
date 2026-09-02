@@ -22,20 +22,31 @@
 // "camembert" sector) is not built. What is asserted, and where, is stated
 // once on the `display-only-editing-gizmo` adaptation in
 // `src/compiler/adaptations.ts`.
+//
+// The three COMPOSITES are fan-outs over those four, so each reaches the
+// widget rows its own pinned body calls and adds only its own assembly.
+// That same unreached pointer drag is what makes a camera's
+// `attachControl` deferral bag fold rather than refuse -- the three
+// predicates it names read a dispatcher map nothing here fills, so the bag
+// leaves the pinned camera taking the branches it takes without one. The
+// fold lives beside those predicates, below.
 import ts from "typescript";
 import { validateObjectProperties } from "../option-helpers.js";
+import type { CompilerSymbols } from "../symbols.js";
 import type { Feature, Value, ValueKind } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
-export interface GizmoIntrinsicContext extends IntrinsicCallContext {
-    requireEngine(value: Value, node: ts.Node): string;
-    requireDefaultEngine(node: ts.Node): string;
-    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
-    fail(node: ts.Node, message: string): never;
-    compileVec3(
-        expression: ts.Expression,
-        precision?: "float" | "double",
-    ): string;
+/**
+ * What folding `attachControl`'s options bag needs.
+ *
+ * Declared apart from the family context below because the bag arrives at
+ * the CAMERA's intrinsic rather than a gizmo's -- the pin puts the
+ * callbacks on `AttachControlOptions` and their meaning on
+ * `src/gizmo/pointer-drag.ts`, so the fold lives with the predicates it
+ * reads and the camera call reaches it.
+ */
+export interface CameraDeferralContext {
+    compileValue(expression: ts.Expression): Value;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -44,6 +55,29 @@ export interface GizmoIntrinsicContext extends IntrinsicCallContext {
         name: string,
     ): ts.Expression | undefined;
     propertyName(name: ts.PropertyName): string | undefined;
+    fail(node: ts.Node, message: string): never;
+    /**
+     * The resolved import symbols: the fold has to know that
+     * `isGizmoInteracting` is the pin's own predicate rather than a
+     * scene-local function that happens to share its spelling.
+     */
+    readonly symbols: CompilerSymbols;
+}
+
+export interface GizmoIntrinsicContext
+    extends IntrinsicCallContext,
+        CameraDeferralContext {
+    requireEngine(value: Value, node: ts.Node): string;
+    requireDefaultEngine(node: ts.Node): string;
+    expectSameEngine(left: Value, right: Value, node: ts.Node): void;
+    compileVec3(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
 }
 
 /**
@@ -90,6 +124,14 @@ interface EditGizmoShape {
     cppFactory: string;
     /** `dragAxis`, `dragPlaneNormal` or `planeNormal`. */
     axis: string;
+    /**
+     * The options past the axis the pinned factory defaults through a
+     * `??`, in the order the generated factory takes them. Each travels
+     * as the pin's own optional, so the default it falls back to stays in
+     * the generated body where the pin writes it -- `color` is the first
+     * of them for all four.
+     */
+    options: readonly { name: string; kind: "number" | "boolean" }[];
     feature: Feature;
     /** What the pinned body's own mesh factories build. */
     meshFeatures: readonly Feature[];
@@ -102,6 +144,10 @@ const editGizmos: readonly EditGizmoShape[] = [
         kind: "axis-drag-gizmo",
         cppFactory: "bbl::create_axis_drag_gizmo",
         axis: "dragAxis",
+        options: [
+            { name: "color", kind: "number" },
+            { name: "thickness", kind: "number" },
+        ],
         feature: "gizmo:axis-drag",
         meshFeatures: ["mesh:cylinder"],
     },
@@ -111,8 +157,17 @@ const editGizmos: readonly EditGizmoShape[] = [
         kind: "axis-scale-gizmo",
         cppFactory: "bbl::create_axis_scale_gizmo",
         axis: "dragAxis",
+        options: [
+            { name: "color", kind: "number" },
+            { name: "thickness", kind: "number" },
+            { name: "uniformScaling", kind: "boolean" },
+        ],
         feature: "gizmo:axis-scale",
-        meshFeatures: ["mesh:box", "mesh:cylinder"],
+        // Three, because the pinned module imports three: the arrow arm's
+        // box and cylinder, and the `centered` arm's octahedron, which
+        // `uniformScaling` selects at run time inside `buildScaleArrow`.
+        // Reached here because that is where the pin reaches them.
+        meshFeatures: ["mesh:box", "mesh:cylinder", "mesh:polyhedron"],
     },
     {
         factory: "createPlaneDragGizmo",
@@ -120,6 +175,7 @@ const editGizmos: readonly EditGizmoShape[] = [
         kind: "plane-drag-gizmo",
         cppFactory: "bbl::create_plane_drag_gizmo",
         axis: "dragPlaneNormal",
+        options: [{ name: "color", kind: "number" }],
         feature: "gizmo:plane-drag",
         meshFeatures: ["mesh:plane"],
     },
@@ -129,22 +185,70 @@ const editGizmos: readonly EditGizmoShape[] = [
         kind: "plane-rotation-gizmo",
         cppFactory: "bbl::create_plane_rotation_gizmo",
         axis: "planeNormal",
+        options: [
+            { name: "color", kind: "number" },
+            { name: "tessellation", kind: "number" },
+            { name: "thickness", kind: "number" },
+        ],
         feature: "gizmo:plane-rotation",
         meshFeatures: ["mesh:torus"],
     },
 ];
 
 /**
+ * One optional member of a gizmo options bag, as the generated factory
+ * takes it.
+ *
+ * Every one of them travels as the pin's own `std::optional`: the
+ * `?? [0.5, 0.5, 0.5]`, `?? 1`, `?? 32` and `?? false` behind them stay in
+ * the generated body, where the lowerer reads each default out of that
+ * coalesce instead of this file restating it.
+ */
+function compileGizmoOption(
+    context: GizmoIntrinsicContext,
+    factory: string,
+    option: { name: string; kind: "number" | "boolean" },
+    expression: ts.Expression | undefined,
+): string {
+    if (option.name === "color") {
+        return expression
+            ? `std::optional<bbl::Vec3d>{` +
+                  `${context.compileVec3(expression, "double")}}`
+            : "std::optional<bbl::Vec3d>{}";
+    }
+    if (!expression) {
+        return option.kind === "number"
+            ? "std::optional<double>{}"
+            : "std::optional<bool>{}";
+    }
+    if (option.kind === "number") {
+        return (
+            "std::optional<double>{" +
+            `${context.compileNumber(expression, "double")}}`
+        );
+    }
+    const value = context.compileValue(expression);
+    if (value.kind !== "boolean") {
+        context.fail(
+            expression,
+            `${factory}'s ${option.name} is a boolean, received ` +
+                `${value.kind}.`,
+        );
+    }
+    return `std::optional<bool>{${value.cpp}}`;
+}
+
+/**
  * `create<Widget>Gizmo(engine, layer, options)`.
  *
- * Two members are served and the rest refuse by name. The axis is the
- * widget's whole orientation, and the colour is a material value the
- * generated builder takes as a parameter -- both are what the scene says
- * rather than what the unit builds. Every other member changes geometry
- * the unit emits from the pinned factory's own defaults (`thickness`,
- * `tessellation`), or names a material or a strength only a pointer drag
- * installs (`hoverColor`, `disableColor`, `rotationColor`, `sensitivity`,
- * `uniformScaling`) -- and pointer drag is not reached.
+ * The axis and every member the pinned factory defaults through a `??`
+ * that changes what the widget DRAWS are served: the axis is the widget's
+ * whole orientation, the colour is a material value, and `thickness`,
+ * `tessellation` and `uniformScaling` each select geometry the generated
+ * builder emits both arms of. What still refuses by name is the rest --
+ * `hoverColor`, `disableColor`, `rotationColor` and `sensitivity` name a
+ * material or a strength only a pointer drag installs, and pointer
+ * interaction is not reached.
  */
 function compileEditGizmo(
     context: GizmoIntrinsicContext,
@@ -161,12 +265,11 @@ function compileEditGizmo(
     validateObjectProperties(
         context,
         options,
-        [shape.axis, "color"],
-        `${shape.factory} options support ${shape.axis} and color. ` +
-            "The rest either change geometry the generated widget " +
-            "builds from the pinned factory's own defaults, or name a " +
-            "material or a strength only a pointer drag installs, and " +
-            "pointer interaction is not reached.",
+        [shape.axis, ...shape.options.map(({ name }) => name)],
+        `${shape.factory} options support ${shape.axis} and ` +
+            `${shape.options.map(({ name }) => name).join(", ")}. ` +
+            "The rest name a material or a strength only a pointer drag " +
+            "installs, and pointer interaction is not reached.",
     );
     const axisExpression = context.objectProperty(options, shape.axis);
     if (!axisExpression) {
@@ -176,7 +279,14 @@ function compileEditGizmo(
                 "orients its root onto it, and there is no default.",
         );
     }
-    const colorExpression = context.objectProperty(options, "color");
+    const supplied = shape.options.map((option) =>
+        compileGizmoOption(
+            context,
+            shape.factory,
+            option,
+            context.objectProperty(options, option.name),
+        ),
+    );
     context.reachFeature(shape.feature, call);
     // The layer's own hosting: every widget hangs off a transform node
     // parented under nothing and carrying the meshes below it.
@@ -189,18 +299,321 @@ function compileEditGizmo(
         kind: shape.kind,
         cpp:
             `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}, ` +
-            `${context.compileVec3(axisExpression, "double")}, ` +
-            // Optional rather than defaulted here: the pin's own
-            // `options.color ?? [0.5, 0.5, 0.5]` stays in the generated
-            // body, where the lowerer reads the default out of that
-            // coalesce instead of this file restating it.
-            `${
-                colorExpression
-                    ? `std::optional<bbl::Vec3d>{` +
-                      `${context.compileVec3(colorExpression, "double")}}`
-                    : "std::optional<bbl::Vec3d>{}"
-            })`,
+            `${context.compileVec3(axisExpression, "double")}` +
+            `${supplied.map((argument) => `, ${argument}`).join("")})`,
         engineCpp: engine.cpp,
+    };
+}
+
+/**
+ * The three pinned predicates a camera's `attachControl` options bag
+ * defers to (`src/gizmo/pointer-drag.ts`).
+ *
+ * All three read the same module-level `_dispatchers` WeakMap, which only
+ * `registerPointerDrag` populates -- and this port reaches no
+ * pointer-drag registration at all (the `display-only-editing-gizmo`
+ * adaptation), so `_dispatchers?.get(canvas)` is always undefined and
+ * each returns `false` from the pinned body's own early return. That the
+ * map has exactly that one writer is asserted at generation, beside the
+ * gizmo family it belongs to.
+ */
+const gizmoStatePredicates: ReadonlySet<string> = new Set([
+    "isGizmoInteracting",
+    "isGizmoDragging",
+    "isGizmoPickPending",
+]);
+
+/**
+ * `attachControl`'s optional fourth argument, and what each member has to
+ * fold to for the camera to keep handling its own pointer input.
+ *
+ * The pinned `attachControl` consults `shouldHandlePointerDown` on every
+ * pointer-down and the other two on every pointer-move; those are the
+ * only reads, so a bag whose members fold to these values selects exactly
+ * the branches the no-options call selects and lowers to nothing.
+ */
+const cameraDeferralMembers: ReadonlyMap<string, boolean> = new Map([
+    ["shouldHandlePointerDown", true],
+    ["isExternalDragActive", false],
+    ["isExternalPickPending", false],
+]);
+
+/** One `() => <predicate>(canvas)` callback, folded to its constant. */
+function foldGizmoStatePredicate(
+    context: CameraDeferralContext,
+    expression: ts.Expression,
+    refusal: string,
+): boolean {
+    if (
+        !ts.isArrowFunction(expression) ||
+        expression.parameters.length !== 0 ||
+        ts.isBlock(expression.body)
+    ) {
+        context.fail(expression, refusal);
+    }
+    let body = expression.body as ts.Expression;
+    let negated = false;
+    if (
+        ts.isPrefixUnaryExpression(body) &&
+        body.operator === ts.SyntaxKind.ExclamationToken
+    ) {
+        negated = true;
+        body = body.operand;
+    }
+    if (
+        !ts.isCallExpression(body) ||
+        !ts.isIdentifier(body.expression) ||
+        !gizmoStatePredicates.has(
+            context.symbols.importedName(body.expression) ?? "",
+        ) ||
+        body.arguments.length !== 1
+    ) {
+        context.fail(expression, refusal);
+    }
+    const canvas = context.compileValue(body.arguments[0]!);
+    if (canvas.kind !== "browser") {
+        context.fail(
+            body.arguments[0]!,
+            "A gizmo state predicate reads the dispatcher registered for " +
+                `one canvas element, received ${canvas.kind}.`,
+        );
+    }
+    // The pinned body's own value with no dispatcher registered.
+    return negated;
+}
+
+/**
+ * `attachControl(camera, canvas, scene, { ...deferral callbacks })`.
+ *
+ * Folded rather than refused, and folded rather than erased. Each
+ * callback is proved to be one of the pin's three gizmo-state predicates
+ * (optionally negated), each of which returns `false` here by the pinned
+ * body quoted above; the resulting constants are then required to be the
+ * ones that leave the pinned `attachControl` taking the same branches it
+ * takes with no options at all. A bag that folds any other way would
+ * change what the camera does, and native camera control has no external
+ * interactor to defer to -- so it refuses by name instead of compiling a
+ * camera that ignores it.
+ */
+export function foldCameraDeferralOptions(
+    context: CameraDeferralContext,
+    expression: ts.Expression,
+): void {
+    const refusal =
+        "attachControl's camera-deferral callbacks fold from the pinned " +
+        "gizmo state predicates, so each must be `() => " +
+        "isGizmoInteracting(canvas)`, `() => isGizmoDragging(canvas)` or " +
+        "`() => isGizmoPickPending(canvas)`, optionally negated. Anything " +
+        "else is consulted only from a pointer handler this port does not " +
+        "reach, and would be accepted and then never called.";
+    const options = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        options,
+        [...cameraDeferralMembers.keys()],
+        "attachControl options support the three camera-deferral " +
+            "callbacks the pinned AttachControlOptions declares.",
+    );
+    for (const [member, inert] of cameraDeferralMembers) {
+        const supplied = context.objectProperty(options, member);
+        if (!supplied) {
+            continue;
+        }
+        if (foldGizmoStatePredicate(context, supplied, refusal) !== inert) {
+            context.fail(
+                supplied,
+                `attachControl's ${member} folds to ${String(!inert)} ` +
+                    "here: the pinned predicates read the pointer-drag " +
+                    "dispatcher map that only registerPointerDrag " +
+                    "populates, and this port reaches no pointer-drag " +
+                    "registration, so each returns false by the pinned " +
+                    "body's own early return. Only a bag that leaves the " +
+                    "camera handling its own pointer input lowers, because " +
+                    "native camera control has no external interactor to " +
+                    "defer the gesture to.",
+            );
+        }
+    }
+}
+
+/**
+ * One composite gizmo, as its three entry points need to see it.
+ *
+ * The pin declares all three in one module and builds each from the four
+ * widgets above, so what differs between them is the option bag the
+ * factory takes, which widgets its body reaches, and the value kind that
+ * keeps one composite's setter from accepting another's handle.
+ */
+interface CompositeGizmoShape {
+    factory: string;
+    attach: string;
+    /** The pinned coordinate-mode fan-out, where the pin declares one. */
+    setLocal: string;
+    kind: ValueKind;
+    cppFactory: string;
+    feature: Feature;
+    /**
+     * The options the pinned factory defaults through a `??`, in the
+     * order the generated factory takes them. Each travels as the pin's
+     * own optional so the default stays in the generated body.
+     */
+    options: readonly { name: string; kind: "number" | "boolean" }[];
+    /** Every feature the pinned body's own factory calls reach. */
+    reached: readonly Feature[];
+}
+
+const compositeGizmos: readonly CompositeGizmoShape[] = [
+    {
+        factory: "createPositionGizmo",
+        attach: "attachPositionGizmoToNode",
+        setLocal: "setPositionGizmoLocalCoordinates",
+        kind: "position-gizmo",
+        cppFactory: "bbl::create_position_gizmo",
+        feature: "gizmo:position",
+        options: [
+            { name: "planarEnabled", kind: "boolean" },
+            { name: "thickness", kind: "number" },
+        ],
+        // The pinned body imports and calls both widget factories
+        // unconditionally -- `planarEnabled` is a run-time ternary inside
+        // it, not an import guard -- so both are reached where the pin
+        // reaches them.
+        reached: [
+            "gizmo:axis-drag",
+            "gizmo:plane-drag",
+            "mesh:cylinder",
+            "mesh:plane",
+        ],
+    },
+    {
+        factory: "createRotationGizmo",
+        attach: "attachRotationGizmoToNode",
+        setLocal: "setRotationGizmoLocalCoordinates",
+        kind: "rotation-gizmo",
+        cppFactory: "bbl::create_rotation_gizmo",
+        feature: "gizmo:rotation",
+        options: [
+            { name: "tessellation", kind: "number" },
+            { name: "thickness", kind: "number" },
+        ],
+        reached: ["gizmo:plane-rotation", "mesh:torus"],
+    },
+    {
+        factory: "createScaleGizmo",
+        attach: "attachScaleGizmoToNode",
+        setLocal: "setScaleGizmoLocalCoordinates",
+        kind: "scale-gizmo",
+        cppFactory: "bbl::create_scale_gizmo",
+        feature: "gizmo:scale",
+        options: [{ name: "thickness", kind: "number" }],
+        // The central uniform handle is `buildScaleArrow`'s `centered`
+        // arm, whose octahedron is a `createPolyhedron` -- so a scale
+        // composite reaches one mesh family the single widget does not.
+        reached: [
+            "gizmo:axis-scale",
+            "mesh:box",
+            "mesh:cylinder",
+            "mesh:polyhedron",
+        ],
+    },
+];
+
+/** `create<Composite>Gizmo(engine, layer, options?)`. */
+function compileCompositeGizmo(
+    context: GizmoIntrinsicContext,
+    shape: CompositeGizmoShape,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 3);
+    const engine = context.compileValue(call.arguments[0]!);
+    const layer = context.compileValue(call.arguments[1]!);
+    context.expectKind(engine, "engine", call.arguments[0]!);
+    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    context.expectSameEngine(engine, layer, call);
+    const options = call.arguments[2]
+        ? context.expectObjectLiteral(call.arguments[2])
+        : undefined;
+    if (options) {
+        validateObjectProperties(
+            context,
+            options,
+            shape.options.map(({ name }) => name),
+            `${shape.factory} options support ` +
+                `${shape.options.map(({ name }) => name).join(" and ")}: ` +
+                "those are the members the pinned factory declares.",
+        );
+    }
+    const supplied = shape.options.map((option) =>
+        compileGizmoOption(
+            context,
+            shape.factory,
+            option,
+            options
+                ? context.objectProperty(options, option.name)
+                : undefined,
+        ),
+    );
+    context.reachFeature(shape.feature, call);
+    for (const feature of shape.reached) {
+        context.reachFeature(feature, call);
+    }
+    // Every sub-widget hangs off its own transform node, as the single
+    // widgets do.
+    context.reachFeature("mesh:transform-node", call);
+    context.reachFeature("mesh:parenting", call);
+    return {
+        kind: shape.kind,
+        cpp:
+            `${shape.cppFactory}(${engine.cpp}, ${layer.cpp}` +
+            `${supplied.map((argument) => `, ${argument}`).join("")})`,
+        engineCpp: engine.cpp,
+    };
+}
+
+/** `attach<Composite>GizmoToNode(gizmo, node)`. */
+function compileCompositeAttach(
+    context: GizmoIntrinsicContext,
+    shape: CompositeGizmoShape,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const gizmo = context.compileValue(call.arguments[0]!);
+    const node = context.compileValue(call.arguments[1]!);
+    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
+    context.expectKind(node, "mesh", call.arguments[1]!);
+    context.expectSameEngine(gizmo, node, call);
+    return {
+        kind: "void",
+        cpp:
+            `bbl::attach_composite_gizmo_to_node(` +
+            `${context.requireEngine(gizmo, call)}, ` +
+            `${gizmo.cpp}, ${node.cpp})`,
+    };
+}
+
+/** `set<Composite>GizmoLocalCoordinates(gizmo, useLocal)`. */
+function compileCompositeLocalCoordinates(
+    context: GizmoIntrinsicContext,
+    shape: CompositeGizmoShape,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const gizmo = context.compileValue(call.arguments[0]!);
+    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
+    const useLocal = context.compileValue(call.arguments[1]!);
+    if (useLocal.kind !== "boolean") {
+        context.fail(
+            call.arguments[1]!,
+            `${shape.setLocal} takes a boolean, received ` +
+                `${useLocal.kind}.`,
+        );
+    }
+    return {
+        kind: "void",
+        cpp:
+            `bbl::set_composite_gizmo_local_coordinates(` +
+            `${context.requireEngine(gizmo, call)}, ` +
+            `${gizmo.cpp}, ${useLocal.cpp})`,
     };
 }
 
@@ -236,6 +649,21 @@ export function compileGizmoIntrinsic(
         }
         if (importedName === shape.attach) {
             return compileEditGizmoAttach(context, shape, call);
+        }
+    }
+    for (const shape of compositeGizmos) {
+        if (importedName === shape.factory) {
+            return compileCompositeGizmo(context, shape, call);
+        }
+        if (importedName === shape.attach) {
+            return compileCompositeAttach(context, shape, call);
+        }
+        if (importedName === shape.setLocal) {
+            return compileCompositeLocalCoordinates(
+                context,
+                shape,
+                call,
+            );
         }
     }
     switch (importedName) {

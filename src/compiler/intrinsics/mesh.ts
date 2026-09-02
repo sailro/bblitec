@@ -581,20 +581,72 @@ export function compileMeshIntrinsic(
                     ts.SyntaxKind.UndefinedKeyword ||
                 (ts.isIdentifier(argument) &&
                     argument.text === "undefined");
-            const optional = [5, 6, 7, 8].map((index) =>
-                !isUndefinedArgument(call.arguments[index])
-                    ? context.compileTypedArrayArgument(
-                          call.arguments[index]!,
-                          "f32array",
-                      )
-                    : "{}",
-            );
-            // The streams decide the mesh half of the variant key, in the
-            // pin's own argument order: uvs, uv2s, tangents, colors.
+            // The pin's four optional streams, in its own argument order:
+            // uvs, uv2s, tangents, colors. A call that omits one, or hands
+            // it a literal `undefined`, settles here. One that hands it a
+            // value the data model holds as `Float32Array | undefined`
+            // settles at RUN time — scene 86's shared mesh table is three
+            // entries of one record type differing in exactly which
+            // attributes they carry — and `create_mesh_from_data` reads an
+            // empty array as the absent stream either way, which is the
+            // same absence the folded `{}` writes.
+            const streams = [5, 6, 7, 8].map((index) => {
+                const argument = call.arguments[index];
+                if (isUndefinedArgument(argument)) {
+                    return { cpp: "{}", present: false as boolean | undefined };
+                }
+                const unwrapped = context.unwrap(argument!);
+                const value = context.compileValue(argument!);
+                if (
+                    value.kind === "data" &&
+                    value.dataType?.kind === "optional" &&
+                    value.dataType.inner.kind === "f32array"
+                ) {
+                    // The select reads the operand twice, so only a path
+                    // is taken: an identifier or a member chain evaluates
+                    // to the same storage both times. Anything else --
+                    // a call, an indexed read whose subscript is itself an
+                    // expression -- refuses here rather than running twice.
+                    if (
+                        !ts.isIdentifier(unwrapped) &&
+                        !ts.isPropertyAccessExpression(unwrapped)
+                    ) {
+                        context.fail(
+                            argument!,
+                            "An optional vertex stream must be a local or a " +
+                                "member of one: the absent case is selected " +
+                                "at run time, which reads the operand twice.",
+                        );
+                    }
+                    context.reachJsData();
+                    return {
+                        cpp:
+                            `(${value.cpp}.has_value() ? ${value.cpp}.value()` +
+                            ` : bbl::js::F32Array{})`,
+                        present: undefined,
+                    };
+                }
+                return {
+                    cpp: context.compileTypedArrayArgument(
+                        argument!,
+                        "f32array",
+                    ),
+                    present: true as boolean | undefined,
+                };
+            });
+            const optional = streams.map((stream) => stream.cpp);
+            // The streams decide the mesh half of the variant key. A
+            // run-time one leaves its entry unrecorded: generation cannot
+            // answer what the composed Standard or PBR variant would need,
+            // so the pairing refuses where it is known — at the material
+            // assignment — rather than composing against a guess.
             const sceneMeshIndex = context.recordSceneMesh("from-data", {
-                hasUv2: optional[1] !== "{}",
-                hasTangents: optional[2] !== "{}",
-                hasColors: optional[3] !== "{}",
+                hasUv2: streams[1]!.present === true,
+                hasTangents: streams[2]!.present === true,
+                hasColors: streams[3]!.present === true,
+                ...(streams.some((stream) => stream.present === undefined)
+                    ? { runtimeStreams: true as const }
+                    : {}),
             });
             context.reachFeature("mesh:from-data", call);
             return {
@@ -608,6 +660,9 @@ export function compileMeshIntrinsic(
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
                 directMorphCompatible: true,
+                ...(streams.some((stream) => stream.present === undefined)
+                    ? { runtimeMeshStreams: true as const }
+                    : {}),
             };
         }
 

@@ -2695,6 +2695,15 @@ inline upstream::SceneUniforms pinned_scene_block(
         static_cast<float>(engine.options.width),
     };
     scene_block._envPad0 = static_cast<float>(engine.options.height);
+    // `writeClipPlaneUbo`, the scene-UBO contributor `setClipPlane`
+    // registers. A scene that never clips carries the zero vector, which
+    // is the same distance the pin's unwritten lanes produce.
+    scene_block.clipPlane = {
+        scene.clip_plane.x,
+        scene.clip_plane.y,
+        scene.clip_plane.z,
+        scene.clip_plane.w,
+    };
     const std::array<std::array<float, 4>*, 9> harmonics{
         &scene_block.vSphericalL00,
         &scene_block.vSphericalL1_1,
@@ -2850,6 +2859,24 @@ inline upstream::NodeMeshUniforms node_mesh_block(
         mesh_index < engine.meshes.size() &&
         engine.meshes[mesh_index].receives_shadows) {
         block.receivesShadow[0] = 1.0f;
+    }
+    // `writeAttributeFlags`: the block's three spare lanes carry whether
+    // the mesh supplies uv1, tangents and vertex colours, which is what
+    // `MeshAttributeExistsBlock` selects its serialized fallback on. The
+    // pin skips these stores for a graph that raised no such block; here
+    // they are unconditional, because a module that does not declare the
+    // block never reads the lanes and every mesh block is packed by this
+    // one function.
+    if (mesh_index < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[mesh_index];
+        if (record.geometry < engine.geometries.size()) {
+            const ModelGeometry& geometry =
+                engine.geometries[record.geometry];
+            block.receivesShadow[1] = geometry.has_uvs ? 1.0f : 0.0f;
+            block.receivesShadow[2] = geometry.has_tangents ? 1.0f : 0.0f;
+            block.receivesShadow[3] =
+                geometry.has_vertex_colors ? 1.0f : 0.0f;
+        }
     }
     pinned_mesh_light_selection(scene, engine, mesh_index, block);
     return block;

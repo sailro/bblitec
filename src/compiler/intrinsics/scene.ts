@@ -1,14 +1,20 @@
 import ts from "typescript";
 import type { LightKind, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import {
+    type CameraDeferralContext,
+    foldCameraDeferralOptions,
+} from "./gizmo.js";
 
 export interface SceneIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext,
+        CameraDeferralContext {
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
     compileColor3(expression: ts.Expression): string;
+    compileVec4(expression: ts.Expression): string;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -229,11 +235,19 @@ export function compileSceneIntrinsic(
 
         case "attachControl":
         case "attachFreeControl": {
-            context.expectArgumentCount(call, 2, 3);
+            // Only the ArcRotate hook takes a fourth argument: the pinned
+            // `AttachControlOptions` bag of camera-deferral callbacks,
+            // folded by the gizmo family that owns the predicates they
+            // read. `attachFreeControl` declares no such parameter.
+            context.expectArgumentCount(
+                call,
+                2,
+                importedName === "attachControl" ? 4 : 3,
+            );
             const camera =
                 context.compileValue(call.arguments[0]!);
             const sceneArgument =
-                call.arguments.length === 3
+                call.arguments.length >= 3
                     ? call.arguments[2]!
                     : call.arguments[1]!;
             const scene =
@@ -249,6 +263,12 @@ export function compileSceneIntrinsic(
                 sceneArgument,
             );
             context.expectSameEngine(camera, scene, call);
+            if (call.arguments[3]) {
+                foldCameraDeferralOptions(
+                    context,
+                    call.arguments[3],
+                );
+            }
             if (importedName === "attachFreeControl") {
                 context.reachFeature("camera:free", call);
             }
@@ -364,6 +384,31 @@ export function compileSceneIntrinsic(
                     `${context.compileNumber(property("start"))}, ` +
                     `${context.compileNumber(property("end"))}, ` +
                     `${context.compileColor3(property("color"))})`,
+            };
+        }
+
+        case "setClipPlane": {
+            // src/scene/scene-ubo-extras.ts, `setFog`'s sibling: the plane
+            // is stored on the scene and the writer that puts it in the
+            // scene UBO's own `clipPlane` lane is registered. The pin makes
+            // importing the setter the opt-in that pulls those bytes in --
+            // "keeping those bytes out of scenes that never clip" -- so the
+            // feature is reached at the same call, and the lane a scene
+            // never writes stays the zero its block was packed with.
+            context.expectArgumentCount(call, 2, 2);
+            const scene =
+                context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                scene,
+                "scene",
+                call.arguments[0]!,
+            );
+            context.reachFeature("renderer:clip-plane", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_scene_clip_plane(${scene.cpp}, ` +
+                    `${context.compileVec4(call.arguments[1]!)})`,
             };
         }
 
