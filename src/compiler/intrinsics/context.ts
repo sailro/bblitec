@@ -43,6 +43,8 @@ export interface IntrinsicCallContext {
             hasUv2: boolean;
             hasTangents: boolean;
             hasColors: boolean;
+            /** At least one stream's presence is a run-time answer. */
+            runtimeStreams?: true;
         },
     ): number;
 }

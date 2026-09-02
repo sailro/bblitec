@@ -110,6 +110,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 83 | <img src="images/scenes/scene83.png" alt="Scene 83 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Normals |
 | 84 | <img src="images/scenes/scene84.png" alt="Scene 84 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Fragment Depth |
 | 85 | <img src="images/scenes/scene85.png" alt="Scene 85 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Matrix Blocks |
+| 86 | <img src="images/scenes/scene86.png" alt="Scene 86 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Scene and Mesh State |
 | 87 | <img src="images/scenes/scene87.png" alt="Scene 87 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | NME Iridescence and Image Processing |
 | 88 | <img src="images/scenes/scene88.png" alt="Scene 88 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Loop Block |
 | 89 | <img src="images/scenes/scene89.png" alt="Scene 89 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Storage Blocks |
@@ -123,6 +124,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprites |
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bone Control |
 | 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok collision-event solver delta; not a renderer-fidelity value. |
+| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | $\color{#cf222e}{\textsf{1.102}} / \color{#cf222e}{\textsf{7.144}}$ | $\color{#cf222e}{\textsf{1.102}} / \color{#cf222e}{\textsf{7.144}}$ | Bullet/Havok trigger-drop solver phase after two elastic bounces; not a renderer-fidelity value. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
@@ -188,6 +190,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Plugins |
 | 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Quantized Duck |
 | 221 | <img src="images/scenes/scene221.png" alt="Scene 221 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Pointer Drags |
+| 222 | <img src="images/scenes/scene222.png" alt="Scene 222 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Composite Gizmos |
 | 223 | <img src="images/scenes/scene223.png" alt="Scene 223 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Camera And Light Gizmos |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |

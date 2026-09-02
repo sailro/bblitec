@@ -104,8 +104,8 @@ Primary source ownership:
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/pinned-picking-shaders.ts` | the two modules a GPU pick draws through, composed by running the pin's own builders |
 | `src/lowering/picking-lowerer.ts` | the picker's bookkeeping; every answer belongs to the backend that owns the buffers |
-| `src/lowering/gizmo-lowerer.ts` | the gizmo family from `src/gizmo/*`: the utility layer, the camera and light displays, the four editing widgets, and the three per-frame follows the pin writes for them |
-| `src/lowering/physics-lowerer.ts` | the rigid-body family from `havok.ts`: the step gate, the four frame phases, the aggregate ordering and `_buildShapeParams`' shape sizing |
+| `src/lowering/gizmo-lowerer.ts` | the gizmo family from `src/gizmo/*`: the utility layer, the camera and light displays, the four editing widgets, the three composites, the three per-frame follows the pin writes for them, and the assertion that the pointer-drag dispatcher map is inert |
+| `src/lowering/physics-lowerer.ts` | the rigid-body family from `havok.ts` and the trigger volumes from `havok-trigger.ts`: the step gate, the four frame phases, the aggregate ordering, `_buildShapeParams`' shape sizing, and the primitive-shape factory both shape paths fork on |
 | `src/compiler/intrinsics/physics.ts` | which physics calls a scene reached, and the erased solver module its `await HavokPhysics(...)` produced |
 | `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted |
 | `src/compiler/intrinsics/audio.ts` | the Babylon half of the audio surface: the engine lifecycle reached, and every sound/bus/spatial entry point that refuses by name |

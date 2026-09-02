@@ -370,8 +370,10 @@ export function compileAdaptations(
                 "event -- the walk stops at a nested function, so the " +
                 "second hide `createPlaneRotationGizmo` performs from its " +
                 "drag callback cannot answer for the build-time one, and " +
-                "the dropped `centered` arm cannot answer for the arrow " +
-                "arm this port emits. An upstream change that made one " +
+                "`buildScaleArrow`'s `centered` arm cannot answer for the " +
+                "arrow arm beside it: the two share their local names, so " +
+                "each is asserted in its own scope. An upstream change " +
+                "that made one " +
                 "show fails generation by name rather than dropping it " +
                 "silently. The two extra materials carry no such " +
                 "assertion, and are simply not built because the pinned " +
@@ -383,7 +385,7 @@ export function compileAdaptations(
                 "makes the substitution sound.",
             risk: "medium",
             validation: [
-                "scene 221 parity against the browser golden, which draws the same widgets before any pointer event",
+                "scenes 221 and 222 parity against the browser golden, which draws the same widgets before any pointer event",
                 "generation fails when a pinned collider mesh, sector quad or widget root stops being hidden at build time",
             ],
         });

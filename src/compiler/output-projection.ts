@@ -110,6 +110,9 @@ export const featureSources: Record<Feature, string[]> = {
     "gizmo:axis-scale": [],
     "gizmo:plane-drag": [],
     "gizmo:plane-rotation": [],
+    "gizmo:position": [],
+    "gizmo:rotation": [],
+    "gizmo:scale": [],
     "scene:remove": [],
     "shadow:esm": [],
     "shadow:pcf": [],
@@ -135,6 +138,10 @@ export const featureSources: Record<Feature, string[]> = {
     // which is the same role SDL plays and so the same boundary.
     "physics:world": ["src/pal_physics_bullet.cpp"],
     "physics:aggregate": [],
+    // The trigger drain rides in the same generated physics module the
+    // world already brings, and in the same PAL translation unit; what
+    // the feature records is which pinned module a scene reached.
+    "physics:trigger": [],
     // The Detour/Recast surface the pin calls on the module
     // createNavigationPluginAsync loads -- the same third-party-
     // library-behind-a-fixed-entry-point boundary the physics PAL
@@ -180,6 +187,7 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:transmission": [],
     "material:pbr-linear-image-processing": [],
     "renderer:fog": [],
+    "renderer:clip-plane": [],
     "renderer:geometry-output": [],
     "renderer:post-process": [],
     "renderer:high-precision-matrix": [],

@@ -3175,6 +3175,8 @@ ${lowered.vertexColor}
                 }
             }
             geometry.has_tangents = tangents != nullptr;
+            geometry.has_uvs = texcoords != nullptr;
+            geometry.has_vertex_colors = colors != nullptr;
             // The same fork the position store above took: a static
             // primitive carries its mirrored node world, an animated or
             // instanced one carries the mirror alone and receives the

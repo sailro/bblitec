@@ -251,8 +251,8 @@ leading candidates at this pin:
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
-`createUtilityLayer` 5 (221 and 223 shipped; 222, 224 and 49 are deferred
-behind `attachControl`'s options bag), the GPU
+`createUtilityLayer` 5 (221, 222 and 223 shipped; 224 wants
+`createBoundingBoxGizmo` and 49 is a physics scene), the GPU
 picker 5 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses
 by design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
 also need two `_shared` modules the corpus does not carry).
@@ -299,8 +299,8 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (18 scenes):**
-86, 91, 113-115, 121-124,
+**Integrate first (17 scenes):**
+91, 113-115, 121-124,
 140, 149, 218, 219,
 231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
@@ -316,8 +316,8 @@ own entry below, and for 302 a definite-assignment `let set` in the
 capability table above -- behind which sit the moving-emitter provider and
 an `isLocal` node-particle system.
 
-**Defer (24 scenes):** 41, 42, 45-49, 101-106, 153, 164, 180, 181,
-209, 222, 224, 225, 227, 228, 272.
+**Defer (22 scenes):** 41, 42, 45-49, 102-106, 153, 164, 180, 181,
+209, 224, 225, 227, 228, 272.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
   full and 0.28 foreground, identical on both backends. The composed fragment
@@ -465,13 +465,23 @@ an `isLocal` node-particle system.
   87-89 measure. Each item is a block the composed graph reaches and
   this port refuses by name at generation, though a scene whose first blocker
   is elsewhere reports that instead:
-  - `ClipPlanesBlock` and `MeshAttributeExistsBlock` (86).
   - alpha blending: the graph's own `alphaMode`, which needs the transparent
     bucket and the sort.
   - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
   - the `inputs` handles, which no reached scene writes: a scene setting one
     would need the node UBO rewritten per frame instead of folded.
 
+  - **Tighten the run-time-optional vertex streams scene 86 introduced.**
+    Each stream argument is compiled TWICE -- once to probe its data type,
+    once for real -- and the emitted select
+    `cond ? nullable.value() : F32Array{}` is a prvalue, so the present
+    stream is copy-constructed before binding to a const reference: three
+    full vector copies per `createMeshFromData` call in scene 86. Both want
+    the optionality answered from the data model rather than by compiling.
+    The refusal pairing such a mesh with a non-node material also covers
+    `mesh.material = ...` but not `RenderTask.addMesh(mesh, { material })`;
+    it belongs where composition fabricates the mesh row, since it is a
+    predicate over (mesh, material) rather than over one assignment syntax.
 - [ ] Extend the fullscreen-effect slice past scenes 74, 75 and 76. Each item
   fails by name today; the refusal list is in
   [features](docs/features.md#fullscreen-effects). Of it,
@@ -590,15 +600,19 @@ an `isLocal` node-particle system.
   `SceneContext`s on one engine rendered into split camera viewports, and
   `parseNodeMaterialFromSnippet` with a per-class `blockLoader` of dynamic
   imports.
-- [ ] Scene 86: support `setClipPlane`, then the mesh-data module function
-  behind its `createMeshFromData`.
 - [ ] Scene 91: support `initializeCsg2Async`.
 - [ ] Scenes 113 and 114: past the frame-yield contract, which now unrolls
-  their `waitFrames(4)`, each wants one thing already sized above — 113
+  their `waitFrames(4)`, both are arms of the GPU-picking entry below rather
+  than scenes of their own. 113 wants
   `enableDetailedPicking`/`getPickedNormal` plus the N-ary `Math.hypot` the
-  hypot-spelling entry blocks, and 114 `setPbrUnlit`'s static-tint
-  requirement. Both are arms of the GPU-picking entry below rather than
-  scenes of their own.
+  hypot-spelling entry blocks. **114 is not the one-contract scene this
+  entry used to claim** -- probed, its ladder is `setPbrUnlit`'s tint
+  through two levels of user-function parameter, then `TypedArray.set` from
+  a plain array, then a scene-code `createSkeleton(engine, joints, weights,
+  2, boneData)` assigned to `mesh.skeleton` (raw bone matrices, not a glTF
+  skin), and behind that the whole detailed-picking arm PLUS
+  `deform-picking-projection.ts`, because both of its pick targets are
+  deformed.
 - [ ] Scene 149: `break`/`continue` in the consuming loop over a container's
   mesh walk (the walk itself lowers), then the node family's
   `GeometryTextureOutputBlock`. Needs `shared/scene149-nme.ts` copied out of
@@ -798,10 +812,11 @@ an `isLocal` node-particle system.
 These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
-- [ ] Scenes 41-43, 45-49, 101-106, 209: finish the physics lane. **Scenes
-  40, 44 and 100 are integrated and published** -- 40 the sphere drop, 100
-  the same drop with a registered collision event, and 44 the sleeping
-  towers, each frozen at the pin's own capture query and measured on both
+- [ ] Scenes 41-43, 45-49, 102-106, 209: finish the physics lane. **Scenes
+  40, 44, 100 and 101 are integrated and published** -- 40 the sphere drop,
+  100 the same drop with a registered collision event, 44 the sleeping
+  towers and 101 the trigger volume, each frozen at the pin's own capture
+  query and measured on both
   backends. What remains is one capability per scene, and none of it is
   shared plumbing any more.
   - **First blockers**, each a per-scene API rather than shared plumbing:
@@ -814,8 +829,15 @@ earlier compiler error.
     a height-field shape and a switch-assigned `let mesh`);
     `createPhysicsBody` (48); `attachControl`'s options bag (49, which is
     also a gizmo scene);
-    `createPhysicsShape` (101, 102); a `new Map` with no concrete type
-    arguments (103); the owner-name grouping in `buildOwnerMap` (104, 105 --
+    `createPhysicsShape` was 101's and 102's; it ships now, so **102 is
+    unmeasured and wants a re-probe**. 103's stated blocker was wrong twice
+    over: its first is `getViewProjectionMatrix` (scene103.ts:274, in a
+    branch that does NOT fold under its query), and its `new Map` failure is
+    not "no concrete type arguments" -- the scene passes them -- but that the
+    pinned `PhysicsBody` interface (`_hkBody: any`, a cyclic `_world`) has
+    no plain-data mapping, so the key type resolves to nothing. Behind those
+    sit live pointer input and a raycast surface across the PAL and the
+    generated layers. The owner-name grouping in `buildOwnerMap` (104, 105 --
     a native mesh record carries its own `scene_node_name`, not its nearest
     non-mesh ancestor's, so the guards have no folded arrangement; both die
     on `createPhysicsCharacterController` regardless);
@@ -833,6 +855,13 @@ earlier compiler error.
     and faithful, and lands no scene on its own, which is why it is filed
     rather than done -- every scene that passes one also wants something
     else.
+  - **Gate the emitted physics surface on the features it already
+    declares.** `physics:trigger` reaches CMake and the feature table but
+    gates nothing in the emitted C++: the trigger entry points and
+    `create_physics_primitive_shape` ship into every scene reaching
+    `physics:world`, measured at 3,265 bytes across the five physics scenes
+    that call none of them. `physics:aggregate` has the same shape today, so
+    one pass should decide both rather than leaving the emitter half-gated.
   - A physics threshold gates this port's own solver, not agreement with
     the pinned one, and cannot be driven to zero
     ([fidelity](docs/fidelity.md#physics-contract)).
@@ -842,8 +871,9 @@ earlier compiler error.
     stack or a constrained body, where the two solvers' convergence
     differs most.
   - **Beyond the reached slice**, each refusing by name: mesh and
-    convex-hull shapes (the pin's own `MeshAccumulator`), container shapes,
-    the `isTriggerShape` option, `disposePhysics`, and
+    container shapes, the aggregate's `isTriggerShape` option and
+    `onPhysicsTriggerBodies`, a shape `rotation` parameter, `disposePhysics`,
+    and
     every body control past creation (impulse, velocity, motion-type
     switching, teleport). A capsule or cylinder whose segment is not
     Y-aligned refuses in the PAL rather than standing upright.
@@ -852,30 +882,23 @@ earlier compiler error.
   animation manager options past `engine`.
 - [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
   wheel handling. First blocker: reached `void` expression statements.
-- [ ] Scenes 222, 224: add the composite gizmo assemblies and the
-  bounding-box widget. First blocker for both, and for 49 in the physics
-  lane -- one contract for all three -- is `attachControl`'s options bag of
-  camera-deferral callbacks, which have no meaning without pointer input, so
-  the open question is whether they erase or refuse. Behind it 222 wants
-  `createPositionGizmo` and 224 `createBoundingBoxGizmo`. Scenes 223 and 221
-  ship the family's foundation and its four single widgets: the utility
-  layer as a swapchain overlay, the camera and light displays, and the
-  axis-drag, axis-scale, plane-drag and plane-rotation editors.
-  - **222** is mostly wiring: the three composites are 3-7 of the shipped
-    widgets plus a record, and `thickness`/`tessellation`/`uniformScaling`
-    are already live parameters in the emitted builders and only need
-    serving rather than refusing. Its one genuinely new mechanism is the
-    local-coordinate follow arm -- the scene sets
-    `setPositionGizmoLocalCoordinates(..., true)` at load, so a STILL
-    capture exercises it -- which wants `transformDirectionByWorld` and
-    `quatMul` lowered beside the `rotationQuatFromMatrix` already present.
-  - **224** is two to three times that. Past `attachControl` and a
-    `?nocam` query branch (whose fold differs between the ad-hoc and the
-    registered path) sits `computeBoundsRecursive` over the attached node's
-    whole subtree with a pre-transform, then twelve edge cylinders, six face
-    anchors and eight three-box corners placed from that AABB, rebuilt
-    whenever the bounds move. The static geometry is mechanical; the bounds
-    walk and the rebuild are the work.
+- [ ] Scene 224: add the bounding-box widget. First blocker:
+  `createBoundingBoxGizmo`. Scenes 221, 222 and 223 ship the rest of the
+  family -- the utility layer as a swapchain overlay, the camera and light
+  displays, the four single editors, the three composites and the
+  local-coordinate follow -- and `attachControl`'s deferral bag now folds
+  from the pinned predicates rather than blocking anything.
+  Sized against `src/gizmo/bounding-box-gizmo.ts` (1,038 lines): 56 meshes
+  laid out every frame from the AABB and the node's world rotation, an
+  attach target that is a TRANSFORM NODE rather than a mesh (a second attach
+  kind), and `computeBoundsRecursive` walking the attached subtree PLUS the
+  main scene's meshes filtered by a parent-chain test, since the scene
+  parents its cubes without populating `.children`. Four capabilities sit
+  outside the family and gate all of it: a Standard `emissiveColor` lane
+  (the widget material is `diffuseColor` + `emissiveColor` +
+  `disableLighting`, which is how it renders flat), `mat4FromQuat`,
+  `computeAabb`, and the transform-node attach. Its `?nocam` query branch
+  also folds differently between the ad-hoc and the registered path.
   - **Collapse the four widget builders when the shape settles.** They
     share a preamble and a tail -- the colour read is character-identical
     four times, and the emitted signature, root and return block repeats
@@ -1094,3 +1117,9 @@ Both backends stay long-term as mutually validating implementations;
     beside `srgbGpuFormat` mapping the pin's sampler descriptor to glTF
     enums would make an upstream filter change fail generation instead of
     silently repackaging.
+  - **`mesh_factories.cpp` is emitted whole whenever any mesh-builder
+    feature is reached**, so `create_mesh_from_data` ships in 138 generated
+    trees while 17 call it -- 31,823 bytes that cannot execute, and the
+    number grows with every option that function gains. Splitting the unit
+    per builder feature wants its own neutrality proof over the whole
+    generated tree.

@@ -43,6 +43,7 @@ export interface PhysicsIntrinsicContext
   expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
   compileFrameCallback(expression: ts.Expression): string;
   compilePhysicsCollisionCallback(expression: ts.Expression): string;
+  compilePhysicsTriggerCallback(expression: ts.Expression): string;
   allocateTemporaryCppName(label: string): string;
   emit(line: string): void;
 }
@@ -57,6 +58,35 @@ export interface PhysicsIntrinsicContext
 const PRIMITIVE_SHAPE_TYPES = ["SPHERE", "CAPSULE", "CYLINDER", "BOX"] as const;
 
 const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, "CONVEX_HULL"] as const;
+
+/**
+ * The `PhysicsShapeParameters` members the reached slice lowers, as (the
+ * pin's name, the generated field, how the value compiles).
+ *
+ * `rotation` is absent: no corpus scene passes one, so the emitted BOX arm
+ * keeps the pin's own `params.rotation ?? { x: 0, y: 0, z: 0, w: 1 }`
+ * default and a scene that names one refuses here.
+ */
+export const SHAPE_PARAMETERS = [
+  ["center", "center", "vec3"],
+  ["radius", "radius", "number"],
+  ["pointA", "point_a", "vec3"],
+  ["pointB", "point_b", "vec3"],
+  ["extents", "extents", "vec3"],
+] as const;
+
+/**
+ * The C++ storage one of those members takes, derived rather than restated.
+ *
+ * The lowerer emits `PhysicsShapeParameters` from this same table and the
+ * intrinsic fills it with DESIGNATED INITIALIZERS, which C++20 requires to
+ * appear in declaration order -- so the order here is load-bearing for both
+ * readers, and a second copy of the table could put the emitted text out of
+ * order with the struct it fills.
+ */
+export const shapeParameterStorage = (
+  shape: (typeof SHAPE_PARAMETERS)[number][2],
+): string => (shape === "vec3" ? "Vec3d" : "double");
 
 /** The `PhysicsAggregateOptions` fields the reached slice lowers. */
 const AGGREGATE_OPTIONS = [
@@ -127,24 +157,62 @@ export function compilePhysicsIntrinsic(
         context,
         options,
         ["type", "parameters", "mesh", "includeChildMeshes"],
-        "A physics shape option outside the reached convex-hull slice.",
+        "A physics shape option outside the reached slice.",
       );
-      if (context.objectProperty(options, "parameters")) {
-        context.fail(
-          call.arguments[1]!,
-          "The reached convex-hull shape takes its geometry from `mesh`; explicit physics shape parameters are not used.",
-        );
-      }
       const typeExpression = context.objectProperty(options, "type");
       if (!typeExpression) {
         context.fail(call.arguments[1]!, "createPhysicsShape requires `type`.");
       }
       const shapeType = expectShapeType(context, typeExpression);
-      if (shapeType !== "CONVEX_HULL") {
+      const parametersExpression = context.objectProperty(
+        options,
+        "parameters",
+      );
+      // Only one direction refuses. The pin reads
+      // `options.parameters ?? {}` and every primitive arm defaults its own
+      // members, so `createPhysicsShape(world, { type: SPHERE })` is a unit
+      // sphere at the origin upstream and lowers to the same empty bag
+      // here; refusing it would be narrower than the pin for nothing.
+      if (shapeType === "CONVEX_HULL" && parametersExpression !== undefined) {
         context.fail(
-          typeExpression,
-          "The standalone createPhysicsShape slice reached here is PhysicsShapeType.CONVEX_HULL.",
+          call.arguments[1]!,
+          "createPhysicsShape builds either a primitive from " +
+            "`parameters` or the convex hull of a `mesh`. " +
+            `PhysicsShapeType.${shapeType} takes its geometry from ` +
+            "`mesh`, and the parameters beside it would be read by " +
+            "neither side.",
         );
+      }
+      if (parametersExpression) {
+        // The mesh half of the options bag reaches nothing on this arm --
+        // the pin's primitive factory never looks at it -- so a call that
+        // supplies one is asking for a shape it will not get.
+        for (const unread of ["mesh", "includeChildMeshes"] as const) {
+          const supplied = context.objectProperty(options, unread);
+          if (supplied) {
+            context.fail(
+              supplied,
+              `A primitive physics shape takes its geometry from ` +
+                "`parameters`; `" +
+                unread +
+                "` is read only by the mesh and convex-hull arms.",
+            );
+          }
+        }
+        // `createPrimitivePhysicsShapeHandle(hknp, options.type,
+        // options.parameters ?? {})`: each member the arm reads defaults
+        // inside the generated factory at the pin's own `??`, so an
+        // omitted one is absent here rather than substituted.
+        context.reachFeature("physics:aggregate", call);
+        return {
+          kind: "physics-shape",
+          cpp:
+            `bbl::upstream::create_physics_primitive_shape(` +
+            `${world.cpp}, ` +
+            `bbl::upstream::PhysicsShapeType::${shapeType}, ` +
+            `${compileShapeParameters(context, parametersExpression)})`,
+          ...(world.engineCpp ? { engineCpp: world.engineCpp } : {}),
+        };
       }
       const meshExpression = context.objectProperty(options, "mesh");
       if (!meshExpression) {
@@ -168,6 +236,91 @@ export function compilePhysicsIntrinsic(
           `${world.cpp}, ${mesh.cpp}, ` +
           `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
         ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
+      };
+    }
+
+    case "setPhysicsShapeIsTrigger": {
+      // `havok-trigger.ts`: the flag is what makes bodies pass through the
+      // shape while their overlaps are reported, so it is the visible half
+      // of the pair even when the event handler erases.
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const shape = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(shape, "physics-shape", call.arguments[1]!);
+      context.expectSameEngine(world, shape, call);
+      context.reachFeature("physics:trigger", call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_shape_is_trigger(` +
+          `${world.cpp}, ${shape.cpp}, ` +
+          `${context.compileBoolean(call.arguments[2]!)})`,
+      };
+    }
+
+    case "createPhysicsBody": {
+      // `(world, node, motionType, startsAsleep = false)`. The pin's node
+      // is a `SceneNode`, so a mesh and a bare transform node both reach
+      // it; the generated record carries which arena the handle addresses.
+      context.expectArgumentCount(call, 3, 4);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      const node = context.compileValue(call.arguments[1]!);
+      if (node.kind !== "mesh" && node.kind !== "transform-node") {
+        context.fail(
+          call.arguments[1]!,
+          "createPhysicsBody binds a body to a scene node: a mesh or a " +
+            `transform node, received ${node.kind}.`,
+        );
+      }
+      context.expectSameEngine(world, node, call);
+      const motion = expectMotionType(context, call.arguments[2]!);
+      const startsAsleep = call.arguments[3]
+        ? context.compileBoolean(call.arguments[3])
+        : "false";
+      context.reachFeature("physics:aggregate", call);
+      return {
+        kind: "physics-body",
+        cpp:
+          `bbl::upstream::create_physics_body(` +
+          `${world.cpp}, bbl::upstream::physics_node(${node.cpp}), ` +
+          `bbl::upstream::PhysicsMotionType::${motion}, ${startsAsleep})`,
+        ...(node.engineCpp ? { engineCpp: node.engineCpp } : {}),
+      };
+    }
+
+    case "setPhysicsBodyShape": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      const shape = context.compileValue(call.arguments[2]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectKind(shape, "physics-shape", call.arguments[2]!);
+      context.expectSameEngine(world, body, call);
+      context.expectSameEngine(world, shape, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_shape(` +
+          `${world.cpp}, ${body.cpp}, ${shape.cpp})`,
+      };
+    }
+
+    case "onPhysicsTrigger": {
+      // The pin returns a disposer that splices the drain back out.
+      // Nothing reached calls it, so the registration is the value.
+      context.expectArgumentCount(call, 2, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.reachFeature("physics:trigger", call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::on_physics_trigger(` +
+          `${world.cpp}, ` +
+          `${context.compilePhysicsTriggerCallback(call.arguments[1]!)})`,
       };
     }
 
@@ -380,6 +533,93 @@ export function compilePhysicsIntrinsic(
     default:
       return undefined;
   }
+}
+
+/**
+ * A standalone shape's own geometry bag.
+ *
+ * Every member is optional upstream and every primitive arm defaults its
+ * own, so an omitted one stays absent here and the generated factory
+ * settles it at the pin's `??` -- the same treatment the aggregate's
+ * friction and restitution get.
+ */
+function compileShapeParameters(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
+): string {
+  const object = context.expectObjectLiteral(expression);
+  validateObjectProperties(
+    context,
+    object,
+    SHAPE_PARAMETERS.map(([pinned]) => pinned),
+    "A physics shape parameter outside this prototype's reached slice " +
+      `(${SHAPE_PARAMETERS.map(([pinned]) => pinned).join(", ")}). ` +
+      "`rotation` reaches no corpus scene, so a rotated primitive would " +
+      "ship the pin's identity quaternion rather than the one written.",
+  );
+  // Designated initializers, so an omitted member is the struct's own
+  // absent lane and the emitted text names the field it fills. C++20 still
+  // requires them in DECLARATION order, so the order of the table above is
+  // load-bearing -- which is why the lowerer emits the struct from that
+  // same table rather than from a copy of it.
+  const written = SHAPE_PARAMETERS.flatMap(([pinned, field, shape]) => {
+    const value = context.objectProperty(object, pinned);
+    if (!value) return [];
+    return [
+      `.${field} = ` +
+        (shape === "vec3"
+          ? context.compileVec3(value, "double")
+          : context.compileNumber(value, "double")),
+    ];
+  });
+  return `bbl::upstream::PhysicsShapeParameters{${written.join(", ")}}`;
+}
+
+/** The generated info record one pinned physics event stream hands over. */
+export function physicsEventInfoType(
+  event: "collision" | "trigger",
+): string {
+  return event === "collision"
+    ? "bbl::upstream::PhysicsCollisionInfo"
+    : "bbl::upstream::PhysicsTriggerInfo";
+}
+
+/**
+ * The value a physics event handler's own parameter binds to.
+ *
+ * `havok-collision.ts` hands its callback `{ type, point, normal, impulse }`
+ * and `havok-trigger.ts` hands its callback `{ type }`. Both types are the
+ * pin's own uppercase strings, read back through the generated name
+ * function so a comparison in scene code is against the same text the
+ * browser compares.
+ */
+export function physicsEventInfoValue(
+  event: "collision" | "trigger",
+  cpp: string,
+): Value {
+  const type = (name: string): Value => ({
+    kind: "data",
+    cpp: `std::string(bbl::upstream::${name}(${cpp}.type))`,
+    dataType: { kind: "string" },
+  });
+  if (event === "trigger") {
+    return {
+      kind: "record",
+      cpp: "",
+      recordProperties: { type: type("physics_trigger_type_name") },
+    };
+  }
+  const vec3 = (member: string): Value => vec3Record(`${cpp}.${member}`);
+  return {
+    kind: "record",
+    cpp: "",
+    recordProperties: {
+      type: type("physics_collision_type_name"),
+      point: vec3("point"),
+      normal: vec3("normal"),
+      impulse: { kind: "number", cpp: `${cpp}.impulse` },
+    },
+  };
 }
 
 function vec3Record(cpp: string): Value {

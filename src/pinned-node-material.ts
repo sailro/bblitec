@@ -333,17 +333,6 @@ function compositionEngine(): unknown {
 }
 
 /**
- * The build-state flags this port does not serve, and the block that sets
- * each. The set is closed: `assertReachedSlice` refuses any *other* flag the
- * pin raises, so a pin that adds one fails here rather than composing a
- * module with an arm no PAL binds.
- */
-const refusedFlags: Readonly<Record<string, string>> = {
-    usesClipPlanes: "ClipPlanesBlock",
-    usesMeshAttributeExists: "MeshAttributeExistsBlock",
-};
-
-/**
  * The build-state flags a served graph is allowed to raise.
  *
  * The lights buffer and the environment pair are resources the PAL already
@@ -372,6 +361,18 @@ const servedFlags = new Set([
     // itself, so it only composes against a renderer that shares the pin's:
     // `pinned_depth_clear` in the PALs, near -> 1 compared greater-equal.
     "usesFragDepth",
+    // `ClipPlanesBlock` reads `sceneU.clipPlane`, which is a lane of the
+    // pin's own scene block -- packed for every scene from the record
+    // `setClipPlane` writes, so serving the block declares no resource.
+    "usesClipPlanes",
+    // `MeshAttributeExistsBlock` reads the mesh block's spare
+    // `receivesShadow` lanes rather than composing a per-mesh variant:
+    // "Babylon Lite batches meshes that share the same NME pipeline, so
+    // the equivalent decision is a per-mesh uniform flag written beside
+    // the world matrix." Both PALs fill those lanes from the geometry's
+    // own attribute presence, so one composed module draws a mesh with an
+    // attribute and one without.
+    "usesMeshAttributeExists",
 ]);
 
 /**
@@ -414,7 +415,7 @@ function assertReachedSlice(
     for (const [flag, value] of Object.entries(material._state)) {
         if (typeof value !== "boolean" || !value) continue;
         if (servedFlags.has(flag)) continue;
-        refuse(label, refusedFlags[flag] ?? `the pinned build flag '${flag}'`);
+        refuse(label, `the pinned build flag '${flag}'`);
     }
 }
 

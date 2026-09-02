@@ -258,6 +258,10 @@ import {
     isDeterministicRandomRead,
 } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
+import {
+    physicsEventInfoType,
+    physicsEventInfoValue,
+} from "./compiler/intrinsics/physics.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
     featureOrder,
@@ -447,6 +451,8 @@ class Compiler
      * entry walk is complete, while retaining registration-site scopes.
      */
     private readonly deferredPhysicsCallbacks: Array<{
+        /** Which pinned event stream the handler is registered on. */
+        event: "collision" | "trigger";
         callback: ts.Identifier | ts.ArrowFunction | ts.FunctionExpression;
         cppName: string;
         eventName: string;
@@ -12140,6 +12146,26 @@ class Compiler
     public compilePhysicsCollisionCallback(
         expression: ts.Expression,
     ): string {
+        return this.compilePhysicsEventCallback(expression, "collision");
+    }
+
+    public compilePhysicsTriggerCallback(expression: ts.Expression): string {
+        return this.compilePhysicsEventCallback(expression, "trigger");
+    }
+
+    /**
+     * A handler on one of the two pinned physics event streams.
+     *
+     * Both are registered before every startup assignment has necessarily
+     * run, so both defer their native body until the entry walk completes
+     * while retaining the registration site's scopes. What differs is the
+     * info record the pin hands the callback, which
+     * `physicsEventInfoValue` builds.
+     */
+    private compilePhysicsEventCallback(
+        expression: ts.Expression,
+        event: "collision" | "trigger",
+    ): string {
         const callback = this.unwrap(expression);
         if (
             !ts.isIdentifier(callback) &&
@@ -12148,31 +12174,33 @@ class Compiler
         ) {
             this.fail(
                 callback,
-                "Physics collision callbacks must be a local function or function literal.",
+                `Physics ${event} callbacks must be a local function or function literal.`,
             );
         }
-        const event = this.allocateTemporaryCppName("physics_collision");
+        const infoType = physicsEventInfoType(event);
+        const eventName = this.allocateTemporaryCppName(
+            `physics_${event}`,
+        );
         const callbackName = this.allocateTemporaryCppName(
-            "physics_collision_callback",
+            `physics_${event}_callback`,
         );
         this.reachJsData();
-        this.emit(
-            `std::function<void(const bbl::upstream::PhysicsCollisionInfo&)> ${callbackName};`,
-        );
+        this.emit(`std::function<void(const ${infoType}&)> ${callbackName};`);
         this.deferredPhysicsCallbacks.push({
+            event,
             callback,
             cppName: callbackName,
-            eventName: event,
+            eventName,
             node: expression,
             scopes: this.variableScopes.map((scope) => new Map(scope)),
         });
         return (
-            `[&](const bbl::upstream::PhysicsCollisionInfo& ${event}) { ` +
-            `if (${callbackName}) { ${callbackName}(${event}); } }`
+            `[&](const ${infoType}& ${eventName}) { ` +
+            `if (${callbackName}) { ${callbackName}(${eventName}); } }`
         );
     }
 
-    /** Emit deferred collision bodies immediately before the engine starts. */
+    /** Emit deferred physics event bodies immediately before the engine starts. */
     private emitDeferredPhysicsCallbacks(): void {
         if (this.deferredPhysicsCallbacks.length === 0) return;
         const emitted: string[] = [];
@@ -12181,31 +12209,7 @@ class Compiler
             this.variableScopes.length = 0;
             this.variableScopes.push(...deferred.scopes);
             const event = deferred.eventName;
-            const vec3 = (member: string): Value => ({
-                kind: "record",
-                cpp: "",
-                recordProperties: {
-                    x: { kind: "number", cpp: `${event}.${member}.x` },
-                    y: { kind: "number", cpp: `${event}.${member}.y` },
-                    z: { kind: "number", cpp: `${event}.${member}.z` },
-                },
-            });
-            const info: Value = {
-                kind: "record",
-                cpp: "",
-                recordProperties: {
-                    type: {
-                        kind: "data",
-                        cpp:
-                            `std::string(bbl::upstream::physics_collision_type_name(` +
-                            `${event}.type))`,
-                        dataType: { kind: "string" },
-                    },
-                    point: vec3("point"),
-                    normal: vec3("normal"),
-                    impulse: { kind: "number", cpp: `${event}.impulse` },
-                },
-            };
+            const info = physicsEventInfoValue(deferred.event, event);
             const previousDepth = this.frameCallbackDepth;
             this.frameCallbackDepth += 1;
             try {
@@ -12230,7 +12234,7 @@ class Compiler
                 // reads nothing at all. Announced unused unconditionally, as
                 // `compileFrameCallback` announces its delta.
                 emitted.push(
-                    `${indent}${deferred.cppName} = [&]([[maybe_unused]] const bbl::upstream::PhysicsCollisionInfo& ${event}) {`,
+                    `${indent}${deferred.cppName} = [&]([[maybe_unused]] const ${physicsEventInfoType(deferred.event)}& ${event}) {`,
                     ...lines.map((line) => `    ${line}`),
                     `${indent}};`,
                 );
@@ -13052,6 +13056,7 @@ class Compiler
             hasUv2: boolean;
             hasTangents: boolean;
             hasColors: boolean;
+            runtimeStreams?: true;
         },
     ): number {
         this.sceneMeshes.push({

@@ -48,11 +48,45 @@ import {
   type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+  SHAPE_PARAMETERS,
+  shapeParameterStorage,
+} from "../compiler/intrinsics/physics.js";
 
 export const havokModule = "src/physics/havok.ts";
 
+/**
+ * The trigger-volume module. Upstream keeps it standalone "so the trigger
+ * path adds bytes only to scenes that actually import
+ * setPhysicsShapeIsTrigger or onPhysicsTrigger", and its two reached
+ * exports are what this port mirrors: the shape flag, and the post-step
+ * drain that turns the back end's event stream into `{ type }`.
+ */
+export const havokTriggerModule = "src/physics/havok-trigger.ts";
+
 /** The pinned builder every aggregate's shape parameters come from. */
 const buildShapeParams = "_buildShapeParams";
+
+/** The pinned factory both shape paths fork on. */
+const primitiveShapeHandle = "createPrimitivePhysicsShapeHandle";
+
+/**
+ * Each primitive arm's back-end entry point and the PAL function that
+ * stands in for it.
+ *
+ * The pin's own call name is checked against the arm rather than assumed,
+ * because the PAL's surface is named after it: a renamed `HP_Shape_Create*`
+ * is a changed back-end contract, and it must fail here rather than keep
+ * routing a box to the sphere entry point.
+ */
+const PRIMITIVE_SHAPE_ARMS: ReadonlyArray<
+  readonly [string, string, string]
+> = [
+  ["SPHERE", "HP_Shape_CreateSphere", "physics_shape_create_sphere"],
+  ["BOX", "HP_Shape_CreateBox", "physics_shape_create_box"],
+  ["CAPSULE", "HP_Shape_CreateCapsule", "physics_shape_create_capsule"],
+  ["CYLINDER", "HP_Shape_CreateCylinder", "physics_shape_create_cylinder"],
+];
 
 /** The statement kinds a restated pinned body's inventory names. */
 const STATEMENT_KINDS: ReadonlyArray<
@@ -424,6 +458,257 @@ Vec3d box_extents(const PinnedShapeBounds& shape) {
 ${segment("CAPSULE")}
 
 ${segment("CYLINDER")}`;
+  }
+
+  /**
+   * `createPrimitivePhysicsShapeHandle`, translated from its own AST.
+   *
+   * This is the one place a shape parameter becomes a back-end call, and
+   * the pin has exactly one of them: `createPhysicsShape` and
+   * `createPhysicsAggregate` both route through it and both fork on its
+   * `null`. So the emitted port has one too -- the aggregate hands it what
+   * `_buildShapeParams` derived, a standalone `createPhysicsShape` hands it
+   * the scene's own `parameters` bag, and each arm's `??` default is read
+   * from the pin rather than restated at either call site.
+   */
+  private lowerPrimitiveShapeHandle(): string {
+    const { file, declaration } = this.context.functionDeclaration(
+      havokModule,
+      primitiveShapeHandle,
+    );
+    if (!declaration.body) {
+      this.context.contractError(
+        declaration,
+        `Expected ${primitiveShapeHandle} to have a body.`,
+      );
+    }
+    this.assertShapeParameterMembers();
+    const cases = this.context
+      .findNodes(declaration, ts.isCaseClause)
+      .map((clause) =>
+        clause.expression.getText(file).replace("PhysicsShapeType.", ""),
+      );
+    const expected = PRIMITIVE_SHAPE_ARMS.map(([name]) => name);
+    if (
+      cases.length !== expected.length ||
+      cases.some((name, index) => name !== expected[index])
+    ) {
+      this.context.contractError(
+        declaration,
+        `${primitiveShapeHandle} switches on [${cases.join(", ")}]; ` +
+          `the PAL names one entry point per [${expected.join(", ")}], ` +
+          "so a primitive the pin adds must reach a surface of its own " +
+          "rather than falling through to the mesh-shape arms.",
+      );
+    }
+    const otherwise = this.context.findNodes(declaration, ts.isDefaultClause);
+    const returnsNull =
+      otherwise.length === 1 &&
+      otherwise[0]!.statements.length === 1 &&
+      ts.isReturnStatement(otherwise[0]!.statements[0]!) &&
+      otherwise[0]!.statements[0]!.expression?.kind === ts.SyntaxKind.NullKeyword;
+    if (!returnsNull) {
+      this.context.contractError(
+        declaration,
+        `Expected ${primitiveShapeHandle} to answer null for a ` +
+          "non-primitive type. Both callers fork on that null, so an " +
+          "arm that started building one would be built twice.",
+      );
+    }
+    return `/**
+ * \`${primitiveShapeHandle}\`. Answers nothing for a type the pin answers
+ * \`null\` for, which is the branch both shape paths fork on.
+ */
+std::optional<pal::PhysicsShapeHandle> primitive_physics_shape_handle(
+    PhysicsShapeType type,
+    const PhysicsShapeParameters& params) {
+    switch (type) {
+${PRIMITIVE_SHAPE_ARMS.map((arm) =>
+  this.lowerPrimitiveShapeArm(file, declaration, arm),
+).join("\n")}
+        default:
+            return std::nullopt;
+    }
+}`;
+  }
+
+  /** One `case PhysicsShapeType.<name>:` of the primitive factory. */
+  private lowerPrimitiveShapeArm(
+    file: ts.SourceFile,
+    declaration: ts.FunctionDeclaration,
+    [caseName, entryPoint, palFunction]: readonly [string, string, string],
+  ): string {
+    const clause = this.context
+      .findNodes(declaration, ts.isCaseClause)
+      .find(
+        (candidate) =>
+          candidate.expression.getText(file) ===
+          `PhysicsShapeType.${caseName}`,
+      )!;
+    const bindings = new Map<string, PinnedBinding>();
+    const lowerer = new PinnedNumericLowerer(file, {
+      bindings,
+      calls: pinnedNumericMathCalls(),
+    });
+    const supplied = new Map<string, string>(
+      SHAPE_PARAMETERS.map(([pinned, field]) => [pinned, field]),
+    );
+    const locals = this.context
+      .findNodes(clause, ts.isVariableDeclaration)
+      .map((local) => {
+        if (!ts.isIdentifier(local.name) || !local.initializer) {
+          this.context.contractError(
+            local,
+            `Expected the ${caseName} arm's local to be a named ` +
+              "initialized binding.",
+          );
+        }
+        const name = local.name.text;
+        const split = this.context.nullishDefault(local.initializer);
+        const member =
+          split && ts.isPropertyAccessExpression(split.left)
+            ? split.left.name.text
+            : undefined;
+        if (!split || !member || split.left.getText(file) !== `params.${member}`) {
+          this.context.contractError(
+            local.initializer,
+            `Expected the ${caseName} arm to read '${name}' as ` +
+              "`params.<member> ?? <default>`; the default is what a " +
+              "caller omitting the parameter gets, and it must come " +
+              "from the pin.",
+          );
+        }
+        const fallback = this.context.unwrapExpression(split.right);
+        const field = supplied.get(member);
+        const components = ts.isObjectLiteralExpression(fallback)
+          ? fallback.properties.map((property) =>
+              property.name && ts.isIdentifier(property.name)
+                ? property.name.text
+                : "",
+            )
+          : undefined;
+        // `??` on the pin's side, `has_value()` on this one -- and for a
+        // member outside the reached slice the left arm cannot be
+        // supplied at all, so the default IS the value.
+        const defaulted = (value: string): string =>
+          field ? `params.${field} ? *params.${field} : ${value}` : value;
+        if (components === undefined) {
+          bindings.set(name, { cpp: name, type: "scalar" });
+          return (
+            `            const double ${name} = ` +
+            `${defaulted(lowerer.expression(fallback))};\n`
+          );
+        }
+        if (components.join(",") === "x,y,z") {
+          bindings.set(name, { cpp: name, type: "vec3" });
+          const literal = `Vec3d{${lowerObjectComponents(
+            this.context,
+            lowerer,
+            fallback,
+            ["x", "y", "z"],
+          ).join(", ")}}`;
+          return `            const Vec3d ${name} = ${defaulted(literal)};\n`;
+        }
+        if (components.join(",") !== "x,y,z,w") {
+          this.context.contractError(
+            fallback,
+            `The ${caseName} arm defaults '${name}' to ` +
+              `[${components.join(", ")}]; the emitted arm knows a ` +
+              "scalar, a three-component vector and a quaternion.",
+          );
+        }
+        // A quaternion has no reached lane in `PhysicsShapeParameters`
+        // (see SHAPE_PARAMETERS), so this is the pin's own default and
+        // nothing can override it. It stays the pin's expression rather
+        // than a typed identity.
+        for (const [index, axis] of ["x", "y", "z", "w"].entries()) {
+          bindings.set(`${name}.${axis}`, {
+            cpp: `${name}[${index}]`,
+            type: "scalar",
+          });
+        }
+        const literal = `{${lowerObjectComponents(
+          this.context,
+          lowerer,
+          fallback,
+          ["x", "y", "z", "w"],
+        ).join(", ")}}`;
+        return (
+          `            const std::array<double, 4> ${name} = ` +
+          `${defaulted(literal)};\n`
+        );
+      })
+      .join("");
+    const returned = clause.statements
+      .flatMap((statement) =>
+        ts.isBlock(statement) ? [...statement.statements] : [statement],
+      )
+      .find(ts.isReturnStatement);
+    const call =
+      returned?.expression &&
+      ts.isElementAccessExpression(returned.expression) &&
+      ts.isCallExpression(returned.expression.expression)
+        ? returned.expression.expression
+        : undefined;
+    if (!call || call.expression.getText(file) !== `hknp.${entryPoint}`) {
+      this.context.contractError(
+        returned ?? clause,
+        `Expected the ${caseName} arm to return ` +
+          `hknp.${entryPoint}(...)[1]; the PAL entry point ` +
+          `${palFunction} is named after it, so a renamed back-end call ` +
+          "must be re-read rather than left routing to the old one.",
+      );
+    }
+    const args = call.arguments.map((argument) => {
+      const unwrapped = this.context.unwrapExpression(argument);
+      return ts.isArrayLiteralExpression(unwrapped)
+        ? `{${unwrapped.elements
+            .map((element) => lowerer.expression(element))
+            .join(", ")}}`
+        : lowerer.expression(unwrapped);
+    });
+    return `        case PhysicsShapeType::${caseName}: {
+${locals}            return pal::${palFunction}(${args.join(", ")});
+        }`;
+  }
+
+  /**
+   * `PhysicsShapeParameters`' own member list.
+   *
+   * The emitted struct carries the reached subset, and the primitive arms
+   * read the rest as the pin's own defaults. Either way a member the pin
+   * ADDS is one an arm may start reading, so the interface is checked
+   * whole rather than only where a lane exists for it.
+   */
+  private assertShapeParameterMembers(): void {
+    const { declaration } = this.context.interfaceDeclaration(
+      havokModule,
+      "PhysicsShapeParameters",
+    );
+    const declared = declaration.members.map((member) =>
+      member.name && ts.isIdentifier(member.name) ? member.name.text : "",
+    );
+    // Derived from the one table, plus the member it deliberately omits:
+    // `rotation` reaches no corpus scene, so the emitted BOX arm reads the
+    // pin's own `?? { x: 0, y: 0, z: 0, w: 1 }` fallback and a scene that
+    // names one refuses at the intrinsic.
+    const known = [
+      ...SHAPE_PARAMETERS.map(([pinned]) => pinned),
+      "rotation",
+    ];
+    if (
+      declared.length !== known.length ||
+      declared.some((member) => !known.includes(member))
+    ) {
+      this.context.contractError(
+        declaration,
+        `PhysicsShapeParameters declares [${declared.join(", ")}]; the ` +
+          `emitted parameter bag knows [${known.join(", ")}] and serves ` +
+          `[${SHAPE_PARAMETERS.map(([pinned]) => pinned).join(", ")}]. A ` +
+          "member the pin adds has to be read and carried rather than " +
+          "silently taking a primitive arm's default.",
+      );
+    }
   }
 
   /**
@@ -1004,6 +1289,7 @@ ${segment("CYLINDER")}`;
     const motionTypes = this.enumMembers("PhysicsMotionType");
     const prestepTypes = this.enumMembers("PhysicsPrestepType");
     const shapeParams = this.lowerShapeParams();
+    const primitiveHandle = this.lowerPrimitiveShapeHandle();
 
     const enumeratorList = (members: Map<string, number>): string =>
       [...members].map(([name, value]) => `    ${name} = ${value},`).join("\n");
@@ -1103,12 +1389,56 @@ struct PhysicsAggregateOptions {
 };
 
 /**
+ * ${havokModule} \`PhysicsShapeParameters\`, reached slice.
+ *
+ * The bag \`createPrimitivePhysicsShapeHandle\` reads. Every member is
+ * optional upstream and every arm defaults its own, so an absent lane here
+ * is the pin's \`undefined\` rather than a value this port settled.
+ */
+struct PhysicsShapeParameters {
+${SHAPE_PARAMETERS.map(
+  ([pinned, field, shape]) =>
+    `    /** \`params.${pinned}\`. */\n` +
+    `    js::Nullable<${shapeParameterStorage(shape)}> ${field}{};`,
+).join("\n")}
+};
+
+/**
  * ${havokModule} \`PhysicsShape\`. The pin's \`_type\` is dropped: it is read
  * only by the mesh-shape arms, which refuse at generation.
  */
 struct PhysicsShape {
     pal::PhysicsShapeHandle handle{};
 };
+
+/**
+ * The node a body follows, which is the pin's \`SceneNode\` -- a mesh or a
+ * plain transform node.
+ *
+ * Upstream has one node type and reads \`node.position\` /
+ * \`node.rotationQuaternion\` off it. This port keeps meshes and transform
+ * nodes in separate arenas, so a body records which arena its handle
+ * addresses; \`sync_node_to_body\` and \`sync_body_to_node\` then read and
+ * write the same two properties on either. A trigger volume is the reached
+ * case: scene 101 hangs one off a bare \`createTransformNode\`.
+ */
+enum class PhysicsNodeKind : std::int32_t {
+    mesh,
+    transform_node,
+};
+
+struct PhysicsNodeRef {
+    PhysicsNodeKind kind = PhysicsNodeKind::mesh;
+    std::uint32_t value = 0;
+};
+
+[[nodiscard]] inline PhysicsNodeRef physics_node(MeshHandle mesh) {
+    return PhysicsNodeRef{PhysicsNodeKind::mesh, mesh.value};
+}
+
+[[nodiscard]] inline PhysicsNodeRef physics_node(TransformNodeHandle node) {
+    return PhysicsNodeRef{PhysicsNodeKind::transform_node, node.value};
+}
 
 /**
  * ${havokModule} \`PhysicsBody\`, trimmed to the reached slice the way
@@ -1118,7 +1448,7 @@ struct PhysicsShape {
  */
 struct PhysicsBody {
     pal::PhysicsBodyHandle handle{};
-    MeshHandle node{};
+    PhysicsNodeRef node{};
     PhysicsShape shape{};
     PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
     PhysicsPrestepType prestep_type = PhysicsPrestepType::TELEPORT;
@@ -1146,6 +1476,27 @@ struct PhysicsCollisionInfo {
 
 [[nodiscard]] const char* physics_collision_type_name(
     PhysicsCollisionType type);
+
+/** ${havokTriggerModule} \`PhysicsTriggerInfo["type"]\`. */
+enum class PhysicsTriggerType {
+    ENTERED,
+    EXITED,
+};
+
+/**
+ * ${havokTriggerModule} \`PhysicsTriggerInfo\`.
+ *
+ * One member, because the pin's own interface has one. Its
+ * \`PhysicsTriggerBodyInfo\` extension resolves the two participating
+ * bodies from the back end's event, and \`onPhysicsTriggerBodies\` -- the
+ * only thing that reads them -- is not reached.
+ */
+struct PhysicsTriggerInfo {
+    PhysicsTriggerType type = PhysicsTriggerType::ENTERED;
+};
+
+[[nodiscard]] const char* physics_trigger_type_name(
+    PhysicsTriggerType type);
 
 struct PhysicsRaycastResult {
     bool has_hit = false;
@@ -1201,6 +1552,26 @@ PhysicsShape create_physics_convex_hull_shape(
     PhysicsWorldHandle world,
     MeshHandle mesh,
     bool include_child_meshes);
+[[nodiscard]] PhysicsShape create_physics_primitive_shape(
+    PhysicsWorldHandle world,
+    PhysicsShapeType type,
+    const PhysicsShapeParameters& parameters);
+void set_physics_shape_is_trigger(
+    PhysicsWorldHandle world,
+    PhysicsShape shape,
+    bool is_trigger);
+[[nodiscard]] PhysicsBody create_physics_body(
+    PhysicsWorldHandle world,
+    PhysicsNodeRef node,
+    PhysicsMotionType motion_type,
+    bool starts_asleep);
+void set_physics_body_shape(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    PhysicsShape shape);
+void on_physics_trigger(
+    PhysicsWorldHandle world,
+    std::function<void(const PhysicsTriggerInfo&)> callback);
 PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle world,
     MeshHandle mesh,
@@ -1362,24 +1733,61 @@ void append_convex_hull_vertices(
     )}
 ${shapeParams}
 
+// ${this.context.provenance(havokModule, primitiveShapeHandle)}
+${primitiveHandle}
+
+/**
+ * \`node.position\` and \`node.rotationQuaternion\`, on whichever arena the
+ * body's node lives in. Both records carry the same two properties, so the
+ * pin's one node type is one accessor here as well.
+ */
+struct PhysicsNodePose {
+    Vec3d position{};
+    Vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f};
+};
+
+[[nodiscard]] PhysicsNodePose physics_node_pose(
+    const Engine& engine,
+    PhysicsNodeRef node) {
+    if (node.kind == PhysicsNodeKind::transform_node) {
+        const TransformNodeRecord& record = engine.transform_nodes[node.value];
+        return PhysicsNodePose{record.position, record.rotation_quaternion};
+    }
+    const MeshRecord& mesh = engine.meshes[node.value];
+    return PhysicsNodePose{mesh.position, mesh.rotation_quaternion};
+}
+
 /** \`_syncBodyToNode\`: the integrated pose written back onto the node. */
 void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
     const pal::PhysicsTransform transform =
         pal::physics_body_get_transform(body.handle);
-    MeshRecord& mesh = engine.meshes[body.node.value];
-    mesh.position = Vec3d{
+    const Vec3d position{
         transform.position[0],
         transform.position[1],
         transform.position[2],
     };
-    mesh.rotation_quaternion = Vec4{
+    const Vec4 rotation{
         static_cast<float>(transform.rotation[0]),
         static_cast<float>(transform.rotation[1]),
         static_cast<float>(transform.rotation[2]),
         static_cast<float>(transform.rotation[3]),
     };
+    if (body.node.kind == PhysicsNodeKind::transform_node) {
+        TransformNodeRecord& record =
+            engine.transform_nodes[body.node.value];
+        record.position = position;
+        record.rotation_quaternion = rotation;
+        record.has_rotation_quaternion = true;
+        mark_transform_node_runtime_transform(
+            engine,
+            TransformNodeHandle{body.node.value});
+        return;
+    }
+    MeshRecord& mesh = engine.meshes[body.node.value];
+    mesh.position = position;
+    mesh.rotation_quaternion = rotation;
     mesh.has_rotation_quaternion = true;
-    mark_mesh_runtime_transform(engine, body.node);
+    mark_mesh_runtime_transform(engine, MeshHandle{body.node.value});
 }
 
 /** \`_syncNodeToBody\` / \`_syncNodeToBodyTarget\`. */
@@ -1387,11 +1795,11 @@ void sync_node_to_body(
     const Engine& engine,
     const PhysicsBody& body,
     bool as_target) {
-    const MeshRecord& mesh = engine.meshes[body.node.value];
+    const PhysicsNodePose pose = physics_node_pose(engine, body.node);
     const pal::PhysicsTransform transform{
-        {mesh.position.x, mesh.position.y, mesh.position.z},
-        {mesh.rotation_quaternion.x, mesh.rotation_quaternion.y,
-         mesh.rotation_quaternion.z, mesh.rotation_quaternion.w},
+        {pose.position.x, pose.position.y, pose.position.z},
+        {pose.rotation.x, pose.rotation.y,
+         pose.rotation.z, pose.rotation.w},
     };
     if (as_target) {
         pal::physics_body_set_target_transform(body.handle, transform);
@@ -1504,6 +1912,37 @@ PhysicsShape create_physics_convex_hull_shape(
     }
     return PhysicsShape{
         pal::physics_shape_create_convex_hull(positions)};
+}
+
+PhysicsShape create_physics_primitive_shape(
+    PhysicsWorldHandle handle,
+    PhysicsShapeType type,
+    const PhysicsShapeParameters& parameters) {
+    // \`createPhysicsShape\`: the primitive factory first, and a type it
+    // answers nothing for falls through to the mesh, container and
+    // convex-hull arms -- which are reached by their own entry point, so
+    // one arriving here is the pin's \`Unsupported shape type\` throw.
+    // The world is read for the same reason the pin destructures it: a
+    // shape belongs to a live world, and a dead handle fails here.
+    static_cast<void>(physics_world_record(handle));
+    const std::optional<pal::PhysicsShapeHandle> primitive =
+        primitive_physics_shape_handle(type, parameters);
+    if (!primitive) {
+        throw std::runtime_error(
+            "createPhysicsShape reached a non-primitive shape type "
+            "through its parameter bag.");
+    }
+    return PhysicsShape{*primitive};
+}
+
+void set_physics_shape_is_trigger(
+    PhysicsWorldHandle handle,
+    PhysicsShape shape,
+    bool is_trigger) {
+    // \`setPhysicsShapeIsTrigger\` is exactly this one back-end write,
+    // reached through the world the pin reads it from.
+    static_cast<void>(physics_world_record(handle));
+    pal::physics_shape_set_trigger(shape.handle, is_trigger);
 }
 
 PhysicsBody& physics_body_record(
@@ -1670,6 +2109,70 @@ PhysicsRaycastResult physics_raycast(
     };
 }
 
+PhysicsBody create_physics_body(
+    PhysicsWorldHandle handle,
+    PhysicsNodeRef node,
+    PhysicsMotionType motion_type,
+    bool starts_asleep) {
+    // \`createPhysicsBody\`: motion type, add to world, then transform --
+    // in that order, because the solver resets a body's transform on add.
+    PhysicsWorld& world = physics_world_record(handle);
+    Engine& engine = *world.engine;
+    PhysicsBody body{};
+    body.node = node;
+    body.motion_type = motion_type;
+    body.handle = pal::physics_body_create();
+    pal::physics_body_set_motion_type(
+        body.handle, pinned_motion_type(motion_type));
+    pal::physics_world_add_body(world.handle, body.handle, starts_asleep);
+    sync_node_to_body(engine, body, false);
+    world.bodies.push_back(body);
+    return body;
+}
+
+void set_physics_body_shape(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    PhysicsShape shape) {
+    // \`setPhysicsBodyShape\` writes \`body._shape\` too, and the live record
+    // is what reads it back: \`setPhysicsBodyMass\` derives its tensor from
+    // there.
+    PhysicsWorld& world = physics_world_record(handle);
+    PhysicsBody& live = physics_body_record(world, body);
+    pal::physics_body_set_shape(live.handle, shape.handle);
+    live.shape = shape;
+}
+
+const char* physics_trigger_type_name(PhysicsTriggerType type) {
+    switch (type) {
+        case PhysicsTriggerType::ENTERED: return "ENTERED";
+        case PhysicsTriggerType::EXITED: return "EXITED";
+    }
+    return "EXITED";
+}
+
+void on_physics_trigger(
+    PhysicsWorldHandle handle,
+    std::function<void(const PhysicsTriggerInfo&)> callback) {
+    // \`registerTriggerDrain\`: the events are produced by the world step,
+    // so they drain through the post-step hook rather than through a
+    // channel of their own. The pin returns a disposer that splices the
+    // drain back out; nothing reached calls it, so the registration is
+    // what is emitted.
+    on_physics_after_step(
+        handle,
+        [handle, callback = std::move(callback)](float) {
+            const PhysicsWorld& world = physics_world_record(handle);
+            for (const pal::PhysicsTriggerEvent& event :
+                 pal::physics_world_trigger_events(world.handle)) {
+                callback(PhysicsTriggerInfo{
+                    event.type == pal::PhysicsTriggerEventType::entered
+                        ? PhysicsTriggerType::ENTERED
+                        : PhysicsTriggerType::EXITED});
+            }
+        });
+}
+
 PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle handle,
     MeshHandle mesh,
@@ -1681,71 +2184,63 @@ PhysicsAggregate create_physics_aggregate(
     const MeshRecord& record = engine.meshes[mesh.value];
     const MeshBounds bounds = mesh_bounds(engine, record);
 
-    // \`_buildShapeParams\`: the reached slice names no explicit geometry,
-    // so every parameter comes from the mesh's own bounds, scaled by the
-    // node's own scaling exactly as the pinned builder scales them.
+    // \`_buildShapeParams\` then the primitive factory, which is the pin's
+    // own pair: the bounds-derived parameters take each explicit override
+    // through the same \`??\`, and the factory settles what is still absent.
     PhysicsShape shape{options.shape};
     if (shape.handle.value == 0) {
       const PinnedShapeBounds sized =
           pinned_shape_bounds(bounds, record.scaling);
-      const Vec3d center = bounding_center(sized);
+      PhysicsShapeParameters params{};
       switch (type) {
         case PhysicsShapeType::SPHERE:
-            shape.handle = pal::physics_shape_create_sphere(
-                {center.x, center.y, center.z},
-                options.radius ? *options.radius : sphere_radius(sized));
+            params.radius =
+                options.radius ? *options.radius : sphere_radius(sized);
+            params.center = bounding_center(sized);
             break;
-        case PhysicsShapeType::BOX: {
-            const Vec3d extents = options.extents
+        case PhysicsShapeType::BOX:
+            params.extents = options.extents
                 ? *options.extents
                 : box_extents(sized);
-            shape.handle = pal::physics_shape_create_box(
-                {center.x, center.y, center.z},
-                {0.0, 0.0, 0.0, 1.0},
-                {extents.x, extents.y, extents.z});
+            params.center = bounding_center(sized);
             break;
-        }
         case PhysicsShapeType::CAPSULE: {
             const PinnedSegmentShape segment = capsule_shape(sized);
-            shape.handle = pal::physics_shape_create_capsule(
-                {segment.point_a.x, segment.point_a.y, segment.point_a.z},
-                {segment.point_b.x, segment.point_b.y, segment.point_b.z},
-                segment.radius);
+            params.radius = segment.radius;
+            params.point_a = segment.point_a;
+            params.point_b = segment.point_b;
             break;
         }
         case PhysicsShapeType::CYLINDER: {
             const PinnedSegmentShape segment = cylinder_shape(sized);
-            shape.handle = pal::physics_shape_create_cylinder(
-                {segment.point_a.x, segment.point_a.y, segment.point_a.z},
-                {segment.point_b.x, segment.point_b.y, segment.point_b.z},
-                segment.radius);
+            params.radius = segment.radius;
+            params.point_a = segment.point_a;
+            params.point_b = segment.point_b;
             break;
         }
           default:
-              throw std::runtime_error(
-                  "createPhysicsAggregate supports only primitive physics "
-                  "shapes without a supplied shape.");
+              break;
       }
+      const std::optional<pal::PhysicsShapeHandle> primitive =
+          primitive_physics_shape_handle(type, params);
+      if (!primitive) {
+          throw std::runtime_error(
+              "createPhysicsAggregate supports only primitive physics "
+              "shapes.");
+      }
+      shape.handle = *primitive;
     }
 
-    // \`createPhysicsBody\`: motion type, add to world, then transform --
-    // in that order, because the solver resets a body's transform on add.
-    PhysicsBody body{};
-    body.node = mesh;
-    body.shape = shape;
-    body.motion_type = options.mass == 0.0
-                           ? PhysicsMotionType::STATIC
-                           : PhysicsMotionType::DYNAMIC;
-    body.handle = pal::physics_body_create();
-    pal::physics_body_set_motion_type(
-        body.handle, pinned_motion_type(body.motion_type));
-    pal::physics_world_add_body(
-        world.handle, body.handle, options.start_asleep);
-    sync_node_to_body(engine, body, false);
+    const PhysicsBody body = create_physics_body(
+        handle,
+        physics_node(mesh),
+        options.mass == 0.0 ? PhysicsMotionType::STATIC
+                            : PhysicsMotionType::DYNAMIC,
+        options.start_asleep);
 
     // \`setPhysicsBodyShape\`, then the material, then the mass. The order
     // is the pin's and is observable: mass derives from the shape.
-    pal::physics_body_set_shape(body.handle, shape.handle);
+    set_physics_body_shape(handle, body, shape);
 
     // \`setPhysicsShapeMaterial\`: the pin writes one friction into both
     // channels and picks a combine mode per channel, which travels as data
@@ -1777,8 +2272,8 @@ PhysicsAggregate create_physics_aggregate(
         pal::physics_body_set_mass_properties(body.handle, properties);
     }
 
-    world.bodies.push_back(body);
-    return PhysicsAggregate{body, shape};
+    return PhysicsAggregate{
+        physics_body_record(world, body), shape};
 }
 
 }  // namespace bbl::upstream

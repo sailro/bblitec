@@ -1730,6 +1730,27 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene101",
+        name: "Scene 101 - Physics Trigger Volume",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene101.ts",
+        title: "Babylon Lite Native - Physics Trigger Volume",
+        parity: {
+            // The pin's own spec serves this scene at `?captureFrame=150`
+            // and waits for the `captureReady` flag the scene raises when
+            // its 150th physics step lands. Both sides read the same query
+            // and both freeze themselves through `stopEngine`; without it
+            // the scene never freezes at all.
+            referenceSearch: "?captureFrame=150",
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "160",
+            },
+            maxFullMad: 1.2,
+            maxForegroundMad: 7.5,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene273",
         name: "Scene 273 - Runtime Material Family",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene273.ts",
@@ -2419,6 +2440,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene86",
+        name: "Scene 86 - NME Scene and Mesh State",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene86.ts",
+        title: "Babylon Lite Native - NME Scene and Mesh State",
+        parity: {
+            // Byte-exact on both backends: the clip plane's diagonal cut
+            // and the three attribute variants a single composed node
+            // module draws, keyed off the mesh block's own has-uv,
+            // has-tangent and has-colour lanes rather than a per-mesh
+            // variant.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 5, 9],
+            backgroundThreshold: 8,
+        },
+    },
+    {
         id: "scene88",
         name: "Scene 88 - NME Loop Block",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene88.ts",
@@ -2802,6 +2840,25 @@ const sceneInputs: readonly SceneInput[] = [
             // backends, which is what says the pinned lookAt and
             // setDirection quaternions, the per-widget scale ratio and the
             // double-sided plane card all agree with the browser.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene222",
+        name: "Scene 222 - Composite Gizmos",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene222.ts",
+        title: "Babylon Lite Native - Composite Gizmos",
+        parity: {
+            // The family's composites: a position, a rotation and a scale
+            // gizmo on one utility layer, each attached to a cube under a
+            // rotated parent and each in local-coordinate mode -- so the
+            // still frame measures the follow's SECOND arm, which
+            // re-orients every widget from the attached node's world
+            // matrix. Removing that arm moves the scene to 0.669/1.169,
+            // which is what says the gate is not vacuous.
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],

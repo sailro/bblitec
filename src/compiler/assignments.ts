@@ -1597,6 +1597,25 @@ export function emitPropertyAssignment(
       const material = context.compileValue(expression.right);
       context.expectKind(material, "material", expression.right);
       context.expectSameEngine(target, material, expression);
+      // A `createMeshFromData` mesh whose optional streams are a run-time
+      // answer has no generation-known attribute set, and the Standard and
+      // PBR variant keys are built from exactly that. The node family
+      // needs none -- `MeshAttributeExistsBlock` reads the per-mesh
+      // uniform lane the PALs fill from the geometry -- so what cannot be
+      // composed is this PAIRING, and it is named here rather than at the
+      // factory, where the material is not yet known.
+      if (
+        target.runtimeMeshStreams === true &&
+        material.nodeMaterialIndex === undefined
+      ) {
+        context.fail(
+          expression.right,
+          "This mesh's optional vertex streams are decided at run time, " +
+            "so its attribute set is not generation-known. Only a node " +
+            "material draws such a mesh: the Standard and PBR variant " +
+            "keys are built from the attribute set.",
+        );
+      }
       context.emit(
         `${context.requireEngine(target, expression)}.meshes[${target.cpp}.value].material = ${material.cpp};`,
       );
