@@ -454,7 +454,15 @@ Important contracts:
 - capture is deferred one frame when scene topology changes so D3D12 upload
   and readback commands do not share an invalid command list; the frame loop
   extends past `BBLITE_MAX_FRAMES` by a bounded grace period until every
-  requested capture lands, so deferral cannot silently skip a screenshot
+  requested capture lands, so deferral cannot silently skip a screenshot,
+  and for as long as the program's own start-up continuations are still
+  draining (capped), plus the same grace counted from the frame they resolve
+  on, since the capture check precedes the frame's drain — so a scene that
+  awaits several frame boundaries before its state is final is captured
+  after them, as the browser harness's ready marker captures it; the parity
+  runner deletes the previous screenshot
+  before a run, so a capture that never lands is a missing file, never a
+  stale measurement
 - native builds place reached assets and snapshotted shaders beside the
   executable to avoid absolute paths and cross-scene drift
 

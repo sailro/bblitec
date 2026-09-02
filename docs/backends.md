@@ -183,7 +183,9 @@ the cost of first-frame compile time.
 Everything that decides *what* a measured run does is written once in
 `native/src/pal_gpu_shared.hpp` and consumed by both backends: `FrameOptions`
 parses the runtime flag matrix, `CaptureGate` decides when the run may stop
-(including the bounded grace period a deferred capture needs), `FrameClock`
+(including the bounded grace a deferred capture needs, and the longer,
+capped one a program still draining its start-up continuations needs),
+`FrameClock`
 produces the real, scene-fixed, or measured-run-overridden delta that scene
 callbacks advance by, and `report_benchmark` prints the
 comparison numbers. A backend that does not implement a flag refuses it rather

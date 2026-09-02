@@ -1262,6 +1262,11 @@ export function runNative(
         verifyDeployedPayload(executable, generatedDirectory);
     }
     mkdirSync(resolve(screenshot, ".."), { recursive: true });
+    // The run must write this screenshot; one left by an earlier run would
+    // otherwise be measured in its place, and a capture that never landed
+    // (a run that ended with the gate still pending) would read as the
+    // previous result rather than as the missing file it is.
+    rmSync(resolve(screenshot), { force: true });
     const maxFrames = nativeCaptureFrameBudget(nativeEnvironment);
     spawnNativeMeasured(executable, {
         ...nativeEnvironment,

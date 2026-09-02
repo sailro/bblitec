@@ -5499,17 +5499,32 @@ public:
         if (engine_stopped() && requested() && !pending()) {
             return false;
         }
-        return running &&
-            (limit_ <= 0 || frame < limit_ ||
-             (pending() && frame < limit_ + grace_frames));
+        if (!running || limit_ <= 0 || frame < limit_) return running;
+        if (!pending()) return false;
+        // Past the budget, a pending capture keeps the loop alive while the
+        // program's own start-up continuations are still draining -- a
+        // scene that awaits nine frame boundaries before its state is
+        // final (scene 118 waits, picks, then waits again) cannot be
+        // captured before they resolve, and the browser harness waits for
+        // that scene's ready marker the same way -- and then for a short
+        // grace counted from the frame they resolved on, because the
+        // capture check runs before the frame's drain and a topology
+        // change defers a capture by one more frame. The drain cap bounds
+        // a program that never resolves.
+        if (!drains_resolved()) return frame < limit_ + drain_cap_frames;
+        if (drains_resolved_at_ < 0) drains_resolved_at_ = frame;
+        return frame < std::max(limit_, drains_resolved_at_) + grace_frames;
     }
 
     static constexpr long grace_frames = 8;
+    static constexpr long drain_cap_frames = 600;
 
 private:
     const FrameOptions* options_;
     long limit_;
     const Engine* engine_;
+    /** The first frame `keep_running` saw the drains resolved, or -1. */
+    mutable long drains_resolved_at_ = -1;
 };
 
 /**
