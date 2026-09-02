@@ -107,12 +107,19 @@ struct PlatformMouseEvent {
     double delta_y = 0.0;
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-/** Stable identity for one node in the scene-created, browser-neutral UI IR. */
+/**
+ * Stable identity for one node in the scene-created, browser-neutral UI IR.
+ * The handle is declared outside the UI feature guard because a materialized
+ * module may hold an empty `std::optional<UiElementHandle>` (a browser-only
+ * `let element: HTMLCanvasElement | null = null` whose writers the bake
+ * erased) in a scene that never reaches the UI runtime; only the UI records
+ * below need the feature.
+ */
 struct UiElementHandle {
     std::uint32_t value = invalid_handle;
 };
 
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 /** Last computed retained-layout box exposed as DOMRect's reached surface. */
 struct UiClientRect {
     double left = 0.0;
@@ -1328,6 +1335,14 @@ struct MeshRecord {
     bool live_imported_transform = false;
     MaterialHandle material{};
     std::uint32_t geometry = invalid_handle;
+    /**
+     * Whether `removeFromScene` reclaimed the geometry behind `geometry`.
+     * The pin lets the JavaScript collector drop a retired mesh's arrays;
+     * here the removal frees them when no other mesh shares the geometry,
+     * and a later `addToScene` of the same mesh refuses by name rather than
+     * drawing nothing.
+     */
+    bool geometry_reclaimed = false;
     // Before renderer startup a clone records the runtime handle of its
     // source mesh here. The renderer uses that link while assigning stable
     // creation-order composition rows, then keeps it for clone provenance.

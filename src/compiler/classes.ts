@@ -1287,6 +1287,40 @@ export class ClassLowerer {
      * Binds a method or constructor parameter list to its arguments by
      * declaring locals, so the inlined body reads them by name.
      */
+    /** The symbols a body spreads into an object literal, one walk per body. */
+    private spreadParameterSymbols(
+        declaration:
+            | ts.ConstructorDeclaration
+            | ts.MethodDeclaration
+            | ts.SetAccessorDeclaration,
+    ): Set<ts.Symbol> {
+        const cached = this.spreadSymbolsByDeclaration.get(declaration);
+        if (cached) return cached;
+        const symbols = new Set<ts.Symbol>();
+        const visit = (node: ts.Node): void => {
+            if (ts.isFunctionLike(node)) return;
+            if (ts.isSpreadAssignment(node)) {
+                const spread = this.context.unwrap(node.expression);
+                if (ts.isIdentifier(spread)) {
+                    const symbol =
+                        this.context.checker.getSymbolAtLocation(spread);
+                    if (symbol) symbols.add(symbol);
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const statement of declaration.body?.statements ?? []) {
+            visit(statement);
+        }
+        this.spreadSymbolsByDeclaration.set(declaration, symbols);
+        return symbols;
+    }
+
+    private readonly spreadSymbolsByDeclaration = new WeakMap<
+        ts.Node,
+        Set<ts.Symbol>
+    >();
+
     private bindParameters(
         declaration:
             | ts.ConstructorDeclaration
@@ -1297,6 +1331,7 @@ export class ClassLowerer {
         preserveStaticRecords = false,
         evaluatedArguments?: readonly Value[],
     ): void {
+        const spreadParameters = this.spreadParameterSymbols(declaration);
         declaration.parameters.forEach((parameter, index) => {
             if (!ts.isIdentifier(parameter.name)) {
                 this.context.fail(
@@ -1370,26 +1405,9 @@ export class ClassLowerer {
             const parameterSymbol = this.context.checker.getSymbolAtLocation(
                 parameter.name,
             );
-            let spreadUse = false;
-            const findSpreadUse = (node: ts.Node): void => {
-                if (spreadUse || ts.isFunctionLike(node)) return;
-                if (
-                    ts.isSpreadAssignment(node) &&
-                    ts.isIdentifier(
-                        this.context.unwrap(node.expression),
-                    ) &&
-                    this.context.checker.getSymbolAtLocation(
-                        this.context.unwrap(node.expression) as ts.Identifier,
-                    ) === parameterSymbol
-                ) {
-                    spreadUse = true;
-                    return;
-                }
-                ts.forEachChild(node, findSpreadUse);
-            };
-            for (const statement of declaration.body?.statements ?? []) {
-                findSpreadUse(statement);
-            }
+            const spreadUse =
+                parameterSymbol !== undefined &&
+                spreadParameters.has(parameterSymbol);
             const staticRecord = evaluatedArgument?.kind === "record"
                 ? evaluatedArgument
                 : preserveStaticRecords || spreadUse

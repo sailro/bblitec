@@ -287,7 +287,8 @@ const CANVAS_SIZE_AXES = new Map<string, CanvasSizeProperty>([
     ["clientHeight", { axis: "height", client: true }],
 ]);
 
-const KEY_EVENT_MODIFIER_FIELDS = new Map<string, string>([
+const KEY_EVENT_FIELDS = new Map<string, string>([
+    ["repeat", "repeat"],
     ["shiftKey", "shift_key"],
     ["ctrlKey", "ctrl_key"],
     ["altKey", "alt_key"],
@@ -393,6 +394,7 @@ class Compiler
     public voxelFileStorageReached = false;
     /** Whether a scene threw one of its own preconditions. */
     public throwReached = false;
+    private assetRootsReachableAnswer: boolean | undefined;
     private readonly staticConstants = new Map<
         ts.Symbol,
         ts.Expression
@@ -542,6 +544,7 @@ class Compiler
         this.dataTypes = new DataTypeRegistry(
             checker,
             (node, message) => this.fail(node, message),
+            () => this.assetRootsReachable(),
         );
         this.dataLowerer = new DataLowerer(this);
         this.classLowerer = new ClassLowerer(this);
@@ -2003,9 +2006,12 @@ class Compiler
         this.emit(sharedPrimitive
             ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
             : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`);
-        const stored = {
+        // Either spelling reads through the emitted variable, so a static
+        // value the initializer carried must not fold past it.
+        const stored: Value = {
             ...value,
             cpp: sharedPrimitive ? `(*${cppName})` : cppName,
+            nativeBinding: true,
         };
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
@@ -4644,7 +4650,7 @@ class Compiler
             const chunks = lowered.split(
                 /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
             );
-            const parts = ["std::string()"];
+            const parts: string[] = [];
             for (const chunk of chunks) {
                 if (!chunk) continue;
                 const marker = chunk.match(
@@ -4660,7 +4666,8 @@ class Compiler
                 );
                 parts.push(substitution);
             }
-            return parts.join(" + ");
+            this.reachJsData();
+            return `bbl::js::concat(${parts.join(", ")})`;
         }
         this.fail(
             expression,
@@ -4722,7 +4729,7 @@ class Compiler
         }
         const lowered = this.lowerUiMarkupLiteral(source);
         const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
-        const parts = ["std::string()"];
+        const parts: string[] = [];
         for (const chunk of chunks) {
             if (!chunk) continue;
             const marker = chunk.match(/^__BBLITE_UI_MARKUP_(\d+)__$/);
@@ -4736,7 +4743,8 @@ class Compiler
                 true,
             ));
         }
-        return parts.join(" + ");
+        this.reachJsData();
+        return `bbl::js::concat(${parts.join(", ")})`;
     }
 
     public emitUiPropertyAssignment(
@@ -5311,17 +5319,11 @@ class Compiler
             return { kind: "json-null", cpp: "std::nullopt" };
         }
         if (owner.kind === "platform-keyboard-event") {
-            if (property === "repeat") {
+            const field = KEY_EVENT_FIELDS.get(property);
+            if (field) {
                 return {
                     kind: "boolean",
-                    cpp: `${owner.cpp}.repeat`,
-                };
-            }
-            const modifier = KEY_EVENT_MODIFIER_FIELDS.get(property);
-            if (modifier) {
-                return {
-                    kind: "boolean",
-                    cpp: `${owner.cpp}.${modifier}`,
+                    cpp: `${owner.cpp}.${field}`,
                 };
             }
             if (property === "code") {
@@ -6796,12 +6798,8 @@ class Compiler
             // can decide whether it owns the comparison. Calls emit as they
             // are inspected, so discard a declined probe and let the numeric
             // path below perform JavaScript's one evaluation for real.
-            const typed = this.probeEmission(
-                () =>
-                    this.dataLowerer.equalityComparison(
-                        unwrapped,
-                    ),
-                (result) => result !== undefined,
+            const typed = this.probeEmission(() =>
+                this.dataLowerer.equalityComparison(unwrapped),
             );
             if (typed) {
                 return typed;
@@ -8227,6 +8225,35 @@ class Compiler
         return this.program.getSourceFiles();
     }
 
+    /**
+     * Whether any reached module can mint an imported asset's synthetic
+     * root: the pin spells it `container.entities[0]`, the one access
+     * `assetRootElementAccess` answers. The data-type registry asks this
+     * once, before it gives `TransformNode` a native handle.
+     */
+    public assetRootsReachable(): boolean {
+        this.assetRootsReachableAnswer ??= this.sourceFiles().some(
+            (file) => {
+                if (file.isDeclarationFile) return false;
+                let found = false;
+                const visit = (node: ts.Node): void => {
+                    if (found) return;
+                    if (
+                        ts.isPropertyAccessExpression(node) &&
+                        node.name.text === "entities"
+                    ) {
+                        found = true;
+                        return;
+                    }
+                    ts.forEachChild(node, visit);
+                };
+                visit(file);
+                return found;
+            },
+        );
+        return this.assetRootsReachableAnswer;
+    }
+
     public reachThrow(): void {
         this.throwReached = true;
     }
@@ -8311,6 +8338,12 @@ class Compiler
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined {
+        // Every identifier call passes through here; the two names decide
+        // before the declaration is resolved.
+        const name = callee.text;
+        if (name !== "saveToFile" && name !== "loadFromFile") {
+            return undefined;
+        }
         const declaration = tryResolveFunctionDeclaration(
             this.checker,
             callee,
@@ -8322,13 +8355,6 @@ class Compiler
             .getSourceFile()
             .fileName.replace(/\\/g, "/");
         if (!/\/demos\/minecraft\/save-load\.(?:ts|js)$/i.test(fileName)) {
-            return undefined;
-        }
-        const name =
-            ts.isFunctionDeclaration(declaration) && declaration.name
-                ? declaration.name.text
-                : callee.text;
-        if (name !== "saveToFile" && name !== "loadFromFile") {
             return undefined;
         }
         this.reachVoxelFileStorage();
@@ -8827,7 +8853,8 @@ class Compiler
      */
     public probeEmission<T>(
         probe: () => T,
-        answered: (result: T) => boolean,
+        answered: (result: T) => boolean = (result) =>
+            result !== undefined,
     ): T {
         const start = this.body.length;
         const result = probe();
@@ -8939,6 +8966,36 @@ class Compiler
     }
 
     /** How many lines the body stream holds, for a caller that may undo. */
+
+    /**
+     * One native accessor per materialized compile-time table: a record
+     * read under a run-time key lowers to a lookup in a `bbl::js::Map`
+     * built from the record's entries, and every function reading the same
+     * record used to carry its own function-local copy of that map -- five
+     * 23-entry block registries in the voxel demo. The map is keyed by its
+     * full initializer text, so two reads that materialize the same table
+     * at the same types share one definition, and a read whose entries
+     * emitted helper lines at the call site keeps its inline form.
+     */
+    private readonly staticRecordAccessors = new Map<string, string>();
+
+    public staticRecordAccessor(
+        mapType: string,
+        entries: readonly string[],
+    ): string {
+        const initializer = `${mapType} values{${entries.join(", ")}};`;
+        const existing = this.staticRecordAccessors.get(initializer);
+        if (existing) return existing;
+        const name = `bbl_static_table_${this.staticRecordAccessors.size}`;
+        this.registerNativeFunction(`${mapType}& ${name}();`, [
+            `${mapType}& ${name}() {`,
+            `    static ${initializer}`,
+            `    return values;`,
+            `}`,
+        ]);
+        this.staticRecordAccessors.set(initializer, name);
+        return name;
+    }
 
     public registerNativeFunction(
         prototype: string,
@@ -12128,6 +12185,7 @@ class Compiler
             ...value,
             cpp: cppName,
             ...(parameter ? { parameterBinding: true } : {}),
+            ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
                 ? {
                       staticElementsOwner:
@@ -13359,6 +13417,7 @@ class Compiler
                 this.nativeFunctionDefinitions,
             staticNativeDeclarations:
                 this.staticNativeDeclarations,
+            voxelFileStorageReached: this.voxelFileStorageReached,
             body: this.body,
         });
     }

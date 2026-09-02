@@ -1130,7 +1130,9 @@ test("forwards DOM-compatible application input through every native loop", () =
 
 test("routes voxel save and load through the host file-dialog PAL", () => {
     const compiler = source("src/compiler.ts");
-    const runtime = source("native/include/bblite/js_data.hpp");
+    const runtime = source("native/include/bblite/js_voxel_file.hpp");
+    const data = source("native/include/bblite/js_data.hpp");
+    const projection = source("src/compiler/output-projection.ts");
     const palHeader = source("native/include/bblite/pal.hpp");
     const pal = source("native/src/pal.cpp");
     const cmake = source("native/CMakeLists.txt");
@@ -1143,24 +1145,36 @@ test("routes voxel save and load through the host file-dialog PAL", () => {
         compiler,
         /load_voxel_world<\$\{this\.dataTypes\.cppType\(stored\)\}>[\s\S]{0,100}this\.requireDefaultEngine\(call\)/,
     );
+    // The boundary travels only with the scene that reaches it: the
+    // plain-data header every scene includes carries no file or stream
+    // headers for it.
+    assert.match(projection, /voxelFileStorageReached[\s\S]{0,120}js_voxel_file\.hpp/);
+    assert.doesNotMatch(data, /<filesystem>|<fstream>|save_voxel_world/);
     assert.match(runtime, /pal::choose_save_file\(/);
     assert.match(runtime, /pal::choose_open_file\(/);
     assert.match(runtime, /world\.voxelsave\.json/);
-    assert.match(runtime, /Voxel world save \(\*\.json\)/);
     assert.equal(
-        (runtime.match(/std::u8string\(path->begin\(\), path->end\(\)\)/g) ?? [])
-            .length,
+        (runtime.match(/voxel_file_path\(\*path\)/g) ?? []).length,
         2,
-        "native save and load preserve UTF-8 dialog paths",
+        "native save and load open the dialog's UTF-8 path the same way",
     );
+    // Numbers are spelled by the one formatter every string coercion shares.
+    assert.match(runtime, /NumberPart\(/);
+    assert.doesNotMatch(runtime, /setprecision/);
     assert.match(palHeader, /struct FileDialogOptions/);
     assert.match(pal, /GetSaveFileNameW\(&dialog\)/);
     assert.match(pal, /GetOpenFileNameW\(&dialog\)/);
-    assert.match(pal, /OFN_OVERWRITEPROMPT/);
-    assert.match(pal, /OFN_FILEMUSTEXIST/);
-    assert.match(pal, /release_pointer_lock_for_dialog\(engine\)/);
+    // Leaving pointer lock for the dialog is the one transition every
+    // other release takes.
+    assert.match(
+        pal,
+        /release_pointer_lock_for_dialog\(Engine& engine\) \{[\s\S]{0,300}sync_pointer_lock\(window, engine\);/,
+    );
     assert.match(pal, /BBLITE_FILE_DIALOG_SAVE_PATH/);
     assert.match(pal, /BBLITE_FILE_DIALOG_OPEN_PATH/);
+    // A host without a picker refuses rather than writing beside the
+    // executable behind a dialog nothing showed.
+    assert.match(pal, /#else[\s\S]{0,400}throw std::runtime_error\([\s\S]{0,120}not implemented on this platform/);
     assert.match(cmake, /target_link_libraries\(bblite_native PRIVATE comdlg32\)/);
 });
 

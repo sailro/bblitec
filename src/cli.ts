@@ -60,6 +60,8 @@ import {
     bakePixelBytes,
     drawSpriteAtlasPng,
     parseExecutedModuleSource,
+    pixelsSourcePrefix,
+    spriteAtlasSourcePrefix,
 } from "./executed-module-assets.js";
 import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
 import { GeneratedTree } from "./generated-tree.js";
@@ -355,9 +357,9 @@ async function materializeAsset(
     // `pixels` kind can also name already-baked inline bytes (the fetched
     // Canvas2D atlas), so kind alone is not an execution contract.
     const bake =
-        asset.source.startsWith("generated:pixels:")
+        asset.source.startsWith(pixelsSourcePrefix)
             ? bakePixelBytes
-            : asset.source.startsWith("generated:sprite-atlas:")
+            : asset.source.startsWith(spriteAtlasSourcePrefix)
               ? drawSpriteAtlasPng
               : undefined;
     if (bake) {

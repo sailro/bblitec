@@ -160,7 +160,7 @@ export interface DataLoweringContext {
     emit(line: string): void;
     probeEmission<T>(
         probe: () => T,
-        answered: (result: T) => boolean,
+        answered?: (result: T) => boolean,
     ): T;
     captureEmittedLines(emitBody: () => void): string[];
     allocateTemporaryCppName(label: string): string;
@@ -496,6 +496,32 @@ export class DataLowerer {
      * Maps the checker type at a node into the data model, or undefined for
      * non-data types.
      */
+    /**
+     * Whether a property or element chain can be a plain-data owner. A
+     * chain rooted in a scene, engine or asset container -- `scene.lights`,
+     * `container.meshes` -- names an engine handle collection that the
+     * handle-collection arms own; compiling it as data would refuse it
+     * before those arms are asked. Every other root (a record, an event, a
+     * handle whose property rules expose data) is compiled and answered by
+     * what comes back.
+     */
+    public plainDataOwnerChain(expression: ts.Expression): boolean {
+        let node = this.context.unwrap(expression);
+        while (
+            ts.isPropertyAccessExpression(node) ||
+            ts.isElementAccessExpression(node)
+        ) {
+            node = this.context.unwrap(node.expression);
+        }
+        if (!ts.isIdentifier(node)) return true;
+        const bound = this.context.lookupIdentifierValue(node);
+        return (
+            bound?.kind !== "scene" &&
+            bound?.kind !== "engine" &&
+            bound?.kind !== "asset"
+        );
+    }
+
     public dataTypeAt(node: ts.Node): DataType | undefined {
         return this.context.dataTypes.fromTsType(
             this.context.checker.getTypeAtLocation(node),
@@ -790,8 +816,12 @@ export class DataLowerer {
                 this.context.allocateTemporaryCppName(
                     "optional_chain",
                 );
+            // A reference: the chain reads through the owner and drops it,
+            // so a lookup that answers with a reference into its container
+            // (a Map of objects) costs no copy, and a temporary lives to the
+            // end of the chain either way.
             this.context.emit(
-                `const auto ${temporary} = ${owner.cpp};`,
+                `[[maybe_unused]] const auto& ${temporary} = ${owner.cpp};`,
             );
             present = `${temporary}.has_value()`;
             presentOwner = {
@@ -816,16 +846,14 @@ export class DataLowerer {
                         "optional_chain",
                     );
                 this.context.emit(
-                    `const auto ${temporary} = ${owner.cpp};`,
+                    `[[maybe_unused]] const auto& ${temporary} = ${owner.cpp};`,
                 );
-                present = optionalFoundCpp.replaceAll(
-                    owner.cpp,
-                    temporary,
-                );
+                const bound = this.leafValue(temporary, owner.dataType);
+                present = bound.optionalFoundCpp!;
                 presentOwner = {
                     ...plainOwner,
                     cpp: temporary,
-                    objectIdentityCpp: `${temporary}.get()`,
+                    objectIdentityCpp: bound.objectIdentityCpp!,
                 };
             } else {
                 present = optionalFoundCpp;
@@ -5427,7 +5455,7 @@ export class DataLowerer {
                     return this.context.dataTypes.isReferenceStruct(
                         dataType.name,
                     )
-                        ? `std::make_shared<bblscene::${dataType.name}Data>(${aggregate})`
+                        ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
                         : aggregate;
                 }
                 if (
@@ -5479,7 +5507,7 @@ export class DataLowerer {
                     return this.context.dataTypes.isReferenceStruct(
                         dataType.name,
                     )
-                        ? `std::make_shared<bblscene::${dataType.name}Data>(${aggregate})`
+                        ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
                         : aggregate;
                 }
                 if (
@@ -5512,7 +5540,7 @@ export class DataLowerer {
                     return this.context.dataTypes.isReferenceStruct(
                         dataType.name,
                     )
-                        ? `std::make_shared<bblscene::${dataType.name}Data>(${aggregate})`
+                        ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(${aggregate})`
                         : aggregate;
                 }
                 break;
@@ -6246,7 +6274,7 @@ export class DataLowerer {
                 dataType.name,
             )
         ) {
-            return `std::make_shared<bblscene::${dataType.name}Data>(bblscene::${dataType.name}Data{${parts.join(", ")}})`;
+            return `bbl::js::make_ref<bblscene::${dataType.name}Data>(bblscene::${dataType.name}Data{${parts.join(", ")}})`;
         }
         return `${this.context.dataTypes.cppType(dataType)}{${parts.join(", ")}}`;
     }
@@ -6273,7 +6301,7 @@ export class DataLowerer {
             if (declared) return;
             this.context.emit(
                 referenceStruct
-                    ? `${this.context.dataTypes.cppType(dataType)} ${cppName} = std::make_shared<bblscene::${dataType.name}Data>();`
+                    ? `${this.context.dataTypes.cppType(dataType)} ${cppName} = bbl::js::make_ref<bblscene::${dataType.name}Data>();`
                     : `${this.context.dataTypes.cppType(dataType)} ${cppName}{};`,
             );
             declared = true;
@@ -6323,7 +6351,7 @@ export class DataLowerer {
                         this.context.emit(
                             `${this.context.dataTypes.cppType(dataType)} ${cppName} = ` +
                                 (referenceStruct
-                                    ? `std::make_shared<bblscene::${dataType.name}Data>(*(${spread.cpp}));`
+                                    ? `bbl::js::make_ref<bblscene::${dataType.name}Data>(*(${spread.cpp}));`
                                     : `${spread.cpp};`),
                         );
                         declared = true;
@@ -6637,7 +6665,8 @@ export class DataLowerer {
             const owner = this.compileDataPath(
                 left.expression,
                 "write",
-            ) ?? (ts.isPropertyAccessExpression(left.expression)
+            ) ?? (ts.isPropertyAccessExpression(left.expression) &&
+                this.plainDataOwnerChain(left.expression)
                 ? this.context.compileValue(left.expression)
                 : undefined);
             if (owner?.kind === "data") {
@@ -6689,7 +6718,6 @@ export class DataLowerer {
                           }
                         : undefined;
                 },
-                (result) => result !== undefined,
             );
             if (narrowed) {
                 if (operator !== "=") {

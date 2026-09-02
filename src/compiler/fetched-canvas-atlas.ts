@@ -1,3 +1,4 @@
+import { pageBase64Script } from "../browser-harness.js";
 import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -112,15 +113,7 @@ function runFetchedCanvasAtlas(
     assetDirectory: string,
 ): Uint8Array {
     const harnessModule = new URL("../browser-harness.js", import.meta.url).href;
-    const base64Helper = `
-        globalThis.__bblBase64 = (bytes) => {
-            let binary = "";
-            for (let i = 0; i < bytes.length; i += 0x8000) {
-                binary += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-            }
-            return btoa(binary);
-        };
-    `;
+    const base64Helper = `${pageBase64Script}globalThis.__bblBase64 = bblBase64;`;
     const script = `
         import { createServer } from "node:http";
         import { readFileSync } from "node:fs";

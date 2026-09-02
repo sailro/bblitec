@@ -7,6 +7,7 @@
 // list is derived from what the compiler reached, so a scene that
 // never touched a subsystem carries no entry for it.
 import type { CompileAdaptation } from "../fidelity.js";
+import { pixelsSourcePrefix } from "../executed-module-assets.js";
 import type {
     CompileAsset,
     CompiledShaderProgram,
@@ -235,7 +236,7 @@ export function compileAdaptations(
     }
     if (
         [...context.assets.values()].some(
-            (asset) => asset.source.startsWith("generated:pixels:"),
+            (asset) => asset.source.startsWith(pixelsSourcePrefix),
         )
     ) {
         adaptations.push({

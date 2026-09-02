@@ -171,8 +171,9 @@ export function compileDataMethodCall(
             : ts.isIdentifier(ownerExpression)
               ? (lowerer.context.lookupIdentifierValue(ownerExpression) ??
                 lowerer.compileStaticContainer(ownerExpression))
-              : ts.isPropertyAccessExpression(ownerExpression) ||
-                  ts.isElementAccessExpression(ownerExpression)
+              : (ts.isPropertyAccessExpression(ownerExpression) ||
+                    ts.isElementAccessExpression(ownerExpression)) &&
+                  lowerer.plainDataOwnerChain(ownerExpression)
                 ? lowerer.context.compileValue(ownerExpression)
               : ts.isStringLiteralLike(ownerExpression) ||
                   ts.isTemplateExpression(ownerExpression)

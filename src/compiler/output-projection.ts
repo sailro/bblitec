@@ -213,8 +213,11 @@ ${generatedSourceLines}
 }
 
 function markUnreferencedLocals(body: string[]): void {
+    // Initialized locals, and the empty `std::optional<...>` storage a
+    // materialized module predeclares for a nullable resource: a browser-only
+    // element whose writers the bake erased is declared and never read.
     const declaration =
-        /^(\s*)((?:auto|double) )([A-Za-z_][A-Za-z0-9_]*) = /;
+        /^(\s*)((?:auto|double) |std::optional<[^;=]*> )([A-Za-z_][A-Za-z0-9_]*)(?: = |;)/;
     const counts = new Map<string, number>();
     for (const line of body) {
         for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
@@ -257,6 +260,8 @@ export interface MainCppProjection {
     nativeFunctionPrototypes: readonly string[];
     nativeFunctionDefinitions: readonly string[];
     staticNativeDeclarations: readonly string[];
+    /** Whether the scene reaches the voxel save/load file boundary. */
+    voxelFileStorageReached: boolean;
     /** The emitted entry-body lines; the render marks unused locals in place. */
     body: string[];
 }
@@ -273,6 +278,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         nativeFunctionPrototypes,
         nativeFunctionDefinitions,
         staticNativeDeclarations,
+        voxelFileStorageReached,
         body,
     } = projection;
     // Scene code names a blend descriptor and a layer at the call
@@ -340,9 +346,11 @@ export function renderMainCpp(projection: MainCppProjection): string {
     const clusteredInclude = features.includes("light:clustered")
         ? "#include <bblite/upstream/clustered_light.hpp>\n"
         : "";
-    const jsDataInclude = jsDataReached
-        ? "#include <bblite/js_data.hpp>\n"
-        : "";
+    const jsDataInclude =
+        (jsDataReached ? "#include <bblite/js_data.hpp>\n" : "") +
+        (voxelFileStorageReached
+            ? "#include <bblite/js_voxel_file.hpp>\n"
+            : "");
     // A composite's factory is generated, so the scene calls it by a name
     // only its own generated header declares.
     const postProcessInclude =

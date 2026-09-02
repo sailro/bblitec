@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -727,19 +728,19 @@ public:
 
     void submit() {
         if (uploads_.empty()) return;
-        if (transfer_capacity_ < bytes_.size()) {
+        if (transfer_capacity_ < bytes_size_) {
             if (transfer_) {
                 SDL_ReleaseGPUTransferBuffer(device_, transfer_);
                 transfer_ = nullptr;
             }
             SDL_GPUTransferBufferCreateInfo transfer_info{};
             transfer_info.usage = SDL_GPU_TRANSFERBUFFERUSAGE_UPLOAD;
-            transfer_info.size = static_cast<Uint32>(bytes_.size());
+            transfer_info.size = static_cast<Uint32>(bytes_size_);
             transfer_ = SDL_CreateGPUTransferBuffer(device_, &transfer_info);
             if (!transfer_) {
                 gpu_error("SDL_CreateGPUTransferBuffer buffer batch");
             }
-            transfer_capacity_ = bytes_.size();
+            transfer_capacity_ = bytes_size_;
         }
         // Cycling hands back a fresh backing store when the previous
         // submit still reads the kept transfer buffer, which is what
@@ -747,7 +748,7 @@ public:
         void* mapped =
             SDL_MapGPUTransferBuffer(device_, transfer_, true);
         if (!mapped) gpu_error("SDL_MapGPUTransferBuffer buffer batch");
-        std::memcpy(mapped, bytes_.data(), bytes_.size());
+        std::memcpy(mapped, bytes_.get(), bytes_size_);
         SDL_UnmapGPUTransferBuffer(device_, transfer_);
 
         SDL_GPUCommandBuffer* command =
@@ -778,7 +779,7 @@ public:
             gpu_error("SDL_SubmitGPUCommandBuffer buffer batch");
         }
         uploads_.clear();
-        bytes_.clear();
+        bytes_size_ = 0;
     }
 
 private:
@@ -798,9 +799,25 @@ private:
         bool cycle) {
         constexpr std::size_t alignment = 4;
         const std::size_t offset =
-            (bytes_.size() + alignment - 1) & ~(alignment - 1);
-        bytes_.resize(offset + size);
-        std::memcpy(bytes_.data() + offset, data, size);
+            (bytes_size_ + alignment - 1) & ~(alignment - 1);
+        const std::size_t required = offset + size;
+        if (required > bytes_capacity_) {
+            // Grow like a vector, but without the value-initialization
+            // `resize` performs: a streaming frame stages several megabytes
+            // of vertices that the memcpy below overwrites in full, and the
+            // memset the standard container would run first was a third
+            // pass over every byte for nothing.
+            const std::size_t capacity =
+                std::max(required, bytes_capacity_ * 2);
+            auto grown = std::make_unique_for_overwrite<std::uint8_t[]>(capacity);
+            if (bytes_size_ > 0) {
+                std::memcpy(grown.get(), bytes_.get(), bytes_size_);
+            }
+            bytes_ = std::move(grown);
+            bytes_capacity_ = capacity;
+        }
+        std::memcpy(bytes_.get() + offset, data, size);
+        bytes_size_ = required;
         uploads_.push_back(StagedUpload{
             .buffer = buffer,
             .offset = offset,
@@ -824,7 +841,11 @@ private:
     SDL_GPUTransferBuffer* transfer_ = nullptr;
     std::size_t transfer_capacity_ = 0;
     std::vector<StagedUpload> uploads_;
-    std::vector<std::uint8_t> bytes_;
+    // The staged bytes of one submit; grown without initialization (see
+    // `stage`) and reused across submits like the transfer buffer.
+    std::unique_ptr<std::uint8_t[]> bytes_;
+    std::size_t bytes_size_ = 0;
+    std::size_t bytes_capacity_ = 0;
 };
 
 inline SDL_GPUSampler* create_texture_sampler(

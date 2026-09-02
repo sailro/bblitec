@@ -1713,6 +1713,8 @@ export interface Value {
   staticBoolean?: boolean;
   /** Materialized mutable parameter; static caller facts cannot fold branches. */
   parameterBinding?: boolean;
+  /** A local the emitter materialized as a native variable; reads go through it. */
+  nativeBinding?: true;
   /** A value bound by a native runtime iteration, not a static unroll. */
   runtimeIteration?: true;
   staticString?: string;

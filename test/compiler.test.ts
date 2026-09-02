@@ -1056,7 +1056,7 @@ test("stabilizes stored record representation before native parameter emission",
 
     assert.match(
         result.cpp,
-        /using Archive = std::shared_ptr<ArchiveData>;/,
+        /using Archive = bbl::js::Ref<ArchiveData>;/,
     );
     assert.match(
         result.cpp,
@@ -1486,7 +1486,7 @@ test("lowers optional data property and element chains generically", () => {
 
     assert.match(
         result.cpp,
-        /const auto (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*const auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
+        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = v_fn\d+_def;\s*const auto v_bblite_nullish_\d+ = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<double>\{\1->speed\} : bbl::js::Nullable<double>\{std::nullopt\}\)/,
     );
     assert.match(
         result.cpp,
@@ -1497,8 +1497,12 @@ test("lowers optional data property and element chains generically", () => {
         /v_bblite_optional_compare_\d+\.has_value\(\) &&/,
     );
     assert.match(result.cpp, /#include <bblite\/js_data\.hpp>/);
-    assert.match(result.cpp, /bbl::js::array_has_index\(/);
-    assert.match(result.cpp, /bbl::js::array_at_or_default\(/);
+    // The element read binds once; a missing index reads as the default
+    // (empty) reference, so the chain tests the reference it bound.
+    assert.match(
+        result.cpp,
+        /const auto& (v_bblite_optional_chain_\d+) = bbl::js::array_at_or_default\([\s\S]{0,200}static_cast<bool>\(\1\)/,
+    );
 });
 
 test("compares the value of an optional boolean from a dynamic record lookup", () => {
@@ -1517,7 +1521,7 @@ test("compares the value of an optional boolean from a dynamic record lookup", (
 
     assert.match(
         result.cpp,
-        /const auto (v_bblite_optional_chain_\d+) = .*\.get\([^;]+;\s*const auto (v_bblite_optional_compare_\d+) = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<bool>\{\1->active\} : bbl::js::Nullable<bool>\{std::nullopt\}\);\s*return \(\2\.has_value\(\) && \(\*\2\) == true\);/s,
+        /\[\[maybe_unused\]\] const auto& (v_bblite_optional_chain_\d+) = .*\.get\([^;]+;\s*const auto (v_bblite_optional_compare_\d+) = \(static_cast<bool>\(\1\) \? bbl::js::Nullable<bool>\{\1->active\} : bbl::js::Nullable<bool>\{std::nullopt\}\);\s*return \(\2\.has_value\(\) && \(\*\2\) == true\);/s,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -1565,7 +1569,7 @@ test("lowers interface-typed structs, optionals, and enums", () => {
     assert.match(result.cpp, /struct ItemData \{/);
     assert.match(
         result.cpp,
-        /using Item = std::shared_ptr<ItemData>;/,
+        /using Item = bbl::js::Ref<ItemData>;/,
     );
     assert.match(
         result.cpp,
@@ -1577,7 +1581,7 @@ test("lowers interface-typed structs, optionals, and enums", () => {
     );
     assert.match(
         result.cpp,
-        /push_back\(std::make_shared<bblscene::ItemData>\(bblscene::ItemData\{2\.0, true\}\)\)/,
+        /push_back\(bbl::js::make_ref<bblscene::ItemData>\(bblscene::ItemData\{2\.0, true\}\)\)/,
     );
     assert.match(
         result.cpp,
@@ -1692,11 +1696,11 @@ test("marks object tuple elements as references before emitting their users", ()
         later.push({ x: 3 });
     `);
 
-    assert.match(result.cpp, /using Point = std::shared_ptr<PointData>;/);
+    assert.match(result.cpp, /using Point = bbl::js::Ref<PointData>;/);
     assert.match(result.cpp, /v_selected->x/);
     assert.match(
         result.cpp,
-        /bbl::js::Array<bblscene::Point>\{std::make_shared<bblscene::PointData>/,
+        /bbl::js::Array<bblscene::Point>\{bbl::js::make_ref<bblscene::PointData>/,
     );
 });
 
@@ -2584,7 +2588,7 @@ test("preserves object identity through a dynamic Record lookup", () => {
 
     assert.match(
         result.cpp,
-        /using Entry = std::shared_ptr<EntryData>;/,
+        /using Entry = bbl::js::Ref<EntryData>;/,
     );
     assert.match(
         result.cpp,
@@ -3390,7 +3394,7 @@ test("copies spread objects and destructures reference-backed array entries", ()
 
     assert.match(
         result.cpp,
-        /bblscene::Row v_moved = std::make_shared<bblscene::RowData>\(\*\(v_original\)\);/,
+        /bblscene::Row v_moved = bbl::js::make_ref<bblscene::RowData>\(\*\(v_original\)\);/,
     );
     assert.match(result.cpp, /v_moved->row = \(v_original->row \+ 1\.0\);/);
     assert.match(
@@ -3456,7 +3460,7 @@ test("shares explicitly typed mutable objects with stored callbacks", () => {
         }
     `);
 
-    assert.match(result.cpp, /using State = std::shared_ptr<StateData>;/);
+    assert.match(result.cpp, /using State = bbl::js::Ref<StateData>;/);
     assert.match(result.cpp, /v_state->count = 1\.0;/);
     assert.match(result.cpp, /stored_callback = \[=\]/);
 });
@@ -5295,7 +5299,7 @@ test("preserves inferred object identity through container storage", () => {
 
     assert.match(
         result.cpp,
-        /bblscene::Image v_image = std::make_shared<bblscene::ImageData>/,
+        /bblscene::Image v_image = bbl::js::make_ref<bblscene::ImageData>/,
     );
     assert.match(result.cpp, /v_image->frame/);
 });
@@ -5317,7 +5321,7 @@ test("keeps a rebound inferred Map object nullable until its fallback", () => {
     `);
 
     assert.match(result.cpp, /static_cast<bool>\(v_\w*batch\)/);
-    assert.match(result.cpp, /v_\w*batch = std::make_shared/);
+    assert.match(result.cpp, /v_\w*batch = bbl::js::make_ref/);
 });
 
 test("keeps a rebound inferred array object as a writable reference", () => {
@@ -5439,7 +5443,7 @@ test("a list a loop grows decides its shape at the first push", () => {
     assert.doesNotMatch(result.cpp, /for \(/);
     assert.equal(
         result.cpp.match(
-            /push_back\(std::make_shared<bblscene::Record\d+Data>/g,
+            /push_back\(bbl::js::make_ref<bblscene::Record\d+Data>/g,
         )?.length,
         4,
     );
@@ -7373,7 +7377,7 @@ test("lowers numeric template substitutions in retained UI cssText", () => {
     assert.match(result.cpp, /position:absolute;right:/);
     assert.match(
         result.cpp,
-        /right:" \+ bbl::js::number_to_string\(v_right\) \+ "px;width:"/,
+        /right:", bbl::js::number_to_string\(v_right\), "px;width:"/,
     );
     assert.match(result.cpp, /number_to_string\(v_right\)/);
     assert.match(result.cpp, /number_to_string\(v_width\)/);
@@ -7779,7 +7783,7 @@ test("packages runtime-selected root UI backgrounds through an image decorator",
         result.cpp,
         /background-color:#222;decorator:image\(\\"/,
     );
-    assert.match(result.cpp, /\+ v_fn\d+_icon->iconUrl \+/);
+    assert.match(result.cpp, /, v_fn\d+_icon->iconUrl, /);
     assert.doesNotMatch(result.cpp, /root_asset_path/);
     assert.match(result.cpp, /\\" cover\);/);
     assert.doesNotMatch(result.cpp, /background-color:#222 url/);
@@ -10996,7 +11000,7 @@ test("retains Scene 117's nullable sprite pick record and all hit fields", () =>
 
     assert.match(
         result.cpp,
-        /using SpritePickInfo = std::shared_ptr<SpritePickInfoData>;/,
+        /using SpritePickInfo = bbl::js::Ref<SpritePickInfoData>;/,
     );
     assert.match(
         result.cpp,
@@ -11012,7 +11016,7 @@ test("retains Scene 117's nullable sprite pick record and all hit fields", () =>
     );
     assert.match(
         result.cpp,
-        /std::make_shared<bblscene::SpritePickInfoData>\(bblscene::SpritePickInfoData\{hit->layer, static_cast<double>\(hit->sprite_index\), hit->u, hit->v\}\)/,
+        /bbl::js::make_ref<bblscene::SpritePickInfoData>\(bblscene::SpritePickInfoData\{hit->layer, static_cast<double>\(hit->sprite_index\), hit->u, hit->v\}\)/,
     );
     assert.match(
         result.cpp,
@@ -12094,7 +12098,7 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.match(result.cpp, /bbl::on_frame_graph_update/);
     assert.match(
         result.cpp,
-        /v_from = std::make_shared<bblscene::MorphStateData>/,
+        /v_from = bbl::js::make_ref<bblscene::MorphStateData>/,
     );
 });
 

@@ -134,36 +134,29 @@ class ModuleInitializerPlanner {
         file: ts.SourceFile,
         observedState: ReadonlySet<ts.Symbol>,
     ): boolean {
-        for (const statement of file.statements) {
-            if (
-                !ts.isVariableStatement(statement) ||
-                (statement.declarationList.flags &
-                    ts.NodeFlags.Const) !==
-                    0
-            ) {
-                continue;
-            }
-            for (const declaration of statement.declarationList
-                .declarations) {
-                if (!ts.isIdentifier(declaration.name)) continue;
-                const symbol = this.symbols.valueSymbol(
-                    declaration.name,
-                );
-                if (symbol && observedState.has(symbol)) {
-                    return true;
-                }
-            }
+        for (const symbol of this.moduleVariableSymbols(file, "mutable")) {
+            if (observedState.has(symbol)) return true;
         }
         return false;
     }
 
-    /** Native storage declared by one project module, exported or private. */
+    /**
+     * Native storage declared by one project module, exported or private:
+     * every variable, or only the `let`/`var` ones.
+     */
     private moduleVariableSymbols(
         file: ts.SourceFile,
+        subset: "all" | "mutable" = "all",
     ): Set<ts.Symbol> {
         const result = new Set<ts.Symbol>();
         for (const statement of file.statements) {
-            if (!ts.isVariableStatement(statement)) {
+            if (
+                !ts.isVariableStatement(statement) ||
+                (subset === "mutable" &&
+                    (statement.declarationList.flags &
+                        ts.NodeFlags.Const) !==
+                        0)
+            ) {
                 continue;
             }
             for (const declaration of statement.declarationList

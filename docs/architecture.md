@@ -332,6 +332,19 @@ stored function fields use native closure ownership, and engine records live
 in arenas. A collector remains optional future work for cyclic objects or
 other genuinely dynamic JavaScript graphs.
 
+A plain-data object a scene declares is shared by identity through
+`bbl::js::Ref<T>`, a reference count without atomics: compiled scene logic
+runs on the one frame thread, and neither the audio device nor the physics
+solver ever holds a scene record, so the interlocked increment a
+`std::shared_ptr` copy performs would pay for a race that cannot happen. A
+`Map` or `Set` of such objects looks a value up by that same reference, and a
+lookup answers with a reference into the map's own slot so an optional chain
+that reads one field copies nothing. The two other shapes JavaScript strings
+and arrays take at run time are built the same way: a concatenation or
+template literal fills one buffer (`bbl::js::concat`, numbers spelled
+straight into it), and an array literal that then grows starts at a small
+fixed capacity rather than paying an allocation per push.
+
 ## Animation and deformation
 
 Property animation and glTF animation share deterministic scene-level seeking

@@ -166,6 +166,17 @@ function declaredInBabylonLite(symbol: ts.Symbol): boolean {
   );
 }
 
+/**
+ * The pin's scene-graph shape: a node owns `children: SceneNode[]` and a
+ * `worldMatrix`. SceneNode and every camera interface carry both.
+ */
+function isSceneGraphNode(type: ts.Type): boolean {
+  return (
+    type.getProperty("children") !== undefined &&
+    type.getProperty("worldMatrix") !== undefined
+  );
+}
+
 function declaredInDomLibrary(symbol: ts.Symbol): boolean {
   return (symbol.declarations ?? []).some((declaration) =>
     declaration
@@ -430,6 +441,7 @@ export class DataTypeRegistry {
   public constructor(
     private readonly checker: ts.TypeChecker,
     private readonly fail: Fail,
+    private readonly assetRootsReachable: () => boolean = () => false,
   ) {}
 
   /**
@@ -611,7 +623,23 @@ export class DataTypeRegistry {
       ? pinnedHandleTypes[type.symbol.name]
       : undefined;
     if (pinnedHandle && declaredInBabylonLite(type.symbol!)) {
+      if (pinnedHandle === "transform-node" && this.assetRootsReachable()) {
+        // TransformNode has two native representations: a node the scene
+        // created (a bbl::TransformNodeHandle) and an imported asset's
+        // synthetic root, which native loading folds into the asset record
+        // rather than allocating a node. A program that can mint the second
+        // keeps every TransformNode-typed record compile-time, where either
+        // may sit; only a program that cannot gets the handle.
+        return undefined;
+      }
       return { kind: "handle", handle: pinnedHandle };
+    }
+    if (type.symbol && declaredInBabylonLite(type.symbol) && isSceneGraphNode(type)) {
+      // A pinned scene-graph entity outside the handle table (Camera's
+      // subtypes) is an engine value the compiler models by kind, not plain
+      // data; its `children: SceneNode[]` member must not turn it into a
+      // struct now that SceneNode itself has a handle.
+      return undefined;
     }
     const objectType = type as ts.ObjectType;
     if ((objectType.objectFlags & ts.ObjectFlags.Reference) !== 0) {
@@ -1756,7 +1784,7 @@ export class DataTypeRegistry {
       }
       lines.push(
         `struct ${name}Data;`,
-        `using ${name} = std::shared_ptr<${name}Data>;`,
+        `using ${name} = bbl::js::Ref<${name}Data>;`,
         "",
       );
     }

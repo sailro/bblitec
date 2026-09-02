@@ -787,6 +787,13 @@ mesh assigned `mesh.parent = node` composes its world through it —
 alias for `SceneNode`, so a node's local matrix is the same
 `composeTrsLocalMatrix` a mesh's is and one emitted composition serves both.
 
+A record field typed `TransformNode` lowers to a `bbl::TransformNodeHandle`
+only in a program that never spells `container.entities[0]`. An imported
+asset's synthetic root is folded into the asset record rather than allocated
+as a node, so the one TypeScript type has two native representations; where
+both could flow into the same field the record stays compile-time, as it did
+before nodes had a handle (`src/compiler/data-types.ts`).
+
 Two halves stay apart because the pin keeps them apart: writing
 `child.parent` registers the child for invalidation and drives the
 transform math, while `node.children.push(child)` fills the traversal list
@@ -1968,7 +1975,16 @@ custom-shader meshes reuse exact local geometry while their per-entry
 transforms and material values remain independent. Their texture/sampler pairs
 are owned once by the material rather than re-uploaded for every replacement;
 reference counts retire geometry as soon as no draw uses it, so repeated
-replacement does not turn the reuse cache into an ever-growing search.
+replacement does not turn the reuse cache into an ever-growing search. That
+cache identifies a geometry by its vertex and index counts and a content
+hash, and keeps the bytes themselves only below a few thousand vertices --
+where a repeated particle or debris cube is confirmed byte for byte and where
+sharing happens -- so a streaming world's unique chunk meshes cost it nothing.
+
+`removeFromScene` also frees the retired mesh's CPU geometry when no other
+mesh shares it, which is what the pin's collector does once nothing holds the
+arrays; a later `addToScene` of that same mesh refuses by name rather than
+drawing an empty buffer.
 
 ### Diagnostics and capture
 

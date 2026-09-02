@@ -636,7 +636,7 @@ export function compileSpriteIntrinsic(
                 ? `${cppType}{}`
                 : `${cppType}{std::nullopt}`;
             const hitValue = referenceBacked
-                ? `std::make_shared<${hitType}Data>(${hitType}Data{${fieldInitializers}})`
+                ? `bbl::js::make_ref<${hitType}Data>(${hitType}Data{${fieldInitializers}})`
                 : `${cppType}{${hitType}{${fieldInitializers}}}`;
             const layerList = dataLayers
                 ? spriteLayerVectorCpp(layers)

@@ -1,3 +1,4 @@
+import { typeComponents } from "../shader-ir.js";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import ts from "typescript";
@@ -786,15 +787,12 @@ export class RendererLowerer {
         reachedShaderPrograms: readonly CompiledShaderProgram[],
     ) {
         const uniformComponentCount = (type: string): number =>
-            type === "f32"
-                ? 1
-                : type === "vec2<f32>"
-                    ? 2
-                    : type === "vec3<f32>"
-                        ? 3
-                        : type === "vec4<f32>"
-                            ? 4
-                            : 0;
+            type === "f32" ||
+            type === "vec2<f32>" ||
+            type === "vec3<f32>" ||
+            type === "vec4<f32>"
+                ? typeComponents(type)
+                : 0;
         const shaderVariantTable = reachedShaderPrograms.map(
             (program) => {
                 const reflection =

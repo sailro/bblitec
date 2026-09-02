@@ -75,7 +75,7 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ### Classes and objects
 
-- [ ] Extend local classes to setters and inheritance.
+- [ ] Extend local classes to inheritance (setters lower as inlined bodies).
 
 ## P1 — Assets and materials
 
@@ -143,7 +143,9 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 - [ ] Make compiler shape probes non-emitting and symbol-aware. Native string
   dispatch currently calls `compileValue` to decide whether to inline, while
   expando-write and catch-binding scans match broad source text/property names.
-  A shared probe transaction must roll back emitted lines *and* compiler state;
+  `probeEmission` rolls back the emitted LINES of a declined probe; a shared
+  probe transaction must also roll back compiler state (temporaries, reached
+  features, registered assets);
   owner/catch matching then needs canonical TypeScript symbols. Use that same
   lookup boundary to remove the duplicate function/alias resolver and fold the
   two loop-control subtree walks into one result.
@@ -172,6 +174,17 @@ findings live in [AUDIT.md](AUDIT.md), not here.
     attribution.
 
 ## P1 — Developer experience
+
+- [ ] Lower the voxel sandbox's save/load from the pinned module instead of
+  the hand-written boundary. `compileVoxelFileCall` keys on the module path
+  and the two function names, and `js_voxel_file.hpp` restates the pin's
+  `JSON.stringify(data)` key order and `parseSave`'s shape check as a
+  hand-typed grammar -- an app-keyed branch in two generic layers. The
+  blocker is a capability: `JSON.stringify` and `JSON.parse` over a plain-data
+  record (the runtime's `ts::JsonValue` reads documents, and nlohmann is
+  linked only under the glTF/`.babylon` loaders). With those lowered, only the
+  `showSaveFilePicker`/`showOpenFilePicker` calls remain a PAL seam,
+  recognised by the browser API they reach rather than by path.
 
 ## P1 — Full Babylon Lite corpus audit
 
@@ -278,7 +291,15 @@ integrated.
   rather than truncating them. Root rotation/scaling need a full
   post-deformation outer matrix; animated morph clones need shared weights
   with an independent node world; and direct mesh/other transform-node clone
-  shapes remain explicitly refused.
+  shapes remain explicitly refused. The root itself is folded into the asset
+  record (`root_position`/`root_rotation`) rather than allocated as a
+  transform node, so a `TransformNode`-typed record field has two native
+  representations and the data-type registry withholds the node handle from
+  any program that spells `container.entities[0]` (the racer's `Vehicle`
+  stays a compile-time record; the voxel sandbox's `Mob` is data). Giving the
+  imported root a `TransformNodeRecord` with the meshes parented under it
+  closes that split, with the clone-of-clone `outer_position`/`outer_rotation`
+  semantics re-measured (scenes 104, 105, 269 and the racer).
 - [ ] Extend the Standard UV transform past what scene 282 measures. The
   channel writer is lowered from the pin's own AST, so the arithmetic covers
   all seven channels, but three inputs the fold does not reach would force a
@@ -366,10 +387,6 @@ integrated.
     renderable family. Scene 53 reaches only the fixed-order-100 `_direct`
     `test-write` arm; the generic transparent arm must join the shared
     camera-depth/order bucket rather than the current family hard slot.
-  - `createTexture2DFromPixels`'s `srgb` format, which picks
-    `rgba8unorm-srgb` and so changes how a texel decodes rather than how it
-    is sampled. The four sampler overrides shipped with scenes 283/284/301;
-    no reached call passes `srgb`.
   - the Handle API. Its index siblings are done — `removeSprite2DIndex` and
     `setSprite2DFrameIndex` shipped with the swap-remove and its id
     reindexing (scenes 58, 59) — so the handle-object form is what remains
@@ -558,7 +575,7 @@ integrated.
   a typed `ShaderSamplerDecl` (its `sampleType`, `viewDimension: "2d-array"`
   and `comparison` each change the declared WGSL texture and sampler types),
   a sampler the vertex stage reads (SDL_GPU gives a vertex texture its own
-  register space), `storageBuffers`, `blend`/`blendMode`, `transmissive`,
+  register space), `storageBuffers`, `blend` (`blendMode` lowers), `transmissive`,
   `depthCompare`, `depthOnlyFragment`, `depthBias`/`depthBiasSlopeScale`,
   `stencil` and `plugins` are all unreached and
   unlowered. `setShaderMatrix`, `setShaderStorageBuffer`,

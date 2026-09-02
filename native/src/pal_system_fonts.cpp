@@ -8,6 +8,8 @@
 #if defined(_WIN32)
 #include <dwrite.h>
 #include <wrl/client.h>
+
+#include "pal_win32_text.hpp"
 #elif defined(__APPLE__)
 #include <CoreFoundation/CoreFoundation.h>
 #include <CoreText/CoreText.h>
@@ -21,34 +23,6 @@ namespace {
 #if defined(_WIN32)
 
 using Microsoft::WRL::ComPtr;
-
-std::optional<std::wstring> utf8_to_wide(std::string_view value) {
-    if (value.size() > static_cast<std::size_t>(
-                           (std::numeric_limits<int>::max)())) {
-        return std::nullopt;
-    }
-    const int input_size = static_cast<int>(value.size());
-    const int output_size = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        value.data(),
-        input_size,
-        nullptr,
-        0);
-    if (output_size <= 0) return std::nullopt;
-
-    std::wstring result(static_cast<std::size_t>(output_size), L'\0');
-    if (MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            value.data(),
-            input_size,
-            result.data(),
-            output_size) != output_size) {
-        return std::nullopt;
-    }
-    return result;
-}
 
 IDWriteFontCollection* system_font_collection() {
     static const ComPtr<IDWriteFontCollection> collection = [] {

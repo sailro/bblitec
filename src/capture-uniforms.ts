@@ -79,7 +79,7 @@ export function layoutOf(type: string): { size: number; align: number } | undefi
     return undefined;
 }
 
-function roundUp(alignment: number, value: number): number {
+export function roundUp(alignment: number, value: number): number {
     return Math.ceil(value / alignment) * alignment;
 }
 

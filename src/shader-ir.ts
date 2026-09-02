@@ -1,3 +1,4 @@
+import { layoutOf, roundUp } from "./capture-uniforms.js";
 import type { ShaderMaterialProgramSource } from "./shader-material-programs.js";
 
 export type ShaderStage = "vertex" | "fragment";
@@ -903,7 +904,8 @@ function stageReadsSampler(
         ));
 }
 
-function typeComponents(type: ShaderType): number {
+/** How many floats a custom uniform type spans; the one such table. */
+export function typeComponents(type: ShaderType): number {
     switch (type) {
         case "f32":
             return 1;
@@ -918,21 +920,17 @@ function typeComponents(type: ShaderType): number {
     }
 }
 
+/**
+ * A custom uniform's alignment, from the layout table the capture decoder
+ * reads browser buffers through -- the same rule on both sides of a
+ * `scene -- diff`, so a stride fix reaches generation and diagnosis at once.
+ */
 function uniformTypeAlignment(type: ShaderType): number {
-    switch (type) {
-        case "f32":
-            return 4;
-        case "vec2<f32>":
-            return 8;
-        case "vec3<f32>":
-        case "vec4<f32>":
-        case "mat4x4<f32>":
-            return 16;
+    const layout = layoutOf(type);
+    if (!layout) {
+        throw new Error(`Custom uniform type '${type}' has no uniform layout.`);
     }
-}
-
-function alignTo(value: number, alignment: number): number {
-    return Math.ceil(value / alignment) * alignment;
+    return layout.align;
 }
 
 function componentSwizzle(start: number, count: number): string {
@@ -973,9 +971,9 @@ function reflectUniformBlock(
         if (count > 4) {
             throw new Error(`Custom matrix uniform '${uniform.name}' is not supported.`);
         }
-        byteOffset = alignTo(
-            byteOffset,
+        byteOffset = roundUp(
             uniformTypeAlignment(uniform.type),
+            byteOffset,
         );
         const slot = Math.floor(byteOffset / 16);
         const component = (byteOffset % 16) / 4;
@@ -993,7 +991,7 @@ function reflectUniformBlock(
         stage,
         binding: 0,
         space: stage === "vertex" ? 1 : 3,
-        size: alignTo(byteOffset, 16),
+        size: roundUp(16, byteOffset),
         systemMatrices,
         members,
     };

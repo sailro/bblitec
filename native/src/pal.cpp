@@ -17,10 +17,10 @@
 
 #include <SDL3/SDL.h>
 
+#include "pal_platform_events.hpp"
+
 #if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <windows.h>
+#include "pal_win32_text.hpp"
 #include <commdlg.h>
 #endif
 
@@ -176,76 +176,24 @@ namespace {
 
 #if defined(_WIN32)
 
+// A modal dialog takes the mouse; leave pointer lock the way the browser
+// host does before its picker opens, through the one transition every
+// other release (Escape, focus loss) already goes through.
 void release_pointer_lock_for_dialog(Engine& engine) {
     if (!engine.pointer_locked && !engine.pointer_lock_requested) return;
-    engine.pointer_lock_requested = false;
     SDL_Window* window = SDL_GetKeyboardFocus();
     if (!window) window = SDL_GetMouseFocus();
-    if (window) {
-        SDL_SetWindowRelativeMouseMode(window, false);
-    }
-    const bool changed = engine.pointer_locked;
-    engine.pointer_locked = false;
-    SDL_ShowCursor();
-    if (changed) {
-        for (const auto& callback : engine.pointer_lock_change_callbacks) {
-            callback();
-        }
-    }
+    engine.pointer_lock_requested = false;
+    sync_pointer_lock(window, engine);
 }
 
-std::wstring utf8_to_wide(std::string_view value) {
-    if (value.empty()) return {};
-    const int size = MultiByteToWideChar(
-        CP_UTF8,
-        MB_ERR_INVALID_CHARS,
-        value.data(),
-        static_cast<int>(value.size()),
-        nullptr,
-        0);
-    if (size <= 0) {
-        throw std::runtime_error("Unable to convert file-dialog text to UTF-16.");
+std::wstring wide_or_throw(std::string_view value, const char* what) {
+    auto wide = utf8_to_wide(value);
+    if (!wide) {
+        throw std::runtime_error(
+            std::string("Unable to convert ") + what + " to UTF-16.");
     }
-    std::wstring result(static_cast<std::size_t>(size), L'\0');
-    if (MultiByteToWideChar(
-            CP_UTF8,
-            MB_ERR_INVALID_CHARS,
-            value.data(),
-            static_cast<int>(value.size()),
-            result.data(),
-            size) != size) {
-        throw std::runtime_error("Unable to convert file-dialog text to UTF-16.");
-    }
-    return result;
-}
-
-std::string wide_to_utf8(std::wstring_view value) {
-    if (value.empty()) return {};
-    const int size = WideCharToMultiByte(
-        CP_UTF8,
-        WC_ERR_INVALID_CHARS,
-        value.data(),
-        static_cast<int>(value.size()),
-        nullptr,
-        0,
-        nullptr,
-        nullptr);
-    if (size <= 0) {
-        throw std::runtime_error("Unable to convert the selected path to UTF-8.");
-    }
-    std::string result(static_cast<std::size_t>(size), '\0');
-    if (WideCharToMultiByte(
-            CP_UTF8,
-            WC_ERR_INVALID_CHARS,
-            value.data(),
-            static_cast<int>(value.size()),
-            result.data(),
-            size,
-            nullptr,
-            nullptr) != size) {
-        throw std::runtime_error("Unable to convert the selected path to UTF-8.");
-    }
-    return result;
+    return std::move(*wide);
 }
 
 std::optional<std::string> choose_windows_file(
@@ -253,17 +201,20 @@ std::optional<std::string> choose_windows_file(
     bool save) {
     std::array<wchar_t, 32768> path{};
     if (save) {
-        const std::wstring suggested = utf8_to_wide(options.suggested_name);
+        const std::wstring suggested =
+            wide_or_throw(options.suggested_name, "the suggested file name");
         std::copy_n(
             suggested.begin(),
             std::min(suggested.size(), path.size() - 1),
             path.begin());
     }
-    const std::wstring title = utf8_to_wide(options.title);
-    const std::wstring filter_name = utf8_to_wide(options.filter_name);
-    const std::wstring filter_pattern = utf8_to_wide(options.filter_pattern);
+    const std::wstring title = wide_or_throw(options.title, "the dialog title");
+    const std::wstring filter_name =
+        wide_or_throw(options.filter_name, "the dialog filter");
+    const std::wstring filter_pattern =
+        wide_or_throw(options.filter_pattern, "the dialog filter");
     const std::wstring default_extension =
-        utf8_to_wide(options.default_extension);
+        wide_or_throw(options.default_extension, "the default extension");
     std::wstring filter = filter_name;
     filter.push_back(L'\0');
     filter.append(filter_pattern);
@@ -286,7 +237,12 @@ std::optional<std::string> choose_windows_file(
         ? GetSaveFileNameW(&dialog)
         : GetOpenFileNameW(&dialog);
     if (accepted) {
-        return wide_to_utf8(path.data());
+        auto utf8 = wide_to_utf8(path.data());
+        if (!utf8) {
+            throw std::runtime_error(
+                "Unable to convert the selected path to UTF-8.");
+        }
+        return std::move(*utf8);
     }
     const DWORD error = CommDlgExtendedError();
     if (error == 0) return std::nullopt;
@@ -310,9 +266,13 @@ std::optional<std::string> choose_file(
     release_pointer_lock_for_dialog(engine);
     return choose_windows_file(options, save);
 #else
-    // Until another host PAL supplies a native picker, preserve the previous
-    // portable working-directory behavior instead of removing save/load.
-    return options.suggested_name;
+    // No picker on this host yet. Refuse by name rather than writing to the
+    // working directory behind a dialog nothing showed -- a degraded path
+    // nothing measures is the shape this repository does not take.
+    static_cast<void>(engine);
+    throw std::runtime_error(
+        "The native file dialog '" + options.title +
+        "' is not implemented on this platform.");
 #endif
 }
 

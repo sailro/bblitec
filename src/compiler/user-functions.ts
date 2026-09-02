@@ -778,6 +778,48 @@ export interface UserFunctionContext {
     fail(node: ts.Node, message: string): never;
 }
 
+/**
+ * The browser-only nullable fallback shape two success-path matchers share:
+ * a body that is one `try` whose catch is `return null` and whose try block
+ * ends in a `return <expression>`. What each matcher then checks is only its
+ * own returned expression.
+ */
+function nullFallbackTryShape(
+    declaration: ts.FunctionLikeDeclaration,
+): { tryStatements: readonly ts.Statement[]; returned: ts.Expression } | undefined {
+    const body = declaration.body;
+    if (!body || !ts.isBlock(body) || body.statements.length !== 1) {
+        return undefined;
+    }
+    const statement = body.statements[0];
+    if (
+        !statement ||
+        !ts.isTryStatement(statement) ||
+        statement.finallyBlock ||
+        !statement.catchClause
+    ) {
+        return undefined;
+    }
+    const catchStatements = statement.catchClause.block.statements;
+    const catchReturn = catchStatements[0];
+    if (
+        catchStatements.length !== 1 ||
+        !catchReturn ||
+        !ts.isReturnStatement(catchReturn) ||
+        catchReturn.expression?.kind !== ts.SyntaxKind.NullKeyword
+    ) {
+        return undefined;
+    }
+    const returned = statement.tryBlock.statements.at(-1);
+    if (!returned || !ts.isReturnStatement(returned) || !returned.expression) {
+        return undefined;
+    }
+    return {
+        tryStatements: statement.tryBlock.statements,
+        returned: returned.expression,
+    };
+}
+
 export class UserFunctionLowerer {
     private readonly directCallCache = new Map<
         SupportedFunction,
@@ -2156,37 +2198,12 @@ export class UserFunctionLowerer {
         });
         if (!ownsRetainedCanvas) return undefined;
 
-        const statement = declaration.body.statements[0];
-        if (
-            !statement ||
-            !ts.isTryStatement(statement) ||
-            statement.finallyBlock ||
-            !statement.catchClause
-        ) {
+        const shape = nullFallbackTryShape(declaration);
+        if (!shape || !ts.isNewExpression(shape.returned)) {
             return undefined;
         }
-        const catchStatements = statement.catchClause.block.statements;
-        const catchReturn = catchStatements[0];
-        if (
-            catchStatements.length !== 1 ||
-            !catchReturn ||
-            !ts.isReturnStatement(catchReturn) ||
-            catchReturn.expression?.kind !==
-                ts.SyntaxKind.NullKeyword
-        ) {
-            return undefined;
-        }
-        const successStatements = statement.tryBlock.statements;
-        const final = successStatements.at(-1);
-        if (
-            !final ||
-            !ts.isReturnStatement(final) ||
-            !final.expression ||
-            !ts.isNewExpression(final.expression)
-        ) {
-            return undefined;
-        }
-        const constructed = final.expression;
+        const successStatements = shape.tryStatements;
+        const constructed = shape.returned;
         const constructedSymbol = this.checker.getSymbolAtLocation(
             constructed.expression,
         );
@@ -2291,36 +2308,12 @@ export class UserFunctionLowerer {
               returnExpression: ts.Expression;
           }
         | undefined {
-        if (
-            !ts.isFunctionDeclaration(declaration) ||
-            !declaration.body ||
-            declaration.body.statements.length !== 1
-        ) {
+        if (!ts.isFunctionDeclaration(declaration)) {
             return undefined;
         }
-        const statement = declaration.body.statements[0];
-        if (
-            !statement ||
-            !ts.isTryStatement(statement) ||
-            statement.finallyBlock ||
-            !statement.catchClause
-        ) {
-            return undefined;
-        }
-        const catchReturn = statement.catchClause.block.statements[0];
-        if (
-            statement.catchClause.block.statements.length !== 1 ||
-            !catchReturn ||
-            !ts.isReturnStatement(catchReturn) ||
-            catchReturn.expression?.kind !== ts.SyntaxKind.NullKeyword
-        ) {
-            return undefined;
-        }
-        const returned = statement.tryBlock.statements.at(-1);
-        if (!returned || !ts.isReturnStatement(returned) || !returned.expression) {
-            return undefined;
-        }
-        let expression = returned.expression;
+        const shape = nullFallbackTryShape(declaration);
+        if (!shape) return undefined;
+        let expression = shape.returned;
         while (ts.isAwaitExpression(expression)) expression = expression.expression;
         if (
             !ts.isCallExpression(expression) ||
@@ -2329,8 +2322,14 @@ export class UserFunctionLowerer {
         ) {
             return undefined;
         }
-        if (!statement.tryBlock.getText().includes("fetch(")) return undefined;
-        return { statements: [], returnExpression: returned.expression };
+        if (
+            !shape.tryStatements.some((statement) =>
+                statement.getText().includes("fetch("),
+            )
+        ) {
+            return undefined;
+        }
+        return { statements: [], returnExpression: shape.returned };
     }
 
     private containsValueReturn(

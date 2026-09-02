@@ -7,6 +7,7 @@
 // reach order, which is the generated variant table's index order, and
 // the uniform setters resolve their offsets from the reflected layout
 // of the reached program.
+import { typeComponents } from "../shader-ir.js";
 import ts from "typescript";
 import { cppIdentifierPattern } from "../cpp-literals.js";
 import {
@@ -365,16 +366,9 @@ export function compileShaderMaterialOptions(
                 `Shader uniform default '${entry.name}' has no typed declaration.`,
             );
         }
-        const componentCount =
-            declared.endsWith(":f32")
-                ? 1
-                : declared.endsWith(":vec2<f32>")
-                    ? 2
-                    : declared.endsWith(":vec3<f32>")
-                        ? 3
-                        : declared.endsWith(":vec4<f32>")
-                            ? 4
-                            : 0;
+        const componentCount = declaredVectorComponents(
+            declared.slice(declared.indexOf(":") + 1),
+        );
         if (componentCount === 0) {
             context.fail(
                 uniformsExpression,
@@ -605,15 +599,7 @@ function compileShaderUniformSignatures(
         if (defaultExpression) {
             const resolvedDefault =
                 context.resolveStaticExpression(defaultExpression);
-            const componentCount = uniformType === "f32"
-                ? 1
-                : uniformType === "vec2<f32>"
-                  ? 2
-                  : uniformType === "vec3<f32>"
-                    ? 3
-                    : uniformType === "vec4<f32>"
-                      ? 4
-                      : 0;
+            const componentCount = declaredVectorComponents(uniformType);
             if (componentCount === 0) {
                 context.fail(
                     type,
@@ -858,18 +844,27 @@ function expectStaticNumber(
     context: ShaderMaterialContext,
     expression: ts.Expression,
 ): number {
-    const resolved = context.resolveStaticExpression(expression);
-    if (ts.isNumericLiteral(resolved)) {
-        return Number(resolved.text);
+    const value = staticNumber(context, expression);
+    if (value === undefined) {
+        context.fail(
+            context.resolveStaticExpression(expression),
+            "Expected a static numeric literal.",
+        );
     }
-    if (
-        ts.isPrefixUnaryExpression(resolved) &&
-        resolved.operator === ts.SyntaxKind.MinusToken &&
-        ts.isNumericLiteral(resolved.operand)
-    ) {
-        return -Number(resolved.operand.text);
-    }
-    context.fail(resolved, "Expected a static numeric literal.");
+    return value;
+}
+
+/**
+ * The scalar or vector float types a custom uniform default may fill, as a
+ * component count -- zero for anything else, so the caller names the type.
+ */
+function declaredVectorComponents(type: string): number {
+    return type === "f32" ||
+        type === "vec2<f32>" ||
+        type === "vec3<f32>" ||
+        type === "vec4<f32>"
+        ? typeComponents(type)
+        : 0;
 }
 
 function staticNumber(
