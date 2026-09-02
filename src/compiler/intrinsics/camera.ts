@@ -4,11 +4,20 @@ import {
     staticVec3Value,
     type PositiveIntegerContext,
 } from "../option-helpers.js";
+import type { DataType, DataTypeRegistry } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 export interface CameraIntrinsicContext
     extends IntrinsicCallContext, PositiveIntegerContext {
+    readonly dataTypes: DataTypeRegistry;
+    readonly checker: ts.TypeChecker;
+    readonly dataLowerer: {
+        structAggregate(
+            dataType: DataType & { kind: "struct" },
+            parts: readonly string[],
+        ): string;
+    };
     compileVec3(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -225,6 +234,70 @@ export function compileCameraIntrinsic(
                 cpp:
                     `bbl::enable_orthographic_camera(` +
                     `${engine}, ${camera.cpp}, ${halfHeight})`,
+                engineCpp: engine,
+            };
+        }
+
+        // src/camera/camera.ts: `{ x: w[12], y: w[13], z: w[14] }` off
+        // the camera's own world matrix, lowered as `camera_position` in
+        // `camera_math.hpp` beside the matrix it reads. What is left here
+        // is the record the scene sees.
+        case "getCameraPosition": {
+            context.expectArgumentCount(call, 1, 1);
+            const camera = context.compileValue(call.arguments[0]!);
+            context.expectKind(camera, "camera", call.arguments[0]!);
+            const resultType = context.dataTypes.fromTsType(
+                context.checker.getTypeAtLocation(call),
+                call,
+            );
+            if (resultType?.kind !== "struct") {
+                context.fail(
+                    call,
+                    "getCameraPosition must return the pin's own " +
+                        "{ x, y, z } record.",
+                );
+            }
+            const fields = context.dataTypes.structFields(
+                resultType.name,
+                call,
+            );
+            if (
+                fields.length !== 3 ||
+                !fields.every(
+                    (field, index) =>
+                        field.name === ["x", "y", "z"][index] &&
+                        field.type.kind === "number",
+                )
+            ) {
+                context.fail(
+                    call,
+                    "getCameraPosition must return the pin's own " +
+                        "{ x, y, z } record.",
+                );
+            }
+            const engine = context.requireEngine(camera, call);
+            // The lanes come from `camera_position`, which the camera
+            // lowerer emits from the pin's own two-line body -- so the
+            // matrix is composed once rather than once per component, and
+            // the float-store rule is stated where it is ported.
+            const position =
+                `bbl::upstream::camera_position(` +
+                `${engine}.cameras[${camera.cpp}.value])`;
+            const cppType = context.dataTypes.cppType(resultType);
+            // Built through the data lowerer rather than braced here: the
+            // reference-vs-value fork is stated in `structAggregate` alone,
+            // which is why the hit records route through it too.
+            const aggregate = context.dataLowerer.structAggregate(
+                resultType,
+                ["eye.x", "eye.y", "eye.z"],
+            );
+            return {
+                kind: "data",
+                cpp:
+                    `([&]() -> ${cppType} { ` +
+                    `const bbl::Vec3d eye = ${position}; ` +
+                    `return ${aggregate}; }())`,
+                dataType: resultType,
                 engineCpp: engine,
             };
         }

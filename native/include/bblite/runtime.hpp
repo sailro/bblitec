@@ -305,6 +305,10 @@ enum class PickedNodeKind : std::uint8_t {
     none,
     mesh,
     splat_mesh,
+    // A billboard sprite is not a node at all: the pin leaves
+    // `pickedMesh` null for it and hangs a `_spritePick` payload on the
+    // info instead, which is what `pickBillboardSprite` reads back.
+    billboard_sprite,
 };
 
 /**
@@ -325,6 +329,15 @@ struct PickingInfo {
      */
     PickedNodeKind picked_kind = PickedNodeKind::none;
     std::uint32_t picked_index = invalid_handle;
+    /**
+     * The read-back id's offset inside the range its candidate owns --
+     * upstream's `pickId - r.base`, the local id it hands the resolving
+     * contributor. A mesh or a cloud owns one id and reads zero here; a
+     * billboard system owns `count` of them (`pick-contributor.ts`:
+     * "nextId - baseId is the id count this contributor owns"), so this
+     * is the sprite's own slot within the system `picked_index` names.
+     */
+    std::uint32_t picked_range_offset = 0;
     std::optional<std::array<double, 3>> picked_point{};
 };
 
@@ -598,6 +611,8 @@ struct RenderTargetOptions {
     bool has_format = false;
     /** See `RenderTargetRecord::shadow_map`. */
     bool shadow_map = false;
+    /** See `RenderTargetRecord::depth_layers`. */
+    std::uint32_t depth_layers = 1;
 };
 
 enum class RenderTextureSource {
@@ -658,6 +673,15 @@ struct RenderTaskOptions {
      * view-projection.
      */
     ShadowGeneratorHandle shadow_generator{};
+    /**
+     * Which layer of the target's depth attachment this pass writes.
+     *
+     * Zero for every pass but a cascaded shadow generator's, whose casters
+     * are drawn once per cascade into one layer each of the generator's
+     * `depth32float` array. It also selects which fitted cascade's matrices
+     * the pass renders through.
+     */
+    std::uint32_t depth_layer = 0;
 };
 
 struct RenderTaskMesh {
@@ -830,6 +854,17 @@ struct RenderTargetRecord {
      * descriptor, so no PAL types one out.
      */
     bool shadow_map = false;
+    /**
+     * How many array layers this target's DEPTH attachment carries.
+     *
+     * One for every target but the cascaded shadow map, whose pinned
+     * factory allocates `depth32float` at
+     * `size.depthOrArrayLayers = numCascades` and renders each cascade into
+     * a single-layer view of it. The layer a pass writes rides on the TASK
+     * (`RenderTaskOptions::depth_layer`), so the texture keeps one owner and
+     * no pass borrows a depth it would then have to not release.
+     */
+    std::uint32_t depth_layers = 1;
 };
 
 struct FrameTaskRecord {
@@ -2530,6 +2565,13 @@ struct AssetRecord {
     std::function<void(const std::vector<BlendedClip>&, float)>
         animation_tick_clips;
     std::function<void(Scene&)> scene_setup;
+    /**
+     * `AssetContainer._gaussianSplats`: the clouds the pinned
+     * `KHR_gaussian_splatting` feature contributed, one per GS primitive, in
+     * document order. The loader builds them; `scene_setup` registers them,
+     * which is where upstream fills the same list.
+     */
+    std::vector<SplatMeshHandle> gaussian_splats;
     /** This asset's clips, in the document's own animation order. */
     std::vector<AnimationGroupHandle> animation_groups;
     /** Sets one clip's isPlaying, through the loader's own runtime. */
@@ -2601,7 +2643,34 @@ enum class ShadowFilter {
      * `computeDirectionalLightMatrix` as its matrix builder.
      */
     pcf_directional,
+    /**
+     * `createCsmDirectionalShadowGenerator`, whose own `_shadowType: "csm"`
+     * is what sends both receiver families down their cascaded arm. Its map
+     * is a layered `depth32float` array rather than the 2D one the two PCF
+     * families share, and its receiver block is the 320-byte cascade one.
+     */
+    csm_directional,
     esm_directional,
+};
+
+/**
+ * One fitted cascade, as `_computeCsmCascades` returns it.
+ *
+ * The receiver samples with `transform` and the cascade's own caster pass
+ * renders through `caster_view_projection` — the PCF family's unbiased /
+ * biased split, applied per cascade.
+ */
+struct ShadowCascade {
+    /** The cascade's light-space view, from the pinned light basis. */
+    std::array<float, 16> view{};
+    /** `cascadeTransforms[i]`: ortho * view, texel-snapped, unbiased. */
+    std::array<float, 16> transform{};
+    /** That transform with the pin's clip-space bias. */
+    std::array<float, 16> caster_view_projection{};
+    /** `viewFrustumZ[i]`: the split distance in camera view space. */
+    double view_frustum_z = 0.0;
+    /** `frustumLengths[i]`: this slice's own length. */
+    double frustum_length = 0.0;
 };
 
 /**
@@ -2642,26 +2711,41 @@ struct ShadowGeneratorRecord {
      * `renderCsmShadowMap` each test it first).
      */
     bool force_refresh_every_frame = false;
-    /** The depth-only render task the task state built for this map. */
-    TaskHandle task{};
+    /**
+     * The render target this generator's map lives in, which is what every
+     * receiver lookup resolves through. A cascaded generator's cascades are
+     * layers of this one target.
+     */
+    RenderTargetHandle map_target{};
+    /**
+     * Every caster pass the task state built: one for a single-map
+     * generator, one per cascade layer for a cascaded one.
+     */
+    std::vector<TaskHandle> caster_tasks;
     /** Source/view pairs retained while a dynamic caster list is filtered. */
     std::vector<MaterialHandle> caster_material_sources;
     std::vector<MaterialHandle> caster_material_views;
-    /** ESM only: the two lanes the receiver block packs. */
+    /** ESM only: one of the two lanes its receiver block packs. */
     double depth_scale = 0.0;
+    /** ESM and CSM: the soft fade at the edge of the fitted volume. */
     double frustum_edge_falloff = 0.0;
     /** ESM only: the ortho volume the caster fit projects into. */
     double ortho_min_z = 1.0;
     double ortho_max_z = 10000.0;
     /**
-     * A CSM generator rendered through the native single-map adaptation.
-     * The map uses the pin's first camera-fitted cascade rather than the
-     * unrelated whole-caster PCF fit, so near-camera coverage and bias stay
-     * identical while the backend still binds its existing 2D PCF resource.
+     * CSM only: the cascade configuration, and the fit it produces.
+     *
+     * `csm_cascades` is refilled by `update_csm_cascades` on every frame
+     * the pinned render gate finds due, and is what both the caster passes
+     * and the receiver's 320-byte block are read from. An unset
+     * `csm_shadow_max_z` is the pin's own `?? null`, resolved against the
+     * active camera's far plane where the split is computed.
      */
-    bool csm_single_map = false;
     std::uint32_t csm_num_cascades = 4;
     double csm_lambda = 0.5;
+    double csm_cascade_blend_percentage = 0.1;
+    std::optional<double> csm_shadow_max_z{};
+    std::vector<ShadowCascade> csm_cascades;
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.
@@ -3936,16 +4020,25 @@ struct PcfDirectionalShadowOptions {
 };
 
 /**
- * The CSM values that determine the first cascade retained by the native
- * single-map adaptation. Other public CSM controls are still validated and
- * evaluated by the compiler, but do not alter this one-map resource shape.
+ * `CsmDirectionalShadowGeneratorConfig`, as the reached slice resolves it.
+ *
+ * `map_size` and the cascade count size the layered map; the rest ride into
+ * the record, where the per-cascade fit and the receiver's own 320-byte
+ * block read them. `stabilizeCascades` and `worldSpaceBias` are the two
+ * arms this port does not build and refuse by name at generation.
  */
 struct CsmDirectionalShadowOptions {
+    // No initialisers, for the reason above: every field is written from
+    // the factory's own `??`.
     std::uint32_t map_size;
     std::uint32_t csm_num_cascades;
     double csm_lambda;
+    double csm_cascade_blend_percentage;
+    /** `cfg.shadowMaxZ ?? null`, resolved against the camera's far plane. */
+    std::optional<double> csm_shadow_max_z;
     double bias;
     double darkness;
+    double frustum_edge_falloff;
     /** `cfg.forceRefreshEveryFrame ?? false`: disables the render gate. */
     bool force_refresh_every_frame;
 };
@@ -4276,6 +4369,17 @@ struct SpriteRendererOptions {
     Color4 clear_value{0.0f, 0.0f, 0.0f, 1.0f};
 };
 
+// `attachParsedSplat`'s two halves, which the pin keeps apart and this port
+// needs apart for the same reason it does: a cloud is BUILT against the
+// engine (`createGaussianSplattingMesh`) and REGISTERED against a scene
+// (`attachGaussianSplattingMesh`). `loadSplat` performs both at its call
+// site; a glTF's `KHR_gaussian_splatting` clouds are built while the file
+// loads and registered when `addToScene` runs the container's scene hook.
+SplatMeshHandle create_gaussian_splatting_mesh(
+    Engine& engine,
+    const std::string& name,
+    std::vector<std::uint8_t> rows);
+void attach_gaussian_splatting_mesh(Scene& scene, SplatMeshHandle splat);
 SplatMeshHandle load_splat(Scene& scene, const std::string& path);
 // Bakes a cloud's own world matrix into its rows, rebuilds its geometry and
 // resets its TRS. Defined by the generated splat bake, which a scene reaches
@@ -4619,6 +4723,19 @@ PickingInfo gpu_pick(
     double y);
 /** `disposePicker(picker)`. */
 void dispose_picker(Engine& engine, GpuPickerHandle picker);
+/**
+ * `pickBillboardSprite(scene, x, y)`: the same pass through a picker the
+ * wrapper makes and disposes itself. Emitted only where a scene reached it.
+ */
+PickingInfo pick_billboard_sprite(
+    Engine& engine,
+    Scene& scene,
+    double x,
+    double y);
+/** `PickingInfo.distance`: camera position to the reconstructed point. */
+[[nodiscard]] double picked_distance(
+    const Scene& scene,
+    const PickingInfo& info);
 /**
  * Run and clear everything `setTimeout` queued. Called by the frame
  * conductor after the frame's own callbacks, which is where the browser

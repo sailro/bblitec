@@ -212,6 +212,18 @@ const handleCollections: readonly HandleCollectionRead[] = [
     record: ["assets", "skeletons"],
     temporaryLabel: "asset_skeleton",
   },
+  {
+    // `AssetContainer._gaussianSplats` — one cloud per GS primitive the
+    // `KHR_gaussian_splatting` feature consumed. Upstream the entries are
+    // promises the feature's `_sceneSetup` fills during `addToScene`; here
+    // the generated loader builds each cloud and the same hook registers it,
+    // so a scene reading the collection holds the attached clouds. It is
+    // `@internal`, which `program.ts` restores the declaration for.
+    owner: "asset",
+    property: "_gaussianSplats",
+    record: ["assets", "gaussian_splats"],
+    temporaryLabel: "asset_gaussian_splat",
+  },
 ];
 
 /**

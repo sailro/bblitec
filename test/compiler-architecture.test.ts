@@ -1414,12 +1414,19 @@ test("replays billboard stages in compiler-owned frame-graph scene tasks", () =>
     );
 });
 
-test("fits the single CSM map to the first clone-aware cascade", () => {
+test("fits one clone-aware cascade per CSM split", () => {
     const shadows = source("src/lowering/shadow-lowerer.ts");
 
+    // The pin's split is `p = (i + 1) / N` over the cascade index, and each
+    // slice runs from the PREVIOUS break to its own -- a body computing
+    // `1 / N` alone would fit every cascade to the nearest one.
     assert.match(
         shadows,
-        /const double p = 1\.0 \/[\s\S]{0,100}csm_num_cascades/,
+        /const double p =\s*static_cast<double>\(index \+ 1\) \/ static_cast<double>\(count\);/,
+    );
+    assert.match(
+        shadows,
+        /const double previous_split =\s*cascade == 0 \? 0\.0 : break_distance\[cascade - 1\];/,
     );
     assert.match(
         shadows,

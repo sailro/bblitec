@@ -103,6 +103,14 @@ module and browser build, so a warm recompile launches no Chromium and
 produces byte-identical output; the directory is disposable and
 `BBLITE_BAKE_CACHE=0` disables the replay.
 
+Two of the replayed bakes run under Node rather than Chromium -- the CPU-side
+DDS/splat parses and the pinned CSG boolean -- and the CSG one keys
+`process.version` in as well, for the reason the browser build is keyed into
+the Chromium ones: `executed-csg-solid` records that its geometry depends on
+the V8 that produced it, since every normal normalizes through the
+implementation-approximated `Math.hypot`. Scene 90's generation measures
+2.38 s cold against 1.70 s on a hit.
+
 Aggregate registered-scene workflows are registry-driven through `sweep`,
 `scenes:compile`, `scenes:build`, `scenes:process`, and `scenes:parity`.
 

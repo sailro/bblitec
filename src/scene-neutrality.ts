@@ -72,6 +72,13 @@ import { join } from "node:path";
  * which spans both the value a previous sweep recorded and the one the
  * next sweep did. Both published rows are 0.000 and 0.001 against
  * thresholds two orders above that.
+ *
+ * Scene 226 joined on its own integration rather than after a surprise, and
+ * paid the entry fee up front: its worst run-to-run move is 2.6e-4 on
+ * SDL_GPU and 2.1e-4 on Dawn, and both backends are bit-identical under
+ * `BBLITE_MSAA=1`. That is the same band and the same bisection as the rest
+ * of the splat family, which is what makes it the family's wobble rather
+ * than a property of the new glTF route it loads through.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
@@ -82,6 +89,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene126", new Set(["dawn", "sdl_gpu"])],
     ["scene128", new Set(["dawn", "sdl_gpu"])],
     ["scene129", new Set(["dawn", "sdl_gpu"])],
+    ["scene226", new Set(["dawn", "sdl_gpu"])],
 ]);
 
 /**

@@ -29,6 +29,20 @@ export const GLB_MAGIC = 0x46546c67;
 export const GLB_JSON_CHUNK = 0x4e4f534a;
 export const GLB_BINARY_CHUNK = 0x004e4942;
 
+/**
+ * `KHR_gaussian_splatting`, and where packaging names what it resolved the
+ * extension into.
+ *
+ * The conversion runs at generation (`compressed-geometry.ts` over the pin's
+ * own hooks), so a packaged document carries the pin's 32-byte splat rows as
+ * an ordinary bufferView under this key and no longer declares the
+ * extension. Both facts are spelled here because the packager writes them,
+ * the specializer refuses a survivor by them, and the generated loader reads
+ * them.
+ */
+export const GAUSSIAN_SPLATTING_EXTENSION = "KHR_gaussian_splatting";
+export const GAUSSIAN_SPLAT_DOCUMENT_KEY = "__bblitecGaussianSplats";
+
 /** A parsed JSON object — the shape every glTF document read shares. */
 export type JsonObject = Record<string, unknown>;
 /** The same type under the packagers' historical name. */
@@ -51,6 +65,39 @@ export const asRecords = (value: unknown): JsonObject[] =>
             .map(asObject)
             .filter((entry): entry is JsonObject => entry !== undefined)
         : [];
+
+/** Every primitive in the document, flattened out of its meshes. */
+export const primitiveRecords = (document: JsonRecord): JsonRecord[] =>
+    asRecords(document.meshes).flatMap((mesh) =>
+        asRecords(mesh.primitives),
+    );
+
+/**
+ * Whether one primitive is a Gaussian-splat primitive, by the pin's own
+ * test.
+ *
+ * `isGsPrimitive` accepts EITHER the extension object on the primitive or
+ * any attribute namespaced under the extension -- a document that takes
+ * only the second form is still one the pinned conversion reads, and a
+ * check that looked at `extensions` alone would let it past.
+ */
+export const isGaussianSplatPrimitive = (
+    primitive: JsonObject,
+): boolean => {
+    if (
+        asObject(primitive.extensions)?.[GAUSSIAN_SPLATTING_EXTENSION] !==
+        undefined
+    ) {
+        return true;
+    }
+    const attributes = asObject(primitive.attributes);
+    return (
+        attributes !== undefined &&
+        Object.keys(attributes).some((key) =>
+            key.startsWith(`${GAUSSIAN_SPLATTING_EXTENSION}:`),
+        )
+    );
+};
 
 /**
  * Any number. `asset-specializer.ts` keeps a deliberately stricter local

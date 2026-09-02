@@ -23,8 +23,10 @@ export type HandleKind =
   | "physics-body"
   | "physics-shape"
   | "billboard-sprite"
+  | "billboard-system"
   | "sprite-layer"
   | "sprite-atlas"
+  | "splat-mesh"
   | "texture"
   | "transform-node"
   | "skeleton"
@@ -41,8 +43,10 @@ const handleCppTypes: Record<HandleKind, string> = {
   "physics-body": "bbl::upstream::PhysicsBody",
   "physics-shape": "bbl::upstream::PhysicsShape",
   "billboard-sprite": "bbl::BillboardSpriteHandle",
+  "billboard-system": "bbl::BillboardSystemHandle",
   "sprite-layer": "bbl::Sprite2DLayerHandle",
   "sprite-atlas": "bbl::SpriteAtlasHandle",
+  "splat-mesh": "bbl::SplatMeshHandle",
   texture: "bbl::StoredTexture",
   "transform-node": "bbl::TransformNodeHandle",
   skeleton: "bbl::SkeletonHandle",
@@ -60,6 +64,7 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Mesh: "mesh",
   AnimationGroup: "animation-group",
   BillboardSpriteHandle: "billboard-sprite",
+  BillboardSpriteSystem: "billboard-system",
   Camera: "camera",
   Material: "material",
   PhysicsBody: "physics-body",
@@ -67,6 +72,10 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   ShaderMaterial: "material",
   Sprite2DLayer: "sprite-layer",
   SpriteAtlas: "sprite-atlas",
+  // A cloud is a SceneNode upstream like a Mesh is, and a container's
+  // `_gaussianSplats` is the one place its type is read through the data
+  // model rather than produced by an intrinsic.
+  GaussianSplattingMesh: "splat-mesh",
   Texture2D: "texture",
   // TransformNode is a pure alias for the pin's SceneNode interface.
   SceneNode: "transform-node",

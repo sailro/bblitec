@@ -302,6 +302,33 @@ export async function importPinnedModuleWithExports<T>(
 let observationCount = 0;
 
 /**
+ * Installs a callback a generated shim module can reach, under a name
+ * nothing else can collide with.
+ *
+ * Every pinned import that watches one of the pin's own imports, or stands
+ * in for one, needs the same two things: a unique name, and the callback on
+ * `globalThis` where a `data:` module can see it. Spelled once here, beside
+ * the imports that use it, because a second naming convention is how two
+ * shims come to share a hook.
+ *
+ * `release` removes it. An observer whose shim outlives the call keeps the
+ * hook; a stand-in that runs once releases it.
+ */
+export function installPinnedImportHook<Arguments extends unknown[]>(
+    callback: (...args: Arguments) => void,
+): { hook: string; release: () => void } {
+    const hook = `__bblitecPinnedImport${observationCount++}`;
+    const globals = globalThis as Record<string, unknown>;
+    globals[hook] = callback;
+    return {
+        hook,
+        release: () => {
+            delete globals[hook];
+        },
+    };
+}
+
+/**
  * Imports a pinned module with some of its own imports observed.
  *
  * A composite post-process task is not a shader: it is a factory that calls
@@ -326,8 +353,9 @@ export async function importPinnedModuleObserving<T>(
     record: (symbol: string, value: unknown) => void,
 ): Promise<T> {
     const modulePath = join(pinnedLibraryRoot(), relativePath);
-    const hook = `__bblitecObserve${observationCount++}`;
-    (globalThis as Record<string, unknown>)[hook] = record;
+    // The shim module stays importable, so the hook it names is not
+    // released.
+    const { hook } = installPinnedImportHook(record);
     const shims = new Map<string, string>();
     for (const [specifier, symbols] of Object.entries(observe)) {
         const target = JSON.stringify(

@@ -119,6 +119,32 @@ function writesThroughRoot(
 export const writesThroughTrackedRoot = writesThroughRoot;
 
 /**
+ * Whether a value of this type can carry a reference into a callee.
+ *
+ * A composite argument hands the callee the caller's own object, so a
+ * write inside it is a write to that object; a scalar one hands it a COPY,
+ * and no callee -- resolvable or not -- can write back through it. A union
+ * aliases if any constituent does, and anything this cannot classify stays
+ * conservative.
+ */
+function argumentCanAlias(type: ts.Type): boolean {
+    if (type.isUnion() || type.isIntersection()) {
+        return type.types.some(argumentCanAlias);
+    }
+    const scalar =
+        ts.TypeFlags.NumberLike |
+        ts.TypeFlags.StringLike |
+        ts.TypeFlags.BooleanLike |
+        ts.TypeFlags.BigIntLike |
+        ts.TypeFlags.ESSymbolLike |
+        ts.TypeFlags.Null |
+        ts.TypeFlags.Undefined |
+        ts.TypeFlags.Void |
+        ts.TypeFlags.Never;
+    return (type.flags & scalar) === 0;
+}
+
+/**
  * Whether one call provably leaves the argument at `index` unchanged.
  *
  * Resolved through the checker's own signature rather than through
@@ -135,6 +161,20 @@ export function callArgumentIsReadOnly(
     index: number,
     active?: Set<ts.Symbol>,
 ): boolean {
+    const argument = call.arguments[index];
+    // `Math.hypot(a[0] - b[0], ...)` mentions the composite and hands the
+    // callee a number, so there is nothing to write through and nothing to
+    // escape into -- which the resolution below could never say, since a
+    // builtin has no declaration to prove read-only against. Treating
+    // every one of them as a writer made both callers wrong: every
+    // arithmetic helper's tuple parameter became mutable, and every
+    // module-level constant array read inside one stopped folding.
+    if (
+        argument !== undefined &&
+        !argumentCanAlias(checker.getTypeAtLocation(argument))
+    ) {
+        return true;
+    }
     const called = checker.getResolvedSignature(call)?.declaration;
     const parameter = called?.parameters[index]?.name;
     return (

@@ -43,7 +43,11 @@ export interface ShadowIntrinsicContext
     ): string | undefined;
     fail(node: ts.Node, message: string): never;
     recordShadowGenerator(entry: {
-        kind: "pcf-spot" | "pcf-directional" | "esm-directional";
+        kind:
+            | "pcf-spot"
+            | "pcf-directional"
+            | "csm-directional"
+            | "esm-directional";
         lightIndex: number;
         esm?: {
             mapSize?: number;
@@ -96,19 +100,23 @@ const pcfDirectionalOptions = [
 ] as const;
 
 /**
- * The CSM factory's public configuration. Native retains the camera-fitted
- * first cascade in one 2D PCF depth map; cascade-only controls are still
- * validated and evaluated so the adaptation boundary stays honest.
+ * The CSM factory's public configuration, as far as this port builds it.
+ *
+ * `mapSize` and `numCascades` size the layered map, so they resolve at
+ * generation; the rest ride into the record, where the cascade fit and the
+ * receiver's 320-byte block read them. `stabilizeCascades` (the
+ * bounding-sphere fit and its light-axis anchor grid) and `worldSpaceBias`
+ * (the far-plane reserve and its per-cascade clip offset) are the two arms
+ * this port does not build, so they refuse by name rather than compiling to
+ * a value the pin would have used differently.
  */
 const csmDirectionalOptions = [
     "mapSize",
     "numCascades",
     "lambda",
     "cascadeBlendPercentage",
-    "stabilizeCascades",
     "shadowMaxZ",
     "bias",
-    "worldSpaceBias",
     "darkness",
     "frustumEdgeFalloff",
     "forceRefreshEveryFrame",
@@ -165,7 +173,11 @@ const esmDirectionalEmitted = [
  * fourth row rather than a fourth copy.
  */
 interface ShadowGeneratorFactory {
-    kind: "pcf-spot" | "pcf-directional" | "esm-directional";
+    kind:
+        | "pcf-spot"
+        | "pcf-directional"
+        | "csm-directional"
+        | "esm-directional";
     lightKind: "spot" | "directional";
     /** How a refusal names this family, e.g. "A PCF spotlight". */
     article: string;
@@ -229,36 +241,38 @@ const shadowGeneratorFactories: Readonly<
         features: ["shadow:pcf", "shadow:pcf-directional"],
     },
     createCsmDirectionalShadowGenerator: {
-        // The native adaptation is the camera-fitted first cascade in one
-        // directional PCF map. Keeping the manifest kind truthful is
-        // important: composition must bind the texture layout that was
-        // actually emitted, not the pin's 2D-array layout.
-        kind: "pcf-directional",
+        // Its own kind, because its own `_shadowType: "csm"` is what sends
+        // both receiver families down the cascaded arm -- and because the
+        // resource it binds is a `texture_depth_2d_array`, not the 2D map
+        // the two PCF families share.
+        kind: "csm-directional",
         lightKind: "directional",
         article: "A CSM directional shadow generator",
         options: csmDirectionalOptions,
-        emitted: [
-            "mapSize",
-            "numCascades",
-            "lambda",
-            "bias",
-            "darkness",
-            "forceRefreshEveryFrame",
-        ],
+        emitted: csmDirectionalOptions,
         defaults: {
             mapSize: "bbl::upstream::csm_default_map_size",
             numCascades: "bbl::upstream::csm_default_num_cascades",
             lambda: "bbl::upstream::csm_default_lambda",
+            cascadeBlendPercentage:
+                "bbl::upstream::csm_default_cascade_blend_percentage",
+            // `cfg._shadowMaxZ ?? null`, which `_computeCsmCascades` then
+            // resolves against the CAMERA's far plane -- a value generation
+            // cannot see, so the absence itself is what is carried.
+            shadowMaxZ: "std::optional<double>{}",
             bias: "bbl::upstream::csm_default_bias",
             darkness: "bbl::upstream::csm_default_darkness",
+            frustumEdgeFalloff:
+                "bbl::upstream::csm_default_frustum_edge_falloff",
             // The pin's `cfg.forceRefreshEveryFrame ?? false`, whose shape
             // the shadow lowerer asserts against the factory.
             forceRefreshEveryFrame: "false",
         },
+        // The two that size the layered map: its extent and its layer count.
         generationResolved: ["mapSize", "numCascades"],
         factory: "bbl::create_csm_directional_shadow_generator",
         optionsStruct: "bbl::CsmDirectionalShadowOptions",
-        features: ["shadow:pcf", "shadow:csm-single-map"],
+        features: ["shadow:pcf", "shadow:csm"],
     },
     createEsmDirectionalShadowGenerator: {
         kind: "esm-directional",
@@ -356,7 +370,16 @@ function compileShadowGeneratorFactory(
                 sizes[name] = Number.parseInt(literal, 10);
                 continue;
             }
-            resolved[name] = context.compileNumber(expression, "double");
+            const number = context.compileNumber(expression, "double");
+            // A row whose pinned DEFAULT is an optional carries an absence,
+            // so a value the scene does pass is wrapped to match it rather
+            // than named here: `shadowMaxZ`'s default is `null`, and the
+            // split formula resolves an absent one against the camera's
+            // own far plane rather than a sentinel generation would pick.
+            resolved[name] =
+                spec.defaults[name]?.startsWith("std::optional<") === true
+                    ? `std::optional<double>{${number}}`
+                    : number;
         }
     }
     if (spec.kind === "esm-directional") {

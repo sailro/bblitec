@@ -41,6 +41,7 @@ function specialization(
         dispersion: false,
         occlusionUv2: false,
         eightInfluenceSkinning: false,
+        gaussianSplats: false,
         ...overrides,
     };
 }
@@ -63,6 +64,7 @@ function emitOptions(
         animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
+        gaussianSplats: false,
         nodeVisibility: false,
         gltfNodeVisibility: false,
         animationPointer: false,

@@ -5112,10 +5112,19 @@ class Compiler
         );
     }
 
+    /** `browserGeneratedString` with this compiler's own argument fold. */
+    private bakedBrowserGeneratedString(
+        call: ts.CallExpression,
+    ): string | undefined {
+        return browserGeneratedString(this.checker, call, (argument) =>
+            this.foldGeneratedStringArgument(argument),
+        );
+    }
+
     public compileBrowserGeneratedString(
         call: ts.CallExpression,
     ): Value | undefined {
-        const value = browserGeneratedString(this.checker, call);
+        const value = this.bakedBrowserGeneratedString(call);
         return value === undefined
             ? undefined
             : {
@@ -5123,6 +5132,38 @@ class Compiler
                   cpp: this.cppString(value),
                   staticString: value,
               };
+    }
+
+    /**
+     * The compile-time value of one argument to a Canvas2D helper.
+     *
+     * A drawn texture is keyed by what it draws, so an argument reaching
+     * the helper through an inlined parameter is as much a compile-time
+     * input as one written as a literal at the call: scene 90 reaches
+     * `labelTextureUrl(text)` from `createLabelMaterial(engine, "-")`, and
+     * the string that decides the glyph is the bound parameter. A value
+     * that does not settle to a scalar answers `undefined`, which is what
+     * keeps a runtime argument from being spelled into the bake.
+     *
+     * The probe discards unconditionally, which is the one thing that
+     * separates it from `compileStringLiteral`'s otherwise identical fold
+     * a few hundred lines down: that one KEEPS what its value lowering
+     * emitted, because the string it answers with is also a value the
+     * program goes on to use. Here the helper's whole call disappears
+     * into a baked asset, so anything it emitted would be a statement no
+     * one reaches.
+     */
+    private foldGeneratedStringArgument(
+        argument: ts.Expression,
+    ): string | number | boolean | undefined {
+        const value = this.probeEmission(
+            () => this.compileValue(argument),
+            () => false,
+        );
+        if (value.staticString !== undefined) return value.staticString;
+        if (value.staticNumber !== undefined) return value.staticNumber;
+        if (value.staticBoolean !== undefined) return value.staticBoolean;
+        return undefined;
     }
 
     /** The complete chained property path containing a failed sub-read. */
@@ -7347,10 +7388,8 @@ class Compiler
         }
         const resolved = this.resolveStaticExpression(expression);
         if (ts.isCallExpression(resolved)) {
-            const generated = browserGeneratedString(
-                this.checker,
-                resolved,
-            );
+            const generated =
+                this.bakedBrowserGeneratedString(resolved);
             if (generated !== undefined) return generated;
             const callee = this.unwrap(resolved.expression);
             if (ts.isIdentifier(callee)) {

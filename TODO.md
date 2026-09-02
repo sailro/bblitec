@@ -253,7 +253,7 @@ list.
 | Scene | First blocker | Family |
 | --- | --- | --- |
 | 186 | `corners.flat` | opt-in PBR local cubemap blending |
-| 187 | a non-literal string argument | SMAA |
+| 187 | `createSmaaPostProcessTask` | SMAA |
 | 302 | an unresolved `SCENE302_CLEAR_COLOR` from the shared module the corpus does not carry | node particles with a moving emitter |
 | 303 | `enableSprite2DYSort` | renderer-native Sprite2D Y-sort |
 | 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
@@ -285,14 +285,14 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (26 scenes):**
-73, 86, 90, 91, 112-115, 118, 121-124,
-140, 149, 214, 215, 218, 219,
-223, 226, 231, 241, 261, 275, 300.
-Includes static CSG/CSG2, compressed assets
-and splats, deterministic picking (113-115, 118), and display-only
+**Integrate first (21 scenes):**
+73, 86, 91, 112-115, 121-124,
+140, 149, 218, 219,
+223, 231, 241, 261, 275, 300.
+Includes CSG2, compressed assets
+and splats, deterministic picking (113-115), and display-only
 gizmos (223). Every navigation scene the corpus carries is now
-integrated.
+integrated, as are the cascaded-shadow pair and the billboard pick.
 
 **Defer (26 scenes):** 41, 42, 44-49, 101-106, 153, 164, 180, 181,
 209, 221, 222, 224, 225, 227, 228, 272.
@@ -385,6 +385,12 @@ integrated.
     refusing at generation because no per-scene cloud count exists to
     refuse on -- `splatShaderModule` is singular and the manifest records
     fragments, not call sites.
+  - the billboard pick walks the systems twice on SDL_GPU. Dawn's `prepare`
+    drives its resources off `collect_pick_billboard_candidates`; SDL's
+    re-walks `scene.billboard_systems` with its own gate, because ids are
+    not known until the pass is open. Two walks have to agree on which
+    systems draw and nothing states it once -- a
+    `for_each_pick_billboard_system` in `pal_gpu_shared.hpp` would.
 - [ ] Collapse the rotation record onto the pin's one-lane model. Upstream
   `rotation` is an Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
   `scene/scene-node.ts`), so `composeTrsLocalMatrix` reads the quaternion
@@ -404,9 +410,8 @@ integrated.
   nearest one, and the setter folds the colour arm; a geometry attachment is
   refused on ownership rather than aspect. An image texture whose own `srgb`
   option is set refuses too: the slot's encoding is the family's, and no
-  reached scene asks for the other. Scenes 90 and 272 block here and each
-  wants more besides: 90 CSG and a canvas2D data URL built in the entry file,
-  272 `cloneTransformNode` and `createSolidTexture2D`.
+  reached scene asks for the other. Scene 272 blocks here and wants more
+  besides: `cloneTransformNode` and `createSolidTexture2D`.
 - [ ] Extend the sprite path past the slice scenes 50-53, 58 and 117 measure.
   Each item is a separate arm upstream keeps behind its own module or hook,
   and each fails explicitly today:
@@ -428,8 +433,12 @@ integrated.
     no longer the blocker — `src/compiler/data-types.ts` carries `u8array`
     beside the `f32array`/`u32array` pair.)
   - the billboard arms past the two orientations, two depth paths and the
-    custom shader that scenes 54-57, 59, 94 and 98 measure. Scene 118
-    needs `marker.name`.
+    custom shader that scenes 54-57, 59, 94 and 98 measure. The pick arm
+    now ships too (scene 118), and it refuses three pairs by name: a cutout
+    system (the pick fragment would bind the atlas its cutoff samples), a
+    floating-origin scene (the pick uploads world anchors while the visible
+    pass bakes eye-relative), and a splat cloud beside it (two contributor
+    families need the pin's one registration-ordered `_pickSources` list).
 - [ ] Extend node materials past the slice scenes 60-72, 77-85 and
   87-89 measure. Each item is a block the composed graph reaches and
   this port refuses by name at generation, though a scene whose first blocker
@@ -474,10 +483,54 @@ integrated.
   then each node capability served adds another hand-written block.
 
 - [ ] Extend the shadow family past the slice scenes 4, 18, 22, 65, 66, 141,
-  207 and 271 measure. The shipped slice is in
-  [features](docs/features.md#shadows), including the CSM single-map
-  adaptation Racer gates; farther cascades and cross-cascade blending are the
-  omitted half. Each remaining item fails by name:
+  207, 214, 215 and 271 measure. The shipped slice is in
+  [features](docs/features.md#shadows); the cascade array, its cross-cascade
+  blend and both receiver families ship, so what is left is per-item. Each
+  remaining item fails by name:
+  - **the cascade fit is mirrored, not lowered, and the mirror dropped an
+    arm.** `_computeCsmCascades` is restated in C++ under thirteen
+    shape assertions where the sibling `computeDirectionalLightMatrix` is
+    lowered from its AST, and `_castersWorldAabb`'s thin-instance branch —
+    bound a caster by the union of its DRAWN instances, because "one
+    prototype-sized box wrecks the cascade Z-fit" — is not implemented, so a
+    thin-instanced CSM caster refuses by name. Lowering the else-arm is NOT
+    blocked: `lowerComputeDirectionalLightMatrix` in the same file already
+    lowers a body that walks `casterMeshes`, binds `worldMatrix`/`boundMin`/
+    `boundMax` onto the carrier and folds the eight `k & 1` corners, and a
+    lowering would have refused `_thinInstanceWorldAabb` by name instead of
+    dropping it. `_computeCsmCascades` itself stays blocked: it takes a
+    `SceneContext`/`Camera`/`Mesh[]`, pushes `Float32Array[]`, and forks on
+    the refused `stabilizeCascades`, none of which `lowerPinnedFunction`'s
+    parameter-kind spec expresses.
+  - **`viewFrustumZ` and `frustumLengths` are literal `std::array<float, 4>`
+    beside a `csm_max_cascades` read from the pin's own `Math.min(…, 4)`
+    clamp**, and `csm_info_block` indexes them by cascade — so a pin raising
+    the clamp writes out of bounds, caught only incidentally by a hand-typed
+    `static_assert(sizeof(CsmInfoUniforms) == 320)`. Spell both lanes at
+    `csm_max_cascades` and derive the assert from the pin's own
+    `new Float32Array(80)`, which `csmDefaults` already parses past.
+  - **`shadow_caster_matrices` is a Babylon selector living in the PAL.** Its
+    twin `shadow_receiver_block` answers the same "which shape does this
+    generator publish" question, keyed on the same test, and is GENERATED
+    into `pinned_shadow.hpp`; that header already includes `runtime.hpp`, so
+    the deeper home needs no plumbing. As it stands a fifth generator family
+    adds one arm in a generated file and one in a hand-written file, and only
+    the first fails generation when the pin moves.
+  - **the cascaded third of `pinned_shadow.hpp` compiles into PCF-only
+    scenes, and its block size reaches them too.** It wants a seventh define,
+    `BBLITE_SHADOWS_CSM`, beside the six in
+    [features](docs/features.md#feature-and-capability-selection) — an
+    attempt that gated it broke every PCF-only scene, so the split is not
+    where it first looks. The measurable half is
+    `shadow_receiver_block_bytes`, which is the cascade block's 320 bytes
+    unconditionally: a PCF- or ESM-only scene carries 224 bytes per
+    generator it cannot use, in `ShadowRefreshState::blocks` and in each
+    backend's generator record, and compares them every frame.
+    `pinnedShadowHeader` takes no feature list, so both halves move
+    together. The emitted half measures 16.7 KB of `pinned_shadow.hpp`'s
+    52 KB -- `update_csm_cascades` 12.5 KB, the two block writers 2.9 KB,
+    `CsmInfoUniforms` 1.3 KB -- carried by the 13 shadow scenes that reach
+    no CSM generator and parsed by four translation units in each.
   - a caster view's composed arms. The view is drawn on its own caster and
     nowhere else, so it composes over that mesh's attribute set alone --
     but still over every light-mode arm the scene has, and a no-colour
@@ -503,55 +556,9 @@ integrated.
     light-space view and view-projection onto a `Camera` whose caches the
     pass reads straight back, so upstream's shadow pass is an ordinary
     camera pass; here it is a branch in each backend's task loop, beside a
-    near-duplicate branch for a task with its own camera. Single-map
-    generators keep that proportionate; a cascaded generator rendering
-    several light-space passes per light is where it stops being.
-- [ ] Scenes 214 and 215: replace the `csm-single-map-near-cascade`
-  adaptation with the pin's real cascade array. `createTorusKnot` shipped and
-  is byte-exact — `regression-torus-knot` is scene 214 with only the generator
-  removed and measures 0.000 on both backends, while 214 measures 9.670 and
-  215 measures 3.365, identically on both. The whole residual is the
-  adaptation: the browser's own splits at that camera are
-  `[1255.375, 2550.25, 4250.125, 10000]`, `update_csm_single_map_shadow`
-  reproduces them exactly, and every ground point sits at view depth
-  1334-3066, so cascade 0 holds no ground and native draws no ground shadow at
-  all. Sized against the capture, five pieces:
-  - **the split loop.** The body computes `p = 1/N` only; it needs the
-    `prevSplit` slice and four transform/view/near-far sets. Everything else
-    there (invert, corners, centroid, light-space AABB, eye, caster-Z
-    tighten, ortho, texel snap, bias split) is already the pin's.
-  - **a `depth32float` `texture_2d_array` map, one caster pass per cascade.**
-    `ShadowGeneratorRecord` holds one `TaskHandle` and one caster matrix pair,
-    and `RenderTargetOptions` carries neither a layered depth nor the pin's
-    `_ownsDepthTexture: false` borrow — which both PALs must honour in
-    creation *and* release, or a borrowed depth is freed twice. SDL_GPU needs
-    no workaround: `SDL_GPUDepthStencilTargetInfo` carries a `layer`.
-  - **the group-2 reflection.** `shadowBindingSlotOrNull` matches
-    `^shadow(Tex|Samp|Comp|Info)_(\d+)$` and the composed rows are
-    `csmTex_0`/`csmComp_0`/`csmInfo_0`, so every CSM row drops out and both
-    PALs would build an empty layout against a shader declaring three
-    bindings. `texture_depth_2d_array` also needs a fourth
-    `PinnedBindingKind` (today every `texture_depth*` maps to
-    `textureDepth2d`), and the info row's size is hardcoded to
-    `sizeof(ShadowInfoUniforms)` — 96 bytes against the CSM block's 320 — so
-    the row has to carry its own.
-  - **the receiver factories.** The fragment text is the pin's, but
-    `createShadowFragment` has no CSM arm: `createStdShadowFragment` and
-    `createPbrShadowFragment` filter for `"csm"` slots and call
-    `getCsmStdReceiverFactory()!` / `getCsmPbrReceiverFactory()!`, a non-null
-    assertion on a registry the pinned generator factory populates — so an
-    unpopulated one is a TypeError at compose time rather than a refusal.
-    `src/compiler/intrinsics/shadow.ts` declares CSM as
-    `kind: "pcf-directional"` today and flips with the same change.
-  - **cross-cascade blending**, which is not deferrable here: both scenes pass
-    `cascadeBlendPercentage: 0.1`.
-  Still refusing by name afterwards, none reached by these two: node-material
-  CSM receivers (`node-shadow.ts` has no CSM arm), `setShadowCasterMaxCascade`,
-  `enableCsmStaticCache`, `getCsmReceiverTexture`/`onCsmReceiverUpdate`,
-  `stabilizeCascades`, and the `worldSpaceBias` clip-offset arm.
-  `docs/lite/architecture/17-cascaded-shadow.md` says PBR renderables ignore
-  CSM in v1; the pin disagrees (`pbr-csm-shadow-fragment`) and scene 215 is a
-  PBR receiver, so the source decides.
+    near-duplicate branch for a task with its own camera. A cascaded
+    generator now renders several light-space passes per light, which is
+    where that branch stopped being proportionate.
 - [ ] Scenes 47, 164: what each still wants now that the shadow generators,
   the heightmap ground and the PBR receiver ship — 47 `createCapsule` and
   the physics family, and 164 the ESM generator's remaining options.

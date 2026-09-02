@@ -48,26 +48,43 @@ const sceneModule = "src/scene/scene-core.ts";
 /** The `<cmath>` names these bodies reach, from the shared pinned table. */
 const mathCalls = pinnedNumericMathCalls();
 
-/** The `?? <literal>` default a pinned option read resolves to. */
+/**
+ * The `?? <literal>` default a pinned option read resolves to.
+ *
+ * Two spellings reach this: most factories bind a `const x = cfg.x ?? d`
+ * local, while the CSM one packs a few straight into its config literal as
+ * `_x: cfg.x ?? d`. Both are the same expression under a different parent,
+ * so the reader takes the INITIALIZER and each caller says where it found
+ * it.
+ */
+function nullishDefaultValue(
+    context: LoweringContext,
+    initializer: ts.Expression,
+    label: string,
+    file: ts.SourceFile,
+): number {
+    const nullish = context.nullishDefault(initializer);
+    if (!nullish) {
+        return context.contractError(
+            initializer,
+            `Expected pinned '${label}' to resolve through '??'.`,
+        );
+    }
+    return context.numericValue(nullish.right, file);
+}
+
 function optionDefault(
     context: LoweringContext,
     declaration: ts.FunctionDeclaration,
     local: string,
     file: ts.SourceFile,
 ): number {
-    const initializer = context.unwrapExpression(
+    return nullishDefaultValue(
+        context,
         context.variableInitializer(declaration, local),
+        local,
+        file,
     );
-    if (
-        !ts.isBinaryExpression(initializer) ||
-        initializer.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
-    ) {
-        return context.contractError(
-            initializer,
-            `Expected pinned '${local}' to resolve through '??'.`,
-        );
-    }
-    return context.numericValue(initializer.right, file);
 }
 
 /**
@@ -582,6 +599,185 @@ function assertShadowUboLayout(context: LoweringContext): void {
 }
 
 /**
+ * `_computeCsmCascades`, held to its own shape.
+ *
+ * The fit this port emits is a mirror of that function rather than a
+ * lowering of it — it allocates per-cascade tuple arrays, branches on the
+ * `stabilizeCascades` arm this port refuses, and folds a thin-instance
+ * caster AABB behind a WeakMap cache, none of which the pinned-function
+ * lowerer expresses. A mirror needs the same guard the mirrored receiver
+ * block has, so every step the emitted body restates is matched against
+ * the pin's own expression here: a formula that moves upstream fails
+ * generation by name instead of drifting.
+ */
+function assertCsmCascadeFit(context: LoweringContext): void {
+    const { declaration } = context.functionDeclaration(
+        csmHooksModule,
+        "_computeCsmCascades",
+    );
+    const shapes: readonly (readonly [string, string])[] = [
+        // The split: a logarithmic and a uniform partition, blended.
+        ["p = (i + 1) / n", "cascade split fraction"],
+        ["log = minZ * ratio ** p", "logarithmic partition"],
+        ["uniform = minZ + range * p", "uniform partition"],
+        [
+            "d = cfg._lambda * (log - uniform) + uniform",
+            "split blend",
+        ],
+        // The slice: both ends ride the same near-to-far ray, and the
+        // near end takes the PREVIOUS break.
+        [
+            "prevSplit = c === 0 ? 0 : breakDist[c - 1]!",
+            "previous split",
+        ],
+        // The eye sits behind the slice along the light direction.
+        ["eyeX = cx + dx * minEz", "shadow camera eye"],
+        ["viewMaxZ = maxEz - minEz", "fitted depth range"],
+        // The ortho, then the texel snap on its own translation.
+        [
+            "proj0 = orthoOffCenterLH(minX, maxX, minY, maxY, viewMinZ, viewMaxZ)",
+            "cascade ortho",
+        ],
+        [
+            "offX = (Math.round(ox) - ox) * (2 / cfg._mapSize)",
+            "texel snap offset",
+        ],
+    ];
+    for (const [source, label] of shapes) {
+        const split = source.indexOf(" = ");
+        context.assertExpressionShape(
+            context.variableInitializer(
+                declaration,
+                source.slice(0, split),
+            ),
+            source.slice(split + 3),
+            `Pinned CSM ${label}`,
+        );
+    }
+    // The stores, which are statements rather than declarations: the two
+    // per-cascade lanes the receiver block carries, and the caster-Z
+    // tighten -- `depthClamp = false` behaviour, narrowing the fitted range
+    // to the casters rather than widening it.
+    for (const [source, label] of [
+        ["breakDist[i] = (d - near) / cameraRange", "split break"],
+        [
+            "frustumLengths[i] = (breakDist[i]! - prevBreak) * cameraRange",
+            "slice length",
+        ],
+        ["viewMaxZ = Math.min(viewMaxZ, cMaxZ)", "caster-Z tighten"],
+    ] as const) {
+        context.expectShapeCount(declaration, source, `Pinned CSM ${label}`);
+    }
+    // The caster matrix's own bias. This port renders every cascade through
+    // the PCF family's already-lowered `bias_view_projection`, which halves
+    // the bias itself -- so what has to hold is that the CSM hook still
+    // passes `_bias * 0.5` and reaches its world-space arm only under a
+    // `worldSpaceBias` this port refuses.
+    const { declaration: render } = context.functionDeclaration(
+        csmHooksModule,
+        "renderCsmShadowMap",
+    );
+    context.assertExpressionShape(
+        context.variableInitializer(render, "clipBias"),
+        "cfg._worldSpaceBias === null ? cfg._bias * 0.5 : " +
+            "csmWorldBiasClipOffset(cfg._worldSpaceBias, cascades._near[i]!, cascades._far[i]!)",
+        "Pinned CSM caster bias",
+    );
+}
+
+/**
+ * `_writeCsmUbo`'s own float order, asserted against the mirrored block.
+ *
+ * The cascaded receiver's block is not `writeShadowUboFields`': the pin
+ * writes it in one place, `out` is 80 floats rather than 24, and the two
+ * per-cascade lanes are written by loops rather than by numbered stores. So
+ * each store is matched by the SHAPE of its index against the shape of its
+ * value, which is what keeps `CsmInfoUniforms` a mirror rather than a guess.
+ *
+ * The one value read back out is the blend factor a zero
+ * `cascadeBlendPercentage` stands for: the pin's own "disable" magnitude,
+ * which a receiver's `clamp(...) * csmParams.y` then saturates with.
+ */
+function assertCsmUboLayout(
+    context: LoweringContext,
+): { disabledBlendFactor: number } {
+    const { file, declaration } = context.functionDeclaration(
+        csmHooksModule,
+        "_writeCsmUbo",
+    );
+    // Every cascade transform lands at a 16-float stride through `set`, and
+    // the fill is what leaves an unwritten slot zero.
+    context.callExpression(declaration, "fill");
+    context.assertExpressionShape(
+        context.callExpression(declaration, "set"),
+        "out.set(cascades._transforms[i]!, i * 16)",
+        "Pinned CSM cascade-transform store",
+    );
+    const expected = new Map<string, string>([
+        ["64 + i", "cascades._viewFrustumZ[i]!"],
+        ["68 + i", "cascades._frustumLengths[i]!"],
+        ["72", "cfg._darkness"],
+        ["73", "cfg._mapSize"],
+        ["74", "1 / cfg._mapSize"],
+        ["75", "cfg._frustumEdgeFalloff"],
+        ["76", "n"],
+        // Its value is a ternary rather than a shape, so the entry stands
+        // for the STORE and the arm below reads the magnitude out of it.
+        ["77", ""],
+    ]);
+    let disabledBlendFactor: number | undefined;
+    for (const store of context.pinnedElementStores(declaration, "out")) {
+        const index = store.left.argumentExpression.getText(file).trim();
+        if (index === "77") {
+            // `cfg._cascadeBlendPercentage === 0 ? <disabled> : 1 / ...`.
+            const blend = context.unwrapExpression(store.right);
+            if (
+                !ts.isConditionalExpression(blend) ||
+                !context.expressionMatchesShape(
+                    blend.condition,
+                    "cfg._cascadeBlendPercentage === 0",
+                ) ||
+                !context.expressionMatchesShape(
+                    blend.whenFalse,
+                    "1 / cfg._cascadeBlendPercentage",
+                )
+            ) {
+                context.contractError(
+                    store.right,
+                    "Expected the CSM blend factor to be the pin's " +
+                        "reciprocal with a disabled arm.",
+                );
+            }
+            disabledBlendFactor = context.numericValue(blend.whenTrue, file);
+            expected.delete(index);
+            continue;
+        }
+        const shape = expected.get(index);
+        if (shape === undefined) {
+            context.contractError(
+                store.left,
+                `Pinned _writeCsmUbo writes float ${index}, which the ` +
+                    "mirrored cascade block does not carry.",
+            );
+        }
+        context.assertExpressionShape(
+            store.right,
+            shape,
+            `Pinned CSM UBO float ${index}`,
+        );
+        expected.delete(index);
+    }
+    if (expected.size !== 0) {
+        context.contractError(
+            declaration,
+            "Pinned _writeCsmUbo no longer writes floats " +
+                `${[...expected.keys()].join(", ")}.`,
+        );
+    }
+    return { disabledBlendFactor: disabledBlendFactor! };
+}
+
+/**
  * Every named local's `??` fallback in one pinned factory.
  *
  * The three generator factories resolve their options the same way -- one
@@ -652,7 +848,7 @@ function pcfDirectionalDefaults(context: LoweringContext) {
     );
 }
 
-/** Defaults which determine the retained first cascade of a CSM generator. */
+/** The pinned defaults a CSM generator's cascade fit and receiver read. */
 function csmDefaults(context: LoweringContext) {
     const { file, declaration } = context.functionDeclaration(
         csmModule,
@@ -681,35 +877,44 @@ function csmDefaults(context: LoweringContext) {
             "Expected CSM cascade count to resolve through '??'.",
         );
     }
+    // Two independent facts: the clamp fixes the receiver block's
+    // `array<mat4x4, MAX>` and the record's cascade arrays, the `??` fixes
+    // what a scene naming no count gets. They happen to agree in this pin,
+    // and neither is derived from the other here.
     const max = context.numericValue(cascades.arguments[1]!, file);
     const fallback = context.numericValue(requested.right, file);
-    if (max !== fallback) {
-        context.contractError(
-            cascades,
-            "Expected the CSM cascade default and clamp to agree.",
-        );
-    }
     const csmCfg = context.unwrapExpression(
         context.variableInitializer(declaration, "csmCfg"),
     );
     if (!ts.isObjectLiteralExpression(csmCfg)) {
         context.contractError(csmCfg, "Expected CSM config object literal.");
     }
-    const lambda = context.unwrapExpression(
-        context.propertyInitializer(csmCfg, "_lambda"),
-    );
-    if (
-        !ts.isBinaryExpression(lambda) ||
-        lambda.operatorToken.kind !== ts.SyntaxKind.QuestionQuestionToken
-    ) {
-        context.contractError(lambda, "Expected CSM lambda to resolve through '??'.");
-    }
+    // A lane the factory packs straight into `csmCfg` rather than into a
+    // local first: the same `cfg.x ?? default`, read off the property.
+    const cfgDefault = (name: string): number =>
+        nullishDefaultValue(
+            context,
+            context.propertyInitializer(csmCfg, name),
+            name,
+            file,
+        );
     return {
         mapSize: optionDefault(context, declaration, "mapSize", file),
         numCascades: fallback,
-        lambda: context.numericValue(lambda.right, file),
+        // `Math.min(cfg.numCascades ?? 4, 4)`: the clamp is what fixes the
+        // receiver block's `array<mat4x4, 4>` and the record's cascade
+        // arrays, so it is read rather than assumed to equal the default.
+        maxCascades: max,
+        lambda: cfgDefault("_lambda"),
+        cascadeBlendPercentage: cfgDefault("_cascadeBlendPercentage"),
         bias: optionDefault(context, declaration, "bias", file),
         darkness: optionDefault(context, declaration, "darkness", file),
+        frustumEdgeFalloff: optionDefault(
+            context,
+            declaration,
+            "frustumEdgeFalloff",
+            file,
+        ),
     };
 }
 
@@ -1462,8 +1667,8 @@ export function pinnedShadowHeader(context: LoweringContext): string {
     const esm = esmDefaults(context);
     const pcfDirectional = pcfDirectionalDefaults(context);
     const csm = csmDefaults(context);
-    // Anchor the adapted fit to the exact camera-frustum function it mirrors.
-    context.functionDeclaration(csmHooksModule, "_computeCsmCascades");
+    assertCsmCascadeFit(context);
+    const csmUbo = assertCsmUboLayout(context);
     const mat4Invert = lowerMat4InvertCpp(context).replace(
         "\nstd::optional<std::array<float, 16>> mat4_invert(",
         "\ninline std::optional<std::array<float, 16>> mat4_invert(",
@@ -1479,7 +1684,9 @@ export function pinnedShadowHeader(context: LoweringContext): string {
 
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <optional>
 #include <vector>
@@ -1526,9 +1733,23 @@ inline constexpr double pcf_directional_default_ortho_max_z = ${
 /** Defaults read from createCsmDirectionalShadowGenerator's own config. */
 inline constexpr std::uint32_t csm_default_map_size = ${csm.mapSize}u;
 inline constexpr std::uint32_t csm_default_num_cascades = ${csm.numCascades}u;
+/**
+ * The factory's \`Math.min(cfg.numCascades ?? N, MAX)\` clamp.
+ *
+ * The receiver block declares \`array<mat4x4<f32>, MAX>\` whatever a scene
+ * asks for, so this bound -- not the default above -- is what the cascade
+ * arrays and the 320-byte block are sized by.
+ */
+inline constexpr std::uint32_t csm_max_cascades = ${csm.maxCascades}u;
 inline constexpr double csm_default_lambda = ${context.doubleLiteral(csm.lambda)};
+inline constexpr double csm_default_cascade_blend_percentage = ${
+        context.doubleLiteral(csm.cascadeBlendPercentage)
+    };
 inline constexpr double csm_default_bias = ${context.doubleLiteral(csm.bias)};
 inline constexpr double csm_default_darkness = ${context.doubleLiteral(csm.darkness)};
+inline constexpr double csm_default_frustum_edge_falloff = ${
+        context.doubleLiteral(csm.frustumEdgeFalloff)
+    };
 
 /**
  * The pin's own shadow target, which is its ONE exception to this port's
@@ -1554,6 +1775,68 @@ struct ShadowInfoUniforms {
     std::array<float, 4> shadowsInfo{};
 };
 static_assert(sizeof(ShadowInfoUniforms) == 96);
+
+/**
+ * The CASCADED receiver's own block (\`csmInfo_NUniforms\`), which is a
+ * different declaration and a different size.
+ *
+ * \`createCsmDirectionalShadowGenerator\` allocates it as
+ * \`new Float32Array(80)\` and \`_writeCsmUbo\` fills it; the field order
+ * here mirrors that writer's own float order, asserted against it at
+ * generation.
+ */
+struct CsmInfoUniforms {
+    std::array<std::array<float, 16>, csm_max_cascades> cascadeTransforms{};
+    std::array<float, 4> viewFrustumZ{};
+    std::array<float, 4> frustumLengths{};
+    std::array<float, 4> shadowsInfo{};
+    std::array<float, 4> csmParams{};
+};
+static_assert(sizeof(CsmInfoUniforms) == 320);
+
+/**
+ * What one generator publishes to its receivers: the bytes of ITS OWN
+ * block, and how many there are.
+ *
+ * A single-map receiver's block is 96 bytes and a cascaded one's is 320,
+ * and which one a row binds is the GENERATOR's answer rather than the
+ * row's -- \`createShadowFragment\` picks a receiver's declaration from its
+ * light's own filter, so a size fixed at the binding site would be right
+ * for one family and wrong for the other. Both PALs read the size from
+ * here.
+ *
+ * It is the CASCADE block's size unconditionally, not this scene's widest.
+ * That costs a PCF- or ESM-only scene 224 bytes per generator in
+ * \`ShadowRefreshState::blocks\` and in each backend's own generator
+ * record, and 224 bytes per generator per frame in the memcmp that
+ * decides whether to re-upload. Sizing it to the reached families needs
+ * the same \`BBLITE_SHADOWS_CSM\` define that would gate the cascaded
+ * third of this header out of those scenes, because
+ * \`pinnedShadowHeader\` is not handed the feature list; both are one
+ * entry in [TODO](../../TODO.md)'s shadow-family item. Stating the cost
+ * here rather than in the doc's aspiration is what makes that entry
+ * worth acting on.
+ */
+inline constexpr std::size_t shadow_receiver_block_bytes =
+    sizeof(CsmInfoUniforms);
+
+struct ShadowReceiverBlock {
+    alignas(16) std::array<std::byte, shadow_receiver_block_bytes> bytes{};
+    std::uint32_t size = 0;
+    friend bool operator==(
+        const ShadowReceiverBlock&,
+        const ShadowReceiverBlock&) = default;
+};
+
+/** One typed block, as the bytes a receiver binds. */
+template <typename Block>
+inline ShadowReceiverBlock shadow_receiver_bytes(const Block& block) {
+    static_assert(sizeof(Block) <= shadow_receiver_block_bytes);
+    ShadowReceiverBlock out{};
+    std::memcpy(out.bytes.data(), &block, sizeof(Block));
+    out.size = static_cast<std::uint32_t>(sizeof(Block));
+    return out;
+}
 
 /** The pin's own defaults for a directional ESM generator. */
 inline constexpr std::uint32_t esm_default_map_size = ${esm.mapSize}u;
@@ -1703,6 +1986,54 @@ inline ShadowInfoUniforms shadow_info_block(
     // combinations, which is why the filter decides here rather than at
     // creation -- and why the arms are read off those factories.
 ${shadowBlockArms(context)}
+}
+
+// ${context.provenance(csmHooksModule, "_writeCsmUbo")}
+/**
+ * The CASCADED receiver's block, in \`_writeCsmUbo\`'s own float order.
+ *
+ * The pin fills its 80 floats: the N cascade transforms at 16-float
+ * strides, the split distances at 64 and the slice lengths at 68, then the
+ * four \`shadowsInfo\` lanes and the two \`csmParams\` the cascade select and
+ * the cross-fade read. A slot past the cascade count is never read -- the
+ * WGSL loop bound is \`csmParams.x\` -- and stays the zero \`out.fill(0)\`
+ * leaves.
+ */
+inline CsmInfoUniforms csm_info_block(
+    const ShadowGeneratorRecord& generator) {
+    const double map_size = static_cast<double>(generator.map_size);
+    const std::size_t count = generator.csm_cascades.size();
+    CsmInfoUniforms block{};
+    for (std::size_t index = 0; index < count; ++index) {
+        block.cascadeTransforms[index] =
+            generator.csm_cascades[index].transform;
+        block.viewFrustumZ[index] = static_cast<float>(
+            generator.csm_cascades[index].view_frustum_z);
+        block.frustumLengths[index] = static_cast<float>(
+            generator.csm_cascades[index].frustum_length);
+    }
+    block.shadowsInfo = {
+        static_cast<float>(generator.darkness),
+        static_cast<float>(map_size),
+        static_cast<float>(1.0 / map_size),
+        static_cast<float>(generator.frustum_edge_falloff)};
+    block.csmParams = {
+        static_cast<float>(count),
+        static_cast<float>(
+            generator.csm_cascade_blend_percentage == 0.0
+                ? ${context.doubleLiteral(csmUbo.disabledBlendFactor)}
+                : 1.0 / generator.csm_cascade_blend_percentage),
+        0.0f,
+        0.0f};
+    return block;
+}
+
+/** Whichever block this generator's receivers bind. */
+inline ShadowReceiverBlock shadow_receiver_block(
+    const ShadowGeneratorRecord& generator) {
+    return generator.filter == ShadowFilter::csm_directional
+        ? shadow_receiver_bytes(csm_info_block(generator))
+        : shadow_receiver_bytes(shadow_info_block(generator));
 }
 
 // ${context.provenance(
@@ -1935,15 +2266,16 @@ inline void update_pcf_directional_shadow(
 }
 
 /**
- * The pin's first CSM cascade, retained as a single 2D PCF map.
+ * \`_computeCsmCascades\`: one camera-frustum slice fitted per cascade.
  *
- * The native resource seam has one sampled depth texture per generator. A
- * CSM source still needs a camera-frustum fit, not the unrelated whole-caster
- * directional PCF fit. The split formula, float VP inversion, clone-aware
- * caster Z fit, texel snap and bias split remain the pin's own; farther
- * cascades conservatively fall outside this one-map resource.
+ * The split blends the pin's logarithmic and uniform partitions, each
+ * slice's eight world corners are folded into a light-space AABB, the
+ * caster AABB tightens the Z range, and the ortho is texel-snapped. Every
+ * cascade keeps the PCF family's own matrix split: the receiver samples
+ * with the unbiased \`transform\`, and that cascade's caster pass renders
+ * through the biased copy.
  */
-inline void update_csm_single_map_shadow(
+inline void update_csm_cascades(
     ShadowGeneratorRecord& generator,
     const LightRecord& light,
     const CameraRecord& camera,
@@ -1952,21 +2284,56 @@ inline void update_csm_single_map_shadow(
     const double near_z = camera.near_plane;
     const double far_z = camera.far_plane;
     const double camera_range = far_z - near_z;
-    const double p = 1.0 /
-        static_cast<double>(generator.csm_num_cascades);
-    const double logarithmic =
-        near_z * std::pow(far_z / near_z, p);
-    const double uniform = near_z + camera_range * p;
-    const double split_distance =
-        generator.csm_lambda * (logarithmic - uniform) + uniform;
-    const double split = (split_distance - near_z) / camera_range;
+    // \`cfg._shadowMaxZ ?? far\`: an unset one is the camera's own far plane,
+    // which generation cannot see, so the record carries the absence.
+    const double shadow_max_z =
+        generator.csm_shadow_max_z.value_or(far_z);
+    const double max_distance =
+        (shadow_max_z < far_z && shadow_max_z >= near_z)
+            ? std::min((shadow_max_z - near_z) / (far_z - near_z), 1.0)
+            : 1.0;
+    constexpr double min_distance = 0.0;
+    const double min_z = near_z + min_distance * camera_range;
+    const double max_z = near_z + max_distance * camera_range;
+    const double range = max_z - min_z;
+    const double ratio = max_z / min_z;
+    // Clamped by the factory, where the pin clamps it.
+    const std::size_t count = generator.csm_num_cascades;
+
+    generator.csm_cascades.assign(count, ShadowCascade{});
+    std::array<double, csm_max_cascades> break_distance{};
+    for (std::size_t index = 0; index < count; ++index) {
+        const double p =
+            static_cast<double>(index + 1) / static_cast<double>(count);
+        const double logarithmic = min_z * std::pow(ratio, p);
+        const double uniform = min_z + range * p;
+        const double distance =
+            generator.csm_lambda * (logarithmic - uniform) + uniform;
+        const double previous_break =
+            index == 0 ? min_distance : break_distance[index - 1];
+        break_distance[index] = (distance - near_z) / camera_range;
+        generator.csm_cascades[index].view_frustum_z = distance;
+        generator.csm_cascades[index].frustum_length =
+            (break_distance[index] - previous_break) * camera_range;
+    }
+
+    double direction_x = light.direction.x;
+    double direction_y = light.direction.y;
+    double direction_z = light.direction.z;
+    const double direction_length =
+        std::hypot(direction_x, direction_y, direction_z);
+    const double safe_length = direction_length == 0.0 ? 1.0 : direction_length;
+    direction_x /= safe_length;
+    direction_y /= safe_length;
+    direction_z /= safe_length;
+    if (std::abs(direction_y) >= 1.0) direction_z = 1e-13;
 
     const std::array<float, 16> view_projection =
         build_view_projection(camera, aspect);
     const auto inverse_value = mat4_invert(view_projection);
     const std::array<float, 16>& inverse =
         inverse_value ? *inverse_value : view_projection;
-    const auto transform = [&](double x, double y, double z) {
+    const auto transform_point = [&](double x, double y, double z) {
         const double tx = static_cast<double>(inverse[0]) * x +
             static_cast<double>(inverse[4]) * y +
             static_cast<double>(inverse[8]) * z + inverse[12];
@@ -1981,84 +2348,16 @@ inline void update_csm_single_map_shadow(
             static_cast<double>(inverse[11]) * z + inverse[15];
         return std::array<double, 3>{tx / tw, ty / tw, tz / tw};
     };
+    // The pin's reverse-Z NDC corners: near at z=1, far at z=0.
     constexpr std::array<std::array<double, 3>, 8> ndc{{
         {{-1.0,  1.0, 1.0}}, {{ 1.0,  1.0, 1.0}},
         {{ 1.0, -1.0, 1.0}}, {{-1.0, -1.0, 1.0}},
         {{-1.0,  1.0, 0.0}}, {{ 1.0,  1.0, 0.0}},
         {{ 1.0, -1.0, 0.0}}, {{-1.0, -1.0, 0.0}},
     }};
-    std::array<std::array<double, 3>, 8> corners{};
-    for (std::size_t index = 0; index < corners.size(); ++index) {
-        corners[index] = transform(
-            ndc[index][0], ndc[index][1], ndc[index][2]);
-    }
-    for (std::size_t index = 0; index < 4; ++index) {
-        const auto near_corner = corners[index];
-        const auto far_corner = corners[index + 4];
-        for (std::size_t axis = 0; axis < 3; ++axis) {
-            corners[index + 4][axis] = near_corner[axis] +
-                (far_corner[axis] - near_corner[axis]) * split;
-        }
-    }
 
-    double center_x = 0.0;
-    double center_y = 0.0;
-    double center_z = 0.0;
-    for (const auto& corner : corners) {
-        center_x += corner[0];
-        center_y += corner[1];
-        center_z += corner[2];
-    }
-    center_x /= 8.0;
-    center_y /= 8.0;
-    center_z /= 8.0;
-
-    double direction_x = light.direction.x;
-    double direction_y = light.direction.y;
-    double direction_z = light.direction.z;
-    const double direction_length =
-        std::hypot(direction_x, direction_y, direction_z);
-    const double safe_length = direction_length == 0.0 ? 1.0 : direction_length;
-    direction_x /= safe_length;
-    direction_y /= safe_length;
-    direction_z /= safe_length;
-    if (std::abs(direction_y) >= 1.0) direction_z = 1e-13;
-
-    const std::array<float, 16> center_view = build_light_view_matrix(
-        direction_x, direction_y, direction_z,
-        center_x, center_y, center_z);
-    double min_x = std::numeric_limits<double>::infinity();
-    double min_y = std::numeric_limits<double>::infinity();
-    double min_eye_z = std::numeric_limits<double>::infinity();
-    double max_x = -std::numeric_limits<double>::infinity();
-    double max_y = -std::numeric_limits<double>::infinity();
-    double max_eye_z = -std::numeric_limits<double>::infinity();
-    for (const auto& corner : corners) {
-        const double x = center_view[0] * corner[0] +
-            center_view[4] * corner[1] + center_view[8] * corner[2] +
-            center_view[12];
-        const double y = center_view[1] * corner[0] +
-            center_view[5] * corner[1] + center_view[9] * corner[2] +
-            center_view[13];
-        const double z = center_view[2] * corner[0] +
-            center_view[6] * corner[1] + center_view[10] * corner[2] +
-            center_view[14];
-        min_x = std::min(min_x, x);
-        max_x = std::max(max_x, x);
-        min_y = std::min(min_y, y);
-        max_y = std::max(max_y, y);
-        min_eye_z = std::min(min_eye_z, z);
-        max_eye_z = std::max(max_eye_z, z);
-    }
-
-    const double eye_x = center_x + direction_x * min_eye_z;
-    const double eye_y = center_y + direction_y * min_eye_z;
-    const double eye_z = center_z + direction_z * min_eye_z;
-    const std::array<float, 16> view = build_light_view_matrix(
-        direction_x, direction_y, direction_z, eye_x, eye_y, eye_z);
-    double view_min_z = 0.0;
-    double view_max_z = max_eye_z - min_eye_z;
-
+    // \`_castersWorldAabb\`, once for every cascade: the union of each
+    // caster's eight world-space bound corners.
     double caster_min_x = std::numeric_limits<double>::infinity();
     double caster_min_y = std::numeric_limits<double>::infinity();
     double caster_min_z = std::numeric_limits<double>::infinity();
@@ -2090,55 +2389,137 @@ inline void update_csm_single_map_shadow(
             caster_max_z = std::max(caster_max_z, world_z);
         }
     }
-    if (std::isfinite(caster_min_x)) {
-        double caster_view_min_z = std::numeric_limits<double>::infinity();
-        double caster_view_max_z = -std::numeric_limits<double>::infinity();
-        for (std::size_t corner = 0; corner < 8; ++corner) {
-            const double world_x = (corner & 1u) ? caster_max_x : caster_min_x;
-            const double world_y = (corner & 2u) ? caster_max_y : caster_min_y;
-            const double world_z = (corner & 4u) ? caster_max_z : caster_min_z;
-            const double z = view[2] * world_x + view[6] * world_y +
-                view[10] * world_z + view[14];
-            caster_view_min_z = std::min(caster_view_min_z, z);
-            caster_view_max_z = std::max(caster_view_max_z, z);
+    const bool has_casters = std::isfinite(caster_min_x);
+
+    for (std::size_t cascade = 0; cascade < count; ++cascade) {
+        const double previous_split =
+            cascade == 0 ? 0.0 : break_distance[cascade - 1];
+        const double split = break_distance[cascade];
+
+        std::array<std::array<double, 3>, 8> corners{};
+        for (std::size_t index = 0; index < corners.size(); ++index) {
+            corners[index] = transform_point(
+                ndc[index][0], ndc[index][1], ndc[index][2]);
         }
-        if (caster_view_min_z <= view_max_z) {
-            view_min_z = std::min(view_min_z, caster_view_min_z);
-            view_max_z = std::min(view_max_z, caster_view_max_z);
+        // Both ends of the slice ride the same near-to-far ray, so the far
+        // corner is written from the ORIGINAL near corner before that one
+        // is moved to the slice's own near plane.
+        for (std::size_t index = 0; index < 4; ++index) {
+            const auto near_corner = corners[index];
+            const auto far_corner = corners[index + 4];
+            for (std::size_t axis = 0; axis < 3; ++axis) {
+                const double ray = far_corner[axis] - near_corner[axis];
+                corners[index + 4][axis] = near_corner[axis] + ray * split;
+                corners[index][axis] =
+                    near_corner[axis] + ray * previous_split;
+            }
         }
+
+        double center_x = 0.0;
+        double center_y = 0.0;
+        double center_z = 0.0;
+        for (const auto& corner : corners) {
+            center_x += corner[0];
+            center_y += corner[1];
+            center_z += corner[2];
+        }
+        center_x /= 8.0;
+        center_y /= 8.0;
+        center_z /= 8.0;
+
+        const std::array<float, 16> center_view = build_light_view_matrix(
+            direction_x, direction_y, direction_z,
+            center_x, center_y, center_z);
+        double min_x = std::numeric_limits<double>::infinity();
+        double min_y = std::numeric_limits<double>::infinity();
+        double min_eye_z = std::numeric_limits<double>::infinity();
+        double max_x = -std::numeric_limits<double>::infinity();
+        double max_y = -std::numeric_limits<double>::infinity();
+        double max_eye_z = -std::numeric_limits<double>::infinity();
+        for (const auto& corner : corners) {
+            const double x = center_view[0] * corner[0] +
+                center_view[4] * corner[1] + center_view[8] * corner[2] +
+                center_view[12];
+            const double y = center_view[1] * corner[0] +
+                center_view[5] * corner[1] + center_view[9] * corner[2] +
+                center_view[13];
+            const double z = center_view[2] * corner[0] +
+                center_view[6] * corner[1] + center_view[10] * corner[2] +
+                center_view[14];
+            min_x = std::min(min_x, x);
+            max_x = std::max(max_x, x);
+            min_y = std::min(min_y, y);
+            max_y = std::max(max_y, y);
+            min_eye_z = std::min(min_eye_z, z);
+            max_eye_z = std::max(max_eye_z, z);
+        }
+
+        const double eye_x = center_x + direction_x * min_eye_z;
+        const double eye_y = center_y + direction_y * min_eye_z;
+        const double eye_z = center_z + direction_z * min_eye_z;
+        const std::array<float, 16> view = build_light_view_matrix(
+            direction_x, direction_y, direction_z, eye_x, eye_y, eye_z);
+        double view_min_z = 0.0;
+        double view_max_z = max_eye_z - min_eye_z;
+
+        // \`depthClamp = false\` behaviour: every caster stays inside the
+        // clip volume, so no GPU depth-clip feature is required.
+        if (has_casters) {
+            double caster_view_min_z = std::numeric_limits<double>::infinity();
+            double caster_view_max_z = -std::numeric_limits<double>::infinity();
+            for (std::size_t corner = 0; corner < 8; ++corner) {
+                const double world_x =
+                    (corner & 1u) ? caster_max_x : caster_min_x;
+                const double world_y =
+                    (corner & 2u) ? caster_max_y : caster_min_y;
+                const double world_z =
+                    (corner & 4u) ? caster_max_z : caster_min_z;
+                const double z = view[2] * world_x + view[6] * world_y +
+                    view[10] * world_z + view[14];
+                caster_view_min_z = std::min(caster_view_min_z, z);
+                caster_view_max_z = std::max(caster_view_max_z, z);
+            }
+            if (caster_view_min_z <= view_max_z) {
+                view_min_z = std::min(view_min_z, caster_view_min_z);
+                view_max_z = std::min(view_max_z, caster_view_max_z);
+            }
+        }
+
+        std::array<float, 16> projection{};
+        projection[0] = static_cast<float>(2.0 / (max_x - min_x));
+        projection[5] = static_cast<float>(2.0 / (max_y - min_y));
+        projection[10] = static_cast<float>(1.0 / (view_max_z - view_min_z));
+        projection[12] = static_cast<float>(-(max_x + min_x) / (max_x - min_x));
+        projection[13] = static_cast<float>(-(max_y + min_y) / (max_y - min_y));
+        projection[14] =
+            static_cast<float>(-view_min_z / (view_max_z - view_min_z));
+        projection[15] = 1.0f;
+        std::array<float, 16> transform_matrix = multiply_4x4(projection, view);
+        // Texel snap on the world origin's own projection, which is the
+        // non-stabilized anchor.
+        const double offset_x =
+            (std::round(transform_matrix[12] * generator.map_size / 2.0) -
+             transform_matrix[12] * generator.map_size / 2.0) *
+            (2.0 / generator.map_size);
+        const double offset_y =
+            (std::round(transform_matrix[13] * generator.map_size / 2.0) -
+             transform_matrix[13] * generator.map_size / 2.0) *
+            (2.0 / generator.map_size);
+        std::array<float, 16> snap{
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            static_cast<float>(offset_x), static_cast<float>(offset_y),
+            0.0f, 1.0f};
+        projection = multiply_4x4(snap, projection);
+        transform_matrix = multiply_4x4(projection, view);
+
+        ShadowCascade& fitted = generator.csm_cascades[cascade];
+        fitted.transform = transform_matrix;
+        fitted.view = view;
+        fitted.caster_view_projection =
+            bias_view_projection(transform_matrix, generator.bias);
     }
-
-    std::array<float, 16> projection{};
-    projection[0] = static_cast<float>(2.0 / (max_x - min_x));
-    projection[5] = static_cast<float>(2.0 / (max_y - min_y));
-    projection[10] = static_cast<float>(1.0 / (view_max_z - view_min_z));
-    projection[12] = static_cast<float>(-(max_x + min_x) / (max_x - min_x));
-    projection[13] = static_cast<float>(-(max_y + min_y) / (max_y - min_y));
-    projection[14] = static_cast<float>(-view_min_z / (view_max_z - view_min_z));
-    projection[15] = 1.0f;
-    std::array<float, 16> transform_matrix = multiply_4x4(projection, view);
-    const double offset_x =
-        (std::round(transform_matrix[12] * generator.map_size / 2.0) -
-         transform_matrix[12] * generator.map_size / 2.0) *
-        (2.0 / generator.map_size);
-    const double offset_y =
-        (std::round(transform_matrix[13] * generator.map_size / 2.0) -
-         transform_matrix[13] * generator.map_size / 2.0) *
-        (2.0 / generator.map_size);
-    std::array<float, 16> snap{
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        static_cast<float>(offset_x), static_cast<float>(offset_y), 0.0f, 1.0f};
-    projection = multiply_4x4(snap, projection);
-    transform_matrix = multiply_4x4(projection, view);
-
-    generator.light_matrix = transform_matrix;
-    generator.caster_view = view;
-    generator.caster_view_projection =
-        bias_view_projection(transform_matrix, generator.bias);
-    generator.near_plane = view_min_z;
-    generator.far_plane = view_max_z;
 }
 
 } // namespace bbl::upstream
@@ -2235,7 +2616,9 @@ export function shadowFactorySource(
     const pcfDirectionalShadows = features.includes(
         "shadow:pcf-directional",
     );
-    const csmSingleMapShadows = features.includes("shadow:csm-single-map");
+    // The cascaded generator: a layered map, one caster pass per
+    // cascade, and the 320-byte cascade block its receivers bind.
+    const csmShadows = features.includes("shadow:csm");
     // One family's caster view, under the filter its task carries. The node
     // family has a second compiled module for both modes: ESM adds its
     // shadow-params binding, while PCF uses NODE_NO_COLOR_OUTPUT and adds no
@@ -2305,6 +2688,78 @@ export function shadowFactorySource(
             "Expected the PCF shadow task to clear its depth attachment.",
         );
     }
+    if (csmShadows) {
+        // The cascaded task state, whose per-layer construction
+        // `build_shadow_task` mirrors: one CLEARING depth-only task per
+        // cascade over a single-layer view of the generator's own depth
+        // array, which is borrowed rather than owned.
+        const { declaration: csmState } = context.functionDeclaration(
+            csmHooksModule,
+            "ensureCsmShadowTaskState",
+        );
+        const csmTaskOptions = context.callObjectArgument(
+            csmState,
+            "createRenderTask",
+        );
+        if (
+            context.propertyInitializer(csmTaskOptions, "clr").kind !==
+            ts.SyntaxKind.TrueKeyword
+        ) {
+            context.contractError(
+                csmTaskOptions,
+                "Expected each CSM cascade task to clear its layer.",
+            );
+        }
+        const objectLiteral = (
+            expression: ts.Expression,
+            what: string,
+        ): ts.ObjectLiteralExpression => {
+            const node = context.unwrapExpression(expression);
+            return ts.isObjectLiteralExpression(node)
+                ? node
+                : context.contractError(
+                      node,
+                      `Expected the pinned CSM ${what} to be an object ` +
+                          "literal.",
+                  );
+        };
+        const csmTarget = objectLiteral(
+            context.variableInitializer(csmState, "rt"),
+            "cascade render target",
+        );
+        // The map is the pin's one standard-Z target, and the cascade's
+        // view of it is BORROWED -- the depth array belongs to the
+        // generator, so no cascade owns or releases it.
+        const csmDescriptor = objectLiteral(
+            context.propertyInitializer(csmTarget, "_descriptor"),
+            "cascade target descriptor",
+        );
+        for (const [owner, name, shape] of [
+            [csmDescriptor, "dFormat", '"depth32float"'],
+            [csmDescriptor, "_depthCompare", '"less-equal"'],
+            [csmTarget, "_ownsDepthTexture", "false"],
+        ] as const) {
+            context.assertExpressionShape(
+                context.propertyInitializer(owner, name),
+                shape,
+                `Pinned CSM cascade target '${name}'`,
+            );
+        }
+        context.assertExpressionShape(
+            context.variableInitializer(csmState, "layerView"),
+            'sg._depthTexture.createView({ dimension: "2d", ' +
+                "baseArrayLayer: i, arrayLayerCount: 1 })",
+            "Pinned CSM cascade layer view",
+        );
+        // Every caster is added to every cascade below its own cap. The cap
+        // is `setShadowCasterMaxCascade`, which this port refuses -- so the
+        // arm must stay the `?? i` identity that makes the test vacuous.
+        context.expectShapeCount(
+            csmState,
+            "i <= (mesh._shadowMaxCascade ?? i)",
+            "Pinned CSM caster cascade cap",
+        );
+    }
     return {
         modulePath: spotModule,
         symbolName: "createPcfSpotlightShadowGenerator",
@@ -2317,6 +2772,7 @@ export function shadowFactorySource(
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_shadow.hpp>
 
+#include <algorithm>
 #include <stdexcept>
 #include <utility>
 
@@ -2350,21 +2806,27 @@ ${!pcfDirectionalShadows ? "" : shadowGeneratorFactory({
         "ortho_max_z",
     ],
 })}
-${!csmSingleMapShadows ? "" : shadowGeneratorFactory({
+${!csmShadows ? "" : shadowGeneratorFactory({
     name: "csm_directional",
     options: "CsmDirectionalShadowOptions",
     article: "A CSM directional shadow generator",
     lightKind: "directional",
-    filter: "pcf_directional",
+    filter: "csm_directional",
     fields: [
         "map_size",
+        "csm_lambda",
+        "csm_cascade_blend_percentage",
+        "csm_shadow_max_z",
         "bias",
         "darkness",
-        "csm_num_cascades",
-        "csm_lambda",
+        "frustum_edge_falloff",
         "force_refresh_every_frame",
     ],
-    tail: "    generator.csm_single_map = true;",
+    // \`Math.min(cfg.numCascades ?? N, MAX)\`, applied where the pin
+    // applies it: the fit, the layered map and its caster passes then all
+    // read one already-clamped count off the record.
+    tail: `    generator.csm_num_cascades = std::min(
+        options.csm_num_cascades, upstream::csm_max_cascades);`,
 })}
 ${!esmShadows ? "" : shadowGeneratorFactory({
     name: "esm_directional",
@@ -2419,27 +2881,34 @@ void refresh_shadow_task_meshes(
     ShadowGeneratorHandle handle) {
     ShadowGeneratorRecord& generator =
         engine.shadow_generators[handle.value];
-    if (generator.task.value >= engine.frame_tasks.size()) return;
-    FrameTaskRecord& task = engine.frame_tasks[generator.task.value];
-    task.render_meshes.clear();
-    for (const MeshHandle mesh : generator.caster_meshes) {
-        const MeshRecord& record = engine.meshes[mesh.value];
-        // Invisible anchors participate in the light-volume fit but the
-        // pin's normal renderable traversal does not draw them.
-        if (!record.visible) continue;
-        const MaterialHandle material = record.material;
-        if (material.value >= engine.materials.size()) {
-            throw std::runtime_error(
-                std::string("Visible shadow caster '") + record.name +
-                "' (mesh " + std::to_string(mesh.value) +
-                ") carries invalid material " +
-                std::to_string(material.value) + ".");
+    if (generator.caster_tasks.empty()) return;
+    // A cascaded generator owns one caster pass per cascade layer, and the
+    // pin adds every caster to each of them (\`ensureCsmShadowTaskState\`
+    // loops the caster set inside its per-cascade task build). One
+    // generator's tasks therefore carry one mesh list, filled here once
+    // per task.
+    for (const TaskHandle task_handle : generator.caster_tasks) {
+        FrameTaskRecord& task = engine.frame_tasks[task_handle.value];
+        task.render_meshes.clear();
+        for (const MeshHandle mesh : generator.caster_meshes) {
+            const MeshRecord& record = engine.meshes[mesh.value];
+            // Invisible anchors participate in the light-volume fit but
+            // the pin's normal renderable traversal does not draw them.
+            if (!record.visible) continue;
+            const MaterialHandle material = record.material;
+            if (material.value >= engine.materials.size()) {
+                throw std::runtime_error(
+                    std::string("Visible shadow caster '") + record.name +
+                    "' (mesh " + std::to_string(mesh.value) +
+                    ") carries invalid material " +
+                    std::to_string(material.value) + ".");
+            }
+            add_render_task_mesh(
+                engine,
+                task_handle,
+                mesh,
+                shadow_caster_view(engine, handle, material));
         }
-        add_render_task_mesh(
-            engine,
-            generator.task,
-            mesh,
-            shadow_caster_view(engine, handle, material));
     }
 }
 
@@ -2478,6 +2947,14 @@ namespace {
  * standard-Z far value. Each caster is added through its material's own
  * no-colour view, which is the same composition arm a scene-code
  * createStandardNoColorMaterialView reaches.
+ *
+ * A CASCADED generator is the same construction N times over ONE map:
+ * \`createCsmDirectionalShadowGenerator\` allocates a \`depth32float\`
+ * texture array of \`numCascades\` layers, and
+ * \`ensureCsmShadowTaskState\` builds one clearing depth-only task per
+ * layer against a single-layer view of it. Here the layers are one render
+ * target -- one texture, one owner -- and the LAYER rides on each task,
+ * so no pass borrows a depth texture it would also have to not release.
  */
 void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     Engine& engine = *scene.engine;
@@ -2489,6 +2966,11 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
         ShadowFilter::esm_directional` : " false"};
     const std::uint32_t map_size =
         engine.shadow_generators[handle.value].map_size;
+    const std::uint32_t layers =${csmShadows ? `
+        engine.shadow_generators[handle.value].filter ==
+                ShadowFilter::csm_directional
+            ? engine.shadow_generators[handle.value].csm_num_cascades
+            : 1u` : " 1u"};
     RenderTargetOptions target;
     target.samples = 1;
     // \`createShadowRenderTarget\` takes a colour texture for the ESM
@@ -2497,6 +2979,9 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     target.has_color = esm;
     target.has_depth = true;
     target.sampled_depth = !esm;
+    // One layer per cascade; the receiver samples the whole array through
+    // its \`texture_depth_2d_array\` row.
+    target.depth_layers = layers;
     if (esm) {
         // The pinned factory's own format for the ESM map. At one sample the
         // colour attachment is sampleable in place, which is what the blur's
@@ -2511,18 +2996,34 @@ void build_shadow_task(Scene& scene, ShadowGeneratorHandle handle) {
     target.width = map_size;
     target.height = map_size;
     const RenderTargetHandle rt = create_render_target(engine, target);
-    RenderTaskOptions task;
-    task.name = esm ? "esm" : "pcf";
-    task.target = rt;
-    task.clear = true;
-    task.shadow_generator = handle;
-    const TaskHandle task_handle =
-        create_render_task(engine, scene, std::move(task));
-    engine.shadow_generators[handle.value].task = task_handle;
+    for (std::uint32_t layer = 0; layer < layers; ++layer) {
+        RenderTaskOptions task;
+        task.name = esm
+            ? "esm"
+            : layers > 1u ? "csm" + std::to_string(layer) : "pcf";
+        task.target = rt;
+        task.clear = true;
+        task.shadow_generator = handle;
+        task.depth_layer = layer;
+        const TaskHandle task_handle =
+            create_render_task(engine, scene, std::move(task));
+        engine.shadow_generators[handle.value].caster_tasks.push_back(
+            task_handle);
+    }
+    // Every cascade renders into a layer of this one target, and it is the
+    // target -- not any one pass -- that the receiver's texture lookup
+    // resolves through.
+    engine.shadow_generators[handle.value].map_target = rt;
     refresh_shadow_task_meshes(engine, handle);
     // ensureShadowTask unshifts the scheduler ahead of the scene's own
     // tasks, so every shadow map renders before the pass that samples it.
-    add_task_at_start(scene, task_handle);
+    // Registered back to front, because each insert pushes the previous
+    // one along: the cascades then stand in the pin's own layer order.
+    const std::vector<TaskHandle>& caster_tasks =
+        engine.shadow_generators[handle.value].caster_tasks;
+    for (std::size_t index = caster_tasks.size(); index-- > 0;) {
+        add_task_at_start(scene, caster_tasks[index]);
+    }
 }
 
 } // namespace
@@ -2541,8 +3042,8 @@ void register_scene_with_shadow_support(Scene& scene) {
             continue;
         }
         if (
-            scene.engine->shadow_generators[generator.value].task.value !=
-            invalid_handle) {
+            !scene.engine->shadow_generators[generator.value]
+                 .caster_tasks.empty()) {
             continue;
         }
         build_shadow_task(scene, generator);

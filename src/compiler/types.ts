@@ -11,6 +11,7 @@ import type {
   NodeParticleStep,
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
+import type { CsgSolidPlan } from "../pinned-csg.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
@@ -223,7 +224,11 @@ export interface ShadowGeneratorManifest {
    * receiver arm refuses at composition rather than composing a
    * neighbour's.
    */
-  kind: "pcf-spot" | "pcf-directional" | "esm-directional";
+  kind:
+    | "pcf-spot"
+    | "pcf-directional"
+    | "csm-directional"
+    | "esm-directional";
   /**
    * Which `scene.lights` slot the owning light occupies. The pinned
    * receiver fragment suffixes every varying and binding with it, so a
@@ -1092,6 +1097,14 @@ export type ValueKind =
    * and one that reaches anything else fails rather than compiling.
    */
   | "node-particle-2d-binding"
+  /**
+   * A `CsgSolid`: the pinned BSP solid, which exists only at generation.
+   * The plan it carries is replayed against the pin's own modules when
+   * `createMeshFromCsg` turns it into geometry, so the value emits
+   * nothing native and every operation on one that is not a boolean or
+   * that conversion refuses by name.
+   */
+  | "csg-solid"
   | "camera-ortho"
   | "camera-world-matrix"
   | "color4"
@@ -1281,6 +1294,10 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
     // The mask a group is about to be given: names and a mode, both
     // known at generation.
     kind === "animation-group-mask" ||
+    // A BSP solid. It never reaches the runtime: `createMeshFromCsg`
+    // replays the plan it carries against the pin's own modules and
+    // bakes the geometry, so the binding declares nothing native.
+    kind === "csg-solid" ||
     // The solver module a physics scene loads. The pin hands it to
     // `createHavokWorld`; a native build reaches its solver through
     // the PAL, so the binding exists for that call to accept.
@@ -1492,6 +1509,15 @@ export interface Value {
    * order, and the scene meshes follow in creation order.
    */
   sceneMeshIndex?: number;
+  /**
+   * The expression tree a `CsgSolid` value stands for.
+   *
+   * A solid has no native representation: it is replayed against the
+   * pin's own modules at `createMeshFromCsg` and the geometry it produced
+   * is baked. So the plan IS the value, and a boolean composes two of
+   * them the way the pin composes two solids.
+   */
+  csgSolid?: CsgSolidPlan;
   /** Stable identity shared by every Value alias of one light handle. */
   lightIdentity?: LightIdentity;
   /**
@@ -1872,6 +1898,7 @@ export type Feature =
   | "material:standard"
   | "material:standard-vertex-colors"
   | "mesh:box"
+  | "mesh:csg"
   | "mesh:from-data"
   | "mesh:update-positions"
   | "mesh:ground"
@@ -1916,6 +1943,12 @@ export type Feature =
   // and this port reaches only the first. The GS contributor rides the
   // splat feature that already selected the cloud.
   | "picking:gpu"
+  // The billboard pick contributor. Its own row because the pin's own
+  // split is one module per pickable entity type
+  // (`picking/billboard-pick-pipeline.ts`), lazily imported by the
+  // picker and reached only through the systems a scene registered --
+  // so a picking scene with no billboards composes none of it.
+  | "picking:billboard"
   // The shadow family, split the way upstream splits it: the filter's own
   // resources and receiver composition (`shadow:pcf`), and the scene-owned
   // frame-graph task that schedules them (`shadow:task`), which
@@ -1923,7 +1956,7 @@ export type Feature =
   | "shadow:esm"
   | "shadow:pcf"
   | "shadow:pcf-directional"
-  | "shadow:csm-single-map"
+  | "shadow:csm"
   | "shadow:task"
   | "sprite:2d"
   | "sprite:2d-depth-host"

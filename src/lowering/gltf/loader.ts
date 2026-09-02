@@ -55,6 +55,12 @@ export interface GltfLoaderOptions {
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;
     nonTrianglePrimitives?: boolean;
+    /**
+     * The asset carries Gaussian-splat clouds: packaging ran the pinned
+     * `KHR_gaussian_splatting` hooks, so the document names row buffers
+     * instead of the POINTS primitives they came from.
+     */
+    gaussianSplats?: boolean;
     /** The scene assigns an AnimationGroupMask to one of this file's groups. */
     animationMask?: boolean;
     /** The scene writes an AnimationGroup's speedRatio. */

@@ -226,17 +226,52 @@ The light-space basis, the spot volume from `light.angle`, the 4x4 multiply and
 the bias are each lowered from their own declarations, and the cone angle is
 written wherever `cos_half_angle` is.
 
-**CSM retains the pin's first cascade in a single-map adaptation.** The source
-factory creates a depth-texture array, computes one camera-frustum fit per
-cascade, and has receivers choose or blend by view depth. Native's PCF seam has
-one 2D sampled depth texture per generator, so it retains the first
-camera-fitted map. The split formula, float view-projection inversion,
-clone-aware caster Z fit, texel snap, nine-tap filter and
-unbiased-receiver/biased-caster matrix split remain source-derived. Farther
-cascades and cross-cascade blending are
-omitted. The scene records `csm-single-map-near-cascade` at high risk rather
-than reporting the resource
-as a texture array it did not create.
+**CSM is the pin's own cascade array, and nothing about it is adapted.** The
+source factory creates a `depth32float` depth-texture array, computes one
+camera-frustum fit per cascade, and has receivers choose or blend by view
+depth; this port creates the same array, renders one depth-only caster pass per
+layer, and composes the pin's own receiver through
+`csm-shadow-fragment-core.ts`. The split formula, float view-projection
+inversion, clone-aware caster Z fit, texel snap, nine-tap filter,
+cross-cascade blend and unbiased-receiver/biased-caster matrix split are all
+source-derived, and `_computeCsmCascades` is **restated and anchored** — the
+arithmetic is written in C++ and guarded by thirteen expression-shape
+assertions against the pinned body, where the sibling
+`computeDirectionalLightMatrix` is lowered from its AST. The difference is not
+cosmetic: a mirror can silently omit an arm where a lowering refuses one it
+cannot express, and this one did. `_castersWorldAabb` opens with a
+thin-instance branch — bound a caster by the union of its DRAWN instances,
+because "one prototype-sized box wrecks the cascade Z-fit" — and only its
+else-arm is implemented, so a thin-instanced CSM caster is refused by name
+until that arm is lowered. The refusal is where the caster walk is, not at
+generation: what makes it wrong is a thin-instanced mesh being *this
+generator's caster*, and a caster list is a runtime array
+(`setShadowTaskCasterMeshes` takes one, and racer spreads two into it). A
+scene that merely reaches both features is fine — racer is exactly that
+scene, with a cascaded sun over thin-instanced skid marks that are never
+casters. The PCF and ESM fits are correct to have no such arm, because the
+pinned function they mirror has none; CSM is the one family where the pin
+does.
+
+The array is **one** render target carrying `depth_layers = N`, with the layer
+on the task rather than N targets each borrowing a layer: same GPU state — one
+array texture, N single-layer attachment views, N clearing depth-only passes —
+but one owner, so the pin's `_ownsDepthTexture: false` cannot become a double
+free here. That flag is asserted at generation instead, so a pin that starts
+owning the texture refuses rather than leaking.
+
+The group-2 row for a cascaded light is reflected like every other, which is
+what the type demanded: `texture_depth_2d_array` is its own binding kind, and
+the row carries its own byte size because the CSM block is 320 bytes against
+the single-map 96. On SDL_GPU `csmInfo_N` joins the demotable blocks, without
+which the receiver exceeds the four-uniform cap. Scenes 214 (Standard
+receiver) and 215 (PBR receiver) gate it, both at 0.000 on both backends, with
+the composed receiver byte-identical to the browser's module and all eighty
+floats of the cascade UBO bit-identical to its upload.
+
+The upstream page says PBR renderables ignore CSM in v1. The pin disagrees —
+`createPbrShadowFragment` dispatches to `pbr-csm-shadow-fragment` — and scene
+215 is what measures which is true.
 
 **A Standard or PBR receiver is a composed variant, not a uniform lane.**
 `_computeMeshFeatures(mesh, receiveShadows)` turns `mesh.receiveShadows &&
@@ -1102,6 +1137,24 @@ apply and left for the compiler to drop; SDL_GPU pushes it to the fragment
 stage exactly when `splat.frag.slots` says it survived. Generation refuses a
 composed module whose vertex half the splice moved, which checks the mangler's
 idempotence on an already-shortened base.
+
+**A glTF cloud arrives through the pin's own document hook, and is not an
+adaptation.** `KHR_gaussian_splatting` is a `preParse` that strips the splat
+primitives plus an `applyAsset` that packs the same 32-byte rows this port
+already reads, so packaging runs the pinned module over the packaged GLB's own
+chunks — the quantization and sparse-accessor class, bit-identical by
+construction, rather than the `.ply` container-parse class that needs the pin's
+parser for its per-exporter property list. Nothing is recorded in
+`fidelity.json` for it because nothing diverges.
+
+Two consequences are worth stating. The conversion *consumes* the primitives it
+packs, so an asset whose only primitives were splats reaches its binary chunk
+through nothing and the rows become the whole chunk — scene 226 packages at
+11.0 MB rather than 31.8 MB. And the pin's `_sceneSetup` writes a 180° rotation
+about Z on the attached cloud, which is exactly what separates these rows from
+scene 120's `.ply`-parsed ones: same 345,217 splats and same 11,046,944 bytes,
+differing by the negation of x, y and the matching quaternion. Gated by scene
+226, which sits in the splat family's measured multisample wobble band.
 
 **A cloud's world matrix is the pin's own TRS composition.** A
 `GaussianSplattingMesh` is a `SceneNode`, so `composeTrsLocalMatrix` builds it

@@ -240,9 +240,10 @@ which the activation inventory then checks against its own derivation from
 the reached features — a check only while the two stay different expressions.
 
 The feature list is finalized during compilation, before remote assets
-materialize, with two exceptions joined afterwards: an asset's own lights
-(glTF `KHR_lights_punctual` kinds, `.babylon` point lights) and
-`EXT_lights_image_based` become `light:*` and `environment:ibl` features,
+materialize, with three exceptions joined afterwards: an asset's own lights
+(glTF `KHR_lights_punctual` kinds, `.babylon` point lights),
+`EXT_lights_image_based`, and a glTF carrying `KHR_gaussian_splatting`
+become `light:*`, `environment:ibl` and `loader:splat` features,
 because light features select `light_*.cpp` translation units and only the
 feature list can. Every other capability an asset reaches without the source
 naming it lives in the capability header — scene transmission being the
@@ -333,10 +334,12 @@ rather than reimplementing the conversion and the packaged asset drops the
 extension. Upstream imports that module only when `extensionsUsed` lists it,
 which is the boundary this pass keeps.
 
-All three run in the pinned registry's own order — meshopt, then sparse, then
-quantization — because each reads what the one before it wrote: a sparse base
-may live in a decompressed bufferView, and a meshopt-filtered animation output
-is itself quantized data the last hook has to see.
+All of them run in the pinned registry's own order — meshopt, then sparse,
+then quantization, then `KHR_gaussian_splatting` — because each reads what the
+one before it wrote: a sparse base may live in a decompressed bufferView, a
+meshopt-filtered animation output is itself quantized data the quantization
+hook has to see, and the splat conversion *consumes* the primitives it packs,
+so it runs once nothing else needs them.
 
 ### Compressed textures
 
@@ -435,6 +438,32 @@ by parity measurement, and the scenes measure byte-identical.
 
 Both share the HDR prefilter's tradeoff: the baked bytes depend on the Chrome
 that compiled them.
+
+**A CSG solid is a third executed kind, and the value is what makes it one.**
+`createCsgFromMesh`/`csgSubtract`/`createMeshFromCsg` build a BSP tree and end
+at `createMeshFromData`, so the solid never reaches the runtime and the
+*shape* is not the contract. What is, is the polygon set: `splitPolygon`
+classifies every vertex against `EPSILON = 1e-5`, so a reassociated dot
+product does not nudge a coordinate — it changes the polygon COUNT, and with
+it the tree the next operation builds. Every plane and interpolated normal
+also normalizes through `Math.hypot`, which the spec leaves
+implementation-approximated (the same fact `splat-hypot-approximation`
+records). So generation replays the scene's own call chain against the pin's
+modules and bakes the four arrays, recorded as `executed-csg-solid`. Unlike
+the atlas and the pixel buffer it runs under **Node** rather than headless
+Chromium, because the module reaches no browser API — the same split the
+node-material compiler takes; scene 90 measuring 0.000 on both backends is
+also the evidence that the two engines agree here. Its bake replays from the
+same content-addressed cache the browser bakes use, keyed on the Node version
+as well because `Math.hypot` is what makes the geometry V8's.
+
+A CSG source named by a binding rather than written inline is resolved by a
+whole-file scan for earlier occurrences of that identifier's text, which is
+also what proves the binding is never written between its declaration and the
+use. So an unrelated same-named binding elsewhere in the file refuses the
+solid: the scan over-refuses rather than resolving the wrong mesh, and a
+symbol-resolved version would have to carry its own mutation scan to keep
+that guarantee.
 
 ### Node particles
 
@@ -1516,8 +1545,20 @@ plan keeps an invisible mesh: `gpu-picker.ts` filters on `pickable` alone and
 never tests visibility, so a hidden mesh is a pick candidate here as it is
 upstream. `visible` is tested one level down, where the draw lists are built.
 
-`PickingInfo` carries WHICH node was hit -- the collection and the index --
-and `pickedMesh.name` reads through that pair where the scene asks for it,
+`pickBillboardSprite` puts a billboard system into the same pass. A pick
+contributor is the pin's own seam for that: the one-pixel render already walks
+a registration-ordered contributor list, so a third family joins it rather
+than growing a second pass, drawing into the same attachments against the same
+depth so a mesh in front of a billboard still wins. Its two vertex stems --
+one per orientation -- are composed by running the pin's own
+`makeBillboardPickWgsl`, and the quad math is therefore never transcribed.
+Scene 118 gates it, and the gate is not vacuous: the pick decides whether the
+marker is placed, so a miss removes 15308 pixels rather than shading them
+slightly differently.
+
+`PickingInfo` carries WHICH node was hit -- the collection, the kind and the
+index -- and `pickedMesh.name` reads through that pair where the scene asks
+for it,
 because upstream `pickedMesh` is a live node reference and a scene may
 rename the node between the pick and the read. Basic picking also consumes
 the depth attachment to reconstruct `pickedPoint` by the pin's inverse-VP
@@ -1594,9 +1635,10 @@ unreached parameter curves still refuse by name.
 
 ### Shadows
 
-Two native shadow resource/filter families are reached — PCF and ESM — through
-four source factories: PCF spot, PCF directional, ESM directional and CSM
-directional. A single receiver may sample the reached filters by light slot.
+Three native shadow resource/filter families are reached — PCF, ESM and CSM —
+through four source factories: PCF spot, PCF directional, ESM directional and
+CSM directional. A single receiver may sample the reached filters by light
+slot; CSM is the one whose map is a layered array rather than a 2D texture.
 
 `createPcfSpotlightShadowGenerator(engine, light, cfg)` owns the GPU state —
 a `depth32float` map at `mapSize`, a comparison sampler under the pin's
@@ -1670,12 +1712,20 @@ needs no define of its own — every resource it wants some sibling already
 builds — so what the port adds for it is the factory, its defaults read off
 the pinned module, and the third arm of the per-frame refresh.
 
-**The CSM directional generator is an explicit single-map adaptation**: the
-pin's depth-texture cascade array becomes the first camera-fitted cascade in
-one 2D PCF map, every formula still derived from the pinned CSM
-declarations. Farther coverage and cross-cascade blending are omitted and
-recorded as `csm-single-map-near-cascade` at high risk
-([fidelity](fidelity.md#shadows) carries the adaptation).
+**The CSM directional generator is the pin's own cascade array.** Its map is a
+`depth32float` `texture_2d_array` sized by the cascade count, its caster half
+is one depth-only pass per layer from that cascade's own fitted light-space
+matrix, and its receiver is the pin's `csm-shadow-fragment-core` through both
+family wrappers — including the cross-cascade blend, which comes with the
+fragment rather than being added here. Nothing about it is adapted — but the
+fit is **mirrored rather than lowered**: the split formula, the texel snap,
+the caster-Z tighten and the unbiased-receiver/biased-caster split are
+restated in C++ and guarded by thirteen shape assertions against
+`_computeCsmCascades`, where the sibling `computeDirectionalLightMatrix` is
+lowered from its own AST. That distinction is the debt, and it has already
+cost one dropped arm ([fidelity](fidelity.md#shadows) carries the contract,
+the ownership choice that differs from the pin's shape, and the refusal that
+covers the arm).
 
 **A composed row names a LIGHT, not a generator.** The pin numbers a
 receiver's group-2 rows `shadowTex_<lightIndex>`, where the index is "the
@@ -1714,9 +1764,13 @@ generation), and generator controls outside the reached factory sets.
 `normalBias` remains refused everywhere, `forceRefreshEveryFrame` on the two
 PCF factories — the ESM and CSM factories validate it as generation-known and
 carry it into the record, where it disables the pinned render gate the way
-`renderEsmShadowMap`'s own first test does; CSM controls whose
-only effect belongs to omitted farther cascades are accepted, validated, and
-named by the fidelity adaptation rather than silently approximated.
+`renderEsmShadowMap`'s own first test does. `shadowMaxZ`,
+`cascadeBlendPercentage` and `frustumEdgeFalloff` are supported now that the
+cascade array is, while `stabilizeCascades` and `worldSpaceBias` refuse beside
+`normalBias`: they are unbuilt arms of the generator rather than controls over
+coverage this port omits. `setShadowCasterMaxCascade`, `enableCsmStaticCache`,
+`getCsmReceiverTexture`/`onCsmReceiverUpdate` and a node-material CSM receiver
+refuse by name.
 
 ### Navigation
 

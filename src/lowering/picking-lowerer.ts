@@ -25,7 +25,11 @@ export class PickingLowerer {
         private readonly context: LoweringContext,
     ) {}
 
-    public lower(): LoweredSource {
+    /**
+     * @param billboardPick whether a scene reached `pickBillboardSprite`,
+     *   which is the pin's own thin wrapper over this same pass.
+     */
+    public lower(billboardPick: boolean): LoweredSource {
         const modulePath = "src/picking/gpu-picker.ts";
         // Anchored rather than assumed: if the pin stops exporting these,
         // the port is describing a surface that no longer exists.
@@ -44,7 +48,7 @@ export class PickingLowerer {
             source: `// ${this.context.provenance(modulePath, "pickAsync")}
 #include <bblite/runtime.hpp>
 #include <bblite/js_data.hpp>
-
+${billboardPick ? "#include <bblite/upstream/camera_math.hpp>\n" : ""}
 #include <cmath>
 #include <stdexcept>
 
@@ -109,6 +113,10 @@ std::string picked_node_name(
             return engine.meshes[info.picked_index].name;
         case PickedNodeKind::splat_mesh:
             return engine.splat_meshes[info.picked_index].name;
+        // A billboard sprite is not a node: the pin leaves
+        // \`info.pickedMesh\` null for it and hangs \`_spritePick\` on the
+        // info instead, so there is no name to read through.
+        case PickedNodeKind::billboard_sprite:
         case PickedNodeKind::none:
             break;
     }
@@ -163,9 +171,63 @@ void populate_picked_point(
 void dispose_picker(Engine& engine, GpuPickerHandle picker) {
     picker_record(engine, picker).disposed = true;
 }
-
+${billboardPick ? this.lowerBillboardWrapper() : ""}
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * `pickBillboardSprite`, which is a wrapper and nothing else.
+     *
+     * Upstream it creates a throwaway picker, runs the shared
+     * `pickAsync`, and reads the `_spritePick` payload the billboard
+     * contributor hung on the info. All three statements survive: the
+     * picker is still created and disposed per call (its record costs one
+     * vector slot and the GPU resources are the renderer's), and the
+     * payload read is the caller's -- the compiled call site tests
+     * `picked_kind` and builds the scene's own record.
+     *
+     * `distance` is the second half the pin computes beside `pickedPoint`,
+     * from `getCameraPosition(camera)` -- the camera's FLOAT world matrix,
+     * so the origin a scene would read itself.
+     */
+    private lowerBillboardWrapper(): string {
+        const wrapperModule = "src/sprite/picking/pick-billboard.ts";
+        this.context.functionDeclaration(
+            wrapperModule,
+            "pickBillboardSprite",
+        );
+        return `
+// ${this.context.provenance(wrapperModule, "pickBillboardSprite")}
+// The pin's \`picker ?? createGpuPicker(scene)\` with no caller-owned
+// picker, and its \`finally\` disposing only what it made.
+PickingInfo pick_billboard_sprite(
+    Engine& engine,
+    Scene& scene,
+    double x,
+    double y) {
+    const GpuPickerHandle picker = create_gpu_picker(scene);
+    const PickingInfo info = gpu_pick(engine, picker, x, y);
+    dispose_picker(engine, picker);
+    return info;
+}
+
+// ${this.context.provenance("src/picking/gpu-picker.ts", "pickAsync")}
+// \`info.distance\`: the pin measures from the camera position it read
+// with \`getCameraPosition\`, which \`camera_position\` is the lowering of.
+double picked_distance(const Scene& scene, const PickingInfo& info) {
+    if (!info.picked_point || !scene.engine) return 0.0;
+    const Engine& engine = *scene.engine;
+    if (scene.camera.value >= engine.cameras.size()) return 0.0;
+    const Vec3d origin =
+        upstream::camera_position(engine.cameras[scene.camera.value]);
+    const std::array<double, 3>& point = *info.picked_point;
+    const double dx = point[0] - origin.x;
+    const double dy = point[1] - origin.y;
+    const double dz = point[2] - origin.z;
+    return std::sqrt(dx * dx + dy * dy + dz * dz);
+}
+`;
     }
 }

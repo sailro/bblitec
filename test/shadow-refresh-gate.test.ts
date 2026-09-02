@@ -74,7 +74,7 @@ test("carries forceRefreshEveryFrame into the ESM and CSM records", () => {
     );
     const csm = shadowFactorySource(
         new LoweringContext(),
-        ["shadow:csm-single-map"],
+        ["shadow:csm"],
     ).source;
     assert.match(
         csm,
@@ -112,7 +112,7 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     );
     assert.match(
         shared,
-        /fitted_shadow_casters\(\s*engine, generator, refresh\.casters\);[\s\S]{0,700}upstream::update_esm_directional_shadow[\s\S]{0,700}upstream::update_csm_single_map_shadow[\s\S]{0,500}upstream::update_pcf_directional_shadow/,
+        /fitted_shadow_casters\(\s*engine, generator, refresh\.casters\);[\s\S]{0,700}upstream::update_esm_directional_shadow[\s\S]{0,700}upstream::update_csm_cascades[\s\S]{0,500}upstream::update_pcf_directional_shadow/,
     );
     // A gated frame whose block is already uploaded skips the pack, the
     // compare and the visitor: the fit did not run, so the bytes are

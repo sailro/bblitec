@@ -24,6 +24,9 @@ import { join, resolve } from "node:path";
 import { createContext, runInContext } from "node:vm";
 
 import {
+    GAUSSIAN_SPLATTING_EXTENSION,
+    GAUSSIAN_SPLAT_DOCUMENT_KEY,
+    isGaussianSplatPrimitive,
     GLB_BINARY_CHUNK as BINARY_CHUNK,
     GLB_JSON_CHUNK as JSON_CHUNK,
     GLB_MAGIC,
@@ -463,6 +466,15 @@ async function decodeDracoPrimitive(
     return { indices, attributes, vertexCount };
 }
 
+/** The parsed chunk as the `DataView` every pinned document hook takes. */
+function binaryChunkView(glb: GlbChunks): DataView {
+    return new DataView(
+        glb.binary.buffer,
+        glb.binary.byteOffset,
+        glb.binary.byteLength,
+    );
+}
+
 /** Appends bytes to the binary chunk at the 4-byte alignment glTF wants. */
 class BinaryBuilder {
     private readonly parts: Buffer[] = [];
@@ -473,6 +485,11 @@ class BinaryBuilder {
         this.length = initial.length;
     }
 
+    /**
+     * The bytes are held as a view rather than copied: every caller appends
+     * a buffer it has just produced and does not touch again, and one of
+     * them is an 11 MB splat row buffer.
+     */
     public append(bytes: ArrayBufferView): number {
         const padding = (4 - (this.length % 4)) % 4;
         if (padding) {
@@ -480,13 +497,10 @@ class BinaryBuilder {
             this.length += padding;
         }
         const offset = this.length;
-        const buffer = Buffer.from(
-            bytes.buffer,
-            bytes.byteOffset,
-            bytes.byteLength,
+        this.parts.push(
+            Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
         );
-        this.parts.push(Buffer.from(buffer));
-        this.length += buffer.length;
+        this.length += bytes.byteLength;
         return offset;
     }
 
@@ -497,6 +511,20 @@ class BinaryBuilder {
     public get byteLength(): number {
         return this.length;
     }
+}
+
+/** Appends one tightly-packed view over freshly appended bytes. */
+function appendBufferView(
+    bufferViews: JsonRecord[],
+    binary: BinaryBuilder,
+    bytes: ArrayBufferView,
+): number {
+    bufferViews.push({
+        buffer: 0,
+        byteOffset: binary.append(bytes),
+        byteLength: bytes.byteLength,
+    });
+    return bufferViews.length - 1;
 }
 
 /**
@@ -548,14 +576,9 @@ async function decodeDracoGlb(
         count: number,
         existing?: JsonRecord,
     ): number => {
-        const offset = binary.append(data);
-        bufferViews.push({
-            buffer: 0,
-            byteOffset: offset,
-            byteLength: data.byteLength,
-        });
+        const view = appendBufferView(bufferViews, binary, data);
         const accessor = existing ?? {};
-        accessor.bufferView = bufferViews.length - 1;
+        accessor.bufferView = view;
         accessor.byteOffset = 0;
         accessor.componentType = componentType;
         accessor.count = count;
@@ -763,12 +786,10 @@ async function runPinnedPreParse(
     if (!pass.trigger(glb.json)) return false;
     await pass.prepare?.();
     const feature = await loadPreParseFeature(pass);
-    const binChunk = new DataView(
-        glb.binary.buffer,
-        glb.binary.byteOffset,
-        glb.binary.byteLength,
+    const rewritten = await feature.preParse?.(
+        glb.json,
+        binaryChunkView(glb),
     );
-    const rewritten = await feature.preParse?.(glb.json, binChunk);
     if (!rewritten) {
         throw new Error(
             `${label} ${pass.shape}, but the pinned ${pass.id} feature ` +
@@ -840,6 +861,132 @@ const pinnedPreParsePasses: readonly PinnedPreParsePass[] = [
 ];
 
 /**
+ * The Draco hook runs at the pin's pre-mesh boundary, after every `preParse`
+ * — so upstream's own GS conversion reads accessors Draco has not touched
+ * yet. A GS primitive carrying compressed attributes is therefore a shape
+ * neither side resolves, and it is named here rather than converted from
+ * whatever the compressed bufferView happens to hold.
+ */
+function refuseDracoGaussianSplats(json: JsonRecord, label: string): void {
+    for (const mesh of asRecords(json.meshes)) {
+        for (const primitive of asRecords(mesh.primitives)) {
+            const extensions = asObject(primitive.extensions);
+            if (
+                isGaussianSplatPrimitive(primitive) &&
+                extensions?.[DRACO_EXTENSION] !== undefined
+            ) {
+                throw new Error(
+                    `${label}: a ${GAUSSIAN_SPLATTING_EXTENSION} primitive ` +
+                        `also declares ${DRACO_EXTENSION}; the pinned splat ` +
+                        "conversion reads its attributes before any Draco " +
+                        "decode, so neither side resolves that pairing.",
+                );
+            }
+        }
+    }
+}
+
+/**
+ * `KHR_gaussian_splatting`, resolved at generation like the three passes
+ * above and for the same reason: its whole implementation is a `preParse`
+ * plus an `applyAsset` over the document and its binary chunk, with no
+ * browser API in either, so generation runs the pin's own module rather than
+ * reimplementing the conversion.
+ *
+ * What changes is the shape of the answer. The other passes rewrite accessors
+ * and hand back a new chunk; this one *consumes* primitives — a GS primitive
+ * is POINTS-mode geometry the core mesh pipeline has no topology for — and
+ * produces the pin's own 32-byte-per-splat row buffer, which is exactly what
+ * a `.ply`/`.splat` asset packages to. So the rows are appended as an
+ * ordinary tightly-packed bufferView, named on the document under
+ * `GAUSSIAN_SPLAT_DOCUMENT_KEY`, and the extension is dropped.
+ *
+ * Consuming rather than rewriting is also what makes the source attributes
+ * droppable: an asset whose ONLY primitives were GS ones leaves a document
+ * that reaches its binary chunk through nothing at all, so the rows become
+ * the whole chunk. That is a two-thirds saving on the reached asset (20.7 MB
+ * of ellipsoid attributes against 11.0 MB of rows), and it is taken only
+ * where it is provable — anything the document could still read the chunk
+ * through keeps the append-only form, which is correct at any size.
+ */
+async function convertGaussianSplats(
+    glb: GlbChunks,
+    label: string,
+): Promise<boolean> {
+    if (
+        !declaredExtensions(glb.json).includes(GAUSSIAN_SPLATTING_EXTENSION)
+    ) {
+        return false;
+    }
+    refuseDracoGaussianSplats(glb.json, label);
+    const { extractGltfGaussianSplats } = await import(
+        "./splat-packager.js"
+    );
+    const splats = await extractGltfGaussianSplats(
+        glb.json,
+        binaryChunkView(glb),
+        label,
+    );
+    dropExtension(glb.json, GAUSSIAN_SPLATTING_EXTENSION);
+    if (splats.length === 0) {
+        // A document declaring the extension with no GS primitive in it: the
+        // pin converts nothing and neither does this, so the chunk is left as
+        // it was.
+        console.log(`No Gaussian-splat primitive in ${label}.`);
+        return true;
+    }
+    const reachable = readsBinaryChunk(glb.json);
+    if (!reachable) {
+        // Nothing left names an accessor, so nothing names a bufferView:
+        // both arrays go with the bytes they described, which is what keeps
+        // the document consistent rather than leaving indices into a chunk
+        // that no longer holds them.
+        glb.json.accessors = [];
+    }
+    const bufferViews = reachable ? asRecords(glb.json.bufferViews) : [];
+    const binary = new BinaryBuilder(
+        reachable ? glb.binary : Buffer.alloc(0),
+    );
+    glb.json[GAUSSIAN_SPLAT_DOCUMENT_KEY] = splats.map((splat) => ({
+        name: splat.name,
+        bufferView: appendBufferView(bufferViews, binary, splat.rows),
+        rotation: [...splat.rotation],
+    }));
+    glb.json.bufferViews = bufferViews;
+    glb.binary = binary.build();
+    glb.json.buffers = [{ byteLength: glb.binary.length }];
+    console.log(
+        `Converted ${splats.length} Gaussian-splat primitive(s) in ` +
+            `${label} through the pinned feature.`,
+    );
+    return true;
+}
+
+/**
+ * Whether anything the document still declares can read its binary chunk.
+ *
+ * Only the four members that name a bufferView are asked, and each is asked
+ * for PRESENCE rather than for which view it names: the question this
+ * answers is "may the existing views be discarded", so an unmodelled
+ * reference has to read as yes. A document that answers no reaches its chunk
+ * through nothing, which is what the GS pass leaves behind when the
+ * primitives it consumed were the whole file.
+ */
+function readsBinaryChunk(json: JsonRecord): boolean {
+    return (
+        asRecords(json.meshes).some(
+            (mesh) => asRecords(mesh.primitives).length > 0,
+        ) ||
+        asRecords(json.images).length > 0 ||
+        asRecords(json.skins).length > 0 ||
+        asRecords(json.animations).length > 0 ||
+        // Every extension resolved by this module is dropped once it is, so a
+        // remaining one is a reader this pass does not model.
+        declaredExtensions(json).length > 0
+    );
+}
+
+/**
  * Every geometry extension this port resolves at generation, in the pin's
  * own order.
  *
@@ -852,9 +999,15 @@ const pinnedPreParsePasses: readonly PinnedPreParsePass[] = [
  * what keeps a caller from getting it backwards -- which would produce a
  * plausible wrong mesh rather than an error.
  *
- * The three document-level hooks share one parse, then Draco runs at the pin's
- * pre-mesh boundary: an asset is read and written once however many features
- * it triggers, and one that triggers none is returned byte-for-byte.
+ * The three document-level hooks share one parse, then the Gaussian-splat
+ * conversion consumes what it owns and Draco runs at the pin's pre-mesh
+ * boundary: an asset is read and written once however many features it
+ * triggers, and one that triggers none is returned byte-for-byte.
+ *
+ * Gaussian splatting sits between them because that is where the pin puts it:
+ * its `preParse` strips the GS primitives with the other pre-parse hooks,
+ * before Draco's pre-mesh decode ever sees a primitive, and it reads
+ * accessors the quantization hook may just have rewritten.
  */
 export async function resolveGeometryExtensions(
     bytes: Uint8Array,
@@ -866,6 +1019,7 @@ export async function resolveGeometryExtensions(
     for (const pass of pinnedPreParsePasses) {
         rewrote = (await runPinnedPreParse(pass, glb, label)) || rewrote;
     }
+    rewrote = (await convertGaussianSplats(glb, label)) || rewrote;
     rewrote = (await decodeDracoGlb(glb, label)) || rewrote;
     return rewrote ? writeGlb(glb.json, glb.binary) : bytes;
 }

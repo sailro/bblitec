@@ -21,10 +21,16 @@
 
 #include "pal_dawn_shared.hpp"
 #include "pal_gpu_shared.hpp"
+#if BBLITE_HAS_BILLBOARDS
+// dawn_billboard_format: one translation of the pinned float count,
+// shared with the visible billboard pass.
+#include "pal_dawn_billboard.hpp"
+#endif
 
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 namespace bbl::pal {
@@ -161,5 +167,322 @@ inline void fill_dawn_pick_targets(
     targets[0].format = WGPUTextureFormat_RGBA8Unorm;
     targets[1].format = WGPUTextureFormat_R32Float;
 }
+
+#if BBLITE_HAS_BILLBOARDS
+/**
+ * The billboard pick contributor on Dawn. The contract is stated once in
+ * `pal_sdl_gpu_picking.hpp` and the walk that assigns its ids once in
+ * `collect_pick_billboard_candidates`; what differs here is the API layer
+ * and one consequence of it. WebGPU forbids a queue write between draws
+ * inside a pass, so every system's 48-byte block is written -- and so the
+ * id ranges those blocks carry are assigned -- BEFORE the encoder opens,
+ * and `record` only binds and draws. SDL_GPU pushes the same bytes per
+ * draw and assigns its ranges where it draws them.
+ */
+class DawnBillboardPickContributor {
+public:
+    DawnBillboardPickContributor() = default;
+    DawnBillboardPickContributor(
+        const DawnBillboardPickContributor&) = delete;
+    DawnBillboardPickContributor& operator=(
+        const DawnBillboardPickContributor&) = delete;
+    ~DawnBillboardPickContributor() { release(); }
+
+    /**
+     * The contributor's `draw`, minus the encoder half: the shared
+     * collector's id ranges, then the resources and the two uploads each
+     * drawing system needs. The pipeline is built here too, so an open
+     * pass never carries a WGSL parse and a PSO compile.
+     */
+    void prepare(
+        WGPUDevice device,
+        WGPUQueue queue,
+        WGPUBindGroupLayout scene_layout,
+        const Engine& engine,
+        const Scene& scene,
+        const std::array<float, 16>& view,
+        std::vector<PickRange>& ranges,
+        std::uint32_t& next_id) {
+        if (device_ && device_ != device) release();
+        device_ = device;
+        queue_ = queue;
+        scene_layout_ = scene_layout;
+        draws_ = collect_pick_billboard_candidates(
+            engine, scene, ranges, next_id);
+        systems_.resize(scene.billboard_systems.size());
+        for (const PickBillboardCandidate& candidate : draws_) {
+            ensure_indices();
+            ensure_pipeline(candidate.orientation);
+            SystemResources& resources = systems_[candidate.system_index];
+            const BillboardSystemRecord& system =
+                engine.billboard_systems[
+                    scene.billboard_systems[candidate.system_index].value];
+            ensure_system(resources, system);
+            // The system's own rows in LOGICAL order, so
+            // `pickId - baseId` is the sprite's slot; the visible pass
+            // uploads the same rows sorted back to front. Ungated as the
+            // pin leaves it: `writeBuffer` is a staged copy with no
+            // submit, which is the SDL twin's whole reason for a stamp.
+            wgpuQueueWriteBuffer(
+                queue_,
+                resources.instances,
+                0,
+                system.instance_data.data(),
+                static_cast<std::size_t>(candidate.count) *
+                    upstream::billboard_instance_stride_bytes);
+            const BillboardPickUniforms uniforms =
+                build_billboard_pick_uniforms(
+                    view, candidate.base_id, 0.0f, candidate.axis);
+            wgpuQueueWriteBuffer(
+                queue_,
+                resources.uniforms,
+                0,
+                &uniforms,
+                sizeof(uniforms));
+        }
+    }
+
+    /** The draws, inside the pass the picker already opened. */
+    void record(
+        WGPURenderPassEncoder pass,
+        WGPUBindGroup scene_group) {
+        for (const PickBillboardCandidate& draw : draws_) {
+            wgpuRenderPassEncoderSetPipeline(
+                pass, ensure_pipeline(draw.orientation));
+            // The pin's contributor rebinds group 0 at the start of its
+            // draw, because a prior contributor may have rebound it.
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 0, scene_group, 0, nullptr);
+            const SystemResources& resources =
+                systems_[draw.system_index];
+            wgpuRenderPassEncoderSetBindGroup(
+                pass, 1, resources.group, 0, nullptr);
+            wgpuRenderPassEncoderSetVertexBuffer(
+                pass, 0, resources.instances, 0, WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderSetIndexBuffer(
+                pass,
+                indices_,
+                WGPUIndexFormat_Uint16,
+                0,
+                WGPU_WHOLE_SIZE);
+            wgpuRenderPassEncoderDrawIndexed(
+                pass,
+                static_cast<std::uint32_t>(
+                    upstream::billboard_index_data.size()),
+                draw.count,
+                0,
+                0,
+                0);
+        }
+    }
+
+private:
+    struct SystemResources {
+        WGPUBuffer instances = nullptr;
+        WGPUBuffer uniforms = nullptr;
+        WGPUBindGroup group = nullptr;
+        std::uint32_t capacity = 0;
+    };
+    WGPUBindGroupLayout ensure_system_layout() {
+        if (system_layout_) return system_layout_;
+        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        entry.binding = 0;
+        entry.visibility =
+            WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+        entry.buffer.type = WGPUBufferBindingType_Uniform;
+        entry.buffer.minBindingSize = sizeof(BillboardPickUniforms);
+        WGPUBindGroupLayoutDescriptor descriptor =
+            WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+        descriptor.entryCount = 1;
+        descriptor.entries = &entry;
+        system_layout_ =
+            wgpuDeviceCreateBindGroupLayout(device_, &descriptor);
+        if (!system_layout_) {
+            dawn_error("billboard pick bind group layout");
+        }
+        return system_layout_;
+    }
+
+    void ensure_indices() {
+        if (indices_) return;
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.usage =
+            WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst;
+        descriptor.size =
+            sizeof(std::uint16_t) *
+            upstream::billboard_index_data.size();
+        indices_ = wgpuDeviceCreateBuffer(device_, &descriptor);
+        if (!indices_) dawn_error("billboard pick index buffer");
+        wgpuQueueWriteBuffer(
+            queue_,
+            indices_,
+            0,
+            upstream::billboard_index_data.data(),
+            static_cast<std::size_t>(descriptor.size));
+    }
+
+    void ensure_system(
+        SystemResources& resources,
+        const BillboardSystemRecord& system) {
+        if (!resources.uniforms) {
+            WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+            descriptor.usage =
+                WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+            descriptor.size = sizeof(BillboardPickUniforms);
+            resources.uniforms =
+                wgpuDeviceCreateBuffer(device_, &descriptor);
+            if (!resources.uniforms) {
+                dawn_error("billboard pick uniform buffer");
+            }
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = 0;
+            entry.buffer = resources.uniforms;
+            entry.size = sizeof(BillboardPickUniforms);
+            WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+            group.layout = ensure_system_layout();
+            group.entryCount = 1;
+            group.entries = &entry;
+            resources.group =
+                wgpuDeviceCreateBindGroup(device_, &group);
+            if (!resources.group) {
+                dawn_error("billboard pick bind group");
+            }
+        }
+        if (system.capacity <= resources.capacity) return;
+        if (resources.instances) wgpuBufferRelease(resources.instances);
+        resources.capacity = system.capacity;
+        WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        descriptor.usage =
+            WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst;
+        descriptor.size =
+            static_cast<std::uint64_t>(resources.capacity) *
+            upstream::billboard_instance_stride_bytes;
+        resources.instances =
+            wgpuDeviceCreateBuffer(device_, &descriptor);
+        if (!resources.instances) {
+            dawn_error("billboard pick instance buffer");
+        }
+    }
+
+    /**
+     * One pipeline per orientation, built on first use -- the pin keys its
+     * own cache by `orientation|cutout|detailed`, and the reached slice
+     * composes only the first arm of the other two.
+     */
+    WGPURenderPipeline ensure_pipeline(BillboardOrientation orientation) {
+        const std::size_t slot =
+            orientation == BillboardOrientation::axis_locked ? 1u : 0u;
+        if (pipelines_[slot]) return pipelines_[slot];
+        WGPUShaderModule vertex = load_wgsl_module(
+            device_, billboard_pick_vertex_stem(orientation));
+        WGPUShaderModule fragment =
+            load_wgsl_module(device_, billboard_pick_fragment_stem());
+
+        const std::array<WGPUBindGroupLayout, 2> groups{
+            scene_layout_, ensure_system_layout()};
+        WGPUPipelineLayoutDescriptor layout_descriptor =
+            WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+        layout_descriptor.bindGroupLayoutCount = groups.size();
+        layout_descriptor.bindGroupLayouts = groups.data();
+        WGPUPipelineLayout pipeline_layout =
+            wgpuDeviceCreatePipelineLayout(device_, &layout_descriptor);
+        if (!pipeline_layout) {
+            dawn_error("billboard pick pipeline layout");
+        }
+
+        std::array<WGPUVertexAttribute, billboard_pick_attributes>
+            attributes{};
+        for (std::size_t index = 0; index < attributes.size(); ++index) {
+            const upstream::BillboardInstanceAttribute& row =
+                upstream::billboard_instance_attributes[index];
+            attributes[index] = WGPUVertexAttribute{
+                nullptr,
+                dawn_billboard_format(row.float_count),
+                row.byte_offset,
+                row.shader_location};
+        }
+        WGPUVertexBufferLayout instance_layout =
+            WGPU_VERTEX_BUFFER_LAYOUT_INIT;
+        instance_layout.stepMode = WGPUVertexStepMode_Instance;
+        instance_layout.arrayStride =
+            upstream::billboard_instance_stride_bytes;
+        instance_layout.attributeCount =
+            static_cast<std::uint32_t>(attributes.size());
+        instance_layout.attributes = attributes.data();
+
+        std::array<WGPUColorTargetState, 2> targets{};
+        fill_dawn_pick_targets(targets);
+        WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
+        fragment_state.module = fragment;
+        fragment_state.entryPoint = string_view("fs");
+        fragment_state.targetCount = targets.size();
+        fragment_state.targets = targets.data();
+
+        // The MESH picker's depth state, for the reason its SDL twin
+        // states.
+        WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
+        depth.format = WGPUTextureFormat_Depth24Plus;
+        depth.depthCompare = WGPUCompareFunction_Greater;
+        depth.depthWriteEnabled = WGPUOptionalBool_True;
+
+        WGPURenderPipelineDescriptor descriptor =
+            WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+        descriptor.layout = pipeline_layout;
+        descriptor.vertex.module = vertex;
+        descriptor.vertex.entryPoint = string_view("vs");
+        descriptor.vertex.bufferCount = 1;
+        descriptor.vertex.buffers = &instance_layout;
+        descriptor.fragment = &fragment_state;
+        descriptor.primitive.topology =
+            WGPUPrimitiveTopology_TriangleList;
+        descriptor.primitive.cullMode = WGPUCullMode_None;
+        descriptor.depthStencil = &depth;
+        descriptor.multisample.count = 1;
+
+        pipelines_[slot] =
+            wgpuDeviceCreateRenderPipeline(device_, &descriptor);
+        wgpuPipelineLayoutRelease(pipeline_layout);
+        wgpuShaderModuleRelease(vertex);
+        wgpuShaderModuleRelease(fragment);
+        if (!pipelines_[slot]) {
+            dawn_error("billboard pick render pipeline");
+        }
+        return pipelines_[slot];
+    }
+
+    void release() {
+        for (SystemResources& resources : systems_) {
+            if (resources.group) wgpuBindGroupRelease(resources.group);
+            if (resources.uniforms) wgpuBufferRelease(resources.uniforms);
+            if (resources.instances) {
+                wgpuBufferRelease(resources.instances);
+            }
+            resources = SystemResources{};
+        }
+        systems_.clear();
+        draws_.clear();
+        if (indices_) wgpuBufferRelease(indices_);
+        indices_ = nullptr;
+        for (WGPURenderPipeline& pipeline : pipelines_) {
+            if (pipeline) wgpuRenderPipelineRelease(pipeline);
+            pipeline = nullptr;
+        }
+        if (system_layout_) {
+            wgpuBindGroupLayoutRelease(system_layout_);
+        }
+        system_layout_ = nullptr;
+        device_ = nullptr;
+    }
+
+    WGPUDevice device_ = nullptr;
+    WGPUQueue queue_ = nullptr;
+    WGPUBindGroupLayout scene_layout_ = nullptr;
+    WGPUBindGroupLayout system_layout_ = nullptr;
+    WGPUBuffer indices_ = nullptr;
+    std::array<WGPURenderPipeline, 2> pipelines_{};
+    std::vector<SystemResources> systems_;
+    std::vector<PickBillboardCandidate> draws_;
+};
+#endif
 
 } // namespace bbl::pal

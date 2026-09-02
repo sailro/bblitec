@@ -32,6 +32,11 @@
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <bblite/upstream/renderer_plan.hpp>
 #endif
+// The billboard family's own generated layout, for the pick contributor's
+// attribute agreement below. Emitted only for a scene that builds a system.
+#if BBLITE_HAS_BILLBOARDS
+#include <bblite/upstream/billboard_system.hpp>
+#endif
 // Babylon Lite's own composed PBR variants: one entry per material feature
 // set the scene's assets reach, each naming its compiled stages and the byte
 // size of the per-variant material UBO the pin declares for it. Included here
@@ -1058,12 +1063,16 @@ inline void compute_cloud_pick_matrix(
  *
  * Upstream keeps mesh ranges and contributor ranges apart because a thin
  * instance makes a mesh's range wider than one id; nothing in the reached
- * slice does, so one id is one node and the two lists are one.
+ * slice does, so one id is one node and the two lists are one -- except
+ * for a billboard system, which is the shape the pin's contributor seam
+ * was drawn for: one entity owns `system.count` consecutive ids, and
+ * `pick_id - id` is the sprite's own slot.
  */
 struct PickRange {
     std::uint32_t id = 0;
     PickedNodeKind kind = PickedNodeKind::none;
     std::uint32_t index = invalid_handle;
+    std::uint32_t count = 1;
 };
 
 /**
@@ -1079,15 +1088,164 @@ inline PickingInfo resolve_pick_result(
     std::uint32_t pick_id) {
     if (pick_id == 0) return PickingInfo{};
     for (const PickRange& range : ranges) {
-        if (range.id != pick_id) continue;
+        if (pick_id < range.id || pick_id - range.id >= range.count) {
+            continue;
+        }
         PickingInfo info;
         info.hit = true;
         info.picked_kind = range.kind;
         info.picked_index = range.index;
+        info.picked_range_offset = pick_id - range.id;
         return info;
     }
     throw std::runtime_error(
         "GPU pick read an id no candidate was drawn under.");
+}
+
+/**
+ * The pin's `BB` block for one billboard system's pick draw, 48 bytes.
+ *
+ * `packBillboardPickUbo` writes the camera basis the pick vertex stage
+ * expands its quad around. It cannot read that basis from the pick scene
+ * block -- that carries only the sheared view projection -- so upstream
+ * lifts rows 0 and 1 out of the column-major VIEW matrix on the CPU,
+ * which is the same `normalize(view rowN)` the visible billboard stage
+ * derives. `cutoff` is a cutout system's alpha cutoff and zero otherwise;
+ * `axis` is the lock axis an axis-locked basis reads and the facing
+ * system's zero vector otherwise.
+ */
+struct BillboardPickUniforms {
+    std::array<float, 3> cam_right{};
+    std::uint32_t base_id = 0;
+    std::array<float, 3> cam_up{};
+    float cutoff = 0.0f;
+    std::array<float, 3> axis{};
+    float pad = 0.0f;
+};
+static_assert(
+    sizeof(BillboardPickUniforms) == 48,
+    "the pin's billboard pick UBO is 48 bytes");
+
+/** `packBillboardPickUbo`, lowered from its own body. */
+inline BillboardPickUniforms build_billboard_pick_uniforms(
+    const std::array<float, 16>& view,
+    std::uint32_t base_id,
+    float cutoff,
+    Vec3 axis) {
+    BillboardPickUniforms out;
+    out.cam_right = {view[0], view[4], view[8]};
+    out.base_id = base_id;
+    out.cam_up = {view[1], view[5], view[9]};
+    out.cutoff = cutoff;
+    out.axis = {axis.x, axis.y, axis.z};
+    return out;
+}
+
+/** The pin's contributor gate: a hidden or empty system draws nothing. */
+inline bool billboard_pick_draws(const BillboardSystemRecord& system) {
+    return system.visible && system.count != 0;
+}
+
+#if BBLITE_HAS_BILLBOARDS
+/**
+ * How many of the visible stage's instance attributes the pick stage
+ * reads: locations 0..5, everything but the colour lane the pick fragment
+ * replaces with an id. The table is the billboard lowerer's, generated
+ * from the RENDER pipeline's own byte offsets -- which is exactly what the
+ * pick module's private copy of them must equal -- so the agreement is
+ * asserted at compile time rather than re-checked per pipeline build.
+ */
+inline constexpr std::size_t billboard_pick_attributes = 6;
+static_assert(
+    upstream::billboard_instance_attributes.size() >=
+        billboard_pick_attributes,
+    "the pinned billboard layout dropped an attribute the pick stage reads");
+static_assert(
+    [] {
+        for (std::size_t index = 0; index < billboard_pick_attributes;
+             ++index) {
+            if (upstream::billboard_instance_attributes[index]
+                    .shader_location != index) {
+                return false;
+            }
+        }
+        return true;
+    }(),
+    "the pinned billboard attributes no longer arrive in location order");
+#endif
+
+/**
+ * The composed module a system's orientation picks through.
+ *
+ * Only the vertex stage forks -- the pin's `makeBillboardPickWgsl` swaps
+ * `basis()` and nothing else -- so the second orientation deploys one
+ * vertex stem and shares the first's fragment, exactly as the visible
+ * billboard pair does.
+ */
+inline const char* billboard_pick_vertex_stem(
+    BillboardOrientation orientation) {
+    return orientation == BillboardOrientation::axis_locked
+        ? "picking-billboard-axis-locked.vert"
+        : "picking-billboard.vert";
+}
+inline const char* billboard_pick_fragment_stem() {
+    return "picking-billboard.frag";
+}
+
+/** One billboard system the pick pass draws, and the range it owns. */
+struct PickBillboardCandidate {
+    /** Index into `scene.billboard_systems`, which keys per-system GPU state. */
+    std::size_t system_index = 0;
+    std::uint32_t base_id = 0;
+    std::uint32_t count = 0;
+    BillboardOrientation orientation = BillboardOrientation::facing;
+    Vec3 axis{};
+};
+
+/**
+ * The billboard half of the contributor walk, decided once for both
+ * backends -- the twin of `collect_pick_mesh_candidates` below, and for
+ * the same reason: the id policy is what the two backends must not drift
+ * on, since `pick_id - base_id` is the sprite index a scene reads back.
+ *
+ * The pin gives one system `system.count` consecutive ids and lets a
+ * hidden or empty one CONSUME its range without drawing, so the mapping
+ * stays positional (`pick-contributor.ts`: "a hidden/empty entity still
+ * consumes its ids"). Both halves live here; each backend keeps only its
+ * pipeline and bind mechanics.
+ */
+inline std::vector<PickBillboardCandidate>
+collect_pick_billboard_candidates(
+    const Engine& engine,
+    const Scene& scene,
+    std::vector<PickRange>& ranges,
+    std::uint32_t& next_id) {
+    std::vector<PickBillboardCandidate> candidates;
+    for (std::size_t index = 0; index < scene.billboard_systems.size();
+         ++index) {
+        const BillboardSystemHandle handle =
+            scene.billboard_systems[index];
+        const BillboardSystemRecord& system =
+            engine.billboard_systems[handle.value];
+        const std::uint32_t base_id = next_id;
+        next_id += system.count;
+        if (system.count == 0) continue;
+        // Recorded even for a hidden system: its ids are consumed either
+        // way, and nothing else can answer for them.
+        ranges.push_back(
+            {base_id,
+             PickedNodeKind::billboard_sprite,
+             handle.value,
+             system.count});
+        if (!billboard_pick_draws(system)) continue;
+        candidates.push_back(
+            {index,
+             base_id,
+             system.count,
+             system.orientation,
+             system.axis});
+    }
+    return candidates;
 }
 
 /** `encodeIdToColor`: the id's three bytes as unit floats. */
@@ -2130,6 +2288,31 @@ inline void fitted_shadow_casters(
     for (const MeshHandle handle : generator.caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& record = engine.meshes[handle.value];
+        // The cascade fit is the one place the pin bounds a caster by its
+        // INSTANCES rather than by its own box: `_castersWorldAabb` opens
+        // with `_thinInstanceWorldAabb`, whose comment says why -- one
+        // prototype-sized box wrecks the cascade Z-fit, an off-world herd
+        // collapsing every shadow. The carrier below is filled from the
+        // mesh's own geometry bounds, which is right for the PCF and ESM
+        // fits (`computeDirectionalLightMatrix` has no such arm) and
+        // silently wrong here, so it fails by name instead.
+        //
+        // Named here rather than refused at generation because the pairing
+        // that matters is this GENERATOR's caster list against this MESH,
+        // and the list is a runtime array -- `setShadowTaskCasterMeshes`
+        // takes one, and racer spreads two into it. A scene that merely
+        // reaches both features is fine, and racer is exactly that scene.
+        if (
+            record.thin_instanced &&
+            generator.filter == ShadowFilter::csm_directional) {
+            throw std::runtime_error(
+                "A thin-instanced mesh is a caster of a cascaded shadow "
+                "generator. The pin fits the cascades to the union of "
+                "every drawn instance (`_thinInstanceWorldAabb`); this "
+                "port bounds a caster by its own geometry box, which "
+                "would collapse the cascade Z-fit around the prototype "
+                "rather than fail.");
+        }
         upstream::ShadowCaster caster;
         caster.world = upstream::shadow_caster_world(record);
         if (record.geometry < engine.geometries.size()) {
@@ -2186,6 +2369,43 @@ inline void for_each_shadow_generator(
     }
 }
 
+/**
+ * The light-space pair one caster pass renders through.
+ *
+ * A cascaded generator draws one pass per cascade and each carries that
+ * cascade's own biased view-projection; every other generator has one pass
+ * and the pair on the record. Which one a pass takes is decided by the
+ * generator's own FILTER, not by whether an index happens to be in range,
+ * and it is decided once here because both backends ask the same question.
+ */
+struct ShadowCasterMatrices {
+    const std::array<float, 16>& view_projection;
+    const std::array<float, 16>& view;
+};
+
+inline ShadowCasterMatrices shadow_caster_matrices(
+    const Engine& engine,
+    const FrameTaskRecord& task) {
+    const ShadowGeneratorRecord& generator =
+        engine.shadow_generators[task.render.shadow_generator.value];
+    if (generator.filter == ShadowFilter::csm_directional) {
+        // A cascade the fit has not filled yet cannot be drawn: the pinned
+        // render gate refits before any caster pass runs, and a pass whose
+        // layer the fit does not carry would otherwise render through a
+        // pair a cascaded generator never writes.
+        if (task.render.depth_layer >= generator.csm_cascades.size()) {
+            throw std::runtime_error(
+                "A cascaded shadow pass names cascade " +
+                std::to_string(task.render.depth_layer) +
+                ", which its generator has not fitted.");
+        }
+        const ShadowCascade& cascade =
+            generator.csm_cascades[task.render.depth_layer];
+        return {cascade.caster_view_projection, cascade.view};
+    }
+    return {generator.caster_view_projection, generator.caster_view};
+}
+
 /** The refresh's own carriers, kept by each backend across frames. */
 struct ShadowRefreshState {
     /** Refilled per generator by the ESM caster fold, never reallocated. */
@@ -2193,10 +2413,12 @@ struct ShadowRefreshState {
     /**
      * The receiver block each generator last uploaded, by handle, against
      * which the next frame's is compared. `renderPcfShadowMap` re-uploads
-     * only when the light moved, and for a static one these 96 bytes are
-     * identical every frame.
+     * only when the light moved, and for a static one those bytes are
+     * identical every frame. The carrier holds whichever of the two shapes
+     * the generator publishes -- 96 bytes for a single-map receiver, 320
+     * for a cascaded one -- and its own size beside them.
      */
-    std::vector<upstream::ShadowInfoUniforms> blocks;
+    std::vector<upstream::ShadowReceiverBlock> blocks;
     /** Whether `blocks[handle]` holds an upload yet. */
     std::vector<bool> uploaded;
     /**
@@ -2284,8 +2506,7 @@ inline void refresh_shadow_generators(
             // forced generator's gate returns before reading it, so the
             // key is built only when the gate will.
             const bool csm_fit =
-                generator.filter == ShadowFilter::pcf_directional &&
-                generator.csm_single_map &&
+                generator.filter == ShadowFilter::csm_directional &&
                 scene.camera.value < engine.cameras.size();
             upstream::CsmCameraKey camera_key;
             if (csm_fit && !generator.force_refresh_every_frame) {
@@ -2335,7 +2556,7 @@ inline void refresh_shadow_generators(
                     } else
 #endif
                     if (csm_fit) {
-                        upstream::update_csm_single_map_shadow(
+                        upstream::update_csm_cascades(
                             generator,
                             light_record,
                             engine.cameras[scene.camera.value],
@@ -2355,13 +2576,10 @@ inline void refresh_shadow_generators(
                 // compare and the visitor are skipped with the pass.
                 return;
             }
-            const upstream::ShadowInfoUniforms block =
-                upstream::shadow_info_block(generator);
+            const upstream::ShadowReceiverBlock block =
+                upstream::shadow_receiver_block(generator);
             const bool moved = !refresh.uploaded[handle.value] ||
-                std::memcmp(
-                    &block,
-                    &refresh.blocks[handle.value],
-                    sizeof(block)) != 0;
+                block != refresh.blocks[handle.value];
             refresh.blocks[handle.value] = block;
             refresh.uploaded[handle.value] = true;
             visit(generator, handle, slot, block, moved);

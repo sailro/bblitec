@@ -882,25 +882,46 @@ void apply_splat_geometry(
     record.colors_rgba = std::move(geometry.colorsRGBA);
 }
 
-SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
-    if (!scene.engine) {
-        throw std::runtime_error("loadSplat requires a scene engine.");
-    }
-    Engine& engine = *scene.engine;
-    std::vector<std::uint8_t> rows = pal::read_binary_file(path);
+// createGaussianSplattingMesh: the engine half of attachParsedSplat, which
+// takes the engine rather than the scene upstream too. A glTF's
+// KHR_gaussian_splatting clouds are built here while the file loads, exactly
+// where the pin's applyAsset packs their rows.
+SplatMeshHandle create_gaussian_splatting_mesh(
+    Engine& engine,
+    const std::string& name,
+    std::vector<std::uint8_t> rows) {
     if (rows.size() % upstream::splat_row_length != 0u || rows.empty()) {
         throw std::runtime_error(
-            "loadSplat: packaged splat rows are not a whole number of splats.");
+            "Packaged splat rows are not a whole number of splats.");
     }
     upstream::SplatGeometry geometry =
         upstream::build_splat_geometry(rows);
 
     SplatMeshRecord record;
+    record.name = name;
     apply_splat_geometry(record, geometry);
 ${retention}    engine.splat_meshes.push_back(std::move(record));
-    const SplatMeshHandle handle{
+    return SplatMeshHandle{
         static_cast<std::uint32_t>(engine.splat_meshes.size() - 1)};
-    scene.splat_meshes.push_back(handle);
+}
+
+// attachGaussianSplattingMesh: the scene half, which pushes the renderable
+// onto the scene's own list.
+void attach_gaussian_splatting_mesh(Scene& scene, SplatMeshHandle splat) {
+    scene.splat_meshes.push_back(splat);
+}
+
+SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
+    if (!scene.engine) {
+        throw std::runtime_error("loadSplat requires a scene engine.");
+    }
+    // The pin names a loadSplat cloud after the last segment of the URL it
+    // fetched; the path here is the packaged asset's, whose content-addressed
+    // stem is not that name, so the record keeps the empty name it has always
+    // had. Every reached read of splat.name is a scene that wrote one.
+    const SplatMeshHandle handle = create_gaussian_splatting_mesh(
+        *scene.engine, "", pal::read_binary_file(path));
+    attach_gaussian_splatting_mesh(scene, handle);
     return handle;
 }
 

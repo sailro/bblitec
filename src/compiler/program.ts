@@ -6,8 +6,10 @@ import {
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 import { isBabylonModule } from "./symbols.js";
+import { LoweringContext } from "../lowering/context.js";
 import {
     findRepositoryRoot,
+    sharedUpstreamStore,
 } from "../upstream-source.js";
 
 let sharedSourceFiles:
@@ -35,6 +37,76 @@ function canCacheSourceFile(path: string): boolean {
     return resolve(path).includes(
         `${sep}node_modules${sep}`,
     );
+}
+
+/**
+ * The pinned members the published typings erase.
+ *
+ * `index.d.ts` is rolled up with `@internal` members stripped, so a member a
+ * corpus scene reaches has no declared type at all and every read of it falls
+ * out of the type model — which would leave each such read restating its own
+ * type somewhere in the compiler. The declaration is restored here instead,
+ * at the one seam where Babylon typings enter the program, and it is restored
+ * from the PINNED SOURCE rather than written out: what is appended is the
+ * member's own text, so a rename or a changed element type fails generation
+ * instead of quietly losing its model.
+ *
+ * TypeScript merges a re-opened interface within one file, so the restored
+ * members ride as a second declaration appended to the typings.
+ */
+const erasedInternalMembers: readonly {
+    /** The pinned module declaring the interface. */
+    module: string;
+    /** The interface the published typings also declare. */
+    interfaceName: string;
+    /** The member `@internal` removed. */
+    member: string;
+}[] = [
+    // `AssetContainer._gaussianSplats`: the clouds the pinned
+    // KHR_gaussian_splatting feature contributes, one promise per GS
+    // primitive. Scene 226 reads it, and its element type is what tells the
+    // handle-collection concept what a member binds as.
+    {
+        module: "src/asset-container.ts",
+        interfaceName: "AssetContainer",
+        member: "_gaussianSplats",
+    },
+];
+
+/**
+ * The restored declarations, appended to the typings once per process.
+ *
+ * `cachedSourceFile` keeps the composed typings for the life of the process,
+ * so this runs on the first compile alone.
+ */
+function pinnedInternalDeclarations(): string {
+    const context = new LoweringContext(sharedUpstreamStore());
+    return erasedInternalMembers
+        .map((erased) => {
+            const { file, declaration } = context.interfaceDeclaration(
+                erased.module,
+                erased.interfaceName,
+            );
+            const member = declaration.members.find(
+                (candidate) =>
+                    candidate.name !== undefined &&
+                    context.propertyName(candidate.name) === erased.member,
+            );
+            if (!member) {
+                return context.contractError(
+                    declaration,
+                    `Expected ${erased.interfaceName} to declare ` +
+                        `'${erased.member}': the published typings erase it, ` +
+                        "so this port restores its declaration and cannot " +
+                        "restore one that moved.",
+                );
+            }
+            return (
+                `export declare interface ${erased.interfaceName} {` +
+                `${member.getText(file)}}`
+            );
+        })
+        .join("\n");
 }
 
 export interface CompilerProgram {
@@ -92,12 +164,26 @@ export function createCompilerProgram(
                 );
             }
             const load = () =>
-                defaultHost.getSourceFile(
-                    path,
-                    languageVersion,
-                    onError,
-                    shouldCreateNewSourceFile,
-                );
+                resolve(path) === babylonTypes
+                    // The one place Babylon typings enter the program, and
+                    // therefore the one place the members `@internal`
+                    // stripped from them are restored.
+                    ? ts.createSourceFile(
+                          babylonTypes,
+                          [
+                              defaultHost.readFile(babylonTypes) ?? "",
+                              pinnedInternalDeclarations(),
+                          ].join("\n"),
+                          languageVersion,
+                          true,
+                          ts.ScriptKind.TS,
+                      )
+                    : defaultHost.getSourceFile(
+                          path,
+                          languageVersion,
+                          onError,
+                          shouldCreateNewSourceFile,
+                      );
             return canCacheSourceFile(path)
                 ? cachedSourceFile(path, load)
                 : load();

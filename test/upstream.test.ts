@@ -35,7 +35,17 @@ import {
     spriteVertexPermutations,
 } from "../src/upstream-lower.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
+import { composeBillboardPickingShader } from "../src/pinned-picking-shaders.js";
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
+import {
+    bakeCsgMesh,
+    csgGeometryDeclarations,
+    type CsgSolidPlan,
+    type CsgSourceMesh,
+} from "../src/pinned-csg.js";
+import { float32Literal } from "../src/cpp-literals.js";
+import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
+import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
 
 /** The provenance banner every generated source carries, derived from the
@@ -130,7 +140,7 @@ test("generates scene defaults, routing, and idempotent registration", () => {
     );
     assert.match(
         lowered.source,
-        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,1600}pending_shadow_retirements\.clear\(\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
+        /void rebuild_scene_renderables\(Scene& scene\)[\s\S]{0,2200}pending_shadow_retirements\.clear\(\);[\s\S]{0,120}topology_rebuild_pending = false;[\s\S]{0,100}\+\+scene\.render_topology_version;/,
     );
     assert.match(
         lowered.source,
@@ -1160,6 +1170,12 @@ test("generates mesh and standard-material factories from upstream defaults", ()
     );
     assert.match(material.source, /material\.diffuse_color = Color3\{1\.0f, 1\.0f, 1\.0f\}/);
     assert.match(material.source, /material\.standard_material = true/);
+    // `MaterialRecord::alpha_cutoff` defaults to the glTF MASK cutoff the
+    // loader wants; the pin's factory ships `alphaCutOff: 0`, so a
+    // scene-created Standard material alpha-tests nothing. Folded from the
+    // same declaration as the six defaults beside it rather than left to
+    // the record's own initializer.
+    assert.match(material.source, /material\.alpha_cutoff = 0\.0f/);
     assert.match(grid.source, /material\.grid_material = true/);
     assert.match(grid.source, /std::round\(options\.major_unit_frequency\)/);
     assert.match(grid.source, /options\.opacity < 1\.0f/);
@@ -2134,6 +2150,93 @@ test("pins the complete synchronous Sprite2D pick-result contract", () => {
     );
 });
 
+test("pins the billboard pick contributor's whole contract", () => {
+    const store = new UpstreamSourceStore();
+    const wrapper = store.getSource("src/sprite/picking/pick-billboard.ts");
+
+    // The wrapper IS the feature: one pick through the shared pass, and
+    // the `_spritePick` payload the contributor hung on the info.
+    assert.match(
+        wrapper,
+        /export async function pickBillboardSprite\(scene: SceneContext, x: number, y: number, picker\?: GpuPicker\): Promise<BillboardPickInfo \| null>/,
+    );
+    assert.match(wrapper, /const owned = picker \?\? createGpuPicker\(scene\);/);
+    assert.match(wrapper, /return info\._spritePick \?\? null;/);
+    assert.match(wrapper, /disposePicker\(owned\);/);
+
+    const pipeline = store.getSource(
+        "src/picking/billboard-pick-pipeline.ts",
+    );
+    // The four members the compiled call site fills, in the pin's order.
+    assert.match(
+        pipeline,
+        /export interface BillboardPickInfo\s*\{[\s\S]*?system: BillboardSpriteSystem;[\s\S]*?spriteIndex: number;[\s\S]*?pickedPoint: \[number, number, number\] \| null;[\s\S]*?distance: number;[\s\S]*?\}/,
+    );
+    // One system owns `count` consecutive ids -- the fact `PickRange`
+    // carries a count for, and the reason a hidden system still consumes
+    // its range.
+    assert.match(
+        pipeline,
+        /if \(!system\.visible \|\| count === 0\) \{\s*return baseId \+ count;/,
+    );
+    assert.match(
+        pipeline,
+        /info\._spritePick = \{ system, spriteIndex: localId, pickedPoint: info\.pickedPoint, distance: info\.distance \};/,
+    );
+    // The instance rows go up in LOGICAL order, which is what makes
+    // `pickId - baseId` the sprite's own slot.
+    assert.match(
+        pipeline,
+        /device\.queue\.writeBuffer\(res\.instanceBuffer, 0, data\.buffer, data\.byteOffset, count \* BILLBOARD_INSTANCE_STRIDE_BYTES\);/,
+    );
+    // The 48-byte block `build_billboard_pick_uniforms` mirrors: the
+    // camera basis lifted out of the column-major view matrix.
+    assert.match(
+        pipeline,
+        /const BILLBOARD_PICK_UBO_BYTES = 48;/,
+    );
+    assert.match(
+        pipeline,
+        /f32\[0\] = view\[0\]!;[\s\S]*?f32\[1\] = view\[4\]!;[\s\S]*?f32\[2\] = view\[8\]!;[\s\S]*?u32\[3\] = baseId;[\s\S]*?f32\[4\] = view\[1\]!;[\s\S]*?f32\[5\] = view\[5\]!;[\s\S]*?f32\[6\] = view\[9\]!;/,
+    );
+    // The mesh picker's depth state, not the visible billboard pass's.
+    assert.match(
+        pipeline,
+        /depthStencil: \{ format: "depth24plus", depthCompare: "greater", depthWriteEnabled: true \}/,
+    );
+});
+
+test("composes the billboard pick module by running the pin's own builder", async () => {
+    const facing = await composeBillboardPickingShader("facing");
+    const locked = await composeBillboardPickingShader("axis-locked");
+
+    // Both stages travel in one module, which is why the emitter writes
+    // the same text under a `.vert` and a `.frag` stem.
+    for (const composed of [facing, locked]) {
+        assert.match(composed, /@vertex\nfn vs\(in: I\) -> O \{/);
+        assert.match(composed, /@fragment\nfn fs\(in: O\) -> FsOut \{/);
+        // The non-detailed arm: two attachments, no `rgba32uint` detail.
+        assert.match(
+            composed,
+            /struct FsOut \{ @location\(0\) color: vec4f, @location\(1\) depth: f32 \};/,
+        );
+        // The plain arm: no atlas, so no cutout discard either.
+        assert.doesNotMatch(composed, /atlasTex/);
+        assert.doesNotMatch(composed, /bb\.cutoff/);
+        // The six instance attributes the native pick layout binds.
+        for (const location of [0, 1, 2, 3, 4, 5]) {
+            assert.match(
+                composed,
+                new RegExp(`@location\\(${location}\\) [a-z]: `),
+            );
+        }
+    }
+    // The basis is the only arm the reached slice forks on.
+    assert.match(facing, /let u = normalize\(bb\.camUp\);\nreturn B\(r, -u\);/);
+    assert.match(locked, /let a = normalize\(bb\.axis\);/);
+    assert.notEqual(facing, locked);
+});
+
 test("records every pinned origin consolidated into sprite_2d.cpp", () => {
     assert.deepEqual(spriteCoreAdditionalProvenance, [
         {
@@ -2307,4 +2410,343 @@ test("selects the lightmap's materials from the document's own mesh names", asyn
         ],
         [7],
     );
+});
+
+/**
+ * A minimal GLB carrying one `KHR_gaussian_splatting` primitive: two splats,
+ * every attribute the extension defines, tightly packed FLOAT accessors.
+ *
+ * The values are chosen so the pin's own conversion lands on constants a
+ * reader can check without restating its formula: an SH DC term of zero is
+ * mid grey, a unit opacity is 255, and an identity quaternion encodes as
+ * (255, 128, 128, 128) in the pin's wxyz byte order.
+ */
+function gaussianSplatGlb(
+    options: { draco?: boolean; keepReader?: boolean } = {},
+): Uint8Array {
+    const positions = Float32Array.from([1, 2, 3, -1, -2, -3]);
+    const scales = Float32Array.from([0.5, 0.25, 0.125, 1, 2, 4]);
+    const rotations = Float32Array.from([0, 0, 0, 1, 0, 0, 0, 1]);
+    const opacities = Float32Array.from([1, 0]);
+    const shDegree0 = Float32Array.from([0, 0, 0, 0, 0, 0]);
+    const parts = [positions, scales, rotations, opacities, shDegree0];
+    const binary = Buffer.concat(
+        parts.map((part) => Buffer.from(part.buffer.slice(0))),
+    );
+    let offset = 0;
+    const bufferViews = parts.map((part) => {
+        const view = {
+            buffer: 0,
+            byteOffset: offset,
+            byteLength: part.byteLength,
+        };
+        offset += part.byteLength;
+        return view;
+    });
+    const accessor = (index: number, type: string) => ({
+        bufferView: index,
+        byteOffset: 0,
+        componentType: 5126,
+        count: 2,
+        type,
+    });
+    return buildGlb(
+        {
+            asset: { version: "2.0" },
+            extensionsUsed: ["KHR_gaussian_splatting"],
+            extensionsRequired: ["KHR_gaussian_splatting"],
+            buffers: [{ byteLength: binary.length }],
+            bufferViews,
+            accessors: [
+                accessor(0, "VEC3"),
+                accessor(1, "VEC3"),
+                accessor(2, "VEC4"),
+                accessor(3, "SCALAR"),
+                accessor(4, "VEC3"),
+            ],
+            meshes: [
+                {
+                    name: "cloud",
+                    primitives: [
+                        // A second, ordinary primitive keeps the document
+                        // reading its chunk, which is what decides whether
+                        // the consumed attribute views may be dropped.
+                        ...(options.keepReader
+                            ? [{ mode: 0, attributes: { POSITION: 0 } }]
+                            : []),
+                        {
+                            mode: 0,
+                            attributes: {
+                                POSITION: 0,
+                                "KHR_gaussian_splatting:SCALE": 1,
+                                "KHR_gaussian_splatting:ROTATION": 2,
+                                "KHR_gaussian_splatting:OPACITY": 3,
+                                "KHR_gaussian_splatting:SH_DEGREE_0_COEF_0": 4,
+                            },
+                            extensions: {
+                                KHR_gaussian_splatting: { kernel: "ellipse" },
+                                ...(options.draco
+                                    ? {
+                                          KHR_draco_mesh_compression: {
+                                              bufferView: 0,
+                                              attributes: { POSITION: 0 },
+                                          },
+                                      }
+                                    : {}),
+                            },
+                        },
+                    ],
+                },
+            ],
+            nodes: [{ mesh: 0 }],
+            scenes: [{ nodes: [0] }],
+        },
+        binary,
+    );
+}
+
+test("converts KHR_gaussian_splatting through the pinned feature", async () => {
+    const { document, binary } = readGlbFixture(
+        await resolveGeometryExtensions(gaussianSplatGlb(), "splat.glb"),
+    );
+    // The pin's preParse consumes every GS primitive, so the core mesh
+    // pipeline never sees POINTS geometry it has no topology for.
+    const meshes = document.meshes as Array<Record<string, unknown>>;
+    assert.deepEqual(meshes[0]!.primitives, []);
+    // Its own scratch key does not survive into the packaged document.
+    assert.equal(document.__gsSplats, undefined);
+    // The document no longer carries the extension, because it no longer
+    // carries anything the extension describes.
+    assert.deepEqual(document.extensionsUsed, []);
+    assert.equal(document.extensionsRequired, undefined);
+
+    const splats = document[
+        "__bblitecGaussianSplats"
+    ] as Array<Record<string, unknown>>;
+    assert.equal(splats.length, 1);
+    // `${mesh.name ?? "splat"}_${meshIndex}_${primitiveIndex}`, the pin's.
+    assert.equal(splats[0]!.name, "cloud_0_0");
+    // The half turn about Z the pin's own scene wiring writes on the cloud
+    // it attaches: the glTF splat convention and the .ply one differ by it.
+    assert.deepEqual(splats[0]!.rotation, [0, 0, Math.PI]);
+
+    // The GS primitives were the whole file, so the ellipsoid attributes
+    // they were converted from reach nothing any more: the rows become the
+    // entire binary chunk, and the accessors that described those attributes
+    // go with the bytes rather than dangling into a chunk without them.
+    const views = document.bufferViews as Array<Record<string, unknown>>;
+    assert.equal(views.length, 1);
+    assert.deepEqual(document.accessors, []);
+    const view = views[splats[0]!.bufferView as number]!;
+    // 32 bytes per splat, which is the row layout `buildSplatGeometry` reads
+    // and the layout a `.splat` asset already packages to.
+    assert.equal(view.byteLength, 64);
+    const rows = binary.subarray(
+        view.byteOffset as number,
+        (view.byteOffset as number) + 64,
+    );
+    // Position and linear scale pass straight through as float32 lanes.
+    assert.deepEqual(
+        [0, 4, 8, 12, 16, 20].map((at) => rows.readFloatLE(at)),
+        [1, 2, 3, 0.5, 0.25, 0.125],
+    );
+    assert.deepEqual(
+        [32, 36, 40].map((at) => rows.readFloatLE(at)),
+        [-1, -2, -3],
+    );
+    // A zero SH DC term reconstructs mid grey; opacity and the identity
+    // quaternion encode as the pin's byte forms (wxyz, q * 127.5 + 127.5).
+    assert.deepEqual([...rows.subarray(24, 32)], [
+        128, 128, 128, 255, 255, 128, 128, 128,
+    ]);
+    assert.equal(rows[27 + 32], 0);
+});
+
+test("keeps the source views when the document still reads them", async () => {
+    // The same asset with one ordinary primitive left behind. Its accessor
+    // still names a bufferView, so the pass appends the rows rather than
+    // replacing the chunk — the shape every other packaged asset takes.
+    const { document } = readGlbFixture(
+        await resolveGeometryExtensions(
+            gaussianSplatGlb({ keepReader: true }),
+            "splat-mixed.glb",
+        ),
+    );
+    const views = document.bufferViews as Array<Record<string, unknown>>;
+    assert.equal(views.length, 6);
+    assert.equal((document.accessors as unknown[]).length, 5);
+    const splats = document[
+        "__bblitecGaussianSplats"
+    ] as Array<Record<string, unknown>>;
+    assert.equal(splats.length, 1);
+    assert.equal(splats[0]!.bufferView, 5);
+    assert.deepEqual(
+        (document.meshes as Array<Record<string, unknown>>)[0]!.primitives,
+        [{ mode: 0, attributes: { POSITION: 0 } }],
+    );
+});
+
+test("refuses a Gaussian-splat primitive that is also Draco-compressed", async () => {
+    await assert.rejects(
+        () =>
+            resolveGeometryExtensions(
+                gaussianSplatGlb({ draco: true }),
+                "splat-draco.glb",
+            ),
+        /also declares KHR_draco_mesh_compression/,
+    );
+});
+
+test("anchors the pinned CSG contracts the executed solid depends on", () => {
+    // There is no CSG page under the pinned clone's `docs/lite/architecture`,
+    // so `src/mesh/csg.ts` is the whole specification and these are the
+    // facts `executed-csg-solid` cites as its reason for executing rather
+    // than folding. Each one moving is a reason to re-decide, so each fails
+    // here rather than quietly changing what the bake replays.
+    const source = new UpstreamSourceStore().getSource("src/mesh/csg.ts");
+    // The five entry points the intrinsics name, by their exported spelling.
+    for (const symbol of [
+        "createCsgFromMesh",
+        "csgUnion",
+        "csgSubtract",
+        "csgIntersect",
+        "createMeshFromCsg",
+        "createMeshesFromCsg",
+    ]) {
+        assert.match(
+            source,
+            new RegExp(`export function ${symbol}\\(`),
+            `csg.ts no longer exports ${symbol}`,
+        );
+    }
+    // The epsilon the BSP classifies against: the reason a reassociated dot
+    // product would change the polygon COUNT rather than a coordinate.
+    assert.match(source, /const EPSILON = 1e-5;/);
+    assert.match(
+        source,
+        /const type = t < -EPSILON \? BACK : t > EPSILON \? FRONT : COPLANAR;/,
+    );
+    // Every plane and every interpolated normal is normalized through the
+    // pin's own helper, whose length is `Math.hypot` -- which the
+    // specification leaves implementation-approximated.
+    assert.match(source, /import \{ normalizeVec3 \} from "\.\.\/math\/normalize-vec3\.js";/);
+    assert.match(
+        new UpstreamSourceStore().getSource("src/math/normalize-vec3.ts"),
+        /const len = Math\.hypot\(x, y, z\);/,
+    );
+    // The one place a solid becomes geometry, which is what the bake reads
+    // back and the emitted `create_mesh_from_data` reproduces.
+    assert.match(
+        source,
+        /return createMeshFromData\(engine as EngineContext, name, new F32\(positions\), new F32\(normals\), new U32\(indices\), new F32\(uvs\)\);/,
+    );
+    // The world matrix the solid bakes in, which is why the intrinsic
+    // proves the mesh has not been moved yet.
+    assert.match(source, /const world = mesh\.worldMatrix;/);
+});
+
+test("executes the pinned CSG solid and bakes the geometry it produced", () => {
+    // The replay is the port's only CSG implementation, so this is the
+    // contract test for it: the plan scene 90 builds, run through the pin's
+    // own modules, yields the mesh the browser builds at load.
+    const solid = (
+        source: CsgSourceMesh,
+    ): CsgSolidPlan => ({ op: "from-mesh", source, materialSlot: 0 });
+    const subtract = bakeCsgMesh(
+        {
+            op: "csgSubtract",
+            left: solid({ factory: "createBox", options: 2 }),
+            right: solid({
+                factory: "createSphere",
+                options: { diameter: 2.5, segments: 32 },
+            }),
+        },
+        "csg-subtract",
+    );
+    // Three streams per vertex and one index triple per triangle, which is
+    // what `createMeshFromPolygons` fans a polygon out into.
+    const vertices = subtract.positions.length / 3;
+    assert.equal(subtract.normals.length, vertices * 3);
+    assert.equal(subtract.uvs.length, vertices * 2);
+    assert.equal(subtract.indices.length % 3, 0);
+    assert.ok(vertices > 0);
+    assert.ok(
+        Math.max(...subtract.indices) < vertices,
+        "every index addresses a vertex the bake emitted",
+    );
+    // A subtraction is bounded by the box it started from. (Byte-stability
+    // across compilations is not asserted here -- a repeat call answers
+    // from the plan memo, so it would compare an array with itself; what
+    // proves it is the generated-tree digest the neutrality ladder takes
+    // over two `compile all` runs.)
+    for (const value of subtract.positions) {
+        assert.ok(Math.abs(value) <= 1.0000001, `${value} is outside the box`);
+    }
+    // The union is the same two solids the other way round: it keeps the
+    // sphere's cap, so it reaches past the box.
+    const union = bakeCsgMesh(
+        {
+            op: "csgUnion",
+            left: solid({ factory: "createBox", options: 2 }),
+            right: solid({
+                factory: "createSphere",
+                options: { diameter: 2.5, segments: 32 },
+            }),
+        },
+        "csg-union",
+    );
+    assert.ok(
+        Math.max(...union.positions) > 1.0000001,
+        "a union of a 2-box and a 2.5-sphere reaches past the box",
+    );
+});
+
+test("spells a baked CSG float at float32 round-trip width", () => {
+    // The values come out of a `Float32Array`, so the shortest decimal that
+    // round-trips through `Math.fround` names the identical float in about
+    // half the characters of the double spelling -- and a boolean solid
+    // emits hundreds of thousands of them.
+    assert.equal(float32Literal(Math.fround(0.3)), "0.3f");
+    assert.equal(float32Literal(2), "2.0f");
+    assert.equal(float32Literal(-0), "-0.0f");
+    assert.equal(float32Literal(0), "0.0f");
+    assert.equal(
+        Math.fround(Number(float32Literal(Math.fround(1 / 3)).slice(0, -1))),
+        Math.fround(1 / 3),
+    );
+    assert.throws(
+        () => float32Literal(Number.POSITIVE_INFINITY),
+        /needs a finite value/,
+    );
+    // MSVC counts a `std::initializer_list` element as an object-file
+    // section (C1128 at 140k floats), so the geometry lands in a plain
+    // array and the vector is built from its bounds.
+    const declarations = csgGeometryDeclarations("v_csg", {
+        positions: new Float32Array([1, 2, 3]),
+        normals: new Float32Array([0, 1, 0]),
+        uvs: new Float32Array([0, 0]),
+        indices: new Uint32Array([0]),
+    });
+    assert.match(
+        declarations.lines.join("\n"),
+        /static const float v_csg_positions\[\] = \{\n\s+1\.0f, 2\.0f, 3\.0f,\n\};/,
+    );
+    assert.equal(
+        declarations.positions,
+        "std::vector<float>(v_csg_positions, v_csg_positions + 3)",
+    );
+    assert.equal(
+        declarations.indices,
+        "std::vector<std::uint32_t>(v_csg_indices, v_csg_indices + 1)",
+    );
+    // An empty stream has no array to bound: a zero-length C array is not
+    // C++, so the expression is the empty vector itself.
+    const empty = csgGeometryDeclarations("v_csg", {
+        positions: new Float32Array(),
+        normals: new Float32Array(),
+        uvs: new Float32Array(),
+        indices: new Uint32Array(),
+    });
+    assert.deepEqual(empty.lines, []);
+    assert.equal(empty.positions, "std::vector<float>{}");
 });

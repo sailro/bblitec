@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { sharedUpstreamStore } from "./upstream-source.js";
+import { importPinnedModule } from "./pinned-shader-composer.js";
 import { unwrapPin } from "./lowering/gltf/shared.js";
 
 /**
@@ -35,6 +36,10 @@ const shadowGeneratorModules: Readonly<Record<string, string>> = {
     // PCF generators agree on that string, and this map exists so the
     // agreement is the PIN's rather than an assumption here.
     "pcf-directional": "src/shadow/pcf-directional-shadow-generator.ts",
+    // The cascaded generator, whose `_shadowType: "csm" as const` is what
+    // sends `createStdShadowFragment`/`createPbrShadowFragment` down their
+    // cascaded arm instead of the shared ESM/PCF core.
+    "csm-directional": "src/shadow/csm-directional-shadow-generator.ts",
     "esm-directional": "src/shadow/esm-directional-shadow-generator.ts",
 };
 
@@ -80,4 +85,56 @@ export function pinnedShadowFilter(
     }
     filtersByKind.set(kind, filter);
     return filter;
+}
+
+/**
+ * Reach the cascaded receiver factories the way the pin reaches them.
+ *
+ * `createStdShadowFragment` and `createPbrShadowFragment` send a `"csm"`
+ * slot to `getCsmStdReceiverFactory()!` / `getCsmPbrReceiverFactory()!`,
+ * and the registry those read is populated by one call:
+ * `createCsmDirectionalShadowGenerator` sets both factories before it
+ * touches the device, so that the cascade WGSL only enters a bundle whose
+ * scene created a generator. That factory call IS the opt-in trigger, so
+ * this executes it rather than importing the two fragment modules and
+ * registering them here — a second detector would decide reachability
+ * differently from the pin's own.
+ *
+ * The device it is handed records nothing: what generation wants from this
+ * call is the registration side effect alone. The map's extent, its layer
+ * count and its format are the record's and the emitted constants', and the
+ * receiver block is written by `_writeCsmUbo`, whose float order generation
+ * asserts.
+ */
+let csmReceiverFactories: Promise<void> | undefined;
+
+export function reachCsmReceiverFactories(
+    slots: readonly ShadowLightSlot[],
+): Promise<void> {
+    if (!slots.some((slot) => slot.shadowType === "csm")) {
+        return Promise.resolve();
+    }
+    csmReceiverFactories ??= (async () => {
+        const module = await importPinnedModule<{
+            createCsmDirectionalShadowGenerator: (
+                engine: unknown,
+                light: unknown,
+                cfg: Record<string, never>,
+            ) => unknown;
+        }>("shadow/csm-directional-shadow-generator.js");
+        module.createCsmDirectionalShadowGenerator(
+            {
+                _device: {
+                    createTexture: () => ({ createView: () => ({}) }),
+                    createSampler: () => ({}),
+                    createBuffer: () => ({}),
+                    queue: { writeBuffer: () => undefined },
+                },
+            },
+            // The factory stores the light and reads nothing off it.
+            { direction: { x: 0, y: -1, z: 0 }, worldMatrixVersion: 0 },
+            {},
+        );
+    })();
+    return csmReceiverFactories;
 }

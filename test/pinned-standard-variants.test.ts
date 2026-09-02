@@ -382,19 +382,36 @@ test("inputs the pin needs but this repo cannot supply throw by name", async () 
         ),
         /rides its thin-instance one/,
     );
-    // The CSM receiver is the one shadow filter still refused: it resolves
-    // through the cascaded receiver registry rather than through
-    // `createShadowFragment`'s own two arms.
-    await assert.rejects(
-        composePinnedStandardVariant(
-            {},
-            {
-                meshFeatures: meshBits.MSH_RECEIVE_SHADOWS,
-                shadowLights: [{ lightIndex: 0, shadowType: "csm" }],
-            },
-        ),
-        /cascaded receiver registry/,
+});
+
+test("a CSM slot composes through the reached receiver registry", async () => {
+    const meshBits = await importPinnedModule<{
+        MSH_RECEIVE_SHADOWS: number;
+    }>("material/mesh-features.js");
+    // The cascaded receiver does not resolve through `createShadowFragment`'s
+    // own two arms: `createStdShadowFragment` reads it out of a registry that
+    // only `createCsmDirectionalShadowGenerator` populates, so composing one
+    // proves the composer reaches that factory at the pin's own trigger
+    // rather than registering a fragment module itself.
+    const variant = await composePinnedStandardVariant(
+        {},
+        {
+            meshFeatures: meshBits.MSH_RECEIVE_SHADOWS,
+            shadowLights: [{ lightIndex: 0, shadowType: "csm" }],
+        },
     );
+    assert.equal(variant.fragmentKey, "std-csm-shadow");
+    // The cascade's own block and array-textured map, which is what
+    // separates this arm from the single-map families.
+    assert.ok(
+        variant.fragmentWgsl.includes(
+            "struct csmInfo_0Uniforms { cascadeTransforms: " +
+                "array<mat4x4<f32>, 4>, viewFrustumZ: vec4<f32>, " +
+                "frustumLengths: vec4<f32>, shadowsInfo: vec4<f32>, " +
+                "csmParams: vec4<f32> };",
+        ),
+    );
+    assert.ok(variant.fragmentWgsl.includes("texture_depth_2d_array"));
 });
 
 test("the ESM caster arm composes the pin's own depth code", async () => {
