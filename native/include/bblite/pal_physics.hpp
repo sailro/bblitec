@@ -226,6 +226,9 @@ void physics_shape_set_material(
 void physics_shape_set_filter_membership_mask(
     PhysicsShapeHandle shape,
     std::uint32_t membership_mask);
+void physics_shape_set_filter_collide_mask(
+    PhysicsShapeHandle shape,
+    std::uint32_t collide_mask);
 /**
  * `HP_Shape_SetTrigger`. A trigger shape overlaps without producing a
  * contact response, and the overlaps it does produce are what

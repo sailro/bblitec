@@ -78,7 +78,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Node materials](#node-materials) | Compile → Run | a Babylon NME graph compiled by the pin's own emitter at generation; its draw and its blocks at run time |
 | [Material plugins](#material-plugins) | Compile | a scene's own WGSL spliced into the PBR or Standard fragment by the pin's own bridges |
 | [Animation playback](#animation-playback) | Run | deterministic seeking, property clips, glTF channels |
-| [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, morph targets, storage morphing, GPU instancing |
+| [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, baked vertex animation, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
 | [Physics](#physics) | Run | rigid bodies, primitive and convex-hull shapes, trigger volumes, one fixed step per frame — over a substituted solver |
@@ -1350,6 +1350,29 @@ deformation data. Scene 66 exercises both branches of one graph: the morphed
 sphere supplies its live buffers, while its box and ground use the empty pair;
 the sphere's PCF caster reads the same deformation storage.
 
+A skinned mesh may instead be BAKED. `bakeVat(engine, mesh, groups)`
+evaluates every clip frame by frame and stacks the posed bone palettes into
+one `rgba32float` texture -- `boneCount * 4` texels wide, one row per
+animation frame, the live palette's own layout -- and `attachVat` drops the
+live skeleton so the mesh deforms from that texture alone. The two calls
+are the pin's own opt-in (upstream the whole baker is a dynamic-import
+chunk behind them), so `mesh:vat` is what puts the bake, the 32-byte
+vertex-visible settings block and the per-mesh VAT texture into a build
+-- the per-instance params texture is the separate `mesh:vat-instances`
+gate, not this one; a scene that never bakes carries none of them and its composed
+variants are unchanged. Playback is `handle.play(clip, { offset, fps })`
+and `handle.update(dt)`, which write that settings block; the vertex stage
+wraps `offset + clock * fps` into the clip's row range, so `fps: 0` freezes
+a pose at an exact baked frame. A baked mesh that is also thin-instanced
+takes the per-instance arm -- two `rgba32float` texels per instance read by
+`instance_index`, uploaded by `handle.setInstances` -- which the pin derives
+from `MSH_HAS_THIN_INSTANCES` rather than from a feature bit of its own, so
+`finalWorld` becomes `instance * mesh.world * skin` and a crowd renders in
+one draw. Because the baked rows are the live palettes byte for byte, a
+baked pose reproduces the live pose at the same frame: scenes 218 and 219
+measure the same 0.010 full-image MAD as scene 11's live skeleton, on both
+backends.
+
 A skeleton is also addressable, behind an opt-in. `enableBoneControl()`
 installs the pin's own builder hook, so a glTF loaded *after* it surfaces
 one `Skeleton` per skin instance on `container.skeletons`, each carrying its
@@ -1626,8 +1649,7 @@ not the base scene's.
 
 `createCameraGizmo` and `createLightGizmo` are display only, and so is
 every widget below: no pointer interaction is reached anywhere in the
-family, and the bounding-box gizmo is the one part not integrated at all.
-What each builds is the pinned body's own tree -- the camera
+family. What each builds is the pinned body's own tree -- the camera
 body is BJS `_CreateCameraMesh` (a box and three cylinders under a
 distance-scaled node) plus a twelve-cylinder frustum wireframe sized from the
 attached camera's fov, near and far; a light gizmo is one of four per-type
@@ -1740,6 +1762,35 @@ too -- the base scene has a plan-rematching path and a layer does not.
 Scene 223 gates the display half at 0.000 on both backends, scene 221 the
 four single widgets, and scene 222 the three composites and the
 local-coordinate follow.
+
+**The BOUNDING-BOX gizmo is the family's one cage rather than one root**,
+and its per-frame work is what makes it different: 55 handles laid out
+every frame from the attached node's world rotation and the bounds of its
+descendant meshes in the frame that rotation removes. Twelve wireframe
+edges, eight three-armed corners, twelve elongated rotation bars, six face
+cubes and one invisible body -- the counts, every mesh factory's options,
+both material builders and every geometric expression behind a handle's
+size and offset are read out of the pinned build, and the four placement
+callbacks and the whole `layout` body are LOWERED from the pin through the
+shared numeric translator, so each handle's coordinate is the pin's own
+expression. What is native behaviour over live records, for the same
+reason the follow above is, is `refresh` and `computeBoundsRecursive`:
+both walk THIS port's tables -- a mesh's parent chain, the layer's main
+scene, one geometry's model vertices -- while every number either computes
+still comes from a lowered pinned body (`rotationQuatFromMatrix`,
+`mat4FromQuat` over the pinned compose, `mat4MultiplyInto`, and
+`computeAabb`'s own fold). The bounds walk has the pin's two arms because
+the scene needs both: the traversal list a node keeps, then the main
+scene's meshes filtered by a parent-chain test, which is the arm that
+finds a cube attached through the `parent` setter alone. Its attach target
+is a TRANSFORM NODE -- upstream the parameter is a `SceneNode` over both
+kinds, and a mesh target refuses by name because the world matrix and the
+descendant test each read one identity here. The pin's zero-alpha body box
+draws nothing in the colour pass through the same
+`derive_material_alpha_mode` every other alpha write goes through, and its
+unlit cage colour is `diffuseColor` plus an emissive white plus
+`disableLighting`, all three read from the pinned material builder. Scene
+224 gates it at 0.000 on both backends.
 
 ### Physics
 

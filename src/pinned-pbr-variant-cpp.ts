@@ -1181,6 +1181,16 @@ export function pinnedSharedVariantDecls(
         "src/material/mesh-features.ts",
         "MSH_HAS_INSTANCE_COLOR",
     );
+    const vatBit = pinnedNumericConstant(
+        context,
+        "src/material/mesh-features.ts",
+        "MSH_VAT",
+    );
+    const skeletonBit = pinnedNumericConstant(
+        context,
+        "src/material/mesh-features.ts",
+        "MSH_HAS_SKELETON",
+    );
     return `// ${provenance}
 #pragma once
 
@@ -1211,6 +1221,14 @@ inline constexpr std::uint32_t pinned_msh_has_thin_instances =
 // the same MeshRecord predicate that decides whether to bind the colour lane.
 inline constexpr std::uint32_t pinned_msh_has_instance_color =
     ${instanceColorBit}u;
+
+// MSH_VAT and the MSH_HAS_SKELETON it replaces. _computeMeshFeatures writes
+// them as one either/or -- a baked mesh has no live skeleton left -- so the
+// PAL SWAPS rather than ORs, and generation composed the swapped row.
+inline constexpr std::uint32_t pinned_msh_vat =
+    ${vatBit}u;
+inline constexpr std::uint32_t pinned_msh_has_skeleton =
+    ${skeletonBit}u;
 
 enum class PinnedBindingKind {
     texture2d,
@@ -1986,6 +2004,11 @@ export interface MaterialTextureSlotFeatures {
     /** A composed variant binds the clustered light field's three data
      *  textures, which the scene's container owns rather than a material. */
     clusteredLights: boolean;
+    /** A composed variant reads a baked vertex-animation texture, and the
+     *  instanced arm its per-instance params texture beside it. Both are
+     *  the MESH's rather than the material's, like the bone palette. */
+    vat: boolean;
+    vatInstances: boolean;
 }
 
 /** One emitted row; `slot: null` marks a scene-owned resource. */
@@ -2249,6 +2272,29 @@ function materialTextureSlotRows(
         textureName: "boneSampler",
         samplerName: "",
     });
+    if (features.vat) {
+        // The baked palette: the same rgba32float layout the bone palette
+        // has, `frameCount` rows tall, and `textureLoad`ed exactly the same
+        // way -- so it carries no sampler either. Appended after the bone
+        // palette for the reason bump and reflection append last: no
+        // existing slot index moves.
+        state.push({
+            source: "vat_palette",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "vatSampler",
+            samplerName: "",
+        });
+    }
+    if (features.vatInstances) {
+        state.push({
+            source: "vat_instance_params",
+            srgb: "linear",
+            fallback: "white",
+            textureName: "vatInstanceTex",
+            samplerName: "",
+        });
+    }
     if (features.clusteredLights) {
         // The clustered field's three, which the scene's CONTAINER owns:
         // scene-owned rows exactly as the environment cube and the BRDF LUT
@@ -2419,6 +2465,10 @@ enum class MaterialTextureSource {
     scene_color,
     /** The skinned variants' rgba32float bone palette (textureLoad). */
     bone_palette,
+    /** A baked mesh's rgba32float VAT, frameCount rows tall (textureLoad). */
+    vat_palette,
+    /** Its per-instance params texture, two texels per instance. */
+    vat_instance_params,
     /** The clustered field's per-light payload (rgba32float, textureLoad). */
     clustered_lights,
     /** Its per-slice light range (rgba32uint, textureLoad). */

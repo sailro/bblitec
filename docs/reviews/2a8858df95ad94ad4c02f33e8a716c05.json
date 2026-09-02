@@ -1,0 +1,122 @@
+{
+ "angles": [
+  "reuse",
+  "simplification",
+  "efficiency",
+  "altitude"
+ ],
+ "findings": [
+  {
+   "summary": "A duplicate, unreachable case for the ampersand token shipped in one switch: reverting the opt-in gate re-added the case at a new position instead of restoring the original, so the arm below it was dead. It had become materially divergent, not merely redundant -- the live arm was repaired to go through bbl::js::bitwise_and while the dead copy still held the bare int32 cast pair that is not ToInt32 for an out-of-range double. Dead case deleted, the two stacked comments folded into one, and the test's phantom claim that the operator refuses without a flag replaced by what the code does.",
+   "applied": true
+  },
+  {
+   "summary": "The VAT feature-set rewrite was chained as the else of the dynamic-receiver arm, so a scene with both a baked mesh and a dynamic shadow receiver silently composed no MSH_VAT row, and a VAT scene dropped its shadow lights. They are orthogonal rewrites; unioned so the base rows go through the VAT rewrite first, then the receiver widening, with the light lists riding along only when there are receivers.",
+   "applied": true
+  },
+  {
+   "summary": "assertFlagFalse was a copy of assertHidden that had dropped the isFunctionLike stop, so it would have accepted a write inside a nested callback as a build-time one. Merged into assertHidden with a member parameter, and its predicate widened to a text match so the cage's element-access receiver resolves.",
+   "applied": true
+  },
+  {
+   "summary": "bake_vat refused an empty animation-group collection three different ways and the wrong one won: it passed a default handle to go_to_frame first, so an empty container threw the group lookup's message, and a non-empty one whose index 0 was unrelated posed from the wrong clip. One early throw before the seek.",
+   "applied": true
+  },
+  {
+   "summary": "Math.round was emitted as std::round, which rounds halves away from zero where JavaScript rounds them toward positive infinity -- the rule fidelity.md already states and bbl::js::round_js already implements. Both VAT sites re-pointed.",
+   "applied": true
+  },
+  {
+   "summary": "The pin computes a clip's frame count from group.frameRate || DEFAULT_FRAME_RATE, and only the RETURN line was asserted. The port spells the rate as a constant unconditionally, so the group.frameRate arm was dropped silently while the lowerer's comment claimed a changed formula must fail generation. That soundness rested on an unstated dependency on a different lowerer's separate contract. The initializer is now pinned too.",
+   "applied": true
+  },
+  {
+   "summary": "prepareVatMany refuses a clip whose bone count disagrees with the skeleton's; the port clamped with std::min and zero-filled the tail instead, baking a silently truncated palette. Replaced by the pin's refusal. The third arm -- the binding lookup returning nothing -- has no counterpart here, because go_to_frame leaves the palette holding the previous clip's pose rather than reporting that it wrote nothing; recorded in the source rather than faked.",
+   "applied": true
+  },
+  {
+   "summary": "computeBoundsRecursive was the one pinned function reimplemented natively and the only one absent from the bounding-box anchor list, so a pin that changed how the subtree is gathered would still have generated. Anchored by name, the way attachFollowTarget already is.",
+   "applied": true
+  },
+  {
+   "summary": "Scenes 218 and 219 registered no nativeEnvironment, so the native side screenshotted frame 0 while each scene's own freeze is at frame 10 -- the emitted callback that writes the instance parameters never ran, and the pose came entirely from the folded-query seek. Both now capture at frame 12, so the two sides hold the same instance texture and the measurement is evidence about the emitted freeze. Same numbers, 0.010/0.276.",
+   "applied": true
+  },
+  {
+   "summary": "The cage's three TRS helpers marked their meshes with mark_mesh_dirty while the layout rewrites all 55 of them from on_before_render. That is the exact case mark_mesh_runtime_transform's own comment describes, and the PAL consequence was re-transforming and re-uploading 1,392 vertices -- about 130 KiB, plus 55 heap allocations -- every frame in both backends. Moved onto the runtime-transform path; scene 224 still 0.000/0.000 and byte-identical between backends.",
+   "applied": true
+  },
+  {
+   "summary": "apply_clip_pose allocated and solved a baked mesh's full joint palette and then discarded it one line later, per frame and for all 2,099 poses of the bake itself. The skip now sits after the mesh's own animated world (which the VAT shader still multiplies by) and before the joint loop.",
+   "applied": true
+  },
+  {
+   "summary": "track_key_at scanned keyframes linearly from index 1. The VAT bake walks 2,099 frames through 93 channels, which made this the bake's dominant cost at roughly 86 million comparisons for one shark. Replaced by std::lower_bound, exactly equivalent given glTF's strictly-increasing sampler inputs, and about 46x fewer comparisons.",
+   "applied": true
+  },
+  {
+   "summary": "One size binding served four different pinned builders, where it means the face box, the rotation-anchor bar, the corner arm and the body respectively. Safe only while three of them pass literals: a pin that started reading size in buildCornerHandle would have emitted the face box's size -- right shape, wrong geometry, clean generation, in a file whose stated premise is that a pin change must fail generation. Size is now bound only where it means the face box; unbound, that same edit fails by the name that reads it.",
+   "applied": true
+  },
+  {
+   "summary": "The new first-skinned search matches on shape and has no name to gate on, so it ran resolveFunctionDeclaration for every one-argument call in every scene -- and that resolver hard-fails on generics, generators and rest parameters. An ordinary generic helper would have failed there, while merely being asked whether it was a skinned search, instead of at the user-function path that owns the diagnostic. Replaced by a plain checker lookup with no failure path; every one of those shapes is rejected by the shape predicate anyway.",
+   "applied": true
+  },
+  {
+   "summary": "Three loader writes that only a VAT build reads -- the per-record skinned flag, the pose pass's baked-mesh skip and the clip duration -- were emitted unconditionally into all 80 trees carrying the glTF loader, where 2 read them. Gated behind a vat option, the mechanism already adjacent to them. Scene 11 re-measured unchanged at 0.010.",
+   "applied": true
+  },
+  {
+   "summary": "MeshRecord::skinned's header comment said it means the node carried a skin, but the write sits inside the loader's animated branch, so a skinned file with no clips answers false where the pin answers the mesh. Both readers want a mesh some clip poses, so neither can observe it; stated rather than left as an overclaim.",
+   "applied": true
+  },
+  {
+   "summary": "A static_cast to void suppressed an unused-but-set warning on a variable that is read three lines later, permanently disabling the one signal that would fire if a pin stopped reading it. Removed; scene 224 rebuilds with no warnings.",
+   "applied": true
+  },
+  {
+   "summary": "pinnedVatBit and pinnedSkeletonBit had no callers anywhere in src or test -- the runtime swap they documented is served by the C++ constants emitted elsewhere. Removed.",
+   "applied": true
+  },
+  {
+   "summary": "Two orphaned doc blocks: assertFlagFalse's survived its method's deletion and came to sit above loweredArrow's own doc, and the 20-line block explaining why the gizmo-state predicates fold to constants was left heading reachesBoundingBox when the new insertion pushed assertPointerDispatchersInert 1,800 lines down. First deleted, second reunited with its method.",
+   "applied": true
+  },
+  {
+   "summary": "The fidelity paragraph for scene 45 stated three things the tree did not support: that the scene shares scene 42's clone and pre-step machinery (it has neither), that its -1 gravity distinguishes it from 42 (identical in both), and that a browser capture at 8 s lands on this port's position exactly, with a pixel count that appears nowhere. Measured instead: a probe at captureAfter=8 gives 1.573/2.231 against 0.808/1.831 at the pin's own pose, so the two solvers diverge further with time rather than converging. Rewritten around what the scene actually does -- both spheres in contact response by frame 180, and an off-centre impulse spinning one of them -- with scene 42, which has no force at all, as the control that isolates it. The registry comment carried the same claim and was corrected with it.",
+   "applied": true
+  },
+  {
+   "summary": "Smaller documentation corrections on lines this branch touched: the status table's physics preamble did not cover scene 45, whose 1.831 is its second-largest value; types.ts said the cage is 56 meshes where every other site says 55 and counts 55; the BBLITE_VAT_INSTANCES rationale said the instance texture selects the instanced variant, which MSH_HAS_THIN_INSTANCES does; three sentences attributed two per-mesh GPU resources to mesh:vat, which gates one; intrinsics/mesh.ts opened with an absolute the branch's own new arm had just falsified; fidelity.md had no VAT entry at all, so seek_vat was an unrecorded adaptation; and four TODO references still listed scenes this branch shipped.",
+   "applied": true
+  },
+  {
+   "summary": "BoundingBoxGizmoRecord::root is written and never read, which read as dead -- but the pin declares a readonly root node on its gizmo and builds every cage part with no parent, so the field mirrors the pinned record rather than serving a hierarchy. Kept, and the reason stated where it is written.",
+   "applied": true
+  },
+  {
+   "summary": "clone_mesh_node is emitted into all 239 trees for one caller, and scene 224 carries 25,710 B of camera/light gizmo it cannot call -- 412,692 B together.",
+   "applied": false,
+   "blockedBy": "Both need a new feature gate rather than an option on an existing bag: scene_core.cpp is listed with an empty feature list, so mesh:clone has to enter the feature vocabulary and its activation row, and the display-gizmo split needs a reachesDisplayGizmos predicate plus CMake wiring. That is a feature-system change, not a lowering change, and it wants its own measured pass rather than a scene wave's.",
+   "filedIn": "TODO.md, folded into the gizmo-family tidy entry"
+  },
+  {
+   "summary": "The first-skinned search and its matcher are roughly 120 lines cloned from the name-search pair beside them, including two copies of the shadow-name and walk-body logic.",
+   "applied": false,
+   "blockedBy": "The collapse wants a shared emitAssetMeshSearch helper and a parameterised matcher, which changes the emission path for the name search too -- a scene family this wave does not touch. Doing it here would put every findNode scene's generated text at risk for a readability win.",
+   "filedIn": "TODO.md, folded into the restated-body inventory entry"
+  },
+  {
+   "summary": "Collide-mask filtering is copy-pasted through all three layers, and an emitted comment names an assertStepGate that does not exist anywhere in src.",
+   "applied": false,
+   "blockedBy": "The mask pair sits beside physics_shape_set_trigger, which already grew a change guard neither mask setter has, so the right fix is one pass over that whole neighbourhood including the missing assertion -- and it touches the Bullet PAL, whose every change needs the physics scenes re-measured. Not the same pass as a scene wave.",
+   "filedIn": "TODO.md, folded into the physics-lane entry"
+  },
+  {
+   "summary": "optionDefaultTuple is a 21-line byte-for-byte copy of optionDefault, resolveCollectionRead is the copied tail of resolveNullishCollection, and the cage's bounds walk allocates two vectors per frame with a quadratic seen check.",
+   "applied": false,
+   "blockedBy": "All three are contained refactors with no behavioural component, and each wants its own before/after on a branch where a byte diff of the generated tree is the proof. Batching them into a wave whose proof burden is already four scenes on two backends would make that diff unreadable.",
+   "filedIn": "TODO.md, folded into the gizmo-family and restated-body entries"
+  }
+ ]
+}

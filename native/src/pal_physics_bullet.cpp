@@ -1132,6 +1132,18 @@ void physics_shape_set_filter_membership_mask(
     }
 }
 
+void physics_shape_set_filter_collide_mask(
+    PhysicsShapeHandle shape,
+    std::uint32_t collide_mask) {
+    ShapeEntry& shape_entry = shape_at(shape);
+    shape_entry.collide_mask = collide_mask;
+    for (BodyEntry& body : bodies()) {
+        if (body.shape == shape.value) {
+            mark_body_dirty(body);
+        }
+    }
+}
+
 void physics_shape_set_trigger(PhysicsShapeHandle shape, bool is_trigger) {
     ShapeEntry& shape_entry = shape_at(shape);
     if (shape_entry.is_trigger != is_trigger) {

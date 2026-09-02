@@ -267,6 +267,7 @@ export function gltfLoaderCpp(
         animationBlending = false,
         animationAdditive = false,
         managedGroups = false,
+        vat = false,
         pinnedSkeletonPalette = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
@@ -945,12 +946,15 @@ ${lowered.animationInterpolation}
 std::size_t track_key_at(
     const std::vector<float>& times,
     float time) {
-    std::size_t right = 1;
-    while (
-        right < times.size() &&
-        times[right] < time) {
-        ++right;
-    }
+    // The first key at or after the time, never index 0, clamped to the
+    // last. Binary rather than linear because glTF requires a sampler's
+    // input times to be strictly increasing, so the two agree exactly --
+    // and because a VAT bake walks every frame of every clip through
+    // every channel, which made this the bake's dominant cost at tens of
+    // millions of comparisons for one shark.
+    std::size_t right = static_cast<std::size_t>(
+        std::lower_bound(times.begin() + 1, times.end(), time) -
+        times.begin());
     if (right >= times.size()) {
         right = times.size() - 1;
     }
@@ -3362,7 +3366,13 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                         "nothing.");
                 }`}
                 engine.meshes[mesh_record_index]
-                    .gpu_deformation = true;${pinnedSkeletonPalette ? `
+                    .gpu_deformation = true;
+                // mesh.skeleton upstream: the node named a skin, so the
+                // pose pass writes this record a joint palette rather than
+                // its own world matrix.
+${vat ? `                engine.meshes[mesh_record_index].skinned =
+                    skin_index !=
+                    std::numeric_limits<std::size_t>::max();` : ""}${pinnedSkeletonPalette ? `
                 // A mesh with no skin publishes no palette at all, so the
                 // flag is about the transport rather than about this mesh.
                 engine.meshes[mesh_record_index]
@@ -4257,6 +4267,19 @@ ${lowered.gltfCameraPoseRefresh}` : ""}
                 }
                 const Matrix& mesh_world =
                     compute_animated_world(binding.node);
+                MeshRecord& mesh_record =
+                    engine.meshes.at(binding.mesh);
+                // attachVat sets mesh.skeleton = null: a baked mesh has no
+                // live skinning left, so the pose pass stops solving it a
+                // palette at all. Placed after the mesh world above and
+                // before the joint loop below, because a baked mesh still
+                // needs its own animated transform -- the VAT shader
+                // multiplies by it -- but not the palette, which is what
+                // the bake replaced. Solving one and discarding it cost a
+                // skin's worth of matrix products and a heap allocation
+                // per baked mesh per frame, and as many again for every
+                // pose the bake itself steps through.
+${vat ? `                if (mesh_record.has_vat) continue;` : ""}
                 const bool skinned =
                     binding.skin <
                     animation_runtime->skins.size();
@@ -4274,8 +4297,6 @@ ${lowered.gltfCameraPoseRefresh}` : ""}
                                 skin->inverse_bind_matrices[joint]));
                     }
                 }
-                MeshRecord& mesh_record =
-                    engine.meshes.at(binding.mesh);
                 mesh_record.bone_matrices.clear();
                 if (skin) {
                     for (const Matrix& joint_matrix : joint_matrices) {
@@ -5204,6 +5225,11 @@ ${animationSpeedRatio ? `                // The pin advances time += dt * speedR
             if (clip >= animation_runtime->clips.size()) return;
             animation_runtime->clips[clip].time = std::max(time, 0.0f);
         };
+${vat ? `        asset.clip_duration =
+            [animation_runtime](std::size_t clip) -> float {
+            if (clip >= animation_runtime->clips.size()) return 0.0f;
+            return animation_runtime->clips[clip].duration;
+        };` : ""}
         asset.apply_clip_pose =
             [animation_runtime, apply_animation_state](
                 std::size_t clip,

@@ -18,6 +18,7 @@ interface MeshFeatureBits {
     MSH_RECEIVE_SHADOWS: number;
     MSH_HAS_TANGENTS: number;
     MSH_HAS_SKELETON: number;
+    MSH_VAT: number;
     MSH_HAS_MORPH_TARGETS: number;
     MSH_HAS_VERTEX_COLOR: number;
     MSH_HAS_UV2: number;
@@ -132,6 +133,27 @@ export async function pinnedFeaturesCarrySkeleton(
     const bit = await meshFeatureBits();
     return features.some(
         (word) => (word & bit.MSH_HAS_SKELETON) !== 0,
+    );
+}
+
+/**
+ * The pin's own baked-vertex-animation bit, and the skeleton bit it
+ * REPLACES.
+ *
+ * `_computeMeshFeatures` writes them as one either/or -- `if (mesh.vat)
+ * ... else if (mesh.skeleton) ...` -- because a baked mesh has no live
+ * skeleton left. So this is not another runtime bit to OR into the
+ * product: it is a rewrite of the rows an attached mesh composes under,
+ * and both PALs perform the same swap at the draw.
+ */
+export async function pinnedVatMeshFeatures(
+    features: readonly number[],
+): Promise<number[]> {
+    const bit = await meshFeatureBits();
+    return features.map((word) =>
+        (word & bit.MSH_HAS_SKELETON) !== 0
+            ? (word & ~bit.MSH_HAS_SKELETON) | bit.MSH_VAT
+            : word
     );
 }
 

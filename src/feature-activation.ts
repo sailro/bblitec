@@ -594,6 +594,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/mesh.ts",
         consumers: CMAKE,
     },
+    "mesh:vat": {
+        provenance: "src/vat/vat-baker.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
+    "mesh:vat-instances": {
+        provenance: "src/vat/vat-baker.ts (setInstances)",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
     "picking:gpu": {
         provenance: "src/picking/gpu-picker.ts",
         consumers: CMAKE,
@@ -659,6 +667,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "gizmo:scale": {
         provenance: "src/gizmo/composite-gizmos.ts",
+        consumers: CMAKE,
+    },
+    // The bounding-box gizmo, its own pinned module. It shares the layer
+    // and the material builder with the rest of the family and nothing
+    // else: the cage is laid out from the attached subtree's world bounds
+    // every frame, which no other widget reads.
+    "gizmo:bounding-box": {
+        provenance: "src/gizmo/bounding-box-gizmo.ts",
         consumers: CMAKE,
     },
     "shadow:esm": {
@@ -1225,6 +1241,44 @@ function capabilityRows(
                 "and recomputes node worlds live; this port bakes static " +
                 "node matrices, so ANY animated mesh needs the deformation " +
                 "path's palette-as-world transport (docs/fidelity.md)",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_VAT",
+            "capability",
+            has("mesh:vat"),
+            [
+                [
+                    has("mesh:vat"),
+                    "scene source reached mesh:vat (bakeVat is the pin's " +
+                        "own dynamic-import trigger for the whole chunk)",
+                ],
+            ],
+            "no scene baked a vertex animation texture",
+            "src/vat/vat-baker.ts: upstream keeps the baker and the VAT " +
+                "shader fragment behind bakeVat/attachVat, so a scene that " +
+                "never bakes carries neither the bake nor the two per-mesh " +
+                "GPU resources",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_VAT_INSTANCES",
+            "capability",
+            has("mesh:vat-instances"),
+            [
+                [
+                    has("mesh:vat-instances"),
+                    "scene source reached mesh:vat-instances " +
+                        "(VatHandle.setInstances allocates the per-instance " +
+                        "params texture)",
+                ],
+            ],
+            "no baked mesh carries per-instance params",
+            "src/vat/vat-baker.ts setInstances: the per-instance params " +
+                "texture the instanced VAT vertex variant reads. The " +
+                "variant itself is selected by MSH_HAS_THIN_INSTANCES, " +
+                "which vat-fragment.ts tests -- this gate is the texture, " +
+                "not the choice of shader",
             ["render_capabilities.hpp"],
         ),
         checkedRow(

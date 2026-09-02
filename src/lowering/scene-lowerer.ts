@@ -20,6 +20,8 @@ export class SceneLowerer {
       visibility?: boolean;
       geometryAccess?: boolean;
       managedAnimationGroups?: boolean;
+      /** The scene baked a vertex animation texture (mesh:vat). */
+      vat?: boolean;
       /** The scene reaches `createTransformNode`. */
       transformNodes?: boolean;
     } = {},
@@ -1034,6 +1036,20 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
     // registering scene contributes one per manager. Not a pinned
     // step -- upstream seeks by calling goToFrame on the groups
     // themselves, which is what this reproduces.
+    // A baked mesh has no animation group left to seek -- attachVat drops
+    // the live skeleton and stops every clip -- so its deterministic pose
+    // comes from the settings block instead. Registered here for the same
+    // reason the manager seeker is: the seek walks the scene's seekers,
+    // and register_scene is the first point that runs after every bake.
+    const vatSeek = options.vat
+      ? `
+    if (!scene.seeks_vat) {
+        scene.seeks_vat = true;
+        Engine* engine = scene.engine;
+        scene.animation_seekers.push_back(
+            [engine](float time) { seek_vat(*engine, time); });
+    }`
+      : "";
     const managerSeek = options.managedAnimationGroups
       ? `
     if (!scene.seeks_animation_managers) {
@@ -1353,6 +1369,47 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
     return cloned_asset;
 }
 
+/**
+ * src/scene/transform-node.ts cloneMeshNode, reached through
+ * cloneTransformNode's own \`"_gpu" in src\` arm when the cloned node is a
+ * mesh rather than an imported root. The record copy is the pin's
+ * \`{ ...mesh }\` spread: position, rotation quaternion, scaling, material
+ * and every GPU-backed reference travel with it, and the geometry owner
+ * count is the native form of the pin's \`retain\`. The clone starts with
+ * no children of its own, exactly as the pin's \`children: []\` does.
+ */
+MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh handle.");
+    }
+    if (engine.meshes[mesh.value].retired) {
+        throw std::runtime_error(
+            "Mesh '" + engine.meshes[mesh.value].name +
+            "' cannot be cloned: it was disposed when it left its last "
+            "scene.");
+    }
+    if (!engine.meshes[mesh.value].children.empty()) {
+        throw std::runtime_error(
+            "Mesh '" + engine.meshes[mesh.value].name +
+            "' has children; the pin clones a node's children recursively "
+            "and no reached scene clones a parented mesh.");
+    }
+    MeshRecord record = engine.meshes[mesh.value];
+    if (record.geometry < engine.geometries.size()) {
+        ++engine.geometries[record.geometry].owners;
+    }
+    record.name += "${cloneSuffix}";
+    record.parented_meshes.clear();
+    record.feature_source_mesh =
+        record.feature_source_mesh != invalid_handle
+            ? record.feature_source_mesh
+            : mesh.value;
+    const MeshHandle clone{
+        static_cast<std::uint32_t>(engine.meshes.size())};
+    engine.meshes.push_back(std::move(record));
+    return clone;
+}
+
 void set_asset_root_position_component(
     Engine& engine,
     AssetHandle asset,
@@ -1562,7 +1619,7 @@ void on_visibility_change(
 }
 
 void register_scene(Scene& scene) {
-    require_scene_engine(scene);${managerSeek}
+    require_scene_engine(scene);${managerSeek}${vatSeek}
     for (const auto& builder : scene.deferred_builders) {
         builder();
     }

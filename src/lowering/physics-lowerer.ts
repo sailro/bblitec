@@ -1513,6 +1513,13 @@ struct PhysicsRaycastResult {
 struct PhysicsWorld {
     pal::PhysicsWorldHandle handle{};
     Engine* engine = nullptr;
+    /**
+     * \`_scene\`. \`worldStepSeconds\` reads the scene's own fixed step
+     * live, so the world keeps the scene rather than a copy of the value:
+     * a scene may write \`fixedDeltaMs\` after the world exists, and the
+     * pin would see that write.
+     */
+    Scene* scene = nullptr;
     std::vector<PhysicsBody> bodies;
     /**
      * \`_fixedDeltaMs\`: the world's own step, independent of the scene.
@@ -1523,7 +1530,15 @@ struct PhysicsWorld {
      * is what the gate reads.
      */
     double fixed_delta_ms = 0.0;
-    double step_seconds = 0.0;
+    /**
+     * \`scene.surface.engine._currentDelta\`, the last delta the renderer
+     * handed this scene's before-render list. The engine record carries no
+     * such field here, and the step callback is where that number arrives,
+     * so it is recorded at the step and read by \`world_step_seconds\` as
+     * the pin's third arm. Zero before the first frame, which is the state
+     * the pin documents on that arm.
+     */
+    double engine_delta_ms = 0.0;
     std::vector<std::function<void(float)>> after_step;
 };
 
@@ -1585,6 +1600,9 @@ void set_physics_body_mass(
     PhysicsWorldHandle world,
     PhysicsBody body,
     double mass);
+void set_physics_body_pre_step(
+    PhysicsBody body,
+    bool enabled);
 void apply_physics_impulse(
     PhysicsWorldHandle world,
     PhysicsBody body,
@@ -1594,6 +1612,10 @@ void set_physics_shape_filter_membership_mask(
     PhysicsWorldHandle world,
     PhysicsShape shape,
     std::uint32_t membership_mask);
+void set_physics_shape_filter_collide_mask(
+    PhysicsWorldHandle world,
+    PhysicsShape shape,
+    std::uint32_t collide_mask);
 [[nodiscard]] Vec3d get_physics_body_linear_velocity(
     PhysicsWorldHandle world,
     PhysicsBody body);
@@ -1809,6 +1831,29 @@ void sync_node_to_body(
 }
 
 /**
+ * \`worldStepSeconds\`. The effective step every physics caller agrees on,
+ * derived live from the same three sources the pin reads in the same
+ * order -- the world's own fixed step, then the scene's, then the
+ * engine's last delta -- under the pin's finite/positive gate and
+ * MAX_STEP_MS clamp. It is derived rather than remembered because a
+ * caller can reach it before the first step, which is exactly where a
+ * remembered step is still zero and the scene's own fixed delta is not.
+ */
+[[nodiscard]] double world_step_seconds(const PhysicsWorld& world) {
+    const double step_ms =
+        world.fixed_delta_ms > 0.0
+            ? world.fixed_delta_ms
+            : (world.scene != nullptr &&
+               static_cast<double>(world.scene->fixed_delta_ms) > 0.0
+                   ? static_cast<double>(world.scene->fixed_delta_ms)
+                   : world.engine_delta_ms);
+    if (!std::isfinite(step_ms) || step_ms <= 0.0) {
+        return 0.0;
+    }
+    return std::min(step_ms, physics_max_step_ms) / 1000.0;
+}
+
+/**
  * \`_stepWorld\`. The gate, the clamp and the four phases are the pinned
  * module's; \`assertStepGate\` in the lowerer fails generation if any of
  * them moves.
@@ -1820,7 +1865,11 @@ void step_world(PhysicsWorld& world, double delta_ms) {
         return;
     }
     const double dt = std::min(step_ms, physics_max_step_ms) / 1000.0;
-    world.step_seconds = dt;
+    // Not the pin's: the engine record carries no _currentDelta, and this
+    // is where the renderer's delta reaches the physics layer. Recorded
+    // raw, so world_step_seconds applies the pin's own gate and clamp to
+    // it rather than reading a number that already went through them.
+    world.engine_delta_ms = delta_ms;
 
     Engine& engine = *world.engine;
     for (const PhysicsBody& body : world.bodies) {
@@ -1855,6 +1904,7 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
     PhysicsWorld& world = physics_worlds().emplace_back();
     world.handle = pal::physics_world_create();
     world.engine = scene.engine;
+    world.scene = &scene;
     pal::physics_world_set_gravity(
         world.handle, {gravity.x, gravity.y, gravity.z});
 
@@ -1987,6 +2037,26 @@ void set_physics_body_mass(
     pal::physics_body_set_mass_properties(live.handle, properties);
 }
 
+/**
+ * \`setPhysicsBodyPreStep\`: one write of \`body._preStep\`, which
+ * \`_stepWorld\`'s pre-step gate reads. The pin reaches the live body
+ * through \`body._world\`; the value a scene holds here is a copy, so the
+ * owning world is the one holding a record with the same PAL handle --
+ * the same identity \`physics_body_record\` matches on.
+ */
+void set_physics_body_pre_step(PhysicsBody body, bool enabled) {
+    for (PhysicsWorld& world : physics_worlds()) {
+        for (PhysicsBody& live : world.bodies) {
+            if (live.handle.value == body.handle.value) {
+                live.pre_step = enabled;
+                return;
+            }
+        }
+    }
+    throw std::runtime_error(
+        "Physics body is not part of any world.");
+}
+
 void apply_physics_impulse(
     PhysicsWorldHandle handle,
     PhysicsBody body,
@@ -2021,6 +2091,15 @@ void set_physics_shape_filter_membership_mask(
         shape.handle, membership_mask);
 }
 
+void set_physics_shape_filter_collide_mask(
+    PhysicsWorldHandle handle,
+    PhysicsShape shape,
+    std::uint32_t collide_mask) {
+    (void)physics_world_record(handle);
+    pal::physics_shape_set_filter_collide_mask(
+        shape.handle, collide_mask);
+}
+
 Vec3d get_physics_body_linear_velocity(
     PhysicsWorldHandle handle,
     PhysicsBody body) {
@@ -2036,8 +2115,8 @@ void apply_physics_body_force(
     PhysicsBody body,
     Vec3d force,
     Vec3d location) {
-    PhysicsWorld& world = physics_world_record(handle);
-    const double dt = world.step_seconds;
+    const PhysicsWorld& world = physics_world_record(handle);
+    const double dt = world_step_seconds(world);
     apply_physics_impulse(
         handle,
         body,

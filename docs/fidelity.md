@@ -524,6 +524,22 @@ pose on its next tick. Native mirrors the shape rather than the call — a scene
 registering with an engine contributes one seeker per manager it created,
 beside the seeker each loaded asset already carries.
 
+**A baked mesh gets a seeker of its own, for the same reason a manager does.**
+`bakeVat` freezes a mesh's animation into a texture and `attachVat` drops its
+live skeleton, so from then on the mesh's pose is a row index rather than a
+palette, and nothing in the pinned animation path reaches it. Upstream a
+scene picks that row itself, per frame, through `handle.play`/`handle.update`
+or a direct `setInstances` write. Scenes 218 and 219 do exactly that from
+`?seekTime=`, and they are captured after their own tenth frame so the
+emitted callback -- not the harness -- performs the write on both sides.
+`seek_vat` is this port's addition beside it: a scene whose registered pose
+is a folded query value reaches the baked row without waiting on a clock, the
+same adaptation the manager seeker above makes for animation groups. It is
+project-owned rather than lowered, and the row arithmetic it performs is the
+pin's own -- `clipFrameCount`'s formula and its frame rate are both asserted
+at generation, so an upstream change to either fails rather than shifting
+every baked pose by a frame.
+
 **A property path is a lane plus a component, because that is what the pinned
 walk produces.** `resolvePropertyBinding` splits the dotted path, walks to an
 owner and a final property name, and `createPropertyWriter` then stores either
@@ -1920,6 +1936,40 @@ asserting agreement with the pinned one. They are the same drop at the same
 two — what 100 adds is the collision surface
 (`setPhysicsBodyCollisionEventsEnabled` and an `onPhysicsCollision` handler)
 compiling, running and leaving the frame where 40 leaves it.
+
+**Scene 45 shows what makes a solver row large, by contrast with scene 42.**
+It publishes 0.808 / 1.831, identical on both backends, and the residual is
+CONTACT RESPONSE: at the pin's `?captureAfter=3` pose both spheres sit about
+10 px -- 0.13 world units -- lower than the golden's, with under a pixel of
+horizontal error. It grows with simulated time rather than closing. A probe
+at `?captureAfter=8`, built and captured the same way, measures 1.573 /
+2.231: the two solvers do not converge on a shared resting pose, so the
+gate belongs at the pin's own pose and would have to rise for any later one.
+
+One thing that is NOT part of it: the impulse itself. The pin turns a force
+into an impulse with `worldStepSeconds(world)`, which falls back to the
+scene's per-frame delta when the world has no fixed step, and this port used
+to read a `step_seconds` it remembered from the last step -- zero before the
+first one, so a force applied before `startEngine` integrated to nothing.
+`world_step_seconds` now derives it the pin's way, from the same three
+sources in the same order. Scene 45 is the only scene that reaches
+`applyPhysicsBodyForce` at all, and it applies its force before starting the
+engine, so this is the difference between the force existing and not.
+
+Two properties of the scene drive it, and scene 42 is the control that
+isolates them. Scene 45's spheres are both in contact response by frame 180
+-- sphere 2 falls 3 m under the scene's -1 m/s² gravity and reaches the
+ground around frame 147, so the captured pose is 30 steps into a bounce --
+and sphere 1 additionally takes `applyPhysicsBodyForce` with the arguments
+in the order the pin declares them, `(world, body, force, location)`, so the
+scene's `sphere1.position` is the FORCE and `{x: 0, y: 1, z: 5}` is the
+application point. That point is off the sphere's centre, so the impulse
+imparts spin, and spin under friction is where two solvers separate fastest.
+Scene 42 has neither: no force anywhere in the scene, two spheres in
+straight vertical fall, one of them pre-stepped and therefore positioned
+rather than simulated. Same lane, same -1 m/s² gravity, same substituted
+solver -- and it measures 0.000 on both backends. The distance between the
+two rows is the scene's dynamics, not the port's.
 
 Scene 101 carries the lane's largest number for the same reason two bounces
 further on, and its mechanism — a contact *instant* rather than accumulated

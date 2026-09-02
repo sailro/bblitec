@@ -115,6 +115,15 @@ const environmentExtensionModule =
 const meshExtensionModules = [
     "material/pbr/fragments/skeleton-fragment.js",
     "material/pbr/fragments/morph-fragment.js",
+    // Upstream this one is not drained here at all: `attachVat`
+    // self-registers it, so the shared PBR renderable never imports it and
+    // a scene with no baked mesh is byte-identical. Registered
+    // unconditionally here for the same reason the environment extension
+    // is -- the registry is process-global, so gating it would make it
+    // depend on which scene composed first -- and it is inert either way:
+    // its `frag` returns null without MSH_VAT and its `bind` returns the
+    // binding index unchanged, which the generated-tree byte diff proves.
+    "material/pbr/fragments/vat-fragment.js",
 ] as const;
 
 interface PbrExtDescriptor {

@@ -330,6 +330,28 @@ const propertyRules: readonly PropertyRule[] = [
     value: "transform-node",
     record: ["light_gizmos", "root"],
   },
+  // --- Vertex animation textures ---------------------------------------
+  // `VatClip`'s three readonly members, off the row the bake produced.
+  // The row is a native record, so these are field reads like any other
+  // record's -- what the bake decided stays the bake's answer.
+  {
+    owner: "vat-clip",
+    property: "fromRow",
+    value: "number",
+    field: "from_row",
+  },
+  {
+    owner: "vat-clip",
+    property: "frameCount",
+    value: "number",
+    field: "frame_count",
+  },
+  {
+    owner: "vat-clip",
+    property: "fps",
+    value: "number",
+    field: "fps",
+  },
   {
     owner: "physics-aggregate",
     property: "body",

@@ -17,6 +17,7 @@ import {
     compileAudioMethodCall,
     isSupportedAudioMethodProperty,
 } from "./audio-surface.js";
+import { compileVatMethodCall } from "./intrinsics/vat.js";
 import { isParseFloatCallee } from "./browser-erasure.js";
 import type { ClassLowerer } from "./classes.js";
 import {
@@ -568,6 +569,21 @@ export class ExpressionLowerer {
             );
         }
         if (ts.isElementAccessExpression(unwrapped)) {
+            // `baked.clips[<name>]`: one row of the bake's own map, read
+            // natively because the bake decided the layout.
+            const clipOwner = this.context.unwrap(unwrapped.expression);
+            if (
+                ts.isPropertyAccessExpression(clipOwner) &&
+                clipOwner.name.text === "clips"
+            ) {
+                const map = this.context.probeEmission(() => {
+                    const value = this.compileValue(clipOwner);
+                    return value.kind === "vat-clip-map" ? value : undefined;
+                });
+                if (map) {
+                    return this.compileVatClipRow(map, unwrapped);
+                }
+            }
             if (!assertedNonNull) {
                 // Determining whether an unchecked element read can carry an
                 // existence predicate resolves its owner. A call-shaped owner
@@ -2613,6 +2629,16 @@ export class ExpressionLowerer {
             if (audio) {
                 return audio;
             }
+            // The second such surface: a VatHandle is a closure bundle
+            // upstream, so its playback methods ride the handle too.
+            const vat = compileVatMethodCall(
+                this.context,
+                call,
+                callee,
+            );
+            if (vat) {
+                return vat;
+            }
             const lightPush =
                 this.context.handleCollections.compileSceneLightPush(
                     call,
@@ -3034,6 +3060,14 @@ export class ExpressionLowerer {
         if (assetNode) {
             return assetNode;
         }
+        const assetSkinned =
+            this.context.handleCollections.compileAssetSkinnedDescendantSearch(
+                call,
+                callee,
+            );
+        if (assetSkinned) {
+            return assetSkinned;
+        }
         const decodedAudio = compileAudioDecodeAssetCall(
             this.context,
             call,
@@ -3054,6 +3088,36 @@ export class ExpressionLowerer {
             callee,
             `Call '${callee.text}' does not resolve to a supported Babylon intrinsic or local function declaration.`,
         );
+    }
+
+    /**
+     * One row of a bake's clip map, by name.
+     *
+     * The name is static in both reached scenes, and the row it selects is
+     * the bake's answer rather than generation's -- so this emits the
+     * native lookup and reports a miss the way every optional read in this
+     * port does. A zero frame count is that miss: no baked clip has one.
+     */
+    private compileVatClipRow(
+        map: Value,
+        access: ts.ElementAccessExpression,
+    ): Value {
+        const clip = this.context.compileStringLiteral(
+            access.argumentExpression,
+        );
+        const engine = this.context.requireEngine(map, access);
+        const row = this.context.allocateTemporaryCppName("vat_clip");
+        this.context.emit(
+            `const bbl::VatClipRow ${row} = bbl::vat_clip_row(` +
+                `${engine}, ${map.cpp}, ` +
+                `${this.context.cppString(clip)});`,
+        );
+        return {
+            kind: "vat-clip",
+            cpp: row,
+            engineCpp: engine,
+            optionalFoundCpp: `(${row}.frame_count != 0.0)`,
+        };
     }
 
     private compileNumberConversion(

@@ -83,6 +83,10 @@ import {
     compileAudioIntrinsic,
     type AudioIntrinsicContext,
 } from "./audio.js";
+import {
+    compileVatIntrinsic,
+    type VatIntrinsicContext,
+} from "./vat.js";
 import type { Value } from "../types.js";
 
 export interface IntrinsicContext
@@ -105,6 +109,7 @@ export interface IntrinsicContext
         SkeletonIntrinsicContext,
         SpriteIntrinsicContext,
         GizmoIntrinsicContext,
+        VatIntrinsicContext,
         EffectIntrinsicContext {}
 
 /**
@@ -150,6 +155,7 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compileAudioIntrinsic,
     compilePickingIntrinsic,
     compileGizmoIntrinsic,
+    compileVatIntrinsic,
 ];
 
 /**

@@ -216,6 +216,68 @@ struct BoneHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/** One baked vertex-animation texture (`VatBakeResult`). */
+struct VatBake {
+    std::uint32_t value = invalid_handle;
+};
+
+/**
+ * The playback handle `attachVat` returns.
+ *
+ * Upstream it is a closure bundle over the mesh's own `VatData`; here it
+ * names that mesh, so `play`/`update`/`setInstances` are writers over the
+ * one record rather than three captured lambdas.
+ */
+struct VatHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+/**
+ * Where one clip landed in the baked texture: its first row, its frame
+ * count, and its native frame rate.
+ *
+ * The three numbers are the pin's own `VatClip` members, which scene code
+ * reads and does arithmetic on -- so they are JavaScript numbers here, the
+ * same convention every other scene-visible numeric field takes.
+ */
+struct VatClipRow {
+    std::string name;
+    double from_row = 0.0;
+    double frame_count = 0.0;
+    double fps = 60.0;
+};
+
+/**
+ * A baked VAT: `frame_count` rows of `bone_count * 4` rgba32float texels,
+ * the same per-row layout the live bone palette uses, so row N reproduces
+ * the live pose at frame N to full float precision.
+ */
+struct VatBakeRecord {
+    std::uint32_t bone_count = 0;
+    std::uint32_t frame_count = 0;
+    std::vector<float> data;
+    std::vector<VatClipRow> clips;
+};
+
+/**
+ * `mesh.vat`: which bake this mesh reads and where in it.
+ *
+ * `settings` is the pin's own 32-byte vertex-visible block --
+ * `params = (fromRow, toRow, frameOffset, fps)` then
+ * `clock = (elapsedSeconds, 0, 0, 0)`. The versions are what each backend
+ * re-uploads on; the instance params are two texels per instance (clip A
+ * then clip B), the dual-clip layout the single instanced variant reads.
+ */
+struct VatData {
+    std::uint32_t bake = invalid_handle;
+    std::array<float, 8> settings{};
+    std::uint64_t settings_version = 1;
+    float time = 0.0f;
+    std::vector<float> instance_params;
+    std::uint32_t instance_texels = 0;
+    std::uint64_t instance_version = 0;
+};
+
 struct BillboardSpriteHandle {
     BillboardSystemHandle system{};
     std::uint32_t id = invalid_handle;
@@ -349,6 +411,17 @@ struct CompositeGizmoHandle {
     std::array<EditGizmoHandle, 6> parts{};
     std::uint32_t part_count = 0;
     std::uint32_t local_coordinate_count = 0;
+};
+
+/**
+ * The bounding-box gizmo, whose record the per-frame layout mutates.
+ *
+ * It is its own handle rather than an editing widget's because it holds a
+ * cage of meshes rather than one root, and because its attach target is a
+ * transform node rather than a mesh.
+ */
+struct BoundingBoxGizmoHandle {
+    std::uint32_t value = invalid_handle;
 };
 
 /**
@@ -1510,6 +1583,24 @@ struct MeshRecord {
      */
     bool pinned_bone_palette = false;
     /**
+     * Whether the glTF node this record was flattened from carried a
+     * `skin` AND the file carried animation: the loader writes it inside
+     * its animated branch, so a skinned file with no clips leaves it
+     * false where the pin's `mesh.skeleton` would answer the mesh. Both
+     * readers -- the first-skinned search and the VAT bake -- want a mesh
+     * whose palette some clip poses, so neither can observe the gap; a
+     * reader that only wanted the skin binding would have to widen this.
+     * Written only in VAT builds, since those two are its only readers.
+     */
+    bool skinned = false;
+    /**
+     * `mesh.vat`. Set by `attachVat`, which also drops the live skeleton --
+     * so a record carrying this one deforms from the baked texture and its
+     * `bone_matrices` are no longer written or read.
+     */
+    bool has_vat = false;
+    VatData vat;
+    /**
      * The front-face state of the geometry as stored by its factory/loader.
      * Runtime parent transforms XOR their live determinant against this
      * baseline; keeping the baseline separate prevents imported geometry
@@ -2658,6 +2749,13 @@ struct AssetRecord {
      * controller is not ticked, with it the pose lands anyway.
      */
     std::function<void(std::size_t, bool)> apply_clip_pose;
+    /**
+     * One clip's duration in seconds. The VAT bake needs it to size the
+     * clip's row block -- `round(duration * frameRate) + 1` frames -- and
+     * the clip table lives inside the generated loader's own runtime, so
+     * this is the reader for it, beside the writers above.
+     */
+    std::function<float(std::size_t)> clip_duration;
     /** Sets one clip's loopAnimation, which the weighted mixer reads. */
     std::function<void(std::size_t, bool)> set_clip_loop;
     /** Sets one clip's speedRatio, which its own advance scales by. */
@@ -2992,6 +3090,54 @@ struct EditGizmoRecord {
         GizmoLocalOrientation::look_at_world_axis;
 };
 
+/**
+ * One corner of the bounding-box cage: the pin's `buildCornerHandle`
+ * returns three thin boxes meeting at the corner, and its `place`
+ * callback moves all three from one corner point through the offsets it
+ * baked at creation. So the three handles and those offsets travel
+ * together, exactly as the closure carries them upstream.
+ */
+struct BoundingBoxCorner {
+    MeshHandle anchor{};
+    MeshHandle y_arm{};
+    MeshHandle z_arm{};
+    Vec3d offsets{};
+};
+
+/**
+ * `BoundingBoxGizmo` (src/gizmo/bounding-box-gizmo.ts), display only.
+ *
+ * The cage is the only widget in the family whose per-frame work reads
+ * the attached subtree rather than one node's world translation: every
+ * frame it recomputes the attached node's world rotation, the bounds of
+ * its descendant meshes in the rotation-removed frame, and lays all of
+ * its handles out from the two. Each group is a vector because its LENGTH
+ * is the pinned build loop's own bound, read from that loop rather than
+ * fixed here.
+ *
+ * The pinned gizmo's remaining members belong to the pointer drag, which
+ * this port does not reach (`display-only-editing-gizmo`): the hover
+ * material nothing assigns outside a drag callback, the disposer list,
+ * and the local bounding diagonal only the rotation drag divides by.
+ */
+struct BoundingBoxGizmoRecord {
+    /** The layer that built it, which its per-frame refresh reads back. */
+    UtilityLayerHandle layer{};
+    TransformNodeHandle root{};
+    MaterialHandle material{};
+    MaterialHandle body_material{};
+    std::vector<MeshHandle> edges;
+    std::vector<BoundingBoxCorner> corners;
+    std::vector<MeshHandle> rotators;
+    std::vector<MeshHandle> faces;
+    MeshHandle body{};
+    /** The pin's `faceBoxSize`, which the layout insets the body by. */
+    double face_box_size = 0.0;
+    /** `attachedNode`, which the pin starts null and this port unset. */
+    bool attached = false;
+    TransformNodeHandle attached_node{};
+};
+
 struct Engine {
     EngineOptions options{};
     /** Logical CSS-pixel extent exposed by renderCanvas.clientWidth/Height. */
@@ -3146,6 +3292,8 @@ struct Engine {
     std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
     std::vector<AnimationGroupRecord> animation_groups;
+    /** The VAT payloads `bakeVat` produced, addressed by `VatBake`. */
+    std::vector<VatBakeRecord> vat_bakes;
     std::vector<SkeletonRecord> skeletons;
     std::vector<BoneRecord> bones;
     std::vector<RenderTargetRecord> render_targets;
@@ -3181,6 +3329,7 @@ struct Engine {
     std::vector<CameraGizmoRecord> camera_gizmos;
     std::vector<LightGizmoRecord> light_gizmos;
     std::vector<EditGizmoRecord> edit_gizmos;
+    std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
     /**
      * The live renderer's pick pass.
      *
@@ -3355,6 +3504,8 @@ struct Scene {
      * so the contribution is too.
      */
     bool seeks_animation_managers = false;
+    /** The same, for the baked meshes this scene's registration reaches. */
+    bool seeks_vat = false;
     std::vector<std::function<void()>> deferred_builders;
     EnvironmentState environment;
     float fixed_delta_ms = 0.0f;
@@ -4207,6 +4358,24 @@ void set_composite_gizmo_local_coordinates(
     Engine& engine,
     CompositeGizmoHandle gizmo,
     bool use_local);
+// The bounding-box gizmo (`src/gizmo/bounding-box-gizmo.ts`). Its four
+// options are the members the pinned factory defaults through a `??`, and
+// each arrives as the pin's own optional so the default stays in the
+// generated body. The attach target is a transform node: upstream the
+// parameter is a SceneNode over both kinds, and what the cage reads back
+// -- the node's world matrix, and the parent chain each candidate mesh is
+// tested against -- is one identity here.
+BoundingBoxGizmoHandle create_bounding_box_gizmo(
+    Engine& engine,
+    UtilityLayerHandle layer,
+    std::optional<Vec3d> color,
+    std::optional<double> edge_thickness,
+    std::optional<double> scale_box_size,
+    std::optional<double> rotation_anchor_size);
+void attach_bounding_box_gizmo_to_node(
+    Engine& engine,
+    BoundingBoxGizmoHandle gizmo,
+    TransformNodeHandle node);
 void set_spot_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // The spot cone angle is an accessor upstream rather than a field: its setter
@@ -4385,6 +4554,7 @@ void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
 void add_asset_entities(Scene& scene, AssetHandle asset);
 AssetHandle clone_asset_root(Engine& engine, AssetHandle asset);
+MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh);
 void set_asset_root_position_component(
     Engine& engine,
     AssetHandle asset,
@@ -4501,6 +4671,43 @@ void play_animation(Engine& engine, AnimationGroupHandle group);
 void pause_animation(PropertyAnimationGroup group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
+// src/vat/vat-baker.ts: the baked vertex-animation surface. Emitted only
+// for a scene that reached mesh:vat, which is the pin's own opt-in --
+// bakeVat is the dynamic-import trigger for the whole chunk.
+VatBake bake_vat(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<AnimationGroupHandle>& groups);
+VatHandle attach_vat(
+    Engine& engine,
+    MeshHandle mesh,
+    VatBake baked,
+    const std::string& clip);
+void vat_play(
+    Engine& engine,
+    VatHandle handle,
+    const std::string& clip,
+    std::optional<double> offset,
+    std::optional<double> fps);
+void vat_update(
+    Engine& engine,
+    VatHandle handle,
+    double delta_seconds);
+void vat_set_instances(
+    Engine& engine,
+    VatHandle handle,
+    const std::vector<float>& params);
+// `baked.clips[name]`: the clip's row block. A name the bake does not
+// carry answers with a zero `frame_count`, which is the miss every
+// optional read in this port already reports through.
+VatClipRow vat_clip_row(
+    Engine& engine,
+    VatBake baked,
+    const std::string& clip);
+// This port's deterministic-pose entry point for a baked mesh, standing
+// for the frozen `play(clip, {offset: round(t*60), fps: 0})` the browser
+// harness drives scene 218 into through its ?seekTime query.
+void seek_vat(Engine& engine, float seconds);
 void set_animation_loop(
     Engine& engine,
     AnimationGroupHandle group,

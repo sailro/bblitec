@@ -42,6 +42,7 @@ import {
 } from "./pinned-material-arms.js";
 import {
     expandRuntimeMeshFeatureSets,
+    pinnedVatMeshFeatures,
     pinnedInstanceColorBit,
     pinnedMeshFeaturesFromPrimitive,
     pinnedReceiveShadowsBit,
@@ -516,6 +517,24 @@ export async function composeScenePipeline({
         ...runtimePbrMeshBits,
         ...dynamicReceiverBits,
     ];
+    // A baked mesh composes under MSH_VAT where its own attributes say
+    // MSH_HAS_SKELETON: `_computeMeshFeatures` writes the two as one
+    // either/or, so this is a REWRITE of the asset's rows rather than
+    // another bit in the runtime product. Only a scene that reached the
+    // pin's own opt-in (`bakeVat`) composes them, and both PALs perform
+    // the identical swap at the draw.
+    const hasVat = result.manifest.features.includes("mesh:vat");
+    const vatFeatureSets = async (
+        features: readonly number[],
+    ): Promise<readonly number[]> =>
+        hasVat
+            ? [
+                ...new Set([
+                    ...features,
+                    ...(await pinnedVatMeshFeatures(features)),
+                ]),
+            ].sort((left, right) => left - right)
+            : features;
     const assetMaterialMeshFeatures = expandRuntimeMeshFeatureSets(
         result.manifest.sceneMeshes.flatMap((mesh, index) =>
             mesh.assetPbrMaterial
@@ -663,14 +682,37 @@ export async function composeScenePipeline({
             materialIndexBase,
             {
                 ...assetVariantOptions,
-                ...(dynamicReceiverBits.length > 0
+                // The two are INDEPENDENT: a baked mesh rewrites its
+                // skeleton bit to MSH_VAT, and a dynamic receiver widens
+                // the same sets by the receiver bits. Chaining them as
+                // else-arms dropped the VAT rewrite from any scene that
+                // had both, and dropped the shadow lights from any scene
+                // that had a baked mesh. The base rows go through the VAT
+                // rewrite first, then the widening, then the light lists
+                // ride along when there are receivers.
+                ...(hasVat || dynamicReceiverBits.length > 0
                     ? {
                           meshFeatureSets: expandRuntimeMeshFeatureSets(
-                              gltfRenderableFeatureSets[assetIndex] ?? [],
-                              dynamicReceiverBits,
+                              hasVat
+                                  ? await vatFeatureSets(
+                                        gltfRenderableFeatureSets[
+                                            assetIndex
+                                        ] ?? [],
+                                    )
+                                  : gltfRenderableFeatureSets[assetIndex] ??
+                                    [],
+                              // The runtime product beside the rewrite: a
+                              // baked mesh that is also thin-instanced
+                              // takes the per-instance VAT arm, which the
+                              // pin derives from MSH_HAS_THIN_INSTANCES
+                              // rather than from a bit of its own.
+                              dynamicReceiverBits.length > 0
+                                  ? dynamicReceiverBits
+                                  : runtimePbrCompositionBits,
                           ),
-                          shadowLights,
-                          perMeshLightLists,
+                          ...(dynamicReceiverBits.length > 0
+                              ? { shadowLights, perMeshLightLists }
+                              : {}),
                       }
                     : {}),
             },

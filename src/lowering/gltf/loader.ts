@@ -51,6 +51,13 @@ export interface GltfLoaderOptions {
     animationAdditive?: boolean;
     /** The scene attaches this file's clips to its own manager. */
     managedGroups?: boolean;
+    /** The scene bakes a mesh's animation into a texture. Three writes in
+     *  this loader exist only for the bake -- the per-record `skinned`
+     *  flag the first-skinned search reads, the pose pass's skip for an
+     *  already-baked mesh, and the clip duration `bakeVat` sizes rows
+     *  from -- and none of the other scenes carrying this loader read
+     *  any of them. */
+    vat?: boolean;
     /** A composed skeleton variant carries the palette, lifting the
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;

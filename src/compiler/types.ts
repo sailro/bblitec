@@ -1142,6 +1142,33 @@ export type ValueKind =
   | "mesh"
   | "transform-node"
   | "morph-targets"
+  /**
+   * The baked vertex-animation texture `bakeVat` returns: the pin's
+   * `VatBakeResult`. It names a native bake record (the texture rows and
+   * the clip row map), which `attachVat` binds to the mesh that produced
+   * it.
+   */
+  | "vat-bake"
+  /**
+   * The `VatHandle` `attachVat` returns. Upstream it carries methods
+   * (`play`/`update`/`setInstances`), which is why it is a kind rather
+   * than plain data; natively it names the mesh whose `vat` record the
+   * methods write.
+   */
+  | "vat-handle"
+  /**
+   * `VatBakeResult.clips`: the bake's own clip row map. It names the bake
+   * rather than a value of its own, so a name lookup on it is the native
+   * row read below.
+   */
+  | "vat-clip-map"
+  /**
+   * One `VatClip` -- a clip's first row, frame count and native rate. The
+   * row map is filled by the bake, so this is a native record read rather
+   * than a generation-time constant: deciding the layout here would be a
+   * second implementation of the bake's own frame arithmetic.
+   */
+  | "vat-clip"
   | "node-particle-graph"
   | "node-particle-set"
   | "node-particle-system"
@@ -1276,6 +1303,11 @@ export type ValueKind =
   | "position-gizmo"
   | "rotation-gizmo"
   | "scale-gizmo"
+  // The bounding-box gizmo. Its own kind and its own record: the cage is
+  // 55 meshes laid out every frame from the attached node's bounds and
+  // world rotation, which is neither a follow over one root nor a list of
+  // sub-widgets.
+  | "bounding-box-gizmo"
   | "string"
   | "task"
   | "texture"
@@ -1326,6 +1358,8 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
     kind === "static-fetch-response" ||
     kind === "json-null" ||
     kind === "morph-targets" ||
+    // The clip row map names the bake; the row itself is a native read.
+    kind === "vat-clip-map" ||
     // A handle collection binds a name to the container the loader
     // already owns; nothing native is declared for the binding itself.
     kind === "handle-collection" ||
@@ -1978,6 +2012,12 @@ export type Feature =
   | "mesh:geometry-access"
   | "mesh:visible"
   | "mesh:pickable"
+  // Baked vertex animation. `bakeVat` is the pin's own opt-in trigger --
+  // the whole subsystem is a dynamic-import chunk behind it -- and the
+  // per-instance params texture rides its own bit because only a scene
+  // that also thin-instances the baked mesh allocates one.
+  | "mesh:vat"
+  | "mesh:vat-instances"
   | "particle:node"
   | "navigation:recast"
   | "navigation:tile-cache"
@@ -2025,6 +2065,10 @@ export type Feature =
   | "gizmo:position"
   | "gizmo:rotation"
   | "gizmo:scale"
+  // The bounding-box gizmo: its own pinned module, its own cage, and the
+  // only widget in the family whose per-frame work reads the attached
+  // subtree's vertex bounds rather than one node's world translation.
+  | "gizmo:bounding-box"
   // The shadow family, split the way upstream splits it: the filter's own
   // resources and receiver composition (`shadow:pcf`), and the scene-owned
   // frame-graph task that schedules them (`shadow:task`), which
