@@ -95,7 +95,7 @@ function pinIdentity(): string {
  * Undefined when no browser resolves; the caller then skips the cache
  * and lets the bake fail exactly as it does today.
  */
-function browserIdentity(): string | undefined {
+export function browserIdentity(): string | undefined {
     try {
         const requireModule = createRequire(import.meta.url);
         const { resolveBrowserPath } =

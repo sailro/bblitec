@@ -3,6 +3,7 @@ import {
     dirname,
     join,
     posix,
+    relative,
     resolve,
 } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,6 +26,18 @@ export interface UpstreamPin {
     package: string;
     version: string;
     sourceVersion: string;
+}
+
+/**
+ * A repository file as the manifest and its readers spell it: relative to
+ * the repository root, forward slashes, so a recorded input list compares
+ * byte for byte wherever the checkout lives.
+ */
+export function repositoryRelativePath(
+    repositoryRoot: string,
+    path: string,
+): string {
+    return relative(repositoryRoot, resolve(path)).replaceAll("\\", "/");
 }
 
 export function findRepositoryRoot(

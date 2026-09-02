@@ -81,6 +81,7 @@ export interface ShaderMaterialContext
     compileStaticString(
         expression: ts.Expression,
     ): string;
+    castNumber(value: Value, precision: "float" | "double"): string;
     compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{
@@ -809,13 +810,18 @@ export function compileShaderUniformComponents(
             context.compileNumber(element),
         );
     }
+    // A tuple's lanes are double values -- a `?? [0.7, 0.82, 0.92]` default
+    // lowers each literal as one -- while the setter takes floats, and the
+    // pin stores the value into a Float32Array. `castNumber` is the one
+    // rule for a number at a float sink: a static lane becomes a float
+    // literal, a runtime lane a `static_cast<float>`.
     const value = context.compileValue(expression);
     if (
         value.kind === "tuple" &&
         value.tupleElements?.length === count
     ) {
-        return value.tupleElements.map(
-            (element) => element.cpp,
+        return value.tupleElements.map((element) =>
+            context.castNumber(element, "float"),
         );
     }
     if (

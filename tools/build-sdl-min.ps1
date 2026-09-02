@@ -88,9 +88,13 @@ if (-not (Test-Path (Join-Path $source ".git"))) {
 # Idempotent: a patch that already sits in the working tree (a re-run on
 # a warm workspace) reverse-applies cleanly and is skipped; anything
 # else fails loudly rather than building unpatched sources.
+# The third patch is this build's own and is NOT in the overlay port's
+# list; its header says why the static shipping SDL turns the dynamic API
+# off, and docs/development.md carries what it measured.
 $patchNames = @(
     "sdl-multisample-read.patch",
-    "d3d12-multisample-lines.patch"
+    "d3d12-multisample-lines.patch",
+    "static-no-dynapi.patch"
 )
 foreach ($patchName in $patchNames) {
     $patch = Join-Path $root "native\vcpkg-overlay-ports\sdl3\$patchName"

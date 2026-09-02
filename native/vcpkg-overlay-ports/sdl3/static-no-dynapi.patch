@@ -1,0 +1,19 @@
+diff --git a/src/dynapi/SDL_dynapi.h b/src/dynapi/SDL_dynapi.h
+index 786d86e..af1c9e6 100644
+--- a/src/dynapi/SDL_dynapi.h
++++ b/src/dynapi/SDL_dynapi.h
+@@ -69,9 +69,12 @@
+ #define SDL_DYNAMIC_API 0 // we need dlopen(), but don't have it....
+ #endif
+ 
+-// everyone else. This is where we turn on the API if nothing forced it off.
++// bblitec: this SDL is linked statically into one executable that ships
++// beside no SDL to swap in, and the jump table references every public
++// entry point, which keeps every subsystem's code alive through the
++// linker's dead-stripping. Off for the trimmed shipping build only.
+ #ifndef SDL_DYNAMIC_API
+-#define SDL_DYNAMIC_API 1
++#define SDL_DYNAMIC_API 0
+ #endif
+ 
+ #endif

@@ -49,6 +49,33 @@ function digest(bytes: Buffer): string {
     return createHash("sha256").update(bytes).digest("hex");
 }
 
+/**
+ * A file's SHA-256, keyed by its size and mtime. The native source set is
+ * the same for every scene and a population run stamps every scene in one
+ * process: without this, refreshing 229 stamps re-reads and re-hashes the
+ * ~2.5 MB of handwritten sources 229 times. A file is re-hashed when its
+ * size or mtime moved, so an edit during the run is still seen.
+ */
+const digestCache = new Map<
+    string,
+    { size: number; mtimeMs: number; sha256: string }
+>();
+
+function cachedDigest(path: string): string {
+    const stat = statSync(path);
+    const cached = digestCache.get(path);
+    if (
+        cached &&
+        cached.size === stat.size &&
+        cached.mtimeMs === stat.mtimeMs
+    ) {
+        return cached.sha256;
+    }
+    const sha256 = digest(readFileSync(path));
+    digestCache.set(path, { size: stat.size, mtimeMs: stat.mtimeMs, sha256 });
+    return sha256;
+}
+
 function walkFiles(
     root: string,
     directory = root,
@@ -89,6 +116,9 @@ function compiledGeneratedFiles(
                 (path.startsWith("upstream/") &&
                     /\.(cpp|hpp)$/.test(path)),
         )
+        // The listing is not a compiled file, so the filter above already
+        // leaves it out; `isGenerationOutput` in generation-stamp.ts names
+        // the same pair when it decides what generation itself wrote.
         .filter((path) => path !== buildStampHeaderPath)
         .sort();
 }
@@ -110,33 +140,33 @@ function nativeSourceFiles(repositoryRoot: string): string[] {
 /**
  * Digest the compiled inputs of a generated scene. The result is
  * independent of the build configuration, so every build directory built
- * from this tree reports the same stamp.
+ * from this tree reports the same stamp. `generatedInputs` is the
+ * generated half already known to be current -- a stamp refresh over a
+ * tree whose generated files were just proved unchanged passes the
+ * previous listing's entries and digests only the native sources.
  */
 export function computeBuildStamp(
     generatedDirectory: string,
     repositoryRoot = process.cwd(),
+    generatedInputs?: readonly StampInput[],
 ): BuildStamp {
     const inputs: StampInput[] = [];
-    for (const path of compiledGeneratedFiles(
-        generatedDirectory,
-    )) {
-        inputs.push({
-            path: `generated/${path}`,
-            sha256: digest(
-                readFileSync(
-                    resolve(generatedDirectory, path),
-                ),
-            ),
-        });
+    if (generatedInputs) {
+        inputs.push(...generatedInputs);
+    } else {
+        for (const path of compiledGeneratedFiles(
+            generatedDirectory,
+        )) {
+            inputs.push({
+                path: `generated/${path}`,
+                sha256: cachedDigest(resolve(generatedDirectory, path)),
+            });
+        }
     }
     for (const path of nativeSourceFiles(repositoryRoot)) {
         inputs.push({
             path: `native/${path}`,
-            sha256: digest(
-                readFileSync(
-                    resolve(repositoryRoot, "native", path),
-                ),
-            ),
+            sha256: cachedDigest(resolve(repositoryRoot, "native", path)),
         });
     }
     const stamp = digest(

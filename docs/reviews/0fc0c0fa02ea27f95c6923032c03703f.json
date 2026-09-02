@@ -1,0 +1,89 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {
+      "summary": "the generation record's input digest hashed every listed file's CONTENT on every run, which read 56 MB of local assets (the Doom WAD, the glTF demos) per no-op population, and re-hashed each scene's inputs up to three times on a miss; inputs are now keyed by size and mtime like the outputs, the identity ninja trusts one step later",
+      "applied": true
+    },
+    {
+      "summary": "a stamp refresh on a hit re-read and re-hashed all generated C++ (104 MB per no-op population) that the output digest had just proved unchanged; `computeBuildStamp` now takes the recorded generated half from `build-inputs.json` and digests only the native sources, through the size/mtime-keyed `cachedDigest`",
+      "applied": true
+    },
+    {
+      "summary": "`refreshBuildStamp` digested both stamp files before and after writing them to learn what `GeneratedTree.write` already decides; `write` returns whether it wrote",
+      "applied": true
+    },
+    {
+      "summary": "the record parsed the whole `manifest.json` (2.5 MB across the registry) for a 50-byte input list; the record carries the list itself, and the manifest is read once, at record time",
+      "applied": true
+    },
+    {
+      "summary": "`compile()` kept two generation paths (single scene, many) differing only in buffering, and rebuilt the compiler arguments four times per scene; one `runConcurrently` path with `buffer: stale.length > 1`, and `compilerArguments` is a module-level function",
+      "applied": true
+    },
+    {
+      "summary": "the mid-run-edit guard made every caller pre-digest the previous input list and thread it through; `recordGeneration` now takes the launch clock reading and refuses when any input's mtime is at or past it, which also covers a first generation and a newly imported file",
+      "applied": true
+    },
+    {
+      "summary": "`generationStaleness` returned five reason strings nobody printed; it is `generationIsCurrent(): boolean`",
+      "applied": true
+    },
+    {
+      "summary": "`toolIdentity` (validation-resume.ts, private), `identity` (generation-stamp.ts) and a second `toolIdentity` (scene-command.ts) were the same six lines; the vcpkg stamp re-spelled `hashEntries` with its own `createHash`; the browser identity re-implemented bake-cache's `browserIdentity`; the record writer skipped the checkpoint writer's tmp+rename. One exported family now: `toolIdentity`, `hashEntries`, `writeJsonRecord`, `browserIdentity`",
+      "applied": true
+    },
+    {
+      "summary": "`validate` kept a second, coarser answer to 'is generation current' (`validationCompileInput` hashed every scene source directory, its output half moved on every stamp refresh) beside the per-scene records; the compile stage carries no checkpoint now and the checkpoint holds only the shader stage",
+      "applied": true
+    },
+    {
+      "summary": "the shader stage walked every scene's shader directory twice on a hit and four times on a miss, and `process` hand-rolled `validate`'s reusable/record loop for it; one walk yields both digests (`shaderDirectoryFingerprints`), the stage is a `Stage` record shared by both commands through `runStage`, and `reusable` hands its digest to `record`",
+      "applied": true
+    },
+    {
+      "summary": "`installDevelopmentVcpkg` hard-coded the triplet its stamp parameterized, and `runDevelopmentSetup` re-derived the install root and feature list `buildSetup` already computed (with a join/split round-trip of the feature list); one `installVcpkgManifest(vcpkg, install, environment)` over a `VcpkgManifestInstall` record, and `developmentVcpkgInstall()` is the one derivation",
+      "applied": true
+    },
+    {
+      "summary": "the tuple-lane float cast in `compileShaderUniformComponents` was a third hand-rolled copy of the width rule, and it double-wrapped `tupleComponents`, which already casts; the lanes go through `castNumber`, the one rule for a number at a float sink (a static lane becomes a float literal)",
+      "applied": true
+    },
+    {
+      "summary": "`repositoryRelative` was exported and never called while its formula was inlined in cli.ts and spelled a third way in program.ts; `repositoryRelativePath` in upstream-source.ts, beside `findRepositoryRoot`, is the one spelling. The asset-source classification (`assetBytes`) and the input listing shared one predicate too: `localAssetPath`, so a source read from disk is always one the record can see, and `isDataUrl` replaces a full data-URL decode used only to classify",
+      "applied": true
+    },
+    {
+      "summary": "the PCH list restated the standard headers `runtime.hpp` already brings, its comment repeated the docs' measurement, and it defaulted ON for the one-off shipping shape; the list is the four repository headers plus what the PAL units include beyond them, and it defaults OFF under `BBLITE_MINSIZE`",
+      "applied": true
+    },
+    {
+      "summary": "`build-rmlui.ps1 -StaticRuntime` embedded a third vswhere discovery ladder for vcpkg; it takes `-Vcpkg` (defaulting from `VCPKG_ROOT`) and re-installs when the manifest or registry configuration is newer than the installed headers",
+      "applied": true
+    },
+    {
+      "summary": "the dynamic-API rationale was written four times (patch header, SDL script, docs, TODO), and docs paragraphs carried before-numbers, discovery narrative and closed conclusions; the patch header carries the mechanism, the docs the measurement, the script and TODO point at them, and the closed conclusions (MSVC beats clang-cl -Oz, no Dawn option remains) moved from the TODO into the docs' size section",
+      "applied": true
+    },
+    {
+      "summary": "the generation-stamp test repeated its setup/teardown four times with drift; `beforeEach`/`afterEach`",
+      "applied": true
+    },
+    {
+      "summary": "`hostOfflineShaderTarget(process.platform, process.env.BBLITE_SHADER_TARGET)` was spelled four times in scene-command.ts, `BBLITE_COLD_BUILD === \"1\"` three times; `shaderTarget()` and `coldBuild()`",
+      "applied": true
+    },
+    {
+      "summary": "the same tuple-lane hand-rolled casts pre-exist in `statements.ts` (`setCallComponents`), `sprite.ts` (`tupleOption` and four sibling sites) and `sprite-atlas-record.ts`, none consulting `staticNumber`, so each emits `static_cast<float>(<double literal>)` where `castNumber` would emit a float literal; routing them through `castNumber` moves generated bytes for every sprite and billboard scene",
+      "applied": false,
+      "blockedBy": "a generated-tree change across the sprite and billboard families that needs its own `neutrality-generated` pass and corpus re-measurement; the sites are outside the reviewed diff and none of them trips a warning today",
+      "filedIn": "TODO.md, under 'Route inline return expressions through double precision', the entry that already owns the width-on-the-Value work"
+    },
+    {
+      "summary": "the optional-codec pair `jpeg, webp` is spelled in cli.ts, native/vcpkg.json, native/CMakeLists.txt, tools/package-demo.ps1, feature-activation.ts and now the SDL_image overlay portfile's comment",
+      "applied": false,
+      "blockedBy": "five of the six are different layers (a TypeScript scan, a vcpkg manifest, a CMake feature map, a PowerShell packager, an activation inventory) with no shared reader; deriving them from one list needs a generated manifest fragment, which nothing produces today",
+      "filedIn": "TODO.md, under 'Reduce the shipping executable further', where the codec facts already live"
+    }
+  ]
+}

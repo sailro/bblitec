@@ -62,6 +62,15 @@ export interface CompileOptions {
 
 export interface CompileManifest {
   source: string;
+  /**
+   * Every repository file this generation read, as sorted forward-slash
+   * paths relative to the repository root: the entry and the modules it
+   * imports (the compiler's half), plus the host-UI companion and any
+   * local asset the CLI materialized. `scene -- compile` hashes exactly
+   * these to prove a scene's inputs unchanged and skip regenerating it, so
+   * a read that is not listed here is a read the skip cannot see.
+   */
+  inputs: string[];
   features: string[];
   /** The explicit surface sample count, absent when the pin's default applies. */
   engineMsaaSamples?: 1 | 4;
