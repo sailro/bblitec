@@ -1645,6 +1645,12 @@ MaterialHandle create_standard_material(Engine& engine) {
     material.specular_power = ${scalar("specularPower")};
     material.emissive_factor = ${tuple("emissiveColor")};
     material.ambient_color = ${tuple("ambientColor")};
+    // MaterialRecord's own default is the glTF MASK cutoff, which the
+    // loader wants and this factory does not: the pin ships
+    // \`alphaCutOff: 0\`, no alpha test at all. Folding it here is what
+    // keeps a scene-created Standard material from discarding the texels
+    // a loaded one is supposed to.
+    material.alpha_cutoff = ${scalar("alphaCutOff")};
     engine.materials.push_back(material);
     return MaterialHandle{static_cast<std::uint32_t>(engine.materials.size() - 1)};
 }

@@ -3,8 +3,11 @@ import { dirname, resolve } from "node:path";
 import ts from "typescript";
 import { CompileAsset } from "./compiler.js";
 import {
+    GAUSSIAN_SPLATTING_EXTENSION,
+    GAUSSIAN_SPLAT_DOCUMENT_KEY,
     asObject,
     asRecords,
+    primitiveRecords,
     asString,
     asStrings,
     parseGlbJson,
@@ -45,6 +48,8 @@ interface GltfSpecialization {
         occlusionUv2: boolean;
         eightInfluenceSkinning: boolean;
         dispersionReached: boolean;
+        /** The packaged document carries converted Gaussian-splat clouds. */
+        gaussianSplats: boolean;
     };
 }
 
@@ -142,10 +147,6 @@ function renderItemSpecializations(
     return result;
 }
 
-function primitiveRecords(document: JsonRecord): JsonRecord[] {
-    return asRecords(document.meshes).flatMap((mesh) => asRecords(mesh.primitives));
-}
-
 function hasExtras(document: JsonRecord): boolean {
     const collections: unknown[] = [
         document.asset,
@@ -206,6 +207,9 @@ const supportedExtensions = new Set<string>([
     // packaged document drops the extension, so the loader that ships sees an
     // ordinary asset. Listed for the same reason as the two above.
     "KHR_mesh_quantization",
+    // Resolved by the same module through the pin's own hooks; a survivor is
+    // refused by name beside the sparse one, below.
+    GAUSSIAN_SPLATTING_EXTENSION,
 ]);
 
 /** Metadata-only extensions with no rendering effect on either side. */
@@ -296,6 +300,16 @@ function refuseUnsupportedGltf(
             `${assetName}: a sparse glTF accessor survived packaging, so ` +
                 `the pinned gltf-feature-sparse preParse did not run over ` +
                 `this document.`,
+        );
+    }
+    // The same rule for KHR_gaussian_splatting (see gltf-document.ts): the
+    // generated loader carries no reader for a POINTS primitive whose
+    // ellipsoid lives in custom vertex attributes.
+    if (extensionsUsed.includes(GAUSSIAN_SPLATTING_EXTENSION)) {
+        throw new Error(
+            `${assetName}: ${GAUSSIAN_SPLATTING_EXTENSION} survived ` +
+                `packaging, so the pinned Gaussian-splatting conversion did ` +
+                `not run over this document.`,
         );
     }
     for (const material of asRecords(document.materials)) {
@@ -537,8 +551,9 @@ export function specializeGltf(
         (primitive) =>
             typeof primitive.mode === "number" &&
             primitive.mode !== 4 &&
-            asObject(primitive.extensions)?.["KHR_gaussian_splatting"] ===
-                undefined,
+            asObject(primitive.extensions)?.[
+                GAUSSIAN_SPLATTING_EXTENSION
+            ] === undefined,
     );
     const nonTrianglePrimitives = exoticPrimitives.length > 0;
     // A triangle strip is excluded because the loader expands one into the
@@ -674,8 +689,32 @@ export function specializeGltf(
             occlusionUv2,
             eightInfluenceSkinning,
             dispersionReached,
+            gaussianSplats: hasGaussianSplats(document),
         },
     };
+}
+
+/**
+ * Whether packaging left converted Gaussian-splat clouds on this document.
+ *
+ * `KHR_gaussian_splatting`'s conversion happens at generation, so what the
+ * loader ships against is the row buffer rather than the extension — which
+ * packaging drops. Both readers ask the rows for that reason.
+ */
+function hasGaussianSplats(document: JsonRecord): boolean {
+    return asRecords(document[GAUSSIAN_SPLAT_DOCUMENT_KEY]).length > 0;
+}
+
+/**
+ * The same question off a materialized asset, for the feature join.
+ *
+ * `loader:splat` selects the generated splat translation units, and only the
+ * runtime feature list can do that — so an asset that carries clouds joins it
+ * after materialization, exactly as an asset's own punctual lights join
+ * `light:*`.
+ */
+export function gltfHasGaussianSplats(path: string): boolean {
+    return hasGaussianSplats(parseGlbJson(path));
 }
 
 export interface AssetSpecializationFeatures {
@@ -717,6 +756,12 @@ export interface AssetSpecializationFeatures {
     occlusionUv2: boolean;
     /** Any asset carries JOINTS_1/WEIGHTS_1 the pin would skin and this port truncates. */
     eightInfluenceSkinning: boolean;
+    /**
+     * Any asset carries Gaussian-splat clouds. The asset alone decides: no
+     * scene API reaches the extension, as none reaches the spec-gloss
+     * workflow replacement.
+     */
+    gaussianSplats: boolean;
 }
 
 export function emitAssetSpecializations(
@@ -748,6 +793,7 @@ export function emitAssetSpecializations(
             dispersion: false,
             occlusionUv2: false,
             eightInfluenceSkinning: false,
+            gaussianSplats: false,
         };
     }
     let nextDrawId = 1;
@@ -859,6 +905,9 @@ export function emitAssetSpecializations(
         eightInfluenceSkinning: specializations.some(
             (specialization) =>
                 specialization.features.eightInfluenceSkinning,
+        ),
+        gaussianSplats: specializations.some(
+            (specialization) => specialization.features.gaussianSplats,
         ),
     };
 }

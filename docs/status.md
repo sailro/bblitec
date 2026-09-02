@@ -111,6 +111,7 @@ collision-event variant of scene 40
 | 87 | <img src="images/scenes/scene87.png" alt="Scene 87 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | NME Iridescence and Image Processing |
 | 88 | <img src="images/scenes/scene88.png" alt="Scene 88 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Loop Block |
 | 89 | <img src="images/scenes/scene89.png" alt="Scene 89 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Storage Blocks |
+| 90 | <img src="images/scenes/scene90.png" alt="Scene 90 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | CSG Operations |
 | 92 | <img src="images/scenes/scene92.png" alt="Scene 92 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Custom Shader |
 | 93 | <img src="images/scenes/scene93.png" alt="Scene 93 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Palette Shader |
 | 94 | <img src="images/scenes/scene94.png" alt="Scene 94 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Custom Shader |
@@ -124,6 +125,7 @@ collision-event variant of scene 40
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | No-Color Depth Views |
 | 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 2D Sprite Picking |
+| 118 | <img src="images/scenes/scene118.png" alt="Scene 118 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprite Picking |
 | 120 | <img src="images/scenes/scene120.png" alt="Scene 120 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting |
 | 125 | <img src="images/scenes/scene125.png" alt="Scene 125 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Transform Bake |
 | 126 | <img src="images/scenes/scene126.png" alt="Scene 126 rendering" width="160"> | 0.000 / 0.001 | 0.002 / 0.005 | Gaussian Splat Shader Plugin |
@@ -177,9 +179,12 @@ collision-event variant of scene 40
 | 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | BrainStem Meshopt |
 | 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="160"> | 0.014 / 0.016 | 0.010 / 0.011 | Dispersion Test |
 | 213 | <img src="images/scenes/scene213.png" alt="Scene 213 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Grid Material Ordering |
+| 214 | <img src="images/scenes/scene214.png" alt="Scene 214 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cascaded Shadow Torus Knots |
+| 215 | <img src="images/scenes/scene215.png" alt="Scene 215 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Cascaded Shadows On A PBR Receiver |
 | 216 | <img src="images/scenes/scene216.png" alt="Scene 216 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Fog |
 | 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Plugins |
 | 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Quantized Duck |
+| 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animated Triangle |
 | 242 | <img src="images/scenes/scene242.png" alt="Scene 242 rendering" width="160"> | 0.000 / 0.004 | 0.000 / 0.004 | Emissive Fireflies |
@@ -275,4 +280,3 @@ a project-owned gate when it reaches the same contract.
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |
 | shadow-pbr-only | <img src="images/scenes/regression-shadow-pbr-only.png" alt="PBR shadows without Standard rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Shadow Receiver Without Standard |
-| torus-knot | <img src="images/scenes/regression-torus-knot.png" alt="Torus knot builder rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Torus Knot Builder |

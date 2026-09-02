@@ -463,10 +463,14 @@ decode helpers in `native/src/pal_gpu_shared.hpp` (`GpuVertex`,
   and one sample. A receiving draw binds the pin's group 2 — map, comparison
   sampler, receiver block — built once per frame graph and shared across
   receivers, the cache `rebuildSingle` keys by layout. Dawn builds that layout
-  from the generator count (three bindings per light, in `scene.lights` order)
-  rather than by reflection, since `createShadowFragment` fixes the shape;
-  SDL_GPU binds it from the sidecar, where the receiver block is an `r` row
-  because the demotion moved it past the four-uniform cap.
+  from the composed text's own reflected rows rather than from a generator
+  count: `createShadowFragment` picks each binding's TYPE from its own light's
+  filter, so a scene mixing filters declares a `texture_depth_2d` beside a
+  `texture_2d<f32>`, and a cascaded light declares a `texture_depth_2d_array`
+  whose info row is 320 bytes against a single-map 96 — none of which a count
+  can express. SDL_GPU binds it from the sidecar, where the receiver block is
+  an `r` row because the demotion moved it past the four-uniform cap; a
+  cascaded `csmInfo_N` takes that same demotion.
 - **Frame graph**: tasks replace the main pass exactly as the SDL task loop
   does. Colour render tasks draw their `build_render_task_draw_lists` lists
   into render targets with pipelines selected by sample count and depth

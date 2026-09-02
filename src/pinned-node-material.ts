@@ -437,6 +437,21 @@ export async function composeNodeMaterial(
         blockEmitters = [],
         castsPcfShadow = false,
     } = options;
+    // `emitShadow` types its slots `"esm" | "pcf"` and forks on
+    // `shadowType === "pcf"`, so a cascaded slot would silently take the
+    // ESM arm -- a float map and a plain sampler against a generator that
+    // renders a comparison-sampled depth array. The node family has no CSM
+    // arm upstream, so a graph receiving from one refuses by name.
+    const csm = shadowLights.find((slot) => slot.shadowType === "csm");
+    if (csm) {
+        throw new Error(
+            `Node material '${label}' receives from the cascaded shadow ` +
+                `generator on light ${csm.lightIndex}. ` +
+                "`material/node/node-shadow.ts#emitShadow` carries only " +
+                "the ESM and PCF arms, and would compose the ESM one for " +
+                "a cascaded slot.",
+        );
+    }
     const module = await importPinnedModule<PinnedNodeMaterialModule>(
         "material/node/node-material.js",
     );

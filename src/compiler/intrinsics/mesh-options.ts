@@ -36,6 +36,30 @@ export interface MeshOptionContext
     ): string;
 }
 
+/**
+ * The option names each builder accepts, spelled once.
+ *
+ * Every reader of a builder's options -- the validation here, the static
+ * record arm beside it, and the CSG source descriptor in `mesh.ts` --
+ * has to agree about the set, because an option one of them ignores is
+ * an option that silently stops reaching the geometry. A pinned builder
+ * that grows one therefore has one list to move.
+ */
+export const BOX_OPTION_NAMES = [
+    "size",
+    "width",
+    "height",
+    "depth",
+] as const;
+
+export const SPHERE_OPTION_NAMES = [
+    "segments",
+    "diameter",
+    "diameterX",
+    "diameterY",
+    "diameterZ",
+] as const;
+
 export function compileBoxOptions(
     context: MeshOptionContext,
     expression: ts.Expression,
@@ -45,7 +69,7 @@ export function compileBoxOptions(
         validateObjectProperties(
             context,
             unwrapped,
-            ["size", "width", "height", "depth"],
+            BOX_OPTION_NAMES,
             "Box options support size, width, height, and depth.",
         );
         const size = context.objectProperty(unwrapped, "size");
@@ -187,13 +211,9 @@ export function compileSphereOptions(
                 "Expected sphere options as an object literal or static record.",
             );
         }
-        const supported = new Set([
-            "segments",
-            "diameter",
-            "diameterX",
-            "diameterY",
-            "diameterZ",
-        ]);
+        const supported: ReadonlySet<string> = new Set(
+            SPHERE_OPTION_NAMES,
+        );
         for (const name of Object.keys(
             record.recordProperties,
         )) {
@@ -262,13 +282,7 @@ export function compileSphereOptions(
     validateObjectProperties(
         context,
         object,
-        [
-            "segments",
-            "diameter",
-            "diameterX",
-            "diameterY",
-            "diameterZ",
-        ],
+        SPHERE_OPTION_NAMES,
         "Sphere options support segments, diameter, diameterX, diameterY, and diameterZ.",
     );
     const segments = context.objectProperty(object, "segments");

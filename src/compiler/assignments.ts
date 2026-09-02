@@ -118,6 +118,19 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     value: "number",
   },
   {
+    // src/material/standard/standard-material.ts: "Fragments with
+    // `alpha < alphaCutOff` are discarded." It is a plain number field,
+    // not a composition key -- `_computeStandardMaterialFeatures` never
+    // reads it, `writeStdMaterialData` writes it at data[19], and every
+    // composed Standard fragment already carries the unconditional
+    // `if (_ds.a < mat.aCut) { discard; }`. So the write is one store.
+    kind: "material",
+    property: "alphaCutOff",
+    collection: "materials",
+    field: "alpha_cutoff",
+    value: "number",
+  },
+  {
     kind: "material",
     property: "disableLighting",
     collection: "materials",

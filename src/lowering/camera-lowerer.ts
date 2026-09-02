@@ -151,6 +151,12 @@ export class CameraLowerer {
     ): LoweredSource {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
+        // Anchored rather than transcribed: `camera_position` below is
+        // this two-line function, and a pin that stopped reading the
+        // world matrix would have to fail here.
+        const positionModule = "src/camera/camera.ts";
+        const positionSymbol = "getCameraPosition";
+        this.context.functionDeclaration(positionModule, positionSymbol);
         const { file, declaration } = this.context.functionDeclaration(modulePath, symbolName);
         const poleAssignments = this.context
             .findNodes(
@@ -238,6 +244,7 @@ using CameraMatrixScalar = ${highPrecisionMatrix ? "double" : "float"};
 
 std::array<CameraMatrixScalar, 16> camera_world_matrix(
     const CameraRecord& camera);
+Vec3d camera_position(const CameraRecord& camera);
 
 } // namespace bbl::upstream
 `,
@@ -334,6 +341,21 @@ std::array<CameraMatrixScalar, 16> camera_world_matrix(
         : local;
 }
 ` : ""}
+// ${this.context.provenance(positionModule, positionSymbol)}
+// \`const w = camera.worldMatrix; return { x: w[12], y: w[13], z: w[14] }\`.
+// The lanes are read out of the STORED matrix, so what a scene observes is
+// the rounded store rather than the double the eye was composed at -- which
+// is the whole reason this reads the matrix instead of recomposing the eye.
+// One composition, not three: every caller wants all three lanes.
+Vec3d camera_position(const CameraRecord& camera) {
+    const std::array<CameraMatrixScalar, 16> world =
+        camera_world_matrix(camera);
+    return Vec3d{
+        static_cast<double>(world[12]),
+        static_cast<double>(world[13]),
+        static_cast<double>(world[14])};
+}
+
 } // namespace bbl::upstream
 
 namespace bbl {

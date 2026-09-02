@@ -26,6 +26,8 @@ import {
 const meshShaderModule = "picking/picking-shader.js";
 /** The pinned module that builds the cloud half. */
 const cloudPipelineModule = "picking/gs-picking-pipeline.js";
+/** The pinned module that builds a billboard system's half. */
+const billboardPipelineModule = "picking/billboard-pick-pipeline.js";
 
 interface MeshShaderExports {
     pickingShaderSource(options?: {
@@ -37,6 +39,17 @@ interface MeshShaderExports {
 
 interface CloudPipelineExports {
     buildPickingWgsl(detailed: boolean): string;
+}
+
+/** The orientations the pin's billboard basis forks on. */
+export type BillboardPickOrientation = "facing" | "axis-locked";
+
+interface BillboardPipelineExports {
+    makeBillboardPickWgsl(
+        orientation: BillboardPickOrientation,
+        isCutout: boolean,
+        detailed: boolean,
+    ): string;
 }
 
 /**
@@ -69,4 +82,31 @@ export async function composeCloudPickingShader(): Promise<string> {
             ["buildPickingWgsl"],
         );
     return pinned.buildPickingWgsl(false);
+}
+
+/**
+ * One billboard system's picking module.
+ *
+ * The pin's own builder, for the same reason the other two are executed:
+ * its vertex stage reproduces the RENDER shader's quad math term for term
+ * -- corner, pivot, rotation, camera basis -- and a transcription that
+ * drifted from it by one term would pick a pixel the renderer did not
+ * draw. The basis is the one arm that forks, and it forks on the system's
+ * orientation exactly as `makeBillboardBasisWgsl` does for the visible
+ * stage.
+ *
+ * `false` for `detailed` is the same non-detailed arm the other two take;
+ * `isCutout` is refused at generation rather than passed, because a cutout
+ * system's pick draw binds the atlas its discard samples and no reached
+ * scene composes one.
+ */
+export async function composeBillboardPickingShader(
+    orientation: BillboardPickOrientation,
+): Promise<string> {
+    const pinned =
+        await importPinnedModuleWithExports<BillboardPipelineExports>(
+            billboardPipelineModule,
+            ["makeBillboardPickWgsl"],
+        );
+    return pinned.makeBillboardPickWgsl(orientation, false, false);
 }

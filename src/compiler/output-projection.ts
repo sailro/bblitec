@@ -74,6 +74,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:standard-emissive-file-texture": [],
     "material:standard-vertex-colors": [],
     "mesh:box": [],
+    "mesh:csg": [],
     "mesh:from-data": [],
     "mesh:update-positions": [],
     "mesh:ground": [],
@@ -100,11 +101,12 @@ export const featureSources: Record<Feature, string[]> = {
     "mesh:parenting": [],
     "mesh:geometry-access": [],
     "picking:gpu": [],
+    "picking:billboard": [],
     "scene:remove": [],
     "shadow:esm": [],
     "shadow:pcf": [],
     "shadow:pcf-directional": [],
-    "shadow:csm-single-map": [],
+    "shadow:csm": [],
     "shadow:task": [],
     "sprite:2d": [],
     "sprite:2d-depth-host": [],
@@ -216,8 +218,15 @@ function markUnreferencedLocals(body: string[]): void {
     // Initialized locals, and the empty `std::optional<...>` storage a
     // materialized module predeclares for a nullable resource: a browser-only
     // element whose writers the bake erased is declared and never read.
+    //
+    // `static` is part of the declaration because a local the entry body
+    // binds AFTER `startEngine` is hoisted to static storage for the
+    // deferred continuation that reads it — and a binding whose only later
+    // reader is a barrier (`await splat.firstSortReady`) is exactly the
+    // shape this pass exists for. Attributes precede the specifier, so the
+    // insertion point is the same one.
     const declaration =
-        /^(\s*)((?:auto|double) |std::optional<[^;=]*> )([A-Za-z_][A-Za-z0-9_]*)(?: = |;)/;
+        /^(\s*)((?:static )?(?:(?:auto|double) |std::optional<[^;=]*> ))([A-Za-z_][A-Za-z0-9_]*)(?: = |;)/;
     const counts = new Map<string, number>();
     for (const line of body) {
         for (const name of line.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {

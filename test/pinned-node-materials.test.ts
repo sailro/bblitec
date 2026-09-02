@@ -134,6 +134,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
+        gaussianSplats: false,
         nodeVisibility: false,
         gltfNodeVisibility: false,
         spriteCustomShaders: [],
@@ -188,10 +189,10 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
 test("both native node paths bind per-mesh morph storage and its fallback", () => {
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
     const drawStart = sdl.indexOf("void draw_node_variant(");
-    const drawEnd = sdl.indexOf(
-        "\n}\n#endif\n\n#if BBLITE_SHADOW_RECEIVERS",
-        drawStart,
-    );
+    // The function's own closing brace at column zero, rather than
+    // whatever declaration happens to follow it -- an anchor on the
+    // next section broke the moment one was inserted between them.
+    const drawEnd = sdl.indexOf("\n}\n", drawStart);
     assert.ok(drawStart >= 0 && drawEnd > drawStart);
     const drawNode = sdl.slice(drawStart, drawEnd);
     const resolverStart = drawNode.indexOf("const auto resolve_storage");

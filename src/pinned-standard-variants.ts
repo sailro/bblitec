@@ -67,7 +67,10 @@
  * throws by name below — the wave-D worklist, not a silent approximation.
  */
 import ts from "typescript";
-import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
+import {
+    reachCsmReceiverFactories,
+    type ShadowLightSlot,
+} from "./pinned-shadow-slots.js";
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
@@ -485,13 +488,6 @@ export async function composePinnedStandardVariant(
                     "`scene.lights`.",
             );
         }
-        if (shadowLights.some((slot) => slot.shadowType === "csm")) {
-            throw new Error(
-                "The CSM receiver fragment is not composable: it resolves " +
-                    "through the cascaded receiver registry, which this " +
-                    "port does not build.",
-            );
-        }
     }
     if (
         meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR &&
@@ -561,6 +557,10 @@ export async function composePinnedStandardVariant(
                 slots: readonly ShadowLightSlot[],
             ) => unknown;
         }>("material/standard/fragments/std-shadow-fragment.js");
+        // Before `createStdShadowFragment` asserts a `"csm"` slot's factory
+        // is non-null; the trigger and why it is the pin's own are stated
+        // once, at `reachCsmReceiverFactories`.
+        await reachCsmReceiverFactories(shadowLights);
         fragments.push(shadow.createStdShadowFragment(shadowLights));
     }
     // `rebuildSingle` builds the shared thin-instance fragment at the

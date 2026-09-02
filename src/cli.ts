@@ -9,6 +9,7 @@ import {
     renderFeaturesCmake,
 } from "./compiler.js";
 import {
+    composeBillboardPickingShader,
     composeCloudPickingShader,
     composeMeshPickingShader,
 } from "./pinned-picking-shaders.js";
@@ -29,7 +30,6 @@ import {
     readPinnedMaxLights,
     type UpstreamEmitOptions,
 } from "./upstream-lower.js";
-import { emitAssetSpecializations } from "./asset-specializer.js";
 import { composeEsmShadow } from "./pinned-esm-shadow.js";
 import {
     composeComposite,
@@ -71,6 +71,10 @@ import {
     gltfLightKinds,
     gltfLightNodeCount,
 } from "./pinned-material-arms.js";
+import {
+    emitAssetSpecializations,
+    gltfHasGaussianSplats,
+} from "./asset-specializer.js";
 import {
     babylonLights,
     reachedDiffuseUv2,
@@ -864,6 +868,14 @@ async function main(): Promise<void> {
         if (gltfHasImageBasedLight(assetPath)) {
             assetFeatures.push("environment:ibl" as Feature);
         }
+        // KHR_gaussian_splatting resolves to the pin's own splat row buffer
+        // at packaging, and the clouds the loader then builds draw through
+        // the generated splat pipeline -- which `loader:splat` is what
+        // selects. No scene API names the extension, so the asset joins the
+        // feature the way its punctual lights join `light:*`.
+        if (gltfHasGaussianSplats(assetPath)) {
+            assetFeatures.push("loader:splat" as Feature);
+        }
         for (const feature of assetFeatures) {
             if (!result.manifest.features.includes(feature)) {
                 result.manifest.features.push(feature);
@@ -933,11 +945,35 @@ async function main(): Promise<void> {
     // A GPU pick draws through the pin's own two modules. Both are
     // executed rather than re-typed, for the reason every composed stage
     // here is: what deploys must be the text the browser compiled.
+    // A contributor's module is composed only where its own entity can be
+    // picked, which is the pin's own pay-for-use rule: the picker
+    // dynamic-imports each pick source's pipeline, so a scene with no
+    // cloud and no billboard system fetches neither.
     const pickingShaders = result.manifest.features.includes("picking:gpu")
         ? {
               mesh: await composeMeshPickingShader(),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
+                  : {}),
+              ...(result.manifest.features.includes("picking:billboard")
+                  ? {
+                        billboard: {
+                            facing:
+                                await composeBillboardPickingShader(
+                                    "facing",
+                                ),
+                            ...(result.manifest.features.includes(
+                                "sprite:billboard-axis-locked",
+                            )
+                                ? {
+                                      axisLocked:
+                                          await composeBillboardPickingShader(
+                                              "axis-locked",
+                                          ),
+                                  }
+                                : {}),
+                        },
+                    }
                   : {}),
           }
         : undefined;
@@ -1063,6 +1099,9 @@ async function main(): Promise<void> {
             result.manifest.features.includes("mesh:morph-targets"),
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
+        // No scene API reaches KHR_gaussian_splatting, so the asset alone
+        // decides -- the shape the spec-gloss workflow replacement takes.
+        gaussianSplats: specializationFeatures.gaussianSplats,
         // Both halves of the same lane: an asset's KHR_node_visibility
         // materializes the cascade at load, and scene code writes the same
         // per-mesh boolean directly. Either reaches the render-plan skip

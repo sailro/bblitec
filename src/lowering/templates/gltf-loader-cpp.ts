@@ -3,6 +3,9 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 // template through gltf/loader.ts, so a value import of the barrel here
 // would be a runtime cycle.
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
+// The document key packaging names the converted Gaussian-splat rows under,
+// from the module that owns the document schema both sides read.
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -266,6 +269,7 @@ export function gltfLoaderCpp(
         managedGroups = false,
         pinnedSkeletonPalette = false,
         nonTrianglePrimitives = false,
+        gaussianSplats = false,
         animationMask = false,
         animationSpeedRatio = false,
         nodeVisibility = false,
@@ -377,6 +381,30 @@ std::vector<double> double_array(const ts::JsonValue* value) {
     }
     return result;
 }
+
+${assetTransmission || gaussianSplats ? `
+/**
+ * Appends one feature's scene wiring to the container's.
+ *
+ * Upstream every loader feature contributes its own _sceneSetup and
+ * addToScene runs them; this port keeps one slot and chains, so the rule
+ * -- earlier contributors run first, and an empty slot is not called -- is
+ * spelled once rather than per feature.
+ *
+ * Emitted with its callers: a document with neither contributor chains
+ * nothing, and an unused static function is an error under -Werror.
+ */
+void chain_scene_setup(
+    AssetRecord& asset,
+    std::function<void(Scene&)> next) {
+    asset.scene_setup =
+        [previous = std::move(asset.scene_setup),
+         next = std::move(next)](Scene& scene) {
+        if (previous) previous(scene);
+        next(scene);
+    };
+}
+` : ""}
 
 struct BufferViewInfo {
     std::size_t offset = 0;
@@ -2274,14 +2302,50 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             }
         }
         if (transmissive_surface) {
-            std::function<void(Scene&)> previous_setup =
-                asset.scene_setup;
-            asset.scene_setup =
-                [previous_setup](Scene& scene) {
-                if (previous_setup) previous_setup(scene);
+            chain_scene_setup(asset, [](Scene& scene) {
                 enable_scene_transmission(scene);
-            };
+            });
         }
+    }` : ""}${gaussianSplats ? `
+    // KHR_gaussian_splatting: packaging ran the pin's own preParse and
+    // applyAsset over this document (compressed-geometry.ts), so what is left
+    // of the extension is the 32-byte-per-splat row buffer each GS primitive
+    // converted to, appended as an ordinary bufferView. Building the cloud is
+    // the engine half of the pin's attachParsedSplat; registering it on a
+    // scene is the scene half, which the container's own scene hook performs
+    // -- exactly where the pinned feature's _sceneSetup performs it.
+    if (const ts::JsonValue* gaussian_splat_value =
+            optional(document, "${GAUSSIAN_SPLAT_DOCUMENT_KEY}")) {
+        for (const ts::JsonValue& entry_value :
+                gaussian_splat_value->as_array()) {
+            const JsonObject& entry = entry_value.as_object();
+            const BufferViewInfo& view =
+                views.at(unsigned_value(required(entry, "bufferView")));
+            const std::uint8_t* rows =
+                buffer.data() + container.bin_offset + view.offset;
+            const SplatMeshHandle splat = create_gaussian_splatting_mesh(
+                engine,
+                string_or(entry, "name"),
+                std::vector<std::uint8_t>(rows, rows + view.length));
+            // The TRS the pinned scene wiring writes on the cloud it just
+            // attached, observed at generation rather than restated: the glTF
+            // splat convention and the .ply one differ by a half turn about
+            // Z, and the pin corrects it on the node rather than in the rows.
+            const std::vector<float> rotation =
+                float_array(optional(entry, "rotation"));
+            if (rotation.size() == 3u) {
+                engine.splat_meshes[splat.value].rotation =
+                    Vec3{rotation[0], rotation[1], rotation[2]};
+            }
+            asset.gaussian_splats.push_back(splat);
+        }
+        chain_scene_setup(
+            asset,
+            [attached = asset.gaussian_splats](Scene& scene) {
+            for (const SplatMeshHandle splat : attached) {
+                attach_gaussian_splatting_mesh(scene, splat);
+            }
+        });
     }` : ""}
 ${animationPointer ? `    // Runtime lights indexed by their KHR_lights_punctual definition index,
     // which is the index a light pointer names.
@@ -5232,7 +5296,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             "for an animated glTF; this file declares skins and carries "
             "no animations.");
     }` : ""}
-    if (asset.meshes.empty()) throw std::runtime_error("glTF contains no renderable meshes.");
+    if (asset.meshes.empty()${gaussianSplats ? " && asset.gaussian_splats.empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }

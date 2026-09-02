@@ -294,7 +294,11 @@ export interface UpstreamEmitOptions {
      * pin's own builders. `cloud` is absent when no Gaussian cloud can be
      * picked, which is the same condition that loaded one.
      */
-    pickingShaders?: { mesh: string; cloud?: string };
+    pickingShaders?: {
+        mesh: string;
+        cloud?: string;
+        billboard?: { facing: string; axisLocked?: string };
+    };
     /**
      * What each reached composite's own factory built, in reach order. Its
      * passes are numbered after every plain pass, so one table indexes both.
@@ -309,6 +313,8 @@ export interface UpstreamEmitOptions {
     animatedWorldBounds: boolean;
     morphStorage: boolean;
     nonTrianglePrimitives: boolean;
+    /** Any loaded glTF carries packaged Gaussian-splat clouds. */
+    gaussianSplats: boolean;
     /**
      * A mesh's `visible` lane is read at all: the renderer's plan skip and
      * the camera's bounds skip. Raised by an asset's KHR_node_visibility OR
@@ -1085,6 +1091,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         options.pinnedSkeletonPalette ?? false,
                     nonTrianglePrimitives:
                         options.nonTrianglePrimitives,
+                    gaussianSplats: options.gaussianSplats,
                     animationMask: features.includes(
                         "animation:gltf-group-mask",
                     ),
@@ -2116,32 +2123,77 @@ ${shadow.blurFragmentWgsl}`,
                 "upstream/include/bblite/upstream/navigation.hpp",
             );
         }
-        if (features.includes("picking:gpu")) {
-            // Refused where the whole feature list is known rather than at
-            // the `createGpuPicker` call site: a thin-instanced mesh may be
-            // created after the picker, so no single call site can see it.
-            // The pin composes the instance stream into the id through
-            // `picking-advanced-pipeline.ts`, which this port does not
-            // build, so a pick would answer with the wrong node rather
-            // than fail.
-            const thinInstanceFeature = [
+        // Feature PAIRS this port refuses, checked where the whole
+        // feature list is known rather than at a call site: the second
+        // half of each pair can be reached after the first — a
+        // thin-instanced mesh created after `createGpuPicker`, a caster
+        // list filled after the generator — so no single call site sees
+        // both. Each names the mechanism the pin composes and this port
+        // does not, so the refusal says what would be wrong rather than
+        // that something is unsupported.
+        for (const [reached, paired, reason] of [
+            [
+                "picking:gpu",
                 "mesh:thin-instances",
+                "GPU picking and thin instances compose only through " +
+                    "the pin's advanced picking pipeline, which this " +
+                    "port does not build.",
+            ],
+            [
+                "picking:gpu",
                 "mesh:thin-instances-dynamic",
-            ].find((feature) => features.includes(feature));
-            if (thinInstanceFeature !== undefined) {
+                "GPU picking and thin instances compose only through " +
+                    "the pin's advanced picking pipeline, which this " +
+                    "port does not build.",
+            ],
+            [
+                "picking:billboard",
+                "sprite:billboard-cutout",
+                "A cutout billboard system's pick pipeline samples " +
+                    "the atlas its alpha cutoff discards against " +
+                    "(`billboard-pick-pipeline.ts` isCutout), which " +
+                    "this port does not bind.",
+            ],
+            [
+                "picking:billboard",
+                "renderer:floating-origin",
+                "A floating-origin billboard system uploads its pick " +
+                    "instances in the world frame while the visible " +
+                    "pass bakes them eye-relative, so the pick would " +
+                    "resolve against quads at a different place.",
+            ],
+            [
+                "picking:billboard",
+                "loader:splat",
+                "Two contributor families in one pick pass need the " +
+                    "pin's own `scene._pickSources` order, which is " +
+                    "registration order; this port draws the clouds " +
+                    "and then the billboards from two separate lists, " +
+                    "so their id ranges would not follow the order " +
+                    "the scene registered them in.",
+            ],
+            // A cascaded generator and a thin-instanced mesh are NOT a
+            // refusable pair: what matters is whether that mesh is one of
+            // THIS generator's casters, and the caster list is a runtime
+            // array (racer spreads two of them). `fitted_shadow_casters`
+            // refuses there instead, where the pairing is known.
+        ] as const) {
+            if (
+                features.includes(reached) &&
+                features.includes(paired)
+            ) {
                 throw new Error(
-                    "GPU picking and thin instances compose only through " +
-                        "the pin's advanced picking pipeline, which this " +
-                        "port does not build." +
-                        refusalReachedFrom(
-                            options.featureSites,
-                            thinInstanceFeature,
-                        ),
+                    reason +
+                        refusalReachedFrom(options.featureSites, paired),
                 );
             }
+        }
+        if (features.includes("picking:gpu")) {
             this.writeSource(
                 "upstream/src/picking.cpp",
-                new PickingLowerer(context).lower(),
+                new PickingLowerer(context).lower(
+                    features.includes("picking:billboard"),
+                ),
                 generated,
             );
             // Both modules carry both stages, so each is written once per
@@ -2167,6 +2219,21 @@ ${shadow.blurFragmentWgsl}`,
                 );
             }
             const cloudPickingWgsl = options.pickingShaders?.cloud;
+            const billboardPickingProvenance = context.provenance(
+                "src/picking/billboard-pick-pipeline.ts",
+                "makeBillboardPickWgsl",
+            );
+            const billboardPickingWgsl =
+                options.pickingShaders?.billboard;
+            if (
+                features.includes("picking:billboard") &&
+                billboardPickingWgsl === undefined
+            ) {
+                throw new Error(
+                    "A scene reaching picking:billboard must arrive with " +
+                        "the pin's composed billboard picking module.",
+                );
+            }
             for (const stage of ["vert", "frag"] as const) {
                 composedShaders.push({
                     output: `upstream/shaders/picking.${stage}.native.wgsl`,
@@ -2184,11 +2251,44 @@ ${shadow.blurFragmentWgsl}`,
                         family: "picking",
                     });
                 }
+                if (billboardPickingWgsl !== undefined) {
+                    composedShaders.push({
+                        output:
+                            `upstream/shaders/picking-billboard.${stage}` +
+                            ".native.wgsl",
+                        data:
+                            `// ${billboardPickingProvenance}\n` +
+                            billboardPickingWgsl.facing,
+                        family: "picking",
+                    });
+                }
+            }
+            // The pin's `makeBillboardPickWgsl` forks only in `basis()`,
+            // which `vs` calls and `fs` does not -- so the second
+            // orientation costs one VERTEX stage and shares the first's
+            // fragment, exactly as the visible billboard pair does.
+            if (billboardPickingWgsl?.axisLocked !== undefined) {
+                composedShaders.push({
+                    output:
+                        "upstream/shaders/" +
+                        "picking-billboard-axis-locked.vert.native.wgsl",
+                    data:
+                        `// ${billboardPickingProvenance}\n` +
+                        billboardPickingWgsl.axisLocked,
+                    family: "picking",
+                });
             }
             generated.push({
                 modulePath: "src/picking/picking-shader.ts",
                 symbolName: "pickingShaderSource",
             });
+            if (billboardPickingWgsl !== undefined) {
+                generated.push({
+                    modulePath:
+                        "src/picking/billboard-pick-pipeline.ts",
+                    symbolName: "makeBillboardPickWgsl",
+                });
+            }
         }
 
         // The pin grows MAX_LIGHTS at run time when an asset carries more
@@ -2844,6 +2944,7 @@ export function emitUpstreamGenerated(
         animatedWorldBounds: false,
         morphStorage: false,
         nonTrianglePrimitives: false,
+        gaussianSplats: false,
         nodeVisibility: false,
         gltfNodeVisibility: false,
         animationPointer: false,

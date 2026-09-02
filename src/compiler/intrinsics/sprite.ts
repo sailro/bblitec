@@ -19,11 +19,17 @@ import {
     type PositiveIntegerContext,
 } from "../option-helpers.js";
 import { parseBlendExport } from "../../lowering/pinned-blend-table.js";
+import {
+    compileNullableHitRecord,
+    numberField,
+    type HitRecordContext,
+} from "./hit-record.js";
 import { stringLiteral } from "../../cpp-literals.js";
 
 export interface SpriteIntrinsicContext
     extends IntrinsicCallContext,
-        PositiveIntegerContext {
+        PositiveIntegerContext,
+        HitRecordContext {
     readonly dataTypes: DataTypeRegistry;
     readonly checker: ts.TypeChecker;
     unwrap(expression: ts.Expression): ts.Expression;
@@ -571,90 +577,39 @@ export function compileSpriteIntrinsic(
             const engineCpp = firstLayer
                 ? context.requireEngine(firstLayer, call)
                 : layers.engineCpp ?? context.requireDefaultEngine(call);
-            const resultType = context.dataTypes.fromTsType(
-                context.checker.getTypeAtLocation(call),
-                call,
-            );
-            const resultStruct =
-                resultType?.kind === "optional" &&
-                resultType.inner.kind === "struct"
-                    ? resultType.inner
-                    : resultType?.kind === "struct" &&
-                        context.dataTypes.isReferenceStruct(
-                            resultType.name,
-                        )
-                      ? resultType
-                      : undefined;
-            if (!resultType || !resultStruct) {
-                context.fail(
-                    call,
-                    "pickSprite2D must return its pinned nullable hit record.",
-                );
-            }
-            const fields = context.dataTypes.structFields(
-                resultStruct.name,
-                call,
-            );
-            const fieldValues: Record<string, string> = {
-                layer: "hit->layer",
-                spriteIndex: "static_cast<double>(hit->sprite_index)",
-                u: "hit->u",
-                v: "hit->v",
-            };
-            if (fields.length !== Object.keys(fieldValues).length) {
-                context.fail(
-                    call,
-                    "pickSprite2D hit record must retain layer, spriteIndex, u, and v.",
-                );
-            }
-            for (const field of fields) {
-                if (fieldValues[field.name] === undefined) {
-                    context.fail(
-                        call,
-                        `pickSprite2D hit record has unsupported field '${field.name}'.`,
-                    );
-                }
-                const validType =
-                    field.name === "layer"
-                        ? field.type.kind === "handle" &&
-                          field.type.handle === "sprite-layer"
-                        : field.type.kind === "number";
-                if (!validType) {
-                    context.fail(
-                        call,
-                        `pickSprite2D hit record field '${field.name}' has an unsupported type.`,
-                    );
-                }
-            }
-            const cppType = context.dataTypes.cppType(resultType);
-            const hitType = context.dataTypes.cppType(resultStruct);
-            const referenceBacked = resultType.kind === "struct";
-            const fieldInitializers = fields
-                .map((field) => fieldValues[field.name])
-                .join(", ");
-            const missValue = referenceBacked
-                ? `${cppType}{}`
-                : `${cppType}{std::nullopt}`;
-            const hitValue = referenceBacked
-                ? `bbl::js::make_ref<${hitType}Data>(${hitType}Data{${fieldInitializers}})`
-                : `${cppType}{${hitType}{${fieldInitializers}}}`;
             const layerList = dataLayers
                 ? spriteLayerVectorCpp(layers)
                 : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
                       .map((layer) => layer.cpp)
                       .join(", ")}}`;
             context.reachFeature("sprite:2d", call);
-            return {
-                kind: "data",
-                cpp:
-                    `([&]() -> ${cppType} { ` +
-                    `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ${layerList}, ` +
+            return compileNullableHitRecord(context, call, {
+                intrinsic: "pickSprite2D",
+                resultType: context.dataTypes.fromTsType(
+                    context.checker.getTypeAtLocation(call),
+                    call,
+                ),
+                fields: {
+                    layer: {
+                        cpp: "hit->layer",
+                        accepts: (type) =>
+                            type.kind === "handle" &&
+                            type.handle === "sprite-layer",
+                    },
+                    spriteIndex: {
+                        cpp: "static_cast<double>(hit->sprite_index)",
+                        accepts: numberField,
+                    },
+                    u: { cpp: "hit->u", accepts: numberField },
+                    v: { cpp: "hit->v", accepts: numberField },
+                },
+                probe:
+                    `const auto hit = bbl::pick_sprite_2d(${engineCpp}, ` +
+                    `${layerList}, ` +
                     `${context.compileNumber(call.arguments[1]!, "double")}, ` +
-                    `${context.compileNumber(call.arguments[2]!, "double")}); ` +
-                    `if (!hit) return ${missValue}; ` +
-                    `return ${hitValue}; }())`,
-                dataType: resultType,
-            };
+                    `${context.compileNumber(call.arguments[2]!, "double")});`,
+                miss: "!hit",
+            });
         }
 
         case "createRenderTexture2D": {

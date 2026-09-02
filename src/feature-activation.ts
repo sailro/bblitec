@@ -163,7 +163,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/animation/animation-group.ts (playAnimation, pauseAnimation, " +
             "stopAnimation, goToFrame) + src/loader-gltf/gltf-feature-animations.ts",
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
     "animation:property": {
         provenance: "src/animation/property-animation.ts",
@@ -376,6 +376,8 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "loader:splat": {
         provenance:
             "src/loader-splat/load-splat.ts#loadSplat + " +
+            "src/loader-splat/load-splat.ts#attachParsedSplat + " +
+            "src/loader-gltf/gltf-feature-gaussian-splatting.ts + " +
             "src/loader-splat/splat-data.ts#buildSplatGeometry + " +
             "src/loader-splat/splat-sort-core.ts + " +
             "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
@@ -385,7 +387,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance:
             "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts" +
             "#bakeCurrentTransformIntoVertices",
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
     "material:pbr": {
         provenance: "src/material/pbr/pbr-material.ts",
@@ -453,7 +455,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/tracking/pbr-tracking.ts",
         // Nothing is emitted for it, so the only consumer is the record of
         // what was dropped and why.
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
     "material:emissive": {
         provenance: "src/material/pbr/set-emissive.ts",
@@ -486,6 +488,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "mesh:box": {
         provenance: "src/mesh/create-box.ts",
+        consumers: CMAKE,
+    },
+    "mesh:csg": {
+        provenance: "src/mesh/csg.ts",
         consumers: CMAKE,
     },
     "mesh:from-data": {
@@ -588,6 +594,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/picking/gpu-picker.ts",
         consumers: CMAKE,
     },
+    // The billboard contributor is the pin's own pay-for-use seam: a
+    // module the picker dynamic-imports on the first pick, reached
+    // through the pick source `addFacingBillboardSystem` registered. Its
+    // shader is composed by that module's own builder, so the row names
+    // both the pipeline module and the WGSL it deploys.
+    "picking:billboard": {
+        provenance: "src/picking/billboard-pick-pipeline.ts",
+        consumers: CMAKE,
+    },
     "scene:remove": {
         provenance: "src/scene/scene-remove.ts",
         consumers: CMAKE,
@@ -606,15 +621,17 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     // with, so this row gates the emitted factory and nothing else.
     "shadow:pcf-directional": {
         provenance: "src/shadow/pcf-directional-shadow-generator.ts",
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
-    // The pin allocates a depth-texture array and one camera-fitted map per
-    // cascade. The native resource seam retains its first cascade in the PCF
-    // family's single sampled depth texture, so this distinct row gates that
-    // factory and records the adaptation in fidelity.json.
-    "shadow:csm-single-map": {
+    // The cascaded generator: a `depth32float` texture_2d_array with one
+    // camera-fitted map per cascade, one caster pass per layer, and the
+    // receiver's own 320-byte cascade block. It reaches `shadow:pcf` beside
+    // this row -- the comparison sampler, the receiver bind path and the
+    // standard-Z caster pass are that family's -- so what this row gates is
+    // the emitted factory, the cascade fit, and the layered map.
+    "shadow:csm": {
         provenance: "src/shadow/csm-directional-shadow-generator.ts",
-        consumers: ["features.cmake", "fidelity.json"],
+        consumers: CMAKE,
     },
     "shadow:task": {
         provenance: "src/frame-graph/shadow-task.ts",
@@ -873,11 +890,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "renderer:post-process": {
         provenance: "src/frame-graph/post-process-task.ts",
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
     "renderer:high-precision-matrix": {
         provenance: "src/math/_matrix-allocator.ts",
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
     "renderer:floating-origin": {
         provenance: "src/large-world/floating-origin.ts",
@@ -886,7 +903,7 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "ui:rml": {
         provenance:
             "scene-created document elements lowered to the retained native UI IR",
-        consumers: ["features.cmake"],
+        consumers: CMAKE,
     },
 };
 
@@ -966,6 +983,37 @@ function row(
     };
 }
 
+/**
+ * What an asset carried that joined a runtime feature the scene source never
+ * named.
+ *
+ * One arm per join the CLI performs, keyed by the feature rather than by the
+ * asset's name: a join with no arm still reports the asset that carried it,
+ * because a wrong reason reads worse than a bare one.
+ */
+function assetJoinReason(name: string, joinedBy: string): string {
+    if (name === "environment:ibl") {
+        return " carries EXT_lights_image_based";
+    }
+    if (name === "loader:splat") {
+        return (
+            " carries KHR_gaussian_splatting clouds, converted to the " +
+            "pin's own splat rows at packaging"
+        );
+    }
+    if (name.startsWith("light:")) {
+        const kind = name.slice("light:".length);
+        // The CLI performs the light join from two loaders and records the
+        // asset output either way; a `.babylon` document's own lights are
+        // load-babylon.ts's, not a glTF extension's.
+        return joinedBy.endsWith(".babylon")
+            ? ` carries a .babylon ${kind} light ` +
+              "(src/loader-babylon/load-babylon.ts)"
+            : ` carries KHR_lights_punctual kind "${kind}"`;
+    }
+    return "";
+}
+
 function runtimeFeatureRows(
     inputs: FeatureActivationInputs,
 ): FeatureActivationRow[] {
@@ -980,18 +1028,9 @@ function runtimeFeatureRows(
         const activatedBy = !active
             ? "not reached"
             : joinedBy !== undefined
-                ? name === "environment:ibl"
-                    ? `asset-joined: ${joinedBy} carries EXT_lights_image_based`
-                    // The CLI performs the light join from two loaders and
-                    // records the asset output either way; a `.babylon`
-                    // document's own lights are load-babylon.ts's, not a
-                    // glTF extension's.
-                    : joinedBy.endsWith(".babylon")
-                        ? `asset-joined: ${joinedBy} carries a .babylon ` +
-                          `${name.slice("light:".length)} light ` +
-                          "(src/loader-babylon/load-babylon.ts)"
-                        : `asset-joined: ${joinedBy} carries KHR_lights_punctual ` +
-                          `kind "${name.slice("light:".length)}"`
+                ? `asset-joined: ${joinedBy}${
+                      assetJoinReason(name, joinedBy)
+                  }`
                 : site !== undefined
                     ? `scene source: reached at ${site}`
                     : "scene source: reached by the compiled scene TypeScript";
@@ -1884,6 +1923,24 @@ function emitOptionRows(
             ["renderer plan"],
         ),
         row(
+            "gaussianSplats",
+            "emit-option",
+            emit.gaussianSplats,
+            emit.gaussianSplats
+                ? "an asset uses KHR_gaussian_splatting (its GS primitives " +
+                    "were converted to the pin's own splat rows at " +
+                    "packaging, and the loader builds one cloud per row " +
+                    "buffer and registers it through the container's scene " +
+                    "hook)"
+                : "no asset uses KHR_gaussian_splatting",
+            "src/loader-gltf/gltf-feature-registry.ts: " +
+                "KHR_gaussian_splatting -> " +
+                "gltf-feature-gaussian-splatting.js; its preParse strips " +
+                "the GS primitives and its applyAsset packs the rows " +
+                "src/loader-splat/load-splat.ts#attachParsedSplat consumes",
+            ["loader flag"],
+        ),
+        row(
             "imageBasedLighting",
             "emit-option",
             emit.imageBasedLighting,
@@ -2523,9 +2580,12 @@ function refusalRows(
             "src/loader-splat/splat-data.ts: a compressed or " +
                 "spherical-harmonic PLY needs the pin's second parser and " +
                 "its own SH pipeline, and a .sog/.spz needs a ZIP/gzip " +
-                "decoder before either; the packager refuses both rather " +
+                "decoder before either. The packager refuses each rather " +
                 "than emitting a row buffer the renderer would draw wrong " +
-                "(src/splat-packager.ts)",
+                "(src/splat-packager.ts), and holds the same tripwire over " +
+                "a KHR_gaussian_splatting cloud the pinned feature hands " +
+                "back with SH coefficients — which its degree-0 conversion " +
+                "cannot do today",
             gate,
         ),
         row(

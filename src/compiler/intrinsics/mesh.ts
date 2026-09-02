@@ -3,12 +3,19 @@ import ts from "typescript";
 
 
 import type { CompileAsset, Value } from "../types.js";
+import type { CompilerSymbols } from "../symbols.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
+    staticNumberValue,
     validateObjectProperties,
     type ObjectValidationContext,
+    type PositiveIntegerContext,
 } from "../option-helpers.js";
-import { GROUND_OPTION_DEFAULTS } from "./mesh-options.js";
+import {
+    BOX_OPTION_NAMES,
+    GROUND_OPTION_DEFAULTS,
+    SPHERE_OPTION_NAMES,
+} from "./mesh-options.js";
 import {
     transformNodeDefaults,
     type TransformNodeParameter,
@@ -22,10 +29,18 @@ import {
     pinnedPolyhedron,
     pinnedPolyhedronCount,
 } from "../../pinned-polyhedra.js";
+import {
+    bakeCsgMesh,
+    csgBooleanNames,
+    csgGeometryDeclarations,
+    type CsgSolidPlan,
+    type CsgSourceMesh,
+} from "../../pinned-csg.js";
 
 export interface MeshIntrinsicContext
     extends IntrinsicCallContext,
-        ObjectValidationContext {
+        ObjectValidationContext,
+        PositiveIntegerContext {
     compileBoxOptions(
         expression: ts.Expression,
     ): [string, string, string];
@@ -102,6 +117,7 @@ export interface MeshIntrinsicContext
     resolveStaticExpression(
         expression: ts.Expression,
     ): ts.Expression;
+    readonly symbols: CompilerSymbols;
     readonly handleCollections: {
         tupleElements(
             expression: ts.Expression,
@@ -226,6 +242,144 @@ function compileVec3Path(
             )
             .join(", ")}}`
     );
+}
+
+/**
+ * The generation-known options a CSG source mesh was built with.
+ *
+ * The bake replays the pinned factory with these values, so an option that
+ * does not settle to a number leaves the descriptor unbuilt and the CSG
+ * call refuses by name. The names come from the one list the native
+ * builder validates against, so an option this reader silently ignored
+ * could not stop reaching the geometry.
+ */
+function csgOptionBag<Name extends string>(
+    context: MeshIntrinsicContext,
+    object: ts.ObjectLiteralExpression,
+    names: readonly Name[],
+): Partial<Record<Name, number>> | undefined {
+    const options: Partial<Record<Name, number>> = {};
+    for (const name of names) {
+        const property = context.objectProperty(object, name);
+        if (!property) continue;
+        const value = staticNumberValue(
+            context,
+            context.unwrap(property),
+        );
+        if (value === undefined) return undefined;
+        options[name] = value;
+    }
+    return options;
+}
+
+/**
+ * The builder call a CSG source mesh came from, wherever the scene spelled
+ * it.
+ *
+ * `createCsgFromMesh` reads a mesh's retained CPU geometry and bakes its
+ * world matrix into every polygon, so generation has to replay the pinned
+ * factory that built it AND know the mesh still stands where that factory
+ * left it. One question decides both: which call produced this argument.
+ *
+ * Two spellings answer it. The argument may BE the builder call, which
+ * nothing can have moved yet. Or it may name a local binding whose
+ * initializer is that call and whose FIRST use is this one -- the
+ * strongest rule that needs no dataflow, because a `position` write, a
+ * helper handed the mesh, or a callback closing over it all mention the
+ * binding earlier. Naming the builder CALL rather than reading a
+ * descriptor off the mesh's own value is what closes the other direction:
+ * a helper that creates a mesh, moves it and returns it hands back a value
+ * whose builder call this never sees.
+ *
+ * Everything else -- a parameter, a helper's return, a collection element
+ * -- refuses by name rather than being baked at a transform generation
+ * would have had to track.
+ */
+function csgSourceCall(
+    context: MeshIntrinsicContext,
+    argument: ts.Expression,
+): ts.CallExpression | undefined {
+    const expression = context.unwrap(argument);
+    if (ts.isCallExpression(expression)) return expression;
+    if (!ts.isIdentifier(expression)) return undefined;
+    const source = expression.getSourceFile();
+    const limit = expression.getStart(source);
+    const earlier: ts.Identifier[] = [];
+    const visit = (node: ts.Node): void => {
+        // A subtree starting at or after this argument can hold no
+        // earlier occurrence, so the walk stops at the call.
+        if (node.getStart(source) >= limit) return;
+        if (ts.isIdentifier(node) && node.text === expression.text) {
+            earlier.push(node);
+        }
+        node.forEachChild(visit);
+    };
+    visit(source);
+    const declaration = earlier[0]?.parent;
+    if (
+        earlier.length !== 1 ||
+        !declaration ||
+        !ts.isVariableDeclaration(declaration) ||
+        declaration.name !== earlier[0] ||
+        !declaration.initializer
+    ) {
+        return undefined;
+    }
+    const initializer = context.unwrap(declaration.initializer);
+    return ts.isCallExpression(initializer) ? initializer : undefined;
+}
+
+/** The descriptor a builder call carries, by its resolved import symbol. */
+function csgSourceFromCall(
+    context: MeshIntrinsicContext,
+    call: ts.CallExpression,
+): CsgSourceMesh | undefined {
+    const callee = context.unwrap(call.expression);
+    const factory = ts.isIdentifier(callee)
+        ? context.symbols.importedName(callee)
+        : undefined;
+    const options = call.arguments[1];
+    if (factory === "createBox") {
+        if (!options) return { factory, options: 1 };
+        const unwrapped = context.unwrap(options);
+        if (!ts.isObjectLiteralExpression(unwrapped)) {
+            // `createBox(engine, size)`, the pin's own shorthand.
+            const size = staticNumberValue(context, unwrapped);
+            return size === undefined
+                ? undefined
+                : { factory, options: size };
+        }
+        const bag = csgOptionBag(context, unwrapped, BOX_OPTION_NAMES);
+        return bag && { factory, options: bag };
+    }
+    if (factory === "createSphere") {
+        if (!options) return { factory, options: {} };
+        const unwrapped = context.unwrap(options);
+        if (!ts.isObjectLiteralExpression(unwrapped)) return undefined;
+        const bag = csgOptionBag(
+            context,
+            unwrapped,
+            SPHERE_OPTION_NAMES,
+        );
+        return bag && { factory, options: bag };
+    }
+    return undefined;
+}
+
+/** The solid a `CsgSolid`-kinded value stands for, or a refusal. */
+function requireCsgSolid(
+    context: MeshIntrinsicContext,
+    argument: ts.Expression,
+): CsgSolidPlan {
+    const value = context.compileValue(argument);
+    context.expectKind(value, "csg-solid", argument);
+    if (!value.csgSolid) {
+        context.fail(
+            argument,
+            "This CSG solid carries no generation-known plan.",
+        );
+    }
+    return value.csgSolid;
 }
 
 export function compileMeshIntrinsic(
@@ -845,6 +999,136 @@ export function compileMeshIntrinsic(
                     engine.engineCpp ?? engine.cpp,
                 directMorphCompatible: true,
             };
+        }
+
+        // ── src/mesh/csg.ts ─────────────────────────────────────────
+        // A solid is generation-only. `createCsgFromMesh` and the three
+        // booleans build a plan; `createMeshFromCsg` replays it against
+        // the pin's own modules and bakes the geometry the pin handed
+        // `createMeshFromData`, which is where every CSG mesh already
+        // ends. Why the value is executed rather than the shape folded is
+        // in `src/pinned-csg.ts`.
+        case "createCsgFromMesh": {
+            context.expectArgumentCount(call, 1, 2);
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const builder = csgSourceCall(context, call.arguments[0]!);
+            const source =
+                builder && csgSourceFromCall(context, builder);
+            if (!source) {
+                context.fail(
+                    call.arguments[0]!,
+                    "createCsgFromMesh replays the pinned factory that " +
+                        "built the mesh's retained CPU geometry and bakes " +
+                        "its world matrix into every polygon, so the " +
+                        "reached slice is createBox or createSphere with " +
+                        "generation-known options, named here or by a " +
+                        "local binding whose first use is this call.",
+                );
+            }
+            const materialSlot = call.arguments[1]
+                ? staticNumberValue(
+                      context,
+                      context.unwrap(call.arguments[1]),
+                  )
+                : 0;
+            if (materialSlot === undefined) {
+                context.fail(
+                    call.arguments[1]!,
+                    "A CSG material slot tags every polygon the solid " +
+                        "carries, so it is generation-known.",
+                );
+            }
+            context.reachFeature("mesh:csg", call);
+            return {
+                kind: "csg-solid",
+                cpp: "",
+                csgSolid: { op: "from-mesh", source, materialSlot },
+            };
+        }
+
+        case "csgUnion":
+        case "csgSubtract":
+        case "csgIntersect": {
+            context.expectArgumentCount(call, 2, 2);
+            const op = csgBooleanNames.find(
+                (name) => name === importedName,
+            )!;
+            const left = requireCsgSolid(context, call.arguments[0]!);
+            const right = requireCsgSolid(context, call.arguments[1]!);
+            context.reachFeature("mesh:csg", call);
+            return {
+                kind: "csg-solid",
+                cpp: "",
+                // The plan names the pin's own export, so the replay
+                // looks the boolean up rather than translating it.
+                csgSolid: { op, left, right },
+            };
+        }
+
+        case "createMeshFromCsg": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                engine,
+                "engine",
+                call.arguments[0]!,
+            );
+            const plan = requireCsgSolid(context, call.arguments[1]!);
+            // `createMeshFromCsg(engine, solid, name = "csg")`: the name
+            // reaches `createMeshFromData` and nothing else, so it is the
+            // mesh record's name here exactly as it is upstream.
+            const name = call.arguments[2]
+                ? context.compileValue(call.arguments[2])
+                : undefined;
+            if (name && name.staticString === undefined) {
+                context.fail(
+                    call.arguments[2]!,
+                    "A CSG mesh's name is generation-known: the solid is " +
+                        "replayed at generation and the mesh it produces " +
+                        "is named there.",
+                );
+            }
+            const meshName = name?.staticString ?? "csg";
+            const baked = bakeCsgMesh(plan, meshName);
+            const prefix =
+                context.allocateTemporaryCppName("csg_geometry");
+            const geometry = csgGeometryDeclarations(prefix, baked);
+            for (const line of geometry.lines) context.emit(line);
+            const sceneMeshIndex = context.recordSceneMesh(
+                "from-data",
+                {
+                    hasUv2: false,
+                    hasTangents: false,
+                    hasColors: false,
+                },
+            );
+            context.reachFeature("mesh:csg", call);
+            context.reachFeature("mesh:from-data", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_mesh_from_data(${engine.cpp}, ` +
+                    `${context.cppString(meshName)}, ` +
+                    `${geometry.positions}, ${geometry.normals}, ` +
+                    `${geometry.indices}, ${geometry.uvs}, {}, {}, {})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+                directMorphCompatible: true,
+            };
+        }
+
+        case "createMeshesFromCsg": {
+            // The multi-material sibling: it partitions the solid's
+            // polygons by their material slot and builds one mesh per
+            // slot. No corpus scene reaches it, and the slice this port
+            // bakes carries one mesh, so it refuses rather than baking
+            // the first partition and dropping the rest.
+            context.fail(
+                call,
+                "createMeshesFromCsg splits a solid across one mesh per " +
+                    "material slot; the reached slice is createMeshFromCsg.",
+            );
         }
 
         case "createSphereData": {

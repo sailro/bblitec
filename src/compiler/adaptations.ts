@@ -337,6 +337,22 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("mesh:csg")) {
+        adaptations.push({
+            id: "executed-csg-solid",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene builds BSP solids from two meshes' CPU geometry, applies a boolean, and triangulates the result into a mesh at load.",
+            nativeSemantics:
+                "Generation replays the same calls against the pin's own csg.ts and mesh factories and bakes the geometry it handed createMeshFromData; the native runtime creates that mesh from data and runs no solid modeller. It is the value rather than the shape that has to hold: splitPolygon classifies every vertex against EPSILON = 1e-5, so a reassociated dot product changes the polygon count and with it the whole tree, and every normal is normalized through Math.hypot, which the specification leaves implementation-approximated (the same fact recorded as splat-hypot-approximation). The solid itself never reaches the runtime, so no shape downstream could catch a drift. The replay runs under Node rather than headless Chromium because the pinned module reaches no browser API -- the same split the node-material compiler takes -- so the baked geometry depends on the V8 that ran it.",
+            risk: "medium",
+            validation: [
+                "scene 90 parity against the browser golden, which runs the same boolean at load",
+                "the replay asserts each source mesh still starts at the identity world matrix",
+                "byte-stable across repeated compilations",
+            ],
+        });
+    }
     if (features.includes("physics:world")) {
         adaptations.push({
             id: "substituted-physics-solver",
@@ -380,29 +396,6 @@ export function compileAdaptations(
                     "apex for the reached coefficient",
                 "both GPU backends render the byte-identical frame from " +
                     "the identical simulated pose",
-            ],
-        });
-    }
-
-    if (features.includes("shadow:csm-single-map")) {
-        adaptations.push({
-            id: "csm-single-map-near-cascade",
-            category: "rendering",
-            sourceSemantics:
-                "The pinned CSM generator allocates a depth-texture array, " +
-                "fits one shadow map to each camera-frustum cascade, and " +
-                "selects or blends cascades in the receiver by view depth.",
-            nativeSemantics:
-                "The native PCF resource seam retains the pin's first " +
-                "camera-fitted cascade in one 2D depth map. Its split formula, " +
-                "float view-projection inversion, clone-aware caster Z fit, " +
-                "texel snap, bias, and PCF kernel stay source-derived; farther " +
-                "coverage and cross-cascade blending are omitted.",
-            risk: "high",
-            validation: [
-                "Racer frame 180 parity on SDL_GPU and Dawn",
-                "focused CSM factory and lowering compiler tests",
-                "upstream _computeCsmCascades source-shape assertions",
             ],
         });
     }

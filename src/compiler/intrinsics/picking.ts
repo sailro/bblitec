@@ -1,9 +1,17 @@
 import ts from "typescript";
+import type { DataTypeRegistry } from "../data-types.js";
 import type { Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import {
+    compileNullableHitRecord,
+    numberField,
+    type HitRecordContext,
+} from "./hit-record.js";
 
 export interface PickingIntrinsicContext
-    extends IntrinsicCallContext {
+    extends IntrinsicCallContext, HitRecordContext {
+    readonly dataTypes: DataTypeRegistry;
+    readonly checker: ts.TypeChecker;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -111,6 +119,83 @@ export function compilePickingIntrinsic(
                     `bbl::dispose_picker(` +
                     `${context.requireEngine(picker, call)}, ` +
                     `${picker.cpp})`,
+            };
+        }
+
+        // src/sprite/picking/pick-billboard.ts: a thin wrapper over the
+        // same `pickAsync` pass, which is the whole point of the pin's
+        // contributor seam -- the picker draws meshes, then walks
+        // `scene._pickSources` and lets each entity's own module draw its
+        // ids into the SAME one-pixel target against the SAME depth
+        // buffer, so a billboard behind a wall loses. What the wrapper
+        // adds is one read: the billboard contributor's `resolve` hangs
+        // `_spritePick` on the info, and this returns that or null.
+        case "pickBillboardSprite": {
+            context.expectArgumentCount(call, 3, 4);
+            if (call.arguments.length === 4) {
+                context.fail(
+                    call.arguments[3]!,
+                    "pickBillboardSprite's optional picker is the pin's " +
+                        "own reuse path for high-frequency picking; the " +
+                        "reached slice passes none, and the default arm " +
+                        "creates and disposes one per call as upstream " +
+                        "does.",
+                );
+            }
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            const engine = context.requireEngine(scene, call);
+            const promised = context.checker.getTypeAtLocation(call);
+            context.reachFeature("picking:gpu", call);
+            context.reachFeature("picking:billboard", call);
+            return {
+                ...compileNullableHitRecord(context, call, {
+                    intrinsic: "pickBillboardSprite",
+                    resultType:
+                        context.dataTypes.fromTsType(
+                            context.checker.getAwaitedType(promised) ??
+                                promised,
+                            call,
+                        ),
+                    // The pin's own four members. `pickedPoint` and
+                    // `distance` are the shared readback's -- the picker
+                    // reconstructs both before it hands the info to a
+                    // contributor -- and the contributor's `resolve` adds
+                    // the two that identify the sprite.
+                    fields: {
+                        system: {
+                            cpp: "bbl::BillboardSystemHandle{info.picked_index}",
+                            accepts: (type) =>
+                                type.kind === "handle" &&
+                                type.handle === "billboard-system",
+                        },
+                        spriteIndex: {
+                            cpp: "static_cast<double>(info.picked_range_offset)",
+                            accepts: numberField,
+                        },
+                        pickedPoint: {
+                            cpp: "bbl::picked_point(info)",
+                            accepts: (type) =>
+                                type.kind === "optional" &&
+                                type.inner.kind === "tuple" &&
+                                type.inner.arity === 3,
+                        },
+                        distance: {
+                            cpp: `bbl::picked_distance(${scene.cpp}, info)`,
+                            accepts: numberField,
+                        },
+                    },
+                    probe:
+                        `const bbl::PickingInfo info = ` +
+                        `bbl::pick_billboard_sprite(${engine}, ` +
+                        `${scene.cpp}, ` +
+                        `${context.compileNumber(call.arguments[1]!, "double")}, ` +
+                        `${context.compileNumber(call.arguments[2]!, "double")});`,
+                    miss:
+                        "info.picked_kind != " +
+                        "bbl::PickedNodeKind::billboard_sprite",
+                }),
+                engineCpp: engine,
             };
         }
 

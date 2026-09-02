@@ -25,9 +25,26 @@ import { tryResolveFunctionDeclaration } from "./user-functions.js";
 // cache-file read the second time.
 const cache = new Map<string, string>();
 
+/**
+ * Fold one argument to the literal a generation-time call can carry.
+ *
+ * The helper runs in a browser with nothing but its own source in scope,
+ * so an argument that is not written as a literal has to arrive as one.
+ * The compiler answers that: `labelTextureUrl(text)` reached from inside
+ * an inlined `createLabelMaterial(engine, "-")` names a parameter whose
+ * bound value is a compile-time string, and the fold is what turns the
+ * name back into the text the browser is handed. Returning `undefined`
+ * means the value is not generation-known, which is what keeps a runtime
+ * argument out of the bake.
+ */
+export type FoldGeneratedStringArgument = (
+    argument: ts.Expression,
+) => string | number | boolean | undefined;
+
 export function browserGeneratedString(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
+    foldArgument: FoldGeneratedStringArgument,
 ): string | undefined {
     if (!ts.isIdentifier(call.expression)) return undefined;
     const declaration = tryResolveFunctionDeclaration(
@@ -37,15 +54,30 @@ export function browserGeneratedString(
     if (!declaration?.body || !ts.isFunctionDeclaration(declaration)) {
         return undefined;
     }
+    // The helper being baked is the one whose own body draws and reads the
+    // canvas back, and the test is over its AST rather than its text: a
+    // file-scoped substring match reached every other function beside it
+    // (scene 187 declares `createUnlitMaterial([r,g,b])` in the file that
+    // also declares its fence texture, and a StandardMaterial factory was
+    // sent to Chromium, where it returned an object), while a body-scoped
+    // one would still be a source-text decision, which generated behaviour
+    // does not make.
+    if (!readsCanvasDataUrl(declaration.body)) return undefined;
     const source = declaration.getSourceFile();
-    if (!source.text.includes(".toDataURL(")) return undefined;
-    if (!call.arguments.every(isLiteralConfiguration)) return undefined;
 
     const functionName = declaration.name?.text;
     if (!functionName) return undefined;
-    const argumentsText = call.arguments
-        .map((argument) => argument.getText(call.getSourceFile()))
-        .join(", ");
+    const argumentTexts: string[] = [];
+    for (const argument of call.arguments) {
+        if (isLiteralConfiguration(argument)) {
+            argumentTexts.push(argument.getText(call.getSourceFile()));
+            continue;
+        }
+        const folded = foldArgument(argument);
+        if (folded === undefined) return undefined;
+        argumentTexts.push(JSON.stringify(folded));
+    }
+    const argumentsText = argumentTexts.join(", ");
     const key = `${source.fileName}\0${functionName}\0${argumentsText}`;
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
@@ -169,6 +201,41 @@ function runCanvasHelperInChromium(
     return Buffer.from(child.stdout.trim(), "base64").toString("utf8");
 }
 
+/**
+ * Whether a body reads a canvas back as a data URL.
+ *
+ * `canvas.toDataURL(...)` is the one call that turns a browser
+ * rasterization into a string a native build can carry, so a helper that
+ * makes it is what generation executes. The test is the call's own
+ * property name in the AST -- a `.toDataURL(` in a comment or a string is
+ * not a call, and generated behaviour is never decided by source text.
+ */
+function readsCanvasDataUrl(body: ts.Node): boolean {
+    let reads = false;
+    const visit = (node: ts.Node): void => {
+        if (reads) return;
+        if (
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.name.text === "toDataURL"
+        ) {
+            reads = true;
+            return;
+        }
+        node.forEachChild(visit);
+    };
+    visit(body);
+    return reads;
+}
+
+/**
+ * An argument whose text can be spelled straight into the executed helper.
+ *
+ * A literal needs no fold, and an object or array literal of literals is
+ * one too — the drawn-texture helpers take an options bag. Anything else
+ * goes through {@link FoldGeneratedStringArgument}, which answers with a
+ * value rather than with source text.
+ */
 function isLiteralConfiguration(expression: ts.Expression): boolean {
     let current = expression;
     while (

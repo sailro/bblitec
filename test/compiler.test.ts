@@ -16,7 +16,10 @@ import {
     resolve,
 } from "node:path";
 import test from "node:test";
-import { readUpstreamPin } from "../src/upstream-source.js";
+import {
+    readUpstreamPin,
+    UpstreamSourceStore,
+} from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
 
 /** A curated asset URL served from the pinned upstream tree; derived from
@@ -5677,7 +5680,7 @@ test("compiles pinned scene 271's live shadow-light replacement unchanged", () =
     assert.doesNotMatch(result.cpp, /requestAnimationFrame|Promise|nextFrame/);
 });
 
-test("records the camera-fitted single-map adaptation for CSM shadows", () => {
+test("compiles the cascaded shadow generator's own factory and options", () => {
     const result = compileSource(`
         import {
             addToScene,
@@ -5704,13 +5707,55 @@ test("records the camera-fitted single-map adaptation for CSM shadows", () => {
         void main();
     `);
 
-    assert.ok(result.manifest.features.includes("shadow:csm-single-map"));
+    assert.ok(result.manifest.features.includes("shadow:csm"));
     assert.ok(!result.manifest.features.includes("shadow:pcf-directional"));
     assert.match(result.cpp, /create_csm_directional_shadow_generator/);
     assert.match(result.cpp, /CsmDirectionalShadowOptions\{/);
-    assert.ok(
-        result.manifest.adaptations.some(
-            ({ id }) => id === "csm-single-map-near-cascade",
+    // The cascade array is the pin's own now, so nothing about it is an
+    // adaptation: what a scene reaches instead of building is refused.
+    assert.deepStrictEqual(
+        result.manifest.adaptations.filter(({ id }) => id.includes("csm")),
+        [],
+    );
+});
+
+test("refuses the two cascaded controls this port does not build", () => {
+    const source = (option: string) => `
+        import {
+            addToScene,
+            createCsmDirectionalShadowGenerator,
+            createDirectionalLight,
+            createEngine,
+            createSceneContext,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const light = createDirectionalLight([-1, -2, -1], 1);
+            addToScene(scene, light);
+            createCsmDirectionalShadowGenerator(engine, light, {
+                ${option},
+            });
+        }
+
+        void main();
+    `;
+    // The bounding-sphere fit with its light-axis anchor grid, and the
+    // world-space bias's far-plane reserve plus per-cascade clip offset.
+    // `validateObjectProperties` locates the refusal at the property, so
+    // the column is what names which one.
+    for (const option of ["stabilizeCascades: true", "worldSpaceBias: 0.5"]) {
+        assert.throws(
+            () => compileSource(source(option)),
+            /A CSM directional shadow generator options/,
+            option,
+        );
+    }
+    // Everything the cascade array does build still compiles.
+    assert.doesNotThrow(() =>
+        compileSource(
+            source("cascadeBlendPercentage: 0.25, shadowMaxZ: 500, frustumEdgeFalloff: 0.1"),
         ),
     );
 });
@@ -11028,6 +11073,79 @@ test("retains Scene 117's nullable sprite pick record and all hit fields", () =>
     );
 });
 
+test("retains Scene 118's nullable billboard pick record and all hit fields", () => {
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene118.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+
+    assert.ok(result.manifest.features.includes("picking:gpu"));
+    assert.ok(result.manifest.features.includes("picking:billboard"));
+    assert.match(
+        result.cpp,
+        /using BillboardPickInfo = bbl::js::Ref<BillboardPickInfoData>;/,
+    );
+    // The pin's own four members, in its own order, at the types the
+    // intrinsic validates: a system HANDLE, the sprite slot, the shared
+    // readback's nullable point, and the distance beside it.
+    assert.match(
+        result.cpp,
+        /struct BillboardPickInfoData \{\s*bbl::BillboardSystemHandle system;\s*double spriteIndex;\s*bbl::js::Nullable<bbl::js::Tuple<3>> pickedPoint;\s*double distance;\s*\};/,
+    );
+    // A miss is the pin's `_spritePick ?? null`: an id no billboard
+    // contributor owns leaves the payload unset.
+    assert.match(
+        result.cpp,
+        /if \(info\.picked_kind != bbl::PickedNodeKind::billboard_sprite\) return bblscene::BillboardPickInfo\{\};/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::pick_billboard_sprite\(v_engine, v_scene, /,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::BillboardSystemHandle\{info\.picked_index\}, static_cast<double>\(info\.picked_range_offset\), bbl::picked_point\(info\), bbl::picked_distance\(v_scene, info\)/,
+    );
+    // `getCameraPosition` goes through the pin's own two-line body,
+    // lowered beside the matrix it reads -- one composition, not one per
+    // component, and the float-store rule stated where it is ported.
+    assert.match(
+        result.cpp,
+        /const bbl::Vec3d eye = bbl::upstream::camera_position\(v_engine\.cameras\[v_camera\.value\]\); return bblscene::Vec3\{eye\.x, eye\.y, eye\.z\}/,
+    );
+});
+
+test("refuses pickBillboardSprite's caller-owned picker by name", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        import {
+            createEngine,
+            createFacingBillboardSystem,
+            createGpuPicker,
+            createSceneContext,
+            loadSpriteAtlas,
+            pickBillboardSprite,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            createFacingBillboardSystem(atlas, { capacity: 1 });
+            const picker = createGpuPicker(scene);
+            await pickBillboardSprite(scene, 0, 0, picker);
+        }
+        void main();
+    `),
+        /optional picker is the pin's own reuse path/,
+    );
+});
+
 test("compiles a SpriteRenderer.layers owner only once for picking", () => {
     const result = compileSource(`
         import {
@@ -14338,5 +14456,282 @@ test("refuses a lightmap walk filter outside the folded grammar", () => {
                 }
             `),
         /closed grammar/,
+    );
+});
+
+test("reads a container's Gaussian splats as the asset's own collection", () => {
+    // Scene 226's shape. `container._gaussianSplats` is the loader-owned
+    // vector on the asset record, indexed with the same bounds guard every
+    // other handle collection takes -- and the local it binds is hoisted to
+    // static storage because the read sits after `startEngine`, which is
+    // where the pin's own `_sceneSetup` has already filled the list.
+    const sourcePath =
+        "corpus/babylon-lite/lab/lite/src/lite/scene226.ts";
+    const { cpp } = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+    assert.match(
+        cpp,
+        /v_engine\.assets\[v_container\.value\]\.gaussian_splats\.size\(\)/,
+    );
+    assert.match(
+        cpp,
+        /const bbl::SplatMeshHandle v_bblite_asset_gaussian_splat_at_\d+ =/,
+    );
+    // `await splat.firstSortReady` is a barrier: this runtime sorts on the
+    // frame's own thread before the draw that reads it, so the await emits
+    // nothing and the binding it guarded stays warning-clean.
+    assert.match(
+        cpp,
+        /\[\[maybe_unused\]\] static auto v_splat = /,
+    );
+});
+
+test("mirrors the pinned _gaussianSplats declaration", () => {
+    // The published typings drop `@internal` members, so `program.ts`
+    // restores this one from the pinned source at the typings seam and the
+    // checker reads its element model from there. A rename or a changed
+    // element type has to fail rather than leaving the collection row
+    // reading a member that no longer exists.
+    const container = new UpstreamSourceStore().getSource(
+        "src/asset-container.ts",
+    );
+    assert.match(
+        container,
+        /_gaussianSplats\?: Promise<GaussianSplattingMesh>\[\];/,
+    );
+    assert.doesNotMatch(
+        readFileSync(
+            resolve("node_modules/@babylonjs/lite/index.d.ts"),
+            "utf8",
+        ),
+        /_gaussianSplats/,
+    );
+});
+
+test("bakes a Canvas2D helper reached through an inlined parameter", () => {
+    // The helper's argument is a bound parameter rather than a literal, so
+    // the fold is what turns the name back into the text the browser is
+    // handed -- and the two calls draw different glyphs, so they bake to
+    // different assets rather than sharing one.
+    const source = [
+        'import { createEngine, createSceneContext, createStandardMaterial, loadTexture2D, registerScene, startEngine } from "babylon-lite";',
+        'import type { EngineContext, StandardMaterialProps } from "babylon-lite";',
+        "",
+        "function labelTextureUrl(text: string): string {",
+        '    const canvas = document.createElement("canvas");',
+        "    canvas.width = 32;",
+        "    canvas.height = 16;",
+        '    const ctx = canvas.getContext("2d");',
+        "    if (!ctx) {",
+        '        throw new Error("needs a 2D canvas context");',
+        "    }",
+        '    ctx.fillStyle = "black";',
+        "    ctx.fillText(text, 4, 12);",
+        '    return canvas.toDataURL("image/png");',
+        "}",
+        "",
+        "async function label(engine: EngineContext, text: string): Promise<StandardMaterialProps> {",
+        "    const material = createStandardMaterial();",
+        "    material.diffuseTexture = await loadTexture2D(engine, labelTextureUrl(text), {});",
+        "    material.alphaCutOff = 0.25;",
+        "    return material;",
+        "}",
+        "",
+        "async function main(): Promise<void> {",
+        '    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;',
+        "    const engine = await createEngine(canvas);",
+        "    const scene = createSceneContext(engine);",
+        '    await label(engine, "-");',
+        '    await label(engine, "+");',
+        "    await registerScene(scene);",
+        "    await startEngine(engine);",
+        "}",
+        "",
+        "main();",
+    ].join("\n");
+    const result = compileSource(source, { fileName: "input.ts" });
+    const inlineAssets = result.manifest.assets.filter(
+        (asset) => asset.kind === "texture",
+    );
+    assert.equal(inlineAssets.length, 2);
+    assert.notEqual(inlineAssets[0]!.output, inlineAssets[1]!.output);
+    // The setter is one record store: `alphaCutOff` is not a Standard
+    // composition key, and every composed Standard fragment already
+    // carries the discard the value feeds.
+    assert.match(
+        result.cpp,
+        /v_engine\.materials\[[A-Za-z0-9_]+\.value\]\.alpha_cutoff = 0\.25f;/,
+    );
+});
+
+test("does not bake a sibling function in a file that draws elsewhere", () => {
+    // The trigger is the helper whose own body reads the canvas back, not
+    // the file it lives in: scene 187 declares a StandardMaterial factory
+    // beside its fence texture, and a file-scoped test sent that factory to
+    // Chromium, where it returned an object and failed by the message a
+    // returned non-string produces.
+    const source = [
+        'import { createEngine, createSceneContext, createStandardMaterial, registerScene, startEngine } from "babylon-lite";',
+        'import type { StandardMaterialProps } from "babylon-lite";',
+        "",
+        "function unlit(color: readonly [number, number, number]): StandardMaterialProps {",
+        "    const material = createStandardMaterial();",
+        "    material.emissiveColor = [color[0], color[1], color[2]];",
+        "    return material;",
+        "}",
+        "",
+        "function unusedTextureUrl(): string {",
+        '    const canvas = document.createElement("canvas");',
+        '    const ctx = canvas.getContext("2d");',
+        "    if (!ctx) {",
+        '        throw new Error("needs a 2D canvas context");',
+        "    }",
+        "    ctx.fillRect(0, 0, 4, 4);",
+        '    return canvas.toDataURL("image/png");',
+        "}",
+        "",
+        "async function main(): Promise<void> {",
+        '    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;',
+        "    const engine = await createEngine(canvas);",
+        "    const scene = createSceneContext(engine);",
+        "    unlit([0.5, 0.25, 0.125]);",
+        "    await registerScene(scene);",
+        "    await startEngine(engine);",
+        "}",
+        "",
+        "main();",
+    ].join("\n");
+    const result = compileSource(source, { fileName: "input.ts" });
+    assert.deepEqual(result.manifest.assets, []);
+    assert.match(
+        result.cpp,
+        /emissive_factor = bbl::Color3\{0\.5f, 0\.25f, 0\.125f\}/,
+    );
+});
+
+/** A scene around one CSG chain the caller spells. */
+function csgScene(
+    body: readonly string[],
+    extraImports: readonly string[] = [],
+): string {
+    return [
+        `import { ${[
+            ...extraImports,
+            "addToScene",
+            "createBox",
+            "createCsgFromMesh",
+            "createEngine",
+            "createMeshFromCsg",
+            "createSceneContext",
+            "createSphere",
+            "createStandardMaterial",
+            "csgIntersect",
+            "csgSubtract",
+            "csgUnion",
+            "registerScene",
+            "startEngine",
+        ].join(", ")} } from "babylon-lite";`,
+        "",
+        "async function main(): Promise<void> {",
+        '    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;',
+        "    const engine = await createEngine(canvas);",
+        "    const scene = createSceneContext(engine);",
+        ...body,
+        "    await registerScene(scene);",
+        "    await startEngine(engine);",
+        "}",
+        "",
+        "main();",
+    ].join("\n");
+}
+
+test("bakes a CSG boolean into the geometry the pin produced", () => {
+    const result = compileSource(
+        csgScene([
+            "    const box = createBox(engine, 2);",
+            // A coarse sphere: this test asserts the emitted SHAPE, and
+            // scene 90's own 32 segments cost it 80x the replay for
+            // nothing it checks.
+            "    const sphere = createSphere(engine, { diameter: 2.5, segments: 8 });",
+            '    const carved = createMeshFromCsg(engine, csgSubtract(createCsgFromMesh(box), createCsgFromMesh(sphere)), "carved");',
+            "    carved.material = createStandardMaterial();",
+            "    addToScene(scene, carved);",
+        ]),
+        { fileName: "input.ts" },
+    );
+    assert.ok(result.manifest.features.includes("mesh:csg"));
+    assert.ok(result.manifest.features.includes("mesh:from-data"));
+    // The solid emits nothing: the mesh it becomes is a
+    // `create_mesh_from_data` over baked arrays, which is where every CSG
+    // mesh already ends upstream.
+    assert.match(
+        result.cpp,
+        /static const float v_bblite_csg_geometry_\d+_positions\[\] = \{/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::create_mesh_from_data\(v_engine, "carved", std::vector<float>\(v_bblite_csg_geometry_\d+_positions,/,
+    );
+    assert.ok(
+        result.manifest.adaptations.some(
+            ({ id }) => id === "executed-csg-solid",
+        ),
+    );
+});
+
+test("refuses a CSG source the scene has already reached", () => {
+    // `createCsgFromMesh` bakes the mesh's world matrix into every polygon,
+    // so the solid is replayable only at the transform its factory left.
+    assert.throws(
+        () =>
+            compileSource(
+                csgScene([
+                    "    const box = createBox(engine, 2);",
+                    "    box.position.x = 3;",
+                    '    const carved = createMeshFromCsg(engine, csgUnion(createCsgFromMesh(box), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), "carved");',
+                    "    addToScene(scene, carved);",
+                ]),
+                { fileName: "input.ts" },
+            ),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /first use is this call/.test(error.message),
+    );
+});
+
+test("refuses a CSG source whose geometry generation cannot replay", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                csgScene([
+                    "    const plane = createPlane(engine, { width: 1, height: 1 });",
+                    '    const carved = createMeshFromCsg(engine, csgIntersect(createCsgFromMesh(plane), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), "carved");',
+                    "    addToScene(scene, carved);",
+                ], ["createPlane"]),
+                { fileName: "input.ts" },
+            ),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /createBox or createSphere with generation-known options/.test(
+                error.message,
+            ),
+    );
+});
+
+test("refuses the multi-material CSG mesh builder by name", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                csgScene([
+                    '    const meshes = createMeshesFromCsg(engine, csgSubtract(createCsgFromMesh(createBox(engine, 2)), createCsgFromMesh(createSphere(engine, { diameter: 1 }))), [createStandardMaterial()], "carved");',
+                    "    addToScene(scene, meshes[0]);",
+                ], ["createMeshesFromCsg"]),
+                { fileName: "input.ts" },
+            ),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /one mesh per material slot/.test(error.message),
     );
 });

@@ -527,11 +527,13 @@ interface VariantBinding {
         | "texture2dLoad"
         | "texture2dUint"
         | "textureCube"
-        // The shadow receiver's two: a PCF map is a depth texture read
+        // The shadow receiver's three: a PCF map is a depth texture read
         // through a comparison sampler, an ESM map an ordinary float one
-        // read through an ordinary sampler, and the pin puts whichever the
-        // scene's generators produce in the same group.
+        // read through an ordinary sampler, a CSM map a LAYERED depth one
+        // whose layer is the selected cascade -- and the pin puts whichever
+        // the scene's generators produce in the same group.
         | "textureDepth2d"
+        | "textureDepth2dArray"
         | "sampler"
         | "samplerComparison"
         | "storageBuffer"
@@ -572,7 +574,7 @@ export function shadowBindingSlot(
         throw new Error(
             `A composed shadow binding is named '${name}', which is none of ` +
                 "the pin's own shadowTex_/shadowSamp_/shadowComp_/" +
-                "shadowInfo_ shapes.",
+                "shadowInfo_ or csmTex_/csmComp_/csmInfo_ shapes.",
         );
     }
     return slot;
@@ -588,17 +590,24 @@ export function shadowBindingSlot(
 export function shadowBindingSlotOrNull(
     name: string,
 ): { role: "map" | "map_sampler" | "info"; light: number } | null {
+    // `csm-shadow-fragment-core.ts` builds the cascaded receiver's three
+    // rows under its own prefix -- `csmTex_`/`csmComp_`/`csmInfo_` -- and
+    // the ESM/PCF core builds the other four under `shadow`. The ROLE is the
+    // same either way, which is why one reader answers for both: the row's
+    // TYPE says which resource shape it wants, and the generator says how
+    // big its block is.
     const match = name.match(
-        /^shadow(Tex|Samp|Comp|Info)_(\d+)$/,
+        /^(?:shadow(Tex|Samp|Comp|Info)|csm(Tex|Comp|Info))_(\d+)$/,
     );
     if (!match) return null;
+    const role = match[1] ?? match[2]!;
     return {
-        role: match[1] === "Tex"
+        role: role === "Tex"
             ? "map"
-            : match[1] === "Info"
+            : role === "Info"
               ? "info"
               : "map_sampler",
-        light: Number(match[2]),
+        light: Number(match[3]),
     };
 }
 
@@ -662,6 +671,11 @@ export function variantBindings(
                     : undefined)
                 : type.startsWith("texture_cube")
                 ? "textureCube"
+                // A cascaded receiver's map is `texture_depth_2d_array`:
+                // the same depth sample type, bound through a layered view
+                // whose layer the fragment selects per cascade.
+                : type === "texture_depth_2d_array"
+                ? "textureDepth2dArray"
                 : type.startsWith("texture_depth")
                 ? "textureDepth2d"
                 // An integer texture is `textureLoad`ed by construction --
@@ -1207,11 +1221,15 @@ enum class PinnedBindingKind {
     // sample type WebGPU names Uint rather than UnfilterableFloat.
     texture2dUint,
     textureCube,
-    // The shadow receiver's two: a PCF map is a depth texture read through a
-    // comparison sampler, an ESM one an ordinary float texture read through
-    // an ordinary sampler, and the pin puts whichever the scene's generators
-    // produce into the same group.
+    // The shadow receiver's three: a PCF map is a depth texture read through
+    // a comparison sampler, an ESM one an ordinary float texture read
+    // through an ordinary sampler, a CSM one a layered depth texture -- and
+    // the pin puts whichever the scene's generators produce into the same
+    // group.
     textureDepth2d,
+    // The cascaded receiver's own: \`texture_depth_2d_array\`, one layer per
+    // cascade, the layer selected per fragment from camera view depth.
+    textureDepth2dArray,
     sampler,
     samplerComparison,
     // A read-only storage buffer; the morph arms' deltas and weights.

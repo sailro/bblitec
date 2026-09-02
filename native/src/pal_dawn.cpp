@@ -386,7 +386,11 @@ struct DawnRenderTarget {
     WGPUTexture sampled_color = nullptr;
     WGPUTextureView sampled_color_view = nullptr;
     WGPUTexture depth = nullptr;
-    WGPUTextureView depth_view = nullptr;
+    // A layered depth attachment (the cascaded shadow map) is written one
+    // layer per pass, so each pass needs its own single-layer view; the
+    // receiver reads the whole array through `depth_sampled_view`, which is
+    // then a `2d-array` view rather than a `2d` one.
+    std::vector<WGPUTextureView> depth_layer_views;
     // Sampled-depth targets copy the depth aspect into an r32float
     // color texture after their task so material slots can filter it
     // like the SDL backend's direct depth SRV reads.
@@ -1033,8 +1037,8 @@ struct DawnState : DawnDevice {
             if (target.depth_sampled_view) {
                 wgpuTextureViewRelease(target.depth_sampled_view);
             }
-            if (target.depth_view) {
-                wgpuTextureViewRelease(target.depth_view);
+            for (WGPUTextureView layer : target.depth_layer_views) {
+                if (layer) wgpuTextureViewRelease(layer);
             }
             if (target.depth) wgpuTextureRelease(target.depth);
             target = {};
@@ -2965,10 +2969,11 @@ WGPUTexture create_frame_texture(
     std::uint32_t samples,
     std::uint32_t width,
     std::uint32_t height,
-    WGPUTextureUsage usage) {
+    WGPUTextureUsage usage,
+    std::uint32_t layers = 1) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage = usage;
-    descriptor.size = {width, height, 1};
+    descriptor.size = {width, height, layers};
     descriptor.format = format;
     descriptor.sampleCount = samples;
     WGPUTexture texture =
@@ -3081,6 +3086,9 @@ void create_frame_graph_textures(
             // A shadow map states its own format: the pinned generator
             // creates `depth32float` where the frame's own attachments take
             // the browser's depth24plus-stencil8.
+            // `create_render_target` normalises this, so the record's own
+            // invariant is that it is at least one.
+            const std::uint32_t depth_layers = record.depth_layers;
             target.depth = create_frame_texture(
                 state,
                 record.shadow_map
@@ -3092,14 +3100,35 @@ void create_frame_graph_textures(
                 record.sampled_depth
                     ? WGPUTextureUsage_RenderAttachment |
                         WGPUTextureUsage_TextureBinding
-                    : WGPUTextureUsage_RenderAttachment);
-            target.depth_view =
-                wgpuTextureCreateView(target.depth, nullptr);
+                    : WGPUTextureUsage_RenderAttachment,
+                depth_layers);
+            // One attachment view per layer:
+            // `ensureCsmShadowTaskState` builds each cascade's render
+            // target over `createView({dimension:"2d", baseArrayLayer:i,
+            // arrayLayerCount:1})`, and a pass writes exactly one of them.
+            target.depth_layer_views.resize(depth_layers);
+            for (std::uint32_t layer = 0; layer < depth_layers; ++layer) {
+                WGPUTextureViewDescriptor layer_descriptor =
+                    WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+                layer_descriptor.dimension = WGPUTextureViewDimension_2D;
+                layer_descriptor.baseArrayLayer = layer;
+                layer_descriptor.arrayLayerCount = 1;
+                target.depth_layer_views[layer] =
+                    wgpuTextureCreateView(target.depth, &layer_descriptor);
+            }
             if (record.sampled_depth) {
                 WGPUTextureViewDescriptor depth_view_descriptor =
                     WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
                 depth_view_descriptor.aspect =
                     WGPUTextureAspect_DepthOnly;
+                // The cascaded receiver declares `texture_depth_2d_array`,
+                // so its sampled view is the pin's own
+                // `dimension: "2d-array"` one over every layer.
+                if (depth_layers > 1) {
+                    depth_view_descriptor.dimension =
+                        WGPUTextureViewDimension_2DArray;
+                    depth_view_descriptor.arrayLayerCount = depth_layers;
+                }
                 target.depth_sampled_view = wgpuTextureCreateView(
                     target.depth,
                     &depth_view_descriptor);
@@ -4456,14 +4485,11 @@ WGPUTextureView shadow_map_view(
     ShadowGeneratorHandle handle) {
     const ShadowGeneratorRecord& generator =
         engine.shadow_generators[handle.value];
-    if (
-        generator.task.value >= engine.frame_tasks.size() ||
-        engine.frame_tasks[generator.task.value].render.target.value >=
-            state.render_targets.size()) {
+    if (generator.map_target.value >= state.render_targets.size()) {
         dawn_error("a shadow generator has no rendered map.");
     }
-    const DawnRenderTarget& map = state.render_targets[
-        engine.frame_tasks[generator.task.value].render.target.value];
+    const DawnRenderTarget& map =
+        state.render_targets[generator.map_target.value];
 #if BBLITE_SHADOWS_ESM
     // The ESM receiver samples `sg._depthTexture`, which the pinned factory
     // set to the SECOND blur half -- not the depth buffer the caster pass
@@ -4525,6 +4551,13 @@ WGPUBindGroupLayoutEntry shadow_layout_entry(
             entry.texture.sampleType = WGPUTextureSampleType_Depth;
             entry.texture.viewDimension = WGPUTextureViewDimension_2D;
             break;
+        case upstream::PinnedBindingKind::textureDepth2dArray:
+            // `bglEntry` maps a `_textureType` containing "array" onto
+            // `viewDimension: "2d-array"`; the sample type is still depth.
+            entry.texture.sampleType = WGPUTextureSampleType_Depth;
+            entry.texture.viewDimension =
+                WGPUTextureViewDimension_2DArray;
+            break;
         case upstream::PinnedBindingKind::texture2d:
             entry.texture.sampleType = WGPUTextureSampleType_Float;
             entry.texture.viewDimension = WGPUTextureViewDimension_2D;
@@ -4578,8 +4611,12 @@ WGPUBindGroupEntry shadow_group_entry(
                 : state.shadow_filtering_sampler;
             break;
         case upstream::PinnedShadowRole::info:
+            // How many bytes is the GENERATOR's answer: a single-map
+            // receiver binds 96 and a cascaded one 320. The refresh already
+            // holds the block this buffer was created from, so its size is
+            // read there rather than mirrored into a second vector.
             entry.buffer = state.shadow_uniforms[handle.value];
-            entry.size = sizeof(upstream::ShadowInfoUniforms);
+            entry.size = state.shadow_refresh.blocks[handle.value].size;
             break;
     }
     return entry;
@@ -4777,7 +4814,7 @@ void write_shadow_generators(
             [[maybe_unused]] const ShadowGeneratorRecord& generator,
             ShadowGeneratorHandle handle,
             std::size_t,
-            const upstream::ShadowInfoUniforms& block,
+            const upstream::ShadowReceiverBlock& block,
             bool moved) {
 #if BBLITE_SHADOWS_ESM
             // `shadow_params_block` reads what the factory fixed -- bias,
@@ -4798,15 +4835,15 @@ void write_shadow_generators(
                 state.shadow_uniforms[handle.value] = create_buffer(
                     state,
                     WGPUBufferUsage_Uniform,
-                    &block,
-                    sizeof(block));
+                    block.bytes.data(),
+                    block.size);
             } else if (moved) {
                 wgpuQueueWriteBuffer(
                     state.queue,
                     state.shadow_uniforms[handle.value],
                     0,
-                    &block,
-                    sizeof(block));
+                    block.bytes.data(),
+                    block.size);
             }
         });
 }
@@ -9877,9 +9914,19 @@ bool run_dawn_engine(Engine& engine) {
     // holds `state`, the scene and the render plan by reference, all of
     // which die with the scope.
     PickHookGuard pick_hook_guard(engine);
+#if BBLITE_HAS_BILLBOARDS
+    // The contributor's own GPU state, scoped to the hook it serves:
+    // upstream it lives in the closure the picker cached and frees in
+    // `disposePicker`, which is this scope.
+    DawnBillboardPickContributor billboard_pick;
+#endif
     engine.pick_hook =
-        [&state, &engine, &scene, &render_plan](
-            GpuPickerHandle, double x, double y) -> PickingInfo {
+        [&state, &engine, &scene, &render_plan
+#if BBLITE_HAS_BILLBOARDS
+         ,
+         &billboard_pick
+#endif
+    ](GpuPickerHandle, double x, double y) -> PickingInfo {
         if (scene.camera.value >= engine.cameras.size()) {
             return PickingInfo{};
         }
@@ -10084,6 +10131,22 @@ bool run_dawn_engine(Engine& engine) {
             ++next_id;
         }
 #endif
+#if BBLITE_HAS_BILLBOARDS
+        // The last contributor in the pin's own order: meshes own 1..M,
+        // then each registered pick source's contiguous range. Its blocks
+        // are written here for the same reason the mesh blocks above are
+        // -- WebGPU forbids a queue write between draws inside a pass.
+        billboard_pick.prepare(
+            state.device,
+            state.queue,
+            state.pick_scene_layout,
+            engine,
+            scene,
+            upstream::build_view_matrix(
+                upstream::camera_world_matrix(camera)),
+            ranges,
+            next_id);
+#endif
 
         WGPUCommandEncoderDescriptor encoder_descriptor =
             WGPU_COMMAND_ENCODER_DESCRIPTOR_INIT;
@@ -10168,6 +10231,9 @@ bool run_dawn_engine(Engine& engine) {
                 0,
                 0);
         }
+#endif
+#if BBLITE_HAS_BILLBOARDS
+        billboard_pick.record(pass, state.pick_scene_group);
 #endif
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
@@ -10834,10 +10900,18 @@ bool run_dawn_engine(Engine& engine) {
         // caster pass through the generator's light-space matrix, so a
         // shader material's system block reads what its pass renders with
         // rather than the frame's.
+        //
+        // `pass_dependent_only` is how a cascade after the first renders:
+        // only the shader and grid arms below read `pass_matrices`, so the
+        // rest would rewrite the same buffers with the same bytes once per
+        // cascade -- 2,412 redundant queue writes per frame on scene 214,
+        // whose 201 casters draw four times. SDL_GPU's palette sweep
+        // already dedupes its own half this way.
         const auto write_material_uniforms =
             [&](
                 const upstream::RenderDrawList& list,
-                const ShaderPassMatrices& pass_matrices) {
+                const ShaderPassMatrices& pass_matrices,
+                const bool pass_dependent_only = false) {
                 for (const upstream::RenderDrawCommand& draw :
                      list.commands) {
                     DawnMesh& draw_mesh = state.meshes[draw.item_index];
@@ -10847,6 +10921,9 @@ bool run_dawn_engine(Engine& engine) {
                     const bool shader_draw =
                         draw.item.material_kind ==
                         upstream::RenderMaterialKind::shader;
+                    if (pass_dependent_only && !grid_draw && !shader_draw) {
+                        continue;
+                    }
                     // The per-mesh vertex, deformation, instancing and
                     // morph state is synced once per frame by the item
                     // pass above; a draw writes only the blocks its
@@ -11170,6 +11247,17 @@ bool run_dawn_engine(Engine& engine) {
 #endif
         if (!scene.tasks.empty()) {
             create_frame_graph_textures(state, engine, width, height);
+#if BBLITE_SHADOW_RECEIVERS
+            // Which generators have had their casters' pass-independent
+            // blocks written this frame. A cascaded generator renders one
+            // task per cascade and every one of them carries the SAME
+            // casters -- `refresh_shadow_task_meshes` adds each caster to
+            // every task through the same view -- so the first cascade
+            // writes the blocks and the rest name only their own matrices.
+            std::vector<bool> wrote_caster_blocks(
+                engine.shadow_generators.size(),
+                false);
+#endif
             for (const TaskHandle handle : scene.tasks) {
                 if (handle.value >= engine.frame_tasks.size()) {
                     throw std::runtime_error(
@@ -11286,16 +11374,18 @@ bool run_dawn_engine(Engine& engine) {
                     // `render*ShadowMap` writes nothing either.
                     state.shadow_refresh.gates[
                         task.render.shadow_generator.value].due) {
-                    const ShadowGeneratorRecord& generator =
-                        engine.shadow_generators[
-                            task.render.shadow_generator.value];
+                    const pal::ShadowCasterMatrices caster =
+                        pal::shadow_caster_matrices(engine, task);
+                    const std::array<float, 16>& caster_view_projection =
+                        caster.view_projection;
+                    const std::array<float, 16>& caster_view = caster.view;
                     upstream::SceneUniforms shadow_block =
                         pinned_scene_block(
                             scene,
                             engine,
                             camera,
-                            generator.caster_view_projection);
-                    shadow_block.view = generator.caster_view;
+                            caster_view_projection);
+                    shadow_block.view = caster_view;
                     task_pinned_frame_group(state, render_task);
                     wgpuQueueWriteBuffer(
                         state.queue,
@@ -11307,20 +11397,30 @@ bool run_dawn_engine(Engine& engine) {
                         state.queue,
                         render_task.view_projection,
                         0,
-                        generator.caster_view_projection.data(),
+                        caster_view_projection.data(),
                         64);
                     ShaderPassMatrices caster_pass_matrices{
-                        generator.caster_view_projection.data(),
-                        &generator.caster_view,
+                        caster_view_projection.data(),
+                        &caster_view,
                         nullptr};
                     caster_pass_matrices.camera_position =
                         &task_camera_position;
+                    const std::size_t generator_index =
+                        task.render.shadow_generator.value;
+                    const bool later_cascade =
+                        generator_index < wrote_caster_blocks.size() &&
+                        wrote_caster_blocks[generator_index];
+                    if (generator_index < wrote_caster_blocks.size()) {
+                        wrote_caster_blocks[generator_index] = true;
+                    }
                     write_material_uniforms(
                         render_task.draw_lists.opaque,
-                        caster_pass_matrices);
+                        caster_pass_matrices,
+                        later_cascade);
                     write_material_uniforms(
                         render_task.draw_lists.transparent,
-                        caster_pass_matrices);
+                        caster_pass_matrices,
+                        later_cascade);
                 }
 #endif
 #if BBLITE_PINNED_MATERIALS
@@ -12169,7 +12269,10 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     WGPURenderPassDepthStencilAttachment
                         shadow_attachment{};
-                    shadow_attachment.view = target.depth_view;
+                    // Its own cascade layer, which for every generator but
+                    // a cascaded one is the single layer 0.
+                    shadow_attachment.view =
+                        target.depth_layer_views[task.render.depth_layer];
                     shadow_attachment.depthLoadOp = WGPULoadOp_Clear;
                     // The pin's own shadow target clears to ITS far value,
                     // which standard-Z puts at 1 where this port's reverse-Z
@@ -12266,7 +12369,8 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     WGPURenderPassDepthStencilAttachment
                         depth_attachment{};
-                    depth_attachment.view = target.depth_view;
+                    depth_attachment.view =
+                        target.depth_layer_views[task.render.depth_layer];
                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                     depth_attachment.depthClearValue =
                         upstream::pinned_depth_clear;
@@ -12467,7 +12571,11 @@ bool run_dawn_engine(Engine& engine) {
                     pass_descriptor.depthStencilAttachment =
                         &depth_attachment;
                 } else if (target_record.has_depth && target.depth) {
-                    depth_attachment.view = target.depth_view;
+                    // Its own layer, as the shadow and depth-only passes
+                    // above take theirs; for every target but a cascaded
+                    // shadow map that is the single layer 0.
+                    depth_attachment.view =
+                        target.depth_layer_views[task.render.depth_layer];
                     depth_attachment.depthLoadOp = WGPULoadOp_Clear;
                     depth_attachment.depthClearValue =
                         upstream::pinned_depth_clear;

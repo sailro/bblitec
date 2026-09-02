@@ -3157,21 +3157,86 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
-        id: "regression-torus-knot",
-        name: "Regression - Torus Knot Builder",
-        source: "examples/regression-torus-knot.ts",
-        sourceOrigin: "bblitec-regression",
-        title: "Babylon Lite Native - Torus Knot Builder",
+        id: "scene226",
+        name: "Scene 226 - Gaussian Splatting glTF",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene226.ts",
+        title: "Babylon Lite Native - Gaussian Splatting glTF",
         parity: {
-            // Corpus scene 214's knot field with the shadow generator
-            // removed, so a non-zero number here is the builder, the
-            // curve's Frenet frame or `computeNormals` — never the
-            // `csm-single-map-near-cascade` adaptation 214 measures.
-            // Delete this gate once a corpus scene reaches
-            // `createTorusKnot` under a shadow path this port composes.
+            // The cloud arrives through the pin's own glTF extension rather
+            // than a `.ply`, and its rows are bit-identical to scene 120's
+            // apart from the half-turn about Z that `_sceneSetup` writes on
+            // the node. In the splat family's multisample wobble band, and
+            // measured through THIS mask rather than the wider automatic
+            // region an unregistered run picks: 0.001 full and 0.003 over
+            // the 310,246-pixel cloud on both backends, attributed
+            // background 0.000 / edges 0.006 / interior 0.001. Headroom
+            // follows scene 126's, the family's other edge-wobbling row.
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.007,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene90",
+        name: "Scene 90 - CSG Operations",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene90.ts",
+        title: "Babylon Lite Native - CSG Operations",
+        parity: {
+            // The solid never reaches the runtime: `createMeshFromCsg` ends
+            // at `createMeshFromData`, so the BSP is replayed against the
+            // pin at generation and its four arrays are baked. Both
+            // backends are byte-identical to the golden, which is also the
+            // evidence that Node's V8 and Chrome's agree on the split.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene214",
+        name: "Scene 214 - Cascaded Shadow Torus Knots",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene214.ts",
+        title: "Babylon Lite Native - Cascaded Shadow Maps",
+        parity: {
+            // 201 seeded torus knots over a 2000-unit ground under a
+            // four-cascade directional generator, with the cascade blend
+            // on. The whole cascade array is measured here: the ground
+            // sits at view depth 1334-3066, entirely beyond cascade 0.
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene215",
+        name: "Scene 215 - Cascaded Shadows On A PBR Receiver",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene215.ts",
+        title: "Babylon Lite Native - Cascaded Shadows PBR",
+        parity: {
+            // The PBR arm of the same generator. The upstream page says
+            // PBR renderables ignore CSM in v1; the pin disagrees
+            // (`pbr-csm-shadow-fragment`), and this scene is what measures
+            // which of the two is true.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [127, 153, 191],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene118",
+        name: "Scene 118 - Billboard Sprite Picking",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene118.ts",
+        title: "Babylon Lite Native - Billboard Sprite Picking",
+        parity: {
+            // The pick decides whether the marker box is placed at all, so
+            // a miss is 15308 absent pixels rather than a small residual.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [41, 46, 56],
             backgroundThreshold: 30,
         },
     },

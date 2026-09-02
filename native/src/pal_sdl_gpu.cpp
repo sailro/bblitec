@@ -866,7 +866,12 @@ struct GpuState {
     struct ShadowGenerator {
         SDL_GPUTexture* map = nullptr;
         SDL_GPUBuffer* info = nullptr;
-        upstream::ShadowInfoUniforms block{};
+        /**
+         * Whichever of the two receiver blocks this generator publishes --
+         * 96 bytes for a single-map one, 320 for a cascaded one -- with its
+         * own size beside it, since the row that binds it cannot know.
+         */
+        upstream::ShadowReceiverBlock block{};
     };
     std::vector<ShadowGenerator> shadow_generators;
     SDL_GPUSampler* shadow_comparison_sampler = nullptr;
@@ -978,6 +983,15 @@ struct GpuState {
     std::uint32_t frame_graph_width = 0;
     std::uint32_t frame_graph_height = 0;
     std::vector<GpuMesh> meshes;
+#if BBLITE_PBR_VARIANTS > 0
+    /**
+     * Which meshes this frame's bone-palette sweep has already streamed.
+     *
+     * Kept on the state rather than built per frame so the sweep costs no
+     * allocation; refilled at the top of each sweep.
+     */
+    std::vector<bool> streamed_palettes;
+#endif
     // Dynamic shader meshes frequently repeat a small set of immutable
     // shapes. Keep exact local-space copies here so topology changes create
     // buffers once per distinct shape, not once per short-lived mesh.
@@ -1795,10 +1809,9 @@ inline PinnedStageBlock shadow_info_uniform_at(
     const GpuState& state,
     const upstream::PinnedShadowBinding* row) {
     if (row == nullptr) return {};
-    return {
-        &shadow_generator_for_row(state, *row).block,
-        sizeof(upstream::ShadowInfoUniforms),
-    };
+    const GpuState::ShadowGenerator& generator =
+        shadow_generator_for_row(state, *row);
+    return {generator.block.bytes.data(), generator.block.size};
 }
 
 /**
@@ -3025,6 +3038,18 @@ void draw_node_variant(
 }
 #endif
 
+// Defined with the frame's own targets, below. Declared here rather than
+// beside the ESM blur alone, because the default layer count has to be in
+// scope for every caller and a default may be stated only once.
+SDL_GPUTexture* create_frame_texture(
+    SDL_GPUDevice* device,
+    SDL_GPUTextureFormat format,
+    SDL_GPUSampleCount samples,
+    std::uint32_t width,
+    std::uint32_t height,
+    SDL_GPUTextureUsageFlags usage,
+    std::uint32_t layers = 1);
+
 #if BBLITE_SHADOW_RECEIVERS
 /**
  * The generators' matrices, their maps and their receiver blocks.
@@ -3038,15 +3063,6 @@ void draw_node_variant(
  * the vertex stage reads it as a uniform.
  */
 #if BBLITE_SHADOWS_ESM
-// Defined with the frame's own targets, below.
-SDL_GPUTexture* create_frame_texture(
-    SDL_GPUDevice* device,
-    SDL_GPUTextureFormat format,
-    SDL_GPUSampleCount samples,
-    std::uint32_t width,
-    std::uint32_t height,
-    SDL_GPUTextureUsageFlags usage);
-
 SDL_GPUTextureFormat esm_texture_format(upstream::EsmTextureFormat format) {
     return format == upstream::EsmTextureFormat::depth32_float
         ? SDL_GPU_TEXTUREFORMAT_D32_FLOAT
@@ -3254,20 +3270,16 @@ void update_shadow_generators(
             const ShadowGeneratorRecord& generator,
             ShadowGeneratorHandle,
             std::size_t slot,
-            const upstream::ShadowInfoUniforms& block,
+            const upstream::ShadowReceiverBlock& block,
             bool moved) {
             GpuState::ShadowGenerator& gpu = state.shadow_generators[slot];
             // Kept beside the map and the buffer under the composed row's
             // LIGHT slot, which is what `shadow_generator_for_row` resolves
             // by -- not the generator's handle.
             gpu.block = block;
-            if (
-                generator.task.value < engine.frame_tasks.size() &&
-                engine.frame_tasks[generator.task.value]
-                        .render.target.value < state.render_targets.size()) {
-                const GpuRenderTarget& target = state.render_targets[
-                    engine.frame_tasks[generator.task.value]
-                        .render.target.value];
+            if (generator.map_target.value < state.render_targets.size()) {
+                const GpuRenderTarget& target =
+                    state.render_targets[generator.map_target.value];
 #if BBLITE_SHADOWS_ESM
                 if (generator.filter == ShadowFilter::esm_directional) {
                     // `sg._depthTexture` is the SECOND blur half, never the
@@ -3286,12 +3298,16 @@ void update_shadow_generators(
                 gpu.info = upload_buffer(
                     state.device,
                     SDL_GPU_BUFFERUSAGE_GRAPHICS_STORAGE_READ,
-                    &block,
-                    sizeof(block));
+                    block.bytes.data(),
+                    block.size);
             } else if (moved) {
                 // `update_buffer` costs a transfer buffer and a second
                 // command submit, so it runs only when the block moved.
-                update_buffer(state.device, gpu.info, &block, sizeof(block));
+                update_buffer(
+                    state.device,
+                    gpu.info,
+                    block.bytes.data(),
+                    block.size);
             }
         });
 }
@@ -4537,14 +4553,20 @@ SDL_GPUTexture* create_frame_texture(
     SDL_GPUSampleCount samples,
     std::uint32_t width,
     std::uint32_t height,
-    SDL_GPUTextureUsageFlags usage) {
+    SDL_GPUTextureUsageFlags usage,
+    std::uint32_t layers) {
     SDL_GPUTextureCreateInfo info{};
-    info.type = SDL_GPU_TEXTURETYPE_2D;
+    // A layered attachment is an ARRAY texture: the cascaded shadow map is
+    // the reached one, and its receiver declares `texture_depth_2d_array`,
+    // so the texture type is what SDL_GPU resolves that register against.
+    info.type = layers > 1
+        ? SDL_GPU_TEXTURETYPE_2D_ARRAY
+        : SDL_GPU_TEXTURETYPE_2D;
     info.format = format;
     info.usage = usage;
     info.width = width;
     info.height = height;
-    info.layer_count_or_depth = 1;
+    info.layer_count_or_depth = layers;
     info.num_levels = 1;
     info.sample_count = samples;
     SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &info);
@@ -4713,7 +4735,11 @@ void create_frame_graph_textures(
                 SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET |
                     (record.sampled_depth
                          ? SDL_GPU_TEXTUREUSAGE_SAMPLER
-                         : 0));
+                         : 0),
+                // One layer per cascade for a cascaded shadow map, one for
+                // every other attachment. `create_render_target` normalises
+                // it, so the record's own invariant is at least one.
+                record.depth_layers);
         }
     }
 
@@ -7324,9 +7350,19 @@ bool run_gpu_engine(Engine& engine) {
         // `state`, the scene and the render plan by reference, all of
         // which die with the scope.
         PickHookGuard pick_hook_guard(engine);
+#if BBLITE_HAS_BILLBOARDS
+        // The contributor's own GPU state, scoped to the hook it serves:
+        // upstream it lives in the closure the picker cached and frees in
+        // `disposePicker`, which is this scope.
+        BillboardPickContributor billboard_pick;
+#endif
         engine.pick_hook =
-            [&state, &engine, &scene, &render_plan](
-                GpuPickerHandle, double x, double y) -> PickingInfo {
+            [&state, &engine, &scene, &render_plan
+#if BBLITE_HAS_BILLBOARDS
+             ,
+             &billboard_pick
+#endif
+        ](GpuPickerHandle, double x, double y) -> PickingInfo {
             const CameraRecord* camera_record =
                 scene.camera.value < engine.cameras.size()
                     ? &engine.cameras[scene.camera.value]
@@ -7355,6 +7391,13 @@ bool run_gpu_engine(Engine& engine) {
             const PickSceneUniforms scene_uniforms =
                 build_pick_scene_uniforms(
                     view_projection, x, y, width, height);
+
+#if BBLITE_HAS_BILLBOARDS
+            // Before the pick command buffer exists, because the instance
+            // upload submits one of its own -- the same ordering the frame
+            // loop's billboard upload takes.
+            billboard_pick.prepare(state.device, engine, scene);
+#endif
 
             SDL_GPUCommandBuffer* command =
                 SDL_AcquireGPUCommandBuffer(state.device);
@@ -7460,6 +7503,20 @@ bool run_gpu_engine(Engine& engine) {
                      splat.mesh.value});
                 ++next_id;
             }
+#endif
+#if BBLITE_HAS_BILLBOARDS
+            // The last contributor in the pin's own order: meshes own
+            // 1..M, then each registered pick source's contiguous range.
+            billboard_pick.record(
+                command,
+                pass,
+                engine,
+                scene,
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(*camera_record)),
+                scene_uniforms,
+                ranges,
+                next_id);
 #endif
             SDL_EndGPURenderPass(pass);
 
@@ -8378,6 +8435,15 @@ bool run_gpu_engine(Engine& engine) {
             // pass. The draw branch below keys its skinned handling on the
             // texture this leaves behind.
             {
+                // A palette is per PLAN ITEM, not per draw, and the same
+                // item is drawn by the main lists and again by every task
+                // that names it as a caster -- a cascaded generator alone
+                // draws each of its casters once per cascade. Each upload
+                // is a transfer buffer, a copy pass and its own submit, so
+                // the sweep streams an item once and the later sightings of
+                // it cost one lookup.
+                std::vector<bool>& streamed = state.streamed_palettes;
+                streamed.assign(state.meshes.size(), false);
                 const auto stream_palettes =
                     [&](const upstream::RenderDrawList& list) {
                     for (
@@ -8387,6 +8453,8 @@ bool run_gpu_engine(Engine& engine) {
                         if (draw.item.mesh.value >= engine.meshes.size()) {
                             continue;
                         }
+                        if (streamed[draw.item_index]) continue;
+                        streamed[draw.item_index] = true;
                         const std::size_t palette_variant =
                             pinned_variant_for_draw(scene, engine, draw);
                         if (
@@ -9106,11 +9174,13 @@ bool run_gpu_engine(Engine& engine) {
                     // them straight back. There is no facade here: the pass
                     // block takes the generator's own biased view-projection
                     // and its light-space view directly.
-                    if (shadow_generator) {
-                        pass_scene_block.viewProjection =
-                            shadow_generator->caster_view_projection;
-                        pass_scene_block.view =
-                            shadow_generator->caster_view;
+                    // The PASS's own matrices, not the generator's: a
+                    // cascaded generator renders one pass per cascade and
+                    // each carries its own cascade's pair, which the
+                    // caller has already resolved into these two.
+                    if (shadow_generator && draw_pass_matrices.view) {
+                        pass_scene_block.viewProjection = draw_matrix;
+                        pass_scene_block.view = *draw_pass_matrices.view;
                     }
 #endif
                     // A caster pass of the two COMPOSED families declares
@@ -9609,8 +9679,23 @@ bool run_gpu_engine(Engine& engine) {
                             const ShadowGeneratorRecord& generator =
                                 engine.shadow_generators[
                                     task.render.shadow_generator.value];
+                            // A cascaded generator has one pass per
+                            // cascade, each clearing and writing its own
+                            // layer of the shared depth array and
+                            // rendering through that cascade's own biased
+                            // view-projection. Every other generator has
+                            // one pass, one layer and one pair.
+                            const pal::ShadowCasterMatrices caster =
+                                pal::shadow_caster_matrices(engine, task);
+                            const std::array<float, 16>&
+                                caster_view_projection =
+                                    caster.view_projection;
+                            const std::array<float, 16>& caster_view =
+                                caster.view;
                             SDL_GPUDepthStencilTargetInfo shadow_depth{};
                             shadow_depth.texture = target.depth;
+                            shadow_depth.layer = static_cast<Uint8>(
+                                task.render.depth_layer);
                             // The pin's own shadow target clears to ITS
                             // far value, which standard-Z puts at 1 where
                             // this port's reverse-Z puts it at 0.
@@ -9653,11 +9738,11 @@ bool run_gpu_engine(Engine& engine) {
                             SDL_PushGPUVertexUniformData(
                                 command,
                                 0,
-                                generator.caster_view_projection.data(),
-                                sizeof(generator.caster_view_projection));
+                                caster_view_projection.data(),
+                                sizeof(caster_view_projection));
                             ShaderPassMatrices caster_pass_matrices{
-                                generator.caster_view_projection.data(),
-                                &generator.caster_view,
+                                caster_view_projection.data(),
+                                &caster_view,
                                 nullptr};
                             caster_pass_matrices.camera_position =
                                 &task_camera_position;
@@ -9669,7 +9754,7 @@ bool run_gpu_engine(Engine& engine) {
                                 nullptr,
                                 {},
                                 {},
-                                generator.caster_view_projection,
+                                caster_view_projection,
                                 task_camera,
                                 caster_pass_matrices,
                                 task_draw_lists[handle.value],
@@ -9705,6 +9790,12 @@ bool run_gpu_engine(Engine& engine) {
                             }
                             SDL_GPUDepthStencilTargetInfo task_depth{};
                             task_depth.texture = target.depth;
+                            // Zero for every target but a layered one, and
+                            // the record carries the layer either way --
+                            // an ordinary pass into a layered target would
+                            // otherwise silently write layer 0.
+                            task_depth.layer = static_cast<Uint8>(
+                                task.render.depth_layer);
                             task_depth.clear_depth =
                                 upstream::pinned_depth_clear;
                             task_depth.load_op = SDL_GPU_LOADOP_CLEAR;
@@ -9851,6 +9942,12 @@ bool run_gpu_engine(Engine& engine) {
                             task_depth_pointer = &task_depth;
                         } else if (target_record.has_depth && target.depth) {
                             task_depth.texture = target.depth;
+                            // Its own layer, as the two passes above take
+                            // theirs; zero for every target but a layered
+                            // one, and an ordinary pass into a layered
+                            // target would otherwise write layer 0.
+                            task_depth.layer = static_cast<Uint8>(
+                                task.render.depth_layer);
                             task_depth.clear_depth =
                                 upstream::pinned_depth_clear;
                             task_depth.load_op = SDL_GPU_LOADOP_CLEAR;

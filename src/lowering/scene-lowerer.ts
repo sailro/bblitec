@@ -1472,16 +1472,24 @@ void rebuild_scene_renderables(Scene& scene) {
         if (still_active) continue;
         ShadowGeneratorRecord& shadow =
             scene.engine->shadow_generators[generator.value];
-        const TaskHandle task = shadow.task;
+        // Every caster pass the generator built: one for a single-map
+        // generator, one per cascade layer for a cascaded one.
+        const std::vector<TaskHandle> retired = shadow.caster_tasks;
         scene.tasks.erase(
             std::remove_if(
                 scene.tasks.begin(),
                 scene.tasks.end(),
-                [task](const TaskHandle candidate) {
-                    return candidate.value == task.value;
+                [&retired](const TaskHandle candidate) {
+                    return std::any_of(
+                        retired.begin(),
+                        retired.end(),
+                        [candidate](const TaskHandle task) {
+                            return candidate.value == task.value;
+                        });
                 }),
             scene.tasks.end());
-        shadow.task = TaskHandle{};
+        shadow.caster_tasks.clear();
+        shadow.map_target = RenderTargetHandle{};
         for (LightRecord& light : scene.engine->lights) {
             if (light.shadow_generator.value == generator.value) {
                 light.shadow_generator = ShadowGeneratorHandle{};

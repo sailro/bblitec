@@ -18,7 +18,10 @@
 import {
     importPinnedModule,
 } from "./pinned-shader-composer.js";
-import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
+import {
+    reachCsmReceiverFactories,
+    type ShadowLightSlot,
+} from "./pinned-shadow-slots.js";
 import { pinnedReceiveShadowsBit } from "./pinned-mesh-features.js";
 import { pinnedClusteredLightExtensions } from "./pinned-clustered-lights.js";
 import type { PinnedToneMapping } from "./pinned-tone-mapping.js";
@@ -395,16 +398,10 @@ export async function composePinnedPbrVariant(
                 "after the light's index in `scene.lights`.",
         );
     }
-    if (
-        receivesShadows &&
-        shadowLights.some((slot) => slot.shadowType === "csm")
-    ) {
-        throw new Error(
-            "The CSM PBR receiver fragment is not composable: it resolves " +
-                "through the cascaded receiver registry, which this port " +
-                "does not build.",
-        );
-    }
+    // Before `createPbrShadowFragment` asserts a `"csm"` slot's factory is
+    // non-null; the trigger and why it is the pin's own are stated once, at
+    // `reachCsmReceiverFactories`.
+    if (receivesShadows) await reachCsmReceiverFactories(shadowLights);
     const pbrShadow = receivesShadows
         ? await importPinnedModule<{
             createPbrShadowFragment: (
