@@ -44,11 +44,12 @@
     "simplify:record": "npm run build && node dist/src/verify-simplify.js --path",
     "status:verify": "npm run build && node dist/src/verify-status.js",
     "corpus:verify": "npm run build && node dist/src/verify-corpus.js",
+    "corpus:manifest": "npm run build && node dist/src/write-corpus-manifest.js",
     "lint:exports": "ts-prune -p tsconfig.json"
   },
   "devDependencies": {
     "@babylonjs/havok": "^1.3.14",
-    "@babylonjs/lite": "^1.25.0",
+    "@babylonjs/lite": "^1.26.0",
     "@recast-navigation/core": "0.43.1",
     "@recast-navigation/generators": "0.43.1",
     "@recast-navigation/wasm": "0.43.1",

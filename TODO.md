@@ -149,6 +149,26 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   owner/catch matching then needs canonical TypeScript symbols. Use that same
   lookup boundary to remove the duplicate function/alias resolver and fold the
   two loop-control subtree walks into one result.
+- [ ] Extend the restated-body statement inventory past the physics lowerer.
+  1.26.0 added a statement to a pinned body this port restates whole and every
+  shape and order contract still passed
+  ([development](docs/development.md#3-fix-the-compatibility-report) carries
+  the category). `inventoryContracts` in `src/lowering/physics-lowerer.ts` now
+  pins the count for the five bodies that translation unit restates, but
+  `assertInventory` is private to `PhysicsLowerer`, so nothing else can reuse
+  it. Restated whole elsewhere with no count guard:
+  `src/lowering/clustered-light-runtime.ts` (the pinned `_write`, which carries
+  a stride anchor and no body contract), `src/lowering/audio-lowerer.ts` (whose
+  own doc claims a body "is exactly these two statements" and checks two
+  presences), and `src/lowering/pinned-frame-atlas.ts` /
+  `pinned-grid-atlas.ts`. Two frictions before it generalizes: the helper has
+  to move onto `LoweringContext` beside the other shared contract checks, and
+  each body needs its inventory READ from the pin once rather than guessed —
+  a wrong row is a refusal on the next bump, not a silent pass, but it still
+  costs the bump that meets it. `_buildShapeParams` is the same gap one level
+  in: `assertShapeParamsPrelude` projects only variable statements, so its two
+  top-level `if` arms are invisible to the inventory and to
+  `assertShapeParamsCases` alike.
 - [ ] Normalize the source path Tint's reflection sidecar embeds. A
   `*.tint-reflection.txt` replayed from the shader cache carries the
   absolute path of whichever scene FIRST compiled that identical variant
@@ -188,7 +208,7 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ## P1 — Full Babylon Lite corpus audit
 
-57 corpus scenes remain unregistered; measured scenes
+58 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -223,12 +243,12 @@ picker 5 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses
 by design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
 also need two `_shared` modules the corpus does not carry).
 
-### What 1.25.0 added
+### What the recent releases added
 
-Three of these are the release's own new subsystems — a clustered spot field,
-an opt-in PBR lightmap and a local-cubemap probe array are each a pinned
-extension this port does not register at all — and 187 and 304 name whole
-families that arrived with the release. Read it as a capability list.
+Each of these arrived with a pin bump and names a family this port does not
+register at all — a clustered spot field, an opt-in PBR lightmap, a
+local-cubemap probe array — or a whole subsystem. Read it as a capability
+list.
 
 | Scene | First blocker | Family |
 | --- | --- | --- |
@@ -237,6 +257,15 @@ families that arrived with the release. Read it as a capability list.
 | 302 | an unresolved `SCENE302_CLEAR_COLOR` from the shared module the corpus does not carry | node particles with a moving emitter |
 | 303 | `enableSprite2DYSort` | renderer-native Sprite2D Y-sort |
 | 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
+| 305 | `normalizeNodeParticleGraph` | NPE Teleport/LocalVariable graph plumbing |
+
+Scene 305 is otherwise shaped exactly like the frozen NPE billboard scenes
+already integrated (262, 283, 284): same oracle, same seed, same 200 steps,
+same `createParticleBillboard` sync. What it adds is the normalizer, which
+rewrites Teleport routing and compiles Elbow and Debug blocks away as
+pass-through before the builder walks the graph — generation work like the
+rest of the node-particle pipeline, so its cost is the normalizer's reach plus
+its shared module.
 
 `186-debug` and `187-debug` are helper modules rather than scenes: they have no
 `main()`, so a sweep reports them clean and neither is integrable.
