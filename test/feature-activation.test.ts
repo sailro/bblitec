@@ -42,6 +42,7 @@ function specialization(
         occlusionUv2: false,
         eightInfluenceSkinning: false,
         gaussianSplats: false,
+        compressedImages: false,
         ...overrides,
     };
 }
@@ -65,6 +66,7 @@ function emitOptions(
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,
+        compressedImages: false,
         nodeVisibility: false,
         gltfNodeVisibility: false,
         animationPointer: false,

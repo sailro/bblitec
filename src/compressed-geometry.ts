@@ -80,7 +80,7 @@ function numberValue(value: unknown, fallback = 0): number {
  * specializer reads both lists to decide what the pinned loader would do with
  * the asset it is handed.
  */
-function dropExtension(json: JsonRecord, name: string): void {
+export function dropExtension(json: JsonRecord, name: string): void {
     json.extensionsUsed = declaredExtensions(json).filter(
         (declared) => declared !== name,
     );

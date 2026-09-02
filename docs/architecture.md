@@ -99,12 +99,12 @@ Primary source ownership:
 | `src/pinned-splat-fragments.ts` | the splat shader plugins a `loadSplat` names, and `applyGsFragments` run over them |
 | `src/lowering/linear-depth-lowerer.ts` | `createLinearDepthMaterial`, folded from the factory that builds it — stages, declarations and fixed-function state |
 | `src/lowering/compressed-texture-lowerer.ts` | the KTX1 container: the pin's parser lowered to C++, its format table, and the suffix selection and URL rewrite generation folds |
-| `src/basis-transcode.ts` | the pinned Basis loader run in headless Chromium, packaged as a KTX1 container |
+| `src/basis-transcode.ts` | the pinned Basis and KTX2 loaders run in headless Chromium, each packaged as a KTX1 container |
 | `src/lowering/sprite-animation-lowerer.ts` | the sprite frame stepper and its delay normalisation, lowered from their own pinned declarations, plus the tagged target the two families share |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/pinned-picking-shaders.ts` | the two modules a GPU pick draws through, composed by running the pin's own builders |
 | `src/lowering/picking-lowerer.ts` | the picker's bookkeeping; every answer belongs to the backend that owns the buffers |
-| `src/lowering/gizmo-lowerer.ts` | the display-gizmo family from `src/gizmo/*`: the utility layer, the camera and light widgets, and the per-frame follow that reads the attached record |
+| `src/lowering/gizmo-lowerer.ts` | the gizmo family from `src/gizmo/*`: the utility layer, the camera and light displays, the four editing widgets, and the three per-frame follows the pin writes for them |
 | `src/lowering/physics-lowerer.ts` | the rigid-body family from `havok.ts`: the step gate, the four frame phases, the aggregate ordering and `_buildShapeParams`' shape sizing |
 | `src/compiler/intrinsics/physics.ts` | which physics calls a scene reached, and the erased solver module its `await HavokPhysics(...)` produced |
 | `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted |

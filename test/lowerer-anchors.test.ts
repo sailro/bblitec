@@ -265,7 +265,7 @@ test("mesh factory tables flow from the pinned builders", () => {
 test("environment sizing constants flow slot by slot", () => {
     const adapter = new EnvironmentLowerer(
         new LoweringContext(),
-    ).lowerLoaderAdapter();
+    ).lowerLoaderAdapter({ loadEnvironment: true, ddsBackground: false });
     // Each literal is tied to its parameter position in the pinned
     // computeSceneSize, then interpolated here: defaults, the diagonal
     // override, the two final scales, and the root composition.

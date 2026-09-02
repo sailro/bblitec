@@ -290,6 +290,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/pbr/background-ground.ts",
         consumers: CMAKE,
     },
+    "background:dds-environment": {
+        provenance: "src/material/pbr/background-dds-environment.ts",
+        consumers: CMAKE,
+    },
     "background:skybox": {
         provenance: "src/material/pbr/background-dds-skybox.ts",
         consumers: CMAKE,
@@ -620,6 +624,25 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "gizmo:light": {
         provenance: "src/gizmo/light-gizmo.ts",
+        consumers: CMAKE,
+    },
+    // The four editing widgets, one row per pinned module. Each builds
+    // its own geometry over the same layer, follow and material builder,
+    // and a scene reaching one reaches none of the others.
+    "gizmo:axis-drag": {
+        provenance: "src/gizmo/axis-drag-gizmo.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:axis-scale": {
+        provenance: "src/gizmo/axis-scale-gizmo.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:plane-drag": {
+        provenance: "src/gizmo/plane-drag-gizmo.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:plane-rotation": {
+        provenance: "src/gizmo/plane-rotation-gizmo.ts",
         consumers: CMAKE,
     },
     "shadow:esm": {
@@ -2450,7 +2473,8 @@ function refusalRows(
             "src/loader-gltf/gltf-feature-registry.ts extension->module " +
                 "rows, parsed from the pin's own AST, plus the named " +
                 "pin-only loader extensions (spec-gloss, anisotropy, " +
-                "diffuse-transmission, basisu, variants); an extension the " +
+                "diffuse-transmission, variants -- basisu left that list " +
+                "when packaging began resolving it away); an extension the " +
                 "pinned loader implements and this port does not would " +
                 "silently render a different image, so it refuses at " +
                 "generation",

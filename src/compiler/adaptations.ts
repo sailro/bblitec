@@ -337,6 +337,57 @@ export function compileAdaptations(
             ],
         });
     }
+    if (
+        (
+            [
+                "gizmo:axis-drag",
+                "gizmo:axis-scale",
+                "gizmo:plane-drag",
+                "gizmo:plane-rotation",
+            ] as const satisfies readonly Feature[]
+        ).some((feature) => features.includes(feature))
+    ) {
+        adaptations.push({
+            id: "display-only-editing-gizmo",
+            category: "platform",
+            sourceSemantics:
+                "An editing gizmo builds a rendered widget and a " +
+                "pointer-drag interaction over it: invisible collider " +
+                "meshes give the widget a pick region, `registerPointerDrag` " +
+                "binds pointer events on the canvas, and a drag swaps the " +
+                "widget's hover material, shows the rotation gizmo's " +
+                "sector readout and writes the attached node's position, " +
+                "rotation or scaling.",
+            nativeSemantics:
+                "The rendered widget and its per-frame follow are " +
+                "generated from the pinned factories; the drag is not " +
+                "reached, because this runtime has no pointer-input " +
+                "contract to bind one to. Every part whose only consumer " +
+                "is that drag is therefore not built -- the collider " +
+                "meshes, the hover and disabled materials, and the " +
+                "rotation sector quad. For the MESHES, generation asserts " +
+                "against the pin that each is hidden BEFORE any pointer " +
+                "event -- the walk stops at a nested function, so the " +
+                "second hide `createPlaneRotationGizmo` performs from its " +
+                "drag callback cannot answer for the build-time one, and " +
+                "the dropped `centered` arm cannot answer for the arrow " +
+                "arm this port emits. An upstream change that made one " +
+                "show fails generation by name rather than dropping it " +
+                "silently. The two extra materials carry no such " +
+                "assertion, and are simply not built because the pinned " +
+                "body assigns neither to a mesh before a drag. The " +
+                "widget's root is the transform node the camera and light " +
+                "gizmos already use where the pin makes an invisible " +
+                "zero-height cylinder for the same purpose, and that the " +
+                "pinned root IS invisible is itself asserted -- it is what " +
+                "makes the substitution sound.",
+            risk: "medium",
+            validation: [
+                "scene 221 parity against the browser golden, which draws the same widgets before any pointer event",
+                "generation fails when a pinned collider mesh, sector quad or widget root stops being hidden at build time",
+            ],
+        });
+    }
     if (features.includes("mesh:csg")) {
         adaptations.push({
             id: "executed-csg-solid",

@@ -82,7 +82,10 @@ test("loads pinned Babylon Lite TypeScript from published source maps", () => {
 test("generates the Babylon environment parser from upstream constants", () => {
     const lowerer = new EnvironmentLowerer(new LoweringContext());
     const lowered = lowerer.lowerParser();
-    const adapter = lowerer.lowerLoaderAdapter();
+    const adapter = lowerer.lowerLoaderAdapter({
+        loadEnvironment: true,
+        ddsBackground: false,
+    });
     const hdrAdapter = lowerer.lowerHdrLoaderAdapter();
     assert.match(lowered.source, /0x86, 0x16, 0x87, 0x96, 0xf6, 0xd6, 0x96, 0x36/);
     assert.match(lowered.source, /constexpr float c1 = 1\.4999984284682104f/);
@@ -92,7 +95,10 @@ test("generates the Babylon environment parser from upstream constants", () => {
     assert.doesNotMatch(adapter.source, /scene\.clear_color/);
     assert.match(adapter.source, /scene\.environment\.ground_texture/);
     assert.match(adapter.source, /scene\.environment\.ground_size/);
-    assert.match(adapter.source, /scene\.environment\.skybox_width/);
+    // The DDS header read is a shared helper now that
+    // addDdsEnvironmentBackground reaches the same skybox, so it names the
+    // record it fills rather than the scene it hangs off.
+    assert.match(adapter.source, /environment\.skybox_width/);
     assert.match(adapter.source, /0x20534444u/);
     assert.match(hdrAdapter.source, /0x42, 0x42, 0x4c, 0x48, 0x44, 0x52, 0x31/);
     assert.match(hdrAdapter.source, /scene\.environment\.specular_rgba16f = true/);
@@ -102,6 +108,42 @@ test("generates the Babylon environment parser from upstream constants", () => {
     );
     assert.match(hdrAdapter.source, /scene\.environment\.tone_mapping_enabled = false/);
     assert.match(hdrAdapter.source, /scene\.environment\.skybox_uses_environment/);
+});
+
+test("emits the DDS background composite only where it is reached", () => {
+    const lowerer = new EnvironmentLowerer(new LoweringContext());
+    const both = lowerer.lowerLoaderAdapter({
+        loadEnvironment: true,
+        ddsBackground: true,
+    });
+    // The two entry points share the world-bounds walk, computeSceneSize and
+    // the DDS header, so they are one unit whose contents follow the features
+    // rather than upstream's own file boundary.
+    assert.match(both.source, /void load_environment\(/);
+    assert.match(both.source, /void add_dds_environment_background\(/);
+    assert.match(both.source, /read_dds_skybox\(scene\.environment/);
+    assert.match(both.source, /scene\.environment\.enable_noise = options\.enable_noise/);
+    assert.equal(both.symbolName, "loadEnvironment,addDdsEnvironmentBackground");
+
+    const backgroundOnly = lowerer.lowerLoaderAdapter({
+        loadEnvironment: false,
+        ddsBackground: true,
+    });
+    assert.doesNotMatch(backgroundOnly.source, /void load_environment\(/);
+    // The `.env` parser is what that function needs and nothing else here
+    // does, so a background-only unit must not include its header.
+    assert.doesNotMatch(backgroundOnly.source, /env_parse\.hpp/);
+    assert.match(backgroundOnly.source, /void add_dds_environment_background\(/);
+
+    const environmentOnly = lowerer.lowerLoaderAdapter({
+        loadEnvironment: true,
+        ddsBackground: false,
+    });
+    assert.doesNotMatch(
+        environmentOnly.source,
+        /add_dds_environment_background/,
+    );
+    assert.match(environmentOnly.source, /env_parse\.hpp/);
 });
 
 test("generates scene defaults, routing, and idempotent registration", () => {

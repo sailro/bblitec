@@ -179,3 +179,57 @@ test("refuses to package a format the pinned table has no enum for", () => {
         /no KTX1 enum for 'astc-4x4-unorm'/,
     );
 });
+
+test("packages an sRGB KTX2 slot under the pin's own sRGB twin", () => {
+    const compressed = lowerer();
+    // A KTX2 transcode is colour-space-agnostic: uploadKtx2Texture2D decodes
+    // the same blocks either way and its sRGB argument only picks this twin,
+    // so one bake serves both and the container states which view its blocks
+    // decode through.
+    assert.equal(
+        compressed.srgbGpuFormat("bc7-rgba-unorm"),
+        "bc7-rgba-unorm-srgb",
+    );
+    assert.notEqual(
+        compressed.glInternalFormat("bc7-rgba-unorm-srgb"),
+        compressed.glInternalFormat("bc7-rgba-unorm"),
+    );
+    assert.throws(
+        () => compressed.srgbGpuFormat("bc7-rgba-unorm-srgb"),
+        /no twin for 'bc7-rgba-unorm-srgb'/,
+    );
+});
+
+test("checks a padded capture against the padded chain", () => {
+    const compressed = lowerer();
+    const block = compressed.blockSize("bc7-rgba-unorm");
+    assert.deepEqual(block, { width: 4, height: 4 });
+    // ktx2-loader.ts writes each level's BLOCK-PADDED copy extent, where
+    // basis-loader.ts writes the level's own size, so the tail level of an
+    // 8x4 chain is captured as 4x4 rather than 4x2. Handing the block size
+    // over is what states which loader produced the capture.
+    const mips = [
+        { width: 8, height: 4, bytes: new Uint8Array(32) },
+        { width: 4, height: 4, bytes: new Uint8Array(16) },
+    ];
+    const texture = { gpuFormat: "bc7-rgba-unorm", width: 8, height: 4, mips };
+    assert.doesNotThrow(() =>
+        writeKtx1(
+            texture,
+            compressed.magicBytes(),
+            compressed.glInternalFormat("bc7-rgba-unorm"),
+            compressed.headerLayout(),
+            block,
+        ),
+    );
+    assert.throws(
+        () =>
+            writeKtx1(
+                texture,
+                compressed.magicBytes(),
+                compressed.glInternalFormat("bc7-rgba-unorm"),
+                compressed.headerLayout(),
+            ),
+        /transcoded level 1 is 4x4/,
+    );
+});

@@ -135,6 +135,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,
+        compressedImages: false,
         nodeVisibility: false,
         gltfNodeVisibility: false,
         spriteCustomShaders: [],

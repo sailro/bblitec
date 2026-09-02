@@ -95,6 +95,58 @@ export function compileEnvironmentOptions(
 }
 
 /**
+ * `addDdsEnvironmentBackground`'s own options.
+ *
+ * Every member but `enableNoise` is required upstream, so there is no
+ * "omitted" arm to fold: the two URLs and the size are read straight
+ * through, and the size keeps the caller's value rather than the `.env`
+ * loader's zero-means-default spelling, because `computeSceneSize` is
+ * handed it as `userSkyboxSize` with no default of its own on this path.
+ */
+export function compileDdsEnvironmentBackgroundOptions(
+    context: AssetOptionContext,
+    expression: ts.Expression,
+): {
+    groundTextureUrl: string;
+    skyboxUrl: string;
+    skyboxSize: string;
+    enableNoise: boolean;
+} {
+    const object = context.expectObjectLiteral(expression);
+    validateObjectProperties(
+        context,
+        object,
+        ["groundTextureUrl", "skyboxUrl", "skyboxSize", "enableNoise"],
+        "DDS environment background options support groundTextureUrl, skyboxUrl, skyboxSize, and enableNoise.",
+    );
+    const required = (name: string): ts.Expression => {
+        const property = context.objectProperty(object, name);
+        if (!property) {
+            context.fail(
+                object,
+                `addDdsEnvironmentBackground requires ${name}.`,
+            );
+        }
+        return property;
+    };
+    return {
+        groundTextureUrl: context.compileStringLiteral(
+            required("groundTextureUrl"),
+        ),
+        skyboxUrl: context.compileStringLiteral(required("skyboxUrl")),
+        skyboxSize: context.compileNumber(required("skyboxSize")),
+        // The pin's own default, which is also what every `loadEnvironment`
+        // background carries: `enableNoise = true` on both builders.
+        enableNoise: compileOptionalStaticBoolean(
+            context,
+            context.objectProperty(object, "enableNoise"),
+            true,
+            "enableNoise",
+        ),
+    };
+}
+
+/**
  * `loadDdsEnvironment` takes a required `brdfUrl` plus `skipSkybox` and
  * `skipGround`, which it accepts and never acts on — it creates neither.
  * The native DDS loader has the same contract, so the skip flags need no

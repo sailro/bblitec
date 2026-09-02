@@ -112,7 +112,7 @@ test("lifts the pinned ground fragment with both dither arms", () => {
 test("the DDS skybox file carries the pin's single high-contrast arm", () => {
     const pinned = readPinnedBackgroundSkyboxSource(pinnedPackageRoot());
     const vertex = backgroundDdsSkyboxVertexWgsl("p", pinned);
-    const dds = backgroundSkyboxFragmentWgsl("p", pinned, true);
+    const dds = backgroundSkyboxFragmentWgsl("p", pinned, "dds");
 
     assert.ok(vertex.includes("let c=(uniforms.world*vec4<f32>(b,1.0)).xyz;"));
     assert.ok(
@@ -206,7 +206,7 @@ test("a reshaped pinned background literal fails generation by name", () => {
                         "exposure",
                     ),
                 },
-                true,
+                "dds",
             ),
         /DDS skybox fragment/,
     );

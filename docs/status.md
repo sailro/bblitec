@@ -125,6 +125,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok collision-event solver delta; not a renderer-fidelity value. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
+| 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | No-Color Depth Views |
 | 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 2D Sprite Picking |
 | 118 | <img src="images/scenes/scene118.png" alt="Scene 118 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprite Picking |
@@ -186,6 +187,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 216 | <img src="images/scenes/scene216.png" alt="Scene 216 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Fog |
 | 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Plugins |
 | 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Quantized Duck |
+| 221 | <img src="images/scenes/scene221.png" alt="Scene 221 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Pointer Drags |
 | 223 | <img src="images/scenes/scene223.png" alt="Scene 223 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Camera And Light Gizmos |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |

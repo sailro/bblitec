@@ -1240,6 +1240,14 @@ export type ValueKind =
   | "utility-layer"
   | "camera-gizmo"
   | "light-gizmo"
+  // The four editing widgets. One native record serves all four -- what
+  // differs between them is the geometry the generated builder emits, not
+  // what the record holds -- but each keeps its own kind here, so one
+  // widget's attach call cannot be handed another's handle.
+  | "axis-drag-gizmo"
+  | "axis-scale-gizmo"
+  | "plane-drag-gizmo"
+  | "plane-rotation-gizmo"
   | "string"
   | "task"
   | "texture"
@@ -1857,6 +1865,7 @@ export type Feature =
   | "animation:gltf-group-speed"
   | "animation:gltf-group-mask"
   | "background:ground"
+  | "background:dds-environment"
   | "background:skybox"
   | "core"
   | "backend:sdl"
@@ -1965,6 +1974,13 @@ export type Feature =
   | "gizmo:utility-layer"
   | "gizmo:camera"
   | "gizmo:light"
+  // The editing widgets, one row each for the same reason: the pin gives
+  // each its own module, and a scene reaching one reaches none of the
+  // others.
+  | "gizmo:axis-drag"
+  | "gizmo:axis-scale"
+  | "gizmo:plane-drag"
+  | "gizmo:plane-rotation"
   // The shadow family, split the way upstream splits it: the filter's own
   // resources and receiver composition (`shadow:pcf`), and the scene-owned
   // frame-graph task that schedules them (`shadow:task`), which

@@ -24,6 +24,7 @@ import { LoweredSource, LoweringContext } from "./context.js";
 
 const KTX_MODULE = "src/texture/ktx-loader.ts";
 const FORMATS_MODULE = "src/texture/compressed-formats.ts";
+const KTX2_MODULE = "src/texture/ktx2-loader.ts";
 
 /**
  * The block formats both backends bind, by the pin's own WebGPU names.
@@ -312,6 +313,88 @@ export class CompressedTextureLowerer {
             );
         }
         return row.gl;
+    }
+
+    /**
+     * `ktx2-loader.ts#srgbFormat`: the sRGB twin of a linear GPU format.
+     *
+     * The KTX2 decode is sRGB-agnostic — `uploadKtx2Texture2D` transcodes
+     * the same blocks either way and uses its `sRGB` argument only to pick
+     * this twin over the row `getCompressedFormat` returned — so a
+     * transcode baked once is packaged under whichever of the two GL enums
+     * the slot that reached the image asked for. The mapping is read off
+     * the pin's own switch rather than restated, because a format whose
+     * twin upstream renames would otherwise package as its linear self and
+     * render one gamma step wrong.
+     */
+    public srgbGpuFormat(gpuFormat: string): string {
+        if (!this.srgbTwins) {
+            const { file, declaration } = this.context.functionDeclaration(
+                KTX2_MODULE,
+                "srgbFormat",
+            );
+            const twins = new Map<string, string>();
+            for (const clause of this.context.findNodes(
+                declaration,
+                (node): node is ts.CaseClause => ts.isCaseClause(node),
+            )) {
+                const statement = clause.statements[0];
+                if (
+                    clause.statements.length !== 1 ||
+                    !statement ||
+                    !ts.isReturnStatement(statement) ||
+                    !statement.expression
+                ) {
+                    this.context.contractError(
+                        clause,
+                        "Pinned srgbFormat case is no longer a single return.",
+                    );
+                }
+                twins.set(
+                    this.context.stringValue(clause.expression, file),
+                    this.context.stringValue(statement.expression, file),
+                );
+            }
+            if (twins.size === 0) {
+                this.context.contractError(
+                    declaration,
+                    "Pinned srgbFormat no longer maps any format.",
+                );
+            }
+            this.srgbTwins = twins;
+        }
+        const twin = this.srgbTwins.get(gpuFormat);
+        if (!twin) {
+            throw new Error(
+                `The pinned sRGB format table has no twin for ` +
+                    `'${gpuFormat}', so an sRGB slot cannot be packaged ` +
+                    "from it.",
+            );
+        }
+        return twin;
+    }
+
+    private srgbTwins?: Map<string, string>;
+
+    /**
+     * The block dimensions the pinned table gives a GPU format.
+     *
+     * `ktx-loader.ts` and `ktx2-loader.ts` both pad a level's copy extent
+     * up to whole blocks before `writeTexture` — a 2x2 tail mip occupies
+     * one 4x4 block — so packaging a capture of one of those uploads has to
+     * know the block to check the chain it captured.
+     */
+    public blockSize(gpuFormat: string): { width: number; height: number } {
+        const row = this.formatRows().find(
+            (candidate) => candidate.gpuFormat === gpuFormat,
+        );
+        if (!row) {
+            throw new Error(
+                `The pinned compressed-format table has no block size for ` +
+                    `'${gpuFormat}'.`,
+            );
+        }
+        return { width: row.blockWidth, height: row.blockHeight };
     }
 
     /** The pinned KTX1 magic, as its own `U8([...])` literal states it. */

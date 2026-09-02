@@ -9236,9 +9236,7 @@ bool run_dawn_engine(Engine& engine) {
         }
         state.skybox_module = load_wgsl_module(
             state,
-            scene.environment.skybox_uses_environment
-                ? "background-skybox.frag"
-                : "background-skybox-dither.frag");
+            pal::background_skybox_fragment(scene.environment));
         const upstream::SkyboxPlan skybox_plan =
             upstream::build_skybox_plan(scene.environment);
         std::array<GpuVertex, 8> skybox_quad{};
@@ -9788,9 +9786,9 @@ bool run_dawn_engine(Engine& engine) {
 #endif
 
     if (use_ground) {
-        // The pinned dither, on the same terms as the skybox above.
-        state.ground_module =
-            load_wgsl_module(state, "background-ground-dither.frag");
+        state.ground_module = load_wgsl_module(
+            state,
+            pal::background_ground_fragment(scene.environment));
         const upstream::BackgroundPlan background =
             upstream::build_background_plan(scene.environment);
         std::array<GpuVertex, 4> ground_quad{};
@@ -11418,7 +11416,8 @@ bool run_dawn_engine(Engine& engine) {
             const upstream::BackgroundUniforms background =
                 upstream::build_background_uniforms(
                     scene.environment,
-                    camera);
+                    camera,
+                    scene.transmission_enabled);
             wgpuQueueWriteBuffer(
                 state.queue,
                 state.ground_uniforms,

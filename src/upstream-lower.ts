@@ -316,6 +316,8 @@ export interface UpstreamEmitOptions {
     nonTrianglePrimitives: boolean;
     /** Any loaded glTF carries packaged Gaussian-splat clouds. */
     gaussianSplats: boolean;
+    /** Any loaded glTF carries packaged KTX1 containers as its images. */
+    compressedImages: boolean;
     /**
      * A mesh's `visible` lane is read at all: the renderer's plan skip and
      * the camera's bounds skip. Raised by an asset's KHR_node_visibility OR
@@ -946,7 +948,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         if (
             features.includes("environment:env") ||
             features.includes("environment:hdr") ||
-            features.includes("environment:dds")
+            features.includes("environment:dds") ||
+            features.includes("background:dds-environment")
         ) {
             const environment = new EnvironmentLowerer(context);
             if (features.includes("environment:env")) {
@@ -956,9 +959,24 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     generated,
                     "upstream/include/bblite/upstream/env_parse.hpp",
                 );
+            }
+            // One unit for both entry points into the pinned background
+            // builders: they share the world-bounds walk, `computeSceneSize`
+            // and the DDS header, so which functions it carries follows the
+            // features rather than upstream's own file boundary.
+            if (
+                features.includes("environment:env") ||
+                features.includes("background:dds-environment")
+            ) {
                 this.writeSource(
                     "upstream/src/environment.cpp",
-                    environment.lowerLoaderAdapter(),
+                    environment.lowerLoaderAdapter({
+                        loadEnvironment:
+                            features.includes("environment:env"),
+                        ddsBackground: features.includes(
+                            "background:dds-environment",
+                        ),
+                    }),
                     generated,
                 );
             }
@@ -1093,6 +1111,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     nonTrianglePrimitives:
                         options.nonTrianglePrimitives,
                     gaussianSplats: options.gaussianSplats,
+                    compressedImages: options.compressedImages,
                     animationMask: features.includes(
                         "animation:gltf-group-mask",
                     ),
@@ -1654,6 +1673,9 @@ ${wgsl}`,
             const shaders = renderer.lowerShaders({
                 ground: features.includes("background:ground"),
                 skybox: features.includes("background:skybox"),
+                ddsEnvironment: features.includes(
+                    "background:dds-environment",
+                ),
                 imageSkybox: features.includes(
                     "background:image-skybox",
                 ),
@@ -2190,14 +2212,14 @@ ${shadow.blurFragmentWgsl}`,
             }
         }
         if (features.includes("gizmo:utility-layer")) {
-            // One unit for the whole family: the layer, both gizmos and
-            // the pinned quaternion helpers they share. A scene reaching
-            // only the layer still gets the two builders, which cost
-            // nothing it does not call -- the same shape the mesh
-            // factories unit takes.
+            // One unit for the family: the layer, the two display gizmos
+            // and the pinned quaternion helpers they share. The four
+            // EDITING widgets are 28% of it and are emitted only for a
+            // scene that reaches one, which is why the lowerer is handed
+            // the feature list rather than assuming it.
             this.writeSource(
                 "upstream/src/gizmo.cpp",
-                new GizmoLowerer(context).lower(),
+                new GizmoLowerer(context, features).lower(),
                 generated,
             );
         }
@@ -2958,6 +2980,7 @@ export function emitUpstreamGenerated(
         morphStorage: false,
         nonTrianglePrimitives: false,
         gaussianSplats: false,
+        compressedImages: false,
         nodeVisibility: false,
         gltfNodeVisibility: false,
         animationPointer: false,
