@@ -25,9 +25,10 @@ A scene that does not reach zero carries a recorded adaptation: every
 generated scene writes a `fidelity.json` giving the source and native
 semantics side by side, with its risk and validation.
 
-Scenes 40 and 100 compare Bullet with Havok at the same moving pose, not two
-renderers over one simulation. Their byte-identical goldens make scene 100 the
-collision-event variant of scene 40
+Scenes 40, 44 and 100 compare Bullet with Havok at the same moving pose, not
+two renderers over one simulation. Scene 100's golden is byte-identical to
+scene 40's, which makes it the collision-event variant of that scene; scene
+44 freezes two stacks mid-collapse, one of them started asleep
 ([fidelity](fidelity.md#physics-contract)).
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
@@ -73,6 +74,7 @@ collision-event variant of scene 40
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
 | 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok sphere-drop solver delta; not a renderer-fidelity value. |
 | 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
+| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.007}} / \color{#1a7f37}{\textsf{0.047}}$ | $\color{#1a7f37}{\textsf{0.007}} / \color{#1a7f37}{\textsf{0.047}}$ | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
 | 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Soft-Edged Sprite Grid |
 | 52 | <img src="images/scenes/scene52.png" alt="Scene 52 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HUD on 3D |
@@ -184,6 +186,7 @@ collision-event variant of scene 40
 | 216 | <img src="images/scenes/scene216.png" alt="Scene 216 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Fog |
 | 217 | <img src="images/scenes/scene217.png" alt="Scene 217 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Plugins |
 | 220 | <img src="images/scenes/scene220.png" alt="Scene 220 rendering" width="160"> | 0.001 / 0.002 | 0.001 / 0.002 | Quantized Duck |
+| 223 | <img src="images/scenes/scene223.png" alt="Scene 223 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Camera And Light Gizmos |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animated Triangle |
@@ -276,6 +279,7 @@ a project-owned gate when it reaches the same contract.
 | sprite-layer-arms | <img src="images/scenes/regression-sprite-layer-arms.png" alt="Sprite layer arms rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Layer Arms |
 | glTF-sparse | <img src="images/scenes/regression-gltf-sparse.png" alt="glTF sparse accessors rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Sparse Accessors |
 | glTF-uv-sets | <img src="images/scenes/regression-gltf-uv-sets.png" alt="glTF UV sets rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF UV Sets |
+| imported-mesh-walk | <img src="images/scenes/regression-imported-mesh-walk.png" alt="Imported mesh walk rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Recursive Container Flatten |
 | glTF-topology | <img src="images/scenes/regression-gltf-topology.png" alt="glTF primitive topology rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Primitive Topology |
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |

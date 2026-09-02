@@ -66,6 +66,7 @@ const AGGREGATE_OPTIONS = [
   "shape",
   "radius",
   "extents",
+  "startAsleep",
 ] as const;
 
 export function compilePhysicsIntrinsic(
@@ -518,12 +519,22 @@ function compileAggregateOptions(
   const extents = extentsExpression
     ? `bbl::js::Nullable<bbl::Vec3d>{${context.compileVec3(extentsExpression, "double")}}`
     : "bbl::js::Nullable<bbl::Vec3d>{}";
+  // `createPhysicsAggregate` forwards `options.startAsleep` straight into
+  // `createPhysicsBody`'s `startsAsleep = false` default, which is the
+  // third argument of the pin's own `HP_World_AddBody`. An omitted option
+  // is `undefined` there, and `undefined` takes the parameter default --
+  // so the absent case is `false` rather than a nullable the generated
+  // factory would have to settle a second time.
+  const startAsleepExpression = context.objectProperty(object, "startAsleep");
+  const startAsleep = startAsleepExpression
+    ? context.compileBoolean(startAsleepExpression)
+    : "false";
   return (
     `bbl::upstream::PhysicsAggregateOptions{` +
     `${mass}, ` +
     `${optional("friction")}, ` +
     `${optional("restitution")}, ` +
     `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}, ` +
-    `${radius}, ${extents}}`
+    `${radius}, ${extents}, ${startAsleep}}`
   );
 }

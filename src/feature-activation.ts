@@ -607,6 +607,21 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/scene/scene-remove.ts",
         consumers: CMAKE,
     },
+    // The display-gizmo family. The layer is what both backends read as a
+    // swapchain overlay -- a second registered scene -- and each gizmo
+    // adds its own generated builder over it.
+    "gizmo:utility-layer": {
+        provenance: "src/gizmo/utility-layer.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:camera": {
+        provenance: "src/gizmo/camera-gizmo.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:light": {
+        provenance: "src/gizmo/light-gizmo.ts",
+        consumers: CMAKE,
+    },
     "shadow:esm": {
         provenance: "src/shadow/esm-directional-shadow-generator.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],

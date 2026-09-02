@@ -5294,6 +5294,17 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     for (const auto& callback : scene.before_render) {
         callback(delta_ms);
     }
+    // Every other registered scene's own callbacks. A swapchain overlay
+    // layer is a second SceneContext with its own `_beforeRender` list --
+    // the utility layer's camera forwarding and each gizmo's follow live
+    // there -- and upstream runs a scene's callbacks as part of rendering
+    // it, so a layer that is drawn is a layer whose callbacks ran.
+    for (Scene* registered : engine.registered_scenes) {
+        if (!registered || registered == &scene) continue;
+        for (const auto& callback : registered->before_render) {
+            callback(delta_ms);
+        }
+    }
     return delta_ms;
 }
 

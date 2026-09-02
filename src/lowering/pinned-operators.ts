@@ -66,6 +66,7 @@ export const PINNED_MATH_FUNCTIONS: Readonly<Record<string, string>> = {
     min: "std::min",
     cos: "std::cos",
     acos: "std::acos",
+    atan2: "std::atan2",
     sin: "std::sin",
     tan: "std::tan",
     sqrt: "std::sqrt",

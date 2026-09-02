@@ -1,0 +1,84 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "The handle-annotation gate was widened so every handle keeps the value path, on a grep-proven-neutral claim. It broke `freeciv` and `platformer` (`Compile-time record value does not match the expected data handle`). Its only beneficiary, scene 261, was dropped for an unrelated blocker, so it delivered no scene while regressing two shipped demos. Reverted and the original comment restored, after establishing the baseline in a worktree at main -- which compiled both -- rather than assuming the branch was at fault. All 226 scenes compile.",
+      "applied": true
+    },
+    {
+      "summary": "Scene 44 did not compile at its REGISTERED pose. With `referenceSearch` folding the query, `Math.round(seconds * PHYSICS_FPS)` refused with `Expected number, received browser`; the stream had measured it on the ad-hoc path and on a hand-frozen copy instead. Instrumenting the erasure evaluator showed `seconds` folding to 5 and `PHYSICS_FPS` answering nothing -- a module constant is in no variable scope. `evaluateBrowserValue` now resolves an unbound identifier through the compiler's own static resolver, and at the real pose the scene measures 0.007/0.047 rather than the 0.354/2.094 the unfrozen path showed.",
+      "applied": true
+    },
+    {
+      "summary": "That fold was unsound as first written: `collectStaticConstants` deliberately admits the ENTRY file's `let` and `var` with their initializers (the emitter deletes each as it reaches the declaration), so a speculative read could have folded a value the program had already reassigned -- prevented only by statement order, not by an invariant. It answers from a `const` declaration alone now, through a new `Compiler.constantInitializer` that asks the declaration rather than trusting the map. Scene 44 and scene 156 both still fold.",
+      "applied": true
+    },
+    {
+      "summary": "The light gizmo silently diverged from the pin on a second attach. Upstream's `_build` early-returns when the new light's type matches the one it built for and otherwise DISPOSES the widget and builds the other type's; only the first arm was lowered, so re-attaching to a different type kept the first widget while the follow retargeted. The record now carries the built `LightKind` and a mismatched re-attach fails by name -- the same treatment `docs/fidelity.md` records for the CSM fit's dropped thin-instance arm.",
+      "applied": true
+    },
+    {
+      "summary": "The `substituted-physics-solver` adaptation record contradicted the registry and `docs/status.md` in one bullet: physics step 100 against 300, 0.019/0.124 against 0.007/0.047, and a sleeping tower described as still at its authored pose where the registered pose is mid-collapse. That string is written into every physics scene's generated `fidelity.json`, which the repository treats as evidence. Restated from the measured run.",
+      "applied": true
+    },
+    {
+      "summary": "`gizmo-lowerer.ts`'s header and `docs/features.md` both claimed everything numeric is read from the pinned source. Three pinned BODIES are transcribed into the emitted C++ instead -- `buildHemisphereMesh`, `lineDefsForLevel` and `buildFrustumWireframe`/`buildFrustumEdge` -- with the frustum normal hand-simplified from the pin's `1*nz - 0*ny` to `nz`. Both claims now state the exception and why it matters, and the lowering is filed on the gizmo entry: every construct in those bodies is one `lowerPinnedFunction` already handles, which makes it a gap rather than a limit.",
+      "applied": true
+    },
+    {
+      "summary": "The gizmo lowerer anchored `createGizmoMaterials`, which only the four editing gizmos call -- so the anchor asserted nothing about what this family generates. Dropped, and `attachFollowTarget`'s anchor now says plainly that only its name is checked, because the native follow reads live records rather than lowering that body.",
+      "applied": true
+    },
+    {
+      "summary": "Dawn cleared `overlay_plans`, `overlay_topology_versions` and `state.overlay_meshes` before their only fill, in a lambda with one call site; SDL_GPU wrote the same block with no clears. The clears were dead, asymmetric between the backends, and the one shape that would be WRONG if they ever fired -- `DawnMesh` is a bag of raw WebGPU handles with no destructor, so clearing it leaks every buffer `release_meshes` exists to release. Removed, with the reason stated.",
+      "applied": true
+    },
+    {
+      "summary": "`CameraGizmoRecord::has_body` was written `true` unconditionally and never anything else -- the pin's `displayBody` option that would clear it is refused by name -- so the `if (!g.has_body) return;` it fed could not fire. Field and branch both dropped from the public runtime header.",
+      "applied": true
+    },
+    {
+      "summary": "SDL_GPU left `pass_scene`, `pass_meshes` and `pass_matrix` pointing at the last overlay layer after its loop, with `pass_matrix` aimed at a loop-body local that had gone out of scope; Dawn restores all three. Restored on SDL too. Latent rather than live -- nothing dereferences them again this frame -- but it was the same code written two ways in the two backends.",
+      "applied": true
+    },
+    {
+      "summary": "`bindDataTuple` was introduced to state the bind-before-indexing rule once, and two more literal copies of the same emit survived: `Compiler.emitArrayBindingDeclaration` and `intrinsics/sprite.ts`. Both fold onto it now, and the helper spells its type through `DataTypes.cppType` rather than restating `bbl::js::Tuple<N>`.",
+      "applied": true
+    },
+    {
+      "summary": "The `transform-node` parent assignment was a character-for-character copy of the `mesh` one, varying only the kind, the diagnostic label and the setter name. Folded to one branch picking the setter from the kind; and a dead `rotationFile` local (kept alive only by a `void rotationFile;`) is gone.",
+      "applied": true
+    },
+    {
+      "summary": "`docs/features.md` said the overlay stores multisample colour 'rather than resolved so the composite resolves once, at the end'. SDL_GPU sets `RESOLVE_AND_STORE` and each overlay pass inherits it; Dawn leaves `resolveTarget` set on every pass. Both resolve per pass and the last one wins. The sentence now says what the code does.",
+      "applied": true
+    },
+    {
+      "summary": "Owner register errors of my own, caught by the review: `docs/status.md`'s physics paragraph named only scenes 40 and 100 while 44 is now a third such row; `TODO.md` still listed 44 under Defer while the same file called it published; the integrate-first list silently dropped scene 300 and explained the removal with 302, which was never on it (300's shared fixture IS staged and its blocker is a compiler one); a `pointA`/`pointB` line contradicted the first-blocker list 25 lines above it; and `docs/architecture.md`, which the instructions call the complete source map, had no row for `gizmo-lowerer.ts`. All corrected.",
+      "applied": true
+    },
+    {
+      "summary": "Gate the swapchain overlay behind a `BBLITE_HAS_*` define, and give a layer one record instead of three parallel arrays plus a re-derived `registered_scenes[layer + 1]` offset. Measured: 519 lines of PAL compile into all 231 scenes and 1 can reach them; the offset is re-derived at five sites, the double bound re-checked at six, and a null the registration path cannot produce re-tested at six.",
+      "applied": false,
+      "blockedBy": "a partial gate is worse than none -- it leaves the state fields, the helpers and the declarations behind and splits one mechanism across two idioms -- and the full one is roughly forty `#if` sites across two 12,000-line PAL files, verifiable only by a full sweep. The struct consolidation rewrites the same lines, so the two belong on one pass over them rather than at the tail of a branch that already measures 0.000",
+      "filedIn": "TODO.md, on the gizmo entry, with the measurement and the desync the dead null check would cause if it ever fired"
+    },
+    {
+      "summary": "This is now the FOURTH bespoke AST matcher for a scene-written glTF hierarchy walk, and one new corpus spelling cost +511 lines. The matchers are brittle at statement granularity (`statements.length !== 2`, `!== 4`, an immediately-following sibling loop), and the approach has a ceiling: it can only ever answer 'the whole mesh list', which is why scenes 104/105's owner-grouping walk has no folded arrangement at all. The document is already parsed at generation and already walked by `requireUniqueAssetDescendantMatch`, so evaluating a pure walk over that node tree would subsume all four matchers and accept scene 73's fifth spelling.",
+      "applied": false,
+      "blockedBy": "replacing four shipped matchers with a generation-time walk evaluator is a redesign of the container-flatten seam, not a cleanup of this diff; it needs its own gate scenes, and every scene the four matchers currently answer would have to be re-measured against it",
+      "filedIn": "TODO.md's scene 73 entry, which already names the general walk as the alternative and now carries the branch's own evidence for it"
+    },
+    {
+      "summary": "The recursive flatten produces a named binding, so its loop takes the generic collection path and never mints the `assetWholeMeshList` licence that `for (... of getContainerMeshes(c))` mints -- meaning `setPbrUnlit` over a recursively-walked mesh refuses rather than widening. It refuses rather than miscompiling, but `docs/features.md` presents the two arrangements as one construct answered once, in the middle of the licence paragraph.",
+      "applied": false,
+      "blockedBy": "minting the licence from the declaration seam means threading it through the binding rather than the iteration, which is the same seam change the general walk evaluator above would make redundant; doing it twice is the waste",
+      "filedIn": "TODO.md's scene 73 entry, beside the general-walk argument it belongs to"
+    }
+  ]
+}

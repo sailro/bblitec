@@ -227,6 +227,12 @@ export class HandleCollections {
         HandleCollectionMember[]
     >();
 
+    /**
+     * Driver loops whose whole effect was folded into the collection
+     * binding the declaration above them now carries.
+     */
+    private readonly foldedFlattenLoops = new Set<ts.Statement>();
+
     public constructor(
         private readonly context: HandleCollectionsContext,
     ) {}
@@ -430,6 +436,148 @@ export class HandleCollections {
             return undefined;
         }
         return { target: collection, asset: owner.asset };
+    }
+
+    /**
+     * The recursive-visitor arrangement of that same flatten, which is two
+     * statements rather than a call:
+     *
+     *     const meshes: Mesh[] = [];
+     *     for (const entity of container.entities) {
+     *         collectMeshes(entity, meshes);
+     *     }
+     *
+     * They are one construct — an empty list and the walk that fills it —
+     * so they are read together and answered once, with the collection
+     * `getContainerMeshes` answers with. Reading them apart is what has no
+     * lowering: the declaration alone is a runtime `Mesh[]` this port does
+     * not materialize, and the loop alone is a hierarchy walk over a tree
+     * native loading resolved away.
+     *
+     * The loop is then folded rather than emitted, which
+     * `isFoldedFlattenLoop` is how the statement lowerer learns.
+     */
+    public assetRecursiveFlattenDeclaration(
+        declaration: ts.VariableDeclaration,
+    ): Value | undefined {
+        if (
+            !ts.isIdentifier(declaration.name) ||
+            !declaration.initializer
+        ) {
+            return undefined;
+        }
+        const empty = this.context.unwrap(
+            declaration.initializer,
+        );
+        if (
+            !ts.isArrayLiteralExpression(empty) ||
+            empty.elements.length !== 0
+        ) {
+            return undefined;
+        }
+        const annotated = this.context.dataTypes.fromTsType(
+            this.context.checker.getTypeAtLocation(
+                declaration.name,
+            ),
+            declaration.name,
+        );
+        if (
+            annotated?.kind !== "vector" ||
+            annotated.element.kind !== "handle" ||
+            annotated.element.handle !== "mesh"
+        ) {
+            return undefined;
+        }
+        const statement = declaration.parent?.parent;
+        if (
+            !statement ||
+            !ts.isVariableStatement(statement) ||
+            statement.declarationList.declarations.length !== 1
+        ) {
+            return undefined;
+        }
+        const loop = nextSibling(statement);
+        if (
+            !loop ||
+            !ts.isForOfStatement(loop) ||
+            loop.awaitModifier ||
+            !ts.isVariableDeclarationList(loop.initializer) ||
+            loop.initializer.declarations.length !== 1
+        ) {
+            return undefined;
+        }
+        const entity =
+            loop.initializer.declarations[0]!.name;
+        const entities = this.context.unwrap(loop.expression);
+        if (
+            !ts.isIdentifier(entity) ||
+            !ts.isPropertyAccessExpression(entities) ||
+            entities.name.text !== "entities"
+        ) {
+            return undefined;
+        }
+        const body = singleExpressionStatement(loop.statement);
+        const visit = body && unwrapWalkExpression(body);
+        if (
+            !visit ||
+            !ts.isCallExpression(visit) ||
+            !ts.isIdentifier(visit.expression) ||
+            visit.arguments.length !== 2 ||
+            !isIdentifierRead(visit.arguments[0]!, entity) ||
+            !isIdentifierRead(
+                visit.arguments[1]!,
+                declaration.name,
+            )
+        ) {
+            return undefined;
+        }
+        const resolve = (
+            identifier: ts.Identifier,
+        ): ts.FunctionDeclaration | undefined => {
+            const found = resolveFunctionDeclaration(
+                this.context.checker,
+                identifier,
+                (node, message) =>
+                    this.context.fail(node, message),
+            );
+            return found && ts.isFunctionDeclaration(found)
+                ? found
+                : undefined;
+        };
+        const walk = resolve(visit.expression);
+        if (
+            !walk ||
+            !isRecursiveMeshFlattenVisitor(
+                walk,
+                resolve,
+                (identifier) =>
+                    !this.context.lookupOptional(identifier),
+            )
+        ) {
+            return undefined;
+        }
+        const owner = this.context.compileValue(
+            entities.expression,
+        );
+        if (
+            owner.kind !== "asset" ||
+            owner.asset?.kind !== "gltf"
+        ) {
+            return undefined;
+        }
+        this.foldedFlattenLoops.add(loop);
+        return this.assetMeshCollection(
+            owner,
+            declaration.name,
+        );
+    }
+
+    /**
+     * Whether a statement's whole effect was already folded into a
+     * collection binding, so emitting it again would repeat the walk.
+     */
+    public isFoldedFlattenLoop(statement: ts.Statement): boolean {
+        return this.foldedFlattenLoops.has(statement);
     }
 
     /** `getContainerMeshes(container)` as the asset's flattened mesh list. */
@@ -2372,4 +2520,367 @@ function isImportedMeshFlattenWalk(
         true,
     );
     return !!descend && isPropertyReadOf(descend, node, "children");
+}
+
+/**
+ * `typeof <parameter> === "object"`, the first half of the object probe a
+ * hand-written type guard opens with.
+ */
+function isTypeofObjectProbe(
+    expression: ts.Expression,
+    parameter: ts.Identifier,
+): boolean {
+    const current = unwrapWalkExpression(expression);
+    if (
+        !ts.isBinaryExpression(current) ||
+        current.operatorToken.kind !==
+            ts.SyntaxKind.EqualsEqualsEqualsToken
+    ) {
+        return false;
+    }
+    const operand = unwrapWalkExpression(current.left);
+    const literal = unwrapWalkExpression(current.right);
+    return (
+        ts.isTypeOfExpression(operand) &&
+        isIdentifierRead(operand.expression, parameter) &&
+        ts.isStringLiteral(literal) &&
+        literal.text === "object"
+    );
+}
+
+/** `<parameter> !== null`, the probe's second half. */
+function isNotNullProbe(
+    expression: ts.Expression,
+    parameter: ts.Identifier,
+): boolean {
+    const current = unwrapWalkExpression(expression);
+    return (
+        ts.isBinaryExpression(current) &&
+        current.operatorToken.kind ===
+            ts.SyntaxKind.ExclamationEqualsEqualsToken &&
+        isIdentifierRead(current.left, parameter) &&
+        unwrapWalkExpression(current.right).kind ===
+            ts.SyntaxKind.NullKeyword
+    );
+}
+
+/**
+ * `Array.isArray(<parameter>.children)`, through whatever cast the guard
+ * writes to reach the property off an `unknown`.
+ *
+ * `Array` must be the global: a scene binding that name locally would be
+ * calling something else entirely, and `lookupOptional` is what says so.
+ */
+function isChildrenArrayProbe(
+    expression: ts.Expression,
+    parameter: ts.Identifier,
+    isGlobal: (identifier: ts.Identifier) => boolean,
+): boolean {
+    const current = unwrapWalkExpression(expression);
+    if (
+        !ts.isCallExpression(current) ||
+        current.arguments.length !== 1
+    ) {
+        return false;
+    }
+    const callee = unwrapWalkExpression(current.expression);
+    if (
+        !ts.isPropertyAccessExpression(callee) ||
+        callee.name.text !== "isArray" ||
+        !ts.isIdentifier(callee.expression) ||
+        callee.expression.text !== "Array" ||
+        !isGlobal(callee.expression)
+    ) {
+        return false;
+    }
+    return isPropertyReadOf(
+        current.arguments[0]!,
+        parameter,
+        "children",
+    );
+}
+
+/** The single `return <conjunction>` a one-parameter type guard is. */
+function typeGuardConjunction(
+    declaration: ts.FunctionDeclaration,
+):
+    | { parameter: ts.Identifier; operands: ts.Expression[] }
+    | undefined {
+    if (
+        !declaration.body ||
+        declaration.asteriskToken ||
+        declaration.typeParameters?.length ||
+        declaration.parameters.length !== 1 ||
+        declaration.body.statements.length !== 1
+    ) {
+        return undefined;
+    }
+    const parameter = declaration.parameters[0]!;
+    if (
+        !ts.isIdentifier(parameter.name) ||
+        parameter.dotDotDotToken ||
+        parameter.initializer ||
+        parameter.questionToken
+    ) {
+        return undefined;
+    }
+    const returned = declaration.body.statements[0]!;
+    if (!ts.isReturnStatement(returned) || !returned.expression) {
+        return undefined;
+    }
+    return {
+        parameter: parameter.name,
+        operands: logicalAndOperands(returned.expression),
+    };
+}
+
+/**
+ * `node is Mesh` written as the renderable-field presence probe:
+ *
+ *     typeof node === "object" && node !== null && "_gpu" in node
+ *
+ * The pin tests `_gpu` for truth where this tests it for presence, and a
+ * loaded mesh carries the field while a transform node does not, so the
+ * two select the same nodes. `"material" in node` beside it is the same
+ * claim written twice, which the worklist spelling also accepts.
+ */
+function isRenderablePresenceGuard(
+    declaration: ts.FunctionDeclaration,
+): boolean {
+    const conjunction = typeGuardConjunction(declaration);
+    if (!conjunction) return false;
+    const { parameter, operands } = conjunction;
+    let gpu = false;
+    let typeofObject = false;
+    let notNull = false;
+    for (const operand of operands) {
+        if (isPropertyPresenceProbe(operand, parameter, "_gpu")) {
+            gpu = true;
+            continue;
+        }
+        if (
+            isPropertyPresenceProbe(operand, parameter, "material")
+        ) {
+            continue;
+        }
+        if (isTypeofObjectProbe(operand, parameter)) {
+            typeofObject = true;
+            continue;
+        }
+        if (isNotNullProbe(operand, parameter)) {
+            notNull = true;
+            continue;
+        }
+        return false;
+    }
+    return gpu && typeofObject && notNull;
+}
+
+/**
+ * `node is SceneNode` written as the descent probe:
+ *
+ *     typeof node === "object" && node !== null &&
+ *         "children" in node && Array.isArray((node as {...}).children)
+ *
+ * The same descent the worklist spelling writes as
+ * `node.children?.length`, asked before the read rather than after it.
+ */
+function isChildrenPresenceGuard(
+    declaration: ts.FunctionDeclaration,
+    isGlobal: (identifier: ts.Identifier) => boolean,
+): boolean {
+    const conjunction = typeGuardConjunction(declaration);
+    if (!conjunction) return false;
+    const { parameter, operands } = conjunction;
+    let children = false;
+    let array = false;
+    let typeofObject = false;
+    let notNull = false;
+    for (const operand of operands) {
+        if (
+            isPropertyPresenceProbe(operand, parameter, "children")
+        ) {
+            children = true;
+            continue;
+        }
+        if (isChildrenArrayProbe(operand, parameter, isGlobal)) {
+            array = true;
+            continue;
+        }
+        if (isTypeofObjectProbe(operand, parameter)) {
+            typeofObject = true;
+            continue;
+        }
+        if (isNotNullProbe(operand, parameter)) {
+            notNull = true;
+            continue;
+        }
+        return false;
+    }
+    return children && array && typeofObject && notNull;
+}
+
+/** `<guard>(<node>)`, resolved to the guard's own declaration. */
+function guardedBy(
+    test: ts.Expression,
+    node: ts.Identifier,
+    resolve: (
+        identifier: ts.Identifier,
+    ) => ts.FunctionDeclaration | undefined,
+    proves: (declaration: ts.FunctionDeclaration) => boolean,
+): boolean {
+    const current = unwrapWalkExpression(test);
+    if (
+        !ts.isCallExpression(current) ||
+        current.arguments.length !== 1 ||
+        !ts.isIdentifier(current.expression) ||
+        !isIdentifierRead(current.arguments[0]!, node)
+    ) {
+        return false;
+    }
+    const declaration = resolve(current.expression);
+    return !!declaration && proves(declaration);
+}
+
+/**
+ * Proves the recursive-visitor spelling of the same container flatten the
+ * worklist above proves:
+ *
+ *     function collectMeshes(node: unknown, meshes: Mesh[]): void {
+ *         if (isMeshNode(node)) {
+ *             meshes.push(node);
+ *         }
+ *         if (hasChildren(node)) {
+ *             for (const child of node.children) {
+ *                 collectMeshes(child, meshes);
+ *             }
+ *         }
+ *     }
+ *
+ * Four corpus scenes write the flatten this way rather than as a worklist,
+ * and the difference is only the arrangement: the same `_gpu` probe selects
+ * the same nodes, and the same `children` descent reaches the same
+ * subtrees. What has to be proven is what it was there -- that the walk is
+ * total (nothing filters a child, and the descent runs on every node the
+ * guard passes), that it collects exactly the loader's mesh records, and
+ * that it does nothing else: two statements, one push, one recursive call,
+ * no other effect.
+ *
+ * Its ORDER is left unclaimed for the reason the worklist's is. This walk
+ * is the pin's own pre-order DFS, but the native answer is
+ * `AssetRecord::meshes`, which the loader builds in glTF node-array order;
+ * the two coincide only for a document whose node array is depth-first,
+ * which no spelling can promise. The caller answers with exactly the
+ * collection `getContainerMeshes` answers with, so nothing learns an order
+ * here that the pinned flatten does not already hand it.
+ */
+function isRecursiveMeshFlattenVisitor(
+    declaration: ts.FunctionDeclaration,
+    resolve: (
+        identifier: ts.Identifier,
+    ) => ts.FunctionDeclaration | undefined,
+    isGlobal: (identifier: ts.Identifier) => boolean,
+): boolean {
+    if (
+        !declaration.name ||
+        !declaration.body ||
+        declaration.asteriskToken ||
+        declaration.typeParameters?.length ||
+        declaration.parameters.length !== 2 ||
+        declaration.parameters.some(
+            (parameter) =>
+                !ts.isIdentifier(parameter.name) ||
+                !!parameter.dotDotDotToken ||
+                !!parameter.initializer ||
+                !!parameter.questionToken,
+        ) ||
+        declaration.body.statements.length !== 2
+    ) {
+        return false;
+    }
+    const node = declaration.parameters[0]!.name as ts.Identifier;
+    const out = declaration.parameters[1]!.name as ts.Identifier;
+
+    // `if (<renderable guard>(node)) meshes.push(node)` -- the collection.
+    const collect = guardedArm(declaration.body.statements[0]!);
+    if (
+        !collect ||
+        !guardedBy(
+            collect.test,
+            node,
+            resolve,
+            isRenderablePresenceGuard,
+        ) ||
+        !isIdentifierRead(
+            pushedArgument(
+                singleExpressionStatement(collect.body),
+                out,
+                false,
+            ),
+            node,
+        )
+    ) {
+        return false;
+    }
+
+    // `if (<children guard>(node)) for (const child of node.children)
+    //      collectMeshes(child, meshes)` -- the descent, over every child.
+    const descend = guardedArm(declaration.body.statements[1]!);
+    if (
+        !descend ||
+        !guardedBy(
+            descend.test,
+            node,
+            resolve,
+            (candidate) =>
+                isChildrenPresenceGuard(candidate, isGlobal),
+        )
+    ) {
+        return false;
+    }
+    const descendBody = ts.isBlock(descend.body)
+        ? descend.body.statements
+        : [descend.body];
+    if (descendBody.length !== 1) return false;
+    const loop = descendBody[0]!;
+    if (
+        !ts.isForOfStatement(loop) ||
+        loop.awaitModifier ||
+        !ts.isVariableDeclarationList(loop.initializer) ||
+        loop.initializer.declarations.length !== 1 ||
+        !isPropertyReadOf(loop.expression, node, "children")
+    ) {
+        return false;
+    }
+    const child = loop.initializer.declarations[0]!.name;
+    if (!ts.isIdentifier(child)) return false;
+    const recursion = singleExpressionStatement(loop.statement);
+    const call = recursion && unwrapWalkExpression(recursion);
+    return (
+        !!call &&
+        ts.isCallExpression(call) &&
+        ts.isIdentifier(call.expression) &&
+        call.expression.text === declaration.name.text &&
+        call.arguments.length === 2 &&
+        isIdentifierRead(call.arguments[0]!, child) &&
+        isIdentifierRead(call.arguments[1]!, out)
+    );
+}
+
+/**
+ * The statement following one among its siblings, when it has one. A walk
+ * written as an empty declaration plus its driver loop is two statements
+ * of one construct, so the pair has to be read together.
+ */
+function nextSibling(
+    statement: ts.Statement,
+): ts.Statement | undefined {
+    const parent = statement.parent;
+    const siblings =
+        parent && (ts.isBlock(parent) || ts.isSourceFile(parent))
+            ? parent.statements
+            : undefined;
+    if (!siblings) return undefined;
+    const index = siblings.indexOf(statement);
+    return index >= 0 ? siblings[index + 1] : undefined;
 }

@@ -1844,6 +1844,38 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene44",
+        name: "Scene 44 - Physics Sleeping Towers",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene44.ts",
+        title: "Babylon Lite Native - Physics Sleeping Towers",
+        parity: {
+            // The pin's own spec serves this scene at `?captureAfter=5`,
+            // which the scene's `readCaptureAfterFrames` rounds to 300
+            // physics steps and where it raises its `captureReady` flag.
+            // Both sides read the same query and both freeze themselves
+            // through `stopEngine`, so the pose is the scene's own.
+            referenceSearch: "?captureAfter=5",
+            // Named after the freeze, since the scene stops its own engine.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "310",
+            },
+            // MEASURED, and like scene 40 the number is a solver
+            // difference rather than a port defect -- see
+            // docs/fidelity.md#physics-contract. Step 300 is one second
+            // after the dropped box wakes the sleeping tower, so the pose
+            // is mid-collapse and the ceiling gates this port's own solver
+            // rather than asserting agreement with Havok. Both backends
+            // measure 0.007/0.047 identically, and the difference is
+            // edge-attributed (background 0.003, edges 0.834, interior
+            // 0.003): the two solvers stack the boxes in the same places
+            // and disagree about their exact contact rest.
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.07,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene43",
         name: "Scene 43 - Parametric Proximity Path",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene43.ts",
@@ -2760,6 +2792,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene223",
+        name: "Scene 223 - Camera And Light Gizmos",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
+        title: "Babylon Lite Native - Camera And Light Gizmos",
+        parity: {
+            // The display-gizmo family's gate: a utility layer registered
+            // as a swapchain overlay, one widget per light type, and a
+            // camera gizmo whose frustum is sized from its subject. Exact
+            // on both backends, which is what says the overlay's own depth
+            // clear, its own light set and every quaternion the pinned
+            // math produces all agree with the browser.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene211",
         name: "Scene 211 - BrainStem Meshopt",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene211.ts",
@@ -3008,6 +3058,24 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "bblitec-regression",
         title: "Babylon Lite Native - glTF UV Sets",
         parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "regression-imported-mesh-walk",
+        name: "Regression - Imported Mesh Walk",
+        source: "examples/regression-imported-mesh-walk.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Imported Mesh Walk",
+        parity: {
+            // The recursive-visitor spelling of the container flatten,
+            // beside the worklist one `regression-gltf-uv-sets` reaches:
+            // every walked mesh is painted with one scene-created
+            // material, so a renderable the walk missed keeps its own
+            // textured one and shows.
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [13, 15, 23],

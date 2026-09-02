@@ -80,6 +80,9 @@ export interface BrowserErasureContext {
     platformDocumentHidden(): string | undefined;
     /** The query string the reference pose is captured at. */
     referenceSearch(): string;
+    constantInitializer(
+        identifier: ts.Identifier,
+    ): ts.Expression | undefined;
 }
 
 export class BrowserErasure {
@@ -584,8 +587,26 @@ export class BrowserErasure {
                 // corresponds to the browser reference at DPR 1.
                 return { kind: "number", value: 1 };
             }
-            return this.context.lookupOptional(unwrapped)
-                ?.browserValue;
+            const bound = this.context.lookupOptional(unwrapped);
+            if (bound !== undefined) return bound.browserValue;
+            // Not a name this scope binds. A module-level `const` is
+            // generation-known and answers here too: a physics scene reads
+            // the step its capture is pinned at as
+            // `Math.round(seconds * PHYSICS_FPS)`, where the seconds come
+            // from the query the reference fixes and the rate is one of
+            // these, so refusing the constant refuses a product the query
+            // has already answered.
+            //
+            // Only a `const`. A mutable top-level binding has an initializer
+            // too, and folding a read of it to that initializer would answer
+            // with a value the program has already reassigned. Resolution
+            // itself is the compiler's own, and only what THIS evaluator
+            // folds comes back -- a constant naming a handle or a factory
+            // call still answers nothing.
+            const resolved = this.context.constantInitializer(unwrapped);
+            return resolved === undefined || resolved === unwrapped
+                ? undefined
+                : this.evaluateBrowserValue(resolved);
         }
         if (
             ts.isNewExpression(unwrapped) &&

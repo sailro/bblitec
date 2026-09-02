@@ -2275,7 +2275,6 @@ test("materializes static tables under runtime indices only", () => {
     );
 });
 
-
 test("lowers a class instance into per-field bindings", () => {
     const result = compileSource(`
         class Stack {
@@ -13803,9 +13802,13 @@ test("compiles scene 156's measured cross-fade branch directly", () => {
         result.cpp,
         /bbl::cross_fade_animation_groups\(v_manager, v_engine, bbl::AnimationWeightFadeTarget::from_property\(v_positiveGroup\), bbl::AnimationWeightFadeTarget::from_property\(v_negativeGroup\), 1000\.0f, 1\.0f\)/,
     );
+    // Both operands are generation-known once the query has folded -- the
+    // 1250 from `?seekTime=1.25` and the 1000 from a module constant -- so
+    // the elapsed millisecond count is a literal rather than a subtraction
+    // the runtime repeats every frame.
     assert.match(
         result.cpp,
-        /bbl::update_animation_manager\(v_manager, v_engine, static_cast<float>\(\(1250\.0 - 1000\.0\)\)\)/,
+        /bbl::update_animation_manager\(v_manager, v_engine, 250\.0f\)/,
     );
     assert.equal(
         result.cpp.match(/bbl::pause_animation\(v_(?:positive|negative)Group\)/g)
@@ -14735,3 +14738,53 @@ test("refuses the multi-material CSG mesh builder by name", () => {
             /one mesh per material slot/.test(error.message),
     );
 });
+
+test("carries a physics aggregate's startAsleep into the pinned body add", () => {
+    // `createPhysicsAggregate` forwards `options.startAsleep` into
+    // `createPhysicsBody(world, node, motionType, startsAsleep = false)`,
+    // which is the third argument of the pin's own `HP_World_AddBody`.
+    // Scene 44 builds one tower asking for it and one not, so both
+    // spellings have to reach the aggregate options from the same helper.
+    const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene44.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Nullable<bbl::Vec3d>\{\}, true\}/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::Nullable<bbl::Vec3d>\{\}, false\}/,
+    );
+});
+
+test("binds a colour helper's returned tuple instead of splicing the call", () => {
+    // `material.diffuseColor = colorFor(i)` is a plain-data
+    // `bbl::js::Tuple<3>` read three times, once per Color3 lane. The
+    // inliner emits the helper's body where the call sits, so splicing
+    // the call into the lanes would run that body three times.
+    const sourcePath = "corpus/babylon-lite/lab/lite/src/lite/scene44.ts";
+    const result = compileSource(
+        readFileSync(resolve(sourcePath), "utf8"),
+        { fileName: sourcePath },
+    );
+    const bindings = [
+        ...result.cpp.matchAll(
+            /const bbl::js::Tuple<3> (\w+) = bblscene::colorFor\(/g,
+        ),
+    ];
+    assert.equal(bindings.length, 8);
+    for (const [, name] of bindings) {
+        assert.equal(
+            result.cpp.split(`${name}[`).length - 1,
+            3,
+        );
+    }
+    assert.doesNotMatch(
+        result.cpp,
+        /bbl::Color3\{static_cast<float>\(bblscene::colorFor/,
+    );
+});
+

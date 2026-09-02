@@ -1231,6 +1231,15 @@ export type ValueKind =
   // the bake reads them back.
   | "skeleton"
   | "bone"
+  // The gizmo family. A `UtilityLayer` is the pin's second SceneContext
+  // over one engine -- the swapchain overlay both backends now record --
+  // so it is a native handle holding that scene. The two display gizmos
+  // are records because their per-frame follow reads live state: the
+  // attached camera's world matrix, the attached light's position and
+  // direction, and the utility scene's own camera for distance scaling.
+  | "utility-layer"
+  | "camera-gizmo"
+  | "light-gizmo"
   | "string"
   | "task"
   | "texture"
@@ -1949,6 +1958,13 @@ export type Feature =
   // picker and reached only through the systems a scene registered --
   // so a picking scene with no billboards composes none of it.
   | "picking:billboard"
+  // The display-gizmo family. `gizmo:utility-layer` is the second
+  // SceneContext itself -- the swapchain overlay both backends record --
+  // and each gizmo is its own row because either can be reached without
+  // the other, exactly as the pin splits them into their own modules.
+  | "gizmo:utility-layer"
+  | "gizmo:camera"
+  | "gizmo:light"
   // The shadow family, split the way upstream splits it: the filter's own
   // resources and receiver composition (`shadow:pcf`), and the scene-owned
   // frame-graph task that schedules them (`shadow:task`), which

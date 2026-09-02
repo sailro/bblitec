@@ -641,9 +641,13 @@ test("preserves multisampling across the transmission scene-color copy", () => {
         pal,
         /const bool multisampled =\s*state\.sample_count != SDL_GPU_SAMPLECOUNT_1;/,
     );
+    // The multisample colour is PRESERVED for two reasons now: a
+    // transmission grab reads it back, and a swapchain overlay layer
+    // composites onto it before the one resolve at the end. Either one
+    // takes the same store op, so the predicate is what this asserts.
     assert.match(
         pal,
-        /transmission_enabled\s*\?\s*SDL_GPU_STOREOP_RESOLVE_AND_STORE/,
+        /transmission_enabled \|\| !overlay_plans\.empty\(\)\s*\?\s*SDL_GPU_STOREOP_RESOLVE_AND_STORE/,
     );
     assert.match(
         pal,

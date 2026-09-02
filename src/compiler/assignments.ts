@@ -1845,18 +1845,30 @@ export function emitPropertyAssignment(
       return;
     }
 
-    if (target.kind === "mesh" && property === "parent") {
-      // `IParentable.parent`: the write that drives the transform
-      // math. Upstream it leaves `children` alone -- the traversal
-      // list is `push`ed separately -- so this stores the link and
-      // nothing else, and the world composes through it lazily the
-      // way `createWorldMatrixState` composes it.
-      requireSimpleAssignment(context, expression, "mesh parent");
+    if (
+      property === "parent" &&
+      (target.kind === "mesh" || target.kind === "transform-node")
+    ) {
+      // `IParentable.parent`: the write that drives the transform math.
+      // Upstream it leaves `children` alone -- the traversal list is
+      // `push`ed separately -- so this stores the link and nothing else,
+      // and the world composes through it lazily the way
+      // `createWorldMatrixState` composes it. The pin's node and mesh
+      // share the write, and so does the record: only which setter
+      // registers the child for invalidation differs.
+      const mesh = target.kind === "mesh";
+      requireSimpleAssignment(
+        context,
+        expression,
+        mesh ? "mesh parent" : "transform node parent",
+      );
       const parent = context.compileValue(expression.right);
       context.expectKind(parent, "transform-node", expression.right);
       context.expectSameEngine(target, parent, expression);
       context.emit(
-        `bbl::set_mesh_transform_parent(` +
+        `bbl::${
+          mesh ? "set_mesh_transform_parent" : "set_transform_node_parent"
+        }(` +
           `${context.requireEngine(target, expression)}, ` +
           `${target.cpp}, ${parent.cpp});`,
       );
