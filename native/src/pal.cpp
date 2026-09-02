@@ -22,6 +22,7 @@
 #if defined(_WIN32)
 #include "pal_win32_text.hpp"
 #include <commdlg.h>
+#include <psapi.h>
 #endif
 
 namespace bbl {
@@ -409,6 +410,22 @@ void advance_performance_milliseconds(float delta_ms) {
         state.milliseconds =
             static_cast<double>(state.fixed_steps) * state.fixed_delta_ms;
     }
+}
+
+std::size_t process_working_set_bytes() {
+#if defined(_WIN32)
+    PROCESS_MEMORY_COUNTERS counters{};
+    counters.cb = sizeof(counters);
+    if (!GetProcessMemoryInfo(GetCurrentProcess(), &counters, sizeof(counters))) {
+        throw std::runtime_error("GetProcessMemoryInfo failed.");
+    }
+    return static_cast<std::size_t>(counters.WorkingSetSize);
+#else
+    // A number nothing measured would let `scene -- memory` pass a run it
+    // never saw, so the query refuses by name until a platform owns it.
+    throw std::runtime_error(
+        "process_working_set_bytes is not implemented on this platform.");
+#endif
 }
 
 } // namespace bbl::pal

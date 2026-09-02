@@ -62,6 +62,8 @@ npm run scene -- diff scene1
 npm run scene -- compose scene1
 npm run scene -- measure artifacts\parity\scene1\native-gpu.png
 npm run scene -- stability scene9 --backend dawn
+npm run scene -- memory all
+npm run scene -- memory minecraft --frames 12000 --replay-file sprint.tape
 npm run scene -- diagnose scene33
 npm run scene -- clean --orphans
 npm run scene -- validate scene1
@@ -875,6 +877,7 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_CAPTURE_UI=0` | omit retained UI from browser and native screenshots for canvas-only attribution; canonical parity captures the full page |
 | `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
 | `BBLITE_CPU_PROFILE=1` | print SDL startup/frame phase timings and Bullet work counters without changing the scene: body/dynamic/active/moving counts, speed envelope, manifolds, cumulative contact stabilizations, pending re-adds, solver time, convex mass tuples, and applied-impulse data |
+| `BBLITE_MEM_PROFILE=1` | print a `[mem][frame]` line every 30th frame: working set, mesh and geometry records against the scene's live meshes, CPU geometry bytes (morph targets included), the backend's GPU meshes and shared-geometry cache. The sprite loops print the working set and record counts with zeros for the scene fields; the frame-graph loop prints nothing, which `scene -- memory` reports as unmeasured rather than passing |
 | `BBLITE_AUDIO_CAPTURE=<path.wav>` | in a build configured with `BBLITE_AUDIO_CAPTURE=ON`, render the scene's audio graph offline instead of opening a device and write 32-bit float WAV; a build without that capability refuses the variable rather than silently ignoring it |
 | `BBLITE_AUDIO_CAPTURE_SECONDS=<t>` | how long to render for `BBLITE_AUDIO_CAPTURE` (default 1.0) |
 | `BBLITE_AUDIO_LOG=trace\|debug\|info\|error` | lower LabSound's log threshold for a diagnostic run; the default is warnings and errors only |

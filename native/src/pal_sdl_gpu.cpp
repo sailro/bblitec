@@ -5935,6 +5935,8 @@ bool run_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
     const bool cpu_profile =
         environment_variable("BBLITE_CPU_PROFILE") == "1";
+    const bool mem_profile =
+        environment_variable("BBLITE_MEM_PROFILE") == "1";
     CpuStartupMark cpu_startup_mark(cpu_profile, "sdl");
     reject_unsupported_frame_options(
         frame_options,
@@ -11478,6 +11480,14 @@ bool run_gpu_engine(Engine& engine) {
                     draw_commands,
                     profile_transformed_meshes,
                     profile_transformed_vertices);
+            }
+            if (mem_profile && completed_frame % memory_profile_frames == 0) {
+                print_memory_frame_profile(
+                    completed_frame,
+                    engine,
+                    scene,
+                    state.meshes,
+                    state.shared_shader_geometries);
             }
             if (benchmark && completed_frame >= warmup) {
                 samples.push_back(end - start);

@@ -177,6 +177,8 @@ bool run_sprite_dawn_engine(Engine& engine) {
         }
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
+        const bool mem_profile =
+            environment_variable("BBLITE_MEM_PROFILE") == "1";
         const bool capture_ui = frame_options.capture_ui;
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
@@ -358,6 +360,11 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 dawn_error(state.uncaptured_error);
             }
             finish_frame(engine);
+            if (mem_profile && frame % memory_profile_frames == 0) {
+                // No scene list and no geometry cache here: a sprite
+                // renderer draws from its own layers.
+                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
+            }
             if (benchmark && frame >= warmup) {
                 samples.push_back(
                     monotonic_milliseconds() - frame_start);

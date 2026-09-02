@@ -3618,3 +3618,11 @@ import {
     resolve,
     sep,
 } from "node:path";
+
+/**
+ * The registered application demos: the sources closest to a real
+ * program's lifetime, which is what a long-run measurement wants.
+ */
+export const applicationScenes: readonly SceneDefinition[] = scenes.filter(
+    (scene) => scene.sourceOrigin === "babylon-lite-application",
+);

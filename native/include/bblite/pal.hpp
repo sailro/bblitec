@@ -45,5 +45,11 @@ double monotonic_milliseconds();
 // monotonic clock; fixed-delta captures advance it deterministically.
 double performance_milliseconds();
 void advance_performance_milliseconds(float delta_ms);
+/**
+ * The process's resident working set in bytes, or 0 where the platform
+ * has no query. Read by the BBLITE_MEM_PROFILE frame line, which is how a
+ * long run shows whether the runtime's memory settles.
+ */
+std::size_t process_working_set_bytes();
 
 } // namespace bbl::pal
