@@ -986,7 +986,7 @@ Scene create_scene_context(Engine& engine) {
 void add_to_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     if (mesh.value >= scene.engine->meshes.size()) throw std::runtime_error("Invalid mesh handle.");
-    if (scene.engine->meshes[mesh.value].geometry_reclaimed) {
+    if (scene.engine->meshes[mesh.value].retired) {
         throw std::runtime_error(
             "Mesh '" + scene.engine->meshes[mesh.value].name +
             "' was removed from the scene and its geometry reclaimed; "
@@ -1090,19 +1090,13 @@ void reclaim_unshared_geometry(Engine& engine, MeshHandle mesh) {
     if (geometry == invalid_handle || geometry >= engine.geometries.size()) {
         return;
     }
-    for (std::size_t index = 0; index < engine.meshes.size(); ++index) {
-        if (index != mesh.value && engine.meshes[index].geometry == geometry) {
-            return;
-        }
+    record.retired = true;
+    ModelGeometry& shared = engine.geometries[geometry];
+    if (shared.owners > 1) {
+        --shared.owners;
+        return;
     }
-    ModelGeometry& retired = engine.geometries[geometry];
-    retired.vertices = {};
-    retired.bind_vertices = {};
-    retired.indices = {};
-    retired.morph_positions = {};
-    retired.morph_normals = {};
-    retired.morph_tangents = {};
-    record.geometry_reclaimed = true;
+    release_geometry_storage(shared);
 }
 
 // src/scene/scene-remove.ts removeFromScene: drop the mesh from the
@@ -1203,6 +1197,9 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
             throw std::runtime_error("Invalid mesh handle in imported root.");
         }
         MeshRecord record = engine.meshes[source_mesh.value];
+        if (record.geometry < engine.geometries.size()) {
+            ++engine.geometries[record.geometry].owners;
+        }
         record.name += "${cloneSuffix}";
         record.feature_source_mesh =
             record.feature_source_mesh != invalid_handle

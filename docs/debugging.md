@@ -467,6 +467,7 @@ the wrong one wastes the run:
 | attribution buffers | Which draw owns which pixels, joined to nodes, meshes, materials and alpha state. Nothing else maps a screen region to a draw. |
 | `geometry` | Frame-graph copy-task attachments at full resolution. `diff` does not look at render targets at all. Takes `--backend`, `--seek`, `--gpu-debug` and `--exe` under the same rules as `diff`: the pose defaults to the registry's, and a cached reference at another pose (or without provenance) is recaptured rather than compared. |
 | `BBLITE_DEFORMATION_DUMP` | Bone palettes and morph weights per mesh, in full. `diff`'s texture-palette section verdicts the first two matrices per mesh against the browser's uploads; this dump is what to read when that verdict says divergent. |
+| `memory` | **Whether the process settles.** Every other tool measures one frame; `memory` runs thousands at the fixed capture delta and fails when the working set keeps growing after the warm-up third (default 6000 frames, 32 MB; `all` is the application demos, the sources closest to a real program's lifetime). A demo that only churns under input takes a tape through `--replay-file`; the voxel sprint is the worked example in `docs/development.md`. |
 | `stability` | **Whether a number is reproducible at all.** Every other tool measures one run; only repeated runs separate a residual from the scenes 9/14/37/120/125/126/128/129 run-to-run wobble class — and its golden column prints beside the run-to-run one because a stable-but-wrong image passes the latter. |
 | `compose` | Whether our *feature derivation* is right, which every tool above assumes. They compare what two renderers did; `compose` compares what Babylon Lite would have built against what we built it from, so it catches a fragment that is missing an arm entirely — the failure that renders as a plausible small bias and never as an error. |
 
@@ -532,6 +533,7 @@ These are the diagnostic ones:
 | `BBLITE_CAPTURE_UI=0` | canvas-only screenshots (retained UI omitted) for attribution |
 | `BBLITE_PHYSICS_TRACE=1` | per-step body trajectories, which are what grade the substituted solver |
 | `BBLITE_CPU_PROFILE=1` | startup/frame phase timings and Bullet work counters |
+| `BBLITE_MEM_PROFILE=1` | a `[mem][frame]` line every 30th frame; `scene -- memory <id|all>` judges whether the working set settles |
 | `BBLITE_AUDIO_CAPTURE=<path.wav>` | render the audio graph offline to WAV instead of opening a device |
 
 **A backend error message is rarely the error.** `SDL_GPU` reports a bad

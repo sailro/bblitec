@@ -5379,6 +5379,74 @@ inline void print_cpu_frame_profile(
 }
 
 /**
+ * The per-frame BBLITE_MEM_PROFILE line, printed by every frame loop on
+ * the BBLITE_CPU_PROFILE cadence (every `memory_profile_frames`th frame),
+ * so `scene -- memory` parses one format. It answers whether a long run
+ * settles: the working set, how many mesh records the engine holds
+ * against how many the scene still draws, the CPU geometry bytes still
+ * allocated (a retired mesh's are released by removeFromScene), and the
+ * backend's live GPU meshes and shared-geometry cache. A loop without a
+ * scene or a geometry cache (the sprite renderers) prints zeros there.
+ */
+inline constexpr long memory_profile_frames = 30;
+
+inline void print_memory_frame_profile(
+    long frame,
+    const bbl::Engine& engine,
+    std::size_t scene_meshes,
+    std::size_t gpu_meshes,
+    std::size_t shared_geometries,
+    std::size_t shared_geometry_bytes) {
+    std::size_t live_geometries = 0;
+    std::size_t geometry_bytes = 0;
+    for (const bbl::ModelGeometry& geometry : engine.geometries) {
+        if (geometry.vertices.empty()) continue;
+        ++live_geometries;
+        geometry_bytes += geometry.vertices.size() * sizeof(bbl::ModelVertex) +
+            geometry.bind_vertices.size() * sizeof(bbl::ModelVertex) +
+            geometry.indices.size() * sizeof(std::uint32_t);
+        for (const auto* targets :
+             {&geometry.morph_positions, &geometry.morph_normals, &geometry.morph_tangents}) {
+            for (const std::vector<Vec3>& target : *targets) {
+                geometry_bytes += target.size() * sizeof(Vec3);
+            }
+        }
+    }
+    constexpr double mb = 1024.0 * 1024.0;
+    std::ostringstream line;
+    line << std::fixed << std::setprecision(1)
+         << "[mem][frame] frame=" << frame
+         << " working_set_mb=" << bbl::pal::process_working_set_bytes() / mb
+         << " mesh_records=" << engine.meshes.size()
+         << " scene_meshes=" << scene_meshes
+         << " geometry_records=" << engine.geometries.size()
+         << " live_geometries=" << live_geometries
+         << " geometry_mb=" << geometry_bytes / mb
+         << " gpu_meshes=" << gpu_meshes
+         << " shared_geometries=" << shared_geometries
+         << " shared_geometry_mb=" << shared_geometry_bytes / mb
+         << '\n';
+    std::fputs(line.str().c_str(), stderr);
+}
+
+/** The scene-loop form: the backend's mesh list and shared-geometry cache. */
+template <typename GpuMesh, typename SharedGeometry>
+inline void print_memory_frame_profile(
+    long frame,
+    const bbl::Engine& engine,
+    const bbl::Scene& scene,
+    const std::vector<GpuMesh>& gpu_meshes,
+    const std::vector<std::unique_ptr<SharedGeometry>>& cache) {
+    std::size_t bytes = 0;
+    for (const auto& geometry : cache) {
+        bytes += geometry->identity.vertex_count * sizeof(GpuVertex) +
+            geometry->identity.index_count * sizeof(std::uint32_t);
+    }
+    print_memory_frame_profile(
+        frame, engine, scene.meshes.size(), gpu_meshes.size(), cache.size(), bytes);
+}
+
+/**
  * Refuse a flag this backend does not implement rather than rendering
  * something else: a silent no-op would be measured as a backend delta.
  * `supported_backend` names the backend the refusal redirects to, so the

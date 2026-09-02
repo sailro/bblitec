@@ -4,10 +4,12 @@ import {
     existsSync,
     mkdirSync,
     readFileSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
+import { fixedCaptureEnvironment } from "./capture-timing.js";
 import { PNG } from "pngjs";
 import {
     captureSuiteReference,
@@ -20,6 +22,7 @@ import {
     computeBuildStamp,
 } from "./build-stamp.js";
 import {
+    applicationScenes,
     isRegisteredScene,
     resolveScene,
     type SceneDefinition,
@@ -794,11 +797,7 @@ export function parseParityArguments(rest: string[]): ParityArguments {
         },
         "parity",
     );
-    const explicit = parsed.values.get("--backend");
-    const backend =
-        explicit === undefined
-            ? undefined
-            : canonicalBackend(explicit, "parity");
+    const backend = optionalBackend(parsed, "parity");
     const sceneId = parsed.positionals[0];
     const executable = parsed.values.get("--exe");
     const actual = parsed.values.get("--actual");
@@ -978,7 +977,8 @@ export function spawnNativeMeasured(
     executable: string,
     overrides: Record<string, string>,
     dropVariables: readonly string[] = [],
-): void {
+    captureStderr = false,
+): string {
     const inherited: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
         if (value === undefined) continue;
@@ -987,13 +987,243 @@ export function spawnNativeMeasured(
         inherited[name] = value;
     }
     const result = spawnSync(resolve(executable), [], {
-        stdio: "inherit",
+        // A report that parses the renderer's frame lines takes stderr
+        // back; every other measured run streams it to the terminal.
+        stdio: captureStderr ? ["ignore", "ignore", "pipe"] : "inherit",
         windowsHide: true,
+        encoding: "utf8",
+        maxBuffer: 64 * 1024 * 1024,
         env: { ...inherited, ...overrides },
     });
     if (result.error) throw result.error;
     if (result.status !== 0) {
-        throw new Error(`Native renderer exited with status ${result.status}.`);
+        throw new Error(
+            `Native renderer exited with status ${result.status}.` +
+                (captureStderr ? `\n${result.stderr.slice(-2000)}` : ""),
+        );
+    }
+    return captureStderr ? result.stderr : "";
+}
+
+/** The optional `--backend` of a measuring command, canonicalized. */
+export function optionalBackend(
+    parsed: ParsedFlags,
+    command: string,
+): string | undefined {
+    const explicit = parsed.values.get("--backend");
+    return explicit === undefined
+        ? undefined
+        : canonicalBackend(explicit, command);
+}
+
+/** The frame loops print one `[mem][frame]` line every this many frames. */
+export const memoryProfileFrames = 30;
+
+export interface MemoryArguments {
+    /** Frames to run; at least three samples, so the warm-up third has one. */
+    frames: number;
+    /** Working-set growth after warm-up that fails the run. */
+    maxGrowthMb: number;
+    backend?: string;
+    /** A BBLITE_INPUT_REPLAY tape, so a demo streams instead of idling. */
+    replay?: string;
+}
+
+export function parseMemoryArguments(
+    rest: readonly string[],
+): MemoryArguments {
+    const parsed = parseFlags(
+        rest,
+        {
+            value: [
+                "--frames",
+                "--backend",
+                "--replay",
+                "--replay-file",
+                "--max-growth-mb",
+            ],
+        },
+        "memory",
+    );
+    const frames = flagNumber(parsed, "--frames", "memory") ?? 6000;
+    const minimumFrames = 3 * memoryProfileFrames;
+    if (!Number.isInteger(frames) || frames < minimumFrames) {
+        throw new Error(
+            `memory: --frames must be an integer >= ${minimumFrames} (three samples at one every ${memoryProfileFrames} frames; got '${parsed.values.get("--frames")}').`,
+        );
+    }
+    const maxGrowthMb = flagNumber(parsed, "--max-growth-mb", "memory") ?? 32;
+    const backend = optionalBackend(parsed, "memory");
+    const replayFile = parsed.values.get("--replay-file");
+    // A streaming tape runs to thousands of entries, past what a shell
+    // passes as one argument; a file carries it whole.
+    const replay =
+        replayFile !== undefined
+            ? readFileSync(replayFile, "utf8").trim()
+            : parsed.values.get("--replay");
+    return {
+        frames,
+        maxGrowthMb,
+        ...(backend !== undefined ? { backend } : {}),
+        ...(replay !== undefined ? { replay } : {}),
+    };
+}
+
+/** One `[mem][frame]` line, with the fields the verdict reads. */
+export interface MemorySample {
+    frame: number;
+    workingSetMb: number;
+    meshRecords: number;
+    sceneMeshes: number;
+    geometryMb: number;
+}
+
+/**
+ * The `[mem][frame]` lines of a run, in order. A line missing one of the
+ * fields the verdict reads is dropped rather than defaulted, so nothing
+ * unmeasured can pass.
+ */
+export function parseMemoryProfile(stderr: string): MemorySample[] {
+    const samples: MemorySample[] = [];
+    for (const match of stderr.matchAll(/^\[mem\]\[frame\] (.*)$/gm)) {
+        const values = new Map<string, number>();
+        for (const field of match[1]!.trim().split(" ")) {
+            const [name, text] = field.split("=");
+            if (name && text !== undefined) values.set(name, Number(text));
+        }
+        const read = (name: string): number | undefined => {
+            const value = values.get(name);
+            return value === undefined || Number.isNaN(value) ? undefined : value;
+        };
+        const frame = read("frame");
+        const workingSetMb = read("working_set_mb");
+        const meshRecords = read("mesh_records");
+        const sceneMeshes = read("scene_meshes");
+        const geometryMb = read("geometry_mb");
+        if (
+            frame === undefined ||
+            workingSetMb === undefined ||
+            meshRecords === undefined ||
+            sceneMeshes === undefined ||
+            geometryMb === undefined
+        ) {
+            continue;
+        }
+        samples.push({ frame, workingSetMb, meshRecords, sceneMeshes, geometryMb });
+    }
+    return samples;
+}
+
+export interface MemorySummary {
+    /** The sample that ends warm-up: a third of the way through the run. */
+    settled: MemorySample;
+    last: MemorySample;
+    /** `last.workingSetMb - settled.workingSetMb`. */
+    growthMb: number;
+    maxGrowthMb: number;
+    passed: boolean;
+}
+
+/**
+ * The verdict of one run: after the warm-up third, does the working set
+ * settle? A streaming scene retires mesh records by design (the slots
+ * stay allocated, a few hundred bytes each), so that count is reported
+ * rather than judged; the growth threshold is what fails the run.
+ * Undefined when the run printed too few lines to judge (a loop without
+ * the line, or a run shorter than three samples).
+ */
+export function summarizeMemoryProfile(
+    samples: readonly MemorySample[],
+    maxGrowthMb: number,
+): MemorySummary | undefined {
+    if (samples.length < 3) return undefined;
+    const settled = samples[Math.ceil((samples.length - 1) / 3)]!;
+    const last = samples[samples.length - 1]!;
+    const growthMb = last.workingSetMb - settled.workingSetMb;
+    return {
+        settled,
+        last,
+        growthMb,
+        maxGrowthMb,
+        passed: growthMb <= maxGrowthMb,
+    };
+}
+
+export function formatMemorySummary(
+    id: string,
+    summary: MemorySummary | undefined,
+): string {
+    if (!summary) {
+        return `${id}: unmeasured (fewer than three [mem][frame] lines; a frame-graph loop prints none)`;
+    }
+    const { settled, last, growthMb, maxGrowthMb } = summary;
+    const verdict = summary.passed ? "ok" : `FAILED (> ${maxGrowthMb} MB)`;
+    const sign = growthMb >= 0 ? "+" : "";
+    return (
+        `${id}: ${verdict} -- working set ${sign}${growthMb.toFixed(1)} MB after warm-up ` +
+        `(${settled.workingSetMb.toFixed(1)} -> ${last.workingSetMb.toFixed(1)} MB, ` +
+        `frames ${settled.frame}..${last.frame}), geometry ${last.geometryMb.toFixed(1)} MB, ` +
+        `${last.meshRecords - last.sceneMeshes} retired mesh record(s)`
+    );
+}
+
+/**
+ * `scene -- memory <id|all>`: run a scene for many frames at the fixed
+ * capture delta with BBLITE_MEM_PROFILE=1 and judge whether its working
+ * set settles after the warm-up third. `all` runs the registered
+ * application demos, the sources closest to a real program's lifetime.
+ * Idle by default; `--replay`/`--replay-file` hand the run an input
+ * tape, which is how a streaming world keeps streaming.
+ */
+export function runMemoryReport(
+    idOrSource: string,
+    memoryArguments: MemoryArguments,
+): void {
+    const selected =
+        idOrSource === "all" ? applicationScenes : [resolveScene(idOrSource)];
+    const backend = resolveBackend(memoryArguments.backend, "memory");
+    applyGpuBackendEnvironment(backend);
+    let failures = 0;
+    for (const scene of selected) {
+        const executable = resolveNativeExecutable(
+            undefined,
+            scene.buildDirectory,
+        );
+        const generatedDirectory = resolve(scene.output);
+        verifyDeployedPayload(executable, generatedDirectory);
+        const stampPath = resolve(
+            "artifacts",
+            "memory",
+            `${scene.id}-${backendFileToken(backend)}.build-stamp`,
+        );
+        mkdirSync(resolve(stampPath, ".."), { recursive: true });
+        rmSync(stampPath, { force: true });
+        const stderr = spawnNativeMeasured(
+            executable,
+            {
+                ...fixedCaptureEnvironment(),
+                BBLITE_BENCHMARK_FRAMES: String(memoryArguments.frames),
+                BBLITE_MEM_PROFILE: "1",
+                BBLITE_BUILD_STAMP_OUT: stampPath,
+                ...(memoryArguments.replay !== undefined
+                    ? { BBLITE_INPUT_REPLAY: memoryArguments.replay }
+                    : {}),
+            },
+            [],
+            true,
+        );
+        verifyBuildIdentity(executable, generatedDirectory, stampPath);
+        const summary = summarizeMemoryProfile(
+            parseMemoryProfile(stderr),
+            memoryArguments.maxGrowthMb,
+        );
+        if (summary && !summary.passed) failures += 1;
+        console.log(formatMemorySummary(scene.id, summary));
+    }
+    if (failures > 0) {
+        throw new Error(
+            `memory: ${failures} run(s) grew past ${memoryArguments.maxGrowthMb} MB after warm-up.`,
+        );
     }
 }
 
@@ -1754,11 +1984,7 @@ export function parseStabilityArguments(
             );
         }
     }
-    const explicit = parsed.values.get("--backend");
-    const backend =
-        explicit === undefined
-            ? undefined
-            : canonicalBackend(explicit, "stability");
+    const backend = optionalBackend(parsed, "stability");
     return {
         runs,
         singleSample: parsed.flags.has("--single-sample"),

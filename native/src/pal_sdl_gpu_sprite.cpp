@@ -164,6 +164,8 @@ bool run_sprite_gpu_engine(Engine& engine) {
 
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
+        const bool mem_profile =
+            environment_variable("BBLITE_MEM_PROFILE") == "1";
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         const bool capture_ui = frame_options.capture_ui;
 #endif
@@ -364,6 +366,11 @@ bool run_sprite_gpu_engine(Engine& engine) {
             }
 
             finish_frame(engine);
+            if (mem_profile && frame % memory_profile_frames == 0) {
+                // No scene list and no geometry cache here: a sprite
+                // renderer draws from its own layers.
+                print_memory_frame_profile(frame, engine, 0, 0, 0, 0);
+            }
             if (benchmark && frame >= warmup) {
                 samples.push_back(
                     monotonic_milliseconds() - frame_start);

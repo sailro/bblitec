@@ -30,12 +30,14 @@ import {
     parseFlags,
     parseParityArguments,
     parseRgbTriple,
+    parseMemoryArguments,
     parseStabilityArguments,
     readCaptureMeta,
     readSeekMeta,
     resolveBackend,
     runSceneParity,
     runSceneParityDifferential,
+    runMemoryReport,
     runStabilityReport,
     seekBracketPlan,
     withEnvironment,
@@ -2601,6 +2603,10 @@ async function main(): Promise<void> {
         runStabilityReport(id, parseStabilityArguments(rest));
         return;
     }
+    if (command === "memory" && id) {
+        runMemoryReport(id, parseMemoryArguments(rest));
+        return;
+    }
     if (command === "validate" && id) {
         parseFlags(rest, {}, "validate");
         await runValidate(id);
@@ -2624,6 +2630,7 @@ async function main(): Promise<void> {
         "Usage: scene-command <doctor | setup | list | show <id|source.ts> | " +
             "compile|build|process|parity|compose|validate <id|source.ts|all> [options] | " +
             "geometry|capture|uniforms|diff|stability|diagnose <id|source.ts> [options] | " +
+            "memory <id|source.ts|all (the application demos)> [--frames N] [--max-growth-mb M] [--replay <tape> | --replay-file <path>] [--backend b] | " +
             "probe-variants <id|source.ts> --shader <name> (--term <text> --with <replacement> | --replace-file <path>) | " +
             "measure <image.png> [--background r,g,b] | " +
             "clean --orphans [--all] | " +

@@ -8191,6 +8191,8 @@ bool run_dawn_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
     const bool cpu_profile =
         environment_variable("BBLITE_CPU_PROFILE") == "1";
+    const bool mem_profile =
+        environment_variable("BBLITE_MEM_PROFILE") == "1";
     CpuStartupMark cpu_startup_mark(cpu_profile, "dawn");
     reject_unsupported_frame_options(
         frame_options,
@@ -13439,6 +13441,14 @@ bool run_dawn_engine(Engine& engine) {
         const double end =
             cpu_profile ? monotonic_milliseconds() : 0.0;
         const long completed_frame = frame - 1;
+        if (mem_profile && completed_frame % memory_profile_frames == 0) {
+            print_memory_frame_profile(
+                completed_frame,
+                engine,
+                scene,
+                state.meshes,
+                state.shared_shader_geometries);
+        }
         if (cpu_profile && completed_frame % 30 == 0) {
             std::size_t draw_commands =
                 render_plan.draw_lists.opaque.commands.size() +

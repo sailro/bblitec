@@ -2912,13 +2912,7 @@ void update_mesh_positions(
         throw std::runtime_error(
             "mesh attribute updates require procedural geometry");
     }
-    const std::size_t aliases = static_cast<std::size_t>(std::count_if(
-        engine.meshes.begin(),
-        engine.meshes.end(),
-        [&](const MeshRecord& candidate) {
-            return candidate.geometry == record.geometry;
-        }));
-    if (aliases > 1) {
+    if (engine.geometries[record.geometry].owners > 1) {
         throw std::runtime_error(
             "mesh attribute updates require unshared geometry: " +
             record.name);

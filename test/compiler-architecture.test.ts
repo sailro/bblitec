@@ -1128,6 +1128,37 @@ test("forwards DOM-compatible application input through every native loop", () =
     }
 });
 
+test("removeFromScene returns a retired mesh's geometry bytes", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const scene = source("src/lowering/scene-lowerer.ts");
+    // The release must swap, not assign: `= {}` keeps the capacity.
+    assert.match(runtime, /std::vector<T>\(\)\.swap\(/);
+    // Every vector member of ModelGeometry is released, read off the struct
+    // itself so a new array cannot be retired without being freed.
+    const struct = /struct ModelGeometry \{([\s\S]*?)\n\};/.exec(runtime);
+    assert.ok(struct);
+    const members = [...struct[1]!.matchAll(/std::vector<[^;]*> (\w+);/g)].map(
+        (match) => match[1],
+    );
+    assert.ok(members.length >= 6);
+    for (const member of members) {
+        assert.match(
+            runtime,
+            new RegExp(`release_storage\\(geometry\\.${member}\\);`),
+        );
+    }
+    assert.match(scene, /release_geometry_storage\(shared\);/);
+    assert.doesNotMatch(scene, /\b\w+\.\w+ = \{\};\s*\n\s*\w+\.\w+ = \{\};/);
+    // Sharing is counted where it is created (an imported-root clone), so
+    // a removal does not scan every mesh record the engine ever made, and
+    // a removed record is retired before its share is released, so a
+    // remove/add/remove cycle cannot release a sharer's geometry twice.
+    assert.match(scene, /\+\+engine\.geometries\[[^\]]+\]\.owners;/);
+    assert.match(scene, /record\.retired = true;[\s\S]{0,200}--shared\.owners;/);
+    assert.match(scene, /meshes\[mesh\.value\]\.retired\)/);
+    assert.match(scene, /reclaim_unshared_geometry\(\*scene\.engine, mesh\);/);
+});
+
 test("routes voxel save and load through the host file-dialog PAL", () => {
     const compiler = source("src/compiler.ts");
     const runtime = source("native/include/bblite/js_voxel_file.hpp");
