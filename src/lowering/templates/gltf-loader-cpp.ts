@@ -268,6 +268,7 @@ export function gltfLoaderCpp(
         animationAdditive = false,
         managedGroups = false,
         vat = false,
+        deformPicking = false,
         pinnedSkeletonPalette = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
@@ -3370,7 +3371,7 @@ ${animatedWorldBounds ? `            // A static primitive bakes its node matrix
                 // mesh.skeleton upstream: the node named a skin, so the
                 // pose pass writes this record a joint palette rather than
                 // its own world matrix.
-${vat ? `                engine.meshes[mesh_record_index].skinned =
+${vat || deformPicking ? `                engine.meshes[mesh_record_index].skinned =
                     skin_index !=
                     std::numeric_limits<std::size_t>::max();` : ""}${pinnedSkeletonPalette ? `
                 // A mesh with no skin publishes no palette at all, so the
@@ -4297,7 +4298,12 @@ ${vat ? `                if (mesh_record.has_vat) continue;` : ""}
                                 skin->inverse_bind_matrices[joint]));
                     }
                 }
-                mesh_record.bone_matrices.clear();
+${deformPicking ? `                // The pin's detailed pick reads \`mesh.worldMatrix\` for the
+                // rest normal, and a skinned record's own transform stays
+                // at rest because its palette carries this. Kept here, in
+                // the one place that computes it, for that reader alone.
+                mesh_record.deform_node_world = native_matrix(mesh_world);
+` : ""}                mesh_record.bone_matrices.clear();
                 if (skin) {
                     for (const Matrix& joint_matrix : joint_matrices) {
                         mesh_record.bone_matrices.push_back(

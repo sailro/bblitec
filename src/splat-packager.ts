@@ -46,18 +46,103 @@ const pinnedPlyParser = await importPinnedModule<{
     convertPlyToSplat: (data: ArrayBuffer) => ParsedSplat;
 }>("loader-splat/splat-ply-parser.js");
 
+/**
+ * The pin's second container parser, which `loadSplat` reaches through a
+ * dynamic import exactly when `isPlyCompressedOrSH` says so.
+ *
+ * Executed for the same reason its plain sibling is — a PLY header is a
+ * per-exporter property list, so the parsed VALUE is what must not drift —
+ * and it is imported here at module scope rather than lazily because
+ * generation has already decided it needs a parser by the time it asks.
+ * The only Web API in its body is `TextDecoder`, which Node has.
+ */
+const pinnedCompressedPlyParser = await importPinnedModule<{
+    convertCompressedPlyToParsedSplat: (data: ArrayBuffer) => ParsedSplat;
+}>("loader-splat/splat-ply-compressed.js");
+
+/**
+ * The spherical harmonics a compressed PLY carries beside its rows.
+ *
+ * `shDegree` bands the per-splat coefficient count the pin's own shader
+ * builder derives from it: `((d + 1)^2 - 1) * 3` bytes per splat.
+ */
+export interface PackagedSplatHarmonics {
+    degree: number;
+    bytes: Uint8Array;
+}
+
 export interface PackagedSplat {
     /** The row buffer, at the pin's own stride. */
     rows: Uint8Array;
+    /**
+     * Present only for a container the pin parsed spherical harmonics out
+     * of. It travels beside the row buffer rather than inside it: the rows
+     * ARE upstream's own `.splat` layout, and a scene fetching a `.splat`
+     * directly must package to the same bytes.
+     */
+    harmonics?: PackagedSplatHarmonics;
+}
+
+/**
+ * Frames one parse result as the bytes the bake cache stores.
+ *
+ * `cachedBakeSync` replays a single buffer, and the compressed parse
+ * produces two — the rows and the SH stream — so the cached entry carries
+ * both behind a fixed twelve-byte prefix. The prefix is INTERNAL to the
+ * cache: what ships is the row buffer and, beside it, the SH stream exactly
+ * as the pin's parser produced it.
+ */
+const CACHE_PREFIX_BYTES = 12;
+
+function frameParsedSplat(parsed: ParsedSplat): Uint8Array {
+    const rows = new Uint8Array(parsed.data);
+    const sh = parsed.sh ?? new Uint8Array(0);
+    const framed = new Uint8Array(CACHE_PREFIX_BYTES + rows.length + sh.length);
+    const header = new DataView(framed.buffer, 0, CACHE_PREFIX_BYTES);
+    header.setUint32(0, rows.length, true);
+    header.setUint32(4, sh.length, true);
+    header.setUint32(8, parsed.shDegree ?? 0, true);
+    framed.set(rows, CACHE_PREFIX_BYTES);
+    framed.set(sh, CACHE_PREFIX_BYTES + rows.length);
+    return framed;
+}
+
+function unframeParsedSplat(framed: Uint8Array): PackagedSplat {
+    const header = new DataView(
+        framed.buffer,
+        framed.byteOffset,
+        CACHE_PREFIX_BYTES,
+    );
+    const rowBytes = header.getUint32(0, true);
+    const shBytes = header.getUint32(4, true);
+    const degree = header.getUint32(8, true);
+    const rows = framed.subarray(
+        CACHE_PREFIX_BYTES,
+        CACHE_PREFIX_BYTES + rowBytes,
+    );
+    if (shBytes === 0 || degree === 0) {
+        return { rows };
+    }
+    return {
+        rows,
+        harmonics: {
+            degree,
+            bytes: framed.subarray(
+                CACHE_PREFIX_BYTES + rowBytes,
+                CACHE_PREFIX_BYTES + rowBytes + shBytes,
+            ),
+        },
+    };
 }
 
 /**
  * Parses a fetched splat asset into the interchange row buffer.
  *
- * Refuses the two containers this slice does not carry rather than emitting a
- * buffer the renderer would draw wrong: a compressed or SH-bearing PLY needs
- * the pin's second parser and its own SH pipeline, and a `.sog`/`.spz` needs
- * a ZIP/gzip decoder before either.
+ * Both PLY containers reach the pin's own parser, on the same fork
+ * `loadSplat` takes: `isPlyCompressedOrSH` selects the chunked/SH parser the
+ * pin dynamically imports, and either one yields the same 32-byte rows plus,
+ * for the compressed container, a flat spherical-harmonic byte stream.
+ * A `.sog`/`.spz` still refuses — those need a ZIP/gzip decoder first.
  */
 export function packageSplat(bytes: Uint8Array): PackagedSplat {
     // `assetBytes` hands back a freshly-allocated array, so the common case
@@ -72,56 +157,51 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
                   bytes.byteOffset + bytes.byteLength,
               ) as ArrayBuffer);
 
-    let rowBuffer: ArrayBuffer | Uint8Array;
+    let packaged: PackagedSplat;
     if (pinnedPlyParser.isPly(data)) {
-        if (pinnedPlyParser.isPlyCompressedOrSH(data)) {
-            throw new Error(
-                "Compressed or spherical-harmonic PLY splats are not lowered; " +
-                    "the reached slice is the plain PLY and .splat row layout.",
-            );
-        }
+        const compressed = pinnedPlyParser.isPlyCompressedOrSH(data);
         // The pin's text parse over a multi-megabyte PLY is deterministic
         // in (asset bytes, pin); a repeat compile replays the row buffer.
         // The `.splat` fast path below stays uncached — caching a copy of
         // the input would only spend disk on a no-op.
-        rowBuffer = cachedBakeSync(
-            {
-                kind: "splat-ply",
-                version: "1",
-                module: moduleIdentity(import.meta.url),
-                browser: false,
-                parameters: {},
-                inputs: [bytes],
-            },
-            () => {
-                const parsed = pinnedPlyParser.convertPlyToSplat(data);
-                if (parsed.data.byteLength === 0) {
-                    throw new Error(
-                        "Splat PLY parsed to an empty row buffer (unsupported property layout).",
-                    );
-                }
-                return new Uint8Array(parsed.data);
-            },
+        packaged = unframeParsedSplat(
+            cachedBakeSync(
+                {
+                    kind: "splat-ply",
+                    version: "2",
+                    module: moduleIdentity(import.meta.url),
+                    browser: false,
+                    parameters: {},
+                    inputs: [bytes],
+                },
+                () => {
+                    const parsed = compressed
+                        ? pinnedCompressedPlyParser
+                              .convertCompressedPlyToParsedSplat(data)
+                        : pinnedPlyParser.convertPlyToSplat(data);
+                    if (parsed.data.byteLength === 0) {
+                        throw new Error(
+                            "Splat PLY parsed to an empty row buffer (unsupported property layout).",
+                        );
+                    }
+                    return frameParsedSplat(parsed);
+                },
+            ),
         );
     } else {
         // A pre-converted `.splat` is already the row layout; the pin takes
         // this same fast path.
-        rowBuffer = data;
+        packaged = { rows: new Uint8Array(data) };
     }
 
     // The stride is not re-typed here: `SplatLowerer` reads ROW_LENGTH off
     // the pinned declaration and the generated loader checks the packaged
     // bytes against it, so a moved stride refuses there rather than agreeing
     // with a copy that can drift.
-    if (rowBuffer.byteLength === 0) {
+    if (packaged.rows.byteLength === 0) {
         throw new Error("Splat asset carries no splats.");
     }
-    return {
-        rows:
-            rowBuffer instanceof Uint8Array
-                ? rowBuffer
-                : new Uint8Array(rowBuffer),
-    };
+    return packaged;
 }
 
 /**

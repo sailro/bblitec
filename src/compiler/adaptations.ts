@@ -66,12 +66,16 @@ export function compileAdaptations(
             category: "asset-materialization",
             sourceSemantics:
                 "loadSplat fetches a .ply and parses it on the main thread " +
-                "into the 32-byte-per-splat row buffer.",
+                "into the 32-byte-per-splat row buffer, taking a second, " +
+                "dynamically-imported parser for a compressed or " +
+                "spherical-harmonic container.",
             nativeSemantics:
                 "The pin's own parser runs at generation and the row buffer " +
                 "is packaged, because a PLY header is a per-exporter " +
                 "property list whose parsed VALUE is what must not drift. " +
-                "The geometry build over that buffer stays a fold.",
+                "The compressed parser runs there too, on the pin's own " +
+                "isPlyCompressedOrSH fork. The geometry build over that " +
+                "buffer stays a fold.",
             risk: "low",
             validation: [
                 "packaged rows are byte-identical to the pin's own .splat",

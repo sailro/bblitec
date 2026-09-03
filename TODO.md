@@ -335,12 +335,12 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (14 scenes):**
-91, 113-115, 121-124,
+**Integrate first (11 scenes):**
+91, 114, 121-123,
 149,
 231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
-and splats, and deterministic picking (113-115). Every navigation scene
+and splats, and deterministic picking (113 and 115 ship; 114 remains). Every navigation scene
 the corpus carries is now integrated, as are the cascaded-shadow pair,
 the billboard pick and the display gizmos.
 
@@ -365,10 +365,6 @@ an `isLocal` node-particle system.
 
 ### Integration-first compiler contract gaps
 
-- [ ] Scene 115: lower the definite-assignment declaration
-  `let resolveFrozen!: () => void`; query-derived `Number.isFinite` conditions
-  now fold to the native reference environment before the selected value arm
-  lowers.
 - [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
   `f0Factor` and `specularWeight` options still refuse explicitly.
 - [ ] Extend imported hierarchy/root clones beyond Scene 12's exact slice.
@@ -402,16 +398,24 @@ an `isLocal` node-particle system.
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
 - [ ] Extend the splat slice past what scenes 120, 125, 126, 127, 128 and
-  129 measure ([fidelity](docs/fidelity.md#gaussian-splats) carries the
-  shipped contracts). What remains, each refusing by name:
+  124 and 129 measure ([fidelity](docs/fidelity.md#gaussian-splats) carries
+  the shipped contracts, spherical harmonics included). What remains, each refusing by name:
   - 121: `splatsData` + `updateData` — the row buffer handed back as a
     mutable `ArrayBuffer` and re-uploaded, which also needs `new
     Float32Array(buf)` over it and an indexed element assignment.
-  - 124: a compressed PLY with spherical harmonics — the pin's second
-    parser plus `gaussian-splatting-pipeline-sh` and its 1..5 rgba32uint SH
-    textures.
   - `loadSOG` (122) needs a ZIP and a WebP decoder; `loadSPZ` (123) needs
-    gzip.
+    gzip. 123 is now the cheaper of the two by some way: the SH pipeline
+    scene 124 built is what it was waiting on, so it adds only the loader
+    intrinsic and a gzip parse, both Node-runnable. 122 still wants a
+    browser-executed WebP decode, whose canvas round-trip can perturb RGB
+    where alpha is under 255 -- and the SOG quats plane stores its mode in
+    alpha, so that is a fidelity hazard rather than a convenience.
+  The `.ply`-equals-`.splat` packaging identity the harmonics sidecar's
+  design turns on is asserted by no test: nothing compares a `.ply`-packaged
+  row buffer against a `.splat`-packaged one for the same cloud. Writing that
+  test means staging a fixture carrying one cloud in both containers, which
+  is a corpus change with its own hash-recording rather than a scene-wave
+  one -- but the invariant is load-bearing and currently unguarded.
   A second `loadSplat` naming a different plugin list also refuses: the
   generated splat stages are one composed module per scene, where upstream
   keys its module cache by the plugin ids. No corpus scene loads two clouds.
@@ -436,9 +440,15 @@ an `isLocal` node-particle system.
     CPU position and normal arrays `detailed-picking.ts` interpolates.
   - `pickAsync`'s `filter`, `discard` and `ignore` options, which select
     `picking-advanced-pipeline.ts` and `picking-ignore.ts`.
-  - a thin-instanced, VAT or morph/skeleton candidate: the first two need
-    the advanced pipeline's instance-composed id, the third the deform
-    projection `deform-picking-projection.ts` builds.
+  - a thin-instanced or VAT candidate: both need the advanced pipeline's
+    instance-composed id. The morph/skeleton arm SHIPPED with scene 115 --
+    `deform-picking-projection.ts` is executed and fed to the detailed
+    pipeline's own shader builder -- but only its two SKINNED arms are
+    composed, because the gate reads the pinned skeleton bit. A mesh whose
+    only deformation is morph targets is therefore picked at its un-morphed
+    pose where the pin would use `noskin-morph`. No registered scene puts
+    one in front of a detailed pick; closing it wants that scene, not a
+    speculative arm.
   - `PickingInfo.distance` and detailed picking's `ray`. Basic
     `pickedPoint` is reached: both backends consume the sampled depth and run
     the pin's inverse-VP reconstruction. The pin derives `distance` from that
@@ -665,7 +675,7 @@ an `isLocal` node-particle system.
 - [ ] Scene 114: an arm of the GPU-picking entry below rather than a scene
   of its own. **Scene 113 is integrated and published**, so detailed picking,
   `normalizeVec3` and N-ary `Math.hypot` all ship -- what 114 adds beyond
-  them is deform picking, which 115 shares. **114 is not the one-contract
+  them is no longer deform picking -- scene 115 shipped that. **114 is not the one-contract
   scene this entry used to claim** -- probed, its ladder is `setPbrUnlit`'s tint
   through two levels of user-function parameter, then `TypedArray.set` from
   a plain array, then a scene-code `createSkeleton(engine, joints, weights,

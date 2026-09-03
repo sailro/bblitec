@@ -1,0 +1,110 @@
+{
+ "angles": [
+  "reuse",
+  "simplification",
+  "efficiency",
+  "altitude"
+ ],
+ "findings": [
+  {
+   "summary": "The splat-harmonics-sidecar adaptation never reached a single fidelity.json. It was gated on features.includes('loader:splat-sh') inside compileAdaptations, which runs in the compiler over AST-derived features -- but that feature is asset-joined and only known at generation, after the pin has parsed the container. It was the one asset-joined gate among fourteen AST-side ones. Moved to src/cli.ts beside four-influence-skinning and executed-ktx2-transcode, which do this correctly, and verified it now lands in scene 124's fidelity.json. This defeated the repo's own rule that every intentional semantic adaptation is recorded there.",
+   "applied": true
+  },
+  {
+   "summary": "Four numbers in the scene 124 registry comment were wrong, written from a stream report rather than re-read off the artifacts. The foreground values were swapped between backends and one was invented (0.0031/0.0030 for a measured 0.00279/0.00311); the full MAD 0.000198 appears in no artifact (0.00018482 SDL, 0.00020616 Dawn); the mask was stated as 57,957 px against a measured 59,973; and 'four times the hard requirement' named a threshold that appears nowhere in the repository -- one grep hit, that sentence. All re-read off report-gpu.json and report-dawn.json, with the surviving probe's artifact path cited so the observation claim is re-derivable. The same correction applied to the fidelity.md paragraph.",
+   "applied": true
+  },
+  {
+   "summary": "The Dawn deform bind group and layout were sized from BBLITE_GPU_MORPH_STORAGE while the shader arm was composed from a narrower predicate. A scene with a node-material variant carrying morph bindings but no scene or asset morph targets composes the pin's nomorph projection -- one group-3 binding -- while Dawn declared three and then required both storage buffers to be non-null, aborting the first deforming pick. SDL was correct for free by being data-driven off the shader's reflection sidecar. A new BBLITE_DEFORM_PICKING_MORPH define now records WHICH ARM WAS COMPOSED, and Dawn sizes from that.",
+   "applied": true
+  },
+  {
+   "summary": "pick_mesh_deforms dropped the VAT exclusion the pin's getDeformPickingProjection opens with. A baked mesh keeps `skinned` (the bake's own first-skinned search writes it) and keeps the palette the pose pass stopped updating, because that pass continues on has_vat BEFORE clearing the matrices -- so a VAT build with detailed picking would have drawn a baked mesh through the deform pipeline against a stale palette and read a node world nothing had refreshed. The pin's first line is now mirrored.",
+   "applied": true
+  },
+  {
+   "summary": "The identity world was substituted for any deforming candidate regardless of whether the pass was the detailed one. A basic pick in a deform-picking build has no palette to read, so it would have drawn the skinned mesh through the affine pipeline with an identity world. The pass's own detailed flag is now threaded into the shared collector, and the basic path keeps exactly the behaviour it had before deform picking existed -- with that pre-existing bind-pose limit named rather than papered over.",
+   "applied": true
+  },
+  {
+   "summary": "That fix then broke every scene with picking but not detailed picking: the `detailed` local only exists behind the define, so scenes 118 and 129 failed to compile. Guarded at both call sites. This is the fourth time in this project that gating emitted code has broken the scene reaching none of it, and it was caught only because the rule to build such a scene was followed.",
+   "applied": true
+  },
+  {
+   "summary": "17.9 MB of spherical-harmonic payload was retained for the process lifetime, nine lines below the `rows` field whose own comment states the opposite policy and reach-gates a smaller buffer for the same reason. Pass creation is the only reader and runs once. Released after upload in both backends, SWAPPED with an empty vector rather than assigned -- assignment keeps the capacity and frees nothing, which is the measured trap from PR #197's reclaim. The two pass-creation functions take a mutable engine now rather than casting away const, since they genuinely consume the staging bytes.",
+   "applied": true
+  },
+  {
+   "summary": "A verbatim duplicated lambda in pal.cpp: the continuation re-arm was written identically in poll_start_continuation's wait branch and in defer_start_continuation_until. One queue_start_continuation_poll now, so the shape that avoids a self-owning std::function cycle exists once.",
+   "applied": true
+  },
+  {
+   "summary": "An orphaned comment in compiler.ts: the new escaping-resolve promise arm was inserted between a comment about Math.random restoration and the statement it documented. Both now sit with their own code.",
+   "applied": true
+  },
+  {
+   "summary": "docs/features.md stated three rgba32uint payload textures, which is scene 124's degree rather than the pipeline's shape -- the pin's SH_TEXTURE_COUNT table is [0,1,2,3,5] and the port supports every non-zero entry. Corrected to one to five, counted by the pin's own table.",
+   "applied": true
+  },
+  {
+   "summary": "The SDL splat header still described four data textures and named the register range t0..t3 in four places, after the same file grew a fifth through ninth. The Dawn sibling had been updated; this one had not.",
+   "applied": true
+  },
+  {
+   "summary": "A comment claimed the pin's projectionFor builds four arms and this port composes two skinned ones. The pin reaches five (skin4 and skin8, each with and without morph, plus noskin-morph) and this port composes exactly ONE per scene, always a skin4 arm, because the mock mesh the composition hands the pin has no second joint buffer. Corrected to the real counts.",
+   "applied": true
+  },
+  {
+   "summary": "docs/features.md presented a GAP as a decision. The zero-weight-quad reason it gives is a correct reason not to use the SKINNED arm for an unskinned mesh; it is not a reason the pin's own noskin-morph arm could not serve one. The two uncomposed arms are now distinguished: skin8 is REFUSED and covered by an existing adaptation, noskin-morph is a gap with nothing refusing it, and one composed arm serving a whole scene where the pin builds one per mesh is stated too.",
+   "applied": true
+  },
+  {
+   "summary": "The sidecar's second stated reason was inaccurate: registerAsset is AST-driven, but assetRecord beneath it is not, and a generation-time second record is possible -- a node-particle graph texture already takes that path. The honest reason is the packaging-identity one alone, which is now what the comment says.",
+   "applied": true
+  },
+  {
+   "summary": "A comment said `deformTriangle` binds absent because the reached slice supplies none. Scene 115 IS a skinned detailed pick, so upstream it supplies one. What makes it unobservable is the reader: getPickedFaceNormal is not in the pinned package's export surface at all, so no scene can ask. Verified against the live export surface and corrected to the real reason, naming where a later pin would break it.",
+   "applied": true
+  },
+  {
+   "summary": "The escaping-resolve recognizer had a dead intermediate that existed only to be re-narrowed under a second isBlock test; and pinned-picking-shaders claimed a stub device stays identity-stable across two calls when a fresh one is built per call. Both corrected.",
+   "applied": true
+  },
+  {
+   "summary": "The two splat texture-count constants are still written once per backend rather than shared.",
+   "applied": false,
+   "blockedBy": "Attempted and reverted, with the reason recorded in both files: the count measures a GENERATED declaration that must be included outside a namespace, and pal_gpu_shared.hpp has no such include -- hoisting it there put upstream:: inside bbl::pal and broke every name in the file. Two duplicated constexpr lines is the cheaper of the two wrongs, and saying so where they live is what stops the next reader repeating the attempt.",
+   "filedIn": "native/src/pal_sdl_gpu_splat.hpp and pal_dawn_splat.hpp, stated where they are defined"
+  },
+  {
+   "summary": "The BBLITE_DEFORM_PICKING activation row restates its emitted expression as its single reason, so its cross-check can never fire.",
+   "applied": false,
+   "blockedBy": "Attempted and reverted after it failed immediately: `activation` combines parts by DISJUNCTION, so decomposing an AND gate into three parts makes the row claim itself active whenever any one input holds. The helper cannot express a conjunction. Restored to one reason with that constraint stated, and the three real inputs named in the provenance so a reader can still see them.",
+   "filedIn": "src/feature-activation.ts, stated at the row"
+  },
+  {
+   "summary": "noskin-morph is composed by neither backend, so a mesh whose only deformation is morph targets is picked at its un-morphed pose with nothing refusing it.",
+   "applied": false,
+   "blockedBy": "Composing an arm no registered scene reaches is what this port does not do, and a refusal needs to distinguish a morph-only candidate at generation, which the feature list does not currently express. The gap is now stated in the predicate, in docs/features.md, in docs/fidelity.md and in TODO.md rather than in one of them; closing it wants a scene.",
+   "filedIn": "TODO.md, docs/features.md, docs/fidelity.md and the predicate itself"
+  },
+  {
+   "summary": "Four of five observation claims across the two registry comments left no artifact behind, because each probe run overwrites the last.",
+   "applied": false,
+   "blockedBy": "The probe tooling keeps one directory per scene, so a second probe erases the first's evidence. Making it keep a directory per term is a change to the probe command rather than to either scene, and it should land with its own test over the tooling. The surviving artifact is now cited by path in the claim it supports, and the erased ones are named as erased rather than presented as re-derivable.",
+   "filedIn": "src/scene-registry.ts and docs/fidelity.md, stated in the claims themselves"
+  },
+  {
+   "summary": "The .ply-equals-.splat packaging identity the sidecar design turns on is asserted by no test.",
+   "applied": false,
+   "blockedBy": "The invariant is about two packaging paths producing identical bytes for one cloud, which needs a fixture carrying the same cloud in both containers; the corpus has one .ply and no matching .splat. Writing the test means adding that fixture, which is a corpus change with its own hash-recording, not a scene-wave change.",
+   "filedIn": "TODO.md, folded into the splat entry"
+  },
+  {
+   "summary": "mesh_cpu_indices and its two siblings return whole mesh arrays by value, so a detailed pick materializes about 198 KB to read 48 bytes.",
+   "applied": false,
+   "blockedBy": "Carried over from wave 7 with the same blocker: those copies exist to preserve typed-array value semantics for SCENE code, so changing the return type touches every scene-facing read of the three properties. Scene 115 picks once and no gate can see it; the cost is on a hover path a real app takes, so it wants its own measured pass.",
+   "filedIn": "TODO.md, folded into the picking entry"
+  }
+ ]
+}

@@ -52,6 +52,58 @@ void defer_start_continuation(
         });
 }
 
+/**
+ * One frame boundary of a gated continuation: run it, or wait another.
+ *
+ * Named rather than a self-capturing lambda so the re-arm is a call
+ * instead of a `std::function` that owns itself -- that shape either
+ * leaks its own cycle or destroys the target it is executing.
+ */
+static void poll_start_continuation(
+    Engine& engine,
+    std::function<bool()> resolved,
+    std::function<void()> callback);
+
+/** The re-arm, spelled once: both the first wait and every later one. */
+static void queue_start_continuation_poll(
+    Engine& engine,
+    std::function<bool()> resolved,
+    std::function<void()> callback) {
+    defer_callback(
+        engine,
+        [&engine,
+         resolved = std::move(resolved),
+         callback = std::move(callback)]() mutable {
+            poll_start_continuation(
+                engine, std::move(resolved), std::move(callback));
+        });
+}
+
+static void poll_start_continuation(
+    Engine& engine,
+    std::function<bool()> resolved,
+    std::function<void()> callback) {
+    if (!resolved()) {
+        queue_start_continuation_poll(
+            engine, std::move(resolved), std::move(callback));
+        return;
+    }
+    callback();
+    --engine.pending_start_continuations;
+}
+
+void defer_start_continuation_until(
+    Engine& engine,
+    std::function<bool()> resolved,
+    std::function<void()> callback) {
+    // Counted for the whole wait, not per boundary: the capture gate asks
+    // whether every start continuation has run, and this one has not until
+    // the scene's callback resolves it.
+    ++engine.pending_start_continuations;
+    queue_start_continuation_poll(
+        engine, std::move(resolved), std::move(callback));
+}
+
 void run_deferred_callbacks(Engine& engine) {
     if (engine.deferred_callbacks.empty()) {
         return;

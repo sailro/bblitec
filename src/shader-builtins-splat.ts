@@ -34,10 +34,88 @@
  *   what the SDL_GPU PAL binds against.
  */
 
-import { pinnedSplatModuleWgsl } from "./pinned-splat-fragments.js";
+import {
+    pinnedSplatModuleWgsl,
+    type PinnedSplatShModule,
+} from "./pinned-splat-fragments.js";
+
+/**
+ * What one pinned splat module spells its shared declarations as.
+ *
+ * The two the pin ships are not one text with a flag: the stock module is a
+ * packaged string the bundler minified (`struct S`, `var<uniform> u:S`,
+ * `@vertex fn vs(`), while the SH module is BUILT by
+ * `buildShShaderSource` and keeps its source formatting (`struct U`,
+ * `var<uniform> u: U;`, `@vertex` on its own line). The split is the same
+ * operation over both, so the anchors travel as data and the splitter is
+ * written once -- a second copy of it would agree until one module moved.
+ */
+interface SplatShaderDialect {
+    /** The uniform block's own `struct` head. */
+    uniformStruct: string;
+    /** The varying struct's head, repeated into the fragment file. */
+    varyingStruct: string;
+    /** The uniform declaration, whose `;` ends the block. */
+    uniformDeclaration: string;
+    /** Where the vertex stage begins. */
+    vertexEntry: string;
+    /** Where the fragment stage begins. */
+    fragmentEntry: string;
+    /** Declarations whose absence means the pin moved a resource. */
+    anchors: readonly string[];
+}
+
+const STOCK_DIALECT: SplatShaderDialect = {
+    uniformStruct: "struct S{",
+    varyingStruct: "struct A{",
+    uniformDeclaration: "var<uniform> u:S",
+    vertexEntry: "@vertex fn vs(",
+    fragmentEntry: "@fragment fn fs(",
+    anchors: [
+        "@group(1) @binding(0) var<uniform> u:S;",
+        "@group(1) @binding(1) var e:sampler;",
+        "@group(1) @binding(2) var F:texture_2d<f32>;",
+        "@group(1) @binding(3) var G:texture_2d<f32>;",
+        "@group(1) @binding(4) var J:texture_2d<f32>;",
+        "@group(1) @binding(5) var K:texture_2d<f32>;",
+        "@vertex fn vs(",
+        "@fragment fn fs(",
+        "@builtin(position) pos:vec4<f32>",
+    ],
+};
+
+const SH_DIALECT: SplatShaderDialect = {
+    uniformStruct: "struct U {",
+    varyingStruct: "struct VOut {",
+    uniformDeclaration: "var<uniform> u: U",
+    vertexEntry: "@vertex\nfn vs(",
+    fragmentEntry: "@fragment\nfn fs(",
+    anchors: [
+        "@group(1) @binding(0) var<uniform> u: U;",
+        "@group(1) @binding(1) var samp: sampler;",
+        "@group(1) @binding(2) var centersTex: texture_2d<f32>;",
+        "@group(1) @binding(3) var covATex: texture_2d<f32>;",
+        "@group(1) @binding(4) var covBTex: texture_2d<f32>;",
+        "@group(1) @binding(5) var colorsTex: texture_2d<f32>;",
+        // The one binding the stock module has no counterpart for, and the
+        // reason the SH arm exists: the view-dependent colour is loaded
+        // from packed unsigned texels in the VERTEX stage.
+        "@group(1) @binding(6) var shTexture0: texture_2d<u32>;",
+        "eyePosition: vec3<f32>",
+        "@vertex\nfn vs(",
+        "@fragment\nfn fs(",
+        "@builtin(position) pos: vec4<f32>",
+    ],
+};
 
 /** The pin's own module, split at its two entry points. */
 export interface SplatShaderSource {
+    /**
+     * Whether the pin's splicer composed this text from plugins. It decides
+     * one thing downstream -- whether the fragment file declares the
+     * uniform block a plugin body may read.
+     */
+    spliced: boolean;
     /** Struct S, the group-1 bindings, struct A, and the texel lookup. */
     prologue: string;
     /** Struct S and its group-1 binding alone — what a plugin may read. */
@@ -86,23 +164,41 @@ const cache = new Map<string, SplatShaderSource>();
 export function pinnedSplatShader(
     composedModule?: string,
 ): SplatShaderSource {
-    const key = composedModule ?? "";
+    return splitSplatShader(
+        STOCK_DIALECT,
+        pinnedSplatModuleWgsl(),
+        composedModule,
+    );
+}
+
+/**
+ * The same split over the module `buildShShaderSource` produced.
+ *
+ * The base is the pin's own build for this scene's degree rather than a
+ * packaged literal, so the "did splicing move the vertex half" check
+ * compares against that build instead of against the stock text.
+ */
+export function pinnedSplatShShader(
+    module: PinnedSplatShModule,
+): SplatShaderSource {
+    return splitSplatShader(
+        SH_DIALECT,
+        module.base,
+        module.wgsl === module.base ? undefined : module.wgsl,
+    );
+}
+
+function splitSplatShader(
+    dialect: SplatShaderDialect,
+    stock: string,
+    composedModule?: string,
+): SplatShaderSource {
+    const key = `${dialect.vertexEntry}|${composedModule ?? stock}`;
     const hit = cache.get(key);
     if (hit) return hit;
-    const stock = pinnedSplatModuleWgsl();
     const wgsl = composedModule ?? stock;
 
-    for (const anchor of [
-        "@group(1) @binding(0) var<uniform> u:S;",
-        "@group(1) @binding(1) var e:sampler;",
-        "@group(1) @binding(2) var F:texture_2d<f32>;",
-        "@group(1) @binding(3) var G:texture_2d<f32>;",
-        "@group(1) @binding(4) var J:texture_2d<f32>;",
-        "@group(1) @binding(5) var K:texture_2d<f32>;",
-        "@vertex fn vs(",
-        "@fragment fn fs(",
-        "@builtin(position) pos:vec4<f32>",
-    ]) {
+    for (const anchor of dialect.anchors) {
         if (!wgsl.includes(anchor)) {
             throw new Error(
                 `Pinned Gaussian-splat WGSL no longer declares '${anchor}'.`,
@@ -110,10 +206,10 @@ export function pinnedSplatShader(
         }
     }
 
-    const uniformStart = wgsl.indexOf("struct S{");
-    const varyingStart = wgsl.indexOf("struct A{");
-    const vertexStart = wgsl.indexOf("@vertex fn vs(");
-    const fragmentStart = wgsl.indexOf("@fragment fn fs(");
+    const uniformStart = wgsl.indexOf(dialect.uniformStruct);
+    const varyingStart = wgsl.indexOf(dialect.varyingStruct);
+    const vertexStart = wgsl.indexOf(dialect.vertexEntry);
+    const fragmentStart = wgsl.indexOf(dialect.fragmentEntry);
     if (
         uniformStart < 0 ||
         varyingStart < 0 ||
@@ -123,7 +219,10 @@ export function pinnedSplatShader(
         throw new Error("Pinned Gaussian-splat WGSL lost an entry point.");
     }
     const uniformEnd =
-        wgsl.indexOf(";", wgsl.indexOf("var<uniform> u:S", uniformStart)) + 1;
+        wgsl.indexOf(
+            ";",
+            wgsl.indexOf(dialect.uniformDeclaration, uniformStart),
+        ) + 1;
     const varyingEnd = declarationSpan(wgsl, varyingStart);
     const vertexEnd = declarationSpan(wgsl, vertexStart);
 
@@ -143,6 +242,7 @@ export function pinnedSplatShader(
         text.replace(/\/\*GS_FRAGMENT_\w+\*\//g, "");
 
     const source: SplatShaderSource = {
+        spliced: composedModule !== undefined,
         prologue: wgsl.slice(0, vertexStart),
         uniformBlock: wgsl.slice(uniformStart, uniformEnd),
         vertexStage: wgsl.slice(vertexStart, vertexEnd),
@@ -158,9 +258,8 @@ export function pinnedSplatShader(
 
 export function splatVertexWgsl(
     provenance: string,
-    composedModule?: string,
+    shader: SplatShaderSource,
 ): string {
-    const shader = pinnedSplatShader(composedModule);
     return `// ${provenance}
 ${shader.prologue}
 ${shader.vertexStage}
@@ -169,13 +268,12 @@ ${shader.vertexStage}
 
 export function splatFragmentWgsl(
     provenance: string,
-    composedModule?: string,
+    shader: SplatShaderSource,
 ): string {
-    const shader = pinnedSplatShader(composedModule);
     // No bindings without plugins: the density is computed from the
     // varyings alone. With them, the pin's own layout lets a plugin body
     // read the uniform block, so it is declared beside the varyings.
-    const head = composedModule !== undefined
+    const head = shader.spliced
         ? `${shader.uniformBlock}
 ${shader.varyingStruct}
 ${shader.fragmentDefinitions}

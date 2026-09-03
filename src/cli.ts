@@ -12,6 +12,7 @@ import {
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
+    composeDeformDetailedMeshPickingShader,
     composeDetailedMeshPickingShader,
     composeMeshPickingShader,
 } from "./pinned-picking-shaders.js";
@@ -95,9 +96,13 @@ import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import {
     composeSplatModule,
+    composeSplatShModule,
     splatFragmentRecords,
 } from "./pinned-splat-fragments.js";
-import { assetRecord } from "./compiler/assets.js";
+import {
+    SPLAT_HARMONICS_SUFFIX,
+    assetRecord,
+} from "./compiler/assets.js";
 import type {
     NodeParticleRegistrationEmit,
     NodeParticleSprite2DEmit,
@@ -356,12 +361,25 @@ async function assetBytes(
     return downloadCached(source);
 }
 
+/**
+ * What materializing one asset told generation about the asset itself.
+ *
+ * Only the splat containers answer anything today: whether the pin's parser
+ * came back carrying spherical harmonics, which decides which of its two
+ * pipelines the scene compiles. It is the same shape `emitAssetSpecializations`
+ * takes for a glTF -- the asset alone decides, because no scene call reaches
+ * the fork.
+ */
+interface MaterializedAssetFacts {
+    splatHarmonicDegree: number;
+}
+
 async function materializeAsset(
     asset: CompileAsset,
     inputPath: string,
     outputPath: string,
     assetPayloads: ReadonlyMap<string, string>,
-): Promise<void> {
+): Promise<MaterializedAssetFacts | undefined> {
     const inlineSource = assetPayloads.get(asset.source);
     if (
         asset.source.startsWith("generated:data-url:") &&
@@ -424,11 +442,16 @@ async function materializeAsset(
 
     if (asset.kind === "splat") {
         const { packageSplat } = await import("./splat-packager.js");
+        const packaged = packageSplat(await assetBytes(source, inputPath));
+        // The rows alone, so a `.ply` and a `.splat` of the same cloud
+        // still package to identical bytes.
+        writeFileSync(destination, packaged.rows);
+        if (!packaged.harmonics) return { splatHarmonicDegree: 0 };
         writeFileSync(
-            destination,
-            packageSplat(await assetBytes(source, inputPath)).rows,
+            `${destination}${SPLAT_HARMONICS_SUFFIX}`,
+            packaged.harmonics.bytes,
         );
-        return;
+        return { splatHarmonicDegree: packaged.harmonics.degree };
     }
 
     if (asset.kind === "basis") {
@@ -728,7 +751,7 @@ async function main(): Promise<void> {
     // and prunes what this run no longer emits.
     rmSync(resolve(outputPath, "assets"), { recursive: true, force: true });
     const tree = new GeneratedTree(outputPath);
-    await Promise.all(
+    const materializedFacts = await Promise.all(
         result.manifest.assets.map((asset) =>
             materializeAsset(
                 asset,
@@ -737,6 +760,30 @@ async function main(): Promise<void> {
                 result.assetPayloads,
             ),
         ),
+    );
+    // Which pipeline a Gaussian cloud attaches is the PARSE's answer, not
+    // the scene's: `attachParsedSplat` tests `parsed.sh && parsed.shDegree`
+    // and imports the SH module when both hold. Generation deploys one
+    // splat stage pair, so a scene whose clouds disagree -- two degrees, or
+    // one cloud with harmonics beside one without -- would need two, and
+    // refuses here instead of drawing one of them through the other's.
+    const splatHarmonicDegrees = new Set(
+        materializedFacts
+            .filter((facts) => facts !== undefined)
+            .map((facts) => facts.splatHarmonicDegree),
+    );
+    if (splatHarmonicDegrees.size > 1) {
+        throw new Error(
+            "This scene loads Gaussian clouds at spherical-harmonic " +
+                `degrees ${[...splatHarmonicDegrees]
+                    .sort()
+                    .join(" and ")}; generation deploys one splat stage ` +
+                "pair, and the pin builds a distinct module per degree " +
+                "(degree 0 being the stock pipeline).",
+        );
+    }
+    const splatHarmonicDegree = [...splatHarmonicDegrees].find(
+        (degree) => degree > 0,
     );
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
@@ -952,6 +999,51 @@ async function main(): Promise<void> {
             }
         }
     }
+    // A packaged splat container that parsed to a non-zero SH degree is
+    // what `attachParsedSplat` forks on, and no scene API names it -- so
+    // the asset joins the feature exactly as a glTF's own extensions do
+    // above. It selects the payload packer and the SH capability defines;
+    // `loader:splat` is already reached by the `loadSplat` call itself.
+    if (splatHarmonicDegree !== undefined) {
+        const splatAsset = result.manifest.assets.find(
+            (asset) => asset.kind === "splat",
+        );
+        result.manifest.features.push("loader:splat-sh");
+        assetJoinedFeatures.set(
+            "loader:splat-sh",
+            splatAsset?.output ?? "splat",
+        );
+            // Pushed HERE rather than in `compileAdaptations`, beside the two
+        // siblings below, because `loader:splat-sh` is an asset-joined
+        // feature: the compiler decides its adaptations from the entry AST
+        // and this one is not known until the pin has parsed the container
+        // and said the cloud carries harmonics. Gating it on the AST-side
+        // list recorded nothing at all -- scene 124's fidelity.json had no
+        // such entry -- which is the failure this placement fixes.
+        result.manifest.adaptations.push({
+            id: "splat-harmonics-sidecar",
+            category: "asset-materialization",
+            sourceSemantics:
+                "convertCompressedPlyToParsedSplat returns the 32-byte rows " +
+                "beside a flat spherical-harmonic byte stream, and " +
+                "attachParsedSplat hands both to the SH pipeline in one call.",
+            nativeSemantics:
+                "The rows package to the interchange .splat buffer " +
+                "unchanged -- a .ply and a .splat of one cloud must still " +
+                "produce identical bytes -- so the harmonics package to a " +
+                "sidecar named off the row file, and the degree becomes a " +
+                "generation-time constant the loader, the payload packer " +
+                "and the deployed stages all read. The pin's run-time fork " +
+                "on parsed.shDegree is therefore taken at generation: a " +
+                "scene whose clouds disagree on degree refuses.",
+            risk: "low",
+            validation: [
+                "scene 124 parity against the browser golden on both backends",
+                "the browser's own compiled module is byte-identical to " +
+                    "buildShShaderSource(3)",
+            ],
+        });
+    }
     // A `.babylon` asset's own lights are the scene's lights the same way a
     // glTF's KHR_lights_punctual lights are: the generated loader fills
     // point LightRecords (`type: 0` is the only kind it accepts), and the
@@ -1008,6 +1100,28 @@ async function main(): Promise<void> {
         emittedArms,
         tree,
     });
+    // Whether anything in this scene deforms on the GPU. Named once
+    // because two unrelated consumers ask it -- the pick pass's deform
+    // projection below and the emit options further down -- and the
+    // asset-or-scene-code disjunction is the whole answer either way.
+    const gpuDeformation =
+        specializationFeatures.gpuDeformation ||
+        result.manifest.features.includes("mesh:morph-targets");
+    // Scene-code morph targets join the storage arm: the pinned morph
+    // fragment (`morph-fragment-core`) reads its deltas and weights
+    // from storage buffers, and with the transcribed standard fragment
+    // retired there is no attribute-lane consumer left for them.
+    const morphStorage =
+        specializationFeatures.morphStorage ||
+        result.manifest.features.includes("mesh:morph-targets");
+    // Named rather than inline so the activation inventory below records
+    // the exact values the emitters consumed, not a restatement of them.
+    // Which palette transport a skin takes: a build whose composed variants
+    // carry the pin's own skeleton bit reads the palette from its per-bone
+    // texture, which caps no joint count.
+    const pinnedSkeletonPalette = await pinnedFeaturesCarrySkeleton(
+        renderableMeshFeatures,
+    );
     // Each reached post-process pass composes its module by running the
     // pinned factory: the effect's stage is the pin's text for the options
     // this scene passed, never a reproduction of it.
@@ -1024,7 +1138,36 @@ async function main(): Promise<void> {
               // The detailed pipeline is a second pinned module rather
               // than an option, composed only where a scene armed it.
               ...(result.manifest.features.includes("picking:detailed")
-                  ? { detailed: await composeDetailedMeshPickingShader() }
+                  ? {
+                        detailed:
+                            await composeDetailedMeshPickingShader(),
+                        // And its deforming arm where the scene's assets
+                        // put a live pose on a candidate: the pin reaches
+                        // `deform-picking-projection.js` from exactly that
+                        // condition, so a scene with nothing to deform
+                        // composes neither the module nor the pipeline.
+                        // The pinned palette is the second half of the
+                        // condition rather than a second condition: the
+                        // projection samples `boneSampler`, which is the
+                        // per-bone texture a composed skeleton variant
+                        // publishes, and a scene deforming through the
+                        // transcribed 64-matrix block has no such texture
+                        // to sample.
+                        ...(gpuDeformation && pinnedSkeletonPalette
+                            ? {
+                                  deform:
+                                      await composeDeformDetailedMeshPickingShader(
+                                          morphStorage,
+                                      ),
+                                  // The arm that composition picked,
+                                  // carried so the runtime sizes its bind
+                                  // group to this shader rather than to
+                                  // BBLITE_GPU_MORPH_STORAGE, which is a
+                                  // wider disjunction.
+                                  deformMorph: morphStorage,
+                              }
+                            : {}),
+                    }
                   : {}),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
@@ -1072,11 +1215,20 @@ async function main(): Promise<void> {
     // the pin's own splicer: `applyGsFragments` concatenates each plugin's
     // slots and then runs upstream's own field-name mangler over the whole
     // string, which is why the module is composed rather than assembled.
+    const splatFragments = await splatFragmentRecords(
+        result.manifest.splatFragments,
+    );
+    // A cloud carrying harmonics reaches the pin's OTHER pipeline, whose
+    // module `buildShShaderSource` writes for this degree -- with the same
+    // plugin splice applied, because `getOrCreateShPipeline` runs
+    // `applyGsFragments` over its build exactly as the stock one does.
+    const splatSh =
+        splatHarmonicDegree !== undefined
+            ? await composeSplatShModule(splatHarmonicDegree, splatFragments)
+            : undefined;
     const splatShaderModule =
-        result.manifest.splatFragments.length > 0
-            ? await composeSplatModule(
-                  await splatFragmentRecords(result.manifest.splatFragments),
-              )
+        splatSh === undefined && splatFragments.length > 0
+            ? await composeSplatModule(splatFragments)
             : undefined;
     // A composite runs its own factory instead: which passes it records, over
     // which intermediates and at which sizes, is the factory's answer.
@@ -1088,14 +1240,6 @@ async function main(): Promise<void> {
                 hasTarget: composite.hasTarget,
             }),
         ),
-    );
-    // Named rather than inline so the activation inventory below records
-    // the exact values the emitters consumed, not a restatement of them.
-    // Which palette transport a skin takes: a build whose composed variants
-    // carry the pin's own skeleton bit reads the palette from its per-bone
-    // texture, which caps no joint count.
-    const pinnedSkeletonPalette = await pinnedFeaturesCarrySkeleton(
-        renderableMeshFeatures,
     );
     // Deformation runs on the GPU or not at all, so the transcribed vertex
     // stage's uniform array is a hard bound rather than a slow path. Both
@@ -1159,18 +1303,9 @@ async function main(): Promise<void> {
         ...(nodeParticleRegistrations.length > 0
             ? { nodeParticleRegistrations }
             : {}),
-        gpuDeformation:
-            specializationFeatures.gpuDeformation ||
-            result.manifest.features.includes(
-                "mesh:morph-targets",
-            ),
+        gpuDeformation,
         animatedWorldBounds: specializationFeatures.animatedWorldBounds,
-        // Scene-code morph targets join the storage arm: the pinned morph
-        // fragment (`morph-fragment-core`) reads its deltas and weights
-        // from storage buffers, and with the transcribed standard fragment
-        // retired there is no attribute-lane consumer left for them.
-        morphStorage: specializationFeatures.morphStorage ||
-            result.manifest.features.includes("mesh:morph-targets"),
+        morphStorage,
         nonTrianglePrimitives:
             specializationFeatures.nonTrianglePrimitives,
         // No scene API reaches KHR_gaussian_splatting, so the asset alone
@@ -1191,6 +1326,7 @@ async function main(): Promise<void> {
         effects: result.manifest.effects,
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
         ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
+        ...(splatSh !== undefined ? { splatSh } : {}),
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,

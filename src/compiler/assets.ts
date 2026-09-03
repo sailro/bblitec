@@ -49,6 +49,24 @@ function basenameWithoutExtension(name: string): string {
     return dot > 0 ? name.slice(0, dot) : name;
 }
 
+/**
+ * What a splat container's spherical harmonics package to, beside its rows.
+ *
+ * The packaged `.splat` IS upstream's own row layout -- a scene fetching a
+ * `.splat` directly must produce the same bytes -- so harmonics cannot ride
+ * inside it, and `registerAsset` -- the AST-driven entry point -- gives one output
+ * file per record. `assetRecord` beneath it is NOT AST-driven and a
+ * generation-time second record is possible (a node-particle graph
+ * texture already takes that path), so the honest reason to prefer a
+ * sidecar is the first one alone: the packaging identity is what a second
+ * record would not break either, but a trailer inside the row buffer
+ * would. They go
+ * to a sidecar named off the row file instead, which is why the suffix is
+ * declared here beside the packaged-name rule rather than at either end:
+ * `materializeAsset` writes it and the generated loader appends it.
+ */
+export const SPLAT_HARMONICS_SUFFIX = ".sh";
+
 export function registerAsset(
     context: AssetRegistryContext,
     source: string,

@@ -1763,10 +1763,63 @@ inline std::array<float, 16> shader_draw_world(
 }
 
 #if BBLITE_HAS_PICKING
+#if BBLITE_DEFORM_PICKING
+/**
+ * Whether a pick candidate draws through the pin's deform vertex
+ * projection instead of the affine one.
+ *
+ * Upstream `getDeformPickingProjection` answers for a mesh carrying a
+ * live skeleton or morph targets, and the arm this port composes is the
+ * SKINNED one -- so the predicate is the skin, not the deformation. An
+ * animated mesh with no skin still reaches the deformation path here (the
+ * loader publishes its own world as a one-entry palette), but its
+ * vertices carry a zero weight quad, so the pin's blend would collapse it
+ * to nothing; that mesh keeps the affine projection and its own live
+ * world, which is the same pairing `pinned_draw_conventions` calls
+ * `world_from_palette`.
+ *
+ * Stated once because two answers depend on it and must not disagree:
+ * which pipeline draws the candidate, and which matrix the detailed
+ * solve transforms its rest normal by.
+ */
+inline bool pick_mesh_deforms(const MeshRecord& mesh) {
+    // `getDeformPickingProjection` opens with `if (mesh.vat) return null;`
+    // and this is that line. A baked mesh keeps `skinned` -- the loader
+    // writes it for the bake's own first-skinned search -- and keeps the
+    // palette the pose pass stopped updating, because the pose pass
+    // `continue`s on `has_vat` BEFORE it clears the matrices. Without this
+    // arm a VAT build with detailed picking would draw a baked mesh through
+    // the deform pipeline against that stale palette, and read a node world
+    // nothing had refreshed.
+#if BBLITE_VAT
+    if (mesh.has_vat) return false;
+#endif
+    // SKINNED, not merely deforming. The pin's `projectionFor` reaches
+    // five arms -- skin4 and skin8, each with and without morph, plus
+    // noskin-morph -- and this port composes exactly ONE per scene: a
+    // skin4 arm, since the mock mesh the composition hands the pin has no
+    // second joint buffer. A scene needing skin8 refuses. The reason it
+    // is a skinned arm at all is that the
+    // composition gate reads the pinned SKELETON bit -- so a mesh whose
+    // only deformation is morph targets takes the affine pipeline and is
+    // picked at its un-morphed pose, where the pin would use its
+    // `noskin-morph` arm. No registered scene puts a morph-only mesh in
+    // front of a detailed pick, and composing an arm nothing reaches is
+    // what this port does not do; the gap is stated here and in TODO.md
+    // rather than filled speculatively.
+    return mesh.skinned && mesh.pinned_bone_palette &&
+        !mesh.bone_matrices.empty();
+}
+#endif
+
 /** One mesh the pick pass will draw: its plan item and its uniform block. */
 struct PickMeshCandidate {
     std::size_t item_index = 0;
     PickMeshUniforms uniforms{};
+#if BBLITE_DEFORM_PICKING
+    /** `pick_mesh_deforms` for this candidate's mesh. */
+    bool deform = false;
+#endif
 };
 
 /**
@@ -1790,7 +1843,13 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
     std::size_t gpu_mesh_count,
     const HasGeometry& has_geometry,
     std::vector<PickRange>& ranges,
-    std::uint32_t& next_id) {
+    std::uint32_t& next_id,
+    // Whether THIS pass is the detailed one. The deform pipeline exists
+    // only there, so only there does the palette carry the world; a basic
+    // pick in the same build still draws through the affine pipeline and
+    // must keep the world that pipeline expects. Per-picker and runtime,
+    // which is why it is a parameter rather than a define.
+    [[maybe_unused]] bool detailed) {
     std::vector<PickMeshCandidate> candidates;
     for (std::size_t item_index = 0;
          item_index < render_plan.items.size() &&
@@ -1808,13 +1867,35 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
         PickMeshCandidate candidate;
         candidate.item_index = item_index;
         const MeshRecord& pick_mesh = engine.meshes[handle.value];
-        candidate.uniforms.world = pick_mesh.gpu_world_transform
+        constexpr std::array<float, 16> identity_world{
+            1.0f, 0.0f, 0.0f, 0.0f,
+            0.0f, 1.0f, 0.0f, 0.0f,
+            0.0f, 0.0f, 1.0f, 0.0f,
+            0.0f, 0.0f, 0.0f, 1.0f};
+#if BBLITE_DEFORM_PICKING
+        candidate.deform = pick_mesh_deforms(pick_mesh);
+#endif
+        candidate.uniforms.world =
+#if BBLITE_DEFORM_PICKING
+            // The skinned arm's own convention, which is the render
+            // path's: the loader's palette is the mirror-conjugated
+            // `jointWorld * IBM` against the MIRRORED vertex buffer this
+            // pass already binds, so `mesh.world * influence` needs the
+            // identity here for the same reason
+            // `pinned_draw_world(skeleton_draw)` does -- the palette
+            // carries the world on both sides and a second copy would
+            // apply it twice. A BASIC pick takes none of this: it has no
+            // palette to read, so it draws the bind pose through the
+            // affine pipeline exactly as it did before deform picking
+            // existed. That is a pre-existing limit of the basic pass --
+            // upstream hands its projection to that pipeline too, and this
+            // port composes only the detailed arm -- and it is recorded in
+            // the picking contract rather than papered over here.
+            (detailed && candidate.deform) ? identity_world :
+#endif
+            pick_mesh.gpu_world_transform
             ? shader_draw_world(engine, pick_mesh)
-            : std::array<float, 16>{
-                  1.0f, 0.0f, 0.0f, 0.0f,
-                  0.0f, 1.0f, 0.0f, 0.0f,
-                  0.0f, 0.0f, 1.0f, 0.0f,
-                  0.0f, 0.0f, 0.0f, 1.0f};
+            : identity_world;
         candidate.uniforms.pick_id = next_id;
         candidates.push_back(candidate);
         ranges.push_back({next_id, PickedNodeKind::mesh, handle.value});
@@ -1853,8 +1934,26 @@ inline void finish_detailed_pick(
     if (info.picked_kind != PickedNodeKind::mesh) return;
     const MeshRecord& hit_mesh = engine.meshes[info.picked_index];
     PickDetailReadback detail = readback;
-    detail.world = upstream::mesh_world_matrix(engine, hit_mesh);
-    detail.world_baked = !hit_mesh.gpu_world_transform;
+    detail.world =
+#if BBLITE_DEFORM_PICKING
+        // A skinned record's own TRS stays at rest because its palette
+        // carries the node world, so `mesh_world_matrix` answers the
+        // identity for one -- and the pin transforms the REST normal by
+        // `mesh.worldMatrix`, which is that node world and not the skin.
+        // The pose pass keeps it for exactly this read.
+        pick_mesh_deforms(hit_mesh) ? hit_mesh.deform_node_world :
+#endif
+        upstream::mesh_world_matrix(engine, hit_mesh);
+    detail.world_baked = !hit_mesh.gpu_world_transform
+#if BBLITE_DEFORM_PICKING
+        // A deforming mesh's buffer carries no world at all: its vertices
+        // are the BIND pose and its transform travels in the palette, so
+        // the varying is already the rest position the solve wants and
+        // un-baking it through a matrix it never carried is what turned
+        // the barycentric weights into 36 and -16.
+        && !pick_mesh_deforms(hit_mesh)
+#endif
+        ;
     info.detail = detail;
 }
 #endif

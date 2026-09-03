@@ -8,15 +8,21 @@
 //
 //   * The uniform block is PUSHED per stage rather than bound as a buffer, at
 //     the register the compaction pass left it in. `splat.vert.slots` is the
-//     authority (`b0 u`, `s0 e`, `t0..t3`), never the pin's own group numbers.
-//   * The four data textures are bound to the VERTEX stage, because that is
+//     authority (`b0 u`, `s0 e`, `t0` upward), never the pin's own group numbers.
+//   * The data textures -- four float payloads, plus one uint texture per
+//     SH payload for a cloud carrying harmonics -- bind to the VERTEX stage,
+//     because that is
 //     where the pin samples them — the fragment stage reads only varyings and
 //     binds nothing at all.
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_depth_state.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/splat_geometry.hpp>
 #include <bblite/upstream/splat_sort.hpp>
+#if BBLITE_SPLAT_SH
+#include <bblite/upstream/splat_harmonics.hpp>
+#endif
 
 #include <array>
 // std::abs on a float in the re-sort gate. Without this only the integer
@@ -24,6 +30,8 @@
 // would silently stop re-sorting.
 #include <cmath>
 #include <cstdint>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "pal_gpu_shared.hpp"
@@ -31,7 +39,39 @@
 
 namespace bbl::pal {
 
+/**
+ * The data textures the vertex stage samples: the pin's RGBA32F payloads,
+ * then one RGBA32UINT spherical-harmonic payload per texture the SH layout
+ * appends after them. Zero of the latter is the stock module, and then this
+ * is the four it always was.
+ *
+ * The float half is the size of the generated `splat_texture_payloads`
+ * array rather than a four typed here, so it is the pin's own bind-group
+ * order that decides -- the same declaration both backends upload from.
+ */
+
 /** One cloud's GPU state. */
+/**
+ * How many textures a splat draw binds, and how many of those are the
+ * float payloads.
+ *
+ * The float half is the size of the generated `splat_texture_payloads`
+ * array rather than a four typed here, so it is the pin's own bind-group
+ * order that decides -- the same declaration both backends upload from.
+ *
+ * Stated once per backend rather than once in `pal_gpu_shared.hpp`,
+ * because the generated declaration it measures has to be included
+ * outside a namespace and the shared header has no such include: hoisting
+ * it there put `upstream::` inside `bbl::pal` and broke every name in the
+ * file. Two lines duplicated is the cheaper of the two wrongs.
+ */
+inline constexpr std::size_t splat_float_payload_count =
+    std::tuple_size_v<decltype(upstream::splat_texture_payloads(
+        std::declval<const SplatMeshRecord&>()))>;
+inline constexpr std::size_t splat_texture_count =
+    splat_float_payload_count +
+    static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
+
 struct SplatPass {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
@@ -40,7 +80,7 @@ struct SplatPass {
     SDL_GPUBuffer* quad = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* order = nullptr;
-    std::array<SDL_GPUTextureSamplerBinding, 4> textures{};
+    std::array<SDL_GPUTextureSamplerBinding, splat_texture_count> textures{};
     SDL_GPUSampler* sampler = nullptr;
 
     /** The register `splat.vert.slots` left the uniform block in. */
@@ -73,12 +113,15 @@ struct SplatPass {
 
 inline SplatPass create_splat_pass(
     SDL_GPUDevice* device,
-    const Engine& engine,
+    // Mutable because pass creation CONSUMES the cloud's staging bytes:
+    // it uploads the SH payloads and then releases them, which is the
+    // same reach boundary the neighbouring `rows` field draws.
+    Engine& engine,
     SplatMeshHandle handle,
     SDL_GPUTextureFormat target_format,
     SDL_GPUTextureFormat depth_format,
     SDL_GPUSampleCount sample_count) {
-    const SplatMeshRecord& record = engine.splat_meshes[handle.value];
+    SplatMeshRecord& record = engine.splat_meshes[handle.value];
     SplatPass pass;
     pass.mesh = handle;
     pass.vertex_count = record.vertex_count;
@@ -95,7 +138,7 @@ inline SplatPass create_splat_pass(
         static_cast<std::uint32_t>(slots.textures.size()),
         static_cast<std::uint32_t>(slots.uniforms.size()),
         "vs");
-    // The fragment stage samples nothing: the four data textures are read
+    // The fragment stage samples nothing: every data texture is read
     // in the vertex stage. Whether it declares the uniform block depends on
     // the scene -- the stock density is `exp(-dot(vq, vq)) * vc.a` over the
     // varyings alone, while a depth plugin reads the projection out of the
@@ -205,6 +248,39 @@ inline SplatPass create_splat_pass(
             "splat data");
         pass.textures[slot].sampler = pass.sampler;
     }
+#if BBLITE_SPLAT_SH
+    // The harmonics, at the same texel grid and the same sampler pair the
+    // four above take: the stage `textureLoad`s them, so no filtering
+    // happens and SDL's texture/sampler pairing is satisfied by the one
+    // point sampler already created -- the shape `pal_sdl_gpu_clustered.hpp`
+    // takes for its own unsigned data textures.
+    if (record.sh_textures.size() != upstream::splat_sh_texture_count) {
+        gpu_error("splat record carries the wrong SH payload count");
+    }
+    for (std::size_t slot = 0; slot < record.sh_textures.size(); ++slot) {
+        SDL_GPUTextureSamplerBinding& binding =
+            pass.textures[payloads.size() + slot];
+        binding.texture = upload_2d_texture(
+            device,
+            record.sh_textures[slot].data(),
+            record.sh_textures[slot].size(),
+            record.texture_width,
+            record.texture_height,
+            SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
+            "splat harmonics");
+        binding.sampler = pass.sampler;
+    }
+    // Released once the GPU owns the bytes. The neighbouring `rows` field
+    // is reach-gated for the same reason and states it: these three
+    // payloads are 17.9 MB for scene 124's cloud, larger than the rows,
+    // and this is the only reader -- pass creation runs once. SWAPPED with
+    // an empty vector rather than assigned `{}`, because assignment keeps
+    // the capacity and frees nothing (measured on PR #197's reclaim).
+    {
+        std::vector<std::vector<std::uint8_t>> released;
+        released.swap(record.sh_textures);
+    }
+#endif
 
     pass.scratch = upstream::create_splat_sort_scratch(
         static_cast<double>(record.vertex_count));
@@ -260,6 +336,10 @@ inline void record_splat_pass(
     const SplatPass& pass,
     const std::array<float, 16>& view,
     const std::array<float, 16>& projection,
+    // `getCameraPosition` is the camera world matrix's own translation, in
+    // absolute space -- which is what the shared helper returns, because a
+    // floating-origin scene reaching a splat refuses at generation.
+    [[maybe_unused]] const std::array<float, 4>& camera_position,
     double width,
     double height) {
     if (pass.vertex_count == 0) return;
@@ -276,7 +356,12 @@ inline void record_splat_pass(
         width,
         height,
         record.texture_width,
-        record.texture_height);
+        record.texture_height
+#if BBLITE_SPLAT_SH
+        ,
+        camera_position
+#endif
+    );
     SDL_PushGPUVertexUniformData(
         command,
         static_cast<Uint32>(pass.uniform_slot),
@@ -295,7 +380,7 @@ inline void record_splat_pass(
     SDL_BindGPUIndexBuffer(
         render_pass, &index_binding, SDL_GPU_INDEXELEMENTSIZE_16BIT);
 
-    // Bound to the VERTEX stage: the pin samples the four data textures
+    // Bound to the VERTEX stage: the pin samples every data texture
     // there and the fragment stage reads none of them.
     SDL_BindGPUVertexSamplers(
         render_pass,

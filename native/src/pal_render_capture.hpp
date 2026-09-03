@@ -1111,6 +1111,8 @@ inline void write_splat_draw_list(
     // UBO stores the view and the projection separately.
     const std::array<float, 16>& view,
     const std::array<float, 16>& projection,
+    // The eye a cloud carrying harmonics builds its view direction from.
+    [[maybe_unused]] const std::array<float, 4>& camera_position,
     int width,
     int height) {
     for (const SplatMeshHandle handle : scene.splat_meshes) {
@@ -1127,7 +1129,12 @@ inline void write_splat_draw_list(
             static_cast<double>(width),
             static_cast<double>(height),
             splat.texture_width,
-            splat.texture_height);
+            splat.texture_height
+#if BBLITE_SPLAT_SH
+            ,
+            camera_position
+#endif
+        );
 
         json.begin_object();
         json.field("stage", "transparent");
@@ -1719,7 +1726,14 @@ inline void write_render_capture(
         frame_pass_matrices);
 #if BBLITE_HAS_SPLATS
     write_splat_draw_list(
-        json, scene, engine, frame_view, frame_projection, width, height);
+        json,
+        scene,
+        engine,
+        frame_view,
+        frame_projection,
+        frame_camera_position,
+        width,
+        height);
 #endif
 #if BBLITE_HAS_BILLBOARDS
     write_billboard_draw_list(json, scene, engine, camera, view_projection);

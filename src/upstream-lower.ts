@@ -55,9 +55,12 @@ import {
     spriteVertexWgsl,
 } from "./shader-builtins-sprite.js";
 import {
+    pinnedSplatShShader,
+    pinnedSplatShader,
     splatFragmentWgsl,
     splatVertexWgsl,
 } from "./shader-builtins-splat.js";
+import type { PinnedSplatShModule } from "./pinned-splat-fragments.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
@@ -300,6 +303,26 @@ export interface UpstreamEmitOptions {
     pickingShaders?: {
         mesh: string;
         detailed?: string;
+        /**
+         * The detailed module composed with the pin's deform vertex
+         * projection, for a candidate whose pose is live. Absent when the
+         * scene deforms nothing, which is the condition the pin's own
+         * lazy import of that module tests.
+         */
+        deform?: string;
+        /**
+         * Whether the composed `deform` module is the pin's MORPH arm.
+         *
+         * Recorded rather than re-derived, because the two questions are
+         * different disjunctions and a backend that sizes its bind group
+         * from the wrong one mismatches the shader it just deployed. The
+         * composition reads scene and asset morph targets; the runtime's
+         * own `BBLITE_GPU_MORPH_STORAGE` also takes a node-material
+         * variant whose morph bindings a graph composed. A scene with the
+         * second and not the first composes the `nomorph` projection --
+         * one `@group(3)` binding -- while that define says three.
+         */
+        deformMorph?: boolean;
         cloud?: string;
         billboard?: { facing: string; axisLocked?: string };
     };
@@ -351,6 +374,16 @@ export interface UpstreamEmitOptions {
      * was, which is what keeps a plugin-free splat scene byte-identical.
      */
     splatShaderModule?: string;
+    /**
+     * The spherical-harmonic pipeline this scene's packaged cloud reached.
+     *
+     * `attachParsedSplat` forks on the PARSE result rather than on anything
+     * the scene wrote, so the asset alone decides — the shape
+     * `gaussianSplats` and `compressedImages` take. Present only when a
+     * packaged container came back carrying harmonics, and one degree per
+     * scene because generation deploys one splat stage pair.
+     */
+    splatSh?: PinnedSplatShModule;
     /**
      * What each ESM shadow generator's own factory built, in reach order.
      *
@@ -703,7 +736,21 @@ class GeneratedSourceWriter {
 }
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
+// The pin's deform pick projection, which is composed exactly where its
+// three inputs exist: a detailed pick to draw, a live pose to deform
+// from, and the per-bone palette texture the projection samples. The
+// define carries all three because the module either deployed or did
+// not, and a pipeline built for a missing shader is a startup failure.
+#define BBLITE_DEFORM_PICKING ${
+    options.pickingShaders?.deform !== undefined ? 1 : 0
+}
 #define BBLITE_GPU_MORPH_STORAGE ${gpuMorphStorage ? 1 : 0}
+// Which arm of the pin's deform projection the picking module was composed
+// with, so a backend sizes its bind group to the shader it deployed rather
+// than to a neighbouring question. Zero in every build that composes none.
+#define BBLITE_DEFORM_PICKING_MORPH ${
+    options.pickingShaders?.deformMorph ? 1 : 0
+}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 // Baked vertex animation. Reached at bakeVat, which is the pin's own
@@ -768,6 +815,18 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
     (BBLITE_STANDARD_SHADOWS || BBLITE_PBR_SHADOWS || BBLITE_NODE_SHADOWS)
 #define BBLITE_IMAGE_SKYBOX ${features.includes("background:image-skybox") ? 1 : 0}
 #define BBLITE_SOLID_SKYBOX ${features.includes("background:solid-skybox") ? 1 : 0}
+
+// A Gaussian cloud whose packaged container carried spherical harmonics.
+// The pin's own fork is on the PARSE result (attachParsedSplat tests
+// parsed.sh && parsed.shDegree > 0) and pulls in a second pipeline module
+// entirely: the SH one binds N more rgba32uint payload textures the VERTEX
+// stage textureLoads, and its UBO carries the eye position the view
+// direction is built from. Degree zero is a cloud with none, which is
+// every other splat scene -- and then not one byte of this compiles.
+#define BBLITE_SPLAT_SH ${options.splatSh?.degree ?? 0}
+// The payloads that degree's layout appends at binding 6, from the pin's
+// own SH_TEXTURE_COUNT table rather than a ceiling division retyped here.
+#define BBLITE_SPLAT_SH_TEXTURES ${options.splatSh?.textureCount ?? 0}
 
 // How many of Babylon Lite's own composed PBR variants this scene reaches.
 // Zero for a scene with no glTF materials, which emits no variant header.
@@ -1142,6 +1201,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         "animation:managed-groups",
                     ),
                     vat: features.includes("mesh:vat"),
+                    deformPicking:
+                        options.pickingShaders?.deform !== undefined,
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
                     nonTrianglePrimitives:
@@ -1290,7 +1351,10 @@ ${wgsl}`,
             );
         }
         if (features.includes("loader:splat")) {
-            const splats = new SplatLowerer(context);
+            const splats = new SplatLowerer(
+                context,
+                options.splatSh?.degree ?? 0,
+            );
             const bakesTransform = features.includes("loader:splat-bake");
             this.writeSource(
                 "upstream/src/splat_geometry.cpp",
@@ -1309,6 +1373,14 @@ ${wgsl}`,
                 splats.lowerLoader({ retainRows: bakesTransform }),
                 generated,
             );
+            if (options.splatSh) {
+                this.writeSource(
+                    "upstream/src/splat_harmonics.cpp",
+                    splats.lowerHarmonics(),
+                    generated,
+                    "upstream/include/bblite/upstream/splat_harmonics.hpp",
+                );
+            }
             if (bakesTransform) {
                 this.writeSource(
                     "upstream/src/splat_bake.cpp",
@@ -1317,35 +1389,39 @@ ${wgsl}`,
                     "upstream/include/bblite/upstream/splat_bake.hpp",
                 );
             }
-            // The pin's own module, split at its two entry points. Its
-            // provenance names the pipeline that ships the WGSL, not a
-            // composer -- nothing here composes.
+            // The pin's own module, split at its two entry points. The
+            // stock provenance names the pipeline that ships the WGSL, not a
+            // composer -- nothing there composes; the SH arm names the
+            // builder that WROTE the module, because for a cloud carrying
+            // harmonics there is no literal to ship.
+            const splatShaderModulePath = options.splatSh
+                ? "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts"
+                : "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
+            const splatShaderSymbol = options.splatSh
+                ? "buildShShaderSource"
+                : "WGSL";
             const provenance = context.provenance(
-                "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
-                "WGSL",
+                splatShaderModulePath,
+                splatShaderSymbol,
             );
+            const splatShader = options.splatSh
+                ? pinnedSplatShShader(options.splatSh)
+                : pinnedSplatShader(options.splatShaderModule);
             composedShaders.push(
                 {
                     output: "upstream/shaders/splat.vert.native.wgsl",
-                    data: splatVertexWgsl(
-                        provenance,
-                        options.splatShaderModule,
-                    ),
+                    data: splatVertexWgsl(provenance, splatShader),
                     family: "splat",
                 },
                 {
                     output: "upstream/shaders/splat.frag.native.wgsl",
-                    data: splatFragmentWgsl(
-                        provenance,
-                        options.splatShaderModule,
-                    ),
+                    data: splatFragmentWgsl(provenance, splatShader),
                     family: "splat",
                 },
             );
             generated.push({
-                modulePath:
-                    "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts",
-                symbolName: "WGSL",
+                modulePath: splatShaderModulePath,
+                symbolName: splatShaderSymbol,
             });
         }
         if (
@@ -2385,6 +2461,26 @@ ${shadow.blurFragmentWgsl}`,
                         family: "picking",
                     });
                 }
+            }
+            // The deform projection reaches only the VERTEX stage: the
+            // pin's builder splices its declarations, inputs and body
+            // around `vs` and leaves the shared fragment above them
+            // untouched. So the deforming arm costs one stage and shares
+            // the plain detailed module's fragment, the same way the
+            // second billboard orientation shares the first's below.
+            const deformPickingWgsl = options.pickingShaders?.deform;
+            if (deformPickingWgsl !== undefined) {
+                composedShaders.push({
+                    output:
+                        "upstream/shaders/" +
+                        "picking-detailed-deform.vert.native.wgsl",
+                    data:
+                        `// ${context.provenance(
+                            "src/picking/deform-picking-projection.ts",
+                            "getDeformPickingProjection",
+                        )}\n` + deformPickingWgsl,
+                    family: "picking",
+                });
             }
             // The pin's `makeBillboardPickWgsl` forks only in `basis()`,
             // which `vs` calls and `fs` does not -- so the second

@@ -1267,6 +1267,63 @@ export class BrowserErasure {
         return body.condition;
     }
 
+    /**
+     * The escaping-continuation Promise: an executor whose whole body
+     * stores `resolve` in a binding declared outside it, so what completes
+     * the wait is a callback the scene installs rather than a frame count.
+     *
+     * ```ts
+     * let resolveFrozen!: () => void;
+     * const frozen = new Promise<void>((resolve) => {
+     *     resolveFrozen = resolve;
+     * });
+     * ```
+     *
+     * It is the fourth shape over the shared `promiseExecutor` head and it
+     * is deliberately the narrowest: the body must be that one assignment
+     * and nothing else, and the assigned value must be `resolve` itself.
+     * An executor that also schedules, calls `resolve`, or stores a wrapper
+     * around it is a different claim about WHEN the wait ends, and falls
+     * through to the refusal the other three leave in place.
+     *
+     * Returns the binding `resolve` escapes into, so the caller can bind it
+     * to the latch the await waits on.
+     */
+    public escapingResolveTarget(
+        expression: ts.Expression,
+    ): ts.Identifier | undefined {
+        const executor = this.promiseExecutor(expression);
+        if (!executor) return undefined;
+        // A block body must be that one statement and nothing else; a
+        // concise body IS the expression. Narrowed rather than cast, so a
+        // two-statement block cannot reach the expression path at all.
+        const body = executor.body;
+        const statement = ts.isBlock(body)
+            ? body.statements.length === 1
+                ? body.statements[0]
+                : undefined
+            : undefined;
+        const assignment = ts.isBlock(body)
+            ? statement && ts.isExpressionStatement(statement)
+                ? this.context.unwrap(statement.expression)
+                : undefined
+            : this.context.unwrap(body);
+        if (
+            !assignment ||
+            !ts.isBinaryExpression(assignment) ||
+            assignment.operatorToken.kind !==
+                ts.SyntaxKind.EqualsToken ||
+            !ts.isIdentifier(assignment.left)
+        ) {
+            return undefined;
+        }
+        const assigned = this.context.unwrap(assignment.right);
+        return ts.isIdentifier(assigned) &&
+            assigned.text === executor.resolveName
+            ? assignment.left
+            : undefined;
+    }
+
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
         const objectInstrumentation =
             ts.isPropertyAccessExpression(call.expression) &&

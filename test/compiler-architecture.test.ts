@@ -1791,11 +1791,11 @@ test("captures splat renderables beside the render-plan draw lists", () => {
     assert.match(capture, /upstream::write_splat_uniforms\(/);
     assert.match(capture, /json\.field\("indexCount", 6u\)/);
     assert.match(capture, /json\.field\("instanceCount", splat\.vertex_count\)/);
-    // The frame's view and projection are built once by the caller and
-    // handed over, because the pin's splat UBO stores them separately and
-    // three consumers read the same pair.
+    // The frame's view, projection and camera position are built once by
+    // the caller and handed over, because the pin's splat UBO stores them
+    // separately and three consumers read the same set.
     assert.match(
         capture,
-        /write_splat_draw_list\(\s*json, scene, engine, frame_view, frame_projection, width, height\)/,
+        /write_splat_draw_list\(\s*json,\s*scene,\s*engine,\s*frame_view,\s*frame_projection,\s*frame_camera_position,\s*width,\s*height\)/,
     );
 });

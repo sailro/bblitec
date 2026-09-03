@@ -1263,6 +1263,34 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene124",
+        name: "Scene 124 - Compressed PLY Gaussian Splatting",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene124.ts",
+        title: "Babylon Lite Native - Compressed PLY Gaussian Splatting",
+        // The pin's second PLY parser and its SH pipeline end to end:
+        // three rgba32uint payload textures the VERTEX stage textureLoads,
+        // and the eye position the degree-3 view direction is built from.
+        // MEASURED, read back off the reports rather than remembered:
+        // full MAD 0.00018482 (SDL_GPU) and 0.00020616 (Dawn); foreground
+        // 0.00279 (SDL_GPU) and 0.00311 (Dawn) over a 59,973-px mask; max
+        // one byte, within1 100% on both. In the splat family's
+        // multisample band: worst run-to-run move 4.2e-5 on SDL_GPU and
+        // 1.46e-4 on Dawn, byte-identical at BBLITE_MSAA=1. Headroom
+        // follows scene 126's, the family's other edge-wobbling row.
+        //
+        // The gate OBSERVES the SH arm rather than merely reaching it:
+        // zeroing the eye position in the composed shader moves the image
+        // 1.9018 MAD at max 167 -- about 9,200x the SDL_GPU residual, and
+        // 634x this row's own full-image gate. That probe's artifact is
+        // artifacts/capture/scene124/probe-variants/.
+        parity: {
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.007,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene125",
         name: "Scene 125 - Gaussian Splat Transform Bake",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene125.ts",
@@ -1352,6 +1380,35 @@ const sceneInputs: readonly SceneInput[] = [
             // off-frame, which is 2,713 pixels. An 11%-wrong pick point
             // measured 0.291 full MAD while a since-fixed dangling
             // reference was live -- 290x this threshold.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene115",
+        name: "Scene 115 - Alien Picking at Frame 100",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene115.ts",
+        title: "Babylon Lite Native - Alien Picking at Frame 100",
+        parity: {
+            // The query the pinned spec serves. MEASURED inert -- the two
+            // generated trees differ only in the folded `getSeekFrame`
+            // expression and both fold to exactly 100 -- but it is the pose
+            // the golden is captured under, so it is declared.
+            referenceSearch: "?seekTime=1.6666666666666667",
+            // MEASURED 0.000/0.000 on both backends (full MAD 3.6e-7,
+            // 921599 of 921600 pixels exact), byte-identical between them
+            // and bit-stable over three runs, so 0.001 is the smallest
+            // value the report prints rather than headroom.
+            //
+            // The gate OBSERVES the deform pick, not just reaches it, and
+            // each of these was measured on this scene: a bind-pose raster
+            // is 0.684 full / 12.520 region, the rest point un-baked
+            // through a matrix the buffer never carried is 0.844 / 9.621,
+            // and dropping the promise wait so the pick runs before the
+            // seek is 0.866 / 9.748. All are hundreds of times this gate.
+            // A miss parks both markers at y = -100, off-frame.
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],

@@ -991,6 +991,19 @@ struct GpuState {
     int pick_detailed_uniform_slot = -1;
     int pick_detailed_frag_scene_slot = -1;
     int pick_detailed_frag_mesh_slot = -1;
+#if BBLITE_DEFORM_PICKING
+    /**
+     * The same module composed with the pin's deform vertex projection.
+     * A third pipeline for the reason the second exists: the projection
+     * splices declarations, inputs and a body into `vs`, so the stage is
+     * different text with its own registers -- and the fragment above is
+     * byte-identical, which is why only the vertex stage is deployed.
+     */
+    SDL_GPUGraphicsPipeline* pick_deform_pipeline = nullptr;
+    int pick_deform_scene_slot = -1;
+    int pick_deform_uniform_slot = -1;
+    PinnedStageSlots pick_deform_vertex_slots;
+#endif
 #endif
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
@@ -5277,6 +5290,13 @@ void release(GpuState& state) {
             state.device, state.pick_detailed_pipeline);
         state.pick_detailed_pipeline = nullptr;
     }
+#if BBLITE_DEFORM_PICKING
+    if (state.pick_deform_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device, state.pick_deform_pipeline);
+        state.pick_deform_pipeline = nullptr;
+    }
+#endif
 #endif
 #if BBLITE_HAS_SPLATS
     if (state.pick_cloud_pipeline) {
@@ -6078,6 +6098,81 @@ inline void ensure_pick_pipelines(GpuState& state) {
     if (!state.pick_detailed_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking-detailed");
     }
+
+#if BBLITE_DEFORM_PICKING
+    // The deforming arm. Only its VERTEX stage differs, so it reuses the
+    // fragment above -- and with it that stage's slots, since the text
+    // the two fragments compile from is the same bytes.
+    state.pick_deform_vertex_slots =
+        read_pinned_stage_slots("picking-detailed-deform.vert");
+    state.pick_deform_scene_slot =
+        stage_uniform_slot(state.pick_deform_vertex_slots, "scene");
+    state.pick_deform_uniform_slot =
+        stage_uniform_slot(state.pick_deform_vertex_slots, "mesh");
+    if (state.pick_deform_scene_slot < 0 ||
+        state.pick_deform_uniform_slot < 0) {
+        gpu_error(
+            "picking-detailed-deform.vert kept neither the scene nor "
+            "the mesh block");
+    }
+    SDL_GPUShader* deform_vertex = load_shader(
+        state.device,
+        "picking-detailed-deform.vert",
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<std::uint32_t>(
+            state.pick_deform_vertex_slots.textures.size()),
+        static_cast<std::uint32_t>(
+            state.pick_deform_vertex_slots.uniforms.size()),
+        "vs",
+        static_cast<std::uint32_t>(
+            state.pick_deform_vertex_slots.storage.size()));
+    SDL_GPUShader* deform_fragment = load_shader(
+        state.device,
+        "picking-detailed.frag",
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        0,
+        static_cast<std::uint32_t>(
+            detailed_fragment_slots.uniforms.size()),
+        "fs");
+
+    // The pin declares one position-only buffer plus a stream per skin
+    // attribute; this port reads all three out of the one interleaved
+    // `GpuVertex` at its own pitch, exactly as the position stream above
+    // already does. `joint_indices` is the integer lane the pin's own
+    // stage takes -- the float pair beside it belongs to the transcribed
+    // one -- so the deform pick needs the pinned variant layout, which
+    // is also what publishes the bone palette it samples.
+    const std::array<SDL_GPUVertexAttribute, 3> deform_attributes{
+        SDL_GPUVertexAttribute{
+            0, 0, SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3, 0},
+        SDL_GPUVertexAttribute{
+            1,
+            0,
+            SDL_GPU_VERTEXELEMENTFORMAT_UINT4,
+            static_cast<Uint32>(offsetof(GpuVertex, joint_indices))},
+        SDL_GPUVertexAttribute{
+            2,
+            0,
+            SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4,
+            static_cast<Uint32>(offsetof(GpuVertex, weights))},
+    };
+
+    SDL_GPUGraphicsPipelineCreateInfo deform_info = detailed_info;
+    deform_info.vertex_shader = deform_vertex;
+    deform_info.fragment_shader = deform_fragment;
+    deform_info.vertex_input_state.vertex_attributes =
+        deform_attributes.data();
+    deform_info.vertex_input_state.num_vertex_attributes =
+        static_cast<Uint32>(deform_attributes.size());
+
+    state.pick_deform_pipeline =
+        SDL_CreateGPUGraphicsPipeline(state.device, &deform_info);
+    SDL_ReleaseGPUShader(state.device, deform_vertex);
+    SDL_ReleaseGPUShader(state.device, deform_fragment);
+    if (!state.pick_deform_pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline picking-detailed-deform");
+    }
+#endif
 #endif
 
 #if BBLITE_HAS_SPLATS
@@ -7738,7 +7833,16 @@ bool run_gpu_engine(Engine& engine) {
                         return gpu.vertices && gpu.indices;
                     },
                     ranges,
-                    next_id);
+                    next_id,
+                    // Whether THIS pass is the detailed one. A build
+                    // without detailed picking has no such pass, so the
+                    // answer is a constant false rather than a local that
+                    // only exists behind the define.
+#if BBLITE_HAS_DETAILED_PICKING
+                    detailed);
+#else
+                    false);
+#endif
 
 #if BBLITE_HAS_DETAILED_PICKING
             const int mesh_scene_slot = detailed
@@ -7776,11 +7880,76 @@ bool run_gpu_engine(Engine& engine) {
                 frag_scene_slot,
                 &scene_uniforms,
                 sizeof(scene_uniforms));
+#if BBLITE_DEFORM_PICKING
+            // Which pipeline is bound right now. The pass draws two
+            // programs -- the affine projection and the pin's deform one
+            // -- so the bind and the scene block that follows it move
+            // with the candidate rather than sitting above the loop.
+            bool deform_bound = false;
+#endif
             for (const PickMeshCandidate& candidate : candidates) {
                 const GpuMesh& gpu = state.meshes[candidate.item_index];
+                int candidate_mesh_slot = mesh_uniform_slot;
+#if BBLITE_DEFORM_PICKING
+                const bool deform_draw = detailed && candidate.deform;
+                if (deform_draw != deform_bound) {
+                    deform_bound = deform_draw;
+                    SDL_BindGPUGraphicsPipeline(
+                        pass,
+                        deform_draw ? state.pick_deform_pipeline
+                                    : state.pick_detailed_pipeline);
+                    SDL_PushGPUVertexUniformData(
+                        command,
+                        static_cast<Uint32>(
+                            deform_draw ? state.pick_deform_scene_slot
+                                        : mesh_scene_slot),
+                        &scene_uniforms,
+                        sizeof(scene_uniforms));
+                    push_stage_uniform(
+                        command,
+                        frag_scene_slot,
+                        &scene_uniforms,
+                        sizeof(scene_uniforms));
+                }
+                if (deform_draw) {
+                    candidate_mesh_slot = state.pick_deform_uniform_slot;
+                    // The palette the composed skeleton variant samples
+                    // and the morph pair the same variant reads, in the
+                    // `.slots` order the deploy recorded: the pick draws
+                    // the pose the frame already uploaded, so it creates
+                    // and copies nothing of its own.
+                    bind_stage_textures(
+                        pass,
+                        state.pick_deform_vertex_slots,
+                        false,
+                        "picking-detailed-deform.vert",
+                        [&](const std::string& name, std::size_t) {
+                            if (name != "boneSampler") {
+                                gpu_error(
+                                    ("picking-detailed-deform.vert "
+                                     "declares an unmapped texture '" +
+                                     name + "'")
+                                        .c_str());
+                            }
+                            return SDL_GPUTextureSamplerBinding{
+                                gpu.pinned_bone_texture,
+                                state.pinned_bone_sampler};
+                        });
+                    bind_stage_storage(
+                        pass,
+                        state.pick_deform_vertex_slots,
+                        false,
+                        "picking-detailed-deform.vert",
+                        state.storage_binding_scratch,
+                        [&](const std::string& name,
+                            std::size_t) -> SDL_GPUBuffer* {
+                            return morph_storage_buffer_for(gpu, name);
+                        });
+                }
+#endif
                 SDL_PushGPUVertexUniformData(
                     command,
-                    static_cast<Uint32>(mesh_uniform_slot),
+                    static_cast<Uint32>(candidate_mesh_slot),
                     &candidate.uniforms,
                     sizeof(candidate.uniforms));
                 push_stage_uniform(
@@ -11778,6 +11947,7 @@ bool run_gpu_engine(Engine& engine) {
                                 splat,
                                 frame_view,
                                 frame_projection,
+                                frame_camera_position,
                                 static_cast<double>(width),
                                 static_cast<double>(height));
                         }

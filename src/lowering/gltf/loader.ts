@@ -58,6 +58,15 @@ export interface GltfLoaderOptions {
      *  from -- and none of the other scenes carrying this loader read
      *  any of them. */
     vat?: boolean;
+    /**
+     * A detailed pick draws this file's meshes through the pin's deform
+     * vertex projection, which is the SKINNED arm alone: an animated
+     * mesh with no skin carries its own world in `bone_matrices[0]` and
+     * a zero weight quad, so the pin's blend would collapse it. That is
+     * the second reader of the per-record `skinned` flag, and the reason
+     * this widens the `vat`-only write above rather than replacing it.
+     */
+    deformPicking?: boolean;
     /** A composed skeleton variant carries the palette, lifting the
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;

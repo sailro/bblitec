@@ -187,6 +187,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["loader:splat-bake"],
     },
     {
+        source: "upstream/src/splat_harmonics.cpp",
+        features: ["loader:splat-sh"],
+    },
+    {
         source: "upstream/src/material_texture_setters.cpp",
         features: [
             "material:standard-diffuse-render-texture",

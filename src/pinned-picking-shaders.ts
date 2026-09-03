@@ -44,8 +44,32 @@ interface CloudPipelineExports {
 /** The pinned module that builds the DETAILED mesh half. */
 const detailedPipelineModule = "picking/picking-detailed-pipeline.js";
 
+/**
+ * One vertex projection's shader half, as `picking-advanced-shader.ts`
+ * declares it. Only the regular arm is read here: the thin arm belongs to
+ * a thin-instanced candidate, which the detailed pipeline refuses.
+ */
+interface PickingVertexProjectionShader {
+    regularDeclarations: string;
+    regularInputs: string;
+    regularBody: string;
+}
+
 interface DetailedPipelineExports {
-    shader(rule: null, projection: null): string;
+    shader(
+        rule: null,
+        projection: PickingVertexProjectionShader | null,
+    ): string;
+}
+
+/** The pinned module that builds a deforming mesh's pick projection. */
+const deformProjectionModule = "picking/deform-picking-projection.js";
+
+interface DeformProjectionExports {
+    getDeformPickingProjection(
+        engine: unknown,
+        mesh: unknown,
+    ): { shader: PickingVertexProjectionShader } | null;
 }
 
 /** The orientations the pin's billboard basis forks on. */
@@ -101,6 +125,69 @@ export async function composeDetailedMeshPickingShader(): Promise<string> {
             ["shader"],
         );
     return pinned.shader(null, null);
+}
+
+/**
+ * The DETAILED mesh picking module of a DEFORMING candidate.
+ *
+ * The same pinned builder as above, handed the pin's own deform vertex
+ * projection instead of null. `deform-picking-projection.ts` is where
+ * upstream keeps it -- a lazily imported module the picker reaches only
+ * when a candidate carries a skeleton or morph targets -- and its whole
+ * point is stated in its own header: the skinning WGSL is imported from
+ * the shared render fragment rather than restated, "so the pick pose can
+ * never drift from the rendered pose". Executing it keeps that property
+ * here; transcribing the projection would give it up.
+ *
+ * The projection is built for a mesh that skins from FOUR influences:
+ * `GpuVertex` holds one joint/weight quad, and the eight-influence tail
+ * is already the recorded `four-influence-skinning` adaptation. `morph`
+ * is the scene's morph-storage transport rather than one mesh's target
+ * list, which is what lets one composed arm serve every deforming mesh
+ * in a scene: both backends bind the storage pair for every one of them,
+ * an empty weights header for a mesh with no targets of its own, and
+ * that header's `count` of zero makes the pin's accumulation loop a
+ * no-op. A scene whose assets carry no targets at all composes the pin's
+ * `nomorph` arm instead, whose group is the bone palette alone --
+ * both backends size their bind group to the composed arm rather than to
+ * the morph one.
+ *
+ * The stub device records nothing: `createProjection` builds a bind-group
+ * layout and this reads only the WGSL beside it, so the object merely has
+ * to exist and stay identity-stable WITHIN the one call, which is what
+ * the pin's own device-invalidation check compares against.
+ */
+export async function composeDeformDetailedMeshPickingShader(
+    morph: boolean,
+): Promise<string> {
+    const projections =
+        await importPinnedModule<DeformProjectionExports>(
+            deformProjectionModule,
+        );
+    const device = { createBindGroupLayout: () => ({}) };
+    const projection = projections.getDeformPickingProjection(
+        { _device: device },
+        {
+            vat: null,
+            skeleton: {
+                joints1Buffer: null,
+                weights1Buffer: null,
+            },
+            morphTargets: morph ? {} : null,
+        },
+    );
+    if (!projection) {
+        throw new Error(
+            "The pinned deform picking projection declined a mesh " +
+                "carrying a skeleton.",
+        );
+    }
+    const pinned =
+        await importPinnedModuleWithExports<DetailedPipelineExports>(
+            detailedPipelineModule,
+            ["shader"],
+        );
+    return pinned.shader(null, projection.shader);
 }
 
 /**

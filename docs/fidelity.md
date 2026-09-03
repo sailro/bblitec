@@ -1190,6 +1190,29 @@ in [backends](backends.md#measured-contracts).
 
 ### Gaussian splats
 
+**A cloud carrying harmonics reaches the pin's other pipeline, and its shader
+is built rather than lifted.** `attachParsedSplat` forks on the parse
+(`parsed.sh && parsed.shDegree > 0`) into `gaussian-splatting-pipeline-sh.ts`,
+whose WGSL `buildShShaderSource(degree)` EMITS -- one texture binding, one
+`textureLoad`, one unpack per coefficient and one polynomial band per degree
+-- so there is no packaged literal to extract and the builder is executed
+rather than transcribed. The split into vertex and fragment is the same one
+the stock module takes, over a second anchor table, and the payload packing
+beside it is a fold. The pin states its texture count twice, as
+`Math.ceil(coefficients / 16)` and as `SH_TEXTURE_COUNT[degree]`; the port
+cross-checks the folded one against the table at run time, so a pin whose two
+statements stopped agreeing refuses rather than packing short.
+
+Gated by scene 124 at 0.000 on both backends, and the gate OBSERVES the arm
+rather than merely reaching it: zeroing the eye position in the composed
+shader moves the image by 1.9018 MAD at max 167, against a published residual
+of 0.00018 -- about nine thousand times. That probe left its artifact under
+`artifacts/capture/scene124/probe-variants/`; a companion probe neutralizing
+the whole view-dependent term measured 1.878 while it ran, but each run
+overwrites the last, so only the eye-position one is re-derivable here. The browser's own compiled
+module is byte-identical to `buildShShaderSource(3)` run under Node, which is
+what says the executed builder and the browser's are the same text.
+
 **The shader plugins are spliced by the pin's own splicer, executed rather
 than restated.** `loadSplat(scene, url, fragments)` takes `GsShaderFragment`
 records — `gs-depth-fragments.ts`'s exports or the scene's own — and
@@ -1926,6 +1949,18 @@ onto D3D12's core `SV_PrimitiveId` for SDL_GPU. A device that could not would
 fail the detailed module's own shader compile, which is the answer -- the
 silently-coarse arm is not composed, because a degraded path that renders a
 different picture is the one thing this port does not build.
+
+**A deforming mesh is the exception, and it is the one that bit.** Where this
+port has baked a mesh's transform into its vertices the detail position is
+world-space and must be mapped back; where the mesh DEFORMS, its buffer
+carries no world at all -- the transform lives in the bone palette -- so
+there is nothing to un-bake, and un-baking anyway sent scene 115's
+barycentrics from `bu=0.188, bv=0.693` to `bu=36.71, bv=-15.89`. The rest
+normal is the mirror case: it takes the mesh's own NODE world, which the pose
+pass keeps on the record, because `mesh_world_matrix` is the identity for a
+skinned record. Both were wrong until a capture said so; neither is
+observable in a scene whose picked mesh does not deform, which is why scene
+129 could not find them and scene 115 did.
 
 **The detail attachment's position arrives in WORLD space for a baked mesh.**
 The pin solves barycentrics against the REST triangle, and the attachment

@@ -13044,6 +13044,92 @@ test("re-queues once per yield so two yields park two frames out", () => {
     );
 });
 
+/**
+ * The escaping-continuation handshake: `resolve` is stored in an outer
+ * binding and a scene callback calls it later. Scene 115's shape, spelled
+ * small.
+ */
+function escapingResolveScene(executor: string, awaited: string): string {
+    return `import {
+    createArcRotateCamera,
+    createBox,
+    createEngine,
+    createSceneContext,
+    onBeforeRender,
+    registerScene,
+    startEngine,
+} from "babylon-lite";
+async function main(): Promise<void> {
+    const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+    const engine = await createEngine(canvas);
+    const scene = createSceneContext(engine);
+    scene.camera = createArcRotateCamera(0, 1, 8, { x: 0, y: 0, z: 0 });
+    createBox(engine, 2);
+    let frames = 0;
+    let resolveReady!: () => void;
+    const ready = new Promise<void>(${executor});
+    onBeforeRender(scene, () => {
+        frames++;
+        if (frames === 3) {
+            resolveReady();
+        }
+    });
+    await registerScene(scene);
+    await startEngine(engine);
+${awaited}
+    scene.clearColor = { r: 0, g: 1, b: 0, a: 1 };
+}
+main().catch(console.error);
+`;
+}
+
+test("parks a continuation behind a promise a scene callback resolves", () => {
+    const result = compileSource(
+        escapingResolveScene(
+            `(resolve) => {
+        resolveReady = resolve;
+    }`,
+            "    await ready;",
+        ),
+        frameYieldFile,
+    );
+    // The promise itself has no native value: it is a latch the resolver
+    // sets and the continuation waits on.
+    assert.match(result.cpp, /bool v_ready = false;/);
+    assert.match(
+        result.cpp,
+        /v_resolveReady = \[&v_ready\]\(\) \{ v_ready = true; \};/,
+    );
+    // And the statements after the await run at the first frame boundary
+    // where the latch is set, not at the next one unconditionally.
+    assert.match(
+        result.cpp,
+        /bbl::defer_start_continuation_until\(v_engine, \[&\]\(\) \{ return v_ready; \}, \[&\]\(\) \{/,
+    );
+    assert.doesNotMatch(result.cpp, /__bblite_start_continuation_until__/);
+});
+
+test("refuses a promise executor that does more than let resolve escape", () => {
+    // The narrowness is the point: an executor that also schedules or
+    // calls `resolve` is a different claim about WHEN the wait ends, and
+    // falls through to the constructor refusal the other shapes leave in
+    // place.
+    assert.throws(
+        () =>
+            compileSource(
+                escapingResolveScene(
+                    `(resolve) => {
+        resolveReady = resolve;
+        resolve();
+    }`,
+                    "    await ready;",
+                ),
+                frameYieldFile,
+            ),
+        /Unsupported constructor expression/,
+    );
+});
+
 test("still erases a frame yield before the loop exists", () => {
     // Before `startEngine` the entry body runs ahead of the first frame's
     // own work, so the original claim holds and the yield erases to

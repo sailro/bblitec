@@ -344,10 +344,16 @@ ${billboardPick ? this.lowerBillboardWrapper() : ""}
      * name lives elsewhere here. `mesh` is reached only for its CPU index
      * array, so the emitted parameter is that array. `deformTriangle` is
      * the pin's own optional hook into the deformed-vertex module, which
-     * only a skinned or morphed detailed pick supplies; the reached slice
-     * supplies none, so it binds absent and the arm behind it does not
-     * translate -- leaving exactly the pin's own "fall back to the rest
-     * edges" behaviour.
+     * a skinned or morphed detailed pick DOES supply upstream -- scene 115
+     * is one. It binds absent here anyway, and the arm behind it does not
+     * translate, leaving the pin's own "fall back to the rest edges"
+     * behaviour. What makes that unobservable rather than a divergence is
+     * the reader: the only fields the hook changes are
+     * `pickedFaceNormal`/`pickedFaceNormalWorld`, and their accessor
+     * `getPickedFaceNormal` is not in the pinned package's export surface
+     * at all, so no scene can ask. `getPickedNormal`, which scenes do
+     * reach, is the smooth normal -- undeformed upstream too. If a later
+     * pin exports the face reader, this binding is where it fails.
      */
     private lowerDetailedHelpers(): string {
         const calls = pinnedNumericMathCallsWithHypot();

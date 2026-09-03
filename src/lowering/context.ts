@@ -734,6 +734,29 @@ export class LoweringContext {
         if (ts.isPrefixUnaryExpression(unwrapped) && unwrapped.operator === ts.SyntaxKind.MinusToken) {
             return -this.numericValue(unwrapped.operand, file);
         }
+        // The pin writes a constant as the LAYOUT it describes whenever the
+        // layout is the point -- the splat UBO is `16 * 4 * 3 + 8 * 4`, and
+        // its SH sibling is the same plus one more `4 * 4` -- so a caller
+        // that reads the number cannot read a literal. Folding the
+        // arithmetic keeps the value the pin's; refusing it would have to be
+        // answered by restating the product here, which is the copy that
+        // drifts.
+        if (ts.isBinaryExpression(unwrapped)) {
+            const left = this.numericValue(unwrapped.left, file);
+            const right = this.numericValue(unwrapped.right, file);
+            switch (unwrapped.operatorToken.kind) {
+                case ts.SyntaxKind.PlusToken:
+                    return left + right;
+                case ts.SyntaxKind.MinusToken:
+                    return left - right;
+                case ts.SyntaxKind.AsteriskToken:
+                    return left * right;
+                case ts.SyntaxKind.SlashToken:
+                    return left / right;
+                default:
+                    break;
+            }
+        }
         if (ts.isIdentifier(unwrapped)) {
             const bound = this.moduleConstant(file, unwrapped.text);
             if (bound) return this.numericValue(bound.initializer, bound.file);

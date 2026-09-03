@@ -26,8 +26,12 @@
 
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/pinned_depth_state.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
 #include <bblite/upstream/splat_geometry.hpp>
 #include <bblite/upstream/splat_sort.hpp>
+#if BBLITE_SPLAT_SH
+#include <bblite/upstream/splat_harmonics.hpp>
+#endif
 
 #include <array>
 // std::abs on a float in the re-sort gate. Without this only the integer
@@ -36,12 +40,50 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "pal_dawn_shared.hpp"
 #include "pal_gpu_shared.hpp"
 
 namespace bbl::pal {
+
+/**
+ * The data textures the vertex stage reads: the pin's RGBA32F payloads,
+ * then one RGBA32UINT spherical-harmonic payload per texture the SH layout
+ * appends after them. With none it is the four it always was.
+ *
+ * The float half is the size of the generated `splat_texture_payloads`
+ * array rather than a four typed here, so it is the pin's own bind-group
+ * order that decides -- the same declaration both backends upload from.
+ */
+
+/** Group 1's own entries: the UBO, the sampler, then those textures. */
+/**
+ * How many textures a splat draw binds, and how many of those are the
+ * float payloads.
+ *
+ * The float half is the size of the generated `splat_texture_payloads`
+ * array rather than a four typed here, so it is the pin's own bind-group
+ * order that decides -- the same declaration both backends upload from.
+ *
+ * Stated once per backend rather than once in `pal_gpu_shared.hpp`,
+ * because the generated declaration it measures has to be included
+ * outside a namespace and the shared header has no such include: hoisting
+ * it there put `upstream::` inside `bbl::pal` and broke every name in the
+ * file. Two lines duplicated is the cheaper of the two wrongs.
+ */
+inline constexpr std::size_t splat_float_payload_count =
+    std::tuple_size_v<decltype(upstream::splat_texture_payloads(
+        std::declval<const SplatMeshRecord&>()))>;
+inline constexpr std::size_t splat_texture_count =
+    splat_float_payload_count +
+    static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
+
+inline constexpr std::size_t dawn_splat_first_texture_binding = 2u;
+inline constexpr std::size_t dawn_splat_binding_count =
+    dawn_splat_first_texture_binding + splat_texture_count;
 
 /** One cloud's GPU state. */
 struct DawnSplatPass {
@@ -59,8 +101,8 @@ struct DawnSplatPass {
     WGPUBuffer indices = nullptr;
     WGPUBuffer order = nullptr;
 
-    std::array<WGPUTexture, 4> textures{};
-    std::array<WGPUTextureView, 4> views{};
+    std::array<WGPUTexture, splat_texture_count> textures{};
+    std::array<WGPUTextureView, splat_texture_count> views{};
     WGPUSampler sampler = nullptr;
 
     /** The sort's own state: the scratch, the last posted transform and the
@@ -72,16 +114,24 @@ struct DawnSplatPass {
     std::array<float, 4> depth_transform{};
 };
 
-/** One RGBA32F data texture, uploaded once. */
+/**
+ * One data texture, uploaded once.
+ *
+ * Sixteen bytes per texel either way -- four floats for a payload the stage
+ * samples, four packed unsigned words for one it `textureLoad`s -- so the
+ * row pitch is the same and only the format differs.
+ */
 inline WGPUTexture upload_dawn_splat_texture(
     WGPUDevice device,
     WGPUQueue queue,
-    const std::vector<float>& rgba,
+    const void* texels,
+    std::size_t byte_size,
+    WGPUTextureFormat format,
     std::uint32_t width,
     std::uint32_t height) {
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.dimension = WGPUTextureDimension_2D;
-    descriptor.format = WGPUTextureFormat_RGBA32Float;
+    descriptor.format = format;
     descriptor.usage =
         WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
     descriptor.size = WGPUExtent3D{width, height, 1};
@@ -95,12 +145,7 @@ inline WGPUTexture upload_dawn_splat_texture(
     layout.rowsPerImage = height;
     const WGPUExtent3D size{width, height, 1};
     wgpuQueueWriteTexture(
-        queue,
-        &destination,
-        rgba.data(),
-        rgba.size() * sizeof(float),
-        &layout,
-        &size);
+        queue, &destination, texels, byte_size, &layout, &size);
     return texture;
 }
 
@@ -109,9 +154,14 @@ inline WGPUTexture upload_dawn_splat_texture(
  * non-filtering sampler, then the four unfilterable-float data textures.
  * The stage samples them with `textureSampleLevel(..., 0.0)`, which is a
  * point fetch, so nothing here is filterable.
+ *
+ * A cloud carrying harmonics appends one `uint` texture per SH payload at
+ * binding 6, which is what `getOrCreateShPipeline` pushes onto its own
+ * layout entries. Those are `textureLoad`ed rather than sampled, so they
+ * share the same point sampler and take the `uint` sample type.
  */
 inline WGPUBindGroupLayout create_dawn_splat_layout(WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+    std::array<WGPUBindGroupLayoutEntry, dawn_splat_binding_count> entries{};
     for (std::size_t index = 0; index < entries.size(); ++index) {
         entries[index] = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
         entries[index].binding = static_cast<std::uint32_t>(index);
@@ -121,9 +171,14 @@ inline WGPUBindGroupLayout create_dawn_splat_layout(WGPUDevice device) {
         WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
     entries[1].sampler.type = WGPUSamplerBindingType_NonFiltering;
-    for (std::size_t index = 2; index < entries.size(); ++index) {
+    for (std::size_t index = dawn_splat_first_texture_binding;
+         index < entries.size();
+         ++index) {
         entries[index].texture.sampleType =
-            WGPUTextureSampleType_UnfilterableFloat;
+            index < dawn_splat_first_texture_binding +
+                        splat_float_payload_count
+                ? WGPUTextureSampleType_UnfilterableFloat
+                : WGPUTextureSampleType_Uint;
         entries[index].texture.viewDimension = WGPUTextureViewDimension_2D;
     }
     WGPUBindGroupLayoutDescriptor descriptor =
@@ -249,9 +304,11 @@ inline DawnSplatPass create_dawn_splat_pass(
     WGPUTextureFormat color_format,
     WGPUTextureFormat depth_format,
     std::uint32_t samples,
-    const Engine& engine,
+    // Mutable for the same reason the SDL twin is: pass creation uploads
+    // the SH payloads and then releases them.
+    Engine& engine,
     SplatMeshHandle handle) {
-    const SplatMeshRecord& record = engine.splat_meshes[handle.value];
+    SplatMeshRecord& record = engine.splat_meshes[handle.value];
     DawnSplatPass pass;
     pass.mesh = handle;
     pass.vertex_count = record.vertex_count;
@@ -273,18 +330,53 @@ inline DawnSplatPass create_dawn_splat_pass(
     // The payload order {centers, cov_a, cov_b, colors} is the pin's,
     // published by the generated splat unit both backends consume.
     const auto payloads = upstream::splat_texture_payloads(record);
-    for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
-        pass.textures[slot] = upload_dawn_splat_texture(
-            device,
-            queue,
-            *payloads[slot],
-            record.texture_width,
-            record.texture_height);
+    const auto view_of = [&](std::size_t slot) {
         WGPUTextureViewDescriptor view = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
         pass.views[slot] =
             wgpuTextureCreateView(pass.textures[slot], &view);
         if (!pass.views[slot]) dawn_error("splat data texture view");
+    };
+    for (std::size_t slot = 0; slot < payloads.size(); ++slot) {
+        pass.textures[slot] = upload_dawn_splat_texture(
+            device,
+            queue,
+            payloads[slot]->data(),
+            payloads[slot]->size() * sizeof(float),
+            WGPUTextureFormat_RGBA32Float,
+            record.texture_width,
+            record.texture_height);
+        view_of(slot);
     }
+#if BBLITE_SPLAT_SH
+    // The harmonics, at the same texel grid: `attachGaussianSplattingMeshSH`
+    // writes one rgba32uint texture per sixteen coefficient bytes and binds
+    // them straight after the four above.
+    if (record.sh_textures.size() != upstream::splat_sh_texture_count) {
+        dawn_error("splat record carries the wrong SH payload count");
+    }
+    for (std::size_t index = 0; index < record.sh_textures.size(); ++index) {
+        const std::size_t slot = payloads.size() + index;
+        pass.textures[slot] = upload_dawn_splat_texture(
+            device,
+            queue,
+            record.sh_textures[index].data(),
+            record.sh_textures[index].size(),
+            WGPUTextureFormat_RGBA32Uint,
+            record.texture_width,
+            record.texture_height);
+        view_of(slot);
+    }
+    // Released once the GPU owns the bytes. The neighbouring `rows` field
+    // is reach-gated for the same reason and states it: these three
+    // payloads are 17.9 MB for scene 124's cloud, larger than the rows,
+    // and this is the only reader -- pass creation runs once. SWAPPED with
+    // an empty vector rather than assigned `{}`, because assignment keeps
+    // the capacity and frees nothing (measured on PR #197's reclaim).
+    {
+        std::vector<std::vector<std::uint8_t>> released;
+        released.swap(record.sh_textures);
+    }
+#endif
 
     // The pin's nearest/clamp data sampler, emitted as data beside the
     // quad; the layout above declares the pair non-filtering.
@@ -324,7 +416,7 @@ inline DawnSplatPass create_dawn_splat_pass(
             nullptr,
             sizeof(upstream::SplatUniforms));
 
-    std::array<WGPUBindGroupEntry, 6> entries{};
+    std::array<WGPUBindGroupEntry, dawn_splat_binding_count> entries{};
     for (std::size_t index = 0; index < entries.size(); ++index) {
         entries[index] = WGPU_BIND_GROUP_ENTRY_INIT;
         entries[index].binding = static_cast<std::uint32_t>(index);
@@ -332,8 +424,9 @@ inline DawnSplatPass create_dawn_splat_pass(
     entries[0].buffer = pass.uniforms;
     entries[0].size = sizeof(upstream::SplatUniforms);
     entries[1].sampler = pass.sampler;
-    for (std::size_t slot = 0; slot < 4; ++slot) {
-        entries[slot + 2].textureView = pass.views[slot];
+    for (std::size_t slot = 0; slot < pass.views.size(); ++slot) {
+        entries[slot + dawn_splat_first_texture_binding].textureView =
+            pass.views[slot];
     }
     WGPUBindGroupDescriptor group = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
     group.layout = pass.layout;
@@ -364,6 +457,10 @@ inline void upload_dawn_splat_pass(
     DawnSplatPass& pass,
     const std::array<float, 16>& view,
     const std::array<float, 16>& projection,
+    // `getCameraPosition` is the camera world matrix's own translation, in
+    // absolute space -- which is what the shared helper returns, because a
+    // floating-origin scene reaching a splat refuses at generation.
+    [[maybe_unused]] const std::array<float, 4>& camera_position,
     double width,
     double height) {
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
@@ -400,7 +497,12 @@ inline void upload_dawn_splat_pass(
         width,
         height,
         record.texture_width,
-        record.texture_height);
+        record.texture_height
+#if BBLITE_SPLAT_SH
+        ,
+        camera_position
+#endif
+    );
     wgpuQueueWriteBuffer(
         queue, pass.uniforms, 0, &uniforms, sizeof(uniforms));
 }

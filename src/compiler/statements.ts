@@ -172,6 +172,22 @@ export interface StatementLoweringContext {
     frameDrainCondition(
         expression: ts.Expression,
     ): ts.Expression | undefined;
+    /**
+     * The latch `await <binding>` waits on when the binding is a promise
+     * a scene callback resolves, and undefined for every other await.
+     */
+    promiseLatchCondition(
+        expression: ts.Expression,
+    ): string | undefined;
+    /**
+     * Emits the marker `hoistEngineContinuation` turns into a re-queue
+     * that repeats until the latch is set, which is what an await on a
+     * callback-resolved promise means at a frame boundary.
+     */
+    emitStartContinuationGate(
+        expression: ts.Expression,
+        latch: string,
+    ): void;
     requireDefaultEngine(node: ts.Node): string;
     isBrowserInstrumentationCall(
         call: ts.CallExpression,
@@ -3061,6 +3077,17 @@ export class StatementLowerer {
                 );
             }
             return;
+        }
+        if (ts.isAwaitExpression(expression)) {
+            // `await <promise a scene callback resolves>`. Unlike the
+            // frame waits below, nothing here counts boundaries: the
+            // scene installed the callback that ends the wait, so the
+            // rest of the continuation is parked until it runs.
+            const latch = context.promiseLatchCondition(unwrapped);
+            if (latch) {
+                context.emitStartContinuationGate(unwrapped, latch);
+                return;
+            }
         }
         const drain = context.frameDrainCondition(unwrapped);
         if (drain) {
