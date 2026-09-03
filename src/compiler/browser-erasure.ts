@@ -49,7 +49,11 @@ const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
     "audio-context",
     "audio-node",
     "audio-param",
+    "blob",
     "data",
+    "file",
+    "file-list",
+    "object-url",
     "static-fetch-response",
     "platform-keyboard-event",
     "platform-mouse-event",
@@ -61,6 +65,7 @@ export interface BrowserErasureContext {
     canvasSizeProperty(
         expression: ts.Expression,
     ): "width" | "height" | undefined;
+    isCanvasElement(expression: ts.Expression): boolean;
     lookupOptional(
         identifier: ts.Identifier,
     ): Value | undefined;
@@ -76,6 +81,7 @@ export interface BrowserErasureContext {
         call: ts.CallExpression,
     ): boolean;
     isNativeUiValueExpression(expression: ts.Expression): boolean;
+    isNativeBrowserFileExpression(expression: ts.Expression): boolean;
     /** Runtime visibility callback parameter, while compiling its body. */
     platformDocumentHidden(): string | undefined;
     /** The query string the reference pose is captured at. */
@@ -85,10 +91,47 @@ export interface BrowserErasureContext {
     ): ts.Expression | undefined;
 }
 
+type BrowserGlobalContext = Pick<
+    BrowserErasureContext,
+    "unwrap" | "lookupOptional" | "isDefaultLibraryIdentifier"
+>;
+
+function isDefaultBrowserGlobal(
+    context: BrowserGlobalContext,
+    identifier: ts.Identifier,
+): boolean {
+    return identifier.text === "globalThis"
+        ? context.lookupOptional(identifier) === undefined
+        : context.isDefaultLibraryIdentifier(identifier);
+}
+
+export function browserGlobalNamed(
+    context: BrowserGlobalContext,
+    expression: ts.Expression,
+): ts.MemberName | undefined {
+    const unwrapped = context.unwrap(expression);
+    if (ts.isIdentifier(unwrapped)) {
+        return isDefaultBrowserGlobal(context, unwrapped)
+            ? unwrapped
+            : undefined;
+    }
+    return ts.isPropertyAccessExpression(unwrapped) &&
+        ts.isIdentifier(unwrapped.expression) &&
+        (unwrapped.expression.text === "window" ||
+            unwrapped.expression.text === "globalThis") &&
+        isDefaultBrowserGlobal(context, unwrapped.expression)
+        ? unwrapped.name
+        : undefined;
+}
+
 export class BrowserErasure {
     public constructor(
         private readonly context: BrowserErasureContext,
     ) {}
+
+    private isDefaultBrowserGlobal(identifier: ts.Identifier): boolean {
+        return isDefaultBrowserGlobal(this.context, identifier);
+    }
 
     /**
      * TypeScript models `globalThis` as an intrinsic symbol with no source
@@ -96,12 +139,6 @@ export class BrowserErasure {
      * the way it identifies `window` or `document`. An existing compiler
      * binding still wins, preserving ordinary lexical shadowing.
      */
-    private isDefaultBrowserGlobal(identifier: ts.Identifier): boolean {
-        return identifier.text === "globalThis"
-            ? this.context.lookupOptional(identifier) === undefined
-            : this.context.isDefaultLibraryIdentifier(identifier);
-    }
-
     /**
      * The browser global this expression names, written any of the ways that
      * reach the same object: bare (`setTimeout`, `location`), or as a member
@@ -117,19 +154,7 @@ export class BrowserErasure {
     private browserGlobalNamed(
         expression: ts.Expression,
     ): ts.MemberName | undefined {
-        const unwrapped = this.context.unwrap(expression);
-        if (ts.isIdentifier(unwrapped)) {
-            return this.isDefaultBrowserGlobal(unwrapped)
-                ? unwrapped
-                : undefined;
-        }
-        return ts.isPropertyAccessExpression(unwrapped) &&
-            ts.isIdentifier(unwrapped.expression) &&
-            (unwrapped.expression.text === "window" ||
-                unwrapped.expression.text === "globalThis") &&
-            this.isDefaultBrowserGlobal(unwrapped.expression)
-            ? unwrapped.name
-            : undefined;
+        return browserGlobalNamed(this.context, expression);
     }
 
     /** A real DOM RAF call, preserving ordinary lexical shadowing. */
@@ -140,6 +165,30 @@ export class BrowserErasure {
             this.browserGlobalNamed(call.expression)?.text ===
             "requestAnimationFrame"
         );
+    }
+
+    /**
+     * The `localStorage` global, or a read or call on it. Spelled through
+     * the same global recognizer as every other host object, so
+     * `window.localStorage` and a lexical shadow answer correctly.
+     */
+    private isWebStorageExpression(
+        expression: ts.Expression,
+    ): boolean {
+        const unwrapped = this.context.unwrap(expression);
+        if (this.browserGlobalNamed(unwrapped)?.text === "localStorage") {
+            return true;
+        }
+        if (
+            ts.isPropertyAccessExpression(unwrapped) ||
+            ts.isElementAccessExpression(unwrapped)
+        ) {
+            return this.isWebStorageExpression(unwrapped.expression);
+        }
+        if (ts.isCallExpression(unwrapped)) {
+            return this.isWebStorageExpression(unwrapped.expression);
+        }
+        return false;
     }
 
     /**
@@ -181,6 +230,9 @@ export class BrowserErasure {
         ) {
             return false;
         }
+        if (this.context.isNativeBrowserFileExpression(unwrapped)) {
+            return false;
+        }
         // `import.meta.url` is the browser module's deployment URL. Native
         // asset sinks fold the reached `new URL(path, import.meta.url)`
         // helper before this erasure gate; every remaining use is browser
@@ -205,6 +257,14 @@ export class BrowserErasure {
         if (this.isPlatformPointerLockCall(unwrapped)) {
             return false;
         }
+        // Web Storage is the third: `localStorage` is durable per-user
+        // data, which the PAL owns outright, so a read of it is a platform
+        // value rather than browser state with nothing behind it. Erasing
+        // it would turn every load into "no save" and every save into a
+        // silent no-op.
+        if (this.isWebStorageExpression(unwrapped)) {
+            return false;
+        }
         if (
             ts.isPropertyAccessExpression(unwrapped) &&
             unwrapped.name.text === "hidden" &&
@@ -220,6 +280,17 @@ export class BrowserErasure {
         if (
             ts.isCallExpression(unwrapped) &&
             this.isDeferredCallbackCall(unwrapped)
+        ) {
+            return false;
+        }
+        if (
+            ts.isCallExpression(unwrapped) &&
+            unwrapped.arguments.length === 0 &&
+            ts.isPropertyAccessExpression(unwrapped.expression) &&
+            unwrapped.expression.name.text === "focus" &&
+            this.context.isCanvasElement(
+                unwrapped.expression.expression,
+            )
         ) {
             return false;
         }
@@ -452,7 +523,8 @@ export class BrowserErasure {
             call.arguments.length === 1 &&
             this.isNativeDomBridge(call.arguments[0]!) &&
             ts.isPropertyAccessExpression(callee.expression) &&
-            callee.expression.name.text === "body" &&
+            (callee.expression.name.text === "body" ||
+                callee.expression.name.text === "head") &&
             ts.isIdentifier(callee.expression.expression) &&
             callee.expression.expression.text === "document" &&
             this.context.isDefaultLibraryIdentifier(

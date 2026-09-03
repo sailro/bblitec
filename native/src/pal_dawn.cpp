@@ -203,8 +203,12 @@ inline void release_dawn_draw_states(
 }
 
 struct DawnSharedShaderGeometry;
-struct DawnSharedShaderMaterialTextures;
+struct DawnSharedMaterialTextures;
+using DawnSharedShaderMaterialTextures = DawnSharedMaterialTextures;
 struct DawnSharedComposedMaterialTextures;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+using DawnSharedPluginMaterialTextures = DawnSharedMaterialTextures;
+#endif
 
 struct DawnMesh {
     WGPUBuffer vertices = nullptr;
@@ -304,6 +308,13 @@ struct DawnMesh {
     std::vector<DawnSampledTexture> shader_textures;
     DawnSharedShaderMaterialTextures* shared_shader_textures = nullptr;
     DawnSharedComposedMaterialTextures* shared_composed_textures = nullptr;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    // The textures this mesh's material plugins bound, in the order the
+    // pin's own `bindPluginTextures` pushes them -- which is the order the
+    // composed fragment declared their `getSamplers` pairs. Shared per
+    // material, because the textures are the material's.
+    DawnSharedPluginMaterialTextures* shared_plugin_textures = nullptr;
+#endif
     // Standard-material `.babylon` reflection cube view, non-owning
     // (points into DawnState::reflection_cube_views).
     WGPUTextureView reflection = nullptr;
@@ -320,6 +331,11 @@ struct DawnMesh {
     WGPUBuffer instance_uniform = nullptr;
     std::uint32_t instance_count = 1;
     std::uint64_t instance_version = 0;
+    // How many instance rows the buffers were allocated for. A live pool
+    // can double past it (`addThinInstance`), and matrices, the pinned
+    // mirror-conjugated copy and the colour lane are all sized from this
+    // one count, so `thin_instance_pool_grew` recreates them together.
+    std::uint32_t instance_capacity = 0;
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
     WGPUBuffer instance_colors = nullptr;
@@ -352,8 +368,8 @@ struct DawnSharedShaderGeometry {
     std::size_t users = 0;
 };
 
-/** Texture/sampler triples shared by every mesh using one shader material. */
-struct DawnSharedShaderMaterialTextures {
+/** Texture/sampler triples shared by every mesh using one material. */
+struct DawnSharedMaterialTextures {
     MaterialHandle material{};
     std::vector<DawnSampledTexture> textures;
     std::size_t users = 0;
@@ -1028,6 +1044,10 @@ struct DawnState : DawnDevice {
         shared_shader_material_textures;
     std::vector<std::unique_ptr<DawnSharedComposedMaterialTextures>>
         shared_composed_material_textures;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    std::vector<std::unique_ptr<DawnSharedPluginMaterialTextures>>
+        shared_plugin_material_textures;
+#endif
 
     // Frame-task draw resources are tied to the current render plan
     // and rebuild together with the meshes.
@@ -1233,6 +1253,13 @@ struct DawnState : DawnDevice {
             } else {
                 release_dawn_extra_textures(mesh.shader_textures);
             }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+            if (mesh.shared_plugin_textures) {
+                release_shared_user(
+                    mesh.shared_plugin_textures,
+                    "Plugin material texture reference count underflow.");
+            }
+#endif
 #if BBLITE_PBR_VARIANTS > 0
             if (mesh.pinned_vertices) {
                 wgpuBufferRelease(mesh.pinned_vertices);
@@ -1343,6 +1370,13 @@ struct DawnState : DawnDevice {
             [](DawnSharedShaderMaterialTextures& textures) {
                 release_dawn_extra_textures(textures.textures);
             });
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+        prune_unused_shared(
+            shared_plugin_material_textures,
+            [](DawnSharedPluginMaterialTextures& textures) {
+                release_dawn_extra_textures(textures.textures);
+            });
+#endif
     }
 
     void prune_shared_composed_material_textures() {
@@ -1550,6 +1584,13 @@ struct DawnState : DawnDevice {
             [](DawnSharedShaderMaterialTextures& textures) {
                 release_dawn_extra_textures(textures.textures);
             });
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+        release_all_shared(
+            shared_plugin_material_textures,
+            [](DawnSharedPluginMaterialTextures& textures) {
+                release_dawn_extra_textures(textures.textures);
+            });
+#endif
         release_all_shared(
             shared_composed_material_textures,
             [](DawnSharedComposedMaterialTextures& textures) {
@@ -5469,10 +5510,41 @@ WGPUBindGroup build_standard_draw_group(
         }
         (void)unfilterable_emissive;
         if (!matched) {
-            dawn_error(
-                ("standard variant declares an unmapped resource '" +
-                 std::string(binding.name) + "'.")
-                    .c_str());
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+            // A material plugin's own declaration. The name alone does not
+            // resolve it -- two plugin lists may declare the same WGSL
+            // name -- so the row is found by the material's own signature
+            // index, and the texture is that material's, at the position
+            // the pin's `bindPluginTextures` fills.
+            const upstream::StandardPluginBinding* plugin_row = material
+                ? upstream::standard_plugin_binding_for(
+                      binding.name,
+                      material->plugin_signature_index)
+                : nullptr;
+            if (plugin_row && mesh.shared_plugin_textures) {
+                if (
+                    plugin_row->ordinal >=
+                    mesh.shared_plugin_textures->textures.size()) {
+                    dawn_error(
+                        ("standard variant plugin resource '" +
+                         std::string(binding.name) +
+                         "' has no bound texture.")
+                            .c_str());
+                }
+                const DawnSampledTexture& plugin_texture =
+                    mesh.shared_plugin_textures
+                        ->textures[plugin_row->ordinal];
+                view = plugin_texture.view;
+                sampler = plugin_texture.sampler;
+                matched = true;
+            }
+#endif
+            if (!matched) {
+                dawn_error(
+                    ("standard variant declares an unmapped resource '" +
+                     std::string(binding.name) + "'.")
+                        .c_str());
+            }
         }
         if (binding.kind == upstream::PinnedBindingKind::sampler) {
             group_entry.sampler = sampler;
@@ -9118,8 +9190,8 @@ bool run_dawn_engine(Engine& engine) {
     std::vector<std::uint64_t> overlay_topology_versions;
     std::uint64_t synced_render_topology_version =
         scene.render_topology_version;
-    std::uint64_t synced_visibility_epoch =
-        engine.visibility_epoch;
+    std::uint64_t synced_draw_list_epoch =
+        engine.draw_list_epoch;
     // For the post-registration family guard the topology update runs,
     // exactly as the SDL backend tracks it.
     std::uint32_t synced_material_family_mask =
@@ -9276,6 +9348,8 @@ bool run_dawn_engine(Engine& engine) {
                           instance_matrices.size());
             mesh.instance_version =
                 mesh_record.instance_version;
+            mesh.instance_capacity =
+                static_cast<std::uint32_t>(instance_matrices.size());
             mesh.instance_uniform = create_buffer(
                 state,
                 WGPUBufferUsage_Uniform,
@@ -9515,6 +9589,46 @@ bool run_dawn_engine(Engine& engine) {
         } else if (material) {
             mesh.shader_textures = upload_shader_textures();
         }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+        // The textures this material's plugins bound, uploaded once per
+        // material like every other caller-owned family: the payload, its
+        // own encoding and its own sampler, with the white fallback an
+        // empty slot takes. The generated `standard_plugin_bindings` table
+        // resolves a composed binding name to a position in this list.
+        if (material && !material->plugin_textures.empty()) {
+            mesh.shared_plugin_textures =
+                find_shared_shader_material_textures(
+                    state.shared_plugin_material_textures,
+                    item.material);
+            if (!mesh.shared_plugin_textures) {
+                auto created =
+                    std::make_unique<DawnSharedPluginMaterialTextures>();
+                created->material = item.material;
+                for (
+                    const MaterialPluginTexture& texture :
+                    material->plugin_textures) {
+                    std::uint32_t plugin_mip_count = 1;
+                    DawnSampledTexture sampled;
+                    sampled.texture = upload_material_texture(
+                        state,
+                        texture.data,
+                        texture.srgb,
+                        {255, 255, 255, 255},
+                        plugin_mip_count);
+                    sampled.view =
+                        wgpuTextureCreateView(sampled.texture, nullptr);
+                    sampled.sampler = create_texture_sampler(
+                        state.device,
+                        texture.data.sampler);
+                    created->textures.push_back(sampled);
+                }
+                mesh.shared_plugin_textures = created.get();
+                state.shared_plugin_material_textures.push_back(
+                    std::move(created));
+            }
+            ++mesh.shared_plugin_textures->users;
+        }
+#endif
         return mesh;
     };
     const auto rebuild_task_draw_lists = [&] {
@@ -10985,6 +11099,9 @@ bool run_dawn_engine(Engine& engine) {
     // fills it in place, so the per-draw buffer writes reuse one
     // allocation across draws and frames.
     std::vector<float> shader_block_scratch;
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+    std::vector<std::array<float, 16>> pinned_instance_scratch;
+#endif
     // The shared drain owns the per-event contract; the scene loop only
     // adds its camera-controls dispatch, which rides the hook so every
     // event the scene receives also reaches the camera -- and none does
@@ -11136,18 +11253,20 @@ bool run_dawn_engine(Engine& engine) {
                 state.shared_shader_material_textures.size(),
                 frame);
             topology_updated = true;
-        } else if (engine.visibility_epoch != synced_visibility_epoch) {
+        } else if (
+            engine.draw_list_epoch != synced_draw_list_epoch) {
             // The pin's visibility epoch re-records the cached opaque
             // render bundles; the draw lists are this port's bundles, so
             // only they and the task lists rebuild -- mesh GPU state is
-            // untouched. (A full topology rebuild above rebuilds them
-            // anyway.)
+            // untouched. A culling-enabled thin-instance pool moves the
+            // second epoch only when its live count crosses zero, matching
+            // the pin's direct-bucket membership.
             render_plan.draw_lists = upstream::build_render_draw_lists(
                 render_plan.items,
                 engine);
             rebuild_task_draw_lists();
         }
-        synced_visibility_epoch = engine.visibility_epoch;
+        synced_draw_list_epoch = engine.draw_list_epoch;
         // One mesh-sync pass per frame over the plan's items, the same
         // walk and skip logic as the SDL_GPU backend's loop: the
         // thin-instance pool re-upload, the GPU-deformation skip (the
@@ -11204,14 +11323,86 @@ bool run_dawn_engine(Engine& engine) {
                 mesh.thin_instanced &&
                 dawn_mesh.instance_version !=
                     mesh.instance_version) {
+                // A pool that grew past what registration allocated cannot
+                // be filled by a write: the three instance buffers are
+                // recreated at the new capacity, which is also a full
+                // upload, so the dirty-range write below is skipped that
+                // frame. Releasing the old handles here is safe because a
+                // submitted command buffer holds its own reference, and
+                // this port records no bundles -- every pass reads DawnMesh
+                // live at the draw, so a shadow or depth task later this
+                // frame binds the new buffers.
+                const bool recreated = thin_instance_pool_grew(
+                    mesh,
+                    dawn_mesh.instance_capacity);
+                if (recreated) {
+                    const std::size_t rows =
+                        mesh.instance_matrices.size();
+                    WGPUBuffer const previous_instances =
+                        dawn_mesh.instances;
+                    wgpuBufferRelease(previous_instances);
+                    dawn_mesh.instances = create_buffer(
+                        state,
+                        WGPUBufferUsage_Vertex,
+                        mesh.instance_matrices.data(),
+                        rows *
+                            sizeof(mesh.instance_matrices.front()));
+#if BBLITE_PBR_VARIANTS > 0
+                    // The PBR family's mirror-conjugated stream is
+                    // allocated for every pool registration saw, and its
+                    // draw predicate is the LIVE record -- so a mesh
+                    // registered with no pool at all, whose first
+                    // addThinInstance lands here, has none yet and would
+                    // bind a null buffer. Allocate it whenever the record
+                    // now instances, null included, rather than only
+                    // refreshing an existing one. A build with no PBR
+                    // variant compiles this out, so Standard pays nothing.
+                    if (
+                        dawn_mesh.pinned_instances &&
+                        dawn_mesh.pinned_instances !=
+                            previous_instances) {
+                        // Aliased to `instances` for some pools and owned
+                        // otherwise, exactly as the release path reads it.
+                        wgpuBufferRelease(dawn_mesh.pinned_instances);
+                    }
+                    {
+                        pinned_instance_matrices(
+                            mesh,
+                            rows,
+                            pinned_instance_scratch);
+                        dawn_mesh.pinned_instances = create_buffer(
+                            state,
+                            WGPUBufferUsage_Vertex,
+                            pinned_instance_scratch.data(),
+                            rows *
+                                sizeof(pinned_instance_scratch.front()));
+                    }
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+                    if (dawn_mesh.instance_colors) {
+                        // The colour mirror is the scene's own array and
+                        // may still be the shorter one; pad to the pool
+                        // the way registration does.
+                        std::vector<float> instance_colors =
+                            mesh.instance_colors;
+                        instance_colors.resize(rows * 4, 1.0f);
+                        wgpuBufferRelease(dawn_mesh.instance_colors);
+                        dawn_mesh.instance_colors = create_buffer(
+                            state,
+                            WGPUBufferUsage_Vertex,
+                            instance_colors.data(),
+                            instance_colors.size() * sizeof(float));
+                    }
+#endif
+                    dawn_mesh.instance_capacity =
+                        static_cast<std::uint32_t>(rows);
+                }
                 // Re-upload the pinned dirty range [0, count) from
                 // the record pool; slots past the active count keep
                 // their previous contents and are never drawn.
-                const std::size_t active_count = std::min(
-                    static_cast<std::size_t>(
-                        mesh.instance_count),
-                    mesh.instance_matrices.size());
-                if (active_count > 0) {
+                const std::size_t active_count =
+                    thin_instance_active_count(mesh);
+                if (!recreated && active_count > 0) {
                     wgpuQueueWriteBuffer(
                         state.queue,
                         dawn_mesh.instances,
@@ -11222,16 +11413,17 @@ bool run_dawn_engine(Engine& engine) {
                                        .front()));
 #if BBLITE_PBR_VARIANTS > 0
                     if (dawn_mesh.pinned_instances) {
-                        const std::vector<std::array<float, 16>>
-                            pinned_matrices =
-                                pinned_instance_matrices(mesh);
+                        pinned_instance_matrices(
+                            mesh,
+                            active_count,
+                            pinned_instance_scratch);
                         wgpuQueueWriteBuffer(
                             state.queue,
                             dawn_mesh.pinned_instances,
                             0,
-                            pinned_matrices.data(),
+                            pinned_instance_scratch.data(),
                             active_count *
-                                sizeof(pinned_matrices.front()));
+                                sizeof(pinned_instance_scratch.front()));
                     }
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
@@ -14327,18 +14519,6 @@ bool run_dawn_engine(Engine& engine) {
                 &copy_destination,
                 &copy_size);
         }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        if (ui_after_capture_copy) {
-            // Canvas-only attribution reads the surface before the native UI
-            // is composited, then presents the UI normally.
-            render_ui_dawn_frame(
-                state,
-                encoder,
-                surface_view,
-                ui_frame);
-        }
-#endif
-
         WGPUCommandBuffer command =
             wgpuCommandEncoderFinish(encoder, nullptr);
         wgpuQueueSubmit(state.queue, 1, &command);
@@ -14388,6 +14568,25 @@ bool run_dawn_engine(Engine& engine) {
             captures.screenshot_saved = true;
         }
         if (readback) wgpuBufferRelease(readback);
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        if (ui_after_capture_copy) {
+            // Complete the canvas-only readback before transitioning the
+            // surface back to a render attachment for host UI. Encoding both
+            // uses in one submission can leave Dawn's map future unresolved.
+            WGPUCommandEncoder ui_encoder =
+                wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+            render_ui_dawn_frame(
+                state,
+                ui_encoder,
+                surface_view,
+                ui_frame);
+            WGPUCommandBuffer ui_command =
+                wgpuCommandEncoderFinish(ui_encoder, nullptr);
+            wgpuQueueSubmit(state.queue, 1, &ui_command);
+            wgpuCommandBufferRelease(ui_command);
+            wgpuCommandEncoderRelease(ui_encoder);
+        }
+#endif
 
         if (
             capture_ready && !captures.id_buffer_saved &&

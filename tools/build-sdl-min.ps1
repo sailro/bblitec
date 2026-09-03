@@ -10,8 +10,10 @@ param(
 # library stays ABI-identical to the one SDL3_image was compiled
 # against. The engine initializes only SDL_INIT_VIDEO|SDL_INIT_EVENTS
 # and renders through SDL_GPU (D3D12), so joystick, haptic,
-# HIDAPI, sensor, camera, power, dialog, misc, locale, the GL/Vulkan
+# HIDAPI, sensor, camera, power, misc, locale, the GL/Vulkan
 # plumbing, and the SDL_Renderer core are compiled out entirely.
+# SDL's portable dialog subsystem remains available for browser:file scenes;
+# static dead stripping removes it from executables that do not reach the PAL.
 # SDL_RENDER is one of them: bblitec requires a GPU and has no software
 # renderer to link it for. Audio stays off by default; EnableAudio creates a
 # separate feature-compatible install for generated scenes that reach it.
@@ -137,7 +139,7 @@ foreach ($patchName in $patchNames) {
     -DSDL_SENSOR=OFF `
     -DSDL_CAMERA=OFF `
     -DSDL_POWER=OFF `
-    -DSDL_DIALOG=OFF `
+    -DSDL_DIALOG=ON `
     -DSDL_MISC=OFF `
     -DSDL_LOCALE=OFF `
     -DSDL_OPENGL=OFF `
@@ -167,7 +169,10 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
 # scene whose reached feature set is incompatible with the selected trimmed
 # dependency. Keep the capability machine-readable rather than inferring it
 # from an install-directory name or from a prose provenance field.
-"set(BBLITE_SDL_AUDIO $audioSetting)`n" |
+@(
+    "set(BBLITE_SDL_AUDIO $audioSetting)"
+    "set(BBLITE_SDL_DIALOG ON)"
+) -join "`n" |
     Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
 
 @{
@@ -176,9 +181,9 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     version = $sdlVersion
     patches = $patchNames
     variant = if ($EnableAudio) {
-        "static, MinSizeRel, static CRT, video+events+audio+gpu only"
+        "static, MinSizeRel, static CRT, video+events+dialogs+audio+gpu only"
     } else {
-        "static, MinSizeRel, static CRT, video+events+gpu only"
+        "static, MinSizeRel, static CRT, video+events+dialogs+gpu only"
     }
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")

@@ -9,8 +9,9 @@ This is a bounded compatibility surface, not a general DOM or HTML canvas.
 
 The `ui:rml` feature is selected only when compilation reaches supported UI
 operations. It adds the RmlUi projection, FreeType, platform font discovery,
-and renderer integration. Builds without reached UI include none of these
-components.
+and renderer integration. Bounded inline markup additionally selects
+`ui:inline-svg`, and CMake requires the pinned RmlUi artifact's LunaSVG plugin.
+Builds without reached UI include none of these components.
 
 Scene-created controls are lowered from the original TypeScript. Static chrome
 owned by a browser host page can be represented by a reviewed JSON companion,
@@ -28,19 +29,73 @@ commands.
 The compiler accepts:
 
 - `document.createElement(<static tag>)`;
-- `textContent`, `innerText`, `innerHTML`, `className`, `id`, and `type`;
+- `textContent`, `innerText`, bounded `innerHTML`, `className`, `id`, and
+  `type`;
+- an object-URL `href` plus `download` on `<a>`, and static `type="file"` plus
+  `accept` on `<input>`;
 - `style.cssText` and reached `style.<property>` writes;
 - `setAttribute(<static name>, <runtime string>)`;
 - `appendChild`, variadic `append`, root attachment, and `remove`;
-- `classList.toggle`;
-- `click`, `pointerdown`, `pointerup`, `pointercancel`, and
-  `lostpointercapture` listeners;
+- `classList.add`, `remove`, and forced `toggle(name, enabled)`;
+- `querySelectorAll(".class")` on a statically-known retained root, with
+  DOM-order `forEach(element, index)` over a statically complete subtree;
+- `click`, `mousedown`, `pointerdown`, `pointerup`, `pointercancel`, and
+  `lostpointercapture` listeners, plus `change` on a file input;
 - the single native pointer id and pointer-capture calls reached by the
-  supported applications.
+  supported applications;
+- programmatic render-canvas `focus()`, including the browser's one-pixel
+  focused-canvas outline in the full-page native frame.
 
 RmlUi receives input before scene controls. Consumed UI events do not also
 move the camera. Element records are patched in place, so hover, pressed, and
 pointer-capture identity survive text and style updates.
+`preventDefault()` is carried on the event while its callback executes.
+RmlUi focuses before dispatching `mousedown`, so native restores the previous
+focus only when that execution cancelled; a conditional cancellation does not
+permanently make the element unfocusable.
+Platform event objects are borrowed for one dispatch. A persistent callback
+cannot capture one directly or through a retained record, tuple, container, or
+closure value; copy the owned scalar field it needs instead.
+
+### File transfer controls
+
+File transfer is retained state but not RmlUi form handling. A programmatic
+anchor click whose `href` is a live native object URL and whose `download` is
+set opens the host save dialog, using a safe extension/MIME-derived filter and
+the download name as its suggestion. Accepting writes the Blob bytes through
+the PAL's randomized exclusive staging and atomic replacement; cancelling
+leaves the destination untouched.
+Ordinary URL navigation is outside the surface and refuses.
+
+A programmatic `<input type="file">` click opens SDL3's host open dialog for
+the static `accept` list. One accepted result is bounded before allocation and
+becomes an opaque byte/display-name `FileList` snapshot before the registered
+`change` callback runs once; cancellation preserves the prior `files` value and
+dispatches nothing. Input, FileList, and File values share that snapshot.
+Replacement and element removal release the input's ownership, while a retained
+old File keeps its bytes until its final handle dies; all live selections share
+a 256 MiB per-engine aggregate cap. `files[0]` is truthy only when selected, and
+`File.text()` reads the immutable bytes rather than reopening a path.
+Native dialog completion is synchronized, so the populated list and its
+immediate `text().then(...)` callback run before `click()` returns; the
+generated listener copies owned callback-local handles and shares mutable
+outer cells. Multiple files, directory selection, wildcard, parameterized or
+unmappable accept entries, and source-supplied paths refuse. Blob/object-URL
+lifetime and the recorded ordering adaptation are defined in
+[fidelity](fidelity.md).
+
+`innerHTML` is parsed at generation, not handed through as arbitrary markup.
+The accepted grammar is text plus `div`/`span` (static `class` and reviewed
+`style`) and inline `svg` containing self-closing `path`/`rect` nodes with the
+reviewed numeric, paint, stroke, view-box, and path-data attributes. Runtime
+text substitutions are RML-escaped. Scripts, event attributes, links, foreign
+elements, unquoted/dynamic attributes, and malformed nesting refuse with a
+source location. RmlUi's pinned LunaSVG plugin rasterizes the vector at its
+live CSS size; `currentColor` is carried through the inherited RmlUi colour as
+an image tint. Because that tint applies to the whole image, an SVG mixing a
+literal paint with `currentColor` refuses; `none` is non-paint. Selectors
+targeting internal `path` or `rect` nodes likewise refuse because LunaSVG
+receives those nodes as image data rather than RmlUi elements.
 
 ## Canvas2D
 
@@ -78,13 +133,41 @@ projected to RmlUi. Compatibility lowering covers:
 
 Static style text is validated at generation against the reviewed property
 surface: a property outside it refuses naming itself and the accepted sets.
-`<style>` sheets accept exact `.class` and `#id` rules, the audited
-`#id .class` descendant form, and `@keyframes` blocks; any other selector
-refuses by name. A descendant rule is projected as a global class rule (the
-retained IR carries no scoped rules), which is exact for the reached sheets
-because they attach those classes only inside the id's own subtree; the
-projection is recorded in the scene's `substituted-ui-runtime` adaptation,
-and two rules that would collide on one global class refuse.
+`<style>` sheets accept exact `.class` and `#id` rules, two-class compounds,
+the audited `#id .class` form, and `.ancestor tag` with optional `:hover`.
+Class/tag descendants are accepted only after the complete retained
+construction subtree proves at least one matching tag; the typed retained
+selector keeps the ancestor scope, so unrelated tags cannot inherit it.
+RmlUi evaluates the reached hover pseudo-class directly.
+
+The same typed rules accept `@media (max-width:Npx)` for the reached position,
+size, and font-size overrides. RmlUi evaluates them against the live context
+and reevaluates after every SDL resize; CSS pixels are translated to its
+density-independent units. Rules remain in source order, so ordinary
+specificity, later overrides, and values such as `right:auto` and
+`bottom:auto` retain the browser cascade. Scene-created sheets follow live
+root attachment order, including remove/reappend, rather than element
+allocation order. Private projection metadata uses the same selector
+specificity before source order.
+
+RmlUi 6.4 has no grid formatting context. The compiler accepts only
+`display:grid` paired with `grid-template-columns:repeat(integer, px)`, a
+static pixel gap, and direct children proven to have the matching fixed pixel
+width, one fixed height, compatible min/max constraints, and no track-changing
+margin, padding, or border. It
+then uses a fixed-width wrapping flex child container, which is equivalent for
+the reached regular grids. Optional fixed row tracks must match the child
+height and the proven number of populated rows. The implementation container
+uses a private tag so author descendant
+selectors cannot match it; authored start/center/end track alignment is
+retained, and a media, hover, or mutable-class rule that can change a grid
+item's geometry makes the proof refuse. Every reachable mutable-class grid
+shape is validated independently, and runtime-unknown class or id mutations
+refuse only when they could activate a grid or alter one of its child proofs.
+Explicit row templates additionally require every counted child to remain in
+normal flow. Runtime grid-class transitions migrate the existing authored
+children without recreating them. Each applied shape is named in
+`substituted-ui-runtime`; any unprovable grid refuses.
 
 Font paths are resolved through DirectWrite on Windows, CoreText on macOS, and
 fontconfig on Linux. The UI layer contains no hardcoded font paths. Platform
@@ -106,7 +189,9 @@ The UI path is integrated into the scene and sprite-only presentation loops.
 The standalone fullscreen-effect and frame-graph drivers render no UI on
 either backend, so generation refuses a program that reaches retained UI
 under either driver. Resize and display-density changes update both the
-RmlUi context and intrinsic layout measurements.
+RmlUi context and intrinsic layout measurements. Synthetic intrinsic widths
+are cleared and recomputed on those changes, and yield whenever an active
+authored width rule supplies the size.
 
 ## Capture and parity
 
@@ -132,20 +217,25 @@ The accepted divergences below are also recorded in the
 `substituted-ui-runtime` adaptation of every `ui:rml` scene's generated
 `fidelity.json`; the refusals hold the rest of the boundary at generation.
 
-- There is no general selector engine, HTML parser, browser stylesheet
-  cascade, measurement API, mutation observer, or arbitrary DOM traversal.
-- Form values, keyboard text input, hover callbacks, multi-touch identity, and
-  general event options are unsupported.
+- There is no general browser selector or HTML engine, measurement API,
+  mutation observer, or arbitrary DOM traversal. Selector and markup parsing
+  stop at the generation-validated forms above; RmlUi performs only their live
+  cascade, hover, and media evaluation.
+- Form values other than the bounded one-file picker, keyboard text input,
+  JavaScript hover callbacks, multi-touch identity, and general event options
+  are unsupported. Reached CSS `:hover` is supported.
 - Tags and attribute names are static. Text, attribute values, and reached
   individual style properties may be runtime values; runtime style values
   flow to the projection unvalidated, while static property names are
   enforced at generation. This includes dynamic `border-color` writes used
   to mark selected retained-UI controls.
-- Style properties outside the reviewed surface refuse at generation. Five
-  reached properties are accepted with a recorded degradation and no native
-  rendering: `backdrop-filter` (and its `-webkit-` twin), `box-shadow`
-  (the recorder exposes no render layers; the PAL filters dynamic writes
-  identically), `font-variant-numeric`, and the voxel sandbox crosshair's
+- Style properties outside the reviewed surface refuse at generation. A static
+  `box-shadow: inset 0 0 0 <px> <color>` projects to the equivalent inside
+  border on an out-of-flow retained child, preserving both the selection
+  outline and the original element's content geometry. Other box
+  shadows remain accepted with a recorded degradation and no native rendering,
+  alongside `backdrop-filter` (and its `-webkit-` twin),
+  `font-variant-numeric`, and the voxel sandbox crosshair's
   exact `mix-blend-mode:difference` (other blend modes still refuse). The
   crosshair's reviewed two-layer gradient shape itself projects to the same
   retained bar markup used by Doom; only the difference blend is degraded.
@@ -158,7 +248,7 @@ The accepted divergences below are also recorded in the
 - `background-clip:text`, `background-size`, `-webkit-text-stroke`, and
   `filter: drop-shadow(...)` are consumed only by the gradient-text
   projection and refuse outside that combination, as do `color:transparent`
-  and `display:grid` outside their reached combinations.
+  and `display:grid` outside the statically-proven fixed-track combination.
 - Web Animations `element.animate()` is a no-op; reached CSS `@keyframes` are
   supported, with `steps()`/`step-start`/`step-end` played as
   `linear-in-out` and the `ease*` family as `sine*`.

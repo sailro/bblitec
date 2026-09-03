@@ -12,6 +12,9 @@ export interface CameraIntrinsicContext
     extends IntrinsicCallContext, PositiveIntegerContext {
     readonly dataTypes: DataTypeRegistry;
     readonly checker: ts.TypeChecker;
+    reachJsData(): void;
+    allocateTemporaryCppName(label: string): string;
+    emit(line: string): void;
     readonly dataLowerer: {
         structAggregate(
             dataType: DataType & { kind: "struct" },
@@ -77,6 +80,20 @@ function arcRotateProgram(
         target,
         properties: [],
     };
+}
+
+function typeMayBeAbsent(
+    checker: ts.TypeChecker,
+    expression: ts.Expression,
+): boolean {
+    const type = checker.getTypeAtLocation(expression);
+    const members = type.isUnion() ? type.types : [type];
+    return members.some(
+        (member) =>
+            (member.flags &
+                (ts.TypeFlags.Null | ts.TypeFlags.Undefined)) !==
+            0,
+    );
 }
 
 /**
@@ -298,6 +315,57 @@ export function compileCameraIntrinsic(
                     `const bbl::Vec3d eye = ${position}; ` +
                     `return ${aggregate}; }())`,
                 dataType: resultType,
+                engineCpp: engine,
+            };
+        }
+
+        case "getViewProjectionMatrix": {
+            context.expectArgumentCount(call, 2, 2);
+            const cameraExpression = call.arguments[0]!;
+            const camera = context.compileValue(cameraExpression);
+            context.expectKind(camera, "camera", cameraExpression);
+            if (
+                camera.optionalFoundCpp !== undefined &&
+                typeMayBeAbsent(context.checker, cameraExpression)
+            ) {
+                context.fail(
+                    cameraExpression,
+                    "getViewProjectionMatrix camera may be absent; guard it before the call.",
+                );
+            }
+            const engine = context.requireEngine(camera, call);
+            const aspect = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            context.reachJsData();
+            context.reachFeature("camera:view-projection", call);
+
+            // src/camera/camera.ts getViewProjectionMatrix returns the
+            // camera-owned Mat4 cache. The reached native camera pipeline
+            // already lowers that exact projection * view composition as
+            // build_view_projection, including the Float32Array stores.
+            // Copy those rounded lanes into an owning F32Array: indexed reads
+            // widen back to JavaScript numbers, and a local passed to another
+            // function keeps valid storage for the whole call. The pin applies
+            // no positive/finite aspect guard, so preserve that behavior while
+            // binding the argument once.
+            const result =
+                context.allocateTemporaryCppName("view_projection");
+            context.emit(
+                `[[maybe_unused]] bbl::js::F32Array ${result} = ` +
+                    `([&]() { const double aspect = ${aspect}; ` +
+                    `const auto matrix = ` +
+                    `bbl::upstream::build_view_projection(` +
+                    `${engine}.cameras.at(${camera.cpp}.value), aspect); ` +
+                    `return bbl::js::F32Array(` +
+                    `matrix.begin(), matrix.end()); }());`,
+            );
+            return {
+                kind: "data",
+                cpp: result,
+                dataType: { kind: "f32array" },
+                freshData: true,
                 engineCpp: engine,
             };
         }

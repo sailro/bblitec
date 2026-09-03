@@ -8,7 +8,12 @@ import type {
 import type { IntrinsicCallContext } from "./context.js";
 import { compressedTextureUrl } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
-import { addressModeByPin } from "../../pinned-address-modes.js";
+import {
+    addressModeByPin,
+    loadTexture2DDefaults,
+    loadTexture2DOptionFields,
+    loadTexture2DSamplerCpp,
+} from "../../pinned-address-modes.js";
 import { compileDynamicPackagedAsset } from "../static-fetch.js";
 import {
     validateObjectProperties,
@@ -494,18 +499,23 @@ export function compileAssetIntrinsic(
                 : context.registerAsset(url, "texture");
             const texturePathCpp = dynamic?.dynamicAssetPathCpp ??
                 `bbl::asset_path(${context.cppString(asset!.output)})`;
-            // Pinned defaults from src/texture/texture-2d.ts: linear
-            // filters, repeat addressing, mipMaps true, invertY true,
-            // srgb false. Mip sampling clamps to the base level when
-            // mipMaps is false, matching the pinned nearest mip filter.
-            let minFilter = "linear";
-            let magFilter = "linear";
-            let mipMaps = true;
-            let invertY = true;
-            let srgb = false;
-            let premultiplyAlpha = false;
-            let addressModeU = "bbl::TextureAddressMode::repeat";
-            let addressModeV = "bbl::TextureAddressMode::repeat";
+            // The pin's own option defaults live in
+            // `pinned-address-modes.ts`, beside the sampler rule the browser
+            // texture bake shares. Mip sampling clamps to the base level
+            // when mipMaps is false, matching the pinned nearest mip filter.
+            let minFilter: string = loadTexture2DDefaults.minFilter;
+            let magFilter: string = loadTexture2DDefaults.magFilter;
+            let mipMaps: boolean = loadTexture2DDefaults.mipMaps;
+            let invertY: boolean = loadTexture2DDefaults.invertY;
+            let srgb: boolean = loadTexture2DDefaults.srgb;
+            let premultiplyAlpha: boolean =
+                loadTexture2DDefaults.premultiplyAlpha;
+            let addressModeU = `bbl::${
+                addressModeByPin[loadTexture2DDefaults.addressModeU]
+            }`;
+            let addressModeV = `bbl::${
+                addressModeByPin[loadTexture2DDefaults.addressModeV]
+            }`;
             if (call.arguments[2]) {
                 const options =
                     context.expectObjectLiteral(
@@ -521,16 +531,7 @@ export function compileAssetIntrinsic(
                             ? property.name.text
                             : undefined;
                     if (
-                        ![
-                            "invertY",
-                            "addressModeU",
-                            "addressModeV",
-                            "magFilter",
-                            "minFilter",
-                            "mipMaps",
-                            "premultiplyAlpha",
-                            "srgb",
-                        ].includes(name ?? "")
+                        !loadTexture2DOptionFields.includes(name ?? "")
                     ) {
                         context.fail(
                             property,
@@ -648,23 +649,18 @@ export function compileAssetIntrinsic(
                         ) === "true";
                 }
             }
-            // `maxAnisotropy: allLinear ? 4 : 1` — the pin asks for
-            // anisotropic filtering only when nothing in the chain is
-            // nearest, and the mip filter it folds into that test is
-            // `mipMaps ? "linear" : "nearest"`, so turning mips off turns
-            // anisotropy off with them. The glTF sampler path already
-            // carries the same rule for the same reason.
-            const allLinear =
-                minFilter === "linear" && magFilter === "linear" && mipMaps;
-            const sampler =
-                `bbl::TextureSamplerState{` +
-                `bbl::TextureFilter::${minFilter}, ` +
-                `bbl::TextureFilter::${magFilter}, ` +
-                `bbl::TextureMipmapMode::${mipMaps ? "linear" : "nearest"}, ` +
-                `${addressModeU}, ` +
-                `${addressModeV}, ` +
-                `${allLinear ? "4.0f" : "1.0f"}, ` +
-                `${mipMaps ? "1000.0f" : "0.0f"}}`;
+            // `maxAnisotropy: allLinear ? 4 : 1` — the rule, and the mip
+            // filter it folds in, live in `pinned-address-modes.ts` because
+            // the generation-time browser texture bake replays the same
+            // call. The glTF sampler path already carries the same rule for
+            // the same reason.
+            const sampler = loadTexture2DSamplerCpp({
+                minFilter,
+                magFilter,
+                mipMaps,
+                addressModeUCpp: addressModeU,
+                addressModeVCpp: addressModeV,
+            });
             context.reachFeature("texture:file", call);
             return {
                 kind: "texture",

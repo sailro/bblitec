@@ -217,6 +217,16 @@ void audio_disconnect(AudioNodeHandle node);
 /** `source.start(when)`, in context time. */
 void audio_node_start(AudioNodeHandle node, double when);
 
+/** `source.start(when, offset)`, with the offset in buffer seconds. */
+void audio_node_start(AudioNodeHandle node, double when, double offset);
+
+/** `source.start(when, offset, duration)`, all values in seconds. */
+void audio_node_start(
+    AudioNodeHandle node,
+    double when,
+    double offset,
+    double duration);
+
 /** `source.stop(when)`, in context time. */
 void audio_node_stop(AudioNodeHandle node, double when);
 

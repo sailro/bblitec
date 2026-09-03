@@ -22,12 +22,15 @@
  * answers with a mesh walk: which index the Standard bridge assigned, so the
  * generated feature derivation can OR the same bits out of the record.
  *
- * The reached slice is the plugin scene 217 declares: a name and a
- * `getCustomCode` returning WGSL for one fragment injection point. Uniforms,
- * samplers, textures, `defines`, `priority` and `isEnabled` all refuse at
- * generation where the scene declares them, so nothing here has to answer
- * for the material UBO, the self-managed Standard `pluginUbo`, or a bind
- * group — which is why the reached slice adds no native binding at all.
+ * The reached slice is a plugin declaring a name, a `getCustomCode`
+ * returning WGSL, and the texture and sampler pairs `getSamplers` declares
+ * with `bindTextures`/`getActiveTextures` filling them. Uniforms,
+ * `defines`, `priority` and `isEnabled` all refuse at generation where the
+ * scene declares them, so nothing here has to answer for the material UBO
+ * or the self-managed Standard `pluginUbo`. The samplers do reach a bind
+ * group: the pin composes their declarations into the fragment, the
+ * generated reflection numbers them, and the material record carries the
+ * textures each material fills them with.
  */
 import ts from "typescript";
 import { importPinnedModule } from "./pinned-shader-composer.js";
@@ -93,6 +96,23 @@ export function pinnedPluginBakeShift(context: LoweringContext): number {
     return standardPluginConstant(context, "PLUGIN_INDEX_SHIFT");
 }
 
+/**
+ * One `PluginSamplerDecl` a plugin's `getSamplers()` returns, folded.
+ *
+ * The two optional halves are the pin's own optional fields, kept optional
+ * here for the same reason `buildPluginFragment` defaults them: an absent
+ * one composes the default, and stating it would make a plugin that omits
+ * it sign differently from one that writes the default out.
+ */
+export interface MaterialPluginSamplerManifest {
+    /** The WGSL name the composed fragment samples the texture through. */
+    texture: string;
+    /** The WGSL name of the sampler beside it. */
+    sampler: string;
+    textureType?: string;
+    samplerType?: string;
+}
+
 /** One `MaterialPlugin` object literal, folded from the scene's own AST. */
 export interface MaterialPluginManifest {
     /** The plugin's own `name`, which heads its signature upstream. */
@@ -104,6 +124,12 @@ export interface MaterialPluginManifest {
     fragment?: Readonly<Record<string, string>>;
     /** `getCustomCode("vertex")`, folded the same way. */
     vertex?: Readonly<Record<string, string>>;
+    /**
+     * `getSamplers()`, folded: the texture and sampler pairs the composed
+     * fragment declares, in the order `buildPluginFragment` emits them —
+     * which is also the order `bindPluginTextures` pushes their resources.
+     */
+    samplers?: readonly MaterialPluginSamplerManifest[];
 }
 
 /** The shape the pin's own bridges read a plugin through. */
@@ -112,17 +138,23 @@ interface PinnedPlugin {
     getCustomCode(
         shaderType: "vertex" | "fragment",
     ): Readonly<Record<string, string>> | null;
+    getSamplers?(): readonly MaterialPluginSamplerManifest[];
 }
 
 /**
  * The folded manifest as the object the pin reads.
  *
  * `pluginSignature` and `buildPluginFragment` call `getCustomCode` and
- * nothing else on a plugin declaring no uniforms or samplers, so the pin
- * sees the scene's own declaration through a closure over the folded
- * records rather than through a second implementation of it.
+ * `getSamplers` and nothing else on a plugin declaring no uniforms, so the
+ * pin sees the scene's own declaration through a closure over the folded
+ * records rather than through a second implementation of it. `getSamplers`
+ * is defined only when the scene declared it, because `pluginSignature`
+ * cannot tell a plugin that has no such member from one whose member
+ * returns nothing — but `buildPluginFragment` can, and this port's own
+ * list key mirrors the same absence.
  */
 function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
+    const samplers = manifest.samplers;
     return {
         name: manifest.name,
         getCustomCode(shaderType) {
@@ -131,6 +163,7 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
                 : manifest.vertex;
             return code ?? null;
         },
+        ...(samplers ? { getSamplers: () => samplers } : {}),
     };
 }
 
@@ -142,10 +175,11 @@ function pinnedPlugin(manifest: MaterialPluginManifest): PinnedPlugin {
  * its own key because it partitions the scene's lists — and assigns the
  * index the generated record carries — before any pinned module is loaded.
  * Over the reached slice the two agree by construction: every input
- * `pluginSignature` reads past the name is a folded custom-code record, the
- * rest being the fields that refuse at generation. Insertion order is kept
- * rather than sorted for the same reason the pin keeps it: `pluginSignature`
- * stringifies the custom-code record as written.
+ * `pluginSignature` reads past the name is a folded custom-code record or a
+ * folded sampler declaration, the rest being the fields that refuse at
+ * generation. Insertion order is kept rather than sorted for the same
+ * reason the pin keeps it: `pluginSignature` stringifies both records as
+ * written.
  */
 export function materialPluginListKey(
     plugins: readonly MaterialPluginManifest[],
@@ -155,6 +189,7 @@ export function materialPluginListKey(
             plugin.name,
             plugin.fragment ?? null,
             plugin.vertex ?? null,
+            plugin.samplers ?? null,
         ]),
     );
 }
@@ -169,7 +204,29 @@ export function materialPluginListKey(
  * The pipeline runs one scene per process (`src/scene-command.ts` spawns
  * `cli.js` per scene), which is what makes that safe here.
  */
-let bridges: Promise<readonly number[]> | undefined;
+let bridges: Promise<readonly RegisteredPluginList[]> | undefined;
+
+/** What one registered list contributes, read back off the pin's bridge. */
+interface RegisteredPluginList {
+    /** The Standard feature bits `registerStdPlugins` pre-baked. */
+    bits: number;
+    /**
+     * The texture and sampler binding names the pin's own composed plugin
+     * fragment declares, paired in `getSamplers` order.
+     *
+     * Taken from `stdPluginExt._frag`'s own `_bindings` rather than
+     * re-concatenated from the manifests: the pairing, the order and the
+     * exclusion of any non-texture binding are `buildPluginFragment`'s, and
+     * a second derivation here would be a copy of it that could disagree.
+     */
+    bindings: readonly MaterialPluginSamplerManifest[];
+}
+
+/** The pinned binding declaration shape `buildPluginFragment` emits. */
+interface PinnedBindingDecl {
+    _name: string;
+    _type: { _kind: string };
+}
 
 /**
  * Registers both plugin bridges, once, exactly where the pin's opt-in does.
@@ -196,8 +253,8 @@ let bridges: Promise<readonly number[]> | undefined;
  */
 async function registerPluginBridges(
     standardMaterialPlugins: readonly (readonly MaterialPluginManifest[])[],
-): Promise<readonly number[]> {
-    const [pbrBridge, stdBridge, pbrFlags, stdFlags, stdMaterial] =
+): Promise<readonly RegisteredPluginList[]> {
+    const [pbrBridge, stdBridge, pbrFlags, stdFlags, stdMaterial, stdExts] =
         await Promise.all([
             importPinnedModule<{
                 registerPbrPlugins: (register: (ext: unknown) => void) => void;
@@ -217,6 +274,14 @@ async function registerPluginBridges(
             importPinnedModule<{
                 getStandardGroupBuilder: () => unknown;
             }>("material/standard/standard-material.js"),
+            importPinnedModule<{
+                _getStdExtsSorted: () => readonly {
+                    _id: string;
+                    _frag: (features: number, meshFeatures: number) => {
+                        _bindings?: readonly PinnedBindingDecl[];
+                    };
+                }[];
+            }>("material/standard/standard-flags.js"),
         ]);
     pbrBridge.registerPbrPlugins(pbrFlags._registerPbrExt);
     // One synthetic mesh per list, in the compiler's own order.
@@ -281,6 +346,7 @@ async function registerPluginBridges(
                 "it.",
         );
     }
+    const registered = standardPluginFragmentBindings(stdExts, shift);
     return materials.map((material, position) => {
         const baked = material._renderFeatures?.features;
         // The compiler numbered the lists 1..n in this order and emitted
@@ -297,8 +363,78 @@ async function registerPluginBridges(
                     "it is given the meshes.",
             );
         }
-        return baked;
+        const bindings = registered(position + 1);
+        // The fold assigns each material's textures to positions in this
+        // list, so a pin that reordered, dropped or unshifted a pair would
+        // bind by an index the record never filled. Comparing the pairs the
+        // scene declared against the ones the pin composed is what makes
+        // the generated table's ordinal the pin's own position.
+        const declared = standardMaterialPlugins[position]!.flatMap(
+            (plugin) =>
+                (plugin.samplers ?? []).map(
+                    ({ texture, sampler }) => ({ texture, sampler }),
+                ),
+        );
+        if (JSON.stringify(bindings) !== JSON.stringify(declared)) {
+            throw new Error(
+                "Pinned buildPluginFragment composed the texture binding " +
+                    `pairs ${JSON.stringify(bindings)} for the plugin list ` +
+                    `at ${position}, where the scene declared ` +
+                    `${JSON.stringify(declared)}.`,
+            );
+        }
+        return { bits: baked, bindings };
     });
+}
+
+/**
+ * The composed plugin fragment's own texture/sampler pairs, by index.
+ *
+ * `stdPluginExt._frag(features)` is how the Standard renderable resolves the
+ * fragment for a material's baked word, so asking it the same question is
+ * how this reads the bindings the pin composed — the alternative, rebuilding
+ * the list from the manifests, would be `buildPluginFragment`'s pairing
+ * written a second time.
+ */
+function standardPluginFragmentBindings(
+    flags: {
+        _getStdExtsSorted: () => readonly {
+            _id: string;
+            _frag: (features: number, meshFeatures: number) => {
+                _bindings?: readonly PinnedBindingDecl[];
+            };
+        }[];
+    },
+    shift: number,
+): (index: number) => readonly MaterialPluginSamplerManifest[] {
+    const ext = flags._getStdExtsSorted().find(
+        (candidate) => candidate._id === "plugin",
+    );
+    if (!ext) {
+        throw new Error(
+            "The pinned Standard plugin bridge did not register an " +
+                "extension the composed fragment can be read from.",
+        );
+    }
+    return (index) => {
+        const declarations = ext._frag(index << shift, 0)._bindings ?? [];
+        const pairs: MaterialPluginSamplerManifest[] = [];
+        for (let at = 0; at < declarations.length; at += 1) {
+            const texture = declarations[at]!;
+            if (texture._type._kind !== "texture") continue;
+            const sampler = declarations[at + 1];
+            if (!sampler || sampler._type._kind !== "sampler") {
+                throw new Error(
+                    "Pinned buildPluginFragment no longer declares a " +
+                        `sampler after texture '${texture._name}', so a ` +
+                        "plugin binding pair cannot be read from it.",
+                );
+            }
+            at += 1;
+            pairs.push({ texture: texture._name, sampler: sampler._name });
+        }
+        return pairs;
+    };
 }
 
 /**
@@ -341,8 +477,8 @@ export async function standardPluginFeatureBits(
     pluginIndex: number | undefined,
 ): Promise<number> {
     if (pluginIndex === undefined) return 0;
-    const bits = (await bridges)?.[pluginIndex - 1];
-    if (bits === undefined) {
+    const list = (await bridges)?.[pluginIndex - 1];
+    if (list === undefined) {
         throw new Error(
             `Material plugin list ${pluginIndex} was not registered with ` +
                 "the pinned Standard bridge; every list a scene attaches " +
@@ -350,5 +486,16 @@ export async function standardPluginFeatureBits(
                 "the pin assigns its indices in one pass.",
         );
     }
-    return bits;
+    return list.bits;
+}
+
+/**
+ * The composed binding pairs each registered Standard plugin list declares,
+ * by the compiler's own 1-based index — the table both backends resolve a
+ * plugin binding name through.
+ */
+export async function standardPluginBindingTable(): Promise<
+    readonly (readonly MaterialPluginSamplerManifest[])[]
+> {
+    return (await bridges ?? []).map((list) => list.bindings);
 }

@@ -3375,6 +3375,201 @@
       ]
     },
     {
+      "id": "sandblox",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/sandblox.ts",
+      "reference": {
+        "source": "reference/sandblox/babylon-lite-golden.png",
+        "sha256": "d68d79d4296f414af1782300626c2496411c96a94038674b089b268efe9a6cc0"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox.ts",
+          "sha256": "0a553a58b8b02f6510ce59788ab58008bd2139026ed81e23c87224f39c105dc3"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/adornments/handles.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/adornments/handles.ts",
+          "sha256": "325afa19efff9839c0eb165ef1c1c967cbe7d2c7988091adfd2ab691e459c664"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/adornments/selection-box.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/adornments/selection-box.ts",
+          "sha256": "24dcf45079516b2f794c5d41dfafffbe94ced4683237ea1d8b0a5d6f56279ba7"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/animation-controller.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/animation-controller.ts",
+          "sha256": "3e18705df14b737ea421e9f885e7f1b62e20895c70b792016863e7a0962e87ae"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/camera-controller.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/camera-controller.ts",
+          "sha256": "5ca1e3f9202d8d5633927d0da0daffc9bd82bb32312b29351e7ca0114fd74255"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/character.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/character.ts",
+          "sha256": "af5e98d50eae4a00445a81c0d76ea93bd1d7959216e8cd385dd34dbfa1d20970"
+        },
+        {
+          "upstreamPath": "lab/public/sandblox/default-map.json",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/default-map.json",
+          "sha256": "9909a08b3a552e29b9c082866923f728beb96ff4a78d8a222a41b06814599f5f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/dragger.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/dragger.ts",
+          "sha256": "0d7f0e5bce26287f99f10790259496de8961d83710bf1f9ddfc6b6095325ad7f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/events.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/events.ts",
+          "sha256": "b0b2668de7151ba76a17e53772d2a40957bff3c2f3d91d7161a4112bbf5242b0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/input-manager.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/input-manager.ts",
+          "sha256": "b9d19a9a6c5f533ab21d32dab2abdf081a7bfdc923035a338df2ea4f0e859556"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/leaderboard.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/leaderboard.ts",
+          "sha256": "0efa610acb76b9945cef748a55433f08fc3ca69f730745169f69128b27d12dbe"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/lighting.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/lighting.ts",
+          "sha256": "e160441c8dedb6afad1ec6419e57cbbe14e13f632822a2a51c01d963c6f5a4c7"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/map-io-ui.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/map-io-ui.ts",
+          "sha256": "18f542210f7efa71210ad86c620f9fe24490642f7fd3b50a6c8175ab69f61acc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/mouse.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/mouse.ts",
+          "sha256": "1c88bae9ce1bc5afef155c67cebf04e23c8d5298f8e2e7ae9bfa4f761f4b07d1"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/movement-controller.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/movement-controller.ts",
+          "sha256": "d6ef42aa5721fd8ba335aeb00b856d2470c4391c9f31b0cc3f1bed9e94b18c98"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/part-renderer.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/part-renderer.ts",
+          "sha256": "f6b7876e44862066336d9ba0ed6e892059474a842da9d54241bdacb503909ab0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/part.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/part.ts",
+          "sha256": "dc153cc7b691cf2a32faaf0abde5613d9d3bfcc616f8533a3b331a1785213e27"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/persistence.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/persistence.ts",
+          "sha256": "32e5727e66d3d93fe244381a22ed07e667ef55cd9a2e46fd5152b727350638c0"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/physics-controller.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/physics-controller.ts",
+          "sha256": "a831f1eb9480337d1c76f9ec2d799f4acb20031666a27aeaf80e2fccc34d9d68"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/player-controller.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/player-controller.ts",
+          "sha256": "91d106fd429d193d6f39bcfd2b605523759f99635b57d3ee0ead586e4e534f3a"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/ray-helpers.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/ray-helpers.ts",
+          "sha256": "3bf81749b863eb7494064f4de7bc47fce7b2377d0e50bda84ee30e29abf7e8fe"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/rigid-body.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/rigid-body.ts",
+          "sha256": "42f8274ece46ef8c4bfc19ee5100da601884f5cc6da189839b54569bced60aec"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/sounds.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/sounds.ts",
+          "sha256": "2583fdd38308241b47c84b241170aba99e52d2c988f3e44a06ffc26b9d0c9b69"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/stud-material-plugin.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/stud-material-plugin.ts",
+          "sha256": "73b24a1d1ccee58b49ce2691c58cbc4d98bb9480f30344306314b960d81a83b2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/stud-texture.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/stud-texture.ts",
+          "sha256": "953c191566343933fb3f579d1e2b67c6c158a20c8bb8d9bed7201736672efa54"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/toolbar.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/toolbar.ts",
+          "sha256": "c5eb654740e88d7ba7f79a1cc2f9401f71b2036c6193cc3a478566a1da9ed5dc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/clone-tool.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/clone-tool.ts",
+          "sha256": "43121a510de69a373cfb0fc3e0e088fea6e6d725c0cf16d842172d9075b417f4"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/delete-tool.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/delete-tool.ts",
+          "sha256": "c395ab7a9c7f45db6eca42d0d867e95094ae91b9bd1cc5a2401fd03b617e4457"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/move-tool.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/move-tool.ts",
+          "sha256": "addbd49e4689136c49cb52d1110a6c4d6d58e94e251fe2064cfdb259eac64f20"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/paint-tool.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/paint-tool.ts",
+          "sha256": "c63107d8ad6cf0a5ad250f63e8ef537340e699b436ece59b848c6c158f24d199"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/resize-tool.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/resize-tool.ts",
+          "sha256": "84313bd1fb4875ecf6ef57a88ce769322e5f172ee9eeb706e426098da205590f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/tool-manager.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/tool-manager.ts",
+          "sha256": "ee638767580915452b2f192e833645ba9d4892e531605198bba6d715d64f8811"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/tools/tool.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/tools/tool.ts",
+          "sha256": "57348dbe2ea079975a42e23e37ce7bee3ac0d2d65459fe31272351e904af954f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/workspace.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/workspace.ts",
+          "sha256": "4cb4cc7c6832ebdbb56b74dca1a2cf20c6abceef2a7ab3390cb1bcb31f8af4e9"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/world-io.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/world-io.ts",
+          "sha256": "af3a10646278c92b2a49683d248eb40e061f965909bf2ffdeba7271a983ff798"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/sandblox/world.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/world.ts",
+          "sha256": "065ee301da6e446f6d03db0feea29f9ec47a0e5c17da57463dc57578447811f4"
+        }
+      ]
+    },
+    {
       "id": "minecraft",
       "entry": "corpus/babylon-lite/lab/lite/src/demos/minecraft.ts",
       "reference": {

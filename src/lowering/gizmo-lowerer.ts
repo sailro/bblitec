@@ -4387,16 +4387,36 @@ BoundingBoxBounds bbox_compute_bounds(
     // is a stack rather than one pass: a node's children carry children.
     // The root itself is visited upstream too and folds nothing, because
     // a transform node has no positions to fold.
-    std::vector<MeshHandle> pending;
+    std::vector<TransformNodeChild> pending;
+    std::vector<std::uint32_t> visited_nodes;
     if (root.value < engine.transform_nodes.size()) {
-        for (const MeshHandle child :
+        for (const TransformNodeChild& child :
              engine.transform_nodes[root.value].children) {
             pending.push_back(child);
         }
     }
     while (!pending.empty()) {
-        const MeshHandle node = pending.back();
+        const TransformNodeChild child = pending.back();
         pending.pop_back();
+        if (std::holds_alternative<TransformNodeHandle>(child)) {
+            const TransformNodeHandle node =
+                std::get<TransformNodeHandle>(child);
+            if (
+                node.value >= engine.transform_nodes.size() ||
+                std::find(
+                    visited_nodes.begin(),
+                    visited_nodes.end(),
+                    node.value) != visited_nodes.end()) {
+                continue;
+            }
+            visited_nodes.push_back(node.value);
+            for (const TransformNodeChild& nested :
+                 engine.transform_nodes[node.value].children) {
+                pending.push_back(nested);
+            }
+            continue;
+        }
+        const MeshHandle node = std::get<MeshHandle>(child);
         if (node.value >= engine.meshes.size() || seen(node.value)) {
             continue;
         }
@@ -4404,7 +4424,7 @@ BoundingBoxBounds bbox_compute_bounds(
         const MeshRecord& record = engine.meshes[node.value];
         bbox_fold_mesh(engine, record, pre_transform, bounds);
         for (const MeshHandle child : record.children) {
-            pending.push_back(child);
+            pending.push_back(TransformNodeChild{child});
         }
     }
     for (const MeshHandle candidate : main_scene.meshes) {

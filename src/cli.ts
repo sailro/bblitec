@@ -51,7 +51,8 @@ import { glbJsonText } from "./gltf-document.js";
 // modules (the HDR one transitively loads the browser harness), so a static
 // import makes every compile pay for asset kinds it never packages.
 import { compressedTextureLowerer } from "./compiler/compressed-texture.js";
-import { isDataUrl, parseDataUrl } from "./data-url.js";
+import { parseDataUrl } from "./data-url.js";
+import { localAssetPath } from "./asset-source.js";
 import { generateIblBrdfLutRgba16f } from "./ibl-brdf-lut.js";
 import {
     buildStampHeader,
@@ -324,27 +325,6 @@ function readNativeHostUi(path: string): NativeHostUi {
             ),
         ),
     };
-}
-
-/**
- * The repository file an asset source names, or undefined for the sources
- * that are not files: a pinned URL is fetched, a data URL carries its own
- * bytes, and a `generated:` source is produced. One classification for
- * the materializer and for the manifest's input list, so a source read
- * from disk is always a source the generation record can see.
- */
-function localAssetPath(
-    source: string,
-    inputPath: string,
-): string | undefined {
-    if (
-        /^https?:\/\//i.test(source) ||
-        source.startsWith("generated:") ||
-        isDataUrl(source)
-    ) {
-        return undefined;
-    }
-    return resolve(dirname(inputPath), source);
 }
 
 async function assetBytes(
@@ -1183,6 +1163,7 @@ async function main(): Promise<void> {
         standardComposition,
         standardRenderableMeshFeatures,
         standardRuntimeMeshFeatures,
+        standardPluginBindings,
         nodeVariants,
     } = await composeScenePipeline({
         result,
@@ -1478,6 +1459,9 @@ async function main(): Promise<void> {
                     standardRenderableMeshFeatures ?? [],
                 ...(standardRuntimeMeshFeatures !== undefined
                     ? { standardRuntimeMeshFeatures }
+                    : {}),
+                ...(standardPluginBindings
+                    ? { standardPluginBindings }
                     : {}),
             }
             : {}),

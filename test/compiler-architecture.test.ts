@@ -168,12 +168,12 @@ test("keeps the lifted-text helpers and pinned operator spellings single-copy", 
     assert.doesNotMatch(interpolation, /text: "&&"/);
     const assignments = source("src/compiler/assignments.ts");
     assert.equal(
-        (assignments.match(/\{ x: 0, y: 1, z: 2 \}/g) ?? []).length,
+        (assignments.match(/\{ x: 0, y: 1, z: 2, w: 3 \}/g) ?? []).length,
         1,
         "the TRS axis map must be spelled once in assignments.ts",
     );
     assert.equal(
-        (assignments.match(/"position", "rotation", "scaling"/g) ?? [])
+        (assignments.match(/"position",\s*"rotation",\s*"rotationQuaternion",\s*"scaling"/g) ?? [])
             .length,
         1,
         "the TRS vector list must be spelled once in assignments.ts",
@@ -1019,6 +1019,14 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /dom_wheel_delta_y\(event\.wheel\)/);
     assert.match(events, /code == "WheelUp" \? -100\.0 : 100\.0/);
     assert.match(events, /code == "MouseMoveRight"/);
+    assert.match(
+        events,
+        /MouseMove@[\s\S]{0,420}\.buttons = static_cast<double>\(mouse_buttons_\)/,
+    );
+    assert.match(
+        events,
+        /if \(down\) \{[\s\S]{0,100}mouse_buttons_ \|= mask;[\s\S]{0,120}mouse_buttons_ &= ~mask;/,
+    );
     assert.match(events, /code == "WindowClose"/);
     assert.match(events, /event_code == "MouseLeftOutsideCanvas"/);
     assert.match(events, /event_code\.starts_with\("Ctrl\+"\)/);
@@ -1038,13 +1046,18 @@ test("forwards DOM-compatible application input through every native loop", () =
     );
     assert.equal(
         (events.match(/dispatch_platform_pointer_down\(/g) ?? []).length,
-        3,
-        "the shared helper plus replay and live calls keep pointer-down client-only",
+        2,
+        "the pointer-down helper is reached only through bounded mouse dispatch",
     );
     assert.equal(
         (events.match(/dispatch_canvas_click\(/g) ?? []).length,
+        2,
+        "click release is reached only through bounded mouse dispatch",
+    );
+    assert.equal(
+        (events.match(/dispatch_platform_mouse_button\(/g) ?? []).length,
         3,
-        "the shared helper plus replay and live calls keep click on release",
+        "the shared mouse helper serves replay and live input",
     );
     assert.match(
         events,
@@ -1077,7 +1090,7 @@ test("forwards DOM-compatible application input through every native loop", () =
     assert.match(events, /engine\.options\.height = height;/);
     assert.match(
         events,
-        /for \(const auto& callback : engine\.window_resize_callbacks\)/,
+        /engine\.window_resize_callbacks\.dispatch\(\)/,
     );
 
     // The shared drain carries the whole per-event contract — quit/close,
@@ -1169,7 +1182,7 @@ test("routes voxel save and load through the host file-dialog PAL", () => {
     const data = source("native/include/bblite/js_data.hpp");
     const projection = source("src/compiler/output-projection.ts");
     const palHeader = source("native/include/bblite/pal.hpp");
-    const pal = source("native/src/pal.cpp");
+    const pal = source("native/src/pal_file.cpp");
     const cmake = source("native/CMakeLists.txt");
 
     assert.match(
@@ -1188,17 +1201,18 @@ test("routes voxel save and load through the host file-dialog PAL", () => {
     assert.match(runtime, /pal::choose_save_file\(/);
     assert.match(runtime, /pal::choose_open_file\(/);
     assert.match(runtime, /world\.voxelsave\.json/);
-    assert.equal(
-        (runtime.match(/voxel_file_path\(\*path\)/g) ?? []).length,
-        2,
-        "native save and load open the dialog's UTF-8 path the same way",
-    );
+    assert.match(runtime, /pal::write_selected_file_atomically\(\*path, text\)/);
+    assert.match(runtime, /std::string text\(file->bytes\.begin\(\), file->bytes\.end\(\)\)/);
+    assert.doesNotMatch(runtime, /<filesystem>|<fstream>/);
     // Numbers are spelled by the one formatter every string coercion shares.
     assert.match(runtime, /NumberPart\(/);
     assert.doesNotMatch(runtime, /setprecision/);
     assert.match(palHeader, /struct FileDialogOptions/);
-    assert.match(pal, /GetSaveFileNameW\(&dialog\)/);
-    assert.match(pal, /GetOpenFileNameW\(&dialog\)/);
+    assert.match(palHeader, /struct SelectedFileSnapshot/);
+    assert.doesNotMatch(palHeader, /read_selected_file_text/);
+    assert.match(pal, /SDL_ShowFileDialogWithProperties/);
+    assert.match(pal, /SDL_FILEDIALOG_SAVEFILE/);
+    assert.match(pal, /SDL_FILEDIALOG_OPENFILE/);
     // Leaving pointer lock for the dialog is the one transition every
     // other release takes.
     assert.match(
@@ -1207,10 +1221,53 @@ test("routes voxel save and load through the host file-dialog PAL", () => {
     );
     assert.match(pal, /BBLITE_FILE_DIALOG_SAVE_PATH/);
     assert.match(pal, /BBLITE_FILE_DIALOG_OPEN_PATH/);
-    // A host without a picker refuses rather than writing beside the
-    // executable behind a dialog nothing showed.
-    assert.match(pal, /#else[\s\S]{0,400}throw std::runtime_error\([\s\S]{0,120}not implemented on this platform/);
-    assert.match(cmake, /target_link_libraries\(bblite_native PRIVATE comdlg32\)/);
+    assert.match(pal, /SDL_PumpEvents\(\)/);
+    assert.doesNotMatch(pal, /SDL_PollEvent|_WIN32|GetOpenFileName/);
+    assert.match(
+        cmake,
+        /"browser:file" IN_LIST BBLITE_RUNTIME_FEATURES[\s\S]{0,120}BBLITE_HAS_BROWSER_FILE=1/,
+    );
+    assert.doesNotMatch(cmake, /comdlg32/);
+});
+
+test("keeps the JSON bridge and Web Storage generic and PAL-owned", () => {
+    const bridge = source("src/compiler/json-bridge.ts");
+    const storage = source("src/compiler/web-storage.ts");
+    const runtime = source("native/include/bblite/js_json.hpp");
+    const shim = source("native/include/bblite/js_storage.hpp");
+    const data = source("native/include/bblite/js_data.hpp");
+    const registry = source("src/compiler/data-types.ts");
+    const pal = source("native/src/pal_storage.cpp");
+    const fileIo = source("native/src/pal_file_io.hpp");
+
+    // Both are recognized by the global the call reaches, not by a module
+    // path, a scene name, or a function name a scene happens to declare.
+    assert.doesNotMatch(bridge, /sandblox|world-io|demos\//i);
+    assert.doesNotMatch(storage, /sandblox|world-io|demos\//i);
+    assert.match(bridge, /isDefaultLibraryIdentifier/);
+    assert.match(storage, /isDefaultLibraryIdentifier/);
+
+    // Codecs are emitted for the records a stringify reaches and no others,
+    // and a self-referential record refuses rather than recursing.
+    assert.match(registry, /jsonSerializedStructs/);
+    assert.match(registry, /reaches a cycle/);
+    assert.match(
+        registry,
+        /renderJsonCodecs\(used\.structs\)/,
+    );
+
+    // The plain-data header every scene includes carries no parser.
+    assert.doesNotMatch(data, /nlohmann|json_stringify|JsonWriter/);
+    // The scene-facing storage header names no OS API.
+    assert.doesNotMatch(shim, /filesystem|fstream|SDL_/);
+    // The PAL owns the path and encodes the key so nothing can traverse.
+    assert.match(pal, /SDL_GetPrefPath\(/);
+    assert.match(pal, /encode_key\(/);
+    assert.match(pal, /detail::write_file_atomically/);
+    assert.match(fileIo, /MoveFileExW|std::filesystem::rename/);
+    // Numbers are spelled by the one formatter every string coercion shares.
+    assert.match(runtime, /format_number\(value, buffer\)/);
+    assert.doesNotMatch(runtime, /setprecision/);
 });
 
 test("keeps image decoding available to standalone effect renderers", () => {
@@ -1418,7 +1475,7 @@ test("replays billboard stages in compiler-owned frame-graph scene tasks", () =>
     );
 });
 
-test("fits one clone-aware cascade per CSM split", () => {
+test("fits one cascade per CSM split", () => {
     const shadows = source("src/lowering/shadow-lowerer.ts");
 
     // The pin's split is `p = (i + 1) / N` over the cascade index, and each
@@ -1432,9 +1489,23 @@ test("fits one clone-aware cascade per CSM split", () => {
         shadows,
         /const double previous_split =\s*cascade == 0 \? 0\.0 : break_distance\[cascade - 1\];/,
     );
+});
+
+test("shares parent and clone transforms with shadow caster fitting", () => {
+    const shadows = source("src/lowering/shadow-lowerer.ts");
+    const renderer = source("src/lowering/renderer-lowerer.ts");
+
     assert.match(
         shadows,
-        /shadow_caster_world[\s\S]{0,3200}mesh\.outer_rotation[\s\S]{0,2500}mesh\.outer_position\.x/,
+        /mesh\.transform_parent\.value < engine\.transform_nodes\.size\(\)[\s\S]{0,180}mesh_world_matrix\(engine, mesh\)/,
+    );
+    assert.match(
+        shadows,
+        /return apply_mesh_outer_transform\(mesh, local\);/,
+    );
+    assert.match(
+        renderer,
+        /std::array<double, 16> apply_mesh_outer_transform\([\s\S]{0,2500}mesh\.outer_position\.x/,
     );
 });
 
@@ -1445,13 +1516,108 @@ test("reuploads dynamic thin-instance colors on both GPU backends", () => {
     ]) {
         assert.match(
             backend,
-            /instance_version !=[\s\S]{0,2200}instance_colors\.data\(\)/,
+            /instance_version !=[\s\S]{0,4600}instance_colors\.data\(\)/,
         );
         assert.match(
             backend,
             /instance_colors\.resize\([\s\S]{0,180}instance_matrices\.size\(\) \* 4[\s\S]{0,80}1\.0f\);/,
         );
     }
+});
+
+test("recreates outgrown thin-instance buffers on both GPU backends", () => {
+    // `addThinInstance` doubles a full pool, so the buffers a registration
+    // sized can be too small a frame later. Both backends ask the shared
+    // rule, recreate all three streams at the new capacity, and stamp the
+    // new row count -- a partial update into the old buffer would write
+    // past its end.
+    assert.match(
+        source("native/src/pal_gpu_shared.hpp"),
+        /inline bool thin_instance_pool_grew\([\s\S]{0,220}instance_matrices\.size\(\) >[\s\S]{0,80}allocated_rows\)/,
+    );
+    for (const [backend, release, create] of [
+        [
+            source("native/src/pal_sdl_gpu.cpp"),
+            "SDL_ReleaseGPUBuffer",
+            "frame_buffer_uploads.upload",
+        ],
+        [
+            source("native/src/pal_dawn.cpp"),
+            "wgpuBufferRelease",
+            "create_buffer",
+        ],
+    ] as const) {
+        assert.match(
+            backend,
+            new RegExp(
+                `const bool recreated =[\\s\\S]{0,200}thin_instance_pool_grew\\(`,
+            ),
+        );
+        // Matrices, the PBR mirror-conjugated copy and the colour lane are
+        // all released and rebuilt, in that order, inside the same branch.
+        // Ordered by position rather than by a character budget, because
+        // the branch's prose is not part of its contract.
+        const branch = backend.indexOf("if (recreated) {");
+        assert.ok(branch >= 0, "no capacity-recreation branch");
+        let cursor = branch;
+        for (const marker of [
+            `${release}(`,
+            `${create}(`,
+            "pinned_instances",
+            "instance_colors",
+            "instance_capacity =",
+        ]) {
+            const at = backend.indexOf(marker, cursor);
+            assert.ok(
+                at > cursor,
+                `the recreation branch does not reach '${marker}' in order`,
+            );
+            cursor = at;
+        }
+        // The old handle is captured before the matrix stream is replaced,
+        // so the aliasing test the release path makes stays answerable.
+        assert.match(
+            backend,
+            /pinned_instances !=\s*\r?\n?\s*previous_instances/,
+        );
+        // A recreation is a full upload, so the dirty-range write is not
+        // repeated over the same buffer that frame.
+        assert.match(backend, /if \(!recreated && active_count > 0\)/);
+        // Nothing may cache a buffer handle past the frame that recreated
+        // it. Neither backend records render bundles, so every pass --
+        // including the shadow and depth tasks encoded after this sync --
+        // reads the mesh's live handles and its live instance count.
+        assert.doesNotMatch(backend, /RenderBundle/);
+        assert.match(backend, /mesh\.instance_count,/);
+    }
+});
+
+test("shares one relative-index rule across the ranged array builtins", () => {
+    const data = source("native/include/bblite/js_data.hpp");
+    // `slice`, `fill(value, start, end)` and `copyWithin` resolve every
+    // endpoint through ECMA-262's relative-index rule, stated once.
+    assert.match(
+        data,
+        /inline std::size_t relative_index\(\s*\r?\n?\s*std::size_t length,\s*\r?\n?\s*double raw\)/,
+    );
+    assert.match(
+        data,
+        /relative_slice_bounds\([\s\S]{0,400}relative_index\(length, begin_value\)[\s\S]{0,400}relative_index\(length, end_value\)/,
+    );
+    assert.match(
+        data,
+        /array_fill_range\([\s\S]{0,300}relative_slice_bounds\(/,
+    );
+    // The spec copies as if through an intermediate list, so an overlapping
+    // forward run must not read bytes it has already written.
+    assert.match(
+        data,
+        /array_copy_within\([\s\S]{0,900}std::copy_backward\(/,
+    );
+    assert.match(
+        data,
+        /const auto count = std::min\(final - from, values\.size\(\) - to\);/,
+    );
 });
 
 test("keys PBR instance colour from the stream binding predicate", () => {
@@ -1589,11 +1755,24 @@ test("instrumented draw census follows the submitted screenshot frame", () => {
     assert.match(capture, /let submittedPassDraws = \{\}/);
     assert.match(
         capture,
-        /GPUQueue\.prototype\.submit = function[\s\S]{0,500}window\.__draws = \{ \.\.\.bundleDraws, \.\.\.submittedPassDraws \}/,
+        /requestAnimationFrame = function[\s\S]{0,220}submittedPassDraws = \{\}/,
     );
-    assert.doesNotMatch(
+    assert.match(capture, /drawIndexedIndirect\(buffer#/);
+    assert.match(
         capture,
-        /window\.__draws\[key\] = \(window\.__draws\[key\]/,
+        /const recordDraw =[\s\S]{0,120}target\[key\] = \(target\[key\] \|\| 0\) \+ 1/,
+    );
+    assert.match(
+        capture,
+        /GPUQueue\.prototype\.submit = function[\s\S]{0,180}!insideAnimationFrame[\s\S]{0,220}submittedPassDraws = \{\}/,
+    );
+});
+
+test("canvas-only capture removes host focus chrome", () => {
+    const harness = source("src/browser-harness.ts");
+    assert.match(
+        harness,
+        /hideNonCanvasChrome[\s\S]{0,500}canvas\.style\.outline = "none"/,
     );
 });
 

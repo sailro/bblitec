@@ -12,14 +12,12 @@
 #   * **Static core only.** The same option set the former per-tree
 #     FetchContent configure forced: static libraries, no samples, no Lua
 #     bindings, no precompiled headers, no RmlUi-injected compiler flags.
-#   * **FreeType is a header-only input here.** rmlui_core records
-#     Freetype::Freetype as a link interface, and every consuming
-#     configure resolves that target from its own vcpkg install (the `ui`
-#     manifest feature -- dynamic development triplet or the
-#     x64-windows-static mini triplet), so the linked FreeType always
-#     follows the consuming tree's triplet and CRT. This build only
-#     compiles against the headers; -FreetypeRoot defaults to the shared
-#     development vcpkg install that `npm run dev:setup` provisions.
+#   * **FreeType and LunaSVG come from the consuming triplet.** rmlui_core
+#     records both targets as link interfaces, and every consuming configure
+#     resolves them from its own vcpkg install (the `ui` manifest feature --
+#     dynamic development triplet or the x64-windows-static mini triplet).
+#     This build compiles against that same prefix; -FreetypeRoot retains its
+#     historical name and defaults to the shared development install.
 #   * **Backends/RmlUi_Platform_SDL.{h,cpp} are installed beside the
 #     package.** RmlUi builds its Backends/ directory only under samples
 #     and tests and installs none of it, while the scene build compiles
@@ -98,6 +96,10 @@ if (-not $FreetypeRoot) {
 }
 if (-not (Test-Path (Join-Path $FreetypeRoot "include\ft2build.h"))) {
     throw "FreeType headers were not found at $FreetypeRoot. Run 'npm run dev:setup' (which installs the development vcpkg manifest), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype."
+}
+$lunaSvgConfig = Join-Path $FreetypeRoot "share\lunasvg\lunasvgConfig.cmake"
+if (-not (Test-Path $lunaSvgConfig)) {
+    throw "LunaSVG was not found at $FreetypeRoot. Run 'npm run dev:setup' (the ui manifest feature installs it), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype and lunasvg."
 }
 if ($StaticRuntime) {
     # vcpkg's port rewrites the `#elif` guarding the dllimport attribute to a
@@ -217,6 +219,7 @@ $configureArguments = @(
     "-DBUILD_SHARED_LIBS=OFF",
     "-DRMLUI_SAMPLES=OFF",
     "-DRMLUI_LUA_BINDINGS=OFF",
+    "-DRMLUI_SVG_PLUGIN=ON",
     "-DRMLUI_PRECOMPILED_HEADERS=OFF",
     "-DRMLUI_COMPILER_OPTIONS=OFF",
     # Static archives carry no runtime dependencies; leave the empty

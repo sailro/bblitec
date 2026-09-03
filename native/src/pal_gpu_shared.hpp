@@ -508,19 +508,8 @@ inline std::array<float, 16> draw_world(
  * takes the same answer in either frame rather than paying a compose the
  * shader never looks at.
  *
- * A pooled mesh asks once per DRAW of it -- once for the instance-parent
- * uniform the transcribed, depth-only and diagnostic pipelines read, once
- * for `standard_draw_world`'s mesh block -- and both get the same matrix. On
- * scene 204 that is twice a frame, because one pool is drawn through one
- * transcribed pipeline beside its Standard mesh block; a scene adding a
- * depth-only or shadow-caster pass over the same pool multiplies it, and
- * that is the condition to re-measure against. Deliberately not cached: the
- * answer is a pure function of the record and the eye, so a cache would be
- * ordering-dependent state on each backend's own mesh record, and the whole
- * duplicate is a 4x4 double multiply. Measured on scene 204, the corpus's
- * only such mesh: ~224 double operations against a 0.144 ms median frame,
- * under 0.2% of it and below the benchmark's own run-to-run spread. Cache it
- * when a scene makes it visible, not before.
+ * Deliberately not cached: the answer is a pure function of the record and
+ * eye, while a backend-local cache would add ordering-dependent state.
  */
 inline std::array<float, 16> instance_parent_draw_world(
     const MeshRecord& record,
@@ -2032,6 +2021,32 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
     };
 }
 
+/**
+ * Whether a live pool has outgrown the instance buffers its registration
+ * allocated.
+ *
+ * `addThinInstance` doubles a full pool, so a mesh registered with sixteen
+ * rows can be drawing thirty-two of them a frame later. Both backends size
+ * every instance buffer -- matrices, the PBR family's mirror-conjugated
+ * copy, and the colour lane -- from the same row count at registration, so
+ * this is one question rather than three, and it is asked before the
+ * version-gated upload that would otherwise write past the end.
+ */
+inline bool thin_instance_pool_grew(
+    const MeshRecord& record,
+    std::uint32_t allocated_rows) {
+    return record.thin_instanced &&
+        record.instance_matrices.size() >
+            static_cast<std::size_t>(allocated_rows);
+}
+
+inline std::size_t thin_instance_active_count(
+    const MeshRecord& record) {
+    return std::min(
+        static_cast<std::size_t>(record.instance_count),
+        record.instance_matrices.size());
+}
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * The same vertices in Babylon's own convention.
@@ -2086,9 +2101,15 @@ inline std::vector<GpuVertex> pinned_convention_vertices(
  * pinned stream's extra vertex mirror. The ordinary/Standard instance stream
  * continues to consume the record bytes directly.
  */
-inline std::vector<std::array<float, 16>> pinned_instance_matrices(
-    const MeshRecord& record) {
-    std::vector<std::array<float, 16>> result = record.instance_matrices;
+inline void pinned_instance_matrices(
+    const MeshRecord& record,
+    std::size_t count,
+    std::vector<std::array<float, 16>>& result) {
+    const std::size_t bounded_count =
+        std::min(count, record.instance_matrices.size());
+    result.assign(
+        record.instance_matrices.begin(),
+        record.instance_matrices.begin() + bounded_count);
     for (std::array<float, 16>& matrix : result) {
         for (std::size_t column = 0; column < 4; ++column) {
             for (std::size_t row = 0; row < 4; ++row) {
@@ -2099,6 +2120,15 @@ inline std::vector<std::array<float, 16>> pinned_instance_matrices(
             }
         }
     }
+}
+
+inline std::vector<std::array<float, 16>> pinned_instance_matrices(
+    const MeshRecord& record) {
+    std::vector<std::array<float, 16>> result;
+    pinned_instance_matrices(
+        record,
+        record.instance_matrices.size(),
+        result);
     return result;
 }
 
@@ -2502,9 +2532,8 @@ inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
  *
  * The pin walks `Mesh` objects and takes `worldMatrix`, `boundMin` and
  * `boundMax` off each; composing a world matrix is this layer's, so the
- * carrier is filled here and the fold stays the pin's. A mesh with no
- * geometry takes the pin's own `?? [...]` fallback, which the generated
- * header carries from its literal.
+ * carrier is filled here and the fold stays the pin's. Geometry bounds start
+ * from the pin's fallback and live public bound overrides are applied last.
  *
  * Not the ESM generator's alone: BOTH directional generators fit their
  * volume to the caster bounds, because a directional light has no position
@@ -2547,7 +2576,9 @@ inline void fitted_shadow_casters(
                 "rather than fail.");
         }
         upstream::ShadowCaster caster;
-        caster.world = upstream::shadow_caster_world(record);
+        caster.world = upstream::shadow_caster_world(engine, record);
+        caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
+        caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
         if (record.geometry < engine.geometries.size()) {
             const ModelGeometry& geometry =
                 engine.geometries[record.geometry];
@@ -2589,10 +2620,23 @@ inline void fitted_shadow_casters(
                     caster.bounds_min,
                     caster.bounds_max);
             }
-        } else {
-            caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
-            caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
         }
+        // `computeDirectionalLightMatrix` reads the mesh's live boundMin and
+        // boundMax properties, not the geometry record. Sandblox maintains
+        // those properties as the aggregate AABB of each thin-instance pool;
+        // ignoring them collapses the fit around the unit prototype and puts
+        // almost every receiver outside the shadow map.
+        Vec3 minimum{
+            caster.bounds_min[0],
+            caster.bounds_min[1],
+            caster.bounds_min[2]};
+        Vec3 maximum{
+            caster.bounds_max[0],
+            caster.bounds_max[1],
+            caster.bounds_max[2]};
+        apply_mesh_bound_overrides(record, minimum, maximum);
+        caster.bounds_min = {minimum.x, minimum.y, minimum.z};
+        caster.bounds_max = {maximum.x, maximum.y, maximum.z};
         casters.push_back(caster);
     }
 }

@@ -754,9 +754,18 @@ void audio_disconnect(AudioNodeHandle node)
     record.context->disconnect(require_node(record, node));
 }
 
-void audio_node_start(AudioNodeHandle node, double when)
+static void audio_node_start_impl(
+    AudioNodeHandle node,
+    double when,
+    double offset,
+    double duration,
+    int argument_count)
 {
 #if BBLITE_HAS_AUDIO_OSCILLATOR || BBLITE_HAS_AUDIO_BUFFER_SOURCE
+#if !BBLITE_HAS_AUDIO_BUFFER_SOURCE
+    (void)offset;
+    (void)duration;
+#endif
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     // LabSound deliberately gives SampledAudioNode an absolute-time start
     // overload which is not virtual. Calling through AudioScheduledSourceNode
@@ -771,16 +780,33 @@ void audio_node_start(AudioNodeHandle node, double when)
         const bool loop =
             index < record.source_loops.size() &&
             record.source_loops[index];
-        sampled->start(static_cast<float>(when), loop ? -1 : 0);
+        if (argument_count == 1) {
+            sampled->start(static_cast<float>(when), loop ? -1 : 0);
+        } else if (argument_count == 2) {
+            sampled->start(
+                static_cast<float>(when),
+                static_cast<float>(offset),
+                loop ? -1 : 0);
+        } else {
+            sampled->start(
+                static_cast<float>(when),
+                static_cast<float>(offset),
+                static_cast<float>(duration),
+                0);
+        }
         if (runtime_trace_enabled()) {
             std::fprintf(
                 stderr,
-                "[bblite trace] audio source=%u start=%.6f\n",
-                node.value, when);
+                "[bblite trace] audio source=%u start=%.6f offset=%.6f duration=%.6f\n",
+                node.value, when, offset, duration);
         }
         return;
     }
 #endif
+    if (argument_count > 1) {
+        throw std::runtime_error(
+            "Audio source offset and duration require a sampled source.");
+    }
     auto scheduled =
         std::dynamic_pointer_cast<lab::AudioScheduledSourceNode>(require_node(node));
     if (!scheduled) {
@@ -796,8 +822,30 @@ void audio_node_start(AudioNodeHandle node, double when)
 #else
     (void)node;
     (void)when;
+    (void)offset;
+    (void)duration;
+    (void)argument_count;
     throw std::runtime_error("Scheduled audio sources were not compiled.");
 #endif
+}
+
+void audio_node_start(AudioNodeHandle node, double when)
+{
+    audio_node_start_impl(node, when, 0.0, 0.0, 1);
+}
+
+void audio_node_start(AudioNodeHandle node, double when, double offset)
+{
+    audio_node_start_impl(node, when, offset, 0.0, 2);
+}
+
+void audio_node_start(
+    AudioNodeHandle node,
+    double when,
+    double offset,
+    double duration)
+{
+    audio_node_start_impl(node, when, offset, duration, 3);
 }
 
 void audio_node_stop(AudioNodeHandle node, double when)

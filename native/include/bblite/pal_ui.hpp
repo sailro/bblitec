@@ -31,6 +31,7 @@ void ui_set_inner_rml(
     Engine& engine,
     UiElementHandle element,
     std::string markup);
+std::string ui_escape_rml(std::string_view text);
 void ui_set_attribute(
     Engine& engine,
     UiElementHandle element,
@@ -52,12 +53,35 @@ void ui_toggle_class(
     bool enabled);
 void ui_add_class_style(
     Engine& engine,
+    UiElementHandle stylesheet,
     std::string class_name,
     std::string style);
+void ui_clear_style_rules(
+    Engine& engine,
+    UiElementHandle stylesheet);
 void ui_add_id_style(
     Engine& engine,
+    UiElementHandle stylesheet,
     std::string id,
     std::string style);
+void ui_add_style_rule(
+    Engine& engine,
+    UiElementHandle stylesheet,
+    UiStyleSelectorKind selector,
+    std::string primary,
+    std::string secondary,
+    std::string tag,
+    bool hover,
+    double max_width,
+    std::string style);
+void ui_add_host_class_style(
+    Engine& engine,
+    std::string class_name,
+    std::string style);
+js::Array<UiElementHandle> ui_query_class(
+    Engine& engine,
+    UiElementHandle root,
+    std::string_view class_name);
 UiElementHandle ui_append_child(
     Engine& engine,
     UiElementHandle parent,
@@ -71,6 +95,27 @@ void ui_on_click(
     Engine& engine,
     UiElementHandle element,
     std::function<void()> callback);
+/** Programmatic HTMLElement.click(), including reached default actions. */
+void ui_click(Engine& engine, UiElementHandle element);
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+void ui_set_download_url(
+    Engine& engine,
+    UiElementHandle element,
+    ObjectUrlHandle url);
+void ui_set_download_name(
+    Engine& engine,
+    UiElementHandle element,
+    std::string name);
+void ui_set_file_input(Engine& engine, UiElementHandle element);
+void ui_set_file_accept(
+    Engine& engine,
+    UiElementHandle element,
+    std::string accept);
+void ui_on_file_change(
+    Engine& engine,
+    UiElementHandle element,
+    std::function<void()> callback);
+#endif
 void ui_on_event(
     Engine& engine,
     UiElementHandle element,
@@ -177,6 +222,59 @@ struct UiRenderFrame {
      */
     std::uint32_t composite_first_index = 0;
 };
+
+inline void append_ui_quad(
+    UiRenderFrame& frame,
+    float left,
+    float top,
+    float right,
+    float bottom,
+    std::uint8_t color) {
+    const std::uint32_t base =
+        static_cast<std::uint32_t>(frame.vertices.size());
+    frame.vertices.insert(
+        frame.vertices.end(),
+        {
+            UiRenderVertex{left, top, color, color, color, 255, 0, 0},
+            UiRenderVertex{right, top, color, color, color, 255, 1, 0},
+            UiRenderVertex{right, bottom, color, color, color, 255, 1, 1},
+            UiRenderVertex{left, bottom, color, color, color, 255, 0, 1},
+        });
+    frame.indices.insert(
+        frame.indices.end(),
+        {
+            base,
+            base + 1,
+            base + 2,
+            base,
+            base + 2,
+            base + 3,
+        });
+}
+
+/** Browser host chrome for a programmatically focused render canvas. */
+inline void append_canvas_focus_outline(UiRenderFrame& frame) {
+    if (frame.width < 2u || frame.height < 2u) return;
+    const std::uint32_t first_index =
+        static_cast<std::uint32_t>(frame.indices.size());
+    frame.vertices.reserve(frame.vertices.size() + 16u);
+    frame.indices.reserve(frame.indices.size() + 24u);
+    const float width = static_cast<float>(frame.width);
+    const float height = static_cast<float>(frame.height);
+    append_ui_quad(frame, 0, 0, width, 1, 16);
+    append_ui_quad(frame, 0, height - 1, width, height, 16);
+    append_ui_quad(frame, 0, 1, 1, height - 1, 16);
+    append_ui_quad(frame, width - 1, 1, width, height - 1, 16);
+    frame.draws.push_back(UiRenderDraw{
+        first_index,
+        static_cast<std::uint32_t>(frame.indices.size()) - first_index,
+        0,
+        0,
+        0,
+        frame.width,
+        frame.height,
+        false});
+}
 
 inline bool ui_frame_uses_texture(
     const UiRenderFrame& frame,

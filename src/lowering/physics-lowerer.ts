@@ -1693,12 +1693,7 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
     }
     const ModelGeometry& geometry = engine.geometries[mesh.geometry];
     MeshBounds bounds{true, geometry.bounds_min, geometry.bounds_max};
-    if (mesh.has_bounds_min_override) {
-        bounds.minimum = mesh.bounds_min_override;
-    }
-    if (mesh.has_bounds_max_override) {
-        bounds.maximum = mesh.bounds_max_override;
-    }
+    apply_mesh_bound_overrides(mesh, bounds.minimum, bounds.maximum);
     return bounds;
 }
 

@@ -1089,7 +1089,7 @@ void set_animation_additive_from_frame(
  */
 PropertyAnimationBucket& track_bucket(
     std::vector<PropertyAnimationBucket>& buckets,
-    PropertyAnimationTarget target,
+    const PropertyAnimationTarget& target,
     const PropertyAnimationTrack& track) {
     for (PropertyAnimationBucket& candidate : buckets) {
         if (
@@ -1208,11 +1208,14 @@ bool update_weighted_property_animations(
     bool contested = false;
     for (const PropertyAnimationGroup& group : manager.groups) {
         if (!group || group->weight == 1.0f) continue;
-        for (const PropertyAnimationTrack& track :
-             group->clip.tracks) {
+        for (std::size_t index = 0;
+             index < group->clip.tracks.size();
+             ++index) {
+            const PropertyAnimationTrack& track =
+                group->clip.tracks[index];
             track_bucket(
                 manager.buckets,
-                group->target,
+                group->targets[index],
                 track).contested = true;
             contested = true;
         }
@@ -1224,18 +1227,23 @@ bool update_weighted_property_animations(
             advance_property_group_time(group, delta_ms);
         const float weight = group->weight;
         if (weight == 0.0f) continue;
-        for (const PropertyAnimationTrack& track :
-             group->clip.tracks) {
+        for (std::size_t index = 0;
+             index < group->clip.tracks.size();
+             ++index) {
+            const PropertyAnimationTrack& track =
+                group->clip.tracks[index];
+            const PropertyAnimationTarget& target =
+                group->targets[index];
             const std::array<float, 4> sample =
                 evaluate_track(track, time);
             PropertyAnimationBucket& bucket = track_bucket(
                 manager.buckets,
-                group->target,
+                target,
                 track);
             if (!bucket.contested) {
                 write_track_value(
                     engine,
-                    group->target,
+                    target,
                     track.path,
                     track.component,
                     sample);
@@ -2336,10 +2344,21 @@ ${weightHelpers}/**
  */
 void write_track_value(
     Engine& engine,
-    PropertyAnimationTarget target,
+    const PropertyAnimationTarget& target,
     PropertyAnimationPath path,
     PropertyAnimationComponent component,
     const std::array<float, 4>& value) {
+    if (target.kind == PropertyAnimationTargetKind::callback) {
+        if (
+            path != PropertyAnimationPath::record_scalar ||
+            component != PropertyAnimationComponent::whole_lane ||
+            !target.write_scalar) {
+            throw std::runtime_error(
+                "Property animation callback target requires one scalar writer.");
+        }
+        target.write_scalar(value[0]);
+        return;
+    }
     if (target.kind == PropertyAnimationTargetKind::camera) {
         if (target.index >= engine.cameras.size()) {
             throw std::runtime_error(
@@ -2375,11 +2394,14 @@ void apply_group(
         throw std::runtime_error(
             "Property animation group is null.");
     }
-    for (const PropertyAnimationTrack& track :
-         group->clip.tracks) {
+    for (std::size_t index = 0;
+         index < group->clip.tracks.size();
+         ++index) {
+        const PropertyAnimationTrack& track =
+            group->clip.tracks[index];
         write_track_value(
             engine,
-            group->target,
+            group->targets[index],
             track.path,
             track.component,
             evaluate_track(track, group->current_time));
@@ -2496,7 +2518,7 @@ PropertyAnimationClip create_property_animation_clip(
 PropertyAnimationGroup create_property_animation_group(
     PropertyAnimationManager manager,
     Engine& engine,
-    PropertyAnimationTarget target,
+    std::vector<PropertyAnimationTarget> targets,
     PropertyAnimationClip clip,
     PropertyAnimationGroupOptions options) {
     PropertyAnimationManagerRecord& owner =
@@ -2505,9 +2527,13 @@ PropertyAnimationGroup create_property_animation_group(
         throw std::runtime_error(
             "Animation play range must have toTime greater than fromTime.");
     }
+    if (targets.size() != clip.tracks.size()) {
+        throw std::runtime_error(
+            "Property animation target count must match the clip tracks.");
+    }
     auto group =
         std::make_shared<PropertyAnimationGroupRecord>();
-    group->target = target;
+    group->targets = std::move(targets);
     group->clip = std::move(clip);
     group->from_time = options.from_time;
     group->to_time = options.to_time;
@@ -2540,12 +2566,29 @@ void start_animation_manager(
         });
 }
 
+void play_animation(PropertyAnimationGroup group) {
+    if (!group) {
+        throw std::runtime_error(
+            "Property animation group is null.");
+    }
+    group->playing = true;
+}
+
 void pause_animation(PropertyAnimationGroup group) {
     if (!group) {
         throw std::runtime_error(
             "Property animation group is null.");
     }
     group->playing = false;
+}
+
+void stop_animation(PropertyAnimationGroup group) {
+    if (!group) {
+        throw std::runtime_error(
+            "Property animation group is null.");
+    }
+    group->playing = false;
+    group->current_time = 0.0f;
 }
 
 void go_to_frame(

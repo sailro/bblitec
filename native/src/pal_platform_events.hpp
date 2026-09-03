@@ -5,6 +5,8 @@
 
 #include <SDL3/SDL.h>
 
+#include <charconv>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -59,13 +61,15 @@ inline void dispatch_platform_keyboard_event(
         .alt_key = alt_key,
         .meta_key = meta_key,
     };
-    const auto& callbacks = down
+    auto& callbacks = down
         ? engine.key_down_callbacks
         : engine.key_up_callbacks;
-    for (const auto& callback : callbacks) {
-        callback(event);
-    }
+    callbacks.dispatch(event);
 }
+
+inline bool canvas_contains_client_point(
+    const Engine& engine,
+    const PlatformMouseEvent& event);
 
 inline void dispatch_platform_wheel_event(
     Engine& engine,
@@ -80,9 +84,8 @@ inline void dispatch_platform_wheel_event(
         .client_y = client_y,
         .delta_y = delta_y,
     };
-    for (const auto& callback : engine.mouse_wheel_callbacks) {
-        callback(event);
-    }
+    if (!canvas_contains_client_point(engine, event)) return;
+    engine.mouse_wheel_callbacks.dispatch(event);
 }
 
 /** Browser events never expose clicks on the host window's decorations. */
@@ -100,9 +103,7 @@ inline void dispatch_platform_pointer_down(
     Engine& engine,
     const PlatformMouseEvent& event) {
     if (!canvas_contains_client_point(engine, event)) return;
-    for (const auto& callback : engine.pointer_down_callbacks) {
-        callback();
-    }
+    engine.pointer_down_callbacks.dispatch();
     if (event.button == 0.0) engine.canvas_click_armed = true;
 }
 
@@ -115,9 +116,22 @@ inline void dispatch_canvas_click(
         canvas_contains_client_point(engine, event);
     engine.canvas_click_armed = false;
     if (!dispatch) return;
-    for (const auto& callback : engine.canvas_click_callbacks) {
-        callback();
+    engine.canvas_click_callbacks.dispatch();
+}
+
+inline void dispatch_platform_mouse_button(
+    Engine& engine,
+    const PlatformMouseEvent& event,
+    bool down) {
+    const bool inside = canvas_contains_client_point(engine, event);
+    if (down) {
+        if (!inside) return;
+        dispatch_platform_pointer_down(engine, event);
+        engine.mouse_down_callbacks.dispatch(event);
+        return;
     }
+    if (inside) engine.mouse_up_callbacks.dispatch(event);
+    dispatch_canvas_click(engine, event);
 }
 
 /**
@@ -129,6 +143,8 @@ inline void dispatch_canvas_click(
  * dispatches key-up only, and `-` is an idle frame. Mouse buttons follow the
  * same prefix convention; `MouseLeftOutsideCanvas` exercises host-decoration
  * rejection. `MouseMoveRight` dispatches one relative-motion packet,
+ * `MouseMove@x:y` moves to an exact client point, and a mouse button may
+ * carry the same suffix (for example `+MouseLeft@320:180`).
  * `WheelUp`/`WheelDown` dispatch a browser-sized wheel notch, and
  * `WindowClose` queues the host close request. All forms reach the ordinary
  * platform callbacks without mutating generated source or scene state.
@@ -164,7 +180,7 @@ public:
         if (source.empty()) codes_.clear();
     }
 
-    void dispatch(long frame, SDL_Window* window, Engine& engine) const {
+    void dispatch(long frame, SDL_Window* window, Engine& engine) {
         if (
             frame < 0 ||
             static_cast<std::size_t>(frame) >= codes_.size()) {
@@ -187,14 +203,22 @@ public:
         if (code == "MouseMoveRight") {
             const PlatformMouseEvent event{
                 .button = -1.0,
-                .buttons = 0.0,
+                .buttons = static_cast<double>(mouse_buttons_),
                 .client_x = engine.canvas_client_width / 2.0,
                 .client_y = engine.canvas_client_height / 2.0,
                 .movement_x = 100.0,
             };
-            for (const auto& callback : engine.mouse_move_callbacks) {
-                callback(event);
-            }
+            engine.mouse_move_callbacks.dispatch(event);
+            return;
+        }
+        if (const auto point = pointer_position(code, "MouseMove@")) {
+            const PlatformMouseEvent event{
+                .button = -1.0,
+                .buttons = static_cast<double>(mouse_buttons_),
+                .client_x = point->first,
+                .client_y = point->second,
+            };
+            engine.mouse_move_callbacks.dispatch(event);
             return;
         }
         if (code == "WheelUp" || code == "WheelDown") {
@@ -202,7 +226,8 @@ public:
                 engine,
                 code == "WheelUp" ? -100.0 : 100.0,
                 engine.canvas_client_width / 2.0,
-                engine.canvas_client_height / 2.0);
+                engine.canvas_client_height / 2.0,
+                static_cast<double>(mouse_buttons_));
             return;
         }
         const bool down_only = code.size() > 1 && code.front() == '+';
@@ -218,9 +243,11 @@ public:
         }
         double mouse_button = -1.0;
         double mouse_mask = 0.0;
+        const auto left_point =
+            pointer_position(event_code, "MouseLeft@");
         const bool outside_canvas =
             event_code == "MouseLeftOutsideCanvas";
-        if (event_code == "MouseLeft" || outside_canvas) {
+        if (event_code == "MouseLeft" || left_point || outside_canvas) {
             mouse_button = 0.0;
             mouse_mask = 1.0;
         } else if (event_code == "MouseMiddle") {
@@ -232,22 +259,28 @@ public:
         }
         if (mouse_button >= 0.0) {
             const auto dispatch_mouse = [&](bool down) {
+                const auto mask =
+                    static_cast<unsigned int>(mouse_mask);
+                if (down) {
+                    mouse_buttons_ |= mask;
+                } else {
+                    mouse_buttons_ &= ~mask;
+                }
                 const PlatformMouseEvent event{
                     .button = mouse_button,
-                    .buttons = down ? mouse_mask : 0.0,
+                    .buttons = static_cast<double>(mouse_buttons_),
                     .client_x = outside_canvas
                         ? -1.0
+                        : left_point
+                          ? left_point->first
                         : engine.canvas_client_width / 2.0,
                     .client_y = outside_canvas
                         ? -1.0
+                        : left_point
+                          ? left_point->second
                         : engine.canvas_client_height / 2.0,
                 };
-                if (down) dispatch_platform_pointer_down(engine, event);
-                const auto& callbacks = down
-                    ? engine.mouse_down_callbacks
-                    : engine.mouse_up_callbacks;
-                for (const auto& callback : callbacks) callback(event);
-                if (!down) dispatch_canvas_click(engine, event);
+                dispatch_platform_mouse_button(engine, event, down);
                 sync_pointer_lock(window, engine);
             };
             if (!up_only) dispatch_mouse(true);
@@ -270,7 +303,34 @@ public:
     }
 
 private:
+    static std::optional<std::pair<double, double>> pointer_position(
+        std::string_view value,
+        std::string_view prefix) {
+        if (!value.starts_with(prefix)) return std::nullopt;
+        value.remove_prefix(prefix.size());
+        const std::size_t separator = value.find(':');
+        if (separator == std::string_view::npos) {
+            throw std::runtime_error(
+                "A coordinate input replay action requires @x:y.");
+        }
+        const auto parse = [](std::string_view component) {
+            int result = 0;
+            const char* begin = component.data();
+            const char* end = begin + component.size();
+            const auto parsed = std::from_chars(begin, end, result);
+            if (parsed.ec != std::errc{} || parsed.ptr != end) {
+                throw std::runtime_error(
+                    "A coordinate input replay action requires integer x:y values.");
+            }
+            return static_cast<double>(result);
+        };
+        return std::pair{
+            parse(value.substr(0, separator)),
+            parse(value.substr(separator + 1))};
+    }
+
     std::vector<std::string> codes_;
+    unsigned int mouse_buttons_ = 0u;
 };
 
 /** DOM-compatible `KeyboardEvent.code` for the portable SDL scancodes. */
@@ -493,6 +553,10 @@ inline void trace_pointer_lock_state(
         << '\n';
 }
 
+inline void dispatch_pointer_lock_change(Engine& engine) {
+    engine.pointer_lock_change_callbacks.dispatch();
+}
+
 /**
  * Apply a pointer-lock request made from an application event callback.
  *
@@ -547,9 +611,7 @@ inline void sync_pointer_lock(SDL_Window* window, Engine& engine) {
     engine.pointer_locked = engine.pointer_lock_requested;
     apply_pointer_lock_cursor(engine.pointer_locked);
     trace_pointer_lock_state("sync-applied", window, engine);
-    for (const auto& callback : engine.pointer_lock_change_callbacks) {
-        callback();
-    }
+    dispatch_pointer_lock_change(engine);
 }
 
 inline void handle_platform_event(
@@ -561,9 +623,7 @@ inline void handle_platform_event(
         if (sync_engine_canvas_size(
                 SDL_GetWindowFromID(event.window.windowID),
                 engine)) {
-            for (const auto& callback : engine.window_resize_callbacks) {
-                callback();
-            }
+            engine.window_resize_callbacks.dispatch();
         }
         return;
     }
@@ -620,19 +680,10 @@ inline void handle_platform_event(
                 << " locked-before=" << (engine.pointer_locked ? 1 : 0)
                 << '\n';
         }
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
-            dispatch_platform_pointer_down(engine, mouse_event);
-        }
-        const auto& callbacks =
-            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
-                ? engine.mouse_down_callbacks
-                : engine.mouse_up_callbacks;
-        for (const auto& callback : callbacks) {
-            callback(mouse_event);
-        }
-        if (event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
-            dispatch_canvas_click(engine, mouse_event);
-        }
+        dispatch_platform_mouse_button(
+            engine,
+            mouse_event,
+            event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
         if (runtime_trace_enabled()) {
             std::cerr
                 << "[bblite trace] input mouse-button callbacks-complete"
@@ -674,8 +725,8 @@ inline void handle_platform_event(
                 << " locked=" << (engine.pointer_locked ? 1 : 0)
                 << '\n';
         }
-        for (const auto& callback : engine.mouse_move_callbacks) {
-            callback(mouse_event);
+        if (canvas_contains_client_point(engine, mouse_event)) {
+            engine.mouse_move_callbacks.dispatch(mouse_event);
         }
         sync_pointer_lock(
             SDL_GetWindowFromID(event.motion.windowID),
@@ -701,9 +752,7 @@ inline void handle_platform_event(
             .button = -1.0,
             .buttons = 0.0,
         };
-        for (const auto& callback : engine.mouse_cancel_callbacks) {
-            callback(mouse_event);
-        }
+        engine.mouse_cancel_callbacks.dispatch(mouse_event);
         engine.pointer_lock_requested = false;
         sync_pointer_lock(
             SDL_GetWindowFromID(event.window.windowID),
@@ -717,9 +766,7 @@ inline void handle_platform_event(
         event.type == SDL_EVENT_WINDOW_SHOWN ||
         event.type == SDL_EVENT_WINDOW_RESTORED;
     if (hidden || visible) {
-        for (const auto& callback : engine.visibility_change_callbacks) {
-            callback(hidden);
-        }
+        engine.visibility_change_callbacks.dispatch(hidden);
     }
 }
 

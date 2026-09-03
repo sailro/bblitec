@@ -30,6 +30,10 @@ Recorded adaptations are semantic **divergences** only:
 | `four-influence-skinning` | for an asset carrying `JOINTS_1`/`WEIGHTS_1` the pinned loader skins eight influences; the generated one keeps the first four and drops the tail weights |
 | `plain-data-value-model` | a const local bound to a container element binds a native reference and is poisoned by a later structural mutation; mutable path-bound locals are copies that reject writes; object parameters pass by reference; sparse arrays zero-initialize; an index the compiler cannot prove in bounds reads or writes through a checked accessor that refuses by name at the access's source location where JavaScript would yield `undefined` (a proven index — static against a known length, or a canonical `i < arr.length` loop binding — keeps the raw fast path, and Array writes keep JavaScript growth) |
 | `deterministic-seeded-random` | mulberry32 over seed 1, on the native runtime and the browser capture alike |
+| `thin-instance-gpu-culling-omitted` | `enableThinInstanceGpuCulling` is accepted and recorded on the mesh, but no compute frustum culler runs and no indirect draw is issued: every ACTIVE instance is drawn, which is the pin's own fallback for a pool it cannot cull, so the pixels are the same and only the cost differs. The opt-in's second, load-bearing effect — marking the renderable `_direct` so it leaves the cached opaque bundle, which is what gives an application per-frame pool sync on a Standard material — needs nothing here, because this port records no bundles at all: both backends re-upload every live pool from the record's version and bind its buffers at the draw, every frame, culled or not. Recorded only where the opt-in can actually enable the culler: a statically-`false` call returns at the pin's own idempotence test, so it names no omission |
+| `json-data-bridge` | `JSON.stringify` writes through codecs generated for exactly the records it reaches, in their declaration order, with a generation-known indent and no replacer; a property the source declared with `?` is omitted when absent, as an `undefined` member is. `JSON.parse` answers one dynamic document rather than a typed value: a missing or wrong-typed field reads as `undefined` so the source's own guards decide, and a malformed document throws where the browser's `SyntaxError` does. A record that reaches itself refuses at generation rather than recursing, where JavaScript throws on the circular structure at run time |
+| `native-web-storage` | `localStorage` is a per-user file store under the host's own preference directory rather than per-origin browser storage: one injectively-named file per key, published through randomized exclusive staging and atomic replacement, with a bounded read. `getItem` still answers a nullable string and `setItem`/`removeItem` still throw where the browser throws its quota error, so the source's own arms are unchanged; what differs is the lifetime — the data outlives a browser profile and is not cleared with site data |
+| `native-browser-file-bridge` | Browser save/open pickers settle asynchronously and an object URL is a browser-origin URL string. Native keeps only an opaque per-engine generation-checked object-URL token, synchronizes SDL3's portable asynchronous dialog behind the synchronous AOT call while pumping host events without dispatching application callbacks, and invokes a selected file input's stored `change` callback before `click()` returns. The observable order inside the callback is preserved — accepted bytes and display metadata are snapshotted under the PAL bound, the file list is populated first, and immediate `File.text().then(...)` runs from owned captures and shared mutable closure cells — while cancellation dispatches nothing and preserves the prior selection. Input/FileList/File handles share immutable selected snapshots, reclaim them after replacement/removal and the final retained handle, and enforce a 256 MiB per-engine live-byte cap. Dialog-selected paths never enter scene values; downloads use randomized exclusive staging and atomic replacement |
 
 plus browser-wrapper erasure, immediate AOT `await`, compile-time asset
 materialization, the SDL platform boundary and the native shader backends.
@@ -51,6 +55,15 @@ that same bounded path and packages its exact RGBA result, recorded as
 PAL: on Windows, Ctrl+S and Ctrl+O use the regular host dialogs with
 `world.voxelsave.json` as the suggested name and preserve the same JSON
 payload, recorded as `native-voxel-file-dialog`.
+
+The generic browser-file boundary uses that same PAL dialog and atomic-file
+mechanics without the voxel module's app-specific codec. Blob bytes remain
+memory-only until a download is accepted; object URL slots clear on revoke and
+advance their generation before reuse. File handles retain only an opaque
+picker result for engine lifetime, so `File.text()` cannot be pointed at a
+source-supplied path. The synchronous picker/callback ordering is the recorded
+adaptation; payload bytes, cancel behavior, callback count, and failure arms are
+the browser contract.
 
 Curated inputs, thresholds and goldens are SHA-256-checked evidence, not
 tuning knobs. Adding a scene or recapturing a reference is an explicit
@@ -1520,15 +1533,29 @@ composes two variants, one per material, like any other fork.
 **A material plugin is folded from the scene and spliced by the pin.** The
 two halves are separated the way the fidelity rule separates them.
 `MaterialPlugin` is a plain object upstream and everything the bridges read
-off one for the reached slice is a constant the scene wrote — its `name`, and
-the WGSL `getCustomCode(shaderType)` returns per injection point — so it is
-folded from the scene's own AST, with each point name checked against the
-pin's own `FRAG_POINT_TO_SLOTS` and `VERT_POINT_TO_SLOT` rather than a list
-retyped here. Everything downstream is executed: `buildPluginFragment` maps
-each point onto its template slot, concatenates two plugins that share one,
+off one for the reached slice is a constant the scene wrote — its `name`, the
+WGSL `getCustomCode(shaderType)` returns per injection point, and the WGSL
+names `getSamplers()` declares — so it is folded from the scene's own AST,
+with each point name checked against the pin's own `FRAG_POINT_TO_SLOTS` and
+`VERT_POINT_TO_SLOT` rather than a list retyped here, and each declaration's
+optional types against the two defaults `buildPluginFragment` itself applies.
+Everything downstream is executed: `buildPluginFragment` maps each point onto
+its template slot, concatenates two plugins that share one, turns each
+sampler pair into the two binding declarations the composed fragment carries,
 and the two bridges number a signature. Scene 217's composed Standard and PBR
 fragments are byte-identical to the ones an instrumented capture shows the
 browser compiling.
+
+**A plugin reached through a factory is still folded, not executed.** Scene
+code writes `mat.plugins = [createStudMaterialPlugin(studs)]` as readily as
+it writes the object inline, because the texture members close over the
+factory's argument. The call is therefore seen THROUGH structurally: a local
+function whose body is one `return` of one object literal, with the
+parameters bound to the values the call site passed through the same
+parameter binding the user-function inliner performs. No statement runs and
+no branch is taken, so the object folded is the one the pin would have been
+handed; a body with anything else in it refuses, because a statement could
+compute a name or a sampler list nothing here can observe.
 
 `enableMaterialPlugins(scene)` is where the port reaches the feature, because
 it is where the pin does: it is the only thing that registers the bridges,
@@ -1550,6 +1577,29 @@ order, and refuses generation if the pin disagreed about a single index. The
 number then rides `MaterialRecord::plugin_signature_index` and the generated
 `standard_material_features` shifts it back in at the same position, because
 the Standard variant selector's key is that derived word.
+
+**The three texture members are proven to agree, because nothing at run time
+can.** Upstream `getSamplers` declares the bindings, `bindTextures(out)`
+fills them positionally and `getActiveTextures(out)` enumerates the same
+textures for the acquire and release `stdPluginExt._textures` performs;
+upstream calls all three on live objects and trusts the author to keep them
+in step. Here they are folded, so the agreement is a generation check:
+equal counts against the declarations, and the same lowered texture at each
+position. A disagreement binds one texture and keeps another alive, which is
+exactly the class of defect a fold can catch and a capture cannot.
+
+**A plugin's textures are the material's, and the binding table says which.**
+The pin builds one plugin resource list per material (`bindPluginTextures`
+walks that material's own plugins), so two materials sharing a signature bind
+different images through the same declaration. The record mirrors that:
+`MaterialRecord::plugin_textures` holds them in push order, and the generated
+`standard_plugin_bindings` table — read back off `stdPluginExt._frag`'s own
+`_bindings` rather than re-concatenated from the fold — maps a composed
+binding name plus the material's signature index onto a position in it. Both
+backends execute that one table; neither carries a scene-specific slot. A PBR
+material's plugin declaring samplers refuses at generation instead, because
+its entries are appended inside `createPbrMeshBindGroup` against a row keyed
+by material index, and no scene measures that path.
 
 ### Node materials
 
@@ -1736,6 +1786,47 @@ split). `loadSpriteAtlas` fixes the sampler the pin fixes (clamp on both
 axes, no mip chain, filter from `sampling`), and the texture is `rgba8unorm`
 with `srgb` off, so the atlas texels reach the blend stage as the bytes on
 disk.
+
+**A texture a scene FUNCTION produces in a canvas is executed at the same
+seam, for the same reason, and reached differently.** The three executed
+asset kinds above are module *exports* named at the call site. Sandblox
+instead calls a one-parameter function that takes the engine and builds the
+texture itself, so what has to be intercepted is the call, ahead of ordinary
+inlining — the body it would inline is a canvas this runtime does not have.
+Neither of its two is lowerable. `character.ts`'s
+`createClassicSmileTexture` rasterizes ellipses and a quadratic stroke into a
+128-square 2D context, which is a rasterizer's antialiasing rather than an
+expression. `stud-texture.ts`'s `createStudTextures` *is* arithmetic, but it
+rounds a 64-square float height field into bytes through a `Math.round` this
+data model does not compile, and then crosses `OffscreenCanvas` →
+`convertToBlob` → `URL.createObjectURL` → `loadTexture2D`, which is a browser
+PNG encode with no representation here at all — the shape-versus-value
+arbitration lands on "execute" from both sides.
+
+**What is executed is bounded by structure and by what the driver answers.**
+The target is a one-parameter top-level function whose same-file call closure
+owns a canvas and reaches `createTexture2DFromPixels` and/or `loadTexture2D`
+and nothing else from the pin, returning once, either one texture or an
+object of them. The module and its repository siblings are transpiled to
+CommonJS and evaluated against a stub that records only those two factories —
+a non-exported target is exposed by the driver rather than by editing what
+the module exports — every other pinned import throws with the name it asked
+for, the engine argument is a proxy that throws on any property read, and a
+`loadTexture2D` URL that is not an object URL refuses. Anything the gate does
+not accept is inlined as before and refuses by naming what it hit, so this
+adds no path that silently substitutes a texture.
+
+**Nothing about the pixels or the sampler is re-derived.** What the factory
+was handed is what is packaged: the raw RGBA with its width, height and
+`PixelsTexture2DOptions`, or the object URL's blob byte-for-byte with its
+`Texture2DOptions`. Both then take the native entry points a written-out call
+already lowers to (`create_texture_2d_from_pixels`, `load_file_texture`),
+through the one copy of the pin's sampler rule in
+`src/pinned-address-modes.ts` — including `maxAnisotropy: allLinear ? 4 : 1`
+folding the mip filter, so a producer that turns mips off turns anisotropy
+off with them. The tradeoff is the drawn atlas's: the baked bytes depend on
+the Chrome that compiled them, recorded per scene as
+`browser-produced-textures`.
 
 **The platformer golden is a frame, not a wall-clock delay.** Its attract
 camera and CRT grain both advance continuously, so a three-second browser
@@ -2458,13 +2549,31 @@ Runtime-selected root-relative background images are retained as RmlUi image
 decorators and resolved through the packaged asset directory; Voxel Sandbox's
 ten hotbar icons gate that path.
 
+Author CSS is not widened into global class declarations. Generation parses a
+closed selector IR (including two-class conjunctions and statically-proven
+class/tag descendants), then RmlUi evaluates its source-ordered cascade,
+`:hover`, and `max-width` rules against the live resized context. RmlUi 6.4
+does not implement Grid, so only a fixed `repeat(integer, px)` track whose
+direct-child width, height, gap, margin, padding, and border prove wrapping
+equivalence is structurally lowered; the exact shape is recorded in
+`substituted-ui-runtime`. Constant inline vector icons take the pinned RmlUi
+LunaSVG path after a generation-time `svg`/`path`/`rect` grammar check.
+Inherited `currentColor` becomes a white SVG source plus the computed RmlUi
+text colour as image tint; mixed literal/currentColor paints refuse because
+the tint covers the whole image, while `none` remains non-paint. These are
+renderer substitutions, not silent fallbacks; unsupported selectors, markup,
+attributes, or grid shapes refuse.
+Programmatic render-canvas focus is retained as host state and its browser
+focus outline is composited above the page UI.
+
 Browser and native UI use different layout and font rasterization stacks, so a
 composite residual can be larger than the canvas residual. Status rows above
 MAD 0.5 identify UI as the dominant residual and publish both backend values
 from a canvas-only attribution run.
 
-`BBLITE_CAPTURE_UI=0` hides browser page chrome and captures the native scene
-before UI composition. Those references and reports live under
+`BBLITE_CAPTURE_UI=0` hides browser page chrome, suppresses the canvas's host
+focus outline, and captures the native scene before UI composition. Those
+references and reports live under
 `artifacts/parity-canvas/`; they are diagnostics, not canonical gates.
 
 Parity poses are deterministic source states and do not depend on clicking UI.

@@ -10,7 +10,95 @@ import {
     type DataType,
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
+import { isJsonValue } from "./json-bridge.js";
 import type { Value } from "./types.js";
+
+/**
+ * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
+ * every statically typed value is decided at generation time.
+ */
+export function compileIsArrayOverData(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+): Value | undefined {
+    const callee = lowerer.context.unwrap(call.expression);
+    if (
+        !ts.isPropertyAccessExpression(callee) ||
+        callee.name.text !== "isArray" ||
+        !ts.isIdentifier(callee.expression) ||
+        callee.expression.text !== "Array" ||
+        lowerer.context.lookupIdentifierValue(callee.expression) !== undefined ||
+        call.arguments.length !== 1
+    ) {
+        return undefined;
+    }
+    const value = lowerer.context.compileValue(call.arguments[0]!);
+    const decided = (answer: boolean): Value => ({
+        kind: "boolean",
+        cpp: answer ? "true" : "false",
+        staticBoolean: answer,
+        dataType: { kind: "boolean" },
+    });
+    if (value.kind === "tuple") return decided(true);
+    const dataType =
+        value.dataType?.kind === "optional"
+            ? value.dataType.inner
+            : value.dataType;
+    if (!dataType) return undefined;
+    if (dataType.kind === "json") {
+        return {
+            kind: "boolean",
+            cpp: `${value.cpp}.is_array()`,
+            dataType: { kind: "boolean" },
+        };
+    }
+    if (
+        dataType.kind === "vector" ||
+        dataType.kind === "span" ||
+        dataType.kind === "tuple" ||
+        dataType.kind === "table"
+    ) {
+        return decided(true);
+    }
+    if (
+        dataType.kind === "number" ||
+        dataType.kind === "boolean" ||
+        dataType.kind === "string" ||
+        dataType.kind === "enum" ||
+        dataType.kind === "struct" ||
+        dataType.kind === "map" ||
+        dataType.kind === "set"
+    ) {
+        return decided(false);
+    }
+    return undefined;
+}
+
+/**
+ * The `[start, end]` pair a ranged builtin takes, as native doubles.
+ *
+ * `slice`, `fill` and `copyWithin` all resolve their endpoints through the
+ * same relative-index rule, and all three read an omitted end as the
+ * receiver's length. `startIndex` says where in the argument list the pair
+ * begins, which is the only thing that differs between them.
+ */
+function relativeRangeArguments(
+    lowerer: DataLowerer,
+    call: ts.CallExpression,
+    receiverCpp: string,
+    startIndex: number,
+): [start: string, end: string] {
+    const startArgument = call.arguments[startIndex];
+    const endArgument = call.arguments[startIndex + 1];
+    return [
+        startArgument
+            ? lowerer.context.compileNumber(startArgument, "double")
+            : "0.0",
+        endArgument
+            ? lowerer.context.compileNumber(endArgument, "double")
+            : `static_cast<double>(${receiverCpp}.size())`,
+    ];
+}
 
 /** Data-container methods whose receiver is not mutated. */
 export const readOnlyDataMethods: ReadonlySet<string> = new Set([
@@ -66,6 +154,48 @@ export const storingDataMethods: ReadonlySet<string> = new Set([
     "unshift",
 ]);
 
+const writeReceiverMethods: ReadonlySet<string> = new Set([
+    "pop",
+    "shift",
+    "push",
+    "unshift",
+    "reverse",
+    "fill",
+    "copyWithin",
+    "splice",
+    "set",
+    "add",
+    "clear",
+    "delete",
+]);
+
+const constantArrayMethods: ReadonlySet<string> = new Set([
+    "indexOf",
+    "includes",
+    "find",
+    "findIndex",
+    "filter",
+    "reduce",
+    "some",
+    "every",
+    "map",
+    "forEach",
+    "join",
+]);
+
+const snapshotInvalidatingMethods: ReadonlySet<string> = new Set([
+    "pop",
+    "shift",
+    "unshift",
+    "reverse",
+    "fill",
+    "copyWithin",
+    "splice",
+    "set",
+    "clear",
+    "delete",
+]);
+
 /**
  * Compiles data-container method calls (`push`, `pop`, `fill`) and the
  * `new Array(n).fill(v)` chain.
@@ -81,6 +211,12 @@ export function compileDataMethodCall(
         return undefined;
     }
     const method = callee.name.text;
+    if (
+        ts.isPropertyAccessExpression(callee.expression) &&
+        callee.expression.name.text === "classList"
+    ) {
+        return undefined;
+    }
     const moduleMapGet =
         method === "get" &&
         ts.isIdentifier(callee.expression)
@@ -110,9 +246,10 @@ export function compileDataMethodCall(
                 );
             }
             lowerer.context.reachJsData();
-            const value = lowerer.compileForSink(
+            const value = lowerer.compileForRetainedSink(
                 call.arguments[0]!,
                 created.element,
+                "Array.fill",
             );
             return {
                 kind: "data",
@@ -192,6 +329,75 @@ export function compileDataMethodCall(
                 }),
             )
           : undefined;
+    if (
+        tupleOwnerElements &&
+        dynamicOwner &&
+        (method === "some" || method === "every")
+    ) {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(
+                call,
+                `Tuple Array.${method} requires exactly one callback.`,
+            );
+        }
+        const callback = lowerer.context.unwrap(call.arguments[0]!);
+        if (
+            !ts.isIdentifier(callback) &&
+            !ts.isArrowFunction(callback) &&
+            !ts.isFunctionExpression(callback)
+        ) {
+            lowerer.context.fail(
+                callback,
+                `Tuple Array.${method} requires a local function or function literal callback.`,
+            );
+        }
+        const folded = lowerer.context.probeEmission(
+            (): Value | undefined => {
+                for (let index = 0; index < tupleOwnerElements.length; ++index) {
+                    const matched =
+                        lowerer.context.compilePredicateWithValues(
+                            callback,
+                            [
+                                tupleOwnerElements[index]!,
+                                {
+                                    kind: "number",
+                                    cpp: `${index}.0`,
+                                    staticNumber: index,
+                                    dataType: { kind: "number" },
+                                },
+                                dynamicOwner,
+                            ],
+                            call,
+                        );
+                    if (matched.staticBoolean === undefined) {
+                        return undefined;
+                    }
+                    if (
+                        (method === "some" && matched.staticBoolean) ||
+                        (method === "every" && !matched.staticBoolean)
+                    ) {
+                        return {
+                            kind: "boolean",
+                            cpp: matched.staticBoolean ? "true" : "false",
+                            staticBoolean: matched.staticBoolean,
+                            dataType: { kind: "boolean" },
+                        };
+                    }
+                }
+                const result = method === "every";
+                return {
+                    kind: "boolean",
+                    cpp: result ? "true" : "false",
+                    staticBoolean: result,
+                    dataType: { kind: "boolean" },
+                };
+            },
+            (value) => value?.staticBoolean !== undefined,
+        );
+        if (folded) {
+            return folded;
+        }
+    }
     if (tupleOwnerElements && dynamicOwner && method === "map") {
         if (call.arguments.length !== 1) {
             lowerer.context.fail(
@@ -234,17 +440,7 @@ export function compileDataMethodCall(
     const owner =
         lowerer.compileDataPath(
             callee.expression,
-            method === "pop" ||
-                method === "shift" ||
-                method === "push" ||
-            method === "unshift" ||
-                method === "reverse" ||
-                method === "fill" ||
-                method === "splice" ||
-                method === "set" ||
-                method === "add" ||
-                method === "clear" ||
-                method === "delete"
+            writeReceiverMethods.has(method)
                 ? "write"
                 : "read",
         ) ??
@@ -255,19 +451,7 @@ export function compileDataMethodCall(
         // A constant array is a compile-time tuple with nothing to
         // search, so searching one materializes it exactly as a
         // runtime index into it does.
-        ([
-            "indexOf",
-            "includes",
-            "find",
-            "findIndex",
-            "filter",
-            "reduce",
-            "some",
-            "every",
-            "map",
-            "forEach",
-            "join",
-        ].includes(method)
+        (constantArrayMethods.has(method)
             ? (lowerer.materializeConstantArray(
                   callee.expression,
               ) ??
@@ -283,15 +467,101 @@ export function compileDataMethodCall(
     ) {
         return undefined;
     }
-    const narrowed = lowerer.narrowOptional(
+    const optionalOwnerType =
+        owner.kind === "data" &&
+        owner.dataType?.kind === "optional"
+            ? owner.dataType
+            : undefined;
+    const optionalSetType =
+        optionalOwnerType?.inner.kind === "set"
+            ? optionalOwnerType.inner
+            : undefined;
+    if (
+        callee.questionDotToken !== undefined &&
+        method === "delete" &&
+        optionalOwnerType &&
+        optionalSetType
+    ) {
+        if (call.arguments.length !== 1) {
+            lowerer.context.fail(
+                call,
+                "Set.delete expects exactly one value.",
+            );
+        }
+        const optional = lowerer.context.allocateTemporaryCppName(
+            "optional_set",
+        );
+        const lookup = lowerer.context.allocateTemporaryCppName(
+            "optional_set_lookup",
+        );
+        const result = lowerer.context.allocateTemporaryCppName(
+            "optional_delete",
+        );
+        const resultType = {
+            kind: "optional",
+            inner: { kind: "boolean" },
+        } as const;
+        lowerer.context.emit(
+            `${lowerer.context.dataTypes.cppType(optionalOwnerType)} ${optional};`,
+        );
+        lowerer.context.emit("{");
+        lowerer.context.increaseIndent();
+        lowerer.context.emit(`const auto ${lookup} = ${owner.cpp};`);
+        lowerer.context.emit(`if (${lookup}.has_value()) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.emit(`${optional} = *${lookup};`);
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+        lowerer.context.emit(
+            `${lowerer.context.dataTypes.cppType(resultType)} ${result};`,
+        );
+        lowerer.context.emit(`if (${optional}.has_value()) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.enterRuntimeControlFlow();
+        try {
+            const value = lowerer.compileForSink(
+                call.arguments[0]!,
+                optionalSetType.element,
+            );
+            lowerer.context.emit(
+                `${result} = (*${optional}).erase(${value});`,
+            );
+        } finally {
+            lowerer.context.leaveRuntimeControlFlow();
+        }
+        lowerer.context.decreaseIndent();
+        lowerer.context.emit("}");
+        return {
+            kind: "data",
+            cpp: result,
+            dataType: resultType,
+            truthinessCpp:
+                `(${result}.has_value() && *${result})`,
+            requiresExplicitDiscard: true,
+        };
+    }
+    const narrowedOwner = lowerer.narrowOptional(
         owner,
         callee.expression,
     );
-    if (
-        ["pop", "shift", "unshift", "reverse", "fill", "splice", "set", "clear", "delete"].includes(
-            method,
-        )
-    ) {
+    // An array method on a parsed document runs over the document's own
+    // elements, each of which is another document. Handing the element
+    // view to the ordinary array lowering is the whole adaptation:
+    // nothing about the callback protocol changes.
+    const narrowed: Value =
+        isJsonValue(narrowedOwner)
+            ? {
+                  kind: "data",
+                  cpp: `${narrowedOwner.cpp}.elements()`,
+                  dataType: {
+                      kind: "span",
+                      element: { kind: "json" },
+                  },
+              }
+            : narrowedOwner;
+    if (snapshotInvalidatingMethods.has(method)) {
         lowerer.invalidateStaticElements(narrowed);
     }
     const dataType =
@@ -310,12 +580,43 @@ export function compileDataMethodCall(
                 functionType,
                 `Stored function '${method}'`,
             );
-            const member = lowerer.context.dataTypes.isReferenceStruct(
+            const referenceReceiver =
+                lowerer.context.dataTypes.isReferenceStruct(
                 dataType.name,
-            )
-                ? "->"
-                : ".";
+            );
+            const member = referenceReceiver ? "->" : ".";
             const cpp = `${narrowed.cpp}${member}${field!.name}(${argumentsCpp.join(", ")})`;
+            if (
+                referenceReceiver &&
+                (call.questionDotToken !== undefined ||
+                    callee.questionDotToken !== undefined)
+            ) {
+                const receiver =
+                    lowerer.context.allocateTemporaryCppName(
+                        "optional_receiver",
+                    );
+                if (!functionType.result) {
+                    return {
+                        kind: "void",
+                        cpp:
+                            `([&]() -> void { const auto& ${receiver} = ${narrowed.cpp}; ` +
+                            `if (${receiver}) ${receiver}->${field!.name}(${argumentsCpp.join(", ")}); }())`,
+                    };
+                }
+                const resultType: DataType = {
+                    kind: "optional",
+                    inner: functionType.result,
+                };
+                lowerer.context.reachJsData();
+                const resultCpp =
+                    lowerer.context.dataTypes.cppType(resultType);
+                return lowerer.leafValue(
+                    `([&]() -> ${resultCpp} { const auto& ${receiver} = ${narrowed.cpp}; ` +
+                        `if (!${receiver}) return std::nullopt; ` +
+                        `return ${resultCpp}{${receiver}->${field!.name}(${argumentsCpp.join(", ")})}; }())`,
+                    resultType,
+                );
+            }
             return functionType.result
                 ? lowerer.leafValue(cpp, functionType.result)
                 : { kind: "void", cpp };
@@ -330,6 +631,13 @@ export function compileDataMethodCall(
                     "Map.clear expects no arguments.",
                 );
             }
+            if (lowerer.context.isInRuntimeControlFlow()) {
+                lowerer.context.invalidateRecordProperties(narrowed);
+            } else if (narrowed.recordProperties) {
+                for (const key of Object.keys(narrowed.recordProperties)) {
+                    delete narrowed.recordProperties[key];
+                }
+            }
             return {
                 kind: "void",
                 cpp: `${narrowed.cpp}.clear()`,
@@ -342,10 +650,19 @@ export function compileDataMethodCall(
                     `Map.${method} expects exactly one key.`,
                 );
             }
-            const key = lowerer.compileForSink(
+            const keyValue = lowerer.context.compileValue(
                 call.arguments[0]!,
-                dataType.key,
             );
+            const key = lowerer.compileKnownValueForSink(
+                keyValue,
+                dataType.key,
+                call.arguments[0]!,
+            );
+            const staticKey =
+                keyValue.staticString ??
+                (keyValue.staticNumber !== undefined
+                    ? String(keyValue.staticNumber)
+                    : undefined);
             if (method === "has") {
                 return {
                     kind: "boolean",
@@ -353,10 +670,42 @@ export function compileDataMethodCall(
                 };
             }
             if (method === "delete") {
+                if (lowerer.context.isInRuntimeControlFlow()) {
+                    lowerer.context.invalidateRecordProperties(narrowed);
+                } else if (
+                    staticKey !== undefined &&
+                    narrowed.recordProperties
+                ) {
+                    delete narrowed.recordProperties[staticKey];
+                } else if (staticKey === undefined) {
+                    lowerer.context.invalidateRecordProperties(narrowed);
+                }
                 return {
                     kind: "boolean",
                     cpp: `${narrowed.cpp}.erase(${key})`,
                     requiresExplicitDiscard: true,
+                };
+            }
+            if (dataType.value.kind === "handle") {
+                const result =
+                    lowerer.context.allocateTemporaryCppName(
+                        "map_get",
+                    );
+                lowerer.context.emit(
+                    `const auto ${result} = ${narrowed.cpp}.get(${key});`,
+                );
+                const known =
+                    staticKey === undefined
+                        ? undefined
+                        : narrowed.recordProperties?.[staticKey];
+                return {
+                    ...(known ?? {}),
+                    ...lowerer.leafValue(
+                        `(*${result})`,
+                        dataType.value,
+                    ),
+                    optionalFoundCpp: `${result}.has_value()`,
+                    optionalStorageCpp: `${result}.to_optional()`,
                 };
             }
             if (
@@ -368,10 +717,12 @@ export function compileDataMethodCall(
                 // Shared object handles carry absence themselves. Do
                 // not wrap and immediately dereference Map.get: a miss
                 // must remain an empty handle for the source guard.
-                return lowerer.leafValue(
-                    `${narrowed.cpp}.get(${key})`,
-                    dataType.value,
-                );
+                return {
+                    ...lowerer.leafValue(
+                        `${narrowed.cpp}.get(${key})`,
+                        dataType.value,
+                    ),
+                };
             }
             return {
                 kind: "data",
@@ -395,18 +746,61 @@ export function compileDataMethodCall(
                     "Map.set expects exactly one key and one value.",
                 );
             }
-            const key = lowerer.compileForSink(
+            const keyValue = lowerer.context.compileValue(
                 call.arguments[0]!,
-                dataType.key,
             );
-            const value = lowerer.compileForSink(
+            const assignedValue = lowerer.context.compileValue(
                 call.arguments[1]!,
-                dataType.value,
             );
+            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)) {
+                lowerer.context.refuseBorrowedPlatformEventEscape(
+                    keyValue,
+                    call.arguments[0]!,
+                    "Map.set key",
+                );
+            }
+            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.value)) {
+                lowerer.context.refuseBorrowedPlatformEventEscape(
+                    assignedValue,
+                    call.arguments[1]!,
+                    "Map.set value",
+                );
+            }
+            const key = lowerer.compileKnownValueForSink(
+                keyValue,
+                dataType.key,
+                call.arguments[0]!,
+            );
+            const value = lowerer.compileKnownValueForSink(
+                assignedValue,
+                dataType.value,
+                call.arguments[1]!,
+            );
+            const staticKey =
+                keyValue.staticString ??
+                (keyValue.staticNumber !== undefined
+                    ? String(keyValue.staticNumber)
+                    : undefined);
+            if (lowerer.context.isInRuntimeControlFlow()) {
+                lowerer.context.invalidateRecordProperties(narrowed);
+            } else if (
+                staticKey !== undefined &&
+                narrowed.recordProperties
+            ) {
+                narrowed.recordProperties[staticKey] = assignedValue;
+            } else if (staticKey === undefined) {
+                lowerer.context.invalidateRecordProperties(narrowed);
+            }
             return {
                 kind: "data",
                 cpp: `${narrowed.cpp}.set(${key}, ${value})`,
                 dataType,
+                ...(narrowed.recordProperties
+                    ? {
+                          recordProperties:
+                              narrowed.recordProperties,
+                      }
+                    : {}),
             };
         }
         if (method === "values" || method === "keys") {
@@ -477,9 +871,10 @@ export function compileDataMethodCall(
                     "Set.add expects exactly one value.",
                 );
             }
-            const value = lowerer.compileForSink(
+            const value = lowerer.compileForRetainedSink(
                 call.arguments[0]!,
                 dataType.element,
+                "Set.add",
             );
             return {
                 kind: "data",
@@ -862,10 +1257,13 @@ export function compileDataMethodCall(
         isTypedArrayType(dataType) &&
         method === "fill"
     ) {
-        if (call.arguments.length !== 1) {
+        if (
+            call.arguments.length < 1 ||
+            call.arguments.length > 3
+        ) {
             lowerer.context.fail(
                 call,
-                "TypedArray.fill expects one argument.",
+                "TypedArray.fill expects one to three arguments.",
             );
         }
         lowerer.context.reachJsData();
@@ -877,9 +1275,57 @@ export function compileDataMethodCall(
             dataType.kind,
             number,
         );
+        if (call.arguments.length === 1) {
+            return {
+                kind: "void",
+                cpp: `bbl::js::array_fill(${narrowed.cpp}, ${stored})`,
+            };
+        }
+        // `fill(value, start[, end])`: both endpoints are relative
+        // indices and an omitted end is the length, exactly as `slice`
+        // resolves its own pair.
+        const [start, end] = relativeRangeArguments(
+            lowerer,
+            call,
+            narrowed.cpp,
+            1,
+        );
         return {
             kind: "void",
-            cpp: `bbl::js::array_fill(${narrowed.cpp}, ${stored})`,
+            cpp:
+                `bbl::js::array_fill_range(${narrowed.cpp}, ` +
+                `${stored}, ${start}, ${end})`,
+        };
+    }
+    if (
+        isTypedArrayType(dataType) &&
+        method === "copyWithin"
+    ) {
+        if (
+            call.arguments.length < 2 ||
+            call.arguments.length > 3
+        ) {
+            lowerer.context.fail(
+                call,
+                "TypedArray.copyWithin expects two or three arguments.",
+            );
+        }
+        lowerer.context.reachJsData();
+        const target = lowerer.context.compileNumber(
+            call.arguments[0]!,
+            "double",
+        );
+        const [start, end] = relativeRangeArguments(
+            lowerer,
+            call,
+            narrowed.cpp,
+            1,
+        );
+        return {
+            kind: "void",
+            cpp:
+                `bbl::js::array_copy_within(${narrowed.cpp}, ` +
+                `${target}, ${start}, ${end})`,
         };
     }
     if (
@@ -1130,21 +1576,26 @@ export function compileDataMethodCall(
         lowerer.context.increaseIndent();
         lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
         try {
-            const compared = lowerer.context.compileCallbackWithValues(
-                callback,
-                [
-                    lowerer.leafValue(left, dataType.element),
-                    lowerer.leafValue(right, dataType.element),
-                ],
-                call,
-            );
-            if (compared.kind !== "number") {
-                lowerer.context.fail(
+            lowerer.context.enterRuntimeIteration();
+            try {
+                const compared = lowerer.context.compileCallbackWithValues(
                     callback,
-                    "Array.sort comparator must return a number.",
+                    [
+                        lowerer.leafValue(left, dataType.element),
+                        lowerer.leafValue(right, dataType.element),
+                    ],
+                    call,
                 );
+                if (compared.kind !== "number") {
+                    lowerer.context.fail(
+                        callback,
+                        "Array.sort comparator must return a number.",
+                    );
+                }
+                lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
+            } finally {
+                lowerer.context.leaveRuntimeIteration();
             }
-            lowerer.context.emit(`return ${compared.cpp} < 0.0;`);
         } finally {
             lowerer.context.popScope();
             lowerer.context.decreaseIndent();
@@ -1314,35 +1765,40 @@ export function compileDataMethodCall(
         lowerer.context.increaseIndent();
         lowerer.context.pushScope(lowerer.context.allocateBlockPrefix());
         try {
-            const reduced =
-                lowerer.context.compileCallbackWithValues(
-                    callback,
-                    [
-                        lowerer.leafValue(
-                            accumulator,
-                            resultType,
-                        ),
-                        lowerer.leafValue(
-                            `${source}[${index}]`,
-                            dataType.element,
-                        ),
-                        {
-                            kind: "number",
-                            cpp: `static_cast<double>(${index})`,
-                            dataType: { kind: "number" },
-                        },
-                        {
-                            ...narrowed,
-                            kind: "data",
-                            cpp: source,
-                            dataType,
-                        },
-                    ],
-                    call,
+            lowerer.context.enterRuntimeIteration();
+            try {
+                const reduced =
+                    lowerer.context.compileCallbackWithValues(
+                        callback,
+                        [
+                            lowerer.leafValue(
+                                accumulator,
+                                resultType,
+                            ),
+                            lowerer.leafValue(
+                                `${source}[${index}]`,
+                                dataType.element,
+                            ),
+                            {
+                                kind: "number",
+                                cpp: `static_cast<double>(${index})`,
+                                dataType: { kind: "number" },
+                            },
+                            {
+                                ...narrowed,
+                                kind: "data",
+                                cpp: source,
+                                dataType,
+                            },
+                        ],
+                        call,
+                    );
+                lowerer.context.emit(
+                    `${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`,
                 );
-            lowerer.context.emit(
-                `${accumulator} = ${lowerer.compileKnownValueForSink(reduced, resultType, callback)};`,
-            );
+            } finally {
+                lowerer.context.leaveRuntimeIteration();
+            }
         } finally {
             lowerer.context.popScope();
             lowerer.context.decreaseIndent();
@@ -1500,6 +1956,17 @@ export function compileDataMethodCall(
                     }
                     value = "true";
                 } else {
+                    if (
+                        lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                            mappedType.element,
+                        )
+                    ) {
+                        lowerer.context.refuseBorrowedPlatformEventEscape(
+                            result,
+                            callback,
+                            "Array.map result",
+                        );
+                    }
                     value = lowerer.compileKnownValueForSink(
                         result,
                         mappedType.element,
@@ -1526,15 +1993,7 @@ export function compileDataMethodCall(
             dataType,
             true,
             () => undefined,
-            (result) => {
-                if (result.cpp.length > 0) {
-                    lowerer.context.emit(
-                        result.requiresExplicitDiscard
-                            ? `static_cast<void>(${result.cpp});`
-                            : `${result.cpp};`,
-                    );
-                }
-            },
+            (result) => lowerer.context.emitDiscardedValue(result),
         );
         return { kind: "void", cpp: "" };
     }
@@ -1614,6 +2073,17 @@ export function compileDataMethodCall(
                     argument.expression,
                 );
                 if (
+                    lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                        dataType.element,
+                    )
+                ) {
+                    lowerer.context.refuseBorrowedPlatformEventEscape(
+                        spread,
+                        argument,
+                        "Array.push spread",
+                    );
+                }
+                if (
                     spread.kind === "tuple" &&
                     spread.tupleElements
                 ) {
@@ -1641,12 +2111,14 @@ export function compileDataMethodCall(
                     source = spread.handleCollection.containerCpp;
                 } else if (
                     spread.kind === "data" &&
-                    (spread.dataType?.kind === "vector" ||
+                    ((spread.dataType?.kind === "vector" ||
                         spread.dataType?.kind === "span") &&
                     dataTypesEqual(
                         spread.dataType.element,
                         dataType.element,
-                    )
+                    ) ||
+                        spread.dataType?.kind === "tuple" &&
+                        dataType.element.kind === "number")
                 ) {
                     source = spread.cpp;
                 } else {
@@ -1660,13 +2132,29 @@ export function compileDataMethodCall(
                     `${source}.begin(), ${source}.end())`
                 );
             }
+            if (
+                pushedValues &&
+                lowerer.context.dataTypes.carriesBorrowedPlatformEvent(
+                    dataType.element,
+                )
+            ) {
+                lowerer.context.refuseBorrowedPlatformEventEscape(
+                    pushedValues[index]!,
+                    argument,
+                    "Array.push",
+                );
+            }
             return `${narrowed.cpp}.push_back(${pushedValues
                 ? lowerer.compileKnownValueForSink(
                       pushedValues[index]!,
                       dataType.element,
                       argument,
                   )
-                : lowerer.compileForSink(argument, dataType.element)})`;
+                : lowerer.compileForRetainedSink(
+                      argument,
+                      dataType.element,
+                      "Array.push",
+                  )})`;
         });
         return {
             kind: "void",
@@ -1712,7 +2200,11 @@ export function compileDataMethodCall(
         }
         lowerer.invalidateAliases(narrowed.cpp);
         const values = call.arguments.map((argument) =>
-            lowerer.compileForSink(argument, dataType.element),
+            lowerer.compileForRetainedSink(
+                argument,
+                dataType.element,
+                "Array.unshift",
+            ),
         );
         return {
             kind: "number",
@@ -1742,9 +2234,10 @@ export function compileDataMethodCall(
                 "Array.fill expects one argument.",
             );
         }
-        const value = lowerer.compileForSink(
+        const value = lowerer.compileForRetainedSink(
             call.arguments[0]!,
             dataType.element,
+            "Array.fill",
         );
         return {
             kind: "void",

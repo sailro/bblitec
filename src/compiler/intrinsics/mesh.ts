@@ -24,6 +24,7 @@ import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
 import {
     pinnedMeshOptionDefault,
     pinnedMeshOptionFlag,
+    pinnedParameterFlag,
 } from "../../pinned-mesh-defaults.js";
 import {
     pinnedPolyhedron,
@@ -106,6 +107,11 @@ export interface MeshIntrinsicContext
     recordThinInstanceColorMesh(
         sceneMeshIndex: number | undefined,
     ): void;
+    recordThinInstanceGpuCulling(
+        sceneMeshIndex: number | undefined,
+    ): void;
+    meshHasThinInstancePool(owner: Value): boolean;
+    meshMayHaveThinInstanceGpuCulling(owner: Value): boolean;
     requireEngine(value: Value, node: ts.Node): string;
     expectSameEngine(
         left: Value,
@@ -907,6 +913,113 @@ export function compileMeshIntrinsic(
                 cpp:
                     `bbl::flush_thin_instances(${context.requireEngine(mesh, call)}, ` +
                     `${mesh.cpp})`,
+            };
+        }
+
+        case "addThinInstance": {
+            // The growing half of the pool. Unlike `setThinInstances`, the
+            // matrix is copied rather than aliased -- the pin's own
+            // `matrices.set(matrix, index * 16)` reads it once -- so an
+            // inline `mat4Identity()` needs no named binding here.
+            context.expectArgumentCount(call, 2, 2);
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const matrix = context.compileTypedArrayArgument(
+                call.arguments[1]!,
+                "f32array",
+            );
+            context.reachFeature("mesh:thin-instances", call);
+            context.reachFeature("mesh:thin-instances-dynamic", call);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            return {
+                kind: "number",
+                cpp:
+                    `bbl::add_thin_instance(` +
+                    `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
+                    `${matrix})`,
+                dataType: { kind: "number" },
+            };
+        }
+
+        case "removeThinInstance": {
+            context.expectArgumentCount(call, 2, 2);
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const index = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            context.reachFeature("mesh:thin-instances", call);
+            context.reachFeature("mesh:thin-instances-dynamic", call);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::remove_thin_instance(` +
+                    `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
+                    `${index})`,
+            };
+        }
+
+        case "enableThinInstanceGpuCulling": {
+            // Upstream this is a performance opt-in whose visible output is
+            // unchanged, and whose second effect -- routing the renderable
+            // to a direct draw, out of the cached opaque bundle -- is what
+            // an application relies on for per-frame pool sync. This port
+            // records no bundles and syncs every live pool every frame, so
+            // the flag lands on the record as an explicit marker and the
+            // compute culler itself is a recorded omission.
+            context.expectArgumentCount(call, 1, 2);
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const enabled = call.arguments[1]
+                ? context.compileCondition(call.arguments[1])
+                : pinnedParameterFlag(
+                      "src/mesh/thin-instance.ts",
+                      "enableThinInstanceGpuCulling",
+                      "enabled",
+                  )
+                  ? "true"
+                  : "false";
+            context.reachFeature("mesh:thin-instances", call);
+            // The pin reads `mesh.thinInstances` and throws without one, so
+            // a mesh generation resolved and never bound a pool on fails at
+            // its own line -- the same failure, at the same call. A mesh
+            // arriving as a runtime handle keeps the emitted call's own.
+            if (!context.meshHasThinInstancePool(mesh)) {
+                context.fail(
+                    call,
+                    "enableThinInstanceGpuCulling requires a " +
+                        "thin-instance pool this mesh never establishes; " +
+                        "bind one with setThinInstances or " +
+                        "addThinInstance first.",
+                );
+            }
+            if (
+                enabled === "false" &&
+                !context.meshMayHaveThinInstanceGpuCulling(mesh)
+            ) {
+                // `_gpuCullingEnabled` starts false and nothing reached so
+                // far on this mesh could have set it, so the pinned body
+                // returns at its own idempotence test: there is no culler
+                // to omit and no flag to move. Reaching the feature anyway
+                // would emit the runtime helper AND record the
+                // omitted-culler adaptation against a scene that never
+                // asked for the culler, which is a fidelity entry naming a
+                // divergence that does not exist.
+                return { kind: "void", cpp: "" };
+            }
+            context.reachFeature(
+                "mesh:thin-instance-gpu-culling",
+                call,
+            );
+            context.recordThinInstanceGpuCulling(mesh.sceneMeshIndex);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::enable_thin_instance_gpu_culling(` +
+                    `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
+                    `${enabled})`,
             };
         }
 

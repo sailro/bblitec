@@ -25,6 +25,8 @@ export interface StandardMaterialSetters {
     emissiveFile: boolean;
     uvTransform: boolean;
     plugins: boolean;
+    /** A plugin binding filled by texels or by a loaded image. */
+    pluginTextures: boolean;
 }
 
 
@@ -1393,6 +1395,7 @@ MaterialHandle create_grid_material(
             emissiveFile,
             uvTransform,
             plugins,
+            pluginTextures,
         } = reached;
         // The material module that owns `diffuseTexture` -- the property
         // every arm below writes. `rtt.ts` is where only ONE of the sources
@@ -1436,6 +1439,9 @@ MaterialHandle create_grid_material(
                     : []),
                 ...(uvTransform ? ["enableMaterialUvTransform"] : []),
                 ...(plugins ? ["material.plugins"] : []),
+                ...(pluginTextures
+                    ? ["material.plugins#bindTextures"]
+                    : []),
             ].join(","),
             header: "",
             source: `// ${this.context.provenance(
@@ -1467,6 +1473,12 @@ MaterialHandle create_grid_material(
                         ? [
                             "src/material/plugin/std-plugin-bridge.ts" +
                             "#registerStdPlugins",
+                        ]
+                        : []),
+                    ...(pluginTextures
+                        ? [
+                            "src/material/plugin/plugin-bridge-shared.ts" +
+                            "#bindPluginTextures",
                         ]
                         : []),
                 ].join(" and "),
@@ -1595,8 +1607,45 @@ void set_material_plugins(
     Engine& engine,
     MaterialHandle material,
     std::uint8_t signature_index) {
-    standard_slot_material(engine, material).plugin_signature_index =
-        signature_index;
+    MaterialRecord& record = standard_slot_material(engine, material);
+    record.plugin_signature_index = signature_index;
+    // Upstream a second \`material.plugins = [...]\` replaces the list the
+    // bridge reads, so the textures the previous list bound go with it.
+    record.plugin_textures.clear();
+}
+` : ""}${pluginTextures ? `
+// src/material/plugin/plugin-bridge-shared.ts bindPluginTextures
+//
+// One texture a plugin's bindTextures pushed, appended in that order --
+// which is the order the pin pushes the bind entries in, and therefore the
+// order the composed fragment declared its getSamplers pairs. This arm
+// takes a createTexture2DFromPixels texture: the texels are the value, and
+// rgba_width/height are what tell the shared upload so.
+void add_material_plugin_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const PixelsTexture& texture) {
+    MaterialPluginTexture entry;
+    entry.data.bytes = texture.rgba;
+    entry.data.rgba_width = texture.width;
+    entry.data.rgba_height = texture.height;
+    entry.data.sampler = texture.sampler;
+    entry.data.uv_transform = texture.uv_transform;
+    entry.data.uv_invert_y = texture.uv_invert_y;
+    entry.srgb = texture.srgb;
+    standard_slot_material(engine, material)
+        .plugin_textures.push_back(entry);
+}
+
+// The same binding filled by a loaded image. The texture object travels
+// whole because the pin has one Texture2D whatever loaded it: the upload
+// flip, the sampler and the encoding its view takes are the texture's.
+void add_material_plugin_file_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const FileTexture& texture) {
+    standard_slot_material(engine, material).plugin_textures.push_back(
+        MaterialPluginTexture{texture.data, texture.srgb});
 }
 ` : ""}
 } // namespace bbl

@@ -36,7 +36,98 @@ export interface PropertyAnimationContext {
     fail(node: ts.Node, message: string): never;
 }
 
-export type PropertyAnimationTargetKind = "mesh" | "camera";
+export interface PropertyAnimationTargetContext {
+    fail(node: ts.Node, message: string): never;
+    allocateTemporaryCppName(label: string): string;
+    captureStoredDataFunctionLines(
+        emitBody: () => void,
+    ): { lines: string[]; capture: string };
+    withRecordScopes<T>(owner: Value, work: () => T): T;
+    compileRecordSetterValue(
+        owner: Value,
+        setter: ts.SetAccessorDeclaration,
+        node: ts.Expression,
+        value: Value,
+    ): void;
+    callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
+    requireDefaultEngine(node: ts.Node): string;
+}
+
+/** Callback writers for record-backed animation paths. */
+export class PropertyAnimationTargetLowerer {
+    compile(
+        context: PropertyAnimationTargetContext,
+        target: Value,
+        paths: readonly string[],
+        node: ts.Expression,
+    ): { cpp: string; engineCpp: string } {
+        const bindings = paths.map((path) => {
+            const segments = path.split(".");
+            const property = segments.pop();
+            if (!property || segments.length === 0) {
+                context.fail(
+                    node,
+                    `Record property animation path '${path}' must be dotted.`,
+                );
+            }
+            let owner = target;
+            for (const segment of segments) {
+                const next =
+                    owner.kind === "record"
+                        ? owner.recordProperties?.[segment]
+                        : undefined;
+                if (!next) {
+                    context.fail(
+                        node,
+                        `Property animation target has no record path '${segments.join(".")}'.`,
+                    );
+                }
+                owner = next;
+            }
+            const setter =
+                owner.kind === "record"
+                    ? owner.recordSetters?.[property]
+                    : undefined;
+            if (!setter) {
+                context.fail(
+                    node,
+                    `Property animation path '${path}' must end at a scalar record setter.`,
+                );
+            }
+            const identity = context.callbackIdentity(setter, owner);
+            const argument =
+                context.allocateTemporaryCppName("property_animation_value");
+            const { lines, capture } =
+                context.captureStoredDataFunctionLines(() =>
+                    context.withRecordScopes(owner, () =>
+                        context.compileRecordSetterValue(
+                            owner,
+                            setter,
+                            node,
+                            {
+                                kind: "number",
+                                cpp: `static_cast<double>(${argument})`,
+                                dataType: { kind: "number" },
+                            },
+                        ),
+                    ),
+                );
+            return (
+                `bbl::PropertyAnimationTarget{` +
+                `bbl::PropertyAnimationTargetKind::callback, ` +
+                `${identity}u, ${capture}(float ${argument}) mutable {\n` +
+                `${lines.map((line) => `    ${line}`).join("\n")}\n` +
+                `}}`
+            );
+        });
+        return {
+            cpp: `{${bindings.join(", ")}}`,
+            engineCpp: context.requireDefaultEngine(node),
+        };
+    }
+}
+
+export type PropertyAnimationTargetKind = "mesh" | "camera" | "record";
 
 export interface PropertyAnimationLane {
     /** The native `PropertyAnimationPath` enumerator this lane lowers to. */
@@ -119,6 +210,15 @@ export const propertyAnimationLanes: ReadonlyMap<
             field: "alpha",
         },
     ],
+    [
+        "__record_scalar__",
+        {
+            native: "record_scalar",
+            components: 1,
+            target: "record",
+            field: "",
+        },
+    ],
 ]);
 
 /** The pin's component order, from `createPropertyWriter`'s own `"xyzw"`. */
@@ -177,8 +277,30 @@ export function resolvePropertyAnimationPath(
     if (separator < 0) return undefined;
     const lane = propertyAnimationLanes.get(path.slice(0, separator));
     const component = path.slice(separator + 1);
-    if (!lane || !laneComponents(lane).includes(component)) {
+    if (lane && !laneComponents(lane).includes(component)) {
         return undefined;
+    }
+    if (!lane) {
+        const segments = path.split(".");
+        if (
+            segments.length < 2 ||
+            segments.some(
+                (segment) =>
+                    !/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(
+                        segment,
+                    ),
+            )
+        ) {
+            return undefined;
+        }
+        return {
+            lane: propertyAnimationLanes.get(
+                "__record_scalar__",
+            )!,
+            component: "whole_lane",
+            stride: 1,
+            quaternion: false,
+        };
     }
     return {
         lane,
@@ -203,6 +325,7 @@ export function compilePropertyAnimationClip(
     frameRate: string;
     duration: string;
     target: PropertyAnimationTargetKind;
+    paths: readonly string[];
 } {
     const tracks = context.expectStaticArrayLiteral(tracksExpression);
     if (tracks.elements.length === 0) {
@@ -246,6 +369,7 @@ export function compilePropertyAnimationClip(
         frameRate = distinct[0] ?? "60.0f";
     }
     const targets = new Set<PropertyAnimationTargetKind>();
+    const paths: string[] = [];
     const compiledTracks = tracks.elements.map((element) => {
         const track = context.expectObjectLiteral(
             context.resolveStaticExpression(element),
@@ -259,6 +383,7 @@ export function compilePropertyAnimationClip(
             );
         }
         const path = context.compileStaticString(pathExpression);
+        paths.push(path);
         const binding = resolvePropertyAnimationPath(path);
         if (!binding) {
             context.fail(
@@ -360,6 +485,7 @@ export function compilePropertyAnimationClip(
         frameRate,
         duration: "0.0f",
         target: [...targets][0] ?? "mesh",
+        paths,
     };
 }
 

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 
 import type { canonicalDevelopmentCompiler } from "./build-options.js";
@@ -324,6 +324,18 @@ export function discoverDevelopmentTools(
               ]
             : []),
     ];
+    const rmlUiConfig = join(
+        rmlUiDirectory,
+        "lib",
+        "cmake",
+        "RmlUi",
+        "RmlUiConfig.cmake",
+    );
+    const rmlUiHasSvg =
+        existsSync(rmlUiConfig) &&
+        /\bset\(RMLUI_SVG_PLUGIN ON\)/.test(
+            readFileSync(rmlUiConfig, "utf8"),
+        );
 
     return {
         visualStudioRoot,
@@ -358,18 +370,10 @@ export function discoverDevelopmentTools(
             existsSync(join(labSoundDirectory, "lib", "libnyquist.lib")),
         rmlUiDirectory,
         rmlUiInstalled:
-            // The two pieces native/CMakeLists.txt consumes: the package
-            // config find_package resolves, and the SDL platform source
-            // the UI feature compiles directly.
-            existsSync(
-                join(
-                    rmlUiDirectory,
-                    "lib",
-                    "cmake",
-                    "RmlUi",
-                    "RmlUiConfig.cmake",
-                ),
-            ) &&
+            // The package must carry the SVG-enabled option set now consumed
+            // by bounded inner markup, plus the SDL platform source the UI
+            // feature compiles directly.
+            rmlUiHasSvg &&
             existsSync(
                 join(rmlUiDirectory, "Backends", "RmlUi_Platform_SDL.cpp"),
             ),

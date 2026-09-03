@@ -263,6 +263,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/camera/orthographic.ts",
         consumers: CMAKE,
     },
+    "camera:view-projection": {
+        provenance:
+            "src/camera/camera.ts (getViewProjectionMatrix)",
+        consumers: CMAKE,
+    },
     "environment:ibl": {
         provenance:
             "src/material/pbr/fragments/ibl-fragment.ts (the scene " +
@@ -567,6 +572,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/thin-instance.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "mesh:thin-instance-gpu-culling": {
+        provenance: "src/mesh/thin-instance.ts",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
     "mesh:cylinder": {
         provenance: "src/mesh/create-cylinder.ts",
         consumers: CMAKE,
@@ -795,6 +804,13 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/plugin/std-plugin-bridge.ts",
         consumers: CMAKE,
     },
+    "material:plugin-textures": {
+        provenance:
+            "src/material/plugin/plugin-bridge-shared.ts " +
+            "bindPluginTextures + src/texture/pixels-texture.ts + " +
+            "src/texture/texture-2d.ts",
+        consumers: CMAKE,
+    },
     "texture:file": {
         provenance:
             "src/texture/texture-2d.ts + src/texture/solid-texture.ts",
@@ -1008,9 +1024,33 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/large-world/floating-origin.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "browser:file": {
+        provenance:
+            "the ECMAScript Blob, URL object-URL, anchor download, and file-input objects -- host services with no pinned Babylon module",
+        consumers: CMAKE,
+    },
     "ui:rml": {
         provenance:
             "scene-created document elements lowered to the retained native UI IR",
+        consumers: CMAKE,
+    },
+    "ui:inline-svg": {
+        provenance:
+            "generation-validated inline svg/path/rect markup projected through the pinned RmlUi SVG plugin",
+        consumers: CMAKE,
+    },
+    "data:json": {
+        provenance:
+            "the ECMAScript JSON object -- no pinned module declares it, so the " +
+            "bridge is the generic writer/parser plus the codecs generated " +
+            "beside the records a scene's own stringify reaches",
+        consumers: CMAKE,
+    },
+    "storage:local": {
+        provenance:
+            "the Web Storage localStorage object -- a host service like the " +
+            "frame conductor's timers, owned by the PAL rather than lowered " +
+            "from a Babylon declaration",
         consumers: CMAKE,
     },
 };

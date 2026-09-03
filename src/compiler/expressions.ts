@@ -18,6 +18,11 @@ import {
     isSupportedAudioMethodProperty,
 } from "./audio-surface.js";
 import { compileVatMethodCall } from "./intrinsics/vat.js";
+import {
+    compileBrowserFileCall,
+    compileBrowserFileConstructor,
+    compileBrowserFileElementAccess,
+} from "./browser-file.js";
 import { isParseFloatCallee } from "./browser-erasure.js";
 import type { ClassLowerer } from "./classes.js";
 import {
@@ -25,7 +30,14 @@ import {
     compileCompressedJsonPromiseThen,
 } from "./compressed-json.js";
 import type { DataLowerer } from "./data-lowering.js";
+import { compileIsArrayOverData } from "./data-methods.js";
 import { dataTypesEqual, type DataType } from "./data-types.js";
+import {
+    compileJsonCall,
+    compileJsonRead,
+    compileJsonTypeOf,
+} from "./json-bridge.js";
+import { compileWebStorageCall } from "./web-storage.js";
 import type { NativeFunctionLowerer } from "./native-functions.js";
 import {
     compileImmediatePromise,
@@ -158,11 +170,15 @@ export interface ExpressionContext
         probe: () => T,
         answered?: (result: T) => boolean,
     ): T;
-    staticRecordAccessor(
+    recordAccessor(
+        owner: Value,
         mapType: string,
         entries: readonly string[],
+        canHoist: boolean,
     ): string;
     requireEngine(value: Value, node: ts.Node): string;
+    /** Whether generation has seen a thin-instance pool set on this mesh. */
+    meshHasThinInstancePool(owner: Value): boolean;
     compileCondition(expression: ts.Expression): string;
     compileNumber(
         expression: ts.Expression,
@@ -238,12 +254,18 @@ export interface ExpressionContext
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined;
+    compileBrowserTextureFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
     compileStaticFetchMethod(
         call: ts.CallExpression,
         owner: Value,
         method: string,
     ): Value | undefined;
     compilePlatformCall(call: ts.CallExpression): Value | undefined;
+    reachJson(): void;
+    reachLocalStorage(): void;
     compileAnimationFrameCall(call: ts.CallExpression): Value | undefined;
     compileBrowserGeneratedString(
         call: ts.CallExpression,
@@ -252,6 +274,8 @@ export interface ExpressionContext
     reachJsData(): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
+    isInRuntimeIteration(): boolean;
+    callbackEvaluationIdentity(): object | undefined;
 }
 
 export class ExpressionLowerer {
@@ -325,16 +349,32 @@ export class ExpressionLowerer {
             ts.isArrowFunction(unwrapped) ||
             ts.isFunctionExpression(unwrapped)
         ) {
+            const evaluationIdentity =
+                this.context.callbackEvaluationIdentity();
+            const lexicalThis = ts.isArrowFunction(unwrapped)
+                ? this.context.activeThis()
+                : undefined;
             return {
                 kind: "callback",
                 cpp: "",
                 callbackDeclaration: unwrapped,
                 callbackRecordOwner: {
-                    kind: "record",
-                    cpp: "",
+                    ...(lexicalThis ?? {
+                        kind: "record" as const,
+                        cpp: "",
+                    }),
                     recordScopes: [
                         ...this.context.variableScopes,
                     ],
+                    ...(this.context.isInRuntimeIteration()
+                        ? { repeatedCallbackEvaluation: true }
+                        : {}),
+                    ...(evaluationIdentity
+                        ? {
+                              callbackEvaluationIdentity:
+                                  evaluationIdentity,
+                          }
+                        : {}),
                 },
             };
         }
@@ -465,6 +505,13 @@ export class ExpressionLowerer {
             return this.context.lookup(unwrapped);
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
+            // A read that descends into a parsed document has no static
+            // shape to consult, so it is answered before the typed data
+            // path tries to give it one.
+            const json = compileJsonRead(this.context, unwrapped);
+            if (json) {
+                return json;
+            }
             if (
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "Math" &&
@@ -494,11 +541,25 @@ export class ExpressionLowerer {
                 "read",
             );
             if (data) {
-                return data;
+                return data.kind === "data" &&
+                    !ts.isPropertyAccessChain(unwrapped) &&
+                    !data.preserveUncheckedLookup
+                    ? this.context.dataLowerer.narrowOptional(
+                          data,
+                          unwrapped,
+                      )
+                    : data;
             }
             return this.context.compilePropertyAccess(unwrapped);
         }
         if (ts.isNewExpression(unwrapped)) {
+            const browserFile = compileBrowserFileConstructor(
+                this.context,
+                unwrapped,
+            );
+            if (browserFile) {
+                return browserFile;
+            }
             if (
                 ts.isIdentifier(unwrapped.expression) &&
                 unwrapped.expression.text === "RegExp" &&
@@ -583,6 +644,17 @@ export class ExpressionLowerer {
                 if (map) {
                     return this.compileVatClipRow(map, unwrapped);
                 }
+            }
+            const browserFile = compileBrowserFileElementAccess(
+                this.context,
+                unwrapped,
+            );
+            if (browserFile) {
+                return browserFile;
+            }
+            const json = compileJsonRead(this.context, unwrapped);
+            if (json) {
+                return json;
             }
             if (!assertedNonNull) {
                 // Determining whether an unchecked element read can carry an
@@ -733,9 +805,16 @@ export class ExpressionLowerer {
                 };
             }
             if (owner.kind === "record") {
-                const key = this.compileValue(
+                const rawKey = this.compileValue(
                     unwrapped.argumentExpression,
                 );
+                const key =
+                    rawKey.kind === "data"
+                        ? this.context.dataLowerer.narrowOptional(
+                              rawKey,
+                              unwrapped.argumentExpression,
+                          )
+                        : rawKey;
                 const property =
                     key.kind === "string"
                         ? key.staticString
@@ -831,24 +910,28 @@ export class ExpressionLowerer {
                         this.context.dataTypes.cppType(
                             valueType,
                         );
-                    const entries = Object.entries(
-                        owner.recordProperties ?? {},
-                    ).map(([name, value]) => {
-                        if (dynamicEnum) {
-                            return `{${this.context.dataTypes.enumMemberCpp(key.dataType as Extract<DataType, { kind: "enum" }>, name, unwrapped)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                        }
-                        if (dynamicString) {
-                            return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
-                        }
-                        const numericKey = Number(name);
-                        if (!Number.isFinite(numericKey)) {
-                            this.context.fail(
-                                unwrapped.expression,
-                                `Dynamic numeric record has non-numeric key '${name}'.`,
-                            );
-                        }
-                        return `{${doubleLiteral(numericKey)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                    let entries: string[] = [];
+                    const entryLines = this.context.captureEmittedLines(() => {
+                        entries = Object.entries(
+                            owner.recordProperties ?? {},
+                        ).map(([name, value]) => {
+                            if (dynamicEnum) {
+                                return `{${this.context.dataTypes.enumMemberCpp(key.dataType as Extract<DataType, { kind: "enum" }>, name, unwrapped)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                            }
+                            if (dynamicString) {
+                                return `{${this.context.cppString(name)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                            }
+                            const numericKey = Number(name);
+                            if (!Number.isFinite(numericKey)) {
+                                this.context.fail(
+                                    unwrapped.expression,
+                                    `Dynamic numeric record has non-numeric key '${name}'.`,
+                                );
+                            }
+                            return `{${doubleLiteral(numericKey)}, ${this.context.dataLowerer.compileKnownValueForSink(value, valueType, unwrapped)}}`;
+                        });
                     });
+                    for (const line of entryLines) this.context.emit(line);
                     this.context.reachJsData();
                     const keyCpp = dynamicString
                         ? "std::string"
@@ -857,12 +940,60 @@ export class ExpressionLowerer {
                           : "double";
                     const mapType =
                         `bbl::js::Map<${keyCpp}, ${valueCpp}>`;
-                    const table = this.context.staticRecordAccessor(
+                    const table = this.context.recordAccessor(
+                        owner,
                         mapType,
                         entries,
+                        entryLines.length === 0 &&
+                            (this.isModuleConstantRecord(
+                                unwrapped.expression,
+                            ) ||
+                                Object.values(
+                                    owner.recordProperties ?? {},
+                                ).every((value) =>
+                                    this.canHoistRecordValue(value),
+                                )),
                     );
                     const lookup =
-                        `bblscene::${table}().${totalClosedKey ? "at" : "get"}(${key.cpp})`;
+                        `${table}.${totalClosedKey ? "at" : "get"}(${key.cpp})`;
+                    const recordValues = Object.values(
+                        owner.recordProperties ?? {},
+                    );
+                    const animationGroupSource =
+                        recordValues.length > 0 &&
+                        recordValues[0]!.animationGroupSource !==
+                            undefined &&
+                        recordValues.every(
+                            (value) =>
+                                value.animationGroupSource ===
+                                recordValues[0]!
+                                    .animationGroupSource,
+                        )
+                            ? recordValues[0]!
+                                  .animationGroupSource
+                            : undefined;
+                    const engineCpp =
+                        recordValues.length > 0 &&
+                        recordValues[0]!.engineCpp !== undefined &&
+                        recordValues.every(
+                            (value) =>
+                                value.engineCpp ===
+                                recordValues[0]!.engineCpp,
+                        )
+                            ? recordValues[0]!.engineCpp
+                            : undefined;
+                    if (resultType.kind === "handle") {
+                        return {
+                            ...this.context.dataLowerer.leafValue(
+                                lookup,
+                                resultType,
+                            ),
+                            ...(animationGroupSource
+                                ? { animationGroupSource }
+                                : {}),
+                            ...(engineCpp ? { engineCpp } : {}),
+                        };
+                    }
                     if (
                         valueType.kind === "struct" &&
                         this.context.dataTypes.isReferenceStruct(
@@ -959,6 +1090,25 @@ export class ExpressionLowerer {
             return value;
         }
         if (ts.isCallExpression(unwrapped)) {
+            if (
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                unwrapped.expression.name.text === "join" &&
+                unwrapped.arguments.length <= 1 &&
+                ts.isArrayLiteralExpression(
+                    this.context.unwrap(
+                        unwrapped.expression.expression,
+                    ),
+                )
+            ) {
+                const value =
+                    this.context.compileStringLiteral(unwrapped);
+                return {
+                    kind: "string",
+                    cpp: this.context.cppString(value),
+                    staticString: value,
+                    dataType: { kind: "string" },
+                };
+            }
             // A pure module-URL helper remains a compile-time string even
             // though its implementation uses browser URL objects. Recognize
             // it before the general browser-erasure gate so the value can
@@ -1186,7 +1336,10 @@ export class ExpressionLowerer {
                     this.context.dataLowerer.dataTypeAt(
                         unwrapped,
                     );
-                if (dataType?.kind !== "vector") {
+                if (
+                    dataType?.kind !== "vector" &&
+                    dataType?.kind !== "tuple"
+                ) {
                     const elements: Value[] = [];
                     let staticTuple = true;
                     for (const element of unwrapped.elements) {
@@ -1247,6 +1400,10 @@ export class ExpressionLowerer {
                 string,
                 ts.GetAccessorDeclaration
             > = {};
+            const setters: Record<
+                string,
+                ts.SetAccessorDeclaration
+            > = {};
             for (const property of unwrapped.properties) {
                 if (ts.isSpreadAssignment(property)) {
                     const spread = this.compileValue(
@@ -1258,7 +1415,8 @@ export class ExpressionLowerer {
                     ) {
                         this.context.fail(
                             property,
-                            "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot.",
+                            "Compile-time object spread requires a plain record value or a data record with a complete static property snapshot " +
+                                `(received ${spread.kind}${spread.dataType ? ` ${JSON.stringify(spread.dataType)}` : ""}).`,
                         );
                     }
                     Object.assign(
@@ -1272,6 +1430,10 @@ export class ExpressionLowerer {
                     Object.assign(
                         getters,
                         spread.recordGetters ?? {},
+                    );
+                    Object.assign(
+                        setters,
+                        spread.recordSetters ?? {},
                     );
                     continue;
                 }
@@ -1288,6 +1450,21 @@ export class ExpressionLowerer {
                         );
                     }
                     getters[name] = property;
+                    continue;
+                }
+                if (
+                    ts.isSetAccessorDeclaration(property)
+                ) {
+                    const name = this.context.propertyName(
+                        property.name,
+                    );
+                    if (!name) {
+                        this.context.fail(
+                            property.name,
+                            "Static record properties require literal names.",
+                        );
+                    }
+                    setters[name] = property;
                     continue;
                 }
                 if (ts.isMethodDeclaration(property)) {
@@ -1358,13 +1535,17 @@ export class ExpressionLowerer {
             }
             const closes =
                 Object.keys(methods).length > 0 ||
-                Object.keys(getters).length > 0;
+                Object.keys(getters).length > 0 ||
+                Object.keys(setters).length > 0;
+            const evaluationIdentity =
+                this.context.callbackEvaluationIdentity();
             return {
                 kind: "record",
                 cpp: "",
                 recordProperties: properties,
                 recordMethods: methods,
                 recordGetters: getters,
+                recordSetters: setters,
                 // Only a record with code in it needs its scope: a
                 // plain property already holds a resolved value.
                 ...(closes
@@ -1372,6 +1553,18 @@ export class ExpressionLowerer {
                           recordScopes: [
                               ...this.context.variableScopes,
                           ],
+                          ...(this.context.isInRuntimeIteration()
+                              ? {
+                                    repeatedCallbackEvaluation:
+                                        true as const,
+                                }
+                              : {}),
+                          ...(evaluationIdentity
+                              ? {
+                                    callbackEvaluationIdentity:
+                                        evaluationIdentity,
+                                }
+                              : {}),
                       }
                     : {}),
             };
@@ -1546,6 +1739,10 @@ export class ExpressionLowerer {
             const operand = this.context.compileValue(
                 expression,
             );
+            const documentType = compileJsonTypeOf(operand);
+            if (documentType) {
+                return documentType;
+            }
             const dataType =
                 operand.dataType?.kind === "optional"
                     ? operand.dataType.inner
@@ -1921,15 +2118,7 @@ export class ExpressionLowerer {
                     continue;
                 }
                 const value = this.compileValue(argument);
-                if (value.kind === "engine" || value.cpp.length === 0) {
-                    continue;
-                }
-                this.context.emit(
-                    value.kind !== "void" ||
-                        value.requiresExplicitDiscard
-                        ? `static_cast<void>(${value.cpp});`
-                        : `${value.cpp};`,
-                );
+                this.context.emitDiscardedValue(value);
             }
         }
         const browserValue =
@@ -2186,25 +2375,86 @@ export class ExpressionLowerer {
             const falseClass = this.context.classOf(whenFalse);
             const trueProperties = whenTrue.recordProperties ?? {};
             const falseProperties = whenFalse.recordProperties ?? {};
-            const names = Object.keys(trueProperties);
-            const falseNames = new Set(Object.keys(falseProperties));
+            const trueNames = Object.keys(trueProperties);
+            const falseNames = Object.keys(falseProperties);
+            const names = [...trueNames];
+            for (const name of falseNames) {
+                if (!names.includes(name)) names.push(name);
+            }
+            const differingShape =
+                trueNames.length !== falseNames.length ||
+                names.some(
+                    (name) =>
+                        trueProperties[name] === undefined ||
+                        falseProperties[name] === undefined,
+                );
             if (
-                names.length !== falseNames.size ||
-                names.some((name) => !falseNames.has(name))
+                differingShape &&
+                (trueClass !== undefined ||
+                    falseClass !== undefined ||
+                    Object.keys(whenTrue.recordMethods ?? {}).length > 0 ||
+                    Object.keys(whenFalse.recordMethods ?? {}).length > 0 ||
+                    Object.keys(whenTrue.recordGetters ?? {}).length > 0 ||
+                    Object.keys(whenFalse.recordGetters ?? {}).length > 0 ||
+                    Object.keys(whenTrue.recordSetters ?? {}).length > 0 ||
+                    Object.keys(whenFalse.recordSetters ?? {}).length > 0)
             ) {
                 this.context.fail(
                     node,
-                    "Conditional record branches must carry the same properties.",
+                    "Conditional class or accessor records must carry the same properties.",
                 );
             }
             const selected: Record<string, Value> = {};
             for (const name of names) {
-                selected[name] = this.selectValue(
-                    condition,
-                    trueProperties[name]!,
-                    falseProperties[name]!,
-                    node,
-                );
+                const trueValue = trueProperties[name];
+                const falseValue = falseProperties[name];
+                if (trueValue && falseValue) {
+                    selected[name] = this.selectValue(
+                        condition,
+                        trueValue,
+                        falseValue,
+                        node,
+                    );
+                    continue;
+                }
+                const present = trueValue ?? falseValue!;
+                const inner =
+                    present.dataType ??
+                    (present.kind === "number"
+                        ? { kind: "number" as const }
+                        : present.kind === "boolean"
+                          ? { kind: "boolean" as const }
+                          : present.kind === "string"
+                            ? { kind: "string" as const }
+                            : undefined);
+                if (!inner || inner.kind === "optional") {
+                    this.context.fail(
+                        node,
+                        `Conditional record property '${name}' must have one non-optional native data type.`,
+                    );
+                }
+                const optional: DataType = {
+                    kind: "optional",
+                    inner,
+                };
+                const optionalCpp =
+                    this.context.dataTypes.cppType(optional);
+                const valueCpp =
+                    this.context.dataLowerer.compileKnownValueForSink(
+                        present,
+                        inner,
+                        node,
+                    );
+                const populated = `${optionalCpp}{${valueCpp}}`;
+                const absent = `${optionalCpp}{std::nullopt}`;
+                selected[name] = {
+                    kind: "data",
+                    cpp:
+                        trueValue !== undefined
+                            ? `(${condition} ? ${populated} : ${absent})`
+                            : `(${condition} ? ${absent} : ${populated})`,
+                    dataType: optional,
+                };
             }
             const selectedRecord: Value = {
                 kind: "record",
@@ -2383,7 +2633,72 @@ export class ExpressionLowerer {
         return conditional;
     }
 
+    private canHoistRecordValue(value: Value): boolean {
+        if (
+            value.staticNumber !== undefined ||
+            value.staticString !== undefined ||
+            value.staticBoolean !== undefined ||
+            value.kind === "json-null"
+        ) {
+            return true;
+        }
+        if (value.kind === "tuple") {
+            return (value.tupleElements ?? []).every((element) =>
+                this.canHoistRecordValue(element),
+            );
+        }
+        if (value.kind === "record") {
+            return (
+                Object.keys(value.recordMethods ?? {}).length === 0 &&
+                Object.keys(value.recordGetters ?? {}).length === 0 &&
+                Object.keys(value.recordSetters ?? {}).length === 0 &&
+                Object.values(
+                    value.recordProperties ?? {},
+                ).every((property) =>
+                    this.canHoistRecordValue(property),
+                )
+            );
+        }
+        return false;
+    }
+
+    private isModuleConstantRecord(expression: ts.Expression): boolean {
+        const owner = this.context.unwrap(expression);
+        if (!ts.isIdentifier(owner)) return false;
+        let symbol = this.context.checker.getSymbolAtLocation(owner);
+        if (symbol && (symbol.flags & ts.SymbolFlags.Alias) !== 0) {
+            symbol = this.context.checker.getAliasedSymbol(symbol);
+        }
+        const declaration = symbol?.valueDeclaration;
+        return (
+            declaration !== undefined &&
+            ts.isVariableDeclaration(declaration) &&
+            declaration.parent !== undefined &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.Const) !== 0 &&
+            declaration.parent.parent !== undefined &&
+            ts.isVariableStatement(declaration.parent.parent) &&
+            ts.isSourceFile(declaration.parent.parent.parent)
+        );
+    }
+
     private compileCall(call: ts.CallExpression): Value {
+        const browserFile = compileBrowserFileCall(this.context, call);
+        if (browserFile) {
+            return browserFile;
+        }
+        // Web Storage and JSON are host services rather than pinned
+        // modules, and both are recognized by the global the call reaches
+        // rather than by anything a scene is named. They come first so
+        // neither is mistaken for a user function of the same name.
+        const storage = compileWebStorageCall(this.context, call);
+        if (storage) {
+            return storage;
+        }
+        const json = compileJsonCall(this.context, call);
+        if (json) {
+            return json;
+        }
         const compressedJsonThen = compileCompressedJsonPromiseThen(
             this.context,
             call,
@@ -2761,11 +3076,21 @@ export class ExpressionLowerer {
                 ts.isConditionalExpression(receiver) ||
                 ts.isCallExpression(receiver)
             ) {
-                const instance = ts.isIdentifier(receiver)
+                const receiverValue = ts.isIdentifier(receiver)
                     ? this.context.lookupOptional(receiver)
                     : receiver.kind === ts.SyntaxKind.ThisKeyword
                       ? this.context.activeThis()
                       : this.compileValue(receiver);
+                const instance = receiverValue
+                    ? (this.context.classLowerer.hydrate(receiverValue) ??
+                          receiverValue)
+                    : undefined;
+                const optionalCall =
+                    call.questionDotToken !== undefined ||
+                    callee.questionDotToken !== undefined;
+                if (instance?.kind === "json-null" && optionalCall) {
+                    return { kind: "void", cpp: "" };
+                }
                 const declaration = instance
                     ? this.context.classOf(instance)
                     : undefined;
@@ -2855,7 +3180,66 @@ export class ExpressionLowerer {
                               inRecordScope,
                           );
                 }
+                if (
+                    recordCallback?.kind === "data" &&
+                    recordCallback.dataType?.kind === "function" &&
+                    !call.questionDotToken &&
+                    !callee.questionDotToken
+                ) {
+                    const functionType = recordCallback.dataType;
+                    const argumentsCpp =
+                        this.context.dataLowerer.compileFunctionArguments(
+                          call,
+                          functionType,
+                          `Stored callback field '${callee.name.text}'`,
+                        );
+                    const cpp =
+                        `${recordCallback.cpp}(${argumentsCpp.join(", ")})`;
+                    return functionType.result
+                        ? this.context.dataLowerer.leafValue(
+                            cpp,
+                            functionType.result,
+                          )
+                        : { kind: "void", cpp };
+                }
                 if (instance && declaration) {
+                    const optionalFound =
+                        instance.optionalFoundCpp ??
+                        (instance.dataType?.kind === "struct" &&
+                        this.context.dataTypes.isReferenceStruct(
+                            instance.dataType.name,
+                        )
+                            ? `static_cast<bool>(${instance.cpp})`
+                            : undefined);
+                    if (optionalCall && optionalFound !== undefined) {
+                        if (!ts.isExpressionStatement(call.parent)) {
+                            this.context.fail(
+                                call,
+                                "Optional class method calls returning a value are not lowered.",
+                            );
+                        }
+                        this.context.emit(`if (${optionalFound}) {`);
+                        this.context.increaseIndent();
+                        const result =
+                            this.context.classLowerer.compileMethodCall(
+                                instance,
+                                callee.name.text,
+                                call,
+                                declaration,
+                            );
+                        if (result.kind !== "void") {
+                            this.context.fail(
+                                call,
+                                "Optional class method calls returning a value are not lowered.",
+                            );
+                        }
+                        if (result.cpp) {
+                            this.context.emit(`${result.cpp};`);
+                        }
+                        this.context.decreaseIndent();
+                        this.context.emit("}");
+                        return { kind: "void", cpp: "" };
+                    }
                     return this.context.classLowerer.compileMethodCall(
                         instance,
                         callee.name.text,
@@ -2904,6 +3288,13 @@ export class ExpressionLowerer {
         }
 
         if (!ts.isIdentifier(callee)) {
+            const isArray = compileIsArrayOverData(
+                this.context.dataLowerer,
+                call,
+            );
+            if (isArray) {
+                return isArray;
+            }
             const receiver =
                 ts.isPropertyAccessExpression(callee) &&
                 ts.isIdentifier(callee.expression)
@@ -3153,6 +3544,14 @@ export class ExpressionLowerer {
         );
         if (decodedAudio) {
             return decodedAudio;
+        }
+        // Ahead of inlining: a canvas-owning texture producer's body is not
+        // a body this compiler can lower, so the structural gate decides
+        // before the inliner reaches `new OffscreenCanvas`.
+        const browserTextures =
+            this.context.compileBrowserTextureFunctionCall(call, callee);
+        if (browserTextures) {
+            return browserTextures;
         }
         const userFunction = this.context.userFunctions.compile(
             this.context,

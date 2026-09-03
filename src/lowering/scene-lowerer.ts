@@ -57,6 +57,96 @@ export class SceneLowerer {
       modulePath,
       addName,
     );
+    this.context.assertExpressionShape(
+      this.context.variableInitializer(addToScene, "kids"),
+      "(entity as unknown as SceneNode).children",
+      "Pinned addToScene child traversal",
+    );
+    const addChildrenLoops = this.context.findNodes(
+      addToScene,
+      (node): node is ts.ForOfStatement =>
+        ts.isForOfStatement(node) &&
+        this.context.propertyPath(node.expression)?.join(".") === "kids",
+    );
+    if (addChildrenLoops.length !== 1) {
+      this.context.contractError(
+        addToScene,
+        "Expected addToScene to walk its ordered children exactly once.",
+      );
+    }
+    const addChildrenLoop = addChildrenLoops[0]!;
+    const childParentWrites = this.context.findNodes(
+      addChildrenLoop.statement,
+      (node): node is ts.BinaryExpression =>
+        ts.isBinaryExpression(node) &&
+        node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+        this.context.propertyPath(node.left)?.join(".") ===
+          "child.parent" &&
+        this.context.propertyPath(node.right)?.join(".") === "entity",
+    );
+    const childRecursiveAdds = this.context.findNodes(
+      addChildrenLoop.statement,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === addName &&
+        node.arguments.length === 2 &&
+        this.context.propertyPath(node.arguments[0]!)?.join(".") ===
+          "scene" &&
+        this.context.propertyPath(node.arguments[1]!)?.join(".") ===
+          "child",
+    );
+    if (
+      childParentWrites.length !== 1 ||
+      childRecursiveAdds.length !== 1 ||
+      childParentWrites[0]!.end >= childRecursiveAdds[0]!.pos
+    ) {
+      this.context.contractError(
+        addChildrenLoop,
+        "Expected addToScene to set each child parent before recursing.",
+      );
+    }
+    const { declaration: createSceneNodeCore } =
+      this.context.functionDeclaration(
+        "src/scene/scene-node.ts",
+        "createSceneNodeCore",
+      );
+    const parentSetters = this.context.findNodes(
+      createSceneNodeCore,
+      (node): node is ts.SetAccessorDeclaration =>
+        ts.isSetAccessorDeclaration(node) &&
+        this.context.propertyName(node.name) === "parent",
+    );
+    const parentSetter = parentSetters[0];
+    if (
+      parentSetters.length !== 1 ||
+      !parentSetter?.body ||
+      parentSetter.body.statements.length !== 1 ||
+      !ts.isExpressionStatement(parentSetter.body.statements[0]!)
+    ) {
+      this.context.contractError(
+        createSceneNodeCore,
+        "Expected SceneNode.parent to be one direct world-state write.",
+      );
+    }
+    this.context.assertExpressionShape(
+      parentSetter.body.statements[0].expression,
+      "wm.parent = v",
+      "Pinned direct SceneNode parent write",
+    );
+    if (
+      this.context.hasNode(
+        parentSetter.body,
+        (node) =>
+          ts.isPropertyAccessExpression(node) &&
+          node.name.text === "children",
+      )
+    ) {
+      this.context.contractError(
+        parentSetter,
+        "A direct SceneNode.parent write must not mutate children.",
+      );
+    }
     const transformNodeModulePath = "src/scene/transform-node.ts";
     const { declaration: cloneTransformNode } =
       this.context.functionDeclaration(
@@ -86,6 +176,19 @@ export class SceneLowerer {
       this.context.contractError(
         cloneTransformNode,
         "Expected cloneTransformNode to route meshes and recursively clone children.",
+      );
+    }
+    const cloneChildPushes = this.context.findNodes(
+      cloneTransformNode,
+      (node): node is ts.CallExpression =>
+        ts.isCallExpression(node) &&
+        this.context.propertyPath(node.expression)?.join(".") ===
+          "clone.children.push",
+    );
+    if (cloneChildPushes.length !== 2) {
+      this.context.contractError(
+        cloneTransformNode,
+        "Expected cloneTransformNode to append each cloned child to the traversal list.",
       );
     }
     const { declaration: cloneMeshNode } = this.context.functionDeclaration(
@@ -422,12 +525,10 @@ void set_mesh_visible(
     MeshHandle mesh,
     bool visible) {
     if (set_mesh_visible_cascade(engine, mesh, visible)) {
-        // The pin's visibility epoch: setSubtreeVisible is the sole
-        // bumper, a bare \`visible\` field write deliberately is not, and
-        // a same-value call skips the bump so a per-frame re-assertion
-        // stays a true no-op. The backends re-record the cached draw
-        // lists on it -- this port's render bundles.
-        ++engine.visibility_epoch;
+        // The pin's visibility epoch feeds the shared native draw-list
+        // membership epoch. A bare \`visible\` field write deliberately does
+        // not bump it, and a same-value call stays a true no-op.
+        ++engine.draw_list_epoch;
     }
 }
 `
@@ -523,6 +624,12 @@ void set_mesh_transform_parent(
     Engine& engine,
     MeshHandle mesh,
     TransformNodeHandle parent) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    if (parent.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node parent handle.");
+    }
     MeshRecord& record = engine.meshes[mesh.value];
     if (
         record.transform_parent.value == parent.value &&
@@ -561,10 +668,40 @@ void set_mesh_transform_parent(
 // recurses into parented_nodes, and transform_node_world already
 // composes record.parent; this is the write that links the two, so a
 // node hung under another follows it exactly as a mesh does.
+namespace {
+void require_acyclic_transform_node_parent(
+    const Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle parent) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node child handle.");
+    }
+    if (parent.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node parent handle.");
+    }
+    TransformNodeHandle cursor = parent;
+    std::size_t depth = 0;
+    while (cursor.value < engine.transform_nodes.size()) {
+        if (
+            cursor.value == node.value ||
+            depth++ >= engine.transform_nodes.size()) {
+            throw std::runtime_error(
+                "Transform-node parent cycle detected.");
+        }
+        cursor = engine.transform_nodes[cursor.value].parent;
+    }
+    if (cursor.value != invalid_handle) {
+        throw std::runtime_error(
+            "Invalid transform-node handle in parent chain.");
+    }
+}
+} // namespace
+
 void set_transform_node_parent(
     Engine& engine,
     TransformNodeHandle node,
     TransformNodeHandle parent) {
+    require_acyclic_transform_node_parent(engine, node, parent);
     TransformNodeRecord& record = engine.transform_nodes[node.value];
     if (record.parent.value == parent.value) return;
     if (record.parent.value < engine.transform_nodes.size()) {
@@ -590,7 +727,83 @@ void push_transform_node_child(
     Engine& engine,
     TransformNodeHandle node,
     MeshHandle child) {
-    engine.transform_nodes[node.value].children.push_back(child);
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    if (child.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    engine.transform_nodes[node.value].children.emplace_back(child);
+}
+
+void push_transform_node_child(
+    Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle child) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    if (child.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node child handle.");
+    }
+    engine.transform_nodes[node.value].children.emplace_back(child);
+}
+
+namespace {
+void validate_transform_node_traversal(
+    const Engine& engine,
+    TransformNodeHandle node,
+    std::vector<bool>& active) {
+    if (node.value >= engine.transform_nodes.size()) {
+        throw std::runtime_error("Invalid transform-node handle.");
+    }
+    if (active[node.value]) {
+        throw std::runtime_error(
+            "Transform-node traversal cycle detected.");
+    }
+    active[node.value] = true;
+    const TransformNodeRecord& record = engine.transform_nodes[node.value];
+    for (const TransformNodeChild& entry : record.children) {
+        if (const auto* mesh = std::get_if<MeshHandle>(&entry)) {
+            if (mesh->value >= engine.meshes.size()) {
+                throw std::runtime_error(
+                    "Invalid mesh handle in transform-node traversal.");
+            }
+            continue;
+        }
+        validate_transform_node_traversal(
+            engine,
+            std::get<TransformNodeHandle>(entry),
+            active);
+    }
+    active[node.value] = false;
+}
+
+void add_transform_node_children(
+    Scene& scene,
+    TransformNodeHandle node) {
+    Engine& engine = *scene.engine;
+    const TransformNodeRecord& record = engine.transform_nodes[node.value];
+    for (const TransformNodeChild& entry : record.children) {
+        if (const auto* mesh = std::get_if<MeshHandle>(&entry)) {
+            set_mesh_transform_parent(engine, *mesh, node);
+            add_to_scene(scene, *mesh);
+            continue;
+        }
+        const TransformNodeHandle child =
+            std::get<TransformNodeHandle>(entry);
+        set_transform_node_parent(engine, child, node);
+        add_transform_node_children(scene, child);
+    }
+}
+} // namespace
+
+// ${this.context.provenance("src/scene/scene-core.ts", "addToScene")}
+void add_to_scene(Scene& scene, TransformNodeHandle node) {
+    require_scene_engine(scene);
+    std::vector<bool> active(scene.engine->transform_nodes.size(), false);
+    validate_transform_node_traversal(*scene.engine, node, active);
+    add_transform_node_children(scene, node);
 }
 `
       : "";
@@ -704,23 +917,52 @@ std::array<float, 16> parenting_world_matrix(
     return result;
 }
 
+bool is_mesh_child(
+    MeshHandle candidate,
+    MeshHandle child) {
+    return candidate == child;
+}
+
+bool is_mesh_child(
+    const TransformNodeChild& candidate,
+    MeshHandle child) {
+    const auto* mesh = std::get_if<MeshHandle>(&candidate);
+    return mesh && *mesh == child;
+}
+
+template <typename Children>
 void unlink_child_links(
-    std::vector<MeshHandle>& children,
+    Children& children,
     std::vector<MeshHandle>& registered,
     MeshHandle child) {
-    children.erase(
-        std::remove(children.begin(), children.end(), child),
-        children.end());
+    const auto traversal = std::find_if(
+        children.begin(),
+        children.end(),
+        [child](const auto& candidate) {
+            return is_mesh_child(candidate, child);
+        });
+    if (traversal != children.end()) {
+        // setParent removes the first public traversal entry. Explicit
+        // duplicate pushes remain observable, exactly as Array.splice does.
+        children.erase(traversal);
+    }
     registered.erase(
         std::remove(registered.begin(), registered.end(), child),
         registered.end());
 }
 
+template <typename Children>
 void link_child_links(
-    std::vector<MeshHandle>& children,
+    Children& children,
     std::vector<MeshHandle>& registered,
     MeshHandle child) {
-    if (std::find(children.begin(), children.end(), child) == children.end()) {
+    if (
+        std::find_if(
+            children.begin(),
+            children.end(),
+            [child](const auto& candidate) {
+                return is_mesh_child(candidate, child);
+            }) == children.end()) {
         children.push_back(child);
     }
     if (std::find(registered.begin(), registered.end(), child) == registered.end()) {
@@ -948,7 +1190,8 @@ js::Array<double> mesh_bound_min_array(
     if (record.geometry < engine.geometries.size()) {
         bounds = engine.geometries[record.geometry].bounds_min;
     }
-    if (record.has_bounds_min_override) bounds = record.bounds_min_override;
+    Vec3 maximum{};
+    apply_mesh_bound_overrides(record, bounds, maximum);
     return {bounds.x, bounds.y, bounds.z};
 }
 
@@ -960,7 +1203,8 @@ js::Array<double> mesh_bound_max_array(
     if (record.geometry < engine.geometries.size()) {
         bounds = engine.geometries[record.geometry].bounds_max;
     }
-    if (record.has_bounds_max_override) bounds = record.bounds_max_override;
+    Vec3 minimum{};
+    apply_mesh_bound_overrides(record, minimum, bounds);
     return {bounds.x, bounds.y, bounds.z};
 }
 `
@@ -1135,7 +1379,12 @@ Scene create_scene_context(Engine& engine) {
 
 void add_to_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
-    if (mesh.value >= scene.engine->meshes.size()) throw std::runtime_error("Invalid mesh handle.");
+    if (mesh.value >= scene.engine->meshes.size()) {
+        throw std::runtime_error(
+            "Invalid mesh handle " + std::to_string(mesh.value) +
+            " for " + std::to_string(scene.engine->meshes.size()) +
+            " meshes.");
+    }
     if (scene.engine->meshes[mesh.value].retired) {
         throw std::runtime_error(
             "Mesh '" + scene.engine->meshes[mesh.value].name +
@@ -1146,20 +1395,6 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     ++scene.render_topology_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
-}
-
-// The pin stores no TransformNode list on SceneContext: adding one walks its
-// public children and registers the meshes beneath it. The reached voxel mob
-// roots contain mesh children directly, already parented by the source.
-void add_to_scene(Scene& scene, TransformNodeHandle node) {
-    require_scene_engine(scene);
-    if (node.value >= scene.engine->transform_nodes.size()) {
-        throw std::runtime_error("Invalid transform-node handle.");
-    }
-    for (const MeshHandle child :
-         scene.engine->transform_nodes[node.value].children) {
-        add_to_scene(scene, child);
-    }
 }
 
 // A static glTF mesh normally bakes its node world into each vertex. Once
@@ -1536,72 +1771,131 @@ void on_scene_dispose(
 
 void on_key_down(
     Engine& engine,
-    std::function<void(const PlatformKeyboardEvent&)> callback) {
-    engine.key_down_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformKeyboardEvent&)> callback,
+    bool once) {
+    engine.key_down_callbacks.add(identity, std::move(callback), once);
+}
+void off_key_down(Engine& engine, std::size_t identity) {
+    engine.key_down_callbacks.remove(identity);
 }
 
 void on_key_up(
     Engine& engine,
-    std::function<void(const PlatformKeyboardEvent&)> callback) {
-    engine.key_up_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformKeyboardEvent&)> callback,
+    bool once) {
+    engine.key_up_callbacks.add(identity, std::move(callback), once);
+}
+void off_key_up(Engine& engine, std::size_t identity) {
+    engine.key_up_callbacks.remove(identity);
 }
 
 void on_pointer_down(
     Engine& engine,
-    std::function<void()> callback) {
-    engine.pointer_down_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.pointer_down_callbacks.add(identity, std::move(callback), once);
+}
+void off_pointer_down(Engine& engine, std::size_t identity) {
+    engine.pointer_down_callbacks.remove(identity);
 }
 
 void on_canvas_click(
     Engine& engine,
-    std::function<void()> callback) {
-    engine.canvas_click_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.canvas_click_callbacks.add(identity, std::move(callback), once);
+}
+void off_canvas_click(Engine& engine, std::size_t identity) {
+    engine.canvas_click_callbacks.remove(identity);
 }
 
 void on_mouse_down(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback) {
-    engine.mouse_down_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_down_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_down(Engine& engine, std::size_t identity) {
+    engine.mouse_down_callbacks.remove(identity);
 }
 
 void on_mouse_up(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback) {
-    engine.mouse_up_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_up_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_up(Engine& engine, std::size_t identity) {
+    engine.mouse_up_callbacks.remove(identity);
 }
 
 void on_mouse_move(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback) {
-    engine.mouse_move_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_move_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_move(Engine& engine, std::size_t identity) {
+    engine.mouse_move_callbacks.remove(identity);
 }
 
 void on_mouse_wheel(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback) {
-    engine.mouse_wheel_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_wheel_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_wheel(Engine& engine, std::size_t identity) {
+    engine.mouse_wheel_callbacks.remove(identity);
 }
 
 void on_mouse_cancel(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback) {
-    engine.mouse_cancel_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once) {
+    engine.mouse_cancel_callbacks.add(identity, std::move(callback), once);
+}
+void off_mouse_cancel(Engine& engine, std::size_t identity) {
+    engine.mouse_cancel_callbacks.remove(identity);
 }
 
 void on_window_resize(
     Engine& engine,
-    std::function<void()> callback) {
-    engine.window_resize_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.window_resize_callbacks.add(identity, std::move(callback), once);
+}
+void off_window_resize(Engine& engine, std::size_t identity) {
+    engine.window_resize_callbacks.remove(identity);
 }
 
 void on_pointer_lock_change(
     Engine& engine,
-    std::function<void()> callback) {
-    engine.pointer_lock_change_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once) {
+    engine.pointer_lock_change_callbacks.add(identity, std::move(callback), once);
+}
+void off_pointer_lock_change(Engine& engine, std::size_t identity) {
+    engine.pointer_lock_change_callbacks.remove(identity);
 }
 
 void set_canvas_cursor(Engine& engine, std::string cursor) {
     engine.canvas_cursor = std::move(cursor);
+}
+
+void focus_canvas(Engine& engine) {
+    engine.canvas_focused = true;
 }
 
 void request_pointer_lock(Engine& engine) {
@@ -1614,8 +1908,13 @@ void exit_pointer_lock(Engine& engine) {
 
 void on_visibility_change(
     Engine& engine,
-    std::function<void(bool)> callback) {
-    engine.visibility_change_callbacks.push_back(std::move(callback));
+    std::size_t identity,
+    std::function<void(bool)> callback,
+    bool once) {
+    engine.visibility_change_callbacks.add(identity, std::move(callback), once);
+}
+void off_visibility_change(Engine& engine, std::size_t identity) {
+    engine.visibility_change_callbacks.remove(identity);
 }
 
 void register_scene(Scene& scene) {

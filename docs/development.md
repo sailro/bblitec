@@ -696,7 +696,8 @@ Build only the pinned Dawn library (same source pin, shared checkout) with
 `pwsh -File tools\build-dawn.ps1`. Build only pinned LabSound with
 `pwsh -File tools\build-labsound.ps1`, and only pinned RmlUi
 (`upstream/rmlui.json`, patch applied, the SDL platform pair installed
-beside the package) with `pwsh -File tools\build-rmlui.ps1` — one install
+beside the package, inline-SVG plugin enabled against the `ui` feature's
+LunaSVG) with `pwsh -File tools\build-rmlui.ps1` — one install
 every `ui:rml` build tree consumes at `BBLITE_RMLUI_DIR` instead of
 fetching and rebuilding the library per tree at configure. The
 development artifact builds with the same compiler the development scene
@@ -873,15 +874,17 @@ pwsh -File tools\build-labsound.ps1 -StaticRuntime -EnableCodecs
 pwsh -File tools\build-rmlui.ps1 -StaticRuntime
 ```
 
-`build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with only
-video, events, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
-sensor, camera, power, dialog, GL/Vulkan, or SDL_Renderer — nothing
-links the software renderer, since bblitec requires a GPU). **A scene
+`build-sdl-min.ps1` compiles the vcpkg-pinned SDL3 version with video, events,
+portable file dialogs, and SDL_GPU (no audio, joystick, haptic, HIDAPI,
+sensor, camera, power, GL/Vulkan, or SDL_Renderer — nothing links the software
+renderer, since bblitec requires a GPU). **A scene
 reaching `audio:engine` is refused at configure against this install**,
 because `SDL_AUDIO=OFF` leaves no device to open. Build the separate
 feature-compatible install with `build-sdl-min.ps1 -EnableAudio`; it is written
 to `artifacts\tools\sdl-min-audio`, and the scene's mini configure must pass
 that directory as `BBLITE_SDL_DIR`.
+Both variants declare the dialog capability too; a stale or custom trimmed SDL
+without it is refused at configure when a scene reaches `browser:file`.
 Both trimmed installs carry the two overlay-port patches the development SDL
 carries, plus one of their own that the development SDL does not:
 `static-no-dynapi.patch` turns SDL's dynamic-API jump table off. The table
@@ -986,8 +989,9 @@ node tools\map-size-report.mjs native\build-scene1-min-sdl\Release\bblite_native
 | `BBLITE_RENDER_CAPTURE=<path>` | write the captured frame's full CPU-side description as JSON (both GPU backends) |
 | `BBLITE_RUNTIME_TRACE=1` | print portable input dispatch, camera changes, and dynamic scene-membership rebuilds to stderr; the trace observes generated applications without modifying their source |
 | `BBLITE_RUNTIME_TRACE_INTERVAL=<frames>` | how far apart `BBLITE_RUNTIME_TRACE`'s periodic state lines print: the first five frames always print, then every Nth (default 60, minimum 1) |
-| `BBLITE_INPUT_REPLAY=<actions>` | dispatch one comma-separated DOM `KeyboardEvent.code` (optionally `Ctrl+`), mouse button, `MouseLeftOutsideCanvas`, `MouseMoveRight`, wheel, or `WindowClose` action per frame through the application's ordinary callbacks (`-` is an idle frame), for deterministic source-independent interaction diagnostics |
+| `BBLITE_INPUT_REPLAY=<actions>` | dispatch one comma-separated DOM `KeyboardEvent.code` (optionally `Ctrl+`), mouse button, exact `MouseMove@x:y` / `MouseLeft@x:y` client coordinate, `MouseLeftOutsideCanvas`, `MouseMoveRight`, wheel, or `WindowClose` action per frame through the application's ordinary callbacks (`-` is an idle frame), for deterministic source-independent interaction diagnostics |
 | `BBLITE_FILE_DIALOG_SAVE_PATH=<path>` / `BBLITE_FILE_DIALOG_OPEN_PATH=<path>` | bypass a reached native file dialog with an exact path for non-interactive save/load diagnostics |
+| `BBLITE_LOCAL_STORAGE_ROOT=<directory>` | redirect Web Storage away from the host's own preference directory, so a diagnostic run — or a test — reads and writes a scratch store instead of the user's saves |
 | `BBLITE_CAPTURE_UI=0` | omit retained UI from browser and native screenshots for canvas-only attribution; canonical parity captures the full page |
 | `BBLITE_PHYSICS_TRACE=1` | print each rigid-body step's `dt` and every body's post-step position to stderr. A substituted solver cannot be gated by MAD against a Havok golden, so the trajectory is what grades it: free fall has a closed form both solvers share, and a resting height is geometry ([fidelity](fidelity.md#physics-contract)) |
 | `BBLITE_CPU_PROFILE=1` | print SDL startup/frame phase timings and Bullet work counters without changing the scene: body/dynamic/active/moving counts, speed envelope, manifolds, cumulative contact stabilizations, pending re-adds, solver time, convex mass tuples, and applied-impulse data |

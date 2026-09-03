@@ -144,6 +144,11 @@ function argumentCanAlias(type: ts.Type): boolean {
     return (type.flags & scalar) === 0;
 }
 
+const parameterReadOnlyCache = new WeakMap<
+    ts.TypeChecker,
+    WeakMap<ts.Symbol, boolean>
+>();
+
 /**
  * Whether one call provably leaves the argument at `index` unchanged.
  *
@@ -285,6 +290,13 @@ export function parameterIsReadOnly(
 ): boolean {
     const symbol = checker.getSymbolAtLocation(parameter);
     if (!symbol || !declaration.body) return false;
+    const rootQuery = active.size === 0;
+    let checkerCache: WeakMap<ts.Symbol, boolean> | undefined;
+    if (rootQuery) {
+        checkerCache = parameterReadOnlyCache.get(checker);
+        const cached = checkerCache?.get(symbol);
+        if (cached !== undefined) return cached;
+    }
     if (active.has(symbol)) return true;
     active.add(symbol);
     const aliases = new Set<ts.Symbol>([symbol]);
@@ -369,6 +381,11 @@ export function parameterIsReadOnly(
     };
     visit(declaration.body);
     active.delete(symbol);
+    if (rootQuery) {
+        checkerCache ??= new WeakMap<ts.Symbol, boolean>();
+        checkerCache.set(symbol, readOnly);
+        parameterReadOnlyCache.set(checker, checkerCache);
+    }
     return readOnly;
 }
 
@@ -766,6 +783,7 @@ export interface UserFunctionIr {
 export interface UserFunctionContext {
     readonly dataTypes: DataTypeRegistry;
     compileValue(expression: ts.Expression): Value;
+    emitDiscardedValue(value: Value): void;
     lookupIdentifierValue(
         identifier: ts.Identifier,
     ): Value | undefined;
@@ -806,12 +824,27 @@ export interface UserFunctionContext {
         cppName: string,
         signature: string,
         escapesEmittingScope: boolean,
+        exposeReference?: boolean,
     ): void;
     beginInlineFrame(wrapped: boolean): void;
     endInlineFrame(): void;
     beginNativeFunctionBody(returnType: DataType | undefined): void;
     endNativeFunctionBody(): void;
-    storedDataFunctionCapture(lines: readonly string[]): string;
+    captureStoredDataFunctionLines(
+        emitBody: () => void,
+    ): { lines: string[]; capture: string };
+    /**
+     * The JavaScript identity a materialized callback carries.
+     *
+     * One number per function declaration *and* per closure the declaration
+     * actually closes over -- the instance of the class that declared it, or
+     * the evaluation of the function body it was written in -- because that
+     * is what evaluating a function expression twice produces: two function
+     * objects. Two materializations of the same declaration under the same
+     * closure are the same JavaScript function, which is what makes
+     * `off(handler)` remove what `on(handler)` added.
+     */
+    callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
     emit(line: string): void;
     increaseIndent(): void;
     decreaseIndent(): void;
@@ -930,6 +963,37 @@ export class UserFunctionLowerer {
                 },
             );
         });
+    }
+
+    /**
+     * Keep a generation-known scalar at the call site when this inlined body
+     * cannot mutate it. A normal parameter still gets native storage: this is
+     * specialization only where the existing mutation walk proves that
+     * rebinding or writing through the parameter is impossible.
+     */
+    private bindSpecializedParameter(
+        context: UserFunctionContext,
+        declaration: SupportedFunction,
+        parameter: UserFunctionParameterIr,
+        value: Value,
+    ): void {
+        const generationKnown =
+            value.staticNumber !== undefined ||
+            value.staticBoolean !== undefined ||
+            value.staticString !== undefined;
+        if (
+            generationKnown &&
+            ts.isIdentifier(parameter.name) &&
+            parameterIsReadOnly(
+                this.checker,
+                declaration,
+                parameter.name,
+            )
+        ) {
+            context.bindCompileTimeValue(parameter.name, value);
+            return;
+        }
+        this.bindParameter(context, parameter, value);
     }
 
     /**
@@ -1624,7 +1688,12 @@ export class UserFunctionLowerer {
             context.beginNativeFunctionBody(entry.returnType);
             try {
                 for (const { parameter, value } of parameterBindings) {
-                    this.bindParameter(context, parameter, value);
+                    this.bindSpecializedParameter(
+                        context,
+                        entry.declaration,
+                        parameter,
+                        value,
+                    );
                 }
                 const body = entry.declaration.body;
                 if (!body) {
@@ -1750,6 +1819,7 @@ export class UserFunctionLowerer {
         context: UserFunctionContext,
         expression: ts.Identifier | SupportedFunction,
         dataType: DataType & { kind: "function" },
+        owner?: Value,
     ): string {
         const unwrapped = ts.isFunctionDeclaration(expression) ||
             ts.isMethodDeclaration(expression)
@@ -1775,17 +1845,23 @@ export class UserFunctionLowerer {
             "stored callback",
             (node, message) => context.fail(node, message),
         );
-        if (ir.parameters.length !== dataType.parameters.length) {
+        const runtimeParameters = ir.parameters.filter(
+            (parameter) =>
+                (parameter.type.flags &
+                    (ts.TypeFlags.Never | ts.TypeFlags.Void)) ===
+                0,
+        );
+        if (runtimeParameters.length > dataType.parameters.length) {
             context.fail(
                 declaration,
-                "Stored function declaration does not match its native data signature.",
+                "Stored function declares more parameters than its native data signature.",
             );
         }
         const prefix = context.allocateUserFunctionPrefix();
         const cppName = `${prefix}stored_callback`;
-        const parameters = ir.parameters.map((parameter, index) => ({
-            parameter,
-            type: dataType.parameters[index]!,
+        const parameters = dataType.parameters.map((type, index) => ({
+            parameter: runtimeParameters[index],
+            type,
             cppName: `${prefix}arg_${index}`,
         }));
         const returnCpp = dataType.result
@@ -1794,9 +1870,29 @@ export class UserFunctionLowerer {
         context.pushScope(prefix);
         context.beginNativeFunctionBody(dataType.result);
         let lines: string[] = [];
+        let capture = "[=]";
         try {
-            lines = context.captureEmittedLines(() => {
-                for (const { parameter, type, cppName: name } of parameters) {
+            const captured = context.captureStoredDataFunctionLines(() => {
+                let runtimeIndex = 0;
+                for (const parameter of ir.parameters) {
+                    if (
+                        (parameter.type.flags &
+                            (ts.TypeFlags.Never | ts.TypeFlags.Void)) !==
+                        0
+                    ) {
+                        const initializer =
+                            parameter.declaration.initializer;
+                        if (initializer) {
+                            const evaluated =
+                                context.compileValue(initializer);
+                            context.emitDiscardedValue(evaluated);
+                        }
+                        continue;
+                    }
+                    const {
+                        type,
+                        cppName: name,
+                    } = parameters[runtimeIndex++]!;
                     let value = context.dataValue(name, type);
                     if (
                         parameter.declaration.initializer &&
@@ -1811,7 +1907,12 @@ export class UserFunctionLowerer {
                             type.inner,
                         );
                     }
-                    this.bindParameter(context, parameter, value);
+                    this.bindSpecializedParameter(
+                        context,
+                        ir.declaration,
+                        parameter,
+                        value,
+                    );
                 }
                 for (const statement of ir.statements) {
                     context.emitStatement(statement);
@@ -1821,17 +1922,7 @@ export class UserFunctionLowerer {
                         const discarded = context.compileValue(
                             ir.returnExpression,
                         );
-                        if (
-                            discarded.kind !== "engine" &&
-                            discarded.cpp.length > 0
-                        ) {
-                            context.emit(
-                                discarded.kind !== "void" ||
-                                    discarded.requiresExplicitDiscard
-                                    ? `static_cast<void>(${discarded.cpp});`
-                                    : `${discarded.cpp};`,
-                            );
-                        }
+                        context.emitDiscardedValue(discarded);
                     } else {
                         context.emit(
                             `return ${context.compileForDataSink(ir.returnExpression, dataType.result)};`,
@@ -1839,19 +1930,28 @@ export class UserFunctionLowerer {
                     }
                 }
             });
+            lines = captured.lines;
+            capture = captured.capture;
         } finally {
             context.endNativeFunctionBody();
             context.popScope();
         }
-        const capture = context.storedDataFunctionCapture(lines);
+        // A callback a container compares carries the identity of the
+        // declaration it came from together with the closure that
+        // declaration closes over, so it is brace-initialized with that
+        // identity beside the closure; everything else is the plain
+        // assignment the stored-function model already emitted.
+        const identity = dataType.identity
+            ? `{${context.callbackIdentity(declaration, owner)}u, `
+            : " = ";
         context.emit(
-            `${context.dataTypes.cppType(dataType)} ${cppName} = ` +
-                `${capture}(${parameters.map(({ type, cppName: name }) => `${context.dataTypes.cppType(type)} ${name}`).join(", ")}) mutable -> ${returnCpp} {`,
+            `${context.dataTypes.cppType(dataType)} ${cppName}${identity}` +
+                `${capture}(${parameters.map(({ type, cppName: name }) => `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`).join(", ")}) mutable -> ${returnCpp} {`,
         );
         context.increaseIndent();
         for (const line of lines) context.emit(line);
         context.decreaseIndent();
-        context.emit("};");
+        context.emit(dataType.identity ? "}};" : "};");
         return cppName;
     }
 
@@ -1900,14 +2000,25 @@ export class UserFunctionLowerer {
                               parameter.declaration,
                               "Array predicate parameter requires an argument or default.",
                           ));
-                this.bindParameter(context, parameter, value);
+                this.bindSpecializedParameter(
+                    context,
+                    ir.declaration,
+                    parameter,
+                    value,
+                );
             });
             for (const statement of ir.statements) {
                 context.emitStatement(statement);
             }
+            const condition = context.compileCondition(ir.returnExpression);
             return {
                 kind: "boolean",
-                cpp: context.compileCondition(ir.returnExpression),
+                cpp: condition,
+                ...(condition === "true"
+                    ? { staticBoolean: true }
+                    : condition === "false"
+                      ? { staticBoolean: false }
+                      : {}),
                 dataType: { kind: "boolean" },
             };
         } finally {
@@ -1979,7 +2090,12 @@ export class UserFunctionLowerer {
                               parameter.declaration,
                               `Optional parameter '${parameter.name.getText()}' requires a default value in reached user functions.`,
                           ));
-                this.bindParameter(context, parameter, value);
+                this.bindSpecializedParameter(
+                    context,
+                    ir.declaration,
+                    parameter,
+                    value,
+                );
             });
             if (ir.needsValueLambda) {
                 const returnType = this.valueLambdaReturnType(

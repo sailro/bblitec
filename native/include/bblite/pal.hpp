@@ -3,6 +3,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace bbl {
@@ -17,7 +18,12 @@ struct FileDialogOptions {
     std::string suggested_name;
     std::string filter_name;
     std::string filter_pattern;
-    std::string default_extension;
+};
+
+/** Bytes and display metadata captured while an open-file choice is accepted. */
+struct SelectedFileSnapshot {
+    std::vector<std::uint8_t> bytes;
+    std::string display_name;
 };
 
 Engine create_engine(EngineOptions options);
@@ -34,12 +40,35 @@ std::string join_path(const std::string& root, const std::string& relative_path)
 std::string parent_path(const std::string& path);
 std::string executable_directory();
 std::string environment_variable(const char* name);
+/**
+ * Durable per-user key/value storage: the platform service behind Web
+ * Storage. The root is the host's own preference directory
+ * (`SDL_GetPrefPath`) under one bblitec namespace, so nothing outside PAL
+ * names a path and no scene decides where its data lives.
+ *
+ * A read of an absent key answers `std::nullopt`; a write replaces the
+ * value atomically; removing an absent key succeeds. Every other failure
+ * throws, because a silent one would let a scene believe it saved.
+ */
+std::optional<std::string> read_local_storage(const std::string& key);
+void write_local_storage(const std::string& key, const std::string& value);
+void remove_local_storage(const std::string& key);
 std::optional<std::string> choose_save_file(
     Engine& engine,
     const FileDialogOptions& options);
-std::optional<std::string> choose_open_file(
+std::optional<SelectedFileSnapshot> choose_open_file(
     Engine& engine,
     const FileDialogOptions& options);
+/**
+ * File contents selected for opening are returned above as a bounded immutable
+ * snapshot. Writes stage beside the destination and replace it atomically.
+ */
+void write_selected_file_atomically(
+    const std::string& path,
+    const std::vector<std::uint8_t>& bytes);
+void write_selected_file_atomically(
+    const std::string& path,
+    std::string_view text);
 double monotonic_milliseconds();
 // Browser-facing `performance.now()`. In ordinary runs this is the same
 // monotonic clock; fixed-delta captures advance it deterministically.

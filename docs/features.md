@@ -59,7 +59,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 
 | Feature family | Phase | Summary |
 | --- | --- | --- |
-| [Program compilation](#program-compilation) | Compile | the TypeScript subset, the plain-data model, browser erasure, AOT promises |
+| [Program compilation](#program-compilation) | Compile | the TypeScript subset, the plain-data model, JSON, Web Storage, bounded browser files, browser erasure, AOT promises |
 | [Native page UI](ui.md) | Compile → Run | a bounded scene-created DOM/CSS/event surface lowered to retained RmlUi controls on SDL_GPU and Dawn |
 | [Feature and capability selection](#feature-and-capability-selection) | Compile | which generated modules, shader variants, codecs, and capability defines exist at all |
 | [Asset materialization](#asset-materialization) | Compile | every reached remote URL downloaded into the generated tree |
@@ -67,6 +67,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Compressed textures](#compressed-textures) | Compile → Run | which container to fetch, and a Basis file transcoded, at generation; the container parsed and its blocks uploaded at load |
 | [Environment compilation](#environment-compilation) | Compile | HDR and DDS cubemaps, GGX prefiltering, SH projection, BRDF LUT |
 | [Drawn and computed assets](#drawn-and-computed-assets) | Compile | Canvas2D sprite and fetched-tile atlases executed and baked, computed pixel buffers baked to RGBA |
+| [Browser-produced textures](#browser-produced-textures) | Compile | a canvas-owning scene function executed against a stub, its raw RGBA or PNG blob packaged with the options it named |
 | [Shader pipeline](#shader-pipeline) | Compile → Run | composed and specialized at generation; compiled offline for SDL_GPU, in-process by Dawn |
 | [Engine, scene, and frame loop](#engine-scene-and-frame-loop) | Run | registration, fixed delta, before-render callbacks, frame gates |
 | [Cameras and input](#cameras-and-input) | Run | ArcRotate/Free, default framing, orthographic opt-in, SDL controls |
@@ -127,6 +128,50 @@ analyzable entry file against one engine.
   its resource handles and callable identity while scalar members snapshot at
   the return boundary. Recursive callbacks that escape into timers are retained
   by the engine after their source scope returns.
+- **Shared class instances.** A local class stays a compile-time record of
+  per-field bindings until a native data position demands one of its instances
+  be a value — an array element, a `Map` key or value, a `Set` member, a
+  callback parameter or result. It then becomes the reference struct shared
+  objects already use, `bbl::js::Ref<XData>`, so `===`, `null`, `includes`,
+  `indexOf`, `Set` membership and `Map` keys are all Ref identity. The layout
+  holds the class's own property declarations, resolved through the
+  instantiated type so `new Workspace<Part>()` reads `P[]` as `Part[]`;
+  a field reaching an engine handle is hoisted out of the instance and must
+  hold the same value at every reached construction, proven site by site
+  rather than taken from the first. Methods, getters, setters and `clone`
+  inline on an instance read back out of a container exactly as on one just
+  constructed. Five shapes refuse by name: an abstract class or a subclass
+  (a stored instance would need dynamic dispatch), a callback declared per
+  instance of such a class (its identity would be shared by every instance),
+  a hoisted field that differs between constructions, a second write to a
+  hoisted field — a conditional one in the constructor, a retarget in a
+  method — since only the one assignment the proof selected has already
+  happened, and an instance
+  constructed as a compile-time record before anything demanded the runtime
+  representation.
+- **Callback identity.** A function stored where a container compares it — a
+  `Set` member, a `Map` key — is a `bbl::js::Callback<Sig>`: the reached
+  closure plus a generation-assigned identity of the declaration together
+  with the closure that declaration closes over, never the receiver that
+  happened to be bound where it was materialized. `off(handler)` therefore
+  removes what `on(handler)` added, and a duplicate `add` is refused, both
+  the way JavaScript answers them. A module-level function is one identity
+  wherever it is added or removed from; two instances of one compile-time
+  class get two identities for the same class-body declaration, as two
+  evaluations of a function expression do. Static loop unrolling gives each
+  evaluation its own identity. A literal written inside a runtime loop or a
+  body emitted once as a native function refuses: its evaluations are one
+  emission and have no safe per-evaluation native identity.
+- **Borrowed platform-event payloads.** A synchronous platform callback may
+  place its exact DOM `MouseEvent`, `KeyboardEvent`, or base `Event` view in a
+  callback payload record. The native field is a non-null borrowed reference
+  to the existing platform event, and the payload is shared by object identity,
+  so a handler's mutation is visible to the dispatch loop. Passing and
+  immediate iteration are allowed; recursively storing the live payload in an
+  array, map, set, class field, retained closure, listener, or timer refuses at
+  that sink. Merely storing a callback whose signature mentions the payload is
+  safe. Other DOM object types and event values without active platform
+  callback provenance remain outside the data model.
 - **The plain-data model.** Interface structs, `T | null` optionals, dynamic
   arrays, insertion-ordered `Map`/`Set`, `ArrayBuffer`/`DataView`,
   `Uint8Array`/`Float32Array`/`Float64Array`/`Uint16Array`/`Uint32Array`, runtime strings,
@@ -138,7 +183,12 @@ analyzable entry file against one engine.
   materialized on demand.
   `Map` and `Set` preserve insertion order through mutation; the reached
   surface includes `get`/`set`/`has`/`delete`/`clear`, map values iterators,
-  set iteration, and `size`. `Object.keys` materializes source-ordered record
+  set iteration, `size`, and the bounded
+  `map.get(key)?.delete(value)` chain, whose missing arm evaluates no argument
+  and whose present arm retains and mutates the Set object returned by
+  `Map.get`, even when evaluating `value` removes or replaces its map slot.
+  `Object.keys`
+  materializes source-ordered record
   keys, including records whose values were written through computed names.
   Resource handles are storable inside data. Const locals bind container
   elements as aliases; function-valued parameters inline, while function
@@ -146,12 +196,77 @@ analyzable entry file against one engine.
   defining values. A stored callback that reaches the engine captures that
   one live engine by reference, so its mutations remain visible to later
   render passes. `Math` and the
-  pinned seeded `Math.random` are available. A typed array takes `fill` and
-  `set(source, offset)`, the latter for a source of the target's own kind —
-  the spec converts every other source through the target's own store, and
-  no reached scene writes one. A number lane inside a tuple or a static
+  pinned seeded `Math.random` are available. A typed array takes `fill` — in
+  both the whole-array and the `fill(value, start, end)` range form —
+  `copyWithin(target, start, end)`, and `set(source, offset)`, the last for a
+  source of the target's own kind: the spec converts every other source
+  through the target's own store, and no reached scene writes one. The two
+  ranged operations resolve every endpoint through ECMA-262's relative-index
+  rule (a negative index counts back from the end, either sign clamps into
+  the array), which the runtime states once and `slice` shares, and
+  `copyWithin` moves overlapping runs as if through an intermediate list.
+  A number lane inside a tuple or a static
   record is written at each sink's own width rather than at the width its
   first sink asked for ([fidelity](fidelity.md#shader-contract)).
+- **JSON.** `JSON.stringify` writes any reached plain-data value through
+  codecs generated beside the records themselves, so an object's keys are in
+  the record's own declaration order rather than sorted: the bytes are what a
+  save round-trips and what a debug capture shows. Numbers go through the one
+  formatter every string coercion shares, a non-finite one writes `null`, a
+  property the source declared with `?` is omitted when absent while a
+  `T | null` one writes `null`, and an absent array slot writes `null` — the
+  rules JavaScript applies to `undefined`. The replacer is `null` or omitted
+  (a function or key list would decide the document at run time and refuses)
+  and the indent is generation-known. A record that reaches itself refuses at
+  generation rather than recursing.
+  `JSON.parse` answers one dynamic document value. A missing property and an
+  index past the end read as `undefined` rather than throwing, so the
+  source's own shape guards — `Array.isArray`, `typeof x === "number"`,
+  `Number.isFinite`, `.length`, `.every`, an optional property read, a strict
+  comparison — decide exactly as they do in the browser; a malformed document
+  throws where the browser's `SyntaxError` does, inside whatever `try` the
+  source wrote. The document coerces at a sink, which is where JavaScript
+  coerces one: `Number(document)` at a number, `String(document)` at a
+  string, its own truthiness at a condition, and a lane-wise
+  `Number(element)` where an assertion reads it as a numeric tuple or array.
+  A scene that reaches neither call links no parser and includes no JSON
+  header.
+- **Web Storage.** `localStorage.getItem`, `setItem` and `removeItem` are a
+  platform service rather than erased browser state: the PAL keeps one file
+  per key under the host's own preference directory (`SDL_GetPrefPath`) in a
+  bblitec namespace. `getItem` answers a nullable string, so an unset key and
+  a key holding `""` stay different states that the source's own `if (!raw)`
+  treats alike; `setItem` and `removeItem` throw when the platform could not
+  store the change, which is the arm a browser's quota error takes. Keys are
+  encoded injectively into file names, so no key names a path outside the
+  root and no two keys collide; a write uses randomized exclusive staging and
+  atomic replacement, so an interrupted save leaves the previous value rather
+  than half a document; and removing a key that was never set succeeds.
+- **Browser files.** `new Blob(parts, { type })` concatenates a bounded list of
+  runtime strings, `Uint8Array`s, and `ArrayBuffer`s byte-for-byte in source
+  order. `URL.createObjectURL` mints an opaque, per-engine identity retaining
+  those bytes until `revokeObjectURL`; no filesystem or network URL is made,
+  and a revoked or unknown URL cannot be downloaded. A retained
+  `<a href={objectUrl} download={name}>` opens the PAL save dialog and publishes
+  the activation-time payload by randomized, exclusive same-directory staging
+  and atomic replacement; cancellation writes nothing. A retained
+  `<input type="file">` accepts one selection, snapshots its bounded bytes and
+  display name while the picker result is accepted, exposes that immutable
+  File through `files[0]`, and reads only the snapshot through `File.text()`.
+  Live input, FileList, and File values share ownership of each snapshot;
+  replacing or removing an input releases its reference, while a retained old
+  File keeps its bytes until that final reference dies. Unshared replacements
+  reuse their record, and live snapshots share a 256 MiB per-engine aggregate
+  cap in addition to the 64 MiB per-file bound. Cancellation preserves the
+  previous list and dispatches no `change`; selection replaces the list before
+  dispatching it once. MIME/extension
+  filters are statically bounded, and every exact MIME must have a safe
+  extension mapping; `multiple`, directory selection, wildcard/parameterized
+  or unmappable accepts, arbitrary anchor navigation, source-supplied paths,
+  and Blob parts/options outside the listed surface refuse by name. The
+  separate `browser:file` feature selects SDL3's Windows/Linux/macOS
+  dialog/file PAL; scenes that do not reach it include no bridge header or
+  source.
 - **Browser erasure and AOT promises.** The browser `main` wrapper, unsupported DOM,
   timing, and dataset instrumentation are erased, and every `await` on a
   materialized asset resolves immediately. `window.location.search` reads as
@@ -172,7 +287,14 @@ analyzable entry file against one engine.
   runtime text/attribute/style state, tree attachment, removal, and reached
   click/pointer callbacks lower into a retained native UI IR. The `ui:rml`
   feature projects that IR through RmlUi for reached SDL_GPU and Dawn scenes.
-  Scene-created canvases use a separate bounded live Canvas2D command IR.
+  The bounded DOM slice also carries class add/remove/forced-toggle, a static
+  class query over a proven retained subtree, typed class compounds and scoped
+  class/tag descendants, CSS hover, and live max-width media rules. Constant
+  `div`/`span` markup and the reviewed inline `svg`/`path`/`rect` subset are
+  parsed at generation; LunaSVG renders the vector icons. Fixed
+  `repeat(integer, px)` grids whose child track shape is proven lower to an
+  equivalent wrapping-flex container. Scene-created canvases use a separate
+  bounded live Canvas2D command IR.
   This is a substitution surface, not a DOM
   or HTML canvas implementation; host-page lookups still erase. See
   [native page UI](ui.md).
@@ -417,6 +539,10 @@ export is called in headless Chromium, and what it returned is baked. Two
 kinds reach this — a drawn sprite atlas, a fetched Canvas2D atlas, and a
 computed pixel buffer.
 
+A fourth shape is executed for the same reason but reached differently: a
+scene FUNCTION that owns a canvas and ends at the pinned texture factories.
+See [browser-produced textures](#browser-produced-textures) below.
+
 **Why the atlas is compile time:** there is no file to download and no
 formula to port — its canvas2D pixels are a browser rasterizer's
 antialiasing rather than an expression
@@ -471,6 +597,50 @@ use. So an unrelated same-named binding elsewhere in the file refuses the
 solid: the scan over-refuses rather than resolving the wrong mesh, and a
 symbol-resolved version would have to carry its own mutation scan to keep
 that guarantee.
+
+### Browser-produced textures
+
+The three kinds above are reached through a *module export*: the call site
+names a zero-argument factory and generation runs it. Sandblox produces its
+textures a different way — a one-parameter scene function takes the engine,
+builds the pixels in a canvas it owns, and hands them straight to the pin.
+Two of them, and neither is lowerable:
+
+- `character.ts`'s face draws two ellipses and a quadratic stroke into a
+  128-square 2D context, rewrites the white background's alpha, flips the
+  rows, and calls `createTexture2DFromPixels`. Those pixels are a browser
+  rasterizer's antialiasing, so the shape is unlowerable in principle,
+  exactly as the drawn atlas is.
+- `stud-texture.ts` computes a 64-square float height field and rounds two
+  RGBA buffers out of it, so it is arithmetic — but `Math.round` is not among
+  the Math functions the data model compiles, and the buffers then cross
+  `OffscreenCanvas` → `convertToBlob` → `URL.createObjectURL` →
+  `loadTexture2D`, which is a browser PNG encode this port has no
+  representation for at all.
+
+**What is executed is decided structurally, never by a name.** The target
+must be a one-parameter top-level function whose same-file call closure owns
+a canvas and reaches `createTexture2DFromPixels` and/or `loadTexture2D` and
+nothing else from the pin, with one return of either a texture or an object
+of textures. Everything else — a producer that memoizes through module-level
+state, one that returns from two arms, one that reaches any other pinned
+export, one that owns a canvas but makes no texture, one that makes a texture
+but owns no canvas — falls straight through to ordinary inlining, which
+refuses by naming what it hit.
+
+Once accepted, the module and its repository siblings are transpiled to
+CommonJS and evaluated in headless Chromium against a stub that records only
+those two factories; a non-exported target is exposed by the driver rather
+than by editing what the module exports. Every other pinned import throws
+with the name it asked for, the engine argument is a proxy that throws on any
+property read, and a `loadTexture2D` URL that is not an object URL refuses.
+
+What is packaged is exactly what the factory was handed: raw RGBA with its
+width, height and sampler options, or the object URL's blob byte-for-byte
+with its sampler, invertY and sRGB options — so both land on the same native
+entry points a written-out call already lowers to. Recorded per scene as
+`browser-produced-textures`, with the same Chrome-dependent-bytes tradeoff,
+and replayed from the transitive-input-keyed bake cache.
 
 ### Node particles
 
@@ -651,6 +821,10 @@ per-frame clamping of the reached properties, and the `enableOrthographicCamera`
 opt-in with its aspect-derived view volume. SDL provides the platform
 boundary: left-drag orbit, right/middle-drag pan, and wheel zoom for ArcRotate;
 Free cameras additionally take `WASD`/arrows plus `Space`/`Shift`.
+`SceneContext.camera` remains nullable until the application assigns one;
+guarded reads retain that state, and `getViewProjectionMatrix(camera, aspect)`
+returns the live camera record's float32 projection-view result for indexed
+reads and `ArrayLike<number>` helpers.
 Application window listeners use the same event bridge in scene, sprite,
 effect, and frame-graph executables. SDL scancodes become DOM-compatible
 `KeyboardEvent.code`/`key` pairs (`Space`/`" "` included), pointer button
@@ -762,12 +936,41 @@ and tube primitives;
 `createMeshFromData` typed-array meshes; indexed glTF/GLB and `.babylon`
 geometry; every glTF primitive mode WebGPU has a topology for — triangle list,
 triangle strip, points, lines and line strip; generated and
-flat normals; negative transforms; and fixed-capacity thin-instance pools —
-the capacity is established when the pool is set and the matrix array stays
-aliased, so flush and count updates re-read it per frame. An array the caller
-builds at the call site is bound to a name first, because the pool keeps
-referencing it for the whole frame loop; one built inside a block refuses,
-since the binding would not outlive it.
+flat normals; negative transforms; and thin-instance pools — the capacity is
+established when the pool is set and the matrix array stays aliased, so flush
+and count updates re-read it per frame. An array the caller builds at the call
+site is bound to a name first, because the pool keeps referencing it for the
+whole frame loop; one built inside a block refuses, since the binding would not
+outlive it. A pool also GROWS: `addThinInstance` appends at the active count
+and returns the slot, doubling from the pin's own initial capacity of 16 when
+the two have met, and `removeThinInstance` swap-removes — the last active row
+fills the freed slot. Both are the pin's own bodies, with its two constants
+read off the declaration rather than restated, and `mesh.thinInstances.count`
+reads the record's live active count so a source computing the moved row from
+it sees what the previous call left. Growth allocates a NEW engine-owned array
+and repoints the record at it, exactly as the pin allocates a longer `F32` and
+reassigns `ti.matrices`: the scene's own array keeps its length and contents
+and goes stale on both sides, where resizing the alias in place would mutate —
+and, past a doubling it does not reach, truncate — storage the scene owns. Two
+states refuse rather than write: a pool established at capacity 0 doubles to 0,
+which is where the pin's own `matrices.set(matrix, 0)` on a zero-length array
+throws (distinct from a mesh with no pool at all, which gets the initial
+capacity), and a `removeThinInstance` index that is negative, NaN, fractional
+or past the active count fails by name instead of truncating onto a
+neighbouring row. Growth past what a registration allocated
+is a backend event, not just a CPU one: both PALs recreate the matrix, pinned
+matrix and colour buffers at the new capacity before the frame's upload, and
+release the old ones — nothing caches a buffer handle, so a shadow or depth
+task later in the same frame binds the new ones. A pool that first exists
+AFTER registration is the same event: the PBR family's mirror-conjugated
+stream is allocated there too, since its draw predicate is the live record.
+`enableThinInstanceGpuCulling`
+is accepted and recorded on the mesh; its compute culler is an
+[omitted optimization](fidelity.md#semantic-contract), not a silent no-op. An
+opt-in whose flag is statically `false` cannot turn that culler on — the pin's
+own body returns at its idempotence test — so it lowers to nothing and records
+no omission, while the mesh's pool is still required at generation the way the
+pin requires `mesh.thinInstances`.
 
 `createMeshFromData`'s four optional streams — uvs, uv2s, tangents, colours —
 may be settled at generation or at run time. A call that omits one, or writes
@@ -1278,13 +1481,17 @@ the two plugin bridges into the global extension registries, and the hook
 loops the two families already walk carry the plugin from there — upstream
 changes no shared file for it, and neither does this port.
 
-**Compile time, all of it.** A `MaterialPlugin` is a plain object whose
-`name` and `getCustomCode(shaderType)` are constants the scene wrote, so the
-plugin is folded from its own declaration; everything after that is the pin's
-own `buildPluginFragment`, executed — which injection point maps onto which
-template slot, how two plugins sharing a slot concatenate, and the
-per-signature index that keys the compose and pipeline caches. What deploys
-is the composed fragment, byte-identical to the one the browser compiles.
+**Compile time, all of it — except the textures.** A `MaterialPlugin` is a
+plain object whose `name`, `getCustomCode(shaderType)` and `getSamplers()`
+are constants the scene wrote, so the plugin is folded from its own
+declaration — through a local factory call where the scene reaches it that
+way, since the factory's captures are what a plugin's texture members name.
+Everything after that is the pin's own `buildPluginFragment`, executed —
+which injection point maps onto which template slot, how two plugins sharing
+a slot concatenate, which binding declarations the sampler pairs become, and
+the per-signature index that keys the compose and pipeline caches. What
+deploys is the composed fragment, byte-identical to the one the browser
+compiles.
 
 **Where the index rides differs by family, because the two variant selectors
 do**: a PBR draw resolves its variant by material index, so its composed row
@@ -1293,13 +1500,36 @@ record carries the index for the generated feature-word derivation to shift
 back in — the pre-bake `registerStdPlugins` performs upstream
 ([fidelity](fidelity.md#material-plugins) carries the routing contract).
 
-The reached slice is a plugin declaring a name and custom code. Everything
-past that refuses at generation naming the member: `getUniforms`/`writeUbo`
-(PBR material-UBO fields and the Standard self-managed `pluginUbo`),
-`getSamplers`/`bindTextures`/`getActiveTextures` (a texture and sampler pair
-the composed fragment reads), and `priority`, `isEnabled` and `defines`. The
-first two groups are what a plugin would need a bind-group contract for,
-which is why the reached slice adds no native binding at all.
+**The textures are the one half that travels.** `getSamplers` declares the
+binding pair, `bindTextures` fills it and `getActiveTextures` enumerates the
+same textures for the pin's acquire and release; generation proves the three
+name one ordered list — by the declaration each reference resolves to, not by
+the native name it renders as — and the material record then carries it, so
+two materials sharing one plugin shape still bind different images. Both a
+`createTexture2DFromPixels` texture and a loaded image reach, each with its
+own sampler, address modes, upload flip and encoding. Both backends resolve
+a composed binding name through the generated `standard_plugin_bindings`
+table — the material's signature index plus the position `bindTextures`
+filled — and upload it once per material through the same shared cache every
+caller-owned texture family uses.
+
+**A declared name is checked against the whole composition**, because the pin
+composes one fragment out of the whole plugin list and splices it into a
+variant that already declares the Standard family's own bindings. So a name
+refuses when a second plugin on the same material declares it, and when it is
+one of the variant's own (`dT`/`dS` and the rest, read from the single list
+the generated `standard_binding_resources` table is rendered from) — whether
+or not that material happens to carry the built-in texture behind it, since
+the composed variant declares the name for its own arms either way.
+
+The reached slice is a plugin declaring a name, custom code, and the sampler
+pairs its two texture members fill on a STANDARD material. Everything past
+that refuses at generation naming the member: `getUniforms`/`writeUbo` (PBR
+material-UBO fields and the Standard self-managed `pluginUbo`), and
+`priority`, `isEnabled` and `defines`. A PBR material's plugin declaring
+samplers refuses too: its bind group is built from the composed row inside
+`createPbrMeshBindGroup` rather than from a record lane, which is a
+different contract and one no scene measures.
 
 ### Animation playback
 
@@ -2418,7 +2648,7 @@ before it trusts a measurement.
 | Post-process passes | each effect's composed stage, for the options the scene passed | the pass, its uniform block, its viewport rectangle and its blend |
 | Shadows | which Standard/PBR receiver variant or node graph carries the pin's shadow fragment, its per-light slots, and each caster view | the caster pass, the map, the light-space matrices, the comparison sampling |
 | Node materials | the graph compiled to a module by the pin's own emitter, its uniform block and fixed draw state folded from the graph, plus reflected morph/shadow bindings | the draw, its mesh block, supplied textures, per-mesh light/shadow selection, morph buffers and shadow caster view |
-| Material plugins | the plugin folded from its own declaration and spliced by the pin's own bridge; the signature index that keys each family's variant | nothing, for the reached slice — a Standard record carries its index so the derived feature word can select the composed variant |
+| Material plugins | the plugin folded from its own declaration and spliced by the pin's own bridge; the signature index that keys each family's variant; the sampler pairs its declarations compose into | a Standard record's signature index, so the derived feature word can select the composed variant, and the textures its plugins bound, in bind order |
 | Fullscreen effects | the caller's fragment wrapped in the pin's own vertex stage, and the bind-group layout the descriptor declared | the pass, its uniform bytes, and the textures the scene bound |
 
 ## Knobs
@@ -2454,8 +2684,9 @@ is the boundaries that belong to no single family.
   expressions, assignments, callbacks, and intrinsics
 - no arbitrary object graphs or run-time module loading. Observable imported
   module state initializes once in dependency order; purely static builders
-  remain generation-time values. Reached local classes retain identity, but
-  inheritance and statics remain rejected, and resource-holding fields cannot
+  remain generation-time values. Reached local classes retain identity, and
+  one demanded by a native data position becomes a shared object; inheritance
+  and statics remain rejected, and resource-holding fields cannot
   be rebound after construction. Mutually recursive plain-data groups lower;
   recursion carrying engine resources still refuses
 - the plain-data model preserves observable JavaScript identity for arrays,

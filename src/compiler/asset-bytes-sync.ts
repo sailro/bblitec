@@ -15,7 +15,8 @@
 // materialization that follows. The child is the cache module, not a
 // second copy of it, so the cache layout stays single-sourced.
 import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
+import { resolve } from "node:path";
+import { localAssetPath } from "../asset-source.js";
 import { parseDataUrl } from "../data-url.js";
 import { runGenerationChild } from "./generation-child.js";
 
@@ -34,17 +35,13 @@ export function readAssetBytesSync(
 }
 
 /** Reads only the fixed PNG header fields, and only when a dimension is used. */
-export function readPngDimensionsSync(
-    source: string,
-    entryFileName: string,
+export function pngDimensions(
+    bytes: Uint8Array,
 ): { width: number; height: number } | undefined {
-    const bytes = readAssetBytesSync(source, entryFileName);
+    const signature = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
     if (
         bytes.length < 24 ||
-        bytes[0] !== 0x89 ||
-        bytes[1] !== 0x50 ||
-        bytes[2] !== 0x4e ||
-        bytes[3] !== 0x47 ||
+        signature.some((byte, index) => bytes[index] !== byte) ||
         bytes[12] !== 0x49 ||
         bytes[13] !== 0x48 ||
         bytes[14] !== 0x44 ||
@@ -63,17 +60,26 @@ export function readPngDimensionsSync(
     };
 }
 
+export function readPngDimensionsSync(
+    source: string,
+    entryFileName: string,
+): { width: number; height: number } | undefined {
+    return pngDimensions(readAssetBytesSync(source, entryFileName));
+}
+
 function readUncached(
     source: string,
     entryFileName: string,
 ): Uint8Array {
     const inline = parseDataUrl(source);
     if (inline) return inline.bytes;
-    if (!/^https?:\/\//i.test(source)) {
-        return new Uint8Array(
-            readFileSync(
-                resolve(dirname(resolve(entryFileName)), source),
-            ),
+    const local = localAssetPath(source, resolve(entryFileName));
+    if (local) {
+        return new Uint8Array(readFileSync(local));
+    }
+    if (source.startsWith("generated:")) {
+        throw new Error(
+            "Generated assets have no source bytes to read synchronously.",
         );
     }
     return downloadCachedSyncBridge(source);

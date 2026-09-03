@@ -24,6 +24,7 @@ import {
 import {
     screenshotCaptureBrowserArgs,
     hideNonCanvasChrome,
+    pageBase64Script,
     waitForSceneReady,
     withBrowserPage,
 } from "./browser-harness.js";
@@ -120,23 +121,35 @@ export function browserCaptureStaleness(
 function initScript(skipDrawIndexCount: number): string {
     return `(() => {
   const skipDrawIndexCount = ${skipDrawIndexCount};
-  const b64 = (u8) => {
-    let s = "";
-    for (let i = 0; i < u8.length; i += 0x8000) {
-      s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
-    }
-    return btoa(s);
-  };
+  ${pageBase64Script}
   const dump = { shaders: [], buffers: [] };
   window.__wgpuDump = dump;
   window.__draws = {};
   window.__texUploads = [];
   const bundleDraws = {};
   let submittedPassDraws = {};
+  let insideAnimationFrame = false;
   let nextBufferId = 1;
   let nextTextureId = 1;
   const bufferMeta = new WeakMap();
   const textureMeta = new WeakMap();
+  const recordDraw = (target, key) => {
+    target[key] = (target[key] || 0) + 1;
+  };
+
+  const origRequestAnimationFrame = window.requestAnimationFrame;
+  window.requestAnimationFrame = function (callback) {
+    return origRequestAnimationFrame.call(window, (time) => {
+      submittedPassDraws = {};
+      insideAnimationFrame = true;
+      try {
+        return callback(time);
+      } finally {
+        insideAnimationFrame = false;
+        window.__draws = { ...bundleDraws, ...submittedPassDraws };
+      }
+    });
+  };
 
   const origCreateShaderModule = GPUDevice.prototype.createShaderModule;
   GPUDevice.prototype.createShaderModule = function (desc) {
@@ -180,7 +193,7 @@ function initScript(skipDrawIndexCount: number): string {
       buffer.unmap = function () {
         for (const entry of ranges) {
           if (entry.range.byteLength <= 32 * 1024 * 1024) {
-            meta.mappedWrites.push({ offset: entry.offset, data: b64(new Uint8Array(entry.range.slice(0))) });
+            meta.mappedWrites.push({ offset: entry.offset, data: bblBase64(new Uint8Array(entry.range.slice(0))) });
           } else {
             meta.mappedWrites.push({ offset: entry.offset, skipped: entry.range.byteLength });
           }
@@ -209,7 +222,7 @@ function initScript(skipDrawIndexCount: number): string {
       }
       meta.writeCount++;
       if (view.byteLength <= 32 * 1024 * 1024) {
-        meta.writes.push({ offset: bufferOffset, data: b64(view) });
+        meta.writes.push({ offset: bufferOffset, data: bblBase64(view) });
       } else {
         meta.writes.push({ offset: bufferOffset, skipped: view.byteLength });
       }
@@ -271,7 +284,7 @@ function initScript(skipDrawIndexCount: number): string {
     proto.drawIndexed = function (indexCount, instanceCount, firstIndex, baseVertex, firstInstance) {
       const key = tag + ".drawIndexed(" + indexCount + "," + (instanceCount ?? 1) + "," + (firstIndex ?? 0) + "," + (baseVertex ?? 0) + ")";
       const target = draws();
-      target[key] = (target[key] || 0) + 1;
+      recordDraw(target, key);
       if (skipDrawIndexCount > 0 && indexCount === skipDrawIndexCount) return;
       return origDrawIndexed.call(this, indexCount, instanceCount, firstIndex, baseVertex, firstInstance);
     };
@@ -279,8 +292,16 @@ function initScript(skipDrawIndexCount: number): string {
     proto.draw = function (vertexCount, instanceCount, firstVertex, firstInstance) {
       const key = tag + ".draw(" + vertexCount + "," + (instanceCount ?? 1) + "," + (firstVertex ?? 0) + ")";
       const target = draws();
-      target[key] = (target[key] || 0) + 1;
+      recordDraw(target, key);
       return origDraw.call(this, vertexCount, instanceCount, firstVertex, firstInstance);
+    };
+    const origDrawIndexedIndirect = proto.drawIndexedIndirect;
+    proto.drawIndexedIndirect = function (buffer, offset) {
+      const meta = bufferMeta.get(buffer);
+      const key = tag + ".drawIndexedIndirect(buffer#" + (meta ? meta.id : -1) + "," + offset + ")";
+      const target = draws();
+      recordDraw(target, key);
+      return origDrawIndexedIndirect.call(this, buffer, offset);
     };
   }
 
@@ -291,7 +312,7 @@ function initScript(skipDrawIndexCount: number): string {
   // the native capture does.
   const origSubmit = GPUQueue.prototype.submit;
   GPUQueue.prototype.submit = function (commandBuffers) {
-    if (Object.keys(submittedPassDraws).length > 0) {
+    if (!insideAnimationFrame && Object.keys(submittedPassDraws).length > 0) {
       window.__draws = { ...bundleDraws, ...submittedPassDraws };
       submittedPassDraws = {};
     }
