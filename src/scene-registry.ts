@@ -1760,17 +1760,16 @@ const sceneInputs: readonly SceneInput[] = [
             // browser through `stopEngine` in a zero-delay `setTimeout`,
             // and the native run through the same lowered call.
             referenceSearch: "?captureFrame=120",
-            // MEASURED, and the number is a solver difference rather than
-            // a port defect -- see docs/fidelity.md#physics-contract. This
-            // is the one gate in the repository whose threshold does not
-            // assert agreement with the pinned engine: Bullet and Havok
-            // integrate different contact models, so at a moving pose
-            // they place the sphere differently by construction. The
-            // ceiling is set just above what was measured, which makes it
-            // a REGRESSION gate on this port's own solver -- it catches
-            // the sphere landing somewhere new -- and nothing more.
-            maxFullMad: 0.333,
-            maxForegroundMad: 0.778,
+            // MEASURED 0.003/0.006 on both backends, against the pinned
+            // Havok golden mid-flight after two bounces. The PAL steps
+            // Bullet on Havok's own 1/240 s sub-steps and reproduces its
+            // speculative landing and next-step rebound, all three measured
+            // on the pinned WASM (docs/fidelity.md#physics-contract); the
+            // trajectory agrees with Havok's to 0.0004 units at step 120.
+            // What remains is the two solvers' arithmetic, so the ceiling
+            // still gates this port's own solver rather than an identity.
+            maxFullMad: 0.004,
+            maxForegroundMad: 0.007,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -1833,14 +1832,14 @@ const sceneInputs: readonly SceneInput[] = [
             referenceSearch: "?captureFrame=120",
             // The golden is byte-identical to scene 40's, which is why the
             // ceiling is: it is the same measurement, and the same
-            // solver-distance reasoning -- docs/fidelity.md#physics-contract.
+            // solver reasoning -- docs/fidelity.md#physics-contract.
             // The file is kept separate rather than pointed at scene 40's
             // because `parity --recapture-reference` writes through this path,
             // and a shared one would let a scene 100 refresh overwrite scene
             // 40's evidence. `reference/exact-corpus-manifest.json` records
             // both digests, so the identity stays checked.
-            maxFullMad: 0.333,
-            maxForegroundMad: 0.778,
+            maxFullMad: 0.004,
+            maxForegroundMad: 0.007,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: {
@@ -1863,8 +1862,12 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "160",
             },
-            maxFullMad: 1.2,
-            maxForegroundMad: 7.5,
+            // MEASURED 0.027/0.178 on both backends, two elastic bounces in;
+            // the residual is the fitted rebound rule's error compounding
+            // over the flight between bounces
+            // (docs/fidelity.md#physics-contract).
+            maxFullMad: 0.03,
+            maxForegroundMad: 0.19,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -1995,22 +1998,22 @@ const sceneInputs: readonly SceneInput[] = [
             // Both sides read the same query and both freeze themselves
             // through `stopEngine`, so the pose is the scene's own.
             referenceSearch: "?captureAfter=5",
-            // Named after the freeze, since the scene stops its own engine.
+            // Named after the freeze, since the scene stops its own engine,
+            // on the fixed frame clock the browser harness pins: the scene's
+            // 2000 ms drop is a `setTimeout`, and the native timer reads wall
+            // time without `BBLITE_FRAME_DELTA_MS`.
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "310",
             },
-            // MEASURED, and like scene 40 the number is a solver
-            // difference rather than a port defect -- see
-            // docs/fidelity.md#physics-contract. Step 300 is one second
-            // after the dropped box wakes the sleeping tower, so the pose
-            // is mid-collapse and the ceiling gates this port's own solver
-            // rather than asserting agreement with Havok. Both backends
-            // measure 0.007/0.047 identically, and the difference is
-            // edge-attributed (background 0.003, edges 0.834, interior
-            // 0.003): the two solvers stack the boxes in the same places
-            // and disagree about their exact contact rest.
-            maxFullMad: 0.01,
-            maxForegroundMad: 0.07,
+            // MEASURED 0.005--0.006 / 0.033--0.037 on both backends across
+            // runs (the drop is a wall-clock timer: TODO.md's physics entry).
+            // Step 300 is one second after the dropped box wakes the
+            // sleeping tower, so the pose is mid-collapse and the ceiling
+            // gates this port's own solver rather than asserting agreement
+            // with Havok: box-box landings keep Bullet's own restitution
+            // (docs/fidelity.md#physics-contract).
+            maxFullMad: 0.008,
+            maxForegroundMad: 0.045,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -2051,17 +2054,13 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: {
                 BBLITE_SCREENSHOT_FRAME: "190",
             },
-            // MEASURED 0.808/1.831, identical on both backends. The
-            // residual is the substituted solver's CONTACT RESPONSE: both
-            // spheres sit 10 px -- 0.13 world units -- lower than the
-            // golden's, under a pixel apart horizontally. It grows with
-            // simulated time rather than closing; a probe at
-            // `?captureAfter=8` measures 1.573/2.231, so this gate is tied
-            // to the pin's own pose and a later one would need a bigger
-            // number. Sphere 1 also takes an off-centre impulse, which
-            // spins it. See docs/fidelity.md#physics-contract.
-            maxFullMad: 0.9,
-            maxForegroundMad: 2.0,
+            // MEASURED 0.037/0.070, identical on both backends. At the
+            // pin's pose both spheres are half a second into the small
+            // hop Havok's restitution gives a 2.4 m/s landing; the residual
+            // is the landing edge cases docs/fidelity.md#physics-contract
+            // lists, and the gate sits just above it.
+            maxFullMad: 0.04,
+            maxForegroundMad: 0.08,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
         },
@@ -3733,7 +3732,10 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Tetris",
         parity: {
-            maxFullMad: 1.4,
+            // Measured 1.208 / 1.038 on both backends; the residual is text
+            // rasterization, docs/ui.md's measured floor, so the gate sits
+            // just above the measurement.
+            maxFullMad: 1.3,
             maxForegroundMad: 1.1,
             // Canvas-only lane: 0.093 / 0.101 on both backends
             // (docs/status.md row note). The gate is the exact pair the
@@ -3801,8 +3803,10 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Platformer",
         parity: {
             referenceFrame: 180,
-            maxFullMad: 1.1,
-            maxForegroundMad: 1.1,
+            // Measured 0.984 / 0.984 SDL_GPU and 0.981 / 0.981 Dawn; the
+            // residual is text rasterization (docs/ui.md).
+            maxFullMad: 1.05,
+            maxForegroundMad: 1.05,
             // Canvas-only lane: 0.013 / 0.013 SDL_GPU and 0.010 / 0.010
             // Dawn (docs/status.md row note); the canvas-golden era's own
             // enforced pair.
@@ -3835,11 +3839,14 @@ const sceneInputs: readonly SceneInput[] = [
         nativeHostUi: "ui/racer-host.json",
         parity: {
             referenceFrame: 180,
-            maxFullMad: 1.2,
-            maxForegroundMad: 1.2,
-            // Canvas-only lane: 0.455 / 0.455 on both backends
-            // (docs/status.md row note); the canvas-golden era's own
-            // enforced pair.
+            // Measured 0.654 / 0.654 on both backends, all of it retained
+            // HUD text (the canvas-only lane below is 0.003), so the gate
+            // sits just above it.
+            maxFullMad: 0.7,
+            maxForegroundMad: 0.7,
+            // Canvas-only lane: 0.003 / 0.003 on both backends
+            // (docs/status.md row note); the 0.5 pair is the canvas-golden
+            // era's own enforced gate.
             canvasThresholds: { maxFullMad: 0.5, maxForegroundMad: 0.5 },
             backgroundColor: [158, 204, 235],
             backgroundThreshold: 30,
@@ -3927,13 +3934,13 @@ const sceneInputs: readonly SceneInput[] = [
         // counts. That asymmetry appeared when scene code moved onto
         // `bbl::js::hypot_js` -- the demo reaches Math.hypot on its own
         // camera math -- and it stays well inside the gate. The remaining
-        // 1.414 full-page floor is retained-UI layout/font rasterization;
-        // the two backends are within one count of each other there, so one
-        // gate pair covers both.
+        // 1.104 / 1.103 full-page residual is retained-UI text
+        // rasterization (docs/ui.md); the two backends are within one
+        // count of each other there, so one gate pair covers both.
         parity: {
             referenceFrame: 180,
-            maxFullMad: 1.5,
-            maxForegroundMad: 1.5,
+            maxFullMad: 1.2,
+            maxForegroundMad: 1.2,
             canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
             backgroundColor: [179, 209, 235],
             backgroundThreshold: 30,

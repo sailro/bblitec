@@ -2,8 +2,8 @@
 #
 # Same shape as build-labsound.ps1, build-tint.ps1 and build-dawn.ps1, and
 # for the same reason: vcpkg's rmlui port is neither at the revision the
-# backend-neutral UI recorder was validated against nor patched with
-# native/patches/rmlui-premultiplied-rounding.patch, so the pin lives in
+# backend-neutral UI recorder was validated against nor patched with the
+# two native/patches/rmlui-*.patch files, so the pin lives in
 # upstream/rmlui.json and the library is built once from it instead of
 # being re-fetched and re-built inside every UI scene's build tree.
 #
@@ -200,14 +200,20 @@ New-Item -ItemType Directory -Path $workspacePath, $output -Force | Out-Null
 Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
 
 # The same maintained patch-application script the former FetchContent
-# configure ran: applies the pinned patch, or verifies it is already
-# present, and fails on anything else.
-& $CMake `
-    "-DRMLUI_SOURCE_DIR=$source" `
-    "-DRMLUI_PATCH=$(Join-Path $root 'native\patches\rmlui-premultiplied-rounding.patch')" `
-    -P (Join-Path $root "native\apply-rmlui-patch.cmake")
-if ($LASTEXITCODE -ne 0) {
-    throw "Unable to apply the pinned RmlUi patch."
+# configure ran: applies each pinned patch, or verifies it is already
+# present, and fails on anything else. docs/ui.md states what each patch
+# corrects and the measurement behind it.
+foreach ($patch in @(
+    "rmlui-premultiplied-rounding.patch",
+    "rmlui-css-box-model.patch"
+)) {
+    & $CMake `
+        "-DRMLUI_SOURCE_DIR=$source" `
+        "-DRMLUI_PATCH=$(Join-Path $root "native\patches\$patch")" `
+        -P (Join-Path $root "native\apply-rmlui-patch.cmake")
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to apply the pinned RmlUi patch $patch."
+    }
 }
 
 $configureArguments = @(

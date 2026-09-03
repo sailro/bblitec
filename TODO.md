@@ -1096,12 +1096,29 @@ earlier compiler error.
     one pass should decide both rather than leaving the emitter half-gated.
   - A physics threshold gates this port's own solver, not agreement with
     the pinned one, and cannot be driven to zero
-    ([fidelity](docs/fidelity.md#physics-contract)).
+    ([fidelity](docs/fidelity.md#physics-contract) lists the three
+    measured residual classes). What unblocks each: the first-1/120 s
+    gravity deficit wants its origin found in the pinned WASM's first
+    sub-step before a constant is copied; the last-sub-step landing wants
+    the rebound fitted over drops that land there, with the driver recipe
+    in that section; box-box pairs want a detector that emits speculative
+    points (that section records what routing them through GJK/EPA
+    measured).
+  - **Scene 44 measures on the wall clock, and the fixed clock is not the
+    browser's frame.** Its 2000 ms drop is a `setTimeout`; the native timer
+    reads wall time unless `BBLITE_FRAME_DELTA_MS` is set, which the
+    harness does for ad-hoc sources and for the registry scenes that ask
+    (`src/capture-timing.ts`; racer asks). Under `fixedCaptureEnvironment()`
+    scene 44 measures 0.337 / 2.202 against 0.005--0.006 on the wall clock,
+    where the presented frames pace at about 60 Hz and the drop lands on
+    the browser's frame. What unblocks it: read which frame each clock
+    fires the timer on (`BBLITE_PHYSICS_TRACE` beside the driver) and align
+    the native fixed clock's timer boundary with the browser harness's
+    pinned timers, then re-measure the fixed-clock scenes that run timers.
   - **Bullet's own gaps before this is more than a prototype**: the
     `double-precision` vcpkg feature is unevaluated (the transform chain
-    around it is double, the solver is float), and nothing yet measures a
-    stack or a constrained body, where the two solvers' convergence
-    differs most.
+    around it is double, the solver is float), and no constrained body is
+    measured yet; scene 44 is the one measured stack.
   - **Beyond the reached slice**, each refusing by name: mesh and
     container shapes, the aggregate's `isTriggerShape` option and
     `onPhysicsTriggerBodies`, a shape `rotation` parameter, `disposePhysics`,

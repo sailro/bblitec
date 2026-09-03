@@ -2138,51 +2138,102 @@ so a body's pose after N steps is a *different number* rather than a
 rounding of the same one, and the difference compounds with every bounce.
 It is recorded per scene as `substituted-physics-solver`, at `high` risk,
 and it means a physics scene's threshold can never be driven toward zero.
-Scenes 40 and 100 carry one, measured just above the distance between the two
-solvers: it gates this port's own solver against that distance rather than
-asserting agreement with the pinned one. They are the same drop at the same
-`?captureFrame=120`, so their ceilings are the same measurement rather than
-two — what 100 adds is the collision surface
+What CAN be driven toward zero is the distance between the two solvers'
+stepping models, because Havok's is measurable: the pinned WASM runs under
+Node (`@babylonjs/havok` is an ESM module that takes its binary as an
+option), so its per-step trajectory for a scene's exact `HP_*` call sequence
+is a number with no pixel in between. Three properties were measured that
+way and reproduced in the PAL, and each physics ceiling is set just above
+what remains — gating this port's own solver against the pinned one's
+measured behaviour rather than asserting agreement with it. Scenes 40 and
+100 are the same drop at the same `?captureFrame=120`, so their ceilings are
+the same measurement rather than two — what 100 adds is the collision surface
 (`setPhysicsBodyCollisionEventsEnabled` and an `onPhysicsCollision` handler)
 compiling, running and leaving the frame where 40 leaves it.
 
-**Scene 45 shows what makes a solver row large, by contrast with scene 42.**
-It publishes 0.808 / 1.831, identical on both backends, and the residual is
-CONTACT RESPONSE: at the pin's `?captureAfter=3` pose both spheres sit about
-10 px -- 0.13 world units -- lower than the golden's, with under a pixel of
-horizontal error. It grows with simulated time rather than closing. A probe
-at `?captureAfter=8`, built and captured the same way, measures 1.573 /
-2.231: the two solvers do not converge on a shared resting pose, so the
-gate belongs at the pin's own pose and would have to rise for any later one.
+**Havok steps in fixed 1/240 s sub-steps, and the count follows the step.**
+A free fall under `HP_World_Step(dt)` advances `y += v·dt + k·g·dt²` with `k`
+= 0.000, 0.250, 0.375 and 0.4375 at dt = 1/240, 1/120, 1/60 and 1/30 —
+`(m-1)/(2m)` for m = 1, 2, 4 and 8 semi-implicit Euler sub-steps. Bullet at
+one step per frame is the m = 1 row, which lagged the reference by
+0.375·g·dt² every step: 0.049 units over scene 40's 46-step fall, the 4 px
+the previous entry here attributed to "an integrator-order difference". The
+PAL now steps Bullet at the same 1/240 s, each sub-step an ordinary full
+Bullet step (`stepSimulation(δ, 0, δ)`, no accumulator, no interpolation),
+and the fall agrees with Havok's to 0.002 units at step 46. What still
+differs there is Havok's first 1/120 s: a body receives 0.0025 m/s less
+gravity over its first two sub-steps, at any step size and any gravity,
+which is 0.16 px after scene 40's fall and 0.66 px at scene 45's slower
+landing; it is not reproduced.
 
-One thing that is NOT part of it: the impulse itself. The pin turns a force
-into an impulse with `worldStepSeconds(world)`, which falls back to the
-scene's per-frame delta when the world has no fixed step, and this port used
-to read a `step_seconds` it remembered from the last step -- zero before the
-first one, so a force applied before `startEngine` integrated to nothing.
-`world_step_seconds` now derives it the pin's way, from the same three
-sources in the same order. Scene 45 is the only scene that reaches
+**Havok's contact is speculative, and its rebound is a step late.** Scene
+40's sphere arrives at the step where it would cross the surface with
+`y = 1.106167`, and Havok's next pose is `y = 1.000000` exactly, velocity
+`-2.702623` = the remaining gap over one sub-step: the constraint lets a
+body close exactly the gap in the sub-step where it would otherwise
+penetrate, and nothing more. The rebound comes in the NEXT step, and holds
+its velocity through every sub-step of that step (`y + v_out·dt` exactly,
+the gravity of each sub-step re-cancelled by the still-active contact).
+Bullet's solver already writes the landing rule for a positive-distance
+point — `velocityError = restitution - rel_vel - distance/dt` — so the PAL
+widens each manifold's contact-breaking threshold to one sub-step of the
+pair's approach (a `btCollisionDispatcher` subclass for new manifolds, a
+refresh for live ones) and gives such points no restitution, because
+Bullet's own would spend the rebound on closing the gap: that is what left
+scene 45's spheres at rest where the reference hops. The landed point that
+follows keeps zero restitution while the pair's rebound is pending, or
+Bullet would bounce off the landing speed first (0.137 on scene 40 with
+both).
+
+**The rebound speed is not `e·v`, and it is fitted rather than derived.**
+Over 72 drops on the pinned WASM — restitutions 1, 0.75, 0.5 and 0.2,
+nine heights, gravities 9.8 and 1 — the next step's velocity is
+`e · sqrt((v_a - g·dt)² - 2·g·d_k)` within 0.3%, where `v_a` is the approach
+speed at the start of the landing step, `g` the gravity into the surface,
+`dt` the full step and `d_k` the gap at the start of the landing sub-step;
+a 0.2 m box dropped on the ground fits the same rule within 1.5%. It is the
+shape Unity Physics documents for the same Havok-derived solver (remove one
+step of gravity from the approach, then the gap's potential energy), and
+the residual it leaves compounds over a flight (scene 101's table below). A
+body approaching slower than `g·dt` rests instead. One edge case is measured
+and not reproduced: a body that reaches the surface on the LAST sub-step
+keeps `-d_k/δ` of its speed into the next step, and Havok's rebound there
+is weaker, or one step later (sphere from 2.5 m under gravity 1: the step
+after landing is `v = 0`, the rebound the step after that). Box-box pairs
+are a detector gap rather than an edge case: Bullet's `btBoxBoxDetector`
+emits only penetrating points, so no speculative point exists for the
+model to act on and such landings keep Bullet's own restitution — scene 44
+measured 0.005--0.006 there against 0.023 when the rebound rule was fed a
+penetrating point, and 0.021 / 0.074 when its box pairs were routed through
+GJK/EPA, which does honour the threshold; the box-box detector's contact
+set is what the stacks rest on.
+
+**Scene 45 is the scene the rebound rule was measured on, by contrast with
+scene 42.** Its two spheres fall 3 m and 4 m under `-1 m/s²`, land at 2.4
+m/s and hop 0.12 units on restitution 0.2; at the pin's `?captureAfter=3`
+pose both are half a second into that hop, and the native trajectories
+follow Havok's to 0.0014 units at step 180 — the previous entry here, with
+Bullet's restitution eaten by the gap-closing term, had both spheres at
+rest 0.13 units under the golden's. Sphere 1 additionally takes
+`applyPhysicsBodyForce` with the arguments in the order the pin declares
+them, `(world, body, force, location)`, so the scene's `sphere1.position` is
+the FORCE and `{x: 0, y: 1, z: 5}` is the application point; that point is
+off the sphere's centre, so the impulse imparts spin, and Havok's friction
+during the landing steps takes that spin from 0.81 to 0.20 rad/s where
+Bullet's takes it less — invisible on a plain white sphere. Scene 42 has
+neither: two spheres in straight vertical fall, one of them pre-stepped and
+therefore positioned rather than simulated, at rest by its pose; it
+measures 0.000 on both backends.
+
+One thing that is NOT part of any of it: the impulse itself. The pin turns a
+force into an impulse with `worldStepSeconds(world)`, which falls back to
+the scene's per-frame delta when the world has no fixed step, and this port
+used to read a `step_seconds` it remembered from the last step -- zero
+before the first one, so a force applied before `startEngine` integrated to
+nothing. `world_step_seconds` now derives it the pin's way, from the same
+three sources in the same order. Scene 45 is the only scene that reaches
 `applyPhysicsBodyForce` at all, and it applies its force before starting the
 engine, so this is the difference between the force existing and not.
-
-Two properties of the scene drive it, and scene 42 is the control that
-isolates them. Scene 45's spheres are both in contact response by frame 180
--- sphere 2 falls 3 m under the scene's -1 m/s² gravity and reaches the
-ground around frame 147, so the captured pose is 30 steps into a bounce --
-and sphere 1 additionally takes `applyPhysicsBodyForce` with the arguments
-in the order the pin declares them, `(world, body, force, location)`, so the
-scene's `sphere1.position` is the FORCE and `{x: 0, y: 1, z: 5}` is the
-application point. That point is off the sphere's centre, so the impulse
-imparts spin, and spin under friction is where two solvers separate fastest.
-Scene 42 has neither: no force anywhere in the scene, two spheres in
-straight vertical fall, one of them pre-stepped and therefore positioned
-rather than simulated. Same lane, same -1 m/s² gravity, same substituted
-solver -- and it measures 0.000 on both backends. The distance between the
-two rows is the scene's dynamics, not the port's.
-
-Scene 101 carries the lane's largest number for the same reason two bounces
-further on, and its mechanism — a contact *instant* rather than accumulated
-error — is measured out below.
 
 **Why the substitution, and why at this seam.** `createHavokWorld(scene,
 hknp)` takes the solver module as a parameter and the pinned layer calls
@@ -2242,14 +2293,24 @@ Two things, and only one needs Havok.
 **Solver-independent properties**, from `BBLITE_PHYSICS_TRACE`'s per-step
 pose, checkable with no reference:
 
-- **Free fall.** Bullet integrates semi-implicit Euler, so the pose after `n`
-  steps is `y = y0 - g·dt²·n(n+1)/2`. `examples/physics-drop.ts` matches it to
-  float32 precision (`1e-7` at magnitude 4) every step before contact. The
-  pinned solver does not integrate that way — the first divergence below.
+- **Free fall.** Four semi-implicit Euler sub-steps per 1/60 s step put the
+  pose after `n` steps at `y = y0 - g·dt²·(n²/2 + 3n/8)`; Havok's is the
+  same expression less its first-1/120 s deficit, so `examples/physics-drop.ts`
+  agrees with the pinned trace to 0.002 units at the 46th step.
 - **A resting body settles at its geometric height**: a sphere of radius 1 on
   a ground plane at `y = 0` rests at exactly `y = 1.0`.
-- **Restitution matches the analytic rebound**: the reached 0.75 coefficient
-  puts the first apex within 0.3% of `v²/2g`.
+- **Restitution follows the fitted rule**: scene 40's sphere leaves its first
+  landing at 5.5025 m/s where Havok leaves it at 5.502501.
+
+**The pinned solver's own trajectory**, from the scratch driver this
+contract was measured with: load `@babylonjs/havok`'s ESM build under Node
+with its `.wasm` passed as `wasmBinary`, issue the scene's `HP_*` sequence
+(shape, body, motion type, add, transform, shape assignment, material, mass
+— the aggregate's order), step `HP_World_Step(1/60)` and read
+`HP_Body_GetQTransform` / `HP_Body_GetLinearVelocity` per step. Beside
+`BBLITE_PHYSICS_TRACE` of the same scene it is a per-step diff with no
+renderer in it, which is how each rule above was found and how a future
+divergence should be attributed before any parity number is read.
 
 **A pixel comparison against Havok, at a pose where phase does not matter.**
 `@babylonjs/havok` is a browser-only devDependency — never linked, never
@@ -2268,80 +2329,59 @@ exactly, on both backends. The substitution costs nothing where both solvers
 have converged, and everything it costs is in the transient.
 
 Scene 40 is the corpus scene, frozen by the pin's own `?captureFrame=120`
-mid-flight after two bounces:
+mid-flight after two bounces, and the trajectory is the measurement: the
+native sphere's height against Havok's stays within 0.002 units through
+the fall and on the same side of every bounce after it, where the previous
+PAL was 4 px low before the first contact, 13 px high at its apex and 5 px
+low at the capture.
 
 | | Scene 40 at step 120 |
 | --- | --- |
-| Full / region MAD | 0.332 / 0.777 |
-| Pixels exactly equal | 97.74% full, 95.07% foreground |
-| Where | edges 11.803, interior 0.559, background 0.032 |
-| Displacement | the sphere sits 5 px lower than the golden's |
+| Full / region MAD | 0.003 / 0.006 |
+| Pixels exactly equal | 99.77% foreground |
+| Trajectory against Havok | 0.0004 units |
 | SDL_GPU versus Dawn | 0.000, byte-identical |
 
-The backends agreeing to zero puts all of it on the CPU side: it is a solver
-difference, living in the silhouette. Both sides bounce at the same step —
-native 46, reference `?captureFrame=47` — and that one-frame shift is the two
-harnesses' own counters, not the solvers'. No threshold here can be driven toward
-zero, and the one this scene carries gates *this port's* solver.
+The backends agreeing to zero puts all of it on the CPU side. The traces
+index their steps differently — the native trace counts from 0, the
+driver from 1 — which is the one-frame shift an earlier entry here read as
+the harnesses' counters; it is the numbering, and nothing else.
 
 **Scene 101 is the same substitution two bounces further on, and it costs
-what a second contact costs.** The pin's own spec freezes it at
-`?captureFrame=150`: a unit sphere dropped from `y = 4` onto a perfectly
-elastic ground (restitution 1, combined MAXIMUM against the sphere's default
-0.2), falling through a static trigger sphere of radius 2 on the way down and
-back out through it on the way up.
+what the fitted rule's residual costs over two flights.** The pin's own spec
+freezes it at `?captureFrame=150`: a unit sphere dropped from `y = 4` onto a
+perfectly elastic ground (restitution 1, combined MAXIMUM against the
+sphere's default 0.2), falling through a static trigger sphere of radius 2
+on the way down and back out through it on the way up.
 
 | | Scene 101 at step 150 |
 | --- | --- |
-| Full / region MAD | 1.102 / 7.144 |
-| Pixels exactly equal | 97.16% full, 82.20% foreground |
-| Where | edges 10.359, interior 6.993, background 0.083 |
-| Displacement | the sphere sits 24.5 px — 0.30 world units — lower than the golden's |
+| Full / region MAD | 0.027 / 0.178 |
+| Pixels exactly equal | 92.36% foreground |
+| Trajectory against Havok | 0.006 units at step 150, 0.019 at its worst (step 135) |
 | SDL_GPU versus Dawn | 0.000, byte-identical |
 
 Everything static is the golden's: the ground, the translucent red trigger
-volume and the background all match, and the whole residual is the ball's own
-disc. What separates the two is *when* each solver bounces. Bullet's
-narrowphase creates the ground contact only once the sphere has penetrated,
-which at 7.67 m/s and a 1/60 step is up to 0.128 of overshoot, so the
-rebound impulse lands about one step late and from below the surface; the
-trace's own per-step pose puts the effective bounce plane at `y ≈ 0.95`
-against the golden's `y ≈ 1.05`. Two bounces multiply that into 0.30 units of
-phase at step 150. Restitution itself is right — the first apex returns to
-`3.998` from `4.000` — and the resting height the degenerate-box sink below
-fixes is right; only the contact instant differs, which is the transient the
-scene 40 row already attributes the substitution to. Bullet has no setting
-that predicts a contact the way Havok's tolerance model does, and the two
-that look as though they should were measured rather than reasoned about:
-`setApplySpeculativeContactRestitution(true)` on the world, and
-`setCcdMotionThreshold`/`setCcdSweptSphereRadius` on the falling body, each
-leave the frame **byte-identical** (1.102 / 7.144, max 204, the same 82.20%
-exact). Both are aimed at a body that would TUNNEL within a step; this one
-penetrates by 0.128 and is found by the ordinary narrow phase, so neither
-arm ever runs. A positive-distance ("speculative") contact also constrains a
-body to *stop* at the surface rather than rebound from it, so raising the
-contact-breaking threshold would remove the bounce rather than advance it.
+volume and the background all match, and the whole residual is the ball's
+own disc. The first rebound leaves at 7.3365 m/s against Havok's 7.336499,
+and that 0.2% grows linearly over the 90-step flight to the second bounce;
+the second bounce resets it. The trigger events land where the pin's spec
+expects them, ENTERED on the way down and EXITED on the way up.
 
-**The fall is an integrator-order difference, and no setting reaches it.**
-Every `btContactSolverInfo` value named for contact agreement was swept
-against the per-step trace. Three are inert at their defaults — the impact is
-far above `m_restitutionVelocityThreshold`, one contact point converges in
-well under `m_numIterations`, and `m_erp` is unused while split impulse is on
-— and every perturbation that is live moves *away* from the golden
-(`m_linearSlop` to `0.05` gives 12.2 px against the default's 5.0, `m_erp2` to
-`0.8` gives 6.7, `m_splitImpulse` off gives 35.4). The shipped configuration
-is Bullet's own defaults because they measured closest.
-
-Semi-implicit Euler advances position by the already-updated velocity, so it
-lags a constant acceleration by `½·a·dt²` each step. Adding that term back —
-as a probe, never shipped — moves the fall and first impact from `+2, +3, +4`
-px to `-1, -1, 0` and reproduces the bounce profile within a pixel. It stays
-unadopted because it makes the phase *after* the bounce markedly worse
-(`-6, -13, -21, -28, -32` against the defaults' `-2, -6, -10, -11`): the
-rebound impulse is a contact-solver difference that a position correction
-perturbs rather than fixes. Neither the pin nor upstream's `ammoJSPlugin`
-sets anything beyond gravity and per-body friction and restitution, so there
-is no upstream-blessed configuration to adopt.
+Before the stepping model was measured, every `btContactSolverInfo` value
+named for contact agreement was swept against the per-step trace and every
+live perturbation moved *away* from the golden (`m_linearSlop` to `0.05`
+gave 12.2 px against the default's 5.0, `m_erp2` to `0.8` gave 6.7,
+`m_splitImpulse` off gave 35.4), as did the two Bullet arms that look like
+Havok's speculative contact — `setApplySpeculativeContactRestitution` and
+`setCcdMotionThreshold`/`setCcdSweptSphereRadius` are aimed at a body that
+would TUNNEL within a step and never ran. The lesson that survives those
+sweeps is the method: a solver difference is attributed against the pinned
+solver's own trajectory, not against pixels, and not by reasoning about
+which of Bullet's settings ought to reach it. Neither the pin nor upstream's
+`ammoJSPlugin` sets anything beyond gravity and per-body friction and
+restitution, so nothing above is a configuration to adopt from upstream;
+each rule is a measured property of the reference solver.
 
 ### PAL-level equivalences
 
@@ -2405,7 +2445,12 @@ and angular damping `0/0.1`. Bullet has no finite speed limit and defaults
 both damping channels to zero, so the PAL clamps every impulse and post-step
 contact result and installs the reference damping when a body is created.
 The clicked shard consequently reads exactly `24/100` immediately after the
-impulse rather than the previous `24/187.6`.
+impulse rather than the previous `24/187.6`. The damping coefficient is
+converted rather than copied: Havok multiplies a velocity by `1 - d·δ` per
+sub-step where Bullet multiplies by `(1 - d)^δ`, and the same per-sub-step
+factor needs Bullet's `d = 1 - (1 - 0.1/240)^240 = 0.0952` for Havok's 0.1 —
+scene 45's spun sphere reads `0.99833` of its angular speed after one step
+on both sides.
 
 **Resting contact is graded as a trajectory, too.** With the same seeded
 boombox, picked point and downward impulse, Havok has fourteen moving pieces
@@ -2417,18 +2462,21 @@ quarter second; free bodies are never touched, and ordinary Bullet island
 activation wakes a stabilized body on a later collision or impulse. The
 native trace has two movers at step 150, one at 210 and zero at 243. This
 is an explicit solver-equivalence shim, not a changed demo impulse or global
-damping knob.
+damping knob. A body between a landing and its rebound, or hopping through
+one, is exempt however slowly it moves: sleeping it there froze scene 42's
+sphere 0.0003 units above the ground, and its timer restarts once the hop
+has landed.
 
 **Havok's combine modes are applied, not approximated.** The pin passes
 `MaterialCombine.MINIMUM` for friction and `MAXIMUM` for restitution, where
 Bullet's default is the product, so both rules run on the contact manifold
 callback.
 
-The remaining equivalences are documented where they happen: the step is pinned
-to a single sub-step (`stepSimulation(seconds, 0, seconds)`), a kinematic
-`SetTargetQTransform` maps to `set_transform` (no corpus scene exercises an
-ACTION prestep), and a material whose static and dynamic friction differ
-refuses rather than averaging.
+The remaining equivalences are documented where they happen: the step is
+Havok's own 1/240 s sub-step grid (`stepSimulation(δ, 0, δ)` for each), a
+kinematic `SetTargetQTransform` maps to `set_transform` (no corpus scene
+exercises an ACTION prestep), and a material whose static and dynamic
+friction differ refuses rather than averaging.
 
 ### The freeze
 

@@ -173,6 +173,40 @@ Font paths are resolved through DirectWrite on Windows, CoreText on macOS, and
 fontconfig on Linux. The UI layer contains no hardcoded font paths. Platform
 font rasterization and browser font rasterization are not pixel-identical.
 
+The pinned RmlUi carries two patches under `native/patches/`, each a
+browser rule it did not implement, measured on the retained demos and
+corrected in the library rather than compensated in the projection, so that
+every element from every style source gets it:
+
+- **`rmlui-css-box-model.patch`.** Two CSS rules. A background paints under
+  the border (`background-clip: border-box` is the initial value) where
+  RmlUi painted it under the padding box alone, so a translucent border read
+  over the page instead of over its own panel -- tetris's
+  `rgba(255,255,255,0.08)` rims measured 170 where the browser shows 63. And
+  an absolutely positioned `width:auto` box with one horizontal offset
+  shrinks to fit the width beside that offset (CSS 2.1 section 10.3.7), where
+  RmlUi's shrink-to-fit width ignored the offset, so `left:50%` never wrapped
+  -- the voxel sandbox's help line is two lines in the browser. A gradient
+  background is an RmlUi decorator painted over the padding box after the
+  border, so a translucent border over a gradient still composites over the
+  page (platformer's boss pips).
+- **`rmlui-premultiplied-rounding.patch`.** RmlUi premultiplies a byte colour
+  by truncating `c·a/255` where Chrome's Skia rounds it (`SkMulDiv255Round`),
+  so tetris's `rgba(10,12,20,0.75)` panel premultiplied to (7,8,14) against
+  the browser's (7,9,15) -- one level dark on every translucent panel pixel.
+
+The text itself is the remaining floor, and it is measured rather than
+assumed. CSS computes `0.8rem` as 12.8 px; RmlUi's default font engine
+truncates the size to a whole pixel on the way to FreeType, and FreeType
+would round a TrueType face's ppem to a whole pixel regardless, because
+Segoe UI, Arial and Consolas all set the `head` table's integer-ppem flag.
+So a 12.48 px row renders at 12 px and measures 4--6% narrower than
+DirectWrite's, which renders the fraction; passing the float size through
+(a trial patch, measured and dropped) only turned truncation into nearest
+rounding and cost tetris 0.1 MAD. Rendering the fraction would take an
+`FT_Set_Transform` scale over the rounded ppem with advances read after it,
+on top of the glyph rasterization difference itself.
+
 ## Rendering
 
 RmlUi records CPU-side geometry, texture updates, scissors, and transforms.

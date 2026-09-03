@@ -1,0 +1,56 @@
+diff --git a/Source/Core/ElementBackgroundBorder.cpp b/Source/Core/ElementBackgroundBorder.cpp
+index 409b1d8..e3e7644 100644
+--- a/Source/Core/ElementBackgroundBorder.cpp
++++ b/Source/Core/ElementBackgroundBorder.cpp
+@@ -132,7 +132,12 @@ void ElementBackgroundBorder::GenerateGeometry(Element* element)
+ 	Mesh mesh = geometry.Release(Geometry::ReleaseMode::ClearMesh);
+ 
+ 	for (int i = 0; i < element->GetNumBoxes(); i++)
+-		MeshUtilities::GenerateBackgroundBorder(mesh, element->GetRenderBox(BoxArea::Padding, i), background_color, border_colors.data());
++	{
++		// CSS paints the background under the border (`background-clip: border-box` is the initial value), so a
++		// translucent border composites over the element's own background rather than over what lies behind it.
++		MeshUtilities::GenerateBackground(mesh, element->GetRenderBox(BoxArea::Border, i), background_color);
++		MeshUtilities::GenerateBackgroundBorder(mesh, element->GetRenderBox(BoxArea::Padding, i), ColourbPremultiplied(0, 0, 0, 0), border_colors.data());
++	}
+ 
+ 	geometry = render_manager->MakeGeometry(std::move(mesh));
+ }
+diff --git a/Source/Core/GeometryBoxShadow.cpp b/Source/Core/GeometryBoxShadow.cpp
+index 872e64f..bc36f8e 100644
+--- a/Source/Core/GeometryBoxShadow.cpp
++++ b/Source/Core/GeometryBoxShadow.cpp
+@@ -98,7 +98,11 @@ void GeometryBoxShadow::GenerateTexture(CallbackTexture& out_shadow_texture, Geo
+ 
+ 	Mesh mesh = out_background_border_geometry.Release(Geometry::ReleaseMode::ClearMesh);
+ 	for (size_t i = 0; i < info.padding_render_boxes.size(); i++)
+-		MeshUtilities::GenerateBackgroundBorder(mesh, info.padding_render_boxes[i], info.background_color, info.border_colors.data());
++	{
++		// The background paints under the border, as in ElementBackgroundBorder.
++		MeshUtilities::GenerateBackground(mesh, info.border_render_boxes[i], info.background_color);
++		MeshUtilities::GenerateBackgroundBorder(mesh, info.padding_render_boxes[i], ColourbPremultiplied(0, 0, 0, 0), info.border_colors.data());
++	}
+ 	out_background_border_geometry = render_manager.MakeGeometry(std::move(mesh));
+ 
+ 	// Callback for generating the box-shadow texture. Using a callback ensures that the texture can be regenerated at any time, for example if the
+diff --git a/Source/Core/Layout/LayoutDetails.cpp b/Source/Core/Layout/LayoutDetails.cpp
+index c39dbbf..351b0f8 100644
+--- a/Source/Core/Layout/LayoutDetails.cpp
++++ b/Source/Core/Layout/LayoutDetails.cpp
+@@ -254,8 +254,14 @@ float LayoutDetails::GetShrinkToFitWidth(Element* element, Vector2f containing_b
+ 	float shrink_to_fit_width = layout_box->GetShrinkToFitWidth();
+ 	if (containing_block.x >= 0)
+ 	{
+-		const float available_width =
+-			Math::Max(0.f, containing_block.x - box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Margin, BoxArea::Padding));
++		// CSS 2.1 section 10.3.7: for an absolutely positioned element the 'left' and 'right' values take part in the
++		// available width, so a box with one offset shrinks to fit the space beside that offset.
++		const auto& computed = element->GetComputedValues();
++		float inset_width = 0.f;
++		if (computed.position() == Style::Position::Absolute || computed.position() == Style::Position::Fixed)
++			inset_width = ResolveValue(computed.left(), containing_block.x) + ResolveValue(computed.right(), containing_block.x);
++		const float available_width = Math::Max(0.f,
++			containing_block.x - inset_width - box.GetSizeAcross(BoxDirection::Horizontal, BoxArea::Margin, BoxArea::Padding));
+ 		shrink_to_fit_width = Math::Min(shrink_to_fit_width, available_width);
+ 	}
+ 	return shrink_to_fit_width;

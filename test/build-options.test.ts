@@ -305,6 +305,7 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(builder, /upstream\\rmlui\.json/);
     assert.match(builder, /apply-rmlui-patch\.cmake/);
     assert.match(builder, /rmlui-premultiplied-rounding\.patch/);
+    assert.match(builder, /rmlui-css-box-model\.patch/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
     assert.match(builder, /RMLUI_SVG_PLUGIN=ON/);
