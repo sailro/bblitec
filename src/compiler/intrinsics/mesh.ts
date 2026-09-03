@@ -419,6 +419,33 @@ export function compileMeshIntrinsic(
                 freshData: true,
             };
         }
+        // `src/math/normalize-vec3.ts`, beside the pinned matrix helpers
+        // above for the same reason they are here: a scene reaches these
+        // as plain math, and the emitted body is the pin's own
+        // declaration translated whole rather than a formula restated at
+        // the call site. The `1e-10` default rides the emitted signature,
+        // so a scene that omits the epsilon takes the pin's.
+        case "normalizeVec3": {
+            context.expectArgumentCount(call, 3, 4);
+            context.reachFeature("math:normalize-vec3", call);
+            context.reachJsData();
+            return {
+                kind: "data",
+                // The pinned body answers a plain triple; the array
+                // IDENTITY a scene sees is added here, where a scene is
+                // what holds it.
+                cpp:
+                    `bbl::js::Tuple<3>(bbl::upstream::normalize_vec3(` +
+                    call.arguments
+                        .map((argument) =>
+                            context.compileNumber(argument, "double"),
+                        )
+                        .join(", ") +
+                    `))`,
+                dataType: { kind: "tuple", arity: 3 },
+                freshData: true,
+            };
+        }
         case "mat4Identity": {
             context.expectArgumentCount(call, 0, 0);
             context.reachJsData();

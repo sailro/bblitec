@@ -1283,6 +1283,78 @@ inline std::array<float, 3> encode_pick_id_to_color(std::uint32_t id) {
     };
 }
 
+/**
+ * One pick's readback layout, stated once for both backends.
+ *
+ * Every attachment is copied into its own 256-byte row of one staging
+ * buffer, so the row count and the buffer size are the same fact -- and a
+ * mismatch between the buffer's SIZE and the map's LENGTH truncates
+ * silently rather than failing, which is why neither backend spells it.
+ */
+inline constexpr std::uint32_t pick_readback_row = 256;
+inline constexpr std::uint32_t pick_color_targets =
+    BBLITE_HAS_DETAILED_PICKING ? 3u : 2u;
+inline constexpr std::uint32_t pick_depth_offset = 1u * pick_readback_row;
+inline constexpr std::uint32_t pick_detail_offset = 2u * pick_readback_row;
+inline constexpr std::uint64_t pick_staging_bytes =
+    static_cast<std::uint64_t>(pick_color_targets) * pick_readback_row;
+
+#if BBLITE_HAS_DETAILED_PICKING
+/**
+ * The detailed attachment's one texel, read the way the pin's
+ * `readDetailTarget` reads it.
+ *
+ * The pin's detailed fragment packs
+ * `vec4u(primitiveIndex, bitcast<u32>(local.x), .y, .z)` into an
+ * `rgba32uint` target, and the readback reinterprets the same sixteen
+ * bytes twice: lane 0 as a `u32` where `0xffffffff` is "no primitive",
+ * lanes 1..3 back through `Float32Array` as the interpolated position.
+ * Both backends copy that texel and decode it here, once.
+ */
+/**
+ * The primitive-index lane's "no primitive" clear, spelled once.
+ *
+ * The pin clears the detail attachment's red lane to 0xFFFFFFFF and
+ * `decode_pick_detail` tests for exactly that word. Backends state a clear
+ * as a colour, and SDL's is float: 4294967295.0f is not representable, so
+ * writing the literal there rounds to 4294967296.0 and the two backends
+ * clear to different words. Kept as a double here and converted by each
+ * backend, so the value has one home and the rounding is visible where it
+ * happens rather than hidden in a literal.
+ */
+inline constexpr std::uint32_t pick_detail_no_primitive = 0xFFFFFFFFu;
+inline constexpr double pick_detail_clear_red =
+    static_cast<double>(pick_detail_no_primitive);
+
+inline PickDetailReadback decode_pick_detail(const std::uint8_t* texel) {
+    std::array<std::uint32_t, 4> lanes{};
+    std::memcpy(lanes.data(), texel, sizeof(lanes));
+    PickDetailReadback out;
+    out.primitive_index = lanes[0] == pick_detail_no_primitive
+        ? -1.0
+        : static_cast<double>(lanes[0]);
+    for (std::size_t lane = 0; lane < 3; ++lane) {
+        float value = 0.0f;
+        std::memcpy(&value, &lanes[lane + 1], sizeof(value));
+        out.point[lane] = static_cast<double>(value);
+    }
+    return out;
+}
+
+/**
+ * `picker._detailedPicking`, which `enableDetailedPicking` arms.
+ *
+ * Read per pick rather than per picker resource, because it selects the
+ * pin's second pipeline module and a third attachment for THAT call.
+ */
+inline bool detailed_pick_armed(
+    const Engine& engine,
+    GpuPickerHandle picker) {
+    return picker.value < engine.gpu_pickers.size() &&
+        engine.gpu_pickers[picker.value].detailed;
+}
+#endif
+
 /** The colour attachment's three bytes back into the id they encode. */
 inline std::uint32_t decode_pick_id(const std::uint8_t* texel) {
     return (static_cast<std::uint32_t>(texel[0]) << 16) |
@@ -1750,6 +1822,42 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
     }
     return candidates;
 }
+
+#if BBLITE_HAS_DETAILED_PICKING
+/**
+ * The tail of the pin's own `pickAsyncImpl` for a detailed pick, decided
+ * once for both backends -- the twin of `collect_pick_mesh_candidates`
+ * above, and for the same reason: what the CPU solve is handed is what
+ * the two backends must not drift on.
+ *
+ * The ray is the pin's `info.ray = detailed ? pickRay : null`. The world
+ * is `upstream::mesh_world_matrix`, which is BOTH what the pin passes
+ * (`mesh.worldMatrix`) and what `transformed_vertices` baked into the
+ * buffer the pass drew, so the same matrix un-bakes the varying and maps
+ * the interpolated normal. Upstream snapshots it before an asynchronous
+ * readback; here the draw and the readback are one synchronous call, so
+ * `copyDetailedWorldMatrix`'s reason -- an animation tick between them --
+ * cannot arise.
+ */
+inline void finish_detailed_pick(
+    const Engine& engine,
+    PickingInfo& info,
+    const PickDetailReadback& readback,
+    const std::array<float, 16>& view_projection,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height) {
+    populate_pick_ray(
+        info, view_projection, sample_x, sample_y, width, height);
+    if (info.picked_kind != PickedNodeKind::mesh) return;
+    const MeshRecord& hit_mesh = engine.meshes[info.picked_index];
+    PickDetailReadback detail = readback;
+    detail.world = upstream::mesh_world_matrix(engine, hit_mesh);
+    detail.world_baked = !hit_mesh.gpu_world_transform;
+    info.detail = detail;
+}
+#endif
 #endif
 #endif
 
@@ -2354,6 +2462,34 @@ inline void fitted_shadow_casters(
                 geometry.bounds_max.y,
                 geometry.bounds_max.z,
             };
+            // enableMorphTargetShadows' provider, read LIVE: the weights
+            // are what the scene animates, and the fit has to follow them
+            // or it bounds a scrambled mesh by its unmorphed box.
+            if (
+                generator.morph_shadow_bounds &&
+                !geometry.morph_positions.empty()) {
+                upstream::ensure_morph_target_ranges(geometry);
+                // The two weight lanes handed over as a pointer and a
+                // count rather than selected with a ternary. There is no
+                // common type between a vector and an array, so the arm
+                // this replaced had to build a vector from the array
+                // explicitly -- which made the conditional's result a
+                // vector PRVALUE and copied the storage lane whole, for
+                // every caster of every refreshed generator, on a path
+                // that runs each frame. Pointers have a common type and
+                // copy nothing.
+                const std::vector<float>& storage_weights =
+                    record.morph_storage_weights;
+                const bool uncapped = !storage_weights.empty();
+                upstream::expand_morph_caster_bounds(
+                    geometry.morph_bounds,
+                    uncapped ? storage_weights.data()
+                             : record.morph_weights.data(),
+                    uncapped ? storage_weights.size()
+                             : record.morph_weights.size(),
+                    caster.bounds_min,
+                    caster.bounds_max);
+            }
         } else {
             caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
             caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;

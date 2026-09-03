@@ -745,6 +745,22 @@ else()
     )
 endif()
 
+# The detailed pick adds a third rgba32uint attachment carrying the winning
+# primitive index and the interpolated rest position, its own pipeline built
+# from the pin's second picking module, and a wider readback. A scene that
+# never arms `enableDetailedPicking` carries none of it.
+if("picking:detailed" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_DETAILED_PICKING=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_DETAILED_PICKING=0
+    )
+endif()
+
 # The clustered light field binds a params block and three data textures into
 # the composed PBR fragment's own group, from the container the scene holds.
 # A scene that never adds one carries none of it.

@@ -21,7 +21,10 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import type { PinnedNumericLowerer } from "./pinned-numeric-lowerer.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    pinnedHypotCall,
+    pinnedNumericMathCalls,
+} from "./pinned-operators.js";
 
 const DECOMPOSE_MODULE = "src/math/mat4-decompose.ts";
 const DETERMINANT_MODULE = "src/math/mat4-determinant3.ts";
@@ -77,7 +80,7 @@ export function lowerMat4Determinant3(
 export function lowerMat4DecomposeRotation(context: LoweringContext): string {
     const calls = new Map<string, (args: readonly string[]) => string>([
         ...pinnedNumericMathCalls(),
-        ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
+        ["Math.hypot", pinnedHypotCall],
     ]);
 
     const determinant = lowerMat4Determinant3(context, calls);
@@ -156,7 +159,7 @@ export function lowerMat4DecomposeRotation(context: LoweringContext): string {
 export function lowerMat4DecomposeFull(context: LoweringContext): string {
     const calls = new Map<string, (args: readonly string[]) => string>([
         ...pinnedNumericMathCalls(),
-        ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
+        ["Math.hypot", pinnedHypotCall],
     ]);
 
     const determinant = lowerMat4Determinant3(

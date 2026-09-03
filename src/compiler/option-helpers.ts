@@ -127,6 +127,28 @@ export function selectedStaticNumberValue(
     context: StaticNumberSelectionContext,
     expression: ts.Expression,
 ): number | undefined {
+    const selected = selectedStaticExpression(context, expression);
+    return selected && staticNumberValue(context, selected);
+}
+
+/**
+ * An expression with every generation-settled conditional already selected.
+ *
+ * The fold on its own, because a conditional is not only a number's problem:
+ * a scene selects an ARRAY the same way -- scene 140 writes both its caster
+ * list and its shadow-light list as `flag ? [...] : [...]` behind a query
+ * that folds. Undefined when a condition stays live, so each caller keeps
+ * its own domain-specific refusal rather than inheriting a number's.
+ */
+export interface StaticSelectionContext {
+    compileCondition(expression: ts.Expression): string;
+    resolveStaticExpression(expression: ts.Expression): ts.Expression;
+}
+
+export function selectedStaticExpression(
+    context: StaticSelectionContext,
+    expression: ts.Expression,
+): ts.Expression | undefined {
     let selected = context.resolveStaticExpression(expression);
     while (ts.isConditionalExpression(selected)) {
         const condition = context.compileCondition(selected.condition);
@@ -139,7 +161,7 @@ export function selectedStaticNumberValue(
                 : selected.whenFalse,
         );
     }
-    return staticNumberValue(context, selected);
+    return selected;
 }
 
 /**

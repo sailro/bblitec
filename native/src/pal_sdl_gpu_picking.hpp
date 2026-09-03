@@ -56,6 +56,11 @@ namespace bbl::pal {
 struct PickTargets {
     SDL_GPUTexture* color = nullptr;
     SDL_GPUTexture* depth_color = nullptr;
+#if BBLITE_HAS_DETAILED_PICKING
+    /** The pin's `pick-detail`: 1x1 rgba32uint, made with the pair above
+     *  because the detailed pipeline is the only one this build draws. */
+    SDL_GPUTexture* detail = nullptr;
+#endif
     SDL_GPUTexture* depth = nullptr;
     SDL_GPUTransferBuffer* staging = nullptr;
 };
@@ -67,6 +72,9 @@ inline void release_pick_targets(
     if (targets.depth_color) {
         SDL_ReleaseGPUTexture(device, targets.depth_color);
     }
+#if BBLITE_HAS_DETAILED_PICKING
+    if (targets.detail) SDL_ReleaseGPUTexture(device, targets.detail);
+#endif
     if (targets.depth) SDL_ReleaseGPUTexture(device, targets.depth);
     if (targets.staging) {
         SDL_ReleaseGPUTransferBuffer(device, targets.staging);
@@ -111,16 +119,25 @@ inline void ensure_pick_targets(
         SDL_GPU_TEXTUREFORMAT_R32_FLOAT,
         SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
         "pick-depth-color");
+#if BBLITE_HAS_DETAILED_PICKING
+    targets.detail = create_pick_attachment(
+        device,
+        SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT,
+        SDL_GPU_TEXTUREUSAGE_COLOR_TARGET,
+        "pick-detail");
+#endif
     targets.depth = create_pick_attachment(
         device,
         SDL_GPU_TEXTUREFORMAT_D24_UNORM,
         SDL_GPU_TEXTUREUSAGE_DEPTH_STENCIL_TARGET,
         "pick-depth");
-    // Two 256-aligned rows: the encoded id, then the r32float clip depth
-    // used by the pin to reconstruct `PickingInfo.pickedPoint`.
+    // 256-aligned rows: the encoded id, then the r32float clip depth used
+    // by the pin to reconstruct `PickingInfo.pickedPoint`, and -- where
+    // the detailed pipeline draws -- the packed primitive index and
+    // interpolated position.
     SDL_GPUTransferBufferCreateInfo transfer{};
     transfer.usage = SDL_GPU_TRANSFERBUFFERUSAGE_DOWNLOAD;
-    transfer.size = 512;
+    transfer.size = static_cast<Uint32>(pick_staging_bytes);
     targets.staging = SDL_CreateGPUTransferBuffer(device, &transfer);
     if (!targets.staging) {
         gpu_error("SDL_CreateGPUTransferBuffer pick");

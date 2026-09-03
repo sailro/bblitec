@@ -41,6 +41,13 @@ interface CloudPipelineExports {
     buildPickingWgsl(detailed: boolean): string;
 }
 
+/** The pinned module that builds the DETAILED mesh half. */
+const detailedPipelineModule = "picking/picking-detailed-pipeline.js";
+
+interface DetailedPipelineExports {
+    shader(rule: null, projection: null): string;
+}
+
 /** The orientations the pin's billboard basis forks on. */
 export type BillboardPickOrientation = "facing" | "axis-locked";
 
@@ -66,6 +73,34 @@ export async function composeMeshPickingShader(): Promise<string> {
         meshShaderModule,
     );
     return pinned.pickingShaderSource({});
+}
+
+/**
+ * The mesh picking module of the DETAILED pipeline.
+ *
+ * A different pinned MODULE rather than an option on the one above: the
+ * pin keeps `picking-detailed-pipeline.ts` beside `picking-pipeline.ts`
+ * and the picker dynamic-imports whichever `_detailedPicking` selected.
+ * Its builder is module-private -- `getPickingPipelineSet` is the only
+ * export -- so it is re-exported through the same `data:` URL rewrite
+ * `buildPickingWgsl` takes rather than copied out. What that builder
+ * writes and this port must not restate is the third attachment's
+ * packing: `vec4u(primitiveIndex, bitcast<u32>(local.x), ...)` over a
+ * varying the vertex stage forwards, plus the `enable primitive_index`
+ * directive the fragment's builtin needs.
+ *
+ * `(null, null)` is what `getPickingPipelineSet(engine, null, null)`
+ * passes it: no discard rule and no vertex projection, which is the
+ * reached slice -- `pickAsync` refuses an options object, and a deform
+ * projection needs the advanced pipeline this port does not compose.
+ */
+export async function composeDetailedMeshPickingShader(): Promise<string> {
+    const pinned =
+        await importPinnedModuleWithExports<DetailedPipelineExports>(
+            detailedPipelineModule,
+            ["shader"],
+        );
+    return pinned.shader(null, null);
 }
 
 /**

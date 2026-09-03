@@ -59,6 +59,12 @@ struct DawnPickTargets {
     WGPUTextureView color_view = nullptr;
     WGPUTexture depth_color = nullptr;
     WGPUTextureView depth_color_view = nullptr;
+#if BBLITE_HAS_DETAILED_PICKING
+    /** The pin's `pick-detail`: 1x1 rgba32uint carrying the winning
+     *  primitive index and the interpolated rest position. */
+    WGPUTexture detail = nullptr;
+    WGPUTextureView detail_view = nullptr;
+#endif
     WGPUTexture depth = nullptr;
     WGPUTextureView depth_view = nullptr;
     WGPUBuffer staging = nullptr;
@@ -68,12 +74,20 @@ inline void release_dawn_pick_targets(DawnPickTargets& targets) {
     for (WGPUTextureView* view :
          {&targets.color_view,
           &targets.depth_color_view,
+#if BBLITE_HAS_DETAILED_PICKING
+          &targets.detail_view,
+#endif
           &targets.depth_view}) {
         if (*view) wgpuTextureViewRelease(*view);
         *view = nullptr;
     }
     for (WGPUTexture* texture :
-         {&targets.color, &targets.depth_color, &targets.depth}) {
+         {&targets.color,
+          &targets.depth_color,
+#if BBLITE_HAS_DETAILED_PICKING
+          &targets.detail,
+#endif
+          &targets.depth}) {
         if (*texture) wgpuTextureRelease(*texture);
         *texture = nullptr;
     }
@@ -111,13 +125,21 @@ inline void ensure_dawn_pick_targets(
     targets.depth_color = attachment(
         WGPUTextureFormat_R32Float, WGPUTextureUsage_CopySrc);
     targets.depth_color_view = view(targets.depth_color);
+#if BBLITE_HAS_DETAILED_PICKING
+    targets.detail = attachment(
+        WGPUTextureFormat_RGBA32Uint, WGPUTextureUsage_CopySrc);
+    targets.detail_view = view(targets.detail);
+#endif
     targets.depth =
         attachment(WGPUTextureFormat_Depth24Plus, WGPUTextureUsage_None);
     targets.depth_view = view(targets.depth);
 
     WGPUBufferDescriptor staging = WGPU_BUFFER_DESCRIPTOR_INIT;
     staging.usage = WGPUBufferUsage_CopyDst | WGPUBufferUsage_MapRead;
-    staging.size = 512;
+    // Three 256-aligned rows where the detailed pipeline draws, two
+    // otherwise. The map below asks for the same size, and a mismatch
+    // truncates silently rather than failing.
+    staging.size = pick_staging_bytes;
     targets.staging = wgpuDeviceCreateBuffer(device, &staging);
     if (!targets.staging) dawn_error("pick staging buffer");
 }
@@ -157,15 +179,23 @@ inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(
     return layout;
 }
 
-/** The pin's own pair of attachments, shared by both pick pipelines. */
+/**
+ * The pin's own attachment formats, shared by every pick pipeline: the id
+ * and the clip depth always, and the detailed module's packed primitive
+ * and rest position where this build draws one. The list is filled whole
+ * and each pipeline states how many of it it binds.
+ */
 inline void fill_dawn_pick_targets(
-    std::array<WGPUColorTargetState, 2>& targets) {
+    std::array<WGPUColorTargetState, pick_color_targets>& targets) {
     for (WGPUColorTargetState& target : targets) {
         target = WGPU_COLOR_TARGET_STATE_INIT;
         target.writeMask = WGPUColorWriteMask_All;
     }
     targets[0].format = WGPUTextureFormat_RGBA8Unorm;
     targets[1].format = WGPUTextureFormat_R32Float;
+#if BBLITE_HAS_DETAILED_PICKING
+    targets[2].format = WGPUTextureFormat_RGBA32Uint;
+#endif
 }
 
 #if BBLITE_HAS_BILLBOARDS
@@ -410,12 +440,14 @@ private:
             static_cast<std::uint32_t>(attributes.size());
         instance_layout.attributes = attributes.data();
 
-        std::array<WGPUColorTargetState, 2> targets{};
+        std::array<WGPUColorTargetState, pick_color_targets> targets{};
         fill_dawn_pick_targets(targets);
         WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
         fragment_state.module = fragment;
         fragment_state.entryPoint = string_view("fs");
-        fragment_state.targetCount = targets.size();
+        // A contributor draws the pin's own pair; the detailed attachment
+        // belongs to the mesh module alone, and the two never compose.
+        fragment_state.targetCount = 2;
         fragment_state.targets = targets.data();
 
         // The MESH picker's depth state, for the reason its SDL twin

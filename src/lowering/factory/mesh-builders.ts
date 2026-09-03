@@ -2718,6 +2718,11 @@ void attach_morph_target(
     geometry.morph_positions.clear();
     geometry.morph_positions.push_back(
         std::move(position_deltas));
+    // The shadow fit caches each target's own delta AABB beside these,
+    // keyed on the list's length; a second call replaces the deltas
+    // without changing that length, so the cache is dropped HERE, where
+    // the thing it is derived from is replaced.
+    geometry.morph_bounds.clear();
     geometry.morph_normals.clear();
     geometry.morph_normals.push_back(
         std::move(normal_deltas));

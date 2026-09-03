@@ -1,11 +1,11 @@
 import { pageBase64Script } from "../browser-harness.js";
-import { spawnSync } from "node:child_process";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import ts from "typescript";
 
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
+import { runGenerationChild } from "./generation-child.js";
 
 interface FetchedCanvasAtlasImage {
     source: string;
@@ -174,21 +174,18 @@ function runFetchedCanvasAtlas(
         );
         process.stdout.write(base64);
     `;
-    const child = spawnSync(process.execPath, ["--input-type=module", "-e", script], {
-        cwd: process.cwd(),
-        input: JSON.stringify({
-            atlas: atlasJavascript,
-            blocks: blocksJavascript,
-            assetDirectory,
-        }),
-        encoding: "utf8",
-        maxBuffer: 64 * 1024 * 1024,
-    });
-    if (child.status !== 0) {
-        throw new Error(
-            "Generation-time fetched Canvas2D atlas failed: " +
-                (child.stderr || child.error?.message || "no output").trim(),
-        );
-    }
-    return new Uint8Array(Buffer.from(child.stdout.trim(), "base64"));
+    return new Uint8Array(
+        Buffer.from(
+            runGenerationChild({
+                script,
+                label: "Generation-time fetched Canvas2D atlas",
+                input: JSON.stringify({
+                    atlas: atlasJavascript,
+                    blocks: blocksJavascript,
+                    assetDirectory,
+                }),
+            }),
+            "base64",
+        ),
+    );
 }

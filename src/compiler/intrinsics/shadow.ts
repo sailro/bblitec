@@ -88,8 +88,16 @@ const spotOptions = [
  * The spot factory's first three, then the ortho pair that replaces its
  * `near`/`far`: a directional light has no position to project from, so the
  * volume is fitted to the casters and these two are the depth range that fit
- * projects into. `normalBias` and `forceRefreshEveryFrame` are unreached and
- * refuse by name, exactly as they do on the spot factory.
+ * projects into. `forceRefreshEveryFrame` rides into the record, where it
+ * disables the pinned render gate, exactly as the CSM and ESM factories
+ * already carry it -- scene 140 reaches it. `normalBias` is still unreached
+ * and refuses by name.
+ *
+ * The PCF SPOT factory still refuses `forceRefreshEveryFrame`, and that
+ * asymmetry is deliberate rather than an oversight: no corpus scene reaches
+ * it there, and the convention here is to reach a capability where the pin's
+ * own callers reach it. Generation still anchors the spot factory's `??
+ * false` default, so a pin that changed what it carries refuses.
  */
 const pcfDirectionalOptions = [
     "mapSize",
@@ -97,6 +105,7 @@ const pcfDirectionalOptions = [
     "darkness",
     "orthoMinZ",
     "orthoMaxZ",
+    "forceRefreshEveryFrame",
 ] as const;
 
 /**
@@ -232,6 +241,9 @@ const shadowGeneratorFactories: Readonly<
             darkness: "bbl::upstream::pcf_directional_default_darkness",
             orthoMinZ: "bbl::upstream::pcf_directional_default_ortho_min_z",
             orthoMaxZ: "bbl::upstream::pcf_directional_default_ortho_max_z",
+            // The pin's `cfg.forceRefreshEveryFrame ?? false`, whose shape
+            // the shadow lowerer asserts against the factory.
+            forceRefreshEveryFrame: "false",
         },
         generationResolved: ["mapSize"],
         factory: "bbl::create_pcf_directional_shadow_generator",
@@ -424,6 +436,28 @@ export function compileShadowIntrinsic(
                 call,
                 shadowGeneratorFactories[importedName]!,
             );
+
+        // Upstream this installs a bounds provider into a WeakMap and wraps
+        // each caster in a proxy mesh whose boundMin/boundMax it rewrites
+        // per frame. This port fills one caster carrier per fit, so the
+        // registration is a flag on the generator and the carrier reads it
+        // where it fills the bounds -- same provider, no proxy.
+        case "enableMorphTargetShadows": {
+            context.expectArgumentCount(call, 1, 1);
+            const generator = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                generator,
+                "shadow-generator",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::enable_morph_target_shadows(` +
+                    `${context.requireEngine(generator, call)}, ` +
+                    `${generator.cpp})`,
+            };
+        }
 
         // The pin keeps the caster list as a lazy task input rather than on
         // the generator, so this is a registration and not a property write;

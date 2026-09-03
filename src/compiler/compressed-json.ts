@@ -16,6 +16,7 @@ import {
     type JsonValuePolicy,
 } from "./json-value.js";
 import type { Value } from "./types.js";
+import { runModuleJsonSync } from "./module-json-sync.js";
 
 export interface CompressedJsonContext {
     readonly checker: ts.TypeChecker;
@@ -574,6 +575,47 @@ function decodeCompressedJson(
     }
 }
 
+/**
+ * Run a named JSON->JSON pass on generation-known arguments.
+ *
+ * Declines unless the declaration lives outside the entry file (so it is a
+ * shared module rather than scene-local control flow), takes only
+ * generation-known JSON, and is annotated as returning a JSON object. The
+ * annotation is the cheapest honest proof that the result is a document:
+ * a function returning void or a handle is doing something this route has
+ * no business folding.
+ */
+function derivedJsonPass(
+    context: CompressedJsonContext,
+    call: ts.CallExpression,
+    declaration: ts.FunctionDeclaration,
+): { value: unknown } | undefined {
+    const returnType = declaration.type;
+    if (
+        !returnType ||
+        !ts.isTypeReferenceNode(returnType) ||
+        returnType.typeName.getText(returnType.getSourceFile()) !==
+            "Record"
+    ) {
+        return undefined;
+    }
+    const modulePath = declaration.getSourceFile().fileName;
+    if (modulePath === call.getSourceFile().fileName) return undefined;
+    const argumentsJson: unknown[] = [];
+    for (const argument of call.arguments) {
+        const value = context.compileValue(argument);
+        if (value.staticJson === undefined) return undefined;
+        argumentsJson.push(value.staticJson);
+    }
+    return {
+        value: runModuleJsonSync(
+            modulePath,
+            declaration.name?.text ?? "",
+            argumentsJson,
+        ),
+    };
+}
+
 /** Compile a reached compressed-JSON utility call, or decline another call. */
 export function compileCompressedJsonCall(
     context: CompressedJsonContext,
@@ -592,6 +634,29 @@ export function compileCompressedJsonCall(
             decodeCompressedJson(context, call.arguments[0]!),
             call,
         );
+    }
+
+    // A scene's own pure JSON pass over values generation already knows.
+    //
+    // The two recognizers below are STRUCTURAL: each proves one known
+    // shape and then re-applies it here, which is what lets a compressed
+    // graph module share a restorer without opening the door to arbitrary
+    // named callbacks. This third route cannot prove a shape it has never
+    // seen, so it proves something else instead -- that every input is
+    // generation-known JSON and the declaration returns a JSON document --
+    // and then runs the scene's OWN function rather than restating it.
+    // Scene 140 derives its caster graph from scene 66's receiver graph by
+    // wiring in an alpha discard, 36 lines of corpus TypeScript that a
+    // port-side copy would silently outlive.
+    //
+    // What keeps it narrow is the argument gate: a call whose inputs are
+    // all static JSON has no runtime behaviour left to preserve, so
+    // folding it is a statement about a document rather than about the
+    // scene's control flow. One whose inputs are not falls straight
+    // through to the ordinary call path.
+    const derived = derivedJsonPass(context, call, declaration);
+    if (derived !== undefined) {
+        return jsonValue(context, derived.value, call);
     }
 
     if (isInputNameAliasRestorer(context.checker, declaration)) {

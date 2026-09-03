@@ -657,6 +657,11 @@ struct DawnState : DawnDevice {
     // siblings rather than nested.
     DawnPickTargets pick_targets;
     WGPURenderPipeline pick_mesh_pipeline = nullptr;
+#if BBLITE_HAS_DETAILED_PICKING
+    /** The pin's second picking module: three targets, and a fragment
+     *  that reads `@builtin(primitive_index)`. */
+    WGPURenderPipeline pick_detailed_pipeline = nullptr;
+#endif
     WGPUBindGroupLayout pick_scene_layout = nullptr;
     WGPUBindGroupLayout pick_mesh_layout = nullptr;
     WGPUBuffer pick_scene_buffer = nullptr;
@@ -1360,6 +1365,11 @@ struct DawnState : DawnDevice {
 #if BBLITE_HAS_PICKING
         release_dawn_pick_targets(pick_targets);
         if (pick_mesh_pipeline) wgpuRenderPipelineRelease(pick_mesh_pipeline);
+#if BBLITE_HAS_DETAILED_PICKING
+        if (pick_detailed_pipeline) {
+            wgpuRenderPipelineRelease(pick_detailed_pipeline);
+        }
+#endif
         if (pick_scene_layout) wgpuBindGroupLayoutRelease(pick_scene_layout);
         if (pick_mesh_layout) wgpuBindGroupLayoutRelease(pick_mesh_layout);
         if (pick_scene_group) wgpuBindGroupRelease(pick_scene_group);
@@ -8358,9 +8368,12 @@ void record_post_process_pass(
 inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     WGPUDevice device,
     WGPUBindGroupLayout scene_layout,
-    WGPUBindGroupLayout mesh_layout) {
-    WGPUShaderModule vertex = load_wgsl_module(device, "picking.vert");
-    WGPUShaderModule fragment = load_wgsl_module(device, "picking.frag");
+    WGPUBindGroupLayout mesh_layout,
+    const char* stem_vertex,
+    const char* stem_fragment,
+    std::uint32_t target_count) {
+    WGPUShaderModule vertex = load_wgsl_module(device, stem_vertex);
+    WGPUShaderModule fragment = load_wgsl_module(device, stem_fragment);
 
     const std::array<WGPUBindGroupLayout, 2> groups{
         scene_layout, mesh_layout};
@@ -8384,13 +8397,13 @@ inline WGPURenderPipeline create_dawn_pick_mesh_pipeline(
     vertex_layout.attributeCount = 1;
     vertex_layout.attributes = &position;
 
-    std::array<WGPUColorTargetState, 2> targets{};
+    std::array<WGPUColorTargetState, pick_color_targets> targets{};
     fill_dawn_pick_targets(targets);
 
     WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
     fragment_state.module = fragment;
     fragment_state.entryPoint = string_view("fs");
-    fragment_state.targetCount = targets.size();
+    fragment_state.targetCount = target_count;
     fragment_state.targets = targets.data();
 
     WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
@@ -8463,13 +8476,15 @@ inline WGPURenderPipeline create_dawn_pick_cloud_pipeline(
     const std::array<WGPUVertexBufferLayout, 2> buffers{
         quad_layout, order_layout};
 
-    std::array<WGPUColorTargetState, 2> targets{};
+    std::array<WGPUColorTargetState, pick_color_targets> targets{};
     fill_dawn_pick_targets(targets);
 
     WGPUFragmentState fragment_state = WGPU_FRAGMENT_STATE_INIT;
     fragment_state.module = fragment;
     fragment_state.entryPoint = string_view("fs");
-    fragment_state.targetCount = targets.size();
+    // The cloud contributor draws the pin's own pair; a detailed pick
+    // composes no contributor, so it never binds the third.
+    fragment_state.targetCount = 2;
     fragment_state.targets = targets.data();
 
     WGPUDepthStencilState depth = WGPU_DEPTH_STENCIL_STATE_INIT;
@@ -10241,7 +10256,11 @@ bool run_dawn_engine(Engine& engine) {
          ,
          &billboard_pick
 #endif
-    ](GpuPickerHandle, double x, double y) -> PickingInfo {
+    ]([[maybe_unused]] GpuPickerHandle picker, double x, double y) -> PickingInfo {
+#if BBLITE_HAS_DETAILED_PICKING
+        // `picker._detailedPicking`, armed by `enableDetailedPicking`.
+        const bool detailed = detailed_pick_armed(engine, picker);
+#endif
         if (scene.camera.value >= engine.cameras.size()) {
             return PickingInfo{};
         }
@@ -10264,7 +10283,22 @@ bool run_dawn_engine(Engine& engine) {
             state.pick_mesh_pipeline = create_dawn_pick_mesh_pipeline(
                 state.device,
                 state.pick_scene_layout,
-                state.pick_mesh_layout);
+                state.pick_mesh_layout,
+                "picking.vert",
+                "picking.frag",
+                2);
+#if BBLITE_HAS_DETAILED_PICKING
+            // The pin's second module, built beside the first: the picker
+            // dynamic-imports whichever `_detailedPicking` selected, and
+            // a picker can be armed after another has already picked.
+            state.pick_detailed_pipeline = create_dawn_pick_mesh_pipeline(
+                state.device,
+                state.pick_scene_layout,
+                state.pick_mesh_layout,
+                "picking-detailed.vert",
+                "picking-detailed.frag",
+                pick_color_targets);
+#endif
             WGPUBufferDescriptor scene_buffer =
                 WGPU_BUFFER_DESCRIPTOR_INIT;
             scene_buffer.usage =
@@ -10468,7 +10502,8 @@ bool run_dawn_engine(Engine& engine) {
         WGPUCommandEncoder encoder =
             wgpuDeviceCreateCommandEncoder(state.device, &encoder_descriptor);
 
-        std::array<WGPURenderPassColorAttachment, 2> attachments{};
+        std::array<WGPURenderPassColorAttachment, pick_color_targets>
+            attachments{};
         for (WGPURenderPassColorAttachment& attachment : attachments) {
             attachment = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
             attachment.loadOp = WGPULoadOp_Clear;
@@ -10479,6 +10514,17 @@ bool run_dawn_engine(Engine& engine) {
         attachments[1].view = state.pick_targets.depth_color_view;
         // 1 is "nothing here" under reverse-Z, which is the pin's clear.
         attachments[1].clearValue = WGPUColor{1.0, 0.0, 0.0, 0.0};
+        std::size_t attachment_count = 2;
+#if BBLITE_HAS_DETAILED_PICKING
+        if (detailed) {
+            attachments[2].view = state.pick_targets.detail_view;
+            // The pin's own 0xffffffff, which `readDetailTarget` reads
+            // back as "no primitive".
+            attachments[2].clearValue =
+                WGPUColor{pick_detail_clear_red, 0.0, 0.0, 0.0};
+            attachment_count = 3;
+        }
+#endif
 
         WGPURenderPassDepthStencilAttachment depth_attachment =
             WGPU_RENDER_PASS_DEPTH_STENCIL_ATTACHMENT_INIT;
@@ -10489,13 +10535,18 @@ bool run_dawn_engine(Engine& engine) {
 
         WGPURenderPassDescriptor pass_descriptor =
             WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-        pass_descriptor.colorAttachmentCount = attachments.size();
+        pass_descriptor.colorAttachmentCount = attachment_count;
         pass_descriptor.colorAttachments = attachments.data();
         pass_descriptor.depthStencilAttachment = &depth_attachment;
         WGPURenderPassEncoder pass =
             wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
 
-        wgpuRenderPassEncoderSetPipeline(pass, state.pick_mesh_pipeline);
+        wgpuRenderPassEncoderSetPipeline(
+            pass,
+#if BBLITE_HAS_DETAILED_PICKING
+            detailed ? state.pick_detailed_pipeline :
+#endif
+                     state.pick_mesh_pipeline);
         wgpuRenderPassEncoderSetBindGroup(
             pass, 0, state.pick_scene_group, 0, nullptr);
         for (std::size_t index = 0; index < blocks.size(); ++index) {
@@ -10558,15 +10609,23 @@ bool run_dawn_engine(Engine& engine) {
         WGPUTexelCopyBufferInfo destination =
             WGPU_TEXEL_COPY_BUFFER_INFO_INIT;
         destination.buffer = state.pick_targets.staging;
-        destination.layout.bytesPerRow = 256;
+        destination.layout.bytesPerRow = pick_readback_row;
         destination.layout.rowsPerImage = 1;
         const WGPUExtent3D one{1, 1, 1};
         wgpuCommandEncoderCopyTextureToBuffer(
             encoder, &source, &destination, &one);
         source.texture = state.pick_targets.depth_color;
-        destination.layout.offset = 256;
+        destination.layout.offset = pick_depth_offset;
         wgpuCommandEncoderCopyTextureToBuffer(
             encoder, &source, &destination, &one);
+#if BBLITE_HAS_DETAILED_PICKING
+        if (detailed) {
+            source.texture = state.pick_targets.detail;
+            destination.layout.offset = pick_detail_offset;
+            wgpuCommandEncoderCopyTextureToBuffer(
+                encoder, &source, &destination, &one);
+        }
+#endif
 
         WGPUCommandBufferDescriptor finish =
             WGPU_COMMAND_BUFFER_DESCRIPTOR_INIT;
@@ -10600,19 +10659,25 @@ bool run_dawn_engine(Engine& engine) {
                 state.pick_targets.staging,
                 WGPUMapMode_Read,
                 0,
-                512,
+                pick_staging_bytes,
                 map_callback));
         if (!state.uncaptured_error.empty()) {
             dawn_error("pick buffer map failed: " + state.uncaptured_error);
         }
         const void* mapped = wgpuBufferGetConstMappedRange(
-            state.pick_targets.staging, 0, 512);
+            state.pick_targets.staging, 0, pick_staging_bytes);
         if (!mapped) dawn_error("pick map returned no data.");
         const auto* bytes = static_cast<const std::uint8_t*>(mapped);
         const std::uint32_t pick_id =
             decode_pick_id(bytes);
         float pick_depth = 1.0f;
-        std::memcpy(&pick_depth, bytes + 256, sizeof(pick_depth));
+        std::memcpy(
+            &pick_depth, bytes + pick_depth_offset, sizeof(pick_depth));
+#if BBLITE_HAS_DETAILED_PICKING
+        const PickDetailReadback pick_detail =
+            detailed ? decode_pick_detail(bytes + pick_detail_offset)
+                     : PickDetailReadback{};
+#endif
         wgpuBufferUnmap(state.pick_targets.staging);
 
         PickingInfo info = resolve_pick_result(ranges, pick_id);
@@ -10624,6 +10689,19 @@ bool run_dawn_engine(Engine& engine) {
             width,
             height,
             pick_depth);
+#if BBLITE_HAS_DETAILED_PICKING
+        if (detailed) {
+            finish_detailed_pick(
+                engine,
+                info,
+                pick_detail,
+                view_projection,
+                x,
+                y,
+                width,
+                height);
+        }
+#endif
         return info;
     };
 #endif

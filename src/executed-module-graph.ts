@@ -45,6 +45,39 @@ export async function executeModuleGraph(
 }
 
 /**
+ * The value a scene module's own function BUILDS from arguments generation
+ * already knows, read by running that function under Node.
+ *
+ * The same route and the same boundary as the export above, one call
+ * deeper: scene 140 derives its caster graph from its receiver graph by
+ * wiring an alpha discard into it, and that wiring is the corpus's own
+ * TypeScript. Executing it is right for the reason this file opens with --
+ * a graph is structure, and nothing about assembling one can differ
+ * between two ECMAScript engines -- which is also why it earns no
+ * adaptation where the pixel routes do.
+ *
+ * The arguments are plain JSON for the same reason the result is: anything
+ * else would be a value this route cannot promise two engines agree on.
+ */
+export async function executeModuleGraphCall(
+    source: ExecutedModuleSource,
+    argumentsJson: readonly unknown[],
+): Promise<unknown> {
+    const url = moduleDataUrl(source.modulePath, new Map());
+    const module = (await import(url)) as Record<string, unknown>;
+    const value = module[source.exportName];
+    if (typeof value !== "function") {
+        throw new Error(
+            `Module export ${source.exportName} in ${source.modulePath} is ` +
+                "not a function.",
+        );
+    }
+    return (value as (...args: readonly unknown[]) => unknown)(
+        ...argumentsJson,
+    );
+}
+
+/**
  * One module as a self-contained `data:` URL, with each relative import
  * replaced by the URL of the sibling it names.
  *

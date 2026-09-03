@@ -38,7 +38,10 @@ import {
     PINNED_DECOMPOSE_ROTATION,
     lowerMat4DecomposeRotation,
 } from "./pinned-mat4-decompose.js";
-import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import {
+    pinnedHypotCall,
+    pinnedNumericMathCalls,
+} from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
@@ -106,7 +109,7 @@ const MATH_CALLS: ReadonlyMap<
     ["Math.round", (a) => `bbl::js::round_js(${a[0]})`],
     // Math.hypot is implementation-approximated by the ECMAScript spec; see
     // the module comment for the measured effect of using the plain root.
-    ["Math.hypot", (a) => `bbl::js::hypot_js({${a.join(", ")}})`],
+    ["Math.hypot", pinnedHypotCall],
 ]);
 
 export class SplatLowerer {

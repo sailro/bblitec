@@ -1335,6 +1335,30 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene113",
+        name: "Scene 113 - Picking Precision",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene113.ts",
+        title: "Babylon Lite Native - Picking Precision",
+        parity: {
+            // The pin's detailed pipeline end to end: the third rgba32uint
+            // attachment, the primitive index, and the CPU barycentric
+            // solve that places both markers. MEASURED 0.000/0.000 on both
+            // backends, byte-identical to the golden and to each other,
+            // and bit-stable across repeated runs -- so 0.001 is the
+            // smallest value the report prints rather than headroom.
+            //
+            // The gate is not vacuous: a pick that misses takes
+            // `placeMarkers`' miss arm and parks both markers at y = -4,
+            // off-frame, which is 2,713 pixels. An 11%-wrong pick point
+            // measured 0.291 full MAD while a since-fixed dangling
+            // reference was live -- 290x this threshold.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene116",
         name: "Scene 116 - No-Color Depth Views",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene116.ts",
@@ -3404,6 +3428,48 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene140",
+        name: "Scene 140 - NME Alpha-Discard Shadows",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene140.ts",
+        title: "Babylon Lite Native - NME Alpha-Discard Shadows",
+        parity: {
+            // Scene 66's own pose, because this is scene 66 with three
+            // things added: the PCF generator refreshes every frame, its
+            // casters are bounded by their live morph-expanded AABB, and
+            // the caster graph discards its own fragments in the depth
+            // pass. All three are REACHED -- the composed caster shader
+            // the PCF pass binds carries the discard, and its arm matches
+            // the browser's third node module -- but only the discard is
+            // OBSERVED. `forceRefreshEveryFrame` is vacuous at a frozen
+            // pose: the weights are set once, the camera does not move, so
+            // the first frame renders and every later frame would be
+            // bit-identical with or without it. The morph bounds are the
+            // subject of the note below.
+            referenceSearch: "?freeze=1",
+            // MEASURED 0.006/0.048 where scene 66 is 0.000017/0.000133 at
+            // the same pose, and the hotspots say where the difference
+            // is: every one sits on the ground INSIDE the shadow, ringing
+            // the holes the caster's discard punches through the depth
+            // map. A discarded fragment moves the shadow's edge by
+            // whatever fraction of a shadow texel the two rasterizations
+            // disagree on, and the PCF kernel then spreads that over the
+            // hole's rim -- 96.3% of the region is exact and 99.8% is
+            // within five counts, all of it in those rims. Scene 66 has
+            // no discard, which is why it has no such band.
+            //
+            // The morph-target bounds are NOT what this gate observes: an
+            // A/B with the provider disabled measures 0.006/0.047, so at
+            // the frozen weight the expanded box does not move the ortho
+            // fit enough to change a pixel. It is implemented because the
+            // scene calls it and the pin computes it live, not because
+            // this pose proves it.
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.06,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene72",
         name: "Scene 72 - NME PBR Full",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene72.ts",
@@ -3739,9 +3805,14 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Voxel Sandbox",
         // The browser and both native backends agree on the voxel canvas to
-        // within one byte in one pixel (MAD rounds to 0.000). The remaining
+        // 0.001 canvas MAD on SDL_GPU and 0.000 on Dawn, against a 0.01
+        // gate: 274 of 921,600 pixels differ at all and the largest is 26
+        // counts. That asymmetry appeared when scene code moved onto
+        // `bbl::js::hypot_js` -- the demo reaches Math.hypot on its own
+        // camera math -- and it stays well inside the gate. The remaining
         // 1.414 full-page floor is retained-UI layout/font rasterization;
-        // SDL_GPU and Dawn are pixel-identical, so one gate pair covers both.
+        // the two backends are within one count of each other there, so one
+        // gate pair covers both.
         parity: {
             referenceFrame: 180,
             maxFullMad: 1.5,

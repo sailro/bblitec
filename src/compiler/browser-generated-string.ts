@@ -13,12 +13,12 @@
 // inlining its own launch. Results replay from the content-addressed
 // bake cache: warm recompiles launch no Chromium and yield the exact
 // bytes of the run that produced them.
-import { spawnSync } from "node:child_process";
 
 import ts from "typescript";
 
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { runGenerationChild } from "./generation-child.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
@@ -182,23 +182,12 @@ function runCanvasHelperInChromium(
         if (typeof value !== "string") throw new Error("Canvas helper did not return a string.");
         process.stdout.write(Buffer.from(value, "utf8").toString("base64"));
     `;
-    const child = spawnSync(
-        process.execPath,
-        ["--input-type=module", "-e", script],
-        {
-            cwd: process.cwd(),
-            input: javascript,
-            encoding: "utf8",
-            maxBuffer: 64 * 1024 * 1024,
-        },
-    );
-    if (child.status !== 0) {
-        throw new Error(
-            `Generation-time Canvas2D call '${functionName}' failed: ` +
-                `${(child.stderr || child.error?.message || "no output").trim()}`,
-        );
-    }
-    return Buffer.from(child.stdout.trim(), "base64").toString("utf8");
+    const stdout = runGenerationChild({
+        script,
+        label: `Generation-time Canvas2D call '${functionName}'`,
+        input: javascript,
+    });
+    return Buffer.from(stdout, "base64").toString("utf8");
 }
 
 /**

@@ -2032,12 +2032,24 @@ export type Feature =
   | "physics:aggregate"
   | "physics:trigger"
   | "scene:remove"
-  // GPU picking. One feature, because the pin's own split is by
-  // PIPELINE rather than by entry point: the simple pass, the advanced
-  // one and the detailed one are three modules behind one `pickAsync`,
-  // and this port reaches only the first. The GS contributor rides the
-  // splat feature that already selected the cloud.
+  // `src/math/normalize-vec3.ts`, which a scene calls directly and the
+  // pin's detailed picking imports. Its own row because the header
+  // carrying the translated declaration is emitted only where one of the
+  // two reaches it.
+  | "math:normalize-vec3"
+  // GPU picking. The pin's own split is by PIPELINE rather than by entry
+  // point: the simple pass, the advanced one and the detailed one are
+  // three modules behind one `pickAsync`, and this port reaches the
+  // simple one and the detailed one. The GS contributor rides the splat
+  // feature that already selected the cloud.
   | "picking:gpu"
+  // The detailed pick pipeline: `picking/picking-detailed-pipeline.ts`
+  // plus `picking/detailed-picking.ts`. Its own row because the pin's own
+  // split is a separate module the picker dynamic-imports only when
+  // `enableDetailedPicking` armed the flag, and because it costs a third
+  // render attachment and a wider readback that a simple pick pays
+  // nothing for.
+  | "picking:detailed"
   // The billboard pick contributor. Its own row because the pin's own
   // split is one module per pickable entity type
   // (`picking/billboard-pick-pipeline.ts`), lazily imported by the

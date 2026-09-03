@@ -602,8 +602,16 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/vat/vat-baker.ts (setInstances)",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
+    "math:normalize-vec3": {
+        provenance: "src/math/normalize-vec3.ts",
+        consumers: CMAKE,
+    },
     "picking:gpu": {
         provenance: "src/picking/gpu-picker.ts",
+        consumers: CMAKE,
+    },
+    "picking:detailed": {
+        provenance: "src/picking/picking-detailed-pipeline.ts",
         consumers: CMAKE,
     },
     // The billboard contributor is the pin's own pay-for-use seam: a

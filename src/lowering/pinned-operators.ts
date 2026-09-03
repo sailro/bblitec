@@ -134,12 +134,20 @@ export function pinnedNumericMathCallsWithHypot(): Map<
     (args: readonly string[]) => string
 > {
     const calls = pinnedNumericMathCalls();
-    calls.set(
-        "Math.hypot",
-        (args: readonly string[]): string =>
-            `bbl::js::hypot_js({${args.join(", ")}})`,
-    );
+    calls.set("Math.hypot", pinnedHypotCall);
     return calls;
+}
+
+/**
+ * `Math.hypot` at any arity, as the one spelling both layers use.
+ *
+ * Scene code reaches it through the compiler's own `Math` dispatch and a
+ * pinned body through the map above; spelling it once here is what keeps
+ * the two from drifting, the way `pinnedMathSpelling` does for the plain
+ * `<cmath>` members.
+ */
+export function pinnedHypotCall(args: readonly string[]): string {
+    return `bbl::js::hypot_js({${args.join(", ")}})`;
 }
 
 /**

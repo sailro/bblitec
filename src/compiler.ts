@@ -92,6 +92,7 @@ import {
     type IntrinsicContext,
 } from "./compiler/intrinsics/registry.js";
 import {
+    selectedStaticExpression,
     selectedStaticNumberValue,
     validateObjectProperties,
 } from "./compiler/option-helpers.js";
@@ -8317,9 +8318,32 @@ class Compiler
     public probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
-        const resolved =
-            this.resolveStaticExpression(expression);
-        return ts.isArrayLiteralExpression(resolved)
+        // A list a scene selects between with a generation-known condition
+        // is still a static list. Scene 140 writes both of its option
+        // arrays that way -- `sg ? [sg] : undefined` for the shadow lights
+        // and `probe ? [box] : [sphere, box]` for the casters -- behind
+        // query flags that fold. Selected through the shared helper rather
+        // than inside resolveStaticExpression, which feeds every numeric
+        // and colour position in the compiler: folding conditional arms
+        // there would move emitted code far outside array positions.
+        // The condition goes through `probeEmission`, unlike the
+        // evaluator's copy of this: several callers fall through on
+        // undefined, so a condition that emits a temporary and then fails
+        // to fold would leak that emission into a lowering nobody kept.
+        const resolved = selectedStaticExpression(
+            {
+                compileCondition: (node) =>
+                    this.probeEmission(
+                        () => this.compileCondition(node),
+                        (folded) =>
+                            folded === "true" || folded === "false",
+                    ),
+                resolveStaticExpression: (node) =>
+                    this.resolveStaticExpression(node),
+            },
+            expression,
+        );
+        return resolved && ts.isArrayLiteralExpression(resolved)
             ? resolved
             : undefined;
     }
