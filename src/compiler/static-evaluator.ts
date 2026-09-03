@@ -12,6 +12,7 @@ import {
     selectedStaticExpression,
     staticNumberValue,
 } from "./option-helpers.js";
+import { isJsonValue } from "./json-bridge.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
@@ -76,6 +77,19 @@ const arithmeticOperators = new Map<ts.SyntaxKind, string>([
     [ts.SyntaxKind.AsteriskToken, "*"],
     [ts.SyntaxKind.SlashToken, "/"],
 ]);
+
+/**
+ * A value a number sink accepts: a native number, and a parsed document,
+ * which JavaScript coerces at the same sink rather than earlier.
+ */
+function isNumericValue(value: Value | undefined): boolean {
+    return (
+        value?.kind === "number" ||
+        (value?.kind === "data" &&
+            value.dataType?.kind === "number") ||
+        isJsonValue(value)
+    );
+}
 
 export class StaticEvaluator {
     public constructor(
@@ -270,6 +284,12 @@ export class StaticEvaluator {
         if (data) {
             return `bbl::Color3{${data.join(", ")}}`;
         }
+        const spreadTuple = this.spreadTupleElements(unwrapped, 3);
+        if (spreadTuple) {
+            return `bbl::Color3{${spreadTuple
+                .map((value) => this.numberValue(value, unwrapped))
+                .join(", ")}}`;
+        }
         if (
             ts.isArrayLiteralExpression(unwrapped) &&
             unwrapped.elements.length === 3
@@ -394,10 +414,10 @@ export class StaticEvaluator {
         }
         if (ts.isPropertyAccessExpression(unwrapped)) {
             const value = this.resolveProperty(unwrapped);
+            if (value?.staticBoolean !== undefined) {
+                return value.staticBoolean ? "true" : "false";
+            }
             if (value?.kind === "boolean") {
-                if (value.staticBoolean !== undefined) {
-                    return value.staticBoolean ? "true" : "false";
-                }
                 return value.cpp;
             }
         }
@@ -740,11 +760,7 @@ export class StaticEvaluator {
             if (optionalNumber !== undefined) {
                 return optionalNumber;
             }
-            if (
-                value?.kind === "number" ||
-                (value?.kind === "data" &&
-                    value.dataType?.kind === "number")
-            ) {
+            if (value && isNumericValue(value)) {
                 return this.castNumber(value, precision);
             }
         }
@@ -759,11 +775,7 @@ export class StaticEvaluator {
             if (optionalNumber !== undefined) {
                 return optionalNumber;
             }
-            if (
-                value?.kind === "number" ||
-                (value?.kind === "data" &&
-                    value.dataType?.kind === "number")
-            ) {
+            if (value && isNumericValue(value)) {
                 return this.castNumber(value, precision);
             }
         }
@@ -777,17 +789,14 @@ export class StaticEvaluator {
             if (optionalNumber !== undefined) {
                 return optionalNumber;
             }
-            if (
-                value.kind !== "number" &&
-                !(
-                    value.kind === "data" &&
-                    value.dataType?.kind === "number"
-                )
-            ) {
+            if (!isNumericValue(value)) {
                 this.fail(
                     unwrapped,
                     `Expected number, received ${value.kind}.`,
                 );
+            }
+            if (isJsonValue(value)) {
+                return this.castNumber(value, precision);
             }
             return precision === "float"
                 ? `static_cast<float>(${value.cpp})`
@@ -833,17 +842,14 @@ export class StaticEvaluator {
             ) {
                 return this.castNumber(narrowed, precision);
             }
-            if (
-                value.kind !== "number" &&
-                !(
-                    value.kind === "data" &&
-                    value.dataType?.kind === "number"
-                )
-            ) {
+            if (!isNumericValue(value)) {
                 this.fail(
                     unwrapped,
                     `Expected number, received ${value.kind}.`,
                 );
+            }
+            if (isJsonValue(value)) {
+                return this.castNumber(value, precision);
             }
             return precision === "float"
                 ? `static_cast<float>(${value.cpp})`
@@ -864,6 +870,17 @@ export class StaticEvaluator {
         value: Value,
         precision: "float" | "double",
     ): string {
+        if (
+            isJsonValue(value)
+        ) {
+            // `Number(document)` at the sink, which is where JavaScript
+            // coerces one: an absent property is NaN, exactly as reading
+            // `undefined` into arithmetic is.
+            const compiled = `${value.cpp}.to_number()`;
+            return precision === "float"
+                ? `static_cast<float>(${compiled})`
+                : compiled;
+        }
         // A static lane re-formats from its own value at the sink's
         // width. Its stored cpp was formatted for whichever sink
         // materialized it -- an array literal's lanes compile at the
@@ -1127,7 +1144,8 @@ export class StaticEvaluator {
     }
 
     /**
-     * `options.x ?? fallback` over a static record, or undefined.
+     * `options.x ?? fallback` over a static record, an inlined parameter
+     * whose call site settled its presence, or undefined.
      *
      * Babylon Lite reads its option records this way throughout, and a
      * record literal settles the question at compile time: the property
@@ -1145,6 +1163,23 @@ export class StaticEvaluator {
         expression: ts.BinaryExpression,
     ): ts.Expression | undefined {
         const left = this.unwrap(expression.left);
+        if (ts.isIdentifier(left)) {
+            const value = this.lookupOptional(left);
+            if (!value) {
+                return undefined;
+            }
+            if (value.kind === "json-null") {
+                return expression.right;
+            }
+            if (
+                value.optionalFoundCpp !== undefined ||
+                (value.kind === "data" &&
+                    value.dataType?.kind === "optional")
+            ) {
+                return undefined;
+            }
+            return expression.left;
+        }
         if (ts.isPropertyAccessExpression(left)) {
             // Records are identifier-bound, so only those owners are
             // probed: the probe is a full value compile with emit
@@ -1174,7 +1209,10 @@ export class StaticEvaluator {
                 }
                 return expression.left;
             }
-            if (owner.recordGetters?.[name]) {
+            if (
+                owner.recordGetters?.[name] ||
+                owner.recordMethods?.[name]
+            ) {
                 return expression.left;
             }
             if (owner.kind === "record") {
@@ -1440,6 +1478,55 @@ export class StaticEvaluator {
             );
         }
         return value.tupleElements;
+    }
+
+    /** Flatten a numeric tuple spread inside a fixed-size array literal. */
+    private spreadTupleElements(
+        expression: ts.Expression,
+        length: number,
+    ): Value[] | undefined {
+        if (
+            !ts.isArrayLiteralExpression(expression) ||
+            !expression.elements.some(ts.isSpreadElement)
+        ) {
+            return undefined;
+        }
+        const values: Value[] = [];
+        for (const element of expression.elements) {
+            if (!ts.isSpreadElement(element)) {
+                values.push(this.resolveValue(element));
+                continue;
+            }
+            const spread = this.resolveValue(element.expression);
+            if (spread.kind === "tuple" && spread.tupleElements) {
+                values.push(...spread.tupleElements);
+                continue;
+            }
+            if (
+                spread.kind === "data" &&
+                spread.dataType?.kind === "tuple"
+            ) {
+                for (let index = 0; index < spread.dataType.arity; ++index) {
+                    values.push({
+                        kind: "number",
+                        cpp: `${spread.cpp}[${index}]`,
+                        dataType: { kind: "number" },
+                    });
+                }
+                continue;
+            }
+            this.fail(
+                element,
+                "A fixed-size vector spread must contain a numeric tuple.",
+            );
+        }
+        if (values.length !== length) {
+            this.fail(
+                expression,
+                `Expected a ${length}-element tuple after spread expansion.`,
+            );
+        }
+        return values;
     }
 
     /**

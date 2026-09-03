@@ -213,10 +213,16 @@ inline void append_dawn_texture_pair(
 }
 
 inline void wait_for(WGPUInstance instance, WGPUFuture future) {
+    constexpr std::uint64_t maximum_wait_nanoseconds =
+        60ull * 1'000'000'000ull;
     WGPUFutureWaitInfo wait_info{};
     wait_info.future = future;
     const WGPUWaitStatus status =
-        wgpuInstanceWaitAny(instance, 1, &wait_info, UINT64_MAX);
+        wgpuInstanceWaitAny(
+            instance,
+            1,
+            &wait_info,
+            maximum_wait_nanoseconds);
     if (status != WGPUWaitStatus_Success) {
         dawn_error("wgpuInstanceWaitAny failed.");
     }

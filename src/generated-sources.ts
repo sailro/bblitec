@@ -51,6 +51,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "camera:arc-rotate",
             "camera:default",
             "camera:free",
+            "camera:view-projection",
         ],
     },
     {
@@ -152,7 +153,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     },
     {
         source: "upstream/src/renderer_plan.cpp",
-        features: ["renderer:scene"],
+        features: ["renderer:scene", "camera:view-projection"],
     },
     {
         source: "upstream/src/frame_graph_geometry.cpp",
@@ -200,6 +201,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "material:standard-emissive-file-texture",
             "material:standard-uv-transform",
             "material:plugin-index",
+            "material:plugin-textures",
         ],
     },
     {
@@ -254,6 +256,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "mesh:thin-instance-colors",
             "mesh:thin-instances",
             "mesh:thin-instances-dynamic",
+            "mesh:thin-instance-gpu-culling",
             "mesh:torus",
             "mesh:torus-knot",
         ],

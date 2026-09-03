@@ -867,6 +867,13 @@ export class NativeFunctionLowerer {
             this.rejected.add(declaration);
             return undefined;
         }
+        if (this.containsRetainedCallbackRegistration(declaration)) {
+            // Each evaluation creates fresh JavaScript function identities.
+            // Keep the body on the inliner, where the callback registry can
+            // distinguish those evaluations by their concrete owner/scope.
+            this.rejected.add(declaration);
+            return undefined;
+        }
         if (this.containsGenerationTimeFetch(declaration)) {
             // A statically known fetch is executed by the compiler, so its
             // URL is part of the call-site specialization. Hoisting the
@@ -935,10 +942,10 @@ export class NativeFunctionLowerer {
      * receiver, touches only plain-data property fields, calls no other
      * local class's methods, constructs no local class, and passes the
      * same body classification the free-function arm applies (no
-     * generation-time fetch, no shader-material creation, no entry-engine
-     * timers, no captured enclosing bindings); the parameters and return
-     * type map into the plain-data model with no handles and no carried
-     * functions.
+     * generation-time fetch, no shader-material creation, no retained
+     * callback registration, no entry-engine timers, no captured enclosing
+     * bindings); the parameters and return type map into the plain-data model
+     * with no handles and no carried functions.
      */
     private resolveMethodSignature(
         method: ts.MethodDeclaration,
@@ -967,6 +974,9 @@ export class NativeFunctionLowerer {
         if (!this.methodIsStructurallyEligible(method)) {
             return reject();
         }
+        if (this.containsRetainedCallbackRegistration(method)) {
+            return reject();
+        }
         const closure = this.collectMethodClosure(
             method,
             classDeclaration,
@@ -993,6 +1003,7 @@ export class NativeFunctionLowerer {
                 ) ||
                 this.containsGenerationTimeFetch(member) ||
                 this.containsShaderMaterialCreation(member) ||
+                this.containsRetainedCallbackRegistration(member) ||
                 this.containsEntryEngineOperation(member)
             ) {
                 return reject();
@@ -1556,6 +1567,105 @@ export class NativeFunctionLowerer {
         visit(declaration.body ?? declaration);
         active.delete(declaration);
         this.generationTimeFetchCache.set(declaration, found);
+        return found;
+    }
+
+    private containsRetainedCallbackRegistration(
+        declaration: EligibleMember,
+    ): boolean {
+        const immediateCallbackMethods = new Set([
+            "every",
+            "filter",
+            "find",
+            "findIndex",
+            "flatMap",
+            "forEach",
+            "map",
+            "reduce",
+            "some",
+            "sort",
+        ]);
+        const onlyCalledDirectly = (
+            callback:
+                | ts.ArrowFunction
+                | ts.FunctionExpression
+                | ts.FunctionDeclaration,
+        ): boolean => {
+            const name = ts.isFunctionDeclaration(callback)
+                ? callback.name
+                : ts.isVariableDeclaration(callback.parent) &&
+                    ts.isIdentifier(callback.parent.name)
+                  ? callback.parent.name
+                  : undefined;
+            const symbol = name
+                ? this.context.checker.getSymbolAtLocation(name)
+                : undefined;
+            if (!name || !symbol) return false;
+            let direct = true;
+            const inspect = (node: ts.Node): void => {
+                if (!direct) return;
+                if (
+                    ts.isIdentifier(node) &&
+                    node !== name &&
+                    this.context.checker.getSymbolAtLocation(node) === symbol
+                ) {
+                    const parent = node.parent;
+                    if (
+                        !ts.isCallExpression(parent) ||
+                        this.context.unwrap(parent.expression) !== node
+                    ) {
+                        direct = false;
+                        return;
+                    }
+                }
+                ts.forEachChild(node, inspect);
+            };
+            inspect(declaration);
+            return direct;
+        };
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (
+                node !== declaration &&
+                (ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node) ||
+                    ts.isFunctionDeclaration(node))
+            ) {
+                const parent = node.parent;
+                const functionExpression =
+                    ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node);
+                const immediatelyInvoked =
+                    ts.isCallExpression(parent) &&
+                    this.context.unwrap(parent.expression) === node;
+                const immediateMethodArgument =
+                    functionExpression &&
+                    ts.isCallExpression(parent) &&
+                    parent.arguments.includes(node) &&
+                    ts.isPropertyAccessExpression(parent.expression) &&
+                    immediateCallbackMethods.has(parent.expression.name.text);
+                if (
+                    !immediatelyInvoked &&
+                    !immediateMethodArgument &&
+                    !onlyCalledDirectly(node)
+                ) {
+                    found = true;
+                    return;
+                }
+            }
+            if (
+                ts.isCallExpression(node) &&
+                ts.isPropertyAccessExpression(node.expression) &&
+                node.expression.name.text === "addEventListener" &&
+                node.arguments.length >= 2
+            ) {
+                found = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(declaration);
         return found;
     }
 

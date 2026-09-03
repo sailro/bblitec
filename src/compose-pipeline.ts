@@ -1,4 +1,5 @@
 import type {
+    SceneMeshManifest,
     ScenePbrMaterialManifest,
     ShadowGeneratorManifest,
 } from "./compiler/types.js";
@@ -20,7 +21,11 @@ import {
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { executeModuleGraph } from "./executed-module-graph.js";
-import { enablePinnedMaterialPlugins } from "./pinned-material-plugins.js";
+import {
+    enablePinnedMaterialPlugins,
+    type MaterialPluginSamplerManifest,
+    standardPluginBindingTable,
+} from "./pinned-material-plugins.js";
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import { glbDocument } from "./gltf-document.js";
@@ -118,6 +123,42 @@ export function receiverShadowLightSlots(
     );
 }
 
+function standardPluginMeshFeatureValues(
+    pluginCount: number,
+    meshes: readonly SceneMeshManifest[],
+    meshFeatures: readonly number[],
+    thinInstancesBit: number,
+    instanceColorBit: number,
+): number[][] {
+    return Array.from({ length: pluginCount }, (_, pluginIndex) => {
+        const values = new Set<number>();
+        for (let meshIndex = 0; meshIndex < meshes.length; meshIndex++) {
+            const mesh = meshes[meshIndex]!;
+            if (mesh.standardMaterialPluginIndex !== pluginIndex + 1) continue;
+            const base = meshFeatures[meshIndex] ?? 0;
+            if (mesh.thinInstances === undefined) {
+                values.add(base);
+                continue;
+            }
+            const thin = base | thinInstancesBit;
+            if (mesh.thinInstances === "always") {
+                values.add(
+                    mesh.thinInstanceColors
+                        ? thin | instanceColorBit
+                        : thin,
+                );
+                continue;
+            }
+            values.add(base);
+            values.add(thin);
+            if (mesh.thinInstanceColors) {
+                values.add(thin | instanceColorBit);
+            }
+        }
+        return [...values];
+    });
+}
+
 /** The values `main`'s remainder (emit options, activation inventory)
  *  consumes, under the names it consumed them by when they were inline. */
 export interface ComposedScenePipeline {
@@ -144,6 +185,15 @@ export interface ComposedScenePipeline {
     standardComposition: StandardSceneComposition | undefined;
     standardRenderableMeshFeatures: number[] | undefined;
     standardRuntimeMeshFeatures: number | undefined;
+    /**
+     * The composed plugin binding pairs each registered Standard plugin
+     * list declares, by the compiler's own 1-based index. Undefined when
+     * no plugin declares a sampler, which is what keeps the generated
+     * header a plugin-free scene's byte-identical.
+     */
+    standardPluginBindings:
+        | readonly (readonly MaterialPluginSamplerManifest[])[]
+        | undefined;
     nodeVariants: readonly NodeVariantManifestEntry[];
 }
 
@@ -235,10 +285,20 @@ export async function composeScenePipeline({
     // lands here — before anything composes, and only for a scene that
     // reached the call. A scene attaching plugins without it composes
     // plugin-free, which is upstream's behaviour rather than a refusal.
+    let standardPluginBindings:
+        | readonly (readonly MaterialPluginSamplerManifest[])[]
+        | undefined;
     if (result.manifest.features.includes("material:plugins")) {
         await enablePinnedMaterialPlugins(
             result.manifest.standardMaterialPlugins,
         );
+        const table = await standardPluginBindingTable();
+        // A scene whose plugins declare no sampler emits no table at all,
+        // which is what keeps its generated header the one it had before
+        // this family bound anything.
+        standardPluginBindings = table.some((list) => list.length > 0)
+            ? table
+            : undefined;
     }
     const hasEnvironment = result.manifest.features.includes(
         "environment:ibl",
@@ -978,6 +1038,16 @@ export async function composeScenePipeline({
                 ),
                 standardMaterialPlugins:
                     result.manifest.standardMaterialPlugins,
+                standardMaterialPluginInputs:
+                    result.manifest.standardMaterialPluginInputs,
+                standardMaterialPluginMeshFeatureValues:
+                    standardPluginMeshFeatureValues(
+                        result.manifest.standardMaterialPlugins.length,
+                        result.manifest.sceneMeshes,
+                        standardSceneMeshFeatures,
+                        thinInstancesBit,
+                        instanceColorBit,
+                    ),
                 thinInstances: hasRuntimeThinInstances,
                 thinInstanceColors: hasRuntimeThinInstanceColors,
                 morphTargets: result.manifest.features.includes(
@@ -1135,6 +1205,7 @@ export async function composeScenePipeline({
         standardComposition,
         standardRenderableMeshFeatures,
         standardRuntimeMeshFeatures,
+        standardPluginBindings,
         nodeVariants,
     };
 }

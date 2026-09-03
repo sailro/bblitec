@@ -218,7 +218,19 @@ resize content rather than exposing an unchanged frame surrounded by black.
 The vertex, deformation, texture and diagnostic payloads live there too:
 vertex packing, morph deltas and weights, image decode with the pinned
 `invertY` flip, RGBD decode, half-float conversion both ways, cluster
-numbering, and the alpha packing the diagnostic shaders read. Pipeline
+numbering, and the alpha packing the diagnostic shaders read. One live-pool
+rule joins them: `thin_instance_pool_grew` answers whether a mesh's pool has
+outgrown the instance buffers its registration allocated. It is one question
+rather than three because both backends size the matrix stream, the PBR
+family's mirror-conjugated copy and the colour lane from the same row count,
+and `addThinInstance` can double all three between two frames. Each backend
+answers it in its own API — release and recreate at the new capacity, which is
+itself a full upload, so that frame skips the version-gated dirty-range write —
+and each may release the old buffers immediately: SDL retires one once the
+command buffers still holding it have finished, and a submitted Dawn command
+buffer holds its own reference. Nothing caches a buffer handle in either
+backend (this port records no render bundles), so a shadow or depth task later
+in the same frame binds the new buffers. Pipeline
 construction, bind groups, pass encoding and swapchain handling stay per
 backend — those API sequences are the mutually validating surface.
 
@@ -578,6 +590,19 @@ regression appears:
   decode). The Standard bump and 2D reflection pairs
   append last, reached only through the composed Standard variants'
   generated slot indices.
+- **Material-plugin pairs** (compiled only under
+  `BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES`): outside the slot table
+  altogether, because the textures are the MATERIAL's rather than a
+  slot's. A plugin's `getSamplers` declaration composes into the Standard
+  fragment under its own WGSL name, and the generated
+  `standard_plugin_bindings` table maps that name plus the material's
+  `plugin_signature_index` onto a position in
+  `MaterialRecord::plugin_textures`. Both backends upload that list once
+  per material through the same shared per-material cache the shader and
+  node families use — the payload's own bytes, its own encoding, its own
+  sampler, white fallback — and drop it through the same reference count.
+  Two materials sharing one plugin signature therefore bind different
+  images through one composed variant.
 - **`.babylon` reflection cubes** (pinned `loadCubeTexture`): rgba8unorm
   faces with the full blit-generated mip chain rendered one face at a
   time; standard materials resolve `material.reflection_cube` into

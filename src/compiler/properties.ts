@@ -131,6 +131,15 @@ interface PropertyRead {
    * Runs before anything is emitted.
    */
   reject?: (owner: Value) => string | undefined;
+  /**
+   * The read is served only where generation cannot prove the mesh has no
+   * thin-instance pool. The pool is not a handle: it is `MeshRecord`'s own
+   * live count and matrix rows, so a mesh whose identity generation
+   * resolved and which never reached a setter says so at its source line.
+   * A mesh arriving as a runtime handle keeps the pin's own non-null
+   * failure, raised by the emitted read.
+   */
+  requiresThinInstancePool?: true;
 }
 
 type PropertyRule = PropertyRead | RefusedProperty;
@@ -780,6 +789,29 @@ export const propertyRules: readonly PropertyRule[] = [
     feature: "mesh:geometry-access",
   },
   {
+    // src/mesh/thin-instance.ts ThinInstanceData. The pool is state on the
+    // mesh record rather than a handle of its own, so the read retags the
+    // mesh and the member below resolves against it.
+    owner: "mesh",
+    property: "thinInstances",
+    value: "thin-instance-pool",
+    retag: true,
+    requiresThinInstancePool: true,
+    feature: "mesh:thin-instances",
+  },
+  {
+    // `ti.count` — the ACTIVE instance count, which every pinned helper
+    // moves (add appends, remove swap-removes, the count setter assigns).
+    // Read live off the record so a source that computes the last slot
+    // from it sees what the previous call left.
+    owner: "thin-instance-pool",
+    property: "count",
+    value: "number",
+    helper: "bbl::thin_instance_count",
+    helperTakesEngine: true,
+    feature: "mesh:thin-instances-dynamic",
+  },
+  {
     owner: "scene",
     property: "clearColor",
     value: "color4",
@@ -790,6 +822,11 @@ export const propertyRules: readonly PropertyRule[] = [
     property: "camera",
     value: "camera",
     field: "camera",
+    // SceneContext.camera is Camera | null and an empty native scene carries
+    // invalid_handle. Publish the same presence contract as optional mesh and
+    // material handles so bindings, guards, ??, and null comparisons all test
+    // the handle before any camera-record access.
+    optionalHandle: true,
   },
   {
     // The pin exposes this only as an internal lifecycle sentinel: removal
@@ -861,6 +898,8 @@ export interface PropertyContext {
   requireEngine(value: Value, node: ts.Node): string;
   reachFeature(feature: Feature, site: ts.Node): void;
   fail(node: ts.Node, message: string): never;
+  /** Whether generation has seen a thin-instance pool set on this mesh. */
+  meshHasThinInstancePool(owner: Value): boolean;
 }
 
 /**
@@ -888,6 +927,17 @@ export function readProperty(
   const rejection = rule.reject?.(owner);
   if (rejection) {
     context.fail(expression, rejection);
+  }
+  if (
+    rule.requiresThinInstancePool &&
+    !context.meshHasThinInstancePool(owner)
+  ) {
+    context.fail(
+      expression,
+      `Reading '${property}' requires a thin-instance pool this mesh ` +
+        "never establishes; bind one with setThinInstances or " +
+        "addThinInstance first.",
+    );
   }
   if (rule.feature) {
     context.reachFeature(rule.feature, expression);

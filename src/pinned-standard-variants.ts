@@ -77,6 +77,7 @@ import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform
 import { importPinnedModule } from "./pinned-shader-composer.js";
 import {
     type MaterialPluginManifest,
+    type MaterialPluginSamplerManifest,
     pinnedPluginBakeShift,
     standardPluginFeatureBits,
 } from "./pinned-material-plugins.js";
@@ -1470,6 +1471,10 @@ export interface StandardSceneCompositionInput {
      */
     standardMaterialPlugins:
         readonly (readonly MaterialPluginManifest[])[];
+    standardMaterialPluginInputs?:
+        readonly (readonly PinnedStandardMaterialInput[])[];
+    /** Mesh feature values observed with each 1-based plugin signature. */
+    standardMaterialPluginMeshFeatureValues?: readonly (readonly number[])[];
     /** `mesh:thin-instances*` reached: pools can attach to scene meshes. */
     thinInstances: boolean;
     /** `mesh:thin-instance-colors` reached: a pool can carry per-instance
@@ -1622,6 +1627,9 @@ function sceneCodeMaterialInputs(
         uvTransform: boolean;
         standardMaterialPlugins:
             readonly (readonly MaterialPluginManifest[])[];
+        /** Exact feature-bearing states observed for each plugin signature. */
+        standardMaterialPluginInputs?:
+            readonly (readonly PinnedStandardMaterialInput[])[];
     },
 ): PinnedStandardMaterialInput[] {
     const inputs: PinnedStandardMaterialInput[] = [];
@@ -1654,7 +1662,11 @@ function sceneCodeMaterialInputs(
     // pin's own bake either way.
     const pluginArms: (number | undefined)[] = [
         undefined,
-        ...options.standardMaterialPlugins.map((_, index) => index + 1),
+        ...(options.standardMaterialPluginInputs
+            ? []
+            : options.standardMaterialPlugins.map(
+                  (_, index) => index + 1,
+              )),
     ];
     for (const disableLighting of [false, true]) {
         for (const doubleSided of [false, true]) {
@@ -1690,6 +1702,13 @@ function sceneCodeMaterialInputs(
                 }
             }
         }
+    }
+    if (options.standardMaterialPluginInputs) {
+        inputs.push(
+            ...options.standardMaterialPluginInputs.flatMap(
+                (materials) => materials,
+            ),
+        );
     }
     return inputs;
 }
@@ -1727,6 +1746,12 @@ export async function composeSceneStandardVariants(
                 diffuseFileTexture: input.diffuseFileTexture,
                 uvTransform: input.uvTransform,
                 standardMaterialPlugins: input.standardMaterialPlugins,
+                ...(input.standardMaterialPluginInputs
+                    ? {
+                          standardMaterialPluginInputs:
+                              input.standardMaterialPluginInputs,
+                      }
+                    : {}),
             }),
         );
     }
@@ -1768,32 +1793,46 @@ export async function composeSceneStandardVariants(
     // The mesh half: `.babylon` renderables carry no composition-relevant
     // bits (zero rows), scene meshes their own recorded sets, plus the
     // runtime-attachable pool and deformation arms.
-    const meshValues: number[] = [];
-    const addMesh = (bits: number): void => {
-        if (!meshValues.includes(bits)) meshValues.push(bits);
-    };
-    if (input.babylonAssets.length > 0) addMesh(0);
-    for (const bits of input.sceneMeshFeatureValues) addMesh(bits);
-    if (input.thinInstances) {
-        for (const bits of [...meshValues]) {
-            addMesh(bits | meshBits.MSH_HAS_THIN_INSTANCES);
-            // A pool that can carry colours reaches both arms: the runtime
-            // ORs the colour bit only for a pool whose colours were set,
-            // and one scene may draw a coloured and an uncoloured pool.
-            if (input.thinInstanceColors) {
-                addMesh(
-                    bits | meshBits.MSH_HAS_THIN_INSTANCES |
-                        meshBits.MSH_HAS_INSTANCE_COLOR,
-                );
+    const expandMeshValues = (
+        initial: readonly number[],
+    ): number[] => {
+        const values: number[] = [];
+        const add = (bits: number): void => {
+            if (!values.includes(bits)) values.push(bits);
+        };
+        for (const bits of initial) add(bits);
+        if (input.thinInstances) {
+            for (const bits of [...values]) {
+                add(bits | meshBits.MSH_HAS_THIN_INSTANCES);
+                // A pool that can carry colours reaches both arms: the runtime
+                // ORs the colour bit only for a pool whose colours were set,
+                // and one scene may draw a coloured and an uncoloured pool.
+                if (input.thinInstanceColors) {
+                    add(
+                        bits |
+                            meshBits.MSH_HAS_THIN_INSTANCES |
+                            meshBits.MSH_HAS_INSTANCE_COLOR,
+                    );
+                }
             }
         }
-    }
-    if (input.morphTargets) {
-        for (const bits of [...meshValues]) {
-            addMesh(bits | meshBits.MSH_HAS_MORPH_TARGETS);
+        if (input.morphTargets) {
+            for (const bits of [...values]) {
+                add(bits | meshBits.MSH_HAS_MORPH_TARGETS);
+            }
         }
-    }
-    if (meshValues.length === 0) addMesh(0);
+        return values;
+    };
+    const meshValues = expandMeshValues([
+        ...(input.babylonAssets.length > 0 ? [0] : []),
+        ...input.sceneMeshFeatureValues,
+    ]);
+    if (meshValues.length === 0) meshValues.push(0);
+    const pluginMeshValues =
+        (
+            input.standardMaterialPluginMeshFeatureValues ??
+            input.standardMaterialPlugins.map(() => [])
+        ).map((values) => [...new Set(values)]);
     // Compose, deduplicating by composed text.
     const variants: PinnedStandardVariantManifestEntry[] = [];
     const byText = new Map<string, number>();
@@ -1848,7 +1887,13 @@ export async function composeSceneStandardVariants(
     };
     for (const materialFeatures of featureValues) {
         const material = representative.get(materialFeatures)!;
-        for (const meshFeatures of meshValues) {
+        const reachableMeshValues =
+            material.pluginIndex === undefined
+                ? meshValues
+                : (pluginMeshValues[
+                      material.pluginIndex - 1
+                  ] ?? []);
+        for (const meshFeatures of reachableMeshValues) {
             // The word the runtime derives, mesh-phase extensions included:
             // the selector is keyed by what `standard_variant_key` computes,
             // not by the material's own bits.
@@ -1969,6 +2014,121 @@ export function babylonRenderableCount(documentText: string): number {
     return count;
 }
 
+/**
+ * One binding pair the composed Standard variants declare on their own.
+ *
+ * This is the single copy: the generated `standard_binding_resources` rows
+ * are rendered from it, and the material-plugin fold reads the same list to
+ * refuse a plugin declaring a name a composed variant already holds. A
+ * second spelling anywhere is how the two would disagree — one composed
+ * fragment declaring `dT` twice is a WGSL redefinition, and a plugin whose
+ * declaration merely SHADOWED a built-in would bind the plugin's texture
+ * into the material's own diffuse sampling.
+ */
+interface StandardBuiltinBinding {
+    /** The WGSL texture name the composed fragment declares. */
+    texture: string;
+    /** Its sampler, declared beside it. */
+    sampler: string;
+    /** `MaterialTextureSource` row the native table resolves through. */
+    source: string;
+    /** Outside the 2D slot table: the mesh's uploaded reflection cube. */
+    reflectionCube: boolean;
+    /** The pinned module that declares the pair, as comment lines. */
+    origin: readonly string[];
+}
+
+/** The pin's own Standard binding names, in the generated table's order. */
+const standardBuiltinBindings: readonly StandardBuiltinBinding[] = [
+    {
+        texture: "dT",
+        sampler: "dS",
+        source: "base_color",
+        reflectionCube: false,
+        origin: ["The template's own diffuse pair (standard-template.ts)."],
+    },
+    {
+        texture: "sT",
+        sampler: "sS",
+        source: "specular_or_metallic_roughness",
+        reflectionCube: false,
+        origin: ["std-specular-fragment.ts."],
+    },
+    {
+        texture: "oT",
+        sampler: "oS",
+        source: "opacity_or_normal",
+        reflectionCube: false,
+        origin: ["std-opacity-fragment.ts."],
+    },
+    {
+        texture: "aT",
+        sampler: "aS",
+        source: "ambient_or_emissive",
+        reflectionCube: false,
+        origin: ["std-ambient-fragment.ts."],
+    },
+    {
+        texture: "eT",
+        sampler: "eS",
+        source: "standard_emissive",
+        reflectionCube: false,
+        origin: ["std-emissive-fragment.ts."],
+    },
+    {
+        texture: "bT",
+        sampler: "bS",
+        source: "standard_bump",
+        reflectionCube: false,
+        origin: ["normal-map-fragment.ts."],
+    },
+    {
+        texture: "rT",
+        sampler: "rS",
+        source: "standard_reflection",
+        reflectionCube: false,
+        origin: [
+            "std-reflection-fragment.ts: the 2D reflection the pin samples at",
+            "computed reflCoords. A slot-table 2D pair like the six above, not",
+            "the cube path.",
+        ],
+    },
+    {
+        texture: "cRT",
+        sampler: "cRS",
+        source: "base_color",
+        reflectionCube: true,
+        origin: ["std-cube-reflection-fragment.ts; outside the slot table."],
+    },
+];
+
+/** Every WGSL name the composed Standard variants declare for themselves. */
+export function standardBuiltinBindingNames(): ReadonlySet<string> {
+    return new Set(
+        standardBuiltinBindings.flatMap(
+            (binding) => [binding.texture, binding.sampler],
+        ),
+    );
+}
+
+/** `standard_binding_resources`' rows, rendered from the list above. */
+function standardBindingResourceRows(): string {
+    return standardBuiltinBindings.map((binding) => {
+        const comment = binding.origin
+            .map((line) => `    // ${line}`)
+            .join("\n");
+        const names = `    {"${binding.texture}", "${binding.sampler}", `;
+        const rest = `MaterialTextureSource::${binding.source}, ` +
+            `${binding.reflectionCube ? "true" : "false"}},`;
+        // Wrapped exactly where the row outgrows the column the rest of the
+        // emitted header keeps to, which is what leaves the generated text
+        // byte-identical to the table this list replaced.
+        const row = names + rest;
+        return `${comment}\n` +
+            (row.length <= 76 ? row : `${names.trimEnd()}\n     ${rest}`);
+    }).join("\n");
+}
+
 /** Inputs for the native-support block appended to standard_variants.hpp. */
 export interface PinnedStandardSupportOptions {
     selectors: readonly PinnedStandardSelector[];
@@ -1979,6 +2139,14 @@ export interface PinnedStandardSupportOptions {
     /** `material:plugins` reached: a Standard material may carry a plugin
      *  signature index, which the derived word has to shift back in. */
     plugins: boolean;
+    /**
+     * Per plugin signature index (1-based), the pin's own composed texture
+     * and sampler binding names in bind order — read back off
+     * `stdPluginExt._frag`, so the table is the pin's pairing rather than a
+     * second concatenation of the folded declarations. Empty lists are
+     * kept, because the index a row carries is the material record's.
+     */
+    pluginBindings?: readonly (readonly MaterialPluginSamplerManifest[])[];
     /** Mesh-feature bits per runtime mesh handle, creation-ordered across
      *  every loaded asset's renderables and the scene-code meshes. */
     renderableMeshFeatures: readonly number[];
@@ -2048,6 +2216,55 @@ export function pinnedStandardSupportBlock(
     const meshRows = options.renderableMeshFeatures.map(
         (bits) => `    ${bits},`,
     );
+    // The plugin binding table, emitted only for a scene whose plugins
+    // declare samplers -- a plugin-free scene and a plugin scene that
+    // declares none both compile the header they compiled before.
+    const pluginBindingRows = (options.pluginBindings ?? []).flatMap(
+        (bindings, list) =>
+            bindings.map((binding, ordinal) =>
+                `    {"${binding.texture}", "${binding.sampler}", ` +
+                `${list + 1}, ${ordinal}},`
+            ),
+    );
+    const pluginBindingBlock = pluginBindingRows.length === 0 ? "" : `
+// The plugin bindings each composed Standard variant declares past the rows
+// above: the \`_bindings\` \`buildPluginFragment\` emitted, paired with the
+// signature index the material record carries and the position in its
+// \`plugin_textures\` that \`bindPluginTextures\` fills.
+//
+// The name alone does not resolve one: two plugin lists may declare the
+// same WGSL name, and only the material's own index says which composed
+// fragment is being bound. The ordinal is a position rather than a slot
+// because the textures are the MATERIAL's -- two materials sharing one
+// signature bind different images through the same declaration.
+struct StandardPluginBinding {
+    std::string_view texture_name;
+    std::string_view sampler_name;
+    /** MaterialRecord::plugin_signature_index, from one. */
+    std::uint8_t signature_index;
+    /** Position in MaterialRecord::plugin_textures. */
+    std::size_t ordinal;
+};
+
+inline constexpr std::array<
+    StandardPluginBinding,
+    ${pluginBindingRows.length}> standard_plugin_bindings{{
+${pluginBindingRows.join("\n")}
+}};
+
+/** The row one composed binding name takes on one material, or nullptr. */
+inline const StandardPluginBinding* standard_plugin_binding_for(
+    std::string_view name,
+    std::uint8_t signature_index) {
+    for (const StandardPluginBinding& row : standard_plugin_bindings) {
+        if (row.signature_index != signature_index) continue;
+        if (name == row.texture_name || name == row.sampler_name) {
+            return &row;
+        }
+    }
+    return nullptr;
+}
+`;
     return `
 // ---------------------------------------------------------------------------
 // Native support for the pinned Standard variants, appended by
@@ -2187,29 +2404,11 @@ struct StandardBindingResource {
     bool reflection_cube;
 };
 
-inline constexpr std::array<StandardBindingResource, 8>
+inline constexpr std::array<StandardBindingResource, ${standardBuiltinBindings.length}>
     standard_binding_resources{{
-    // The template's own diffuse pair (standard-template.ts).
-    {"dT", "dS", MaterialTextureSource::base_color, false},
-    // std-specular-fragment.ts.
-    {"sT", "sS",
-     MaterialTextureSource::specular_or_metallic_roughness, false},
-    // std-opacity-fragment.ts.
-    {"oT", "oS", MaterialTextureSource::opacity_or_normal, false},
-    // std-ambient-fragment.ts.
-    {"aT", "aS", MaterialTextureSource::ambient_or_emissive, false},
-    // std-emissive-fragment.ts.
-    {"eT", "eS", MaterialTextureSource::standard_emissive, false},
-    // normal-map-fragment.ts.
-    {"bT", "bS", MaterialTextureSource::standard_bump, false},
-    // std-reflection-fragment.ts: the 2D reflection the pin samples at
-    // computed reflCoords. A slot-table 2D pair like the six above, not
-    // the cube path.
-    {"rT", "rS", MaterialTextureSource::standard_reflection, false},
-    // std-cube-reflection-fragment.ts; outside the slot table.
-    {"cRT", "cRS", MaterialTextureSource::base_color, true},
+${standardBindingResourceRows()}
 }};
-
+${pluginBindingBlock}
 struct StandardVariantSelector {
     /** standard_material_features(record), plus the no-color pass bit for a
      *  depth-only view's rows. */

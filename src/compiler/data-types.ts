@@ -17,7 +17,9 @@ export type HandleKind =
   | "mesh"
   | "animation-group"
   | "audio-buffer"
+  | "audio-context"
   | "camera"
+  | "property-animation-group"
   | "ui-element"
   | "material"
   | "physics-body"
@@ -37,7 +39,9 @@ const handleCppTypes: Record<HandleKind, string> = {
   mesh: "bbl::MeshHandle",
   "animation-group": "bbl::AnimationGroupHandle",
   "audio-buffer": "bbl::pal::AudioBufferHandle",
+  "audio-context": "bbl::pal::AudioContextHandle",
   camera: "bbl::CameraHandle",
+  "property-animation-group": "bbl::PropertyAnimationGroup",
   "ui-element": "bbl::UiElementHandle",
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
@@ -90,6 +94,16 @@ export type DataType =
   | { kind: "boolean" }
   | { kind: "arraybuffer" }
   | { kind: "dataview" }
+  /**
+   * A DOM event borrowed from one active synchronous platform callback.
+   * `event` is the exact supported view: the base Event exposes only
+   * preventDefault, while the two typed views reuse the existing platform
+   * event property lowering.
+   */
+  | {
+      kind: "borrowed-platform-event";
+      event: "event" | "mouse" | "keyboard";
+    }
   // A resource value stored inside ordinary data. Most are handles, while
   // the pixels-texture arm maps the pin's Texture2D to its native upload
   // record. `compileForSink` rejects texture producers represented by a
@@ -104,9 +118,31 @@ export type DataType =
       kind: "function";
       parameters: DataType[];
       result?: DataType;
+      /**
+       * The container this function is stored in observes its JavaScript
+       * identity -- a Set membership, a Map key. Such a value carries the
+       * identity of the declaration it was materialized from so `delete`
+       * and a duplicate `add` answer the way the source does.
+       */
+      identity?: true;
+      /**
+       * Source parameters whose type is void/never and therefore have no
+       * native argument. Their expressions are still validated at calls; no
+       * placeholder runtime value is invented.
+       */
+      erasedParameters?: number[];
     }
   | { kind: "struct"; name: string }
   | { kind: "enum"; name: string }
+  /**
+   * A `JSON.parse` result: the one dynamic value in the model, because a
+   * parsed document's shape is exactly what the source has not proven yet.
+   * Reads over it answer `undefined` where the document has nothing, so
+   * the source's own guards -- `Array.isArray`, `typeof`, a strict
+   * comparison, an optional property read -- decide as they do in the
+   * browser. Nothing else produces one, so it stays where the parse put it.
+   */
+  | { kind: "json" }
   | { kind: "optional"; inner: DataType }
   | { kind: "vector"; element: DataType }
   | { kind: "map"; key: DataType; value: DataType }
@@ -136,15 +172,52 @@ export type DataIterationElement =
   DataType | { kind: "map-entry"; key: DataType; value: DataType };
 
 export interface DataStructField {
+  /** Property spelling in TypeScript/JSON. */
+  sourceName: string;
+  /** Identifier-safe spelling in generated C++. */
   name: string;
   type: DataType;
+  /** The source property cannot be rebound after construction. */
+  readOnly?: boolean;
   /** A discriminated-union field absent from at least one inactive arm. */
   defaultWhenMissing?: boolean;
+  /**
+   * The source declared the property with `?`, so JavaScript can observe it
+   * as absent rather than as null. `JSON.stringify` is the observer: it
+   * omits an absent member and writes `null` for one that is present and
+   * null, which is the whole difference between `sh?: number` and
+   * `sh: number | null` once both are a `Nullable` field here.
+   */
+  optionalProperty?: boolean;
+}
+
+function propertyIsReadOnly(property: ts.Symbol): boolean {
+  return (property.declarations ?? []).some(
+    (declaration) =>
+      (ts.isPropertySignature(declaration) ||
+        ts.isPropertyDeclaration(declaration) ||
+        ts.isParameter(declaration)) &&
+      declaration.modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+      ),
+  );
 }
 
 interface DataStructDefinition {
   name: string;
   fields: DataStructField[];
+}
+
+/**
+ * One local class with a demanded runtime representation.
+ *
+ * `type` is the instantiated class type the demand named, so a generic
+ * class's fields resolve through `Workspace<Part>` rather than through the
+ * declaration's own `P`.
+ */
+export interface ClassStructBinding {
+  declaration: ts.ClassDeclaration;
+  type: ts.Type;
 }
 
 interface DataEnumDefinition {
@@ -193,6 +266,16 @@ function declaredInDomLibrary(symbol: ts.Symbol): boolean {
       .fileName.replace(/\\/g, "/")
       .endsWith("/lib.dom.d.ts"),
   );
+}
+
+function borrowedPlatformEventKind(
+  symbol: ts.Symbol | undefined,
+): "event" | "mouse" | "keyboard" | undefined {
+  if (!symbol || !declaredInDomLibrary(symbol)) return undefined;
+  if (symbol.name === "Event") return "event";
+  if (symbol.name === "MouseEvent") return "mouse";
+  if (symbol.name === "KeyboardEvent") return "keyboard";
+  return undefined;
 }
 
 function isDomElementType(symbol: ts.Symbol): boolean {
@@ -357,6 +440,28 @@ export function tupleComponents(
   );
 }
 
+/**
+ * Marks a stored value's own function type as identity-carrying.
+ *
+ * A Set member and a Map key are the two positions whose behaviour depends
+ * on comparing the value: everything else stores a function without ever
+ * asking whether two of them are the same one, and keeps the plain
+ * `std::function` it already emitted.
+ */
+function markIdentityFunctions(dataType: DataType): DataType {
+  switch (dataType.kind) {
+    case "function":
+      return { ...dataType, identity: true };
+    case "optional":
+      return {
+        kind: "optional",
+        inner: markIdentityFunctions(dataType.inner),
+      };
+    default:
+      return dataType;
+  }
+}
+
 export function dataTypesEqual(left: DataType, right: DataType): boolean {
   if (left.kind !== right.kind) {
     return false;
@@ -367,6 +472,7 @@ export function dataTypesEqual(left: DataType, right: DataType): boolean {
     case "string":
     case "arraybuffer":
     case "dataview":
+    case "json":
     case "u8array":
     case "f64array":
     case "f32array":
@@ -375,14 +481,24 @@ export function dataTypesEqual(left: DataType, right: DataType): boolean {
     case "u32array":
     case "i32array":
       return true;
+    case "borrowed-platform-event":
+      return (
+        left.event ===
+        (right as { event: "event" | "mouse" | "keyboard" }).event
+      );
     case "handle":
       return left.handle === (right as { handle: string }).handle;
     case "function": {
       const other = right as {
         parameters: DataType[];
         result?: DataType;
+        identity?: true;
+        erasedParameters?: number[];
       };
       return (
+        left.identity === other.identity &&
+        (left.erasedParameters ?? []).join(",") ===
+          (other.erasedParameters ?? []).join(",") &&
         left.parameters.length === other.parameters.length &&
         left.parameters.every((parameter, index) =>
           dataTypesEqual(parameter, other.parameters[index]!)) &&
@@ -472,16 +588,51 @@ export class DataTypeRegistry {
     }
   >();
   private readonly structNamesInProgress = new Map<
-    ts.Symbol | ts.Type,
+    ts.Symbol | ts.Type | string,
     string
   >();
   private readonly structTypesByIdentity = new Map<
-    ts.Symbol | ts.Type,
+    ts.Symbol | ts.Type | string,
     DataType & { kind: "struct" }
   >();
   private readonly referenceStructNames = new Set<string>();
+  /**
+   * Local classes that reached a native data position, by the struct name
+   * standing for them. The declaration is how a method call on a value read
+   * back out of a container recovers what to inline.
+   */
+  private readonly classStructDeclarations = new Map<
+    string,
+    ClassStructBinding
+  >();
+  private readonly classStructNames = new Map<
+    ts.Symbol | ts.Type | string,
+    string
+  >();
+  /**
+   * Whether the current mapping is inside a stored position.
+   *
+   * A local class is a compile-time record until something demands a value
+   * of it in native data -- an array element, a map key or value, a set
+   * member, a stored field, a callback parameter or result. Without that
+   * demand a class maps to nothing and stays a record.
+   */
+  private classDemanded = false;
+  /**
+   * What the class's type parameters stand for while one of its bodies is
+   * being inlined. Empty outside a generic receiver.
+   */
+  private activeTypeArguments: ReadonlyMap<ts.Symbol, ts.Type> | undefined;
+  /** That substitution as one struct-identity key, spelled when it is set. */
+  private activeTypeArgumentKey = "";
   private anonymousStructIndex = 0;
   private anonymousEnumIndex = 0;
+  /**
+   * The structs `JSON.stringify` actually reaches, in the order the walk
+   * found them. Nothing else emits a codec: a scene that serializes one
+   * record does not carry a writer for every other record it declares.
+   */
+  private readonly jsonSerializedStructs = new Set<string>();
 
   public constructor(
     private readonly checker: ts.TypeChecker,
@@ -508,7 +659,10 @@ export class DataTypeRegistry {
       case "vector":
       case "span": {
         const element = this.markStoredObjectReferences(dataType.element);
-        return { ...dataType, element };
+        return {
+          kind: "vector",
+          element,
+        };
       }
       case "set":
         return {
@@ -582,6 +736,10 @@ export class DataTypeRegistry {
     type: ts.Type,
     node: ts.Node,
   ): DataType | undefined {
+    const substituted = this.substituteTypeParameter(type);
+    if (substituted) {
+      return this.fromTsType(substituted, node);
+    }
     if (
       (type.flags & (ts.TypeFlags.Number | ts.TypeFlags.NumberLiteral)) !==
       0
@@ -615,6 +773,13 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "DataView") {
       return { kind: "dataview" };
     }
+    const borrowedEvent = borrowedPlatformEventKind(type.symbol);
+    if (borrowedEvent) {
+      return {
+        kind: "borrowed-platform-event",
+        event: borrowedEvent,
+      };
+    }
     if (
       type.symbol?.name === "RegExpExecArray" ||
       type.symbol?.name === "RegExpMatchArray"
@@ -630,14 +795,37 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "AudioBuffer") {
       return { kind: "handle", handle: "audio-buffer" };
     }
+    if (
+      type.symbol?.name === "AudioContext" ||
+      type.symbol?.name === "BaseAudioContext" ||
+      type.symbol?.name === "OfflineAudioContext"
+    ) {
+      return { kind: "handle", handle: "audio-context" };
+    }
+    if (
+      type.symbol?.name === "AudioEngine" &&
+      declaredInBabylonLite(type.symbol)
+    ) {
+      // AudioEngine carries compiler-owned context, buses, and nullable
+      // construction state; its public interface is not a plain-data record.
+      return undefined;
+    }
     if (type.symbol && isDomElementType(type.symbol)) {
       return { kind: "handle", handle: "ui-element" };
     }
-    if ((type.symbol?.declarations ?? []).some(ts.isClassDeclaration)) {
+    if (
+      type.symbol &&
+      (type.symbol.declarations ?? []).some(ts.isClassDeclaration)
+    ) {
+      if (declaredInBabylonLite(type.symbol)) {
+        return undefined;
+      }
       // Reached local classes keep their methods and identity in the
       // class lowerer. Treating their public fields as an anonymous
-      // struct would erase both at a parameter or field boundary.
-      return undefined;
+      // struct would erase both at a parameter or field boundary, so a
+      // class only takes a runtime representation where a native data
+      // position demands one.
+      return this.fromLocalClassType(type, node);
     }
     const recordMap = this.fromRecordType(type, node);
     if (recordMap) {
@@ -708,7 +896,7 @@ export class DataTypeRegistry {
       if (symbolName === "ArrayLike") {
         const [elementType] = this.checker.getTypeArguments(reference);
         if (!elementType) return undefined;
-        const element = this.fromTsType(elementType, node);
+        const element = this.fromStoredTsType(elementType, node);
         return element ? { kind: "span", element } : undefined;
       }
       if (symbolName === "Array" || symbolName === "ReadonlyArray") {
@@ -716,7 +904,7 @@ export class DataTypeRegistry {
         if (!elementType) {
           return undefined;
         }
-        const element = this.fromTsType(elementType, node);
+        const element = this.fromStoredTsType(elementType, node);
         if (!element) {
           return undefined;
         }
@@ -731,23 +919,25 @@ export class DataTypeRegistry {
       if (symbolName === "Map" || symbolName === "ReadonlyMap") {
         const [keyType, valueType] = this.checker.getTypeArguments(reference);
         if (!keyType || !valueType) return undefined;
-        const key = this.fromTsType(keyType, node);
-        const value = this.fromTsType(valueType, node);
+        const key = this.fromStoredTsType(keyType, node);
+        const value = this.fromStoredTsType(valueType, node);
         if (!key || !value) return undefined;
         return {
           kind: "map",
-          key: this.markStoredObjectReferences(key),
+          key: markIdentityFunctions(this.markStoredObjectReferences(key)),
           value: this.markStoredObjectReferences(value),
         };
       }
       if (symbolName === "Set") {
         const [elementType] = this.checker.getTypeArguments(reference);
         if (!elementType) return undefined;
-        const element = this.fromTsType(elementType, node);
+        const element = this.fromStoredTsType(elementType, node);
         return element
           ? {
               kind: "set",
-              element: this.markStoredObjectReferences(element),
+              element: markIdentityFunctions(
+                this.markStoredObjectReferences(element),
+              ),
             }
           : undefined;
       }
@@ -780,13 +970,25 @@ export class DataTypeRegistry {
         owner = owner.parent;
       }
     }
-    const parameters = signature.getParameters().map((parameter) => {
+    const erasedParameters: number[] = [];
+    const parameters = signature.getParameters().flatMap((parameter, index) => {
       const declaration =
         parameter.valueDeclaration ?? parameter.declarations?.[0];
-      return this.fromTsType(
-        this.checker.getTypeOfSymbolAtLocation(parameter, declaration ?? node),
+      const parameterType = this.checker.getTypeOfSymbolAtLocation(
+        parameter,
         declaration ?? node,
       );
+      if (
+        (parameterType.flags & (ts.TypeFlags.Never | ts.TypeFlags.Void)) !== 0
+      ) {
+        erasedParameters.push(index);
+        return [];
+      }
+      const mapped = this.fromStoredTsType(
+        parameterType,
+        declaration ?? node,
+      );
+      return mapped ? [mapped] : [undefined];
     });
     if (parameters.some((parameter) => parameter === undefined)) {
       return undefined;
@@ -794,7 +996,7 @@ export class DataTypeRegistry {
     const resultType = this.checker.getReturnTypeOfSignature(signature);
     const result = (resultType.flags & ts.TypeFlags.Void) !== 0
       ? undefined
-      : this.fromTsType(resultType, node);
+      : this.fromStoredTsType(resultType, node);
     if ((resultType.flags & ts.TypeFlags.Void) === 0 && !result) {
       return undefined;
     }
@@ -802,6 +1004,7 @@ export class DataTypeRegistry {
       kind: "function",
       parameters: parameters as DataType[],
       ...(result ? { result } : {}),
+      ...(erasedParameters.length > 0 ? { erasedParameters } : {}),
     };
   }
 
@@ -905,8 +1108,15 @@ export class DataTypeRegistry {
         return undefined;
       }
       fields.push({
+        sourceName: property.name,
         name: sanitizeIdentifier(property.name),
         type: this.markStoredObjectReferences(first),
+        ...(propertiesByMember.every((properties) =>
+          propertyIsReadOnly(
+            properties.find(({ name }) => name === property.name)!,
+          ))
+          ? { readOnly: true }
+          : {}),
       });
     }
 
@@ -918,7 +1128,10 @@ export class DataTypeRegistry {
       this.structNames,
     );
     const key = fields
-      .map((field) => `${field.name}:${this.typeKey(field.type)}:required`)
+      .map(
+        (field) =>
+          `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:required:${field.readOnly ? "readonly" : "mutable"}`,
+      )
       .join(",");
     const existing = this.structsByKey.get(key);
     if (existing) {
@@ -995,6 +1208,12 @@ export class DataTypeRegistry {
     }
     const fields: DataStructField[] = [];
     for (const propertyName of propertyNames) {
+      const memberProperties = propertiesByMember.flatMap((properties) => {
+        const property = properties.find(
+          ({ name: candidate }) => candidate === propertyName,
+        );
+        return property ? [property] : [];
+      });
       const propertyTypes = propertiesByMember.flatMap((properties) => {
         const property = properties.find(
           ({ name: candidate }) => candidate === propertyName,
@@ -1040,8 +1259,13 @@ export class DataTypeRegistry {
         mapped = first;
       }
       fields.push({
+        sourceName: propertyName,
         name: sanitizeIdentifier(propertyName),
         type: this.markStoredObjectReferences(mapped),
+        ...(memberProperties.length === type.types.length &&
+        memberProperties.every(propertyIsReadOnly)
+          ? { readOnly: true }
+          : {}),
         ...(propertyTypes.length < type.types.length
           ? { defaultWhenMissing: true }
           : {}),
@@ -1050,7 +1274,7 @@ export class DataTypeRegistry {
     const key = fields
       .map(
         (field) =>
-          `${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}`,
+          `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}`,
       )
       .join(",");
     const existing = this.structsByKey.get(key);
@@ -1073,7 +1297,8 @@ export class DataTypeRegistry {
     if (elements.length === 0) {
       return undefined;
     }
-    const mapped = elements.map((element) => this.fromTsType(element, node));
+    const mapped = elements.map((element) =>
+      this.fromStoredTsType(element, node));
     if (mapped.some((element) => !element)) {
       return undefined;
     }
@@ -1138,7 +1363,132 @@ export class DataTypeRegistry {
     }
   }
 
-  private structIdentity(type: ts.Type): ts.Symbol | ts.Type {
+  /**
+   * Runs `map` with a generic receiver's instantiation in force.
+   *
+   * Everything inlined under one `this` sees the same substitution, which
+   * is what makes a generic class's method body resolve `P` the way the
+   * construction site spelled it.
+   */
+  public setActiveTypeArguments(
+    substitution: ReadonlyMap<ts.Symbol, ts.Type> | undefined,
+  ): void {
+    this.activeTypeArguments = substitution;
+    // The struct-identity key folds the instantiation in, and it is the
+    // same string for the whole window this substitution is in force --
+    // so it is spelled here rather than once per cache lookup.
+    this.activeTypeArgumentKey = substitution
+      ? [...substitution.values()]
+          .map((argument) => this.checker.typeToString(argument))
+          .join(",")
+      : "";
+  }
+
+  /** The active substitution, so a receiver can carry it. */
+  public typeArgumentsOf(
+    declaration: ts.ClassDeclaration,
+    type: ts.Type,
+  ): ReadonlyMap<ts.Symbol, ts.Type> | undefined {
+    const parameters = declaration.typeParameters;
+    if (!parameters || parameters.length === 0) {
+      return undefined;
+    }
+    const objectType = type as ts.ObjectType;
+    const supplied =
+      (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0
+        ? this.checker.getTypeArguments(type as ts.TypeReference)
+        : [];
+    const substitution = new Map<ts.Symbol, ts.Type>();
+    parameters.forEach((parameter, index) => {
+      const argument = supplied[index];
+      const symbol = this.checker.getTypeAtLocation(parameter).symbol;
+      if (argument && symbol) {
+        substitution.set(symbol, argument);
+      }
+    });
+    return substitution.size > 0 ? substitution : undefined;
+  }
+
+  /** The type a type parameter stands for here, when one is in force. */
+  private substituteTypeParameter(type: ts.Type): ts.Type | undefined {
+    if (
+      !this.activeTypeArguments ||
+      (type.flags & ts.TypeFlags.TypeParameter) === 0 ||
+      !type.symbol
+    ) {
+      return undefined;
+    }
+    const argument = this.activeTypeArguments.get(type.symbol);
+    return argument === type ? undefined : argument;
+  }
+
+  /**
+   * Whether a type still mentions a parameter the active substitution
+   * replaces, so two instantiations of one generic declaration cannot
+   * share a cached struct.
+   *
+   * The walk covers every place a parameter can hide inside one type: a
+   * union or intersection constituent, a reference's own type arguments,
+   * and the members of an anonymous or instantiated object -- an inline
+   * `{ part: P; distance: number }` is spelled identically under two
+   * instantiations and would otherwise read back the first one's struct.
+   * `seen` closes the recursion on self-referential shapes, and every
+   * branch is a disjunction over a set, so no answer depends on order.
+   */
+  private mentionsSubstitution(
+    type: ts.Type,
+    seen: Set<ts.Type> = new Set(),
+  ): boolean {
+    if (!this.activeTypeArguments || seen.has(type)) {
+      return false;
+    }
+    seen.add(type);
+    if (this.substituteTypeParameter(type)) {
+      return true;
+    }
+    const constituents =
+      (type.flags & (ts.TypeFlags.Union | ts.TypeFlags.Intersection)) !== 0
+        ? (type as ts.UnionOrIntersectionType).types
+        : [];
+    if (
+      constituents.some((member) => this.mentionsSubstitution(member, seen))
+    ) {
+      return true;
+    }
+    const objectType = type as ts.ObjectType;
+    if ((type.flags & ts.TypeFlags.Object) === 0) {
+      return false;
+    }
+    if (
+      (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+      this.checker
+        .getTypeArguments(type as ts.TypeReference)
+        .some((argument) => this.mentionsSubstitution(argument, seen))
+    ) {
+      return true;
+    }
+    // A named interface or class declares its members against its own
+    // parameters, which the reference arguments above already answer for.
+    // What is left is the object whose members ARE the type: an anonymous
+    // literal, or an instantiation of one.
+    if (
+      (objectType.objectFlags &
+        (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
+      0
+    ) {
+      return false;
+    }
+    return this.checker
+      .getPropertiesOfType(type)
+      .some((property) =>
+        this.mentionsSubstitution(
+          this.checker.getTypeOfSymbol(property),
+          seen,
+        ),
+      );
+  }
+
+  private structIdentity(type: ts.Type): ts.Symbol | ts.Type | string {
     // A generic alias symbol names the factory, not one instantiation.
     // `Record<ClosedKeys, T>` and `Record<string, U>` therefore share the
     // global `Record` symbol while exposing different property sets. Key
@@ -1146,6 +1496,38 @@ export class DataTypeRegistry {
     // cannot poison the next; non-generic aliases and named interfaces
     // retain their stable symbol identity.
     if (type.aliasSymbol && (type.aliasTypeArguments?.length ?? 0) > 0) {
+      return type;
+    }
+    // Two instantiations of one generic declaration are spelled the same
+    // inside its own body: `Hit<P>` under a `Workspace<Part>` and under a
+    // `Workspace<Other>` are the same checker type. Fold the substitution
+    // into the key so the second does not read back the first's struct.
+    if (this.mentionsSubstitution(type)) {
+      return `${this.checker.typeToString(type)}<${this.activeTypeArgumentKey}>`;
+    }
+    // The same collision exists one level down, where a generic interface
+    // or class is instantiated rather than aliased: `WorkspaceRaycastHit<P>`
+    // and `WorkspaceRaycastHit<Part>` are two types sharing one declaration
+    // symbol, and keying both by that symbol hands the second whatever the
+    // first resolved to.
+    const objectType = type as ts.ObjectType;
+    if (
+      (objectType.objectFlags & ts.ObjectFlags.Reference) !== 0 &&
+      this.checker.getTypeArguments(type as ts.TypeReference).length > 0
+    ) {
+      return type;
+    }
+    // And the same collision again where there is no name to share at all:
+    // an inline `{ part: P; distance: number }` is written once, so every
+    // instantiation of it carries that one type literal's symbol while the
+    // checker mints a type per instantiation. The instantiated type is its
+    // own identity; an anonymous object that was never instantiated is the
+    // one shape its symbol names, and keeps it.
+    if (
+      (objectType.objectFlags &
+        (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)) ===
+      (ts.ObjectFlags.Anonymous | ts.ObjectFlags.Instantiated)
+    ) {
       return type;
     }
     return type.aliasSymbol ?? type.symbol ?? type;
@@ -1175,10 +1557,17 @@ export class DataTypeRegistry {
       const mappedValue = callableType.getCallSignatures().length > 0
         ? allowStoredFunctions &&
           declaration !== undefined &&
-          ts.isPropertySignature(declaration) &&
+          (ts.isPropertySignature(declaration) ||
+            ts.isMethodSignature(declaration)) &&
           (property.flags & ts.SymbolFlags.Optional) === 0
           ? this.fromFunctionType(propertyType, declaration ?? node)
           : undefined
+        // A record's own field inherits the position the record is in
+        // rather than demanding one: an interface written to carry a
+        // scene's singletons -- a tool context holding the workspace, the
+        // mouse and the dragger -- is a compile-time record, and giving
+        // each of those a runtime object because a field names them would
+        // turn every one of them into a shared allocation nothing shares.
         : this.fromTsType(propertyType, declaration ?? node);
       if (!mappedValue) {
         return undefined;
@@ -1191,17 +1580,28 @@ export class DataTypeRegistry {
           : mappedValue,
       );
       fields.push({
+        sourceName: property.name,
         name: sanitizeIdentifier(property.name),
         type: mapped,
+        ...(propertyIsReadOnly(property) ? { readOnly: true } : {}),
+        ...(optional ? { optionalProperty: true } : {}),
         ...(optional && mapped.kind !== "optional"
           ? { defaultWhenMissing: true }
           : {}),
       });
     }
+    if (
+      fields.some((field) => this.carriesBorrowedPlatformEvent(field.type))
+    ) {
+      // A synchronous callback observes one JavaScript payload object. Making
+      // the whole record reference-backed ensures a handler's field mutation
+      // is visible to the dispatcher after the call.
+      this.referenceStructNames.add(provisionalName);
+    }
     const key = `${fields
       .map(
         (field) =>
-          `${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}`,
+          `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}`,
       )
       .join(",")}`;
     const existing = this.structsByKey.get(key);
@@ -1218,6 +1618,286 @@ export class DataTypeRegistry {
 
   public isReferenceStruct(name: string): boolean {
     return this.referenceStructNames.has(name);
+  }
+
+  /**
+   * Maps a local class demanded by a native data position onto the reference
+   * struct that stands for one of its instances.
+   *
+   * The representation is the one shared objects already have here: a
+   * `bbl::js::Ref<XData>`, marked reference-valued the moment the name is
+   * minted rather than when a container happens to store it, so identity,
+   * null, `includes`, `indexOf`, `Set` membership and `Map` keys all use Ref
+   * identity whatever order the demands arrive in.
+   *
+   * The struct's fields are not read here: `defineClassStructFields` fills
+   * them from the class's own property declarations when the class lowerer
+   * first constructs one, which is also where a field that turns out to hold
+   * a compile-time value is hoisted out of the layout.
+   */
+  private fromLocalClassType(
+    type: ts.Type,
+    node: ts.Node,
+  ): DataType | undefined {
+    const declaration = (type.symbol?.declarations ?? []).find(
+      ts.isClassDeclaration,
+    );
+    if (!declaration) {
+      return undefined;
+    }
+    const identity = this.structIdentity(type);
+    const existing = this.classStructNames.get(identity);
+    if (existing) {
+      return { kind: "struct", name: existing };
+    }
+    // Demand mints the representation; it does not scope it. Once one
+    // position stores a class, every mention of it is that same shared
+    // object -- otherwise a field typed `Part | null` beside an array of
+    // `Part` would be a different thing from the array's elements.
+    if (!this.classDemanded) {
+      return undefined;
+    }
+    this.rejectUnsupportedRuntimeClass(declaration, node);
+    const name = this.uniqueName(
+      sanitizeIdentifier(declaration.name?.text ?? "Instance"),
+      this.structNames,
+    );
+    this.classStructNames.set(identity, name);
+    this.classStructDeclarations.set(name, { declaration, type });
+    this.referenceStructNames.add(name);
+    this.structsByKey.set(`class#${name}`, {
+      name,
+      fields: this.classStructFields(declaration, type),
+    });
+    return { kind: "struct", name };
+  }
+
+  /**
+   * Which of a class's properties the shared object stores.
+   *
+   * A property is stored when its declared type -- resolved through the
+   * instantiated class type, so `Workspace<Part>` answers with `Part` and
+   * not with `P` -- maps into the plain-data model and holds no engine
+   * handle. A handle-bearing field is a per-instance reference to something
+   * generation owns rather than something the instance owns; it is hoisted
+   * out of the layout, and construction then has to prove it the same at
+   * every site.
+   *
+   * The layout is settled the moment the struct exists, before any
+   * construction: a method inlined on an instance read out of a container
+   * must name the same slots whatever order the walk reached things in.
+   */
+  private classStructFields(
+    declaration: ts.ClassDeclaration,
+    type: ts.Type,
+  ): DataStructField[] {
+    const fields: DataStructField[] = [];
+    for (const member of declaration.members) {
+      if (
+        !ts.isPropertyDeclaration(member) ||
+        (ts.getCombinedModifierFlags(member) & ts.ModifierFlags.Static) !== 0
+      ) {
+        continue;
+      }
+      if (!ts.isIdentifier(member.name)) {
+        this.fail(
+          member,
+          "Private class fields are outside the supported subset.",
+        );
+      }
+      const property = type.getProperty(member.name.text);
+      const propertyType = property
+        ? this.checker.getTypeOfSymbolAtLocation(property, member.name)
+        : this.checker.getTypeAtLocation(member.name);
+      const mapped = this.fromClassFieldType(propertyType, member.name);
+      if (
+        !mapped &&
+        this.checker
+          .getNonNullableType(propertyType)
+          .getCallSignatures().length > 0
+      ) {
+        // A handler written as a field of a class instances are stored by
+        // would be a different function object per instance, and the only
+        // identity a materialized callback can carry is its declaration's.
+        // `off(this._handler)` would then remove every instance's handler,
+        // so the shape is refused rather than conflated.
+        this.fail(
+          member,
+          `Field '${member.name.text}' of shared class ` +
+            `'${declaration.name?.text ?? "?"}' declares a callback per ` +
+            "instance; a stored instance has no identity a container could " +
+            "compare it by.",
+        );
+      }
+      if (!mapped || this.carriesHandle(mapped)) {
+        // Nothing an instance stores may reach an engine handle: what such
+        // a field names is something generation owns, not something the
+        // instance owns, so it is hoisted and the construction proof has to
+        // find it the same at every site.
+        continue;
+      }
+      fields.push({
+        sourceName: member.name.text,
+        name: sanitizeIdentifier(member.name.text),
+        type: this.markStoredObjectReferences(mapped),
+        ...(member.modifiers?.some(
+          (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+        )
+          ? { readOnly: true }
+          : {}),
+      });
+    }
+    return fields;
+  }
+
+  /**
+   * The shapes that cannot be one concrete `Ref<XData>`.
+   *
+   * A native data position names one layout. An abstract class or a
+   * subclass hierarchy would need a value that dispatches on its dynamic
+   * type, which this model has no representation for -- so the demand is
+   * refused by name rather than silently specialized to whichever class the
+   * walk reached first.
+   */
+  private rejectUnsupportedRuntimeClass(
+    declaration: ts.ClassDeclaration,
+    node: ts.Node,
+  ): void {
+    const className = declaration.name?.text ?? "?";
+    if (
+      (ts.getCombinedModifierFlags(declaration) &
+        ts.ModifierFlags.Abstract) !==
+      0
+    ) {
+      this.fail(
+        node,
+        `Abstract class '${className}' has no single native representation; ` +
+          "store a concrete class instead.",
+      );
+    }
+    if (
+      declaration.heritageClauses?.some(
+        (clause) => clause.token === ts.SyntaxKind.ExtendsKeyword,
+      )
+    ) {
+      this.fail(
+        node,
+        `Class '${className}' extends another class; a stored instance would ` +
+          "need dynamic dispatch, which is outside the supported subset.",
+      );
+    }
+  }
+
+  /**
+   * A class property's type as an instantiated class sees it.
+   *
+   * `new Workspace<Part>()` must resolve `_parts: P[]` to `Part[]`; asking
+   * the checker at the declaration would answer with the type parameter,
+   * which maps to nothing and would leave the field unbound.
+   */
+  public classFieldDataType(
+    type: ts.Type,
+    name: ts.Identifier,
+  ): DataType | undefined {
+    const property = type.getProperty(name.text);
+    if (!property) {
+      return undefined;
+    }
+    return this.fromClassFieldType(
+      this.checker.getTypeOfSymbolAtLocation(property, name),
+      name,
+    );
+  }
+
+  /** The class one class-backed struct name stands for. */
+  public classStruct(name: string): ClassStructBinding | undefined {
+    return this.classStructDeclarations.get(name);
+  }
+
+  /**
+   * The struct a class type has already taken, without demanding one.
+   *
+   * Construction asks this rather than mapping the type: a class becomes a
+   * shared object because something stored it, so a class nothing stores
+   * keeps the compile-time record the subset started with.
+   */
+  public existingClassStruct(type: ts.Type): string | undefined {
+    return this.classStructNames.get(this.structIdentity(type));
+  }
+
+  /** Whether a struct name stands for a local class rather than a record. */
+  public isClassStruct(name: string): boolean {
+    return this.classStructDeclarations.has(name);
+  }
+
+  /**
+   * The stored slot one SOURCE property name maps to, when the layout kept
+   * it.
+   *
+   * The registry owns the spelling: it mints the slot through the same
+   * identifier sanitizer every other struct field goes through, so nothing
+   * outside has to re-derive it and then diverge from it.
+   */
+  public classStructField(
+    name: string,
+    property: string,
+  ): DataStructField | undefined {
+    return this.classStructLayout(name).find(
+      (candidate) => candidate.sourceName === property,
+    );
+  }
+
+  /**
+   * Every stored field of a class-backed struct, in layout order, paired
+   * with the source property each one came from.
+   *
+   * Settled when the struct is minted, so a construction reads it rather
+   * than deciding it.
+   */
+  public classStructLayout(name: string): readonly DataStructField[] {
+    return this.structsByKey.get(`class#${name}`)?.fields ?? [];
+  }
+
+  /**
+   * Runs `map` with class demand set to `demanded`.
+   *
+   * One save/restore for both directions: a stored position raises the
+   * demand, and a class's own field mapping drops it to zero so the demand
+   * does not cross into a class-backed struct's layout.
+   */
+  private withClassDemand<T>(demanded: boolean, map: () => T): T {
+    const saved = this.classDemanded;
+    this.classDemanded = demanded;
+    try {
+      return map();
+    } finally {
+      this.classDemanded = saved;
+    }
+  }
+
+  /** `fromTsType` in a stored position. */
+  private fromStoredTsType(
+    type: ts.Type,
+    node: ts.Node,
+  ): DataType | undefined {
+    return this.withClassDemand(true, () =>
+      this.fromTsType(type, node));
+  }
+
+  /**
+   * `fromTsType` for a class's own stored field.
+   *
+   * The demand does not cross into a class-backed struct: a field whose type
+   * is itself a local class would need that class to have a layout before
+   * this one does, and a per-instance reference to another instance is not
+   * part of the reached subset. Such a field is hoisted instead, and the
+   * hoist has to prove itself uniform across every construction.
+   */
+  public fromClassFieldType(
+    type: ts.Type,
+    node: ts.Node,
+  ): DataType | undefined {
+    return this.withClassDemand(false, () => this.fromTsType(type, node));
   }
 
   /**
@@ -1251,7 +1931,7 @@ export class DataTypeRegistry {
         : this.checker.getIndexTypeOfType(type, ts.IndexKind.Number);
       const indexedValue = stringValue ?? numberValue;
       if (!indexedValue) return undefined;
-      const element = this.fromTsType(indexedValue, node);
+      const element = this.fromStoredTsType(indexedValue, node);
       if (!element) return undefined;
       return {
         kind: "map",
@@ -1259,8 +1939,8 @@ export class DataTypeRegistry {
         value: this.markStoredObjectReferences(element),
       };
     }
-    const key = this.fromTsType(keyType, node);
-    const element = this.fromTsType(valueType, node);
+    const key = this.fromStoredTsType(keyType, node);
+    const element = this.fromStoredTsType(valueType, node);
     if (!element) {
       return undefined;
     }
@@ -1430,6 +2110,44 @@ export class DataTypeRegistry {
     }
   }
 
+  /**
+   * Whether a value of this shape physically contains a borrowed event.
+   *
+   * Function signatures deliberately stop the walk: a stored handler may
+   * accept an event-bearing payload without itself containing a live event.
+   */
+  public carriesBorrowedPlatformEvent(
+    type: DataType,
+    seen = new Set<string>(),
+  ): boolean {
+    switch (type.kind) {
+      case "borrowed-platform-event":
+        return true;
+      case "optional":
+        return this.carriesBorrowedPlatformEvent(type.inner, seen);
+      case "vector":
+      case "span":
+      case "enummap":
+      case "set":
+        return this.carriesBorrowedPlatformEvent(type.element, seen);
+      case "map":
+        return (
+          this.carriesBorrowedPlatformEvent(type.key, seen) ||
+          this.carriesBorrowedPlatformEvent(type.value, seen)
+        );
+      case "function":
+        return false;
+      case "struct":
+        if (seen.has(type.name)) return false;
+        seen.add(type.name);
+        return this.structFieldTypes(type.name).some((field) =>
+          this.carriesBorrowedPlatformEvent(field, seen),
+        );
+      default:
+        return false;
+    }
+  }
+
   /** The shared structural view of two record types, if one is non-empty. */
   public commonStruct(
     left: Extract<DataType, { kind: "struct" }>,
@@ -1440,15 +2158,18 @@ export class DataTypeRegistry {
       [...this.structsByKey.values()].find((entry) => entry.name === name)
         ?.fields ?? [];
     const rightFields = new Map(
-      fieldsFor(right.name).map((field) => [field.name, field]),
+      fieldsFor(right.name).map((field) => [field.sourceName, field]),
     );
     const fields = fieldsFor(left.name).filter((field) => {
-      const candidate = rightFields.get(field.name);
+      const candidate = rightFields.get(field.sourceName);
       return candidate && dataTypesEqual(candidate.type, field.type);
     });
     if (fields.length === 0) return undefined;
     const key = fields
-      .map((field) => `${field.name}:${this.typeKey(field.type)}:required`)
+      .map(
+        (field) =>
+          `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:required`,
+      )
       .join(",");
     const existing = this.structsByKey.get(key);
     if (existing) return { kind: "struct", name: existing.name };
@@ -1458,7 +2179,8 @@ export class DataTypeRegistry {
     );
     this.structsByKey.set(key, {
       name,
-      fields: fields.map(({ name: fieldName, type }) => ({
+      fields: fields.map(({ sourceName, name: fieldName, type }) => ({
+        sourceName,
         name: fieldName,
         type,
       })),
@@ -1482,6 +2204,14 @@ export class DataTypeRegistry {
         return (
           this.carriesHandle(type.key, seen) ||
           this.carriesHandle(type.value, seen)
+        );
+      case "function":
+        // A stored function reaches whatever its signature names, which is
+        // what a class field holding a handler has to be judged on.
+        return (
+          type.parameters.some((parameter) =>
+            this.carriesHandle(parameter, seen)) ||
+          (type.result !== undefined && this.carriesHandle(type.result, seen))
         );
       case "struct":
         if (seen.has(type.name)) return false;
@@ -1510,7 +2240,9 @@ export class DataTypeRegistry {
     node: ts.Node,
   ): DataStructField {
     const found = this.structFields(name, node).find(
-      (candidate) => candidate.name === field,
+      (candidate) =>
+        candidate.sourceName === field ||
+        candidate.name === field,
     );
     if (!found) {
       this.fail(node, `Struct ${name} has no field '${field}'.`);
@@ -1647,18 +2379,32 @@ export class DataTypeRegistry {
         return "bbl::js::ArrayBuffer";
       case "dataview":
         return "bbl::js::DataView";
+      case "borrowed-platform-event":
+        return dataType.event === "event"
+          ? "bbl::js::BorrowedEvent"
+          : `bbl::js::Borrowed<const bbl::Platform${
+              dataType.event === "mouse" ? "Mouse" : "Keyboard"
+            }Event>`;
       case "string":
         return "std::string";
       case "handle":
         return handleCppTypes[dataType.handle];
-      case "function":
-        return `std::function<${dataType.result ? this.cppType(dataType.result) : "void"}(${dataType.parameters.map((parameter) => this.cppType(parameter)).join(", ")})>`;
+      case "function": {
+        const signature =
+          `${dataType.result ? this.cppType(dataType.result) : "void"}` +
+          `(${dataType.parameters.map((parameter) => this.cppType(parameter)).join(", ")})`;
+        return dataType.identity
+          ? `bbl::js::Callback<${signature}>`
+          : `std::function<${signature}>`;
+      }
       case "struct":
         this.emittedNamedTypes.add(dataType.name);
         return `bblscene::${dataType.name}`;
       case "enum":
         this.emittedNamedTypes.add(dataType.name);
         return `bblscene::${dataType.name}`;
+      case "json":
+        return "bbl::js::JsonValue";
       case "optional":
         if (
           dataType.inner.kind === "struct" &&
@@ -1709,16 +2455,20 @@ export class DataTypeRegistry {
         return "ab";
       case "dataview":
         return "dv";
+      case "borrowed-platform-event":
+        return `borrowed(${dataType.event})`;
       case "string":
         return "str";
       case "handle":
         return `h(${dataType.handle})`;
       case "function":
-        return `fn(${dataType.parameters.map((parameter) => this.typeKey(parameter)).join(",")})->${dataType.result ? this.typeKey(dataType.result) : "void"}`;
+        return `${dataType.identity ? "cb" : "fn"}(${dataType.parameters.map((parameter) => this.typeKey(parameter)).join(",")})${dataType.erasedParameters?.length ? `~${dataType.erasedParameters.join(",")}` : ""}->${dataType.result ? this.typeKey(dataType.result) : "void"}`;
       case "struct":
         return `s(${dataType.name})`;
       case "enum":
         return `e(${dataType.name})`;
+      case "json":
+        return "json";
       case "optional":
         return `o(${this.typeKey(dataType.inner)})`;
       case "vector":
@@ -1765,6 +2515,131 @@ export class DataTypeRegistry {
     }
     used.add(name);
     return name;
+  }
+
+  /**
+   * Registers every generated record `JSON.stringify` reaches through this
+   * value, so the codec emission below writes exactly those and no others.
+   *
+   * A record that reaches itself has no finite document -- JavaScript
+   * throws on the circular structure at run time -- and a walk that
+   * emitted a codec for it would recurse until the stack ended. Refuse the
+   * cycle by name instead, at the call site that asked for it.
+   */
+  public markJsonSerialized(dataType: DataType, node: ts.Node): void {
+    const path: string[] = [];
+    const visit = (current: DataType): void => {
+      switch (current.kind) {
+        case "struct": {
+          if (path.includes(current.name)) {
+            this.fail(
+              node,
+              `JSON.stringify reaches a cycle through '${[...path, current.name].join(" -> ")}'; ` +
+                "a self-referential record has no JSON document.",
+            );
+          }
+          if (this.jsonSerializedStructs.has(current.name)) {
+            return;
+          }
+          this.jsonSerializedStructs.add(current.name);
+          path.push(current.name);
+          for (const field of this.structFields(current.name, node)) {
+            visit(field.type);
+          }
+          path.pop();
+          return;
+        }
+        case "optional":
+          visit(current.inner);
+          return;
+        case "vector":
+        case "set":
+        case "span":
+          visit(current.element);
+          return;
+        case "map":
+          if (current.key.kind !== "string" && current.key.kind !== "number") {
+            this.fail(
+              node,
+              "JSON.stringify writes a record's keys as strings, so a map " +
+                "reaching it needs string or number keys.",
+            );
+          }
+          visit(current.value);
+          return;
+        case "number":
+        case "boolean":
+        case "string":
+        case "tuple":
+        case "json":
+          return;
+        default:
+          this.fail(
+            node,
+            `JSON.stringify does not serialize a '${current.kind}' value.`,
+          );
+      }
+    };
+    visit(dataType);
+  }
+
+  /**
+   * The `json_write` overloads for the reached records, emitted beside the
+   * structs themselves so ADL finds them from the generic writer. The
+   * declarations come first, so a record that names another one -- in
+   * either order -- resolves.
+   */
+  private renderJsonCodecs(used: ReadonlySet<string>): string[] {
+    const names = [...this.jsonSerializedStructs].filter((name) =>
+      used.has(name),
+    );
+    if (names.length === 0) {
+      return [];
+    }
+    const structName = (name: string): string =>
+      `${name}${this.isReferenceStruct(name) ? "Data" : ""}`;
+    const lines: string[] = names.map(
+      (name) =>
+        `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value);`,
+    );
+    lines.push("");
+    for (const name of names) {
+      const definition = [...this.structsByKey.values()].find(
+        (candidate) => candidate.name === name,
+      );
+      lines.push(
+        `inline void json_write(bbl::js::JsonWriter& writer, const ${structName(name)}& value) {`,
+        "    writer.begin_object();",
+      );
+      for (const field of definition?.fields ?? []) {
+        const key = JSON.stringify(field.sourceName);
+        // An `f?: T` property is JavaScript's `undefined` when it is not
+        // set, and `JSON.stringify` drops such a member outright. An
+        // `f: T | null` one is present, so its key is written with `null`.
+        const omittable =
+          field.optionalProperty === true &&
+          field.type.kind === "optional" &&
+          !(
+            field.type.inner.kind === "struct" &&
+            this.isReferenceStruct(field.type.inner.name)
+          );
+        if (omittable) {
+          lines.push(
+            `    if (value.${field.name}.has_value()) {`,
+            `        writer.key(${key});`,
+            `        json_write(writer, *value.${field.name});`,
+            "    }",
+          );
+          continue;
+        }
+        lines.push(
+          `    writer.key(${key});`,
+          `    json_write(writer, value.${field.name});`,
+        );
+      }
+      lines.push("    writer.end_object();", "}", "");
+    }
+    return lines;
   }
 
   /**
@@ -1872,6 +2747,7 @@ export class DataTypeRegistry {
         "",
       );
     }
+    lines.push(...this.renderJsonCodecs(used.structs));
     lines.push("}  // namespace bblscene");
     return lines.join("\n");
   }

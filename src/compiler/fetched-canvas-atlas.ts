@@ -2,10 +2,9 @@ import { pageBase64Script } from "../browser-harness.js";
 import { readFileSync, readdirSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
-import ts from "typescript";
-
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { runGenerationChild } from "./generation-child.js";
+import { transpileCommonJs } from "../typescript-transpile.js";
 
 interface FetchedCanvasAtlasImage {
     source: string;
@@ -71,16 +70,14 @@ export function bakeFetchedCanvasAtlas(
             bytes: readFileSync(source),
         }),
     );
-    const transpile = (source: string, fileName: string): string =>
-        ts.transpileModule(source, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.CommonJS,
-            },
-            fileName,
-        }).outputText;
-    const atlasJavascript = transpile(atlasSource, atlasFileName);
-    const blocksJavascript = transpile(blocksSource, blocksFileName);
+    const atlasJavascript = transpileCommonJs(
+        atlasSource,
+        atlasFileName,
+    );
+    const blocksJavascript = transpileCommonJs(
+        blocksSource,
+        blocksFileName,
+    );
     const inputs = [
         Buffer.from(atlasJavascript, "utf8"),
         Buffer.from(blocksJavascript, "utf8"),

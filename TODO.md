@@ -52,6 +52,12 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   its call site fails explicitly unless a reached API owns a specialized
   retained form; scene 300's `renderer._beforeUpdate.push` and the
   `EffectRenderer` per-frame `update` are tracked by their own entries.
+  Build the classification into the typed user-code IR so shared-binding
+  storage derives from function-typed retaining sinks. Today
+  `collectSharedClosureSymbols` has to recognize object members, local helper
+  references, and platform registrations as separate AST shapes; extending
+  that syntax list is not a substitute for the escape graph the IR does not
+  yet carry.
 - [ ] Collapse a run of adjacent EMPTY continuation parts into one counted
   re-queue. A constant-trip frame-yield loop now unrolls into one
   `defer_start_continuation` per iteration, and a body whose only statement
@@ -84,8 +90,52 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 ### Classes and objects
 
 - [ ] Extend local classes to inheritance (setters lower as inlined bodies).
+  A class demanded by a native data position is one concrete
+  `bbl::js::Ref<XData>`, so a subclass hierarchy stored in a container refuses
+  by name today; lifting it needs a value that dispatches on its dynamic type,
+  which the data model has no representation for.
+- [ ] Instantiate a generic class's method bodies rather than substituting
+  the receiver's type arguments as they are asked for. The substitution
+  installed with `this` answers every type the mapper is asked for inside an
+  inlined body, which is what `new Workspace<Part>()` needs, but a body that
+  reaches the checker directly for a narrowing still sees the declaration's
+  own `P`; `narrowOptional` closes that one case by asking whether the
+  checker still admits null rather than by comparing mapped types.
+- [ ] Three costs the shared-instance lowering leaves on the table, each
+  cheap and each blocked on a mechanism that does not exist yet.
+  `ClassLowerer.hydrate` binds the receiver to a temporary before it knows
+  whether the read is a stored slot, so a read of a hoisted field pays an
+  indexed read and a `Ref` copy it never uses — closing it needs a lazily
+  evaluated record property, which `Value` has no shape for. A
+  `bbl::js::Callback` is compared and hashed on its identity alone, but
+  `Set::erase` and `Map::get` still construct the whole closure to pass
+  one — closing it needs heterogeneous lookup through
+  `IndexedInsertionOrdered`'s index, which every Map and Set shares. And
+  `make_ref<XData>()` value-initializes every slot before the declaration
+  initializers assign over the top, so an empty container field is built
+  twice per instance — closing it needs generation to recognize an
+  initializer as equal to the value-initialized default.
 
 ## P1 — Assets and materials
+
+- [ ] Emit one ordered `.babylon` renderable manifest during asset lowering
+  and consume it in both the generated loader and Standard variant
+  composition. `babylonRenderableCount` currently mirrors the runtime
+  loader's visible/unparented/geometry/submesh admission rules because the
+  composer needs row offsets before native loading. Removing that duplicate
+  predicate is blocked on replacing the generic runtime JSON walk with a
+  generated per-asset manifest; no shared typed renderable inventory exists
+  yet.
+
+- [ ] Make generation-time browser texture execution reuse one parsed module
+  graph and one browser worker. `repositoryModuleClosure` discovers imports,
+  then `closureModules` parses the same source before `transpileModule` parses
+  it again; a durable cache hit still pays that work, and each cold producer
+  launches its own Node/server/Chromium process. Closing all three costs needs
+  an AST-backed CommonJS emitter/cache key plus a worker protocol that preserves
+  the current per-producer isolation and content-addressed replay contract.
+  Extend that executor with a typed fetched-asset manifest and retire the
+  voxel-atlas-only `fetched-canvas-atlas` source gate in the same pass.
 
 ### Property animation
 
@@ -102,6 +152,20 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   the single mesh it was attached to and refuses the second.
 
 ## P1 — Runtime and validation
+
+- [ ] Extract retained DOM/CSS analysis from `Compiler` into a stateful
+  `UiLowerer` with a narrow lowering context. Move the private CSS projection
+  markers to typed `UiStyleRule` declarations in the same pass, then split the
+  PAL's global UI revision into stylesheet/tree/content dirtiness. The runtime
+  can then update only affected subtrees, carry client-rectangle demand before
+  the first layout invalidation instead of seeding every element on that pass,
+  index only elements
+  matched by private `:hover` rules instead of scanning every projected element
+  per frame, represent repeated backgrounds/crosshairs as typed generic layers
+  instead of hardcoded CSS dimensions and markup, and maintain active texture
+  ids without linear rescans. Those typed state and dirty-set mechanisms do not
+  exist yet; extracting only methods would preserve the string contracts and
+  whole-tree work while adding another facade.
 
 - [ ] Drop the vendored SDL patches once upstream ships them.
   `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the manifest's
@@ -254,12 +318,50 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   the hand-written boundary. `compileVoxelFileCall` keys on the module path
   and the two function names, and `js_voxel_file.hpp` restates the pin's
   `JSON.stringify(data)` key order and `parseSave`'s shape check as a
-  hand-typed grammar -- an app-keyed branch in two generic layers. The
-  blocker is a capability: `JSON.stringify` and `JSON.parse` over a plain-data
-  record (the runtime's `ts::JsonValue` reads documents, and nlohmann is
-  linked only under the glTF/`.babylon` loaders). With those lowered, only the
-  `showSaveFilePicker`/`showOpenFilePicker` calls remain a PAL seam,
-  recognised by the browser API they reach rather than by path.
+  hand-typed grammar -- an app-keyed branch in two generic layers. **The
+  capability blocker is closed**: `JSON.stringify` and `JSON.parse` now lower
+  generically (`data:json`, `js_json.hpp`, codecs generated beside the
+  records a stringify reaches), so the hand-typed grammar can be replaced by
+  the pin's own module. What remains is the port itself, and one gap the port
+  will meet: `parseSave` reads its document back into a **typed** record,
+  which the bridge does not do -- `JSON.parse` answers a dynamic value, and
+  the pinned module's field reads over it lower only where the source guards
+  them the way `world-io.ts` does. Size that before starting. With both, only
+  the `showSaveFilePicker`/`showOpenFilePicker` calls remain a PAL seam,
+  recognised by the browser API they reach rather than by path. The generic
+  `browser:file` Blob/download/file-input slice now owns the shared dialog,
+  bounded-read, and atomic-write mechanics; this entry retains only the File
+  System Access API spelling and the voxel module's typed parse migration.
+
+- [ ] `Array#every`, `Array.isArray` and the other shape predicates over a
+  **generation-decoded** fetch document. `world-io.ts`'s `isVec` runs over
+  both lanes -- `JSON.parse` (a dynamic document, which lowers) and
+  `await res.json()` (which the compiler decodes at generation into
+  compile-time tuples) -- and the second refuses with `Unsupported call
+  target 'v.every' on tuple`. `Array.isArray` over a decided value already
+  folds (`compileIsArrayOverData`); `every`/`some` over a compile-time tuple
+  bound to a parameter do not, because `materializeKnownTuple` resolves an
+  expression rather than a binding. The current unmodified Sandblox path no
+  longer stops here; retain the entry for other generation-decoded tuple
+  callers.
+
+- [ ] JavaScript falsiness for a nullable string is absent **or** empty, and
+  the general lowering answers only `has_value()`. `localStorage.getItem`
+  carries the correct rule on its own value (`nullableStringFalsy`), because
+  making it general rewrites the conditions in doom, freeciv, platformer and
+  quake -- each reads an optional string with `if (x)` -- and those four then
+  need their parity re-measured. The rewrite is correct and small; it is the
+  measurement that is outstanding. The same question stands for an optional
+  number, where `0` is falsy.
+
+- [ ] Emit one typed file-accept descriptor instead of keeping the
+  MIME-to-extension table in both `browser-file.ts` and `js_file.hpp`.
+  Compilation currently validates and canonicalizes the source string, while
+  the PAL parses it again to build SDL filters and also uses the same mapping
+  for Blob downloads. Removing either copy therefore needs a generated
+  descriptor that carries canonical MIME types, extensions, and labels into
+  both default actions; a string-only change would silently drop the download
+  inference arm.
 
 ## P1 — Full Babylon Lite corpus audit
 
@@ -685,10 +787,8 @@ an `isLocal` node-particle system.
     caster's own draw reaches -- and nothing has measured which those are
     for a non-receiving mesh. Unblocks by measuring that.
   - the generator options past the four factories' own reached sets:
-    `normalBias` refuses on all four, and `forceRefreshEveryFrame` on the
-    two PCF factories — the ESM and CSM factories honour it: it disables
-    the pinned outer refresh gate, so the task re-renders every frame
-    (break-meshes reaches it). `setShadowCasterMaxCascade` is CSM-only.
+    `normalBias` refuses on all four. `setShadowCasterMaxCascade` is
+    CSM-only.
   - a caster or receiver that is an imported mesh, and a `receiveShadows`
     the scene computes — the variant is selected at generation, so the
     second would need both fragments composed and a runtime choice.
@@ -744,6 +844,22 @@ an `isLocal` node-particle system.
   colour array where the matrix pool keeps the caller's own. No corpus scene
   at this pin reaches any of them.
 
+- [ ] Extend the thin-instance surface past the pool slice. Established,
+  growing and emptied pools ship — `setThinInstances`, `setThinInstanceCount`,
+  `setThinInstanceMatrix`, `flushThinInstances`, `setThinInstanceColors`,
+  `addThinInstance`, `removeThinInstance`, `mesh.thinInstances.count` — and
+  `enableThinInstanceGpuCulling` is accepted with its culler recorded as an
+  omission. The rest of `src/mesh/thin-instance.ts` fails by name and no
+  corpus scene reaches any of it: `setThinInstanceDrawCount` and
+  `enableThinInstanceDynamicDrawCount` (a fixed-capacity pool's
+  fully-synchronized draw-count fast path, whose whole point is the cached
+  bundle this port does not record), `setThinInstanceCullBoundsPad` and
+  `setThinInstanceLodPartner` (both meaningful only with the culler), and the
+  per-instance `setThinInstanceColor` twin. The culler itself stays out until
+  something measures it — the pin's fallback draws every instance, so the
+  pixels are already right and only a scene big enough to make the cost
+  visible would justify porting `thin-instance-gpu-culling.ts`.
+
 - [ ] Extend shader-material options past the slice scenes 159-163 and 165
   measure. `samplers` and `defines` shipped, and 165's thin-instance colour
   lane ships — of `useThinInstanceColors` only the material-side `_tic`
@@ -764,20 +880,40 @@ an `isLocal` node-particle system.
   its own camera and aspect, and `build_scene_projection` answers for the
   orthographic arm — so what the four still want is a source per matrix,
   not a mechanism.
-- [ ] Extend the material-plugin slice past what scene 217 measures
+- [ ] Extend the material-plugin slice past what scene 217 and Sandblox
+  measure
   ([fidelity](docs/fidelity.md#shader-contract) carries the shipped shape).
-  Every member past `name` and `getCustomCode` refuses at the declaration, and the
-  three that would cost native work are one item rather than seven:
-  `getUniforms`/`writeUbo` put fields into the PBR material UBO and build the
-  Standard self-managed `pluginUbo`, and `getSamplers`/`bindTextures`/
-  `getActiveTextures` declare a texture and sampler pair the composed
-  fragment reads — so closing them is one bind-group contract per family,
-  reflected from the composed WGSL the way group 2 already is. `priority`,
-  `isEnabled` and `defines` fold into the signature and need no native
-  counterpart; `isEnabled` additionally needs the pin's own rebuild path,
-  since the toggle is a run-time variant change. No corpus scene at this pin
-  reaches any of them.
-  Four review findings sit here, each waiting on a capability that does not
+  The texture and sampler half is closed: `getSamplers`, `bindTextures` and
+  `getActiveTextures` fold, compose through the pin's own
+  `buildPluginFragment`, and bind per material on both backends. What still
+  refuses at the declaration is the uniform half plus the three signature
+  fields: `getUniforms`/`writeUbo` put fields into the PBR material UBO and
+  build the Standard self-managed `pluginUbo`, which is a second bind-group
+  contract per family; `priority`, `isEnabled` and `defines` fold into the
+  signature and need no native counterpart, though `isEnabled` additionally
+  needs the pin's own rebuild path, since the toggle is a run-time variant
+  change. No corpus scene at this pin reaches any of them.
+  Two capability gaps sit beside them:
+  - **A PBR material's plugin declaring samplers refuses.** The Standard
+    family's textures ride `MaterialRecord::plugin_textures` and resolve
+    through the generated `standard_plugin_bindings` table, because a
+    Standard draw's variant is keyed by the record's derived feature word.
+    A PBR draw resolves its variant by material index and appends the
+    plugin's entries inside `createPbrMeshBindGroup`, which is a different
+    bind path; no scene measures it, so widening the Standard table to it
+    would be an unmeasured guess. Closing it needs a PBR scene that binds
+    one.
+  - **The bounded local-factory see-through lives in the plugin fold.**
+    "A local function whose body is one return of an object literal, with
+    its parameters bound to the call site's values" is a general
+    static-evaluation shape, and `resolveStaticExpression` is where it
+    belongs — any other fold reaching a factory would then get it for free.
+    Missing: `resolveStaticExpression` is the shared evaluator behind
+    `probeStaticArrayLiteral`, `compileStaticString` and every intrinsic's
+    constant fold, so teaching it to inline calls silently widens what all
+    of them accept. It needs its own reached scene and its own refusal set
+    before it can move down.
+  Three review findings sit here, each waiting on a capability that does not
   exist yet:
   - **The plugin sweep arm composes one dead Standard variant pair on scene
     217** (its only Standard material carries the plugin). Trimming it needs
@@ -1064,6 +1200,27 @@ CLI exposes no combined-sampler emission.
 - [ ] Validate uniform layout, derivatives, cubemaps, and blending.
 
 ## P2 — Platform and performance
+
+- [ ] Let bounded text reads fill a sized `std::string` directly and return a
+  typed not-found result from the open attempt. `read_text_file_bounded`
+  currently allocates a byte vector and copies it, while `localStorage.getItem`
+  stats before opening; fixing only one retains either the 64 MiB peak copy or
+  the redundant syscall/race. The shared file reader needs an
+  absent/error/value result that preserves strict errors for every non-ENOENT
+  failure.
+
+- [ ] Reuse backend-owned scratch storage while uploading dynamic thin-instance
+  pools. PBR mirror-conjugation and missing color padding currently allocate
+  full temporary vectors in both PALs when a pool grows or changes; the shared
+  transform/padding helpers need caller-provided output spans before either
+  backend can fill upload staging directly without retaining stale capacity.
+
+- [ ] Parse dynamic JSON directly into `JsonValue` rather than building an
+  `nlohmann::ordered_json` DOM and recursively copying it. The replacement
+  needs a SAX builder that preserves source key order, duplicate-key behavior,
+  numeric conversion, and the parser's existing throw boundary; wrapping the
+  nlohmann tree instead would duplicate the entire read/coercion surface and
+  make the generic JSON bridge depend on a third-party type in every value.
 
 - [ ] Finish the Web Audio slice. A prototype exists: `bblite/pal_audio.hpp`
   over LabSound with an SDL3 `lab::AudioDevice`, an `audio:engine` feature

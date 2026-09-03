@@ -39,12 +39,12 @@ import type { CompileAsset, Feature, Value } from "./types.js";
 export interface AudioReceiverContext extends PropertyContext {
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     resolveThisField(name: string): Value | undefined;
+    compileValue(expression: ts.Expression): Value;
     unwrap(expression: ts.Expression): ts.Expression;
 }
 
 /** What a property write needs. `AssignmentContext` satisfies it. */
 export interface AudioWriteContext extends AudioReceiverContext {
-    compileValue(expression: ts.Expression): Value;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -199,9 +199,30 @@ function resolveAudioReceiver(
     expression: ts.Expression,
 ): Value | undefined {
     const node = context.unwrap(expression);
+    const narrowedAudioData = (
+        value: Value | undefined,
+    ): Value | undefined => {
+        const type = value?.dataType;
+        const handle =
+            type?.kind === "handle"
+                ? type.handle
+                : type?.kind === "optional" &&
+                    type.inner.kind === "handle"
+                  ? type.inner.handle
+                  : undefined;
+        if (!handle || !AUDIO_KINDS.has(handle)) {
+            return undefined;
+        }
+        const narrowed = context.compileValue(node);
+        return AUDIO_KINDS.has(narrowed.kind)
+            ? narrowed
+            : undefined;
+    };
     if (ts.isIdentifier(node)) {
         const bound = context.lookupOptional(node);
-        return bound && AUDIO_KINDS.has(bound.kind) ? bound : undefined;
+        return bound && AUDIO_KINDS.has(bound.kind)
+            ? bound
+            : narrowedAudioData(bound);
     }
     if (ts.isPropertyAccessExpression(node)) {
         if (
@@ -212,7 +233,7 @@ function resolveAudioReceiver(
             );
             return field && AUDIO_KINDS.has(field.kind)
                 ? field
-                : undefined;
+                : narrowedAudioData(field);
         }
         const owner = resolveAudioReceiver(context, node.expression);
         if (!owner) {
@@ -466,18 +487,23 @@ export function compileAudioMethodCall(
                     call.arguments.length > 0
                         ? context.compileNumber(call.arguments[0]!, "double")
                         : "0.0";
-                if (call.arguments.length > 1) {
+                const maximum = method === "start" ? 3 : 1;
+                if (call.arguments.length > maximum) {
                     context.fail(
                         call,
-                        `${method}'s offset and duration arguments are not ` +
-                            "lowered; the reached form passes a time alone.",
+                        `${method} expects at most ${maximum} arguments.`,
                     );
                 }
+                const trailing = call.arguments
+                    .slice(1)
+                    .map((argument) =>
+                        context.compileNumber(argument, "double"),
+                    );
                 return {
                     kind: "void",
                     cpp:
                         `bbl::pal::audio_node_${method}(` +
-                        `${receiver.cpp}, ${when})`,
+                        `${receiver.cpp}, ${[when, ...trailing].join(", ")})`,
                 };
             }
             default:

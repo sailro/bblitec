@@ -266,6 +266,8 @@ if ($navigationReached) {
 }
 if ($uiReached) {
     $licensePackages["FreeType.txt"] = "freetype"
+    $licensePackages["LunaSVG.txt"] = "lunasvg"
+    $licensePackages["PlutoVG.txt"] = "plutovg"
 }
 foreach ($entry in $licensePackages.GetEnumerator()) {
     $source = Join-Path $vcpkgShare "$($entry.Value)\copyright"

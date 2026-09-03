@@ -51,8 +51,13 @@ import {
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
+import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 
 const cacheRoot = join("artifacts", "bake-cache");
+const moduleIdentities = new Map<string, string>();
+let cachedPinIdentity: string | undefined;
+let cachedBrowserIdentity: string | null | undefined;
 
 function cacheEnabled(): boolean {
     if (process.env.BBLITE_BAKE_CACHE === "0") return false;
@@ -61,6 +66,18 @@ function cacheEnabled(): boolean {
     // compare the cache to itself.
     if (process.env.NODE_TEST_CONTEXT !== undefined) return false;
     return true;
+}
+
+/**
+ * The same rule for the same-process memos that sit in FRONT of this cache.
+ *
+ * A bake reached twice in one compile is replayed from a `Map` rather than
+ * re-run, which is the same replay this file performs across processes — so
+ * it has to answer to the same switch, or a determinism gate that disabled
+ * the cache would still be comparing a replay to itself.
+ */
+export function bakeReplayEnabled(): boolean {
+    return cacheEnabled();
 }
 
 function sha256(payload: string | Uint8Array): string {
@@ -74,18 +91,25 @@ function sha256(payload: string | Uint8Array): string {
  * rebuild-more-on-doubt direction.
  */
 export function moduleIdentity(moduleUrl: string): string {
-    return sha256(readFileSync(fileURLToPath(moduleUrl)));
+    const cached = moduleIdentities.get(moduleUrl);
+    if (cached) return cached;
+    const identity = sha256(readFileSync(fileURLToPath(moduleUrl)));
+    moduleIdentities.set(moduleUrl, identity);
+    return identity;
 }
 
 /** The pin component, loaded lazily so importing this module stays free. */
 function pinIdentity(): string {
+    if (cachedPinIdentity) return cachedPinIdentity;
     const requireModule = createRequire(import.meta.url);
     const { readUpstreamPin } =
         requireModule(
             "./upstream-source.js",
         ) as typeof import("./upstream-source.js");
     const pin = readUpstreamPin();
-    return `${pin.package}@${pin.version}#${pin.sourceVersion}`;
+    cachedPinIdentity =
+        `${pin.package}@${pin.version}#${pin.sourceVersion}`;
+    return cachedPinIdentity;
 }
 
 /**
@@ -96,6 +120,9 @@ function pinIdentity(): string {
  * and lets the bake fail exactly as it does today.
  */
 export function browserIdentity(): string | undefined {
+    if (cachedBrowserIdentity !== undefined) {
+        return cachedBrowserIdentity ?? undefined;
+    }
     try {
         const requireModule = createRequire(import.meta.url);
         const { resolveBrowserPath } =
@@ -104,13 +131,16 @@ export function browserIdentity(): string | undefined {
             ) as typeof import("./browser-path.js");
         const path = resolveBrowserPath();
         const stats = statSync(path);
-        return `${path}|${stats.size}|${stats.mtimeMs}`;
+        cachedBrowserIdentity =
+            `${path}|${stats.size}|${stats.mtimeMs}`;
+        return cachedBrowserIdentity;
     } catch {
+        cachedBrowserIdentity = null;
         return undefined;
     }
 }
 
-interface BakeKey {
+export interface BakeKey {
     /** `hdr-prefilter`, `basis-transcode`, `node-particle`,
      *  `executed-module`, `ibl-brdf-lut`, `browser-generated-string`,
      *  `dds-package`, `splat-ply`, `executed-csg-solid`. */
@@ -146,7 +176,7 @@ function canonicalJson(value: unknown): string {
 
 /** The cache file for a key, or undefined when the key cannot be
  *  computed (no browser for a browser bake) or the cache is disabled. */
-function cachePath(key: BakeKey): string | undefined {
+export function bakeIdentity(key: BakeKey): string | undefined {
     if (!cacheEnabled()) return undefined;
     const browser = key.browser ? browserIdentity() : "cpu";
     if (browser === undefined) return undefined;
@@ -159,7 +189,14 @@ function cachePath(key: BakeKey): string | undefined {
         `parameters:${canonicalJson(key.parameters)}`,
         ...key.inputs.map((input, index) => `input${index}:${sha256(input)}`),
     ].join("\n");
-    return resolve(cacheRoot, `${key.kind}-${sha256(payload)}.bin`);
+    return `${key.kind}-${sha256(payload)}`;
+}
+
+function cachePath(key: BakeKey): string | undefined {
+    const identity = bakeIdentity(key);
+    return identity === undefined
+        ? undefined
+        : resolve(cacheRoot, `${identity}.bin`);
 }
 
 /**
@@ -260,46 +297,67 @@ function storeBake(
  * when any relative import cannot be resolved to a repository file,
  * and the caller then skips the cache: uncertain inputs mean bake.
  */
-export function moduleClosureBytes(
+export interface RepositoryModuleFile {
+    path: string;
+    source: Buffer;
+}
+
+export function repositoryModuleClosure(
     modulePaths: readonly string[],
     repositoryRoot = resolve("."),
-): Uint8Array[] | undefined {
+): RepositoryModuleFile[] | undefined {
     const visited = new Set<string>();
-    const payloads: Uint8Array[] = [];
+    const files: RepositoryModuleFile[] = [];
     const queue = modulePaths.map((path) =>
         resolve(repositoryRoot, path),
     );
     while (queue.length > 0) {
         const path = queue.shift()!;
-        const file = resolveModuleFile(path);
+        const file = resolveRepositoryModuleFile(path);
         if (file === undefined) return undefined;
         if (!file.startsWith(repositoryRoot)) return undefined;
         if (visited.has(file)) continue;
         visited.add(file);
         const source = readFileSync(file);
-        // The file's identity includes its path, so moving a module is
-        // a different closure even when its text is not.
-        payloads.push(
-            Buffer.from(`${file}\n`, "utf8"),
-            source,
-        );
-        for (const specifier of importSpecifiers(
+        files.push({ path: file, source });
+        const sourceFile = ts.createSourceFile(
+            file,
             source.toString("utf8"),
-        )) {
-            if (!specifier.startsWith(".")) continue;
-            queue.push(resolve(dirname(file), specifier));
+            ts.ScriptTarget.ES2022,
+            true,
+        );
+        for (const specifier of moduleSpecifiers(sourceFile)) {
+            if (!specifier.text.startsWith(".")) continue;
+            queue.push(resolve(dirname(file), specifier.text));
         }
     }
-    return payloads;
+    return files;
+}
+
+export function moduleClosureBytes(
+    modulePaths: readonly string[],
+    repositoryRoot = resolve("."),
+): Uint8Array[] | undefined {
+    return repositoryModuleClosure(modulePaths, repositoryRoot)?.flatMap(
+        ({ path, source }) => [
+            // The file's identity includes its path, so moving a module is
+            // a different closure even when its text is not.
+            Buffer.from(`${path}\n`, "utf8"),
+            source,
+        ],
+    );
 }
 
 /** Resolve a specifier target the way the suite server serves it: the
  *  file itself, its `.ts` twin for a `.js` specifier, or the bare
  *  specifier plus `.ts`. */
-function resolveModuleFile(path: string): string | undefined {
+export function resolveRepositoryModuleFile(
+    path: string,
+): string | undefined {
     const candidates = [
         path,
         path.endsWith(".js") ? `${path.slice(0, -3)}.ts` : `${path}.ts`,
+        `${path}/index.ts`,
     ];
     for (const candidate of candidates) {
         if (existsSync(candidate) && statSync(candidate).isFile()) {
@@ -307,21 +365,4 @@ function resolveModuleFile(path: string): string | undefined {
         }
     }
     return undefined;
-}
-
-/** Every import/export specifier in a module's text: static, re-export
- *  and dynamic forms. Over-matching (a specifier-looking string in a
- *  comment) only widens the closure, which is the safe direction. */
-function importSpecifiers(source: string): string[] {
-    const specifiers = new Set<string>();
-    for (const pattern of [
-        /(?:import|export)\s+[^"'`;]*?from\s*["']([^"']+)["']/g,
-        /import\s*["']([^"']+)["']/g,
-        /import\s*\(\s*["']([^"']+)["']\s*\)/g,
-    ]) {
-        for (const match of source.matchAll(pattern)) {
-            specifiers.add(match[1]!);
-        }
-    }
-    return [...specifiers];
 }

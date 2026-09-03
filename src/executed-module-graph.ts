@@ -21,6 +21,7 @@ import ts from "typescript";
 import { transpileForBrowser } from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
 import type { ExecutedModuleSource } from "./executed-module-assets.js";
+import { moduleSpecifiers } from "./typescript-module-specifiers.js";
 
 /**
  * Run a scene module and return the object one of its exports holds.
@@ -116,7 +117,7 @@ function moduleDataUrl(
     // JavaScript: the transpiler copies a module specifier through verbatim,
     // so substituting here is exact where a regex over the output is a guess.
     const edits: Array<{ start: number; end: number; text: string }> = [];
-    for (const specifier of importSpecifiers(file)) {
+    for (const specifier of moduleSpecifiers(file)) {
         const text = specifier.text;
         if (!text.startsWith("./") && !text.startsWith("../")) {
             throw new Error(
@@ -143,29 +144,4 @@ function moduleDataUrl(
     const url = javascriptModuleUrl(javascript);
     building.set(modulePath, url);
     return url;
-}
-
-/** Every module specifier the module names, static and dynamic alike. */
-function importSpecifiers(file: ts.SourceFile): ts.StringLiteralLike[] {
-    const found: ts.StringLiteralLike[] = [];
-    const visit = (node: ts.Node): void => {
-        if (
-            (ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) &&
-            node.moduleSpecifier &&
-            ts.isStringLiteralLike(node.moduleSpecifier)
-        ) {
-            found.push(node.moduleSpecifier);
-        }
-        if (
-            ts.isCallExpression(node) &&
-            node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-            node.arguments.length > 0 &&
-            ts.isStringLiteralLike(node.arguments[0]!)
-        ) {
-            found.push(node.arguments[0] as ts.StringLiteralLike);
-        }
-        ts.forEachChild(node, visit);
-    };
-    visit(file);
-    return found;
 }

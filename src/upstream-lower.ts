@@ -117,6 +117,7 @@ import {
     type PinnedStandardSelector,
     type PinnedStandardVariantManifestEntry,
 } from "./pinned-standard-variants.js";
+import type { MaterialPluginSamplerManifest } from "./pinned-material-plugins.js";
 import type {
     ComposedComposite,
     ComposedPostProcess,
@@ -473,6 +474,14 @@ export interface UpstreamEmitOptions {
     standardRenderableMeshFeatures?: readonly number[];
     /** The Standard fallback for meshes created past the static table. */
     standardRuntimeMeshFeatures?: number;
+    /**
+     * The composed texture and sampler binding names each registered
+     * Standard plugin list declares, by the compiler's own 1-based index.
+     * Absent for a scene whose plugins declare no samplers.
+     */
+    standardPluginBindings?: readonly (
+        readonly MaterialPluginSamplerManifest[]
+    )[];
     /**
      * The pin's own composed node graphs — one module per graph, emitted as
      * `node_variants.hpp` plus the two stages each deploys under. Absent when
@@ -984,10 +993,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             );
         }
 
-        if (
+        const reachesCameraFactory =
             features.includes("camera:arc-rotate") ||
             features.includes("camera:default") ||
-            features.includes("camera:free")
+            features.includes("camera:free");
+        if (
+            reachesCameraFactory ||
+            features.includes("camera:view-projection")
         ) {
             const cameraLowerer = new CameraLowerer(context);
             this.writeSource(
@@ -1001,12 +1013,14 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 generated,
                 "upstream/include/bblite/upstream/camera_math.hpp",
             );
-            this.writeSource(
-                "upstream/src/camera_controls.cpp",
-                cameraLowerer.lowerControls(),
-                generated,
-                "upstream/include/bblite/upstream/camera_controls.hpp",
-            );
+            if (reachesCameraFactory) {
+                this.writeSource(
+                    "upstream/src/camera_controls.cpp",
+                    cameraLowerer.lowerControls(),
+                    generated,
+                    "upstream/include/bblite/upstream/camera_controls.hpp",
+                );
+            }
             if (features.includes("camera:free")) {
                 this.writeSource(
                     "upstream/src/camera_free.cpp",
@@ -1946,6 +1960,17 @@ ${wgsl}`,
                     },
                 );
             }
+        } else if (features.includes("camera:view-projection")) {
+            // getViewProjectionMatrix is a public camera helper and can be
+            // reached before a scene renderer. Its implementation already
+            // lives in the generated render-plan math; emit that source and
+            // header without pulling the renderer's shaders or PAL.
+            this.writeSource(
+                "upstream/src/renderer_plan.cpp",
+                new RendererLowerer(context).lowerRenderPlan(),
+                generated,
+                "upstream/include/bblite/upstream/renderer_plan.hpp",
+            );
         }
         if (features.includes("renderer:geometry-output")) {
             this.writeSource(
@@ -2114,6 +2139,9 @@ ${composed.wgsl}`,
                     "material:standard-uv-transform",
                 ),
                 plugins: features.includes("material:plugin-index"),
+                pluginTextures: features.includes(
+                    "material:plugin-textures",
+                ),
             };
             if (Object.values(setters).some(Boolean)) {
                 this.writeSource(
@@ -2154,6 +2182,7 @@ ${composed.wgsl}`,
             features.includes("mesh:thin-instance-colors") ||
             features.includes("mesh:thin-instances") ||
             features.includes("mesh:thin-instances-dynamic") ||
+            features.includes("mesh:thin-instance-gpu-culling") ||
             features.includes("mesh:torus") ||
             features.includes("mesh:torus-knot") ||
             features.includes("mesh:disc") ||
@@ -2672,6 +2701,9 @@ ${shadow.blurFragmentWgsl}`,
                         options.standardRenderableMeshFeatures ?? [],
                     runtimeMeshFeatures:
                         options.standardRuntimeMeshFeatures,
+                    ...(options.standardPluginBindings
+                        ? { pluginBindings: options.standardPluginBindings }
+                        : {}),
                 }),
             );
             for (const variant of options.pinnedStandardVariants!) {

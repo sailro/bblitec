@@ -1,10 +1,13 @@
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import type {
+    DataStructField,
     DataType,
     DataTypeRegistry,
 } from "./data-types.js";
 import { passesByReference } from "./data-types.js";
 import type { Value } from "./types.js";
+import { sameCompiledValue } from "./types.js";
 import { parameterIsReadOnly } from "./user-functions.js";
 
 const successfulConstructorResourceKinds = new Set([
@@ -13,6 +16,53 @@ const successfulConstructorResourceKinds = new Set([
     "audio-node",
     "audio-buffer",
 ]);
+
+/** One property a shared class instance stores inside its `Ref`. */
+interface StoredClassField extends DataStructField {
+    /** The property name in the source. */
+    source: string;
+}
+
+/** A class body's own instance property declarations, named plainly. */
+type InstanceProperty = ts.PropertyDeclaration & { name: ts.Identifier };
+
+/** The instance property declarations a class body writes, in order. */
+function instanceProperties(
+    declaration: ts.ClassDeclaration,
+): InstanceProperty[] {
+    return declaration.members.filter(
+        (member): member is InstanceProperty =>
+            ts.isPropertyDeclaration(member) &&
+            ts.isIdentifier(member.name) &&
+            (ts.getCombinedModifierFlags(member) &
+                ts.ModifierFlags.Static) ===
+                0,
+    );
+}
+
+/** A class body's accessors, by property name. */
+function accessorsOf(declaration: ts.ClassDeclaration): {
+    getters: Record<string, ts.GetAccessorDeclaration>;
+    setters: Record<string, ts.SetAccessorDeclaration>;
+} {
+    const getters: Record<string, ts.GetAccessorDeclaration> = {};
+    const setters: Record<string, ts.SetAccessorDeclaration> = {};
+    for (const member of declaration.members) {
+        if (
+            ts.isGetAccessorDeclaration(member) &&
+            ts.isIdentifier(member.name)
+        ) {
+            getters[member.name.text] = member;
+        }
+        if (
+            ts.isSetAccessorDeclaration(member) &&
+            ts.isIdentifier(member.name)
+        ) {
+            setters[member.name.text] = member;
+        }
+    }
+    return { getters, setters };
+}
 
 export interface ClassLoweringContext {
     readonly checker: ts.TypeChecker;
@@ -42,12 +92,14 @@ export interface ClassLoweringContext {
     bindClassField(
         name: ts.Identifier,
         initializer: ts.Expression,
+        declared?: DataType,
     ): void;
     bindNullableClassField(
         name: ts.Identifier,
     ): Value | undefined;
     bindUninitializedClassDataField(
         name: ts.Identifier,
+        declared?: DataType,
     ): Value | undefined;
     bindOptionalResourceValue(
         name: ts.Identifier,
@@ -55,6 +107,8 @@ export interface ClassLoweringContext {
     pushScope(cppPrefix: string): void;
     popScope(): void;
     allocateUserFunctionPrefix(): string;
+    allocateTemporaryCppName(label: string): string;
+    reachJsData(): void;
     emit(line: string): void;
     increaseIndent(): void;
     decreaseIndent(): void;
@@ -67,6 +121,11 @@ export interface ClassLoweringContext {
         expression: ts.Expression,
         dataType: DataType,
     ): string;
+    assignOptionalResourceValue(
+        target: Value,
+        value: Value,
+        node: ts.Node,
+    ): void;
     defineThis(instance: Value | undefined): void;
     activeThis(): Value | undefined;
     registerClassInstance(
@@ -102,6 +161,14 @@ export class ClassLowerer {
     private readonly recursiveMethods = new Map<
         ts.MethodDeclaration,
         boolean
+    >();
+    /**
+     * Per shared class, the fields its layout hoisted and the value each
+     * one was proven to hold at every construction.
+     */
+    private readonly hoistedClassFields = new Map<
+        string,
+        Map<string, Value>
     >();
     private readonly activeRecursiveMethods = new Map<
         ts.MethodDeclaration,
@@ -349,36 +416,11 @@ export class ClassLowerer {
                 );
                 values.forEach((value, index) => {
                     const target = targets[index]!;
-                    if (
-                        value.kind === "data" &&
-                        value.dataType?.kind === "optional" &&
-                        value.dataType.inner.kind === "handle" &&
-                        value.dataType.inner.handle === target.kind
-                    ) {
-                        this.context.emit(
-                            `${target.optionalStorageCpp} = ${value.cpp};`,
-                        );
-                        return;
-                    }
-                    if (value.kind !== target.kind) {
-                        this.context.fail(
-                            success!.arguments![index]!,
-                            `Nullable factory field expects ${target.kind}, received ${value.kind}.`,
-                        );
-                    }
-                    if (value.optionalFoundCpp !== undefined) {
-                        this.context.emit(
-                            `if (${value.optionalFoundCpp}) {`,
-                        );
-                        this.context.emit(
-                            `    ${target.optionalStorageCpp} = ${value.cpp};`,
-                        );
-                        this.context.emit("}");
-                    } else {
-                        this.context.emit(
-                            `${target.optionalStorageCpp} = ${value.cpp};`,
-                        );
-                    }
+                    this.context.assignOptionalResourceValue(
+                        target,
+                        value,
+                        success!.arguments![index]!,
+                    );
                     if (value.audioMainBusCpp !== undefined) {
                         this.context.emit(
                             `${mainBus} = ${value.audioMainBusCpp};`,
@@ -494,35 +536,75 @@ export class ClassLowerer {
               )
             : [];
         const fields: Record<string, Value> = {};
-        const getters: Record<
-            string,
-            ts.GetAccessorDeclaration
-        > = {};
-        const setters: Record<
-            string,
-            ts.SetAccessorDeclaration
-        > = {};
-        for (const member of declaration.members) {
-            if (
-                ts.isGetAccessorDeclaration(member) &&
-                ts.isIdentifier(member.name)
-            ) {
-                getters[member.name.text] = member;
-            }
-            if (
-                ts.isSetAccessorDeclaration(member) &&
-                ts.isIdentifier(member.name)
-            ) {
-                setters[member.name.text] = member;
-            }
-        }
+        const { getters, setters } = accessorsOf(declaration);
+        const instanceType =
+            this.context.checker.getTypeAtLocation(expression);
+        const instanceTypeArguments =
+            this.context.dataTypes.typeArgumentsOf(
+                declaration,
+                instanceType,
+            );
         const instance: Value = {
             kind: "record",
             cpp: "",
             recordProperties: fields,
             recordGetters: getters,
             recordSetters: setters,
+            ...(instanceTypeArguments
+                ? { classTypeArguments: instanceTypeArguments }
+                : {}),
         };
+        // A class something already demanded in a native data position is
+        // one shared object rather than a bag of locals: it allocates its
+        // `Ref<XData>` here, and every field the layout keeps names a slot
+        // inside it instead of a local of its own.
+        const structName =
+            this.context.dataTypes.existingClassStruct(instanceType);
+        if (structName) {
+            const layout = this.runtimeLayout(declaration, structName);
+            const cpp = this.context.allocateTemporaryCppName(
+                `${structName.toLowerCase()}_instance`,
+            );
+            this.context.reachJsData();
+            const structType: DataType = { kind: "struct", name: structName };
+            const cppType = this.context.dataTypes.cppType(structType);
+            this.context.emit(
+                `${cppType} ${cpp} = ` +
+                    `bbl::js::make_ref<bblscene::${structName}Data>();`,
+            );
+            instance.cpp = cpp;
+            instance.dataType = structType;
+            for (const field of layout) {
+                fields[field.source] = this.storedFieldValue(
+                    cpp,
+                    field,
+                );
+            }
+            // What the layout left out has to come from somewhere every
+            // instance shares. The one shape that can: a constructor
+            // parameter, bound here to the value the CALLER evaluated
+            // rather than to a local of this construction, so the proof
+            // below compares what the sites passed.
+            if (constructorDeclaration) {
+                for (const [name, hoist] of this.hoistedParameterFields(
+                    declaration,
+                    constructorDeclaration,
+                    layout,
+                )) {
+                    const argument = evaluatedArguments[hoist.index];
+                    if (argument) {
+                        // The body's own `this.x = p` has nothing left to
+                        // do; marking the binding with that exact assignment
+                        // is what tells the assignment path so, instead of
+                        // it re-deriving the same fact by comparing values.
+                        fields[name] = {
+                            ...argument,
+                            classHoistedAssignment: hoist.assignment,
+                        };
+                    }
+                }
+            }
+        }
         // Constructor bodies may call another method on `this`. Make the
         // declaration discoverable as soon as the instance record exists,
         // rather than only after construction has already returned.
@@ -539,15 +621,24 @@ export class ClassLowerer {
         try {
             // Field declarations with initializers bind first, so the
             // constructor body can already read them.
-            for (const member of declaration.members) {
-                if (
-                    ts.isPropertyDeclaration(member) &&
-                    !member.initializer &&
-                    ts.isIdentifier(member.name) &&
-                    (ts.getCombinedModifierFlags(member) &
-                        ts.ModifierFlags.Static) ===
-                        0
-                ) {
+            for (const member of instanceProperties(declaration)) {
+                const stored = fields[member.name.text];
+                // A slot the layout already allocated inside the shared
+                // object is storage; its declaration initializer is a
+                // store into that slot rather than a second binding.
+                if (stored?.classStoredField) {
+                    if (member.initializer) {
+                        this.context.emit(
+                            `${stored.cpp} = ` +
+                                `${this.context.compileForDataSink(
+                                    member.initializer,
+                                    stored.dataType!,
+                                )};`,
+                        );
+                    }
+                    continue;
+                }
+                if (!member.initializer) {
                     const nullable =
                         this.context.bindNullableClassField(
                             member.name,
@@ -558,6 +649,10 @@ export class ClassLowerer {
                         const data =
                             this.context.bindUninitializedClassDataField(
                                 member.name,
+                                this.context.dataTypes.classFieldDataType(
+                                    instanceType,
+                                    member.name,
+                                ),
                             );
                         if (data) {
                             fields[member.name.text] = data;
@@ -589,25 +684,37 @@ export class ClassLowerer {
                     }
                     continue;
                 }
-                if (
-                    ts.isPropertyDeclaration(member) &&
-                    member.initializer &&
-                    ts.isIdentifier(member.name) &&
-                    (ts.getCombinedModifierFlags(member) &
-                        ts.ModifierFlags.Static) ===
-                        0
-                ) {
-                    // Declaring a local gives array and numeric fields
-                    // real storage; the record then names that local.
-                    this.context.bindClassField(
+                // Declaring a local gives array and numeric fields
+                // real storage; the record then names that local.
+                this.context.bindClassField(
+                    member.name,
+                    member.initializer,
+                    this.context.dataTypes.classFieldDataType(
+                        instanceType,
                         member.name,
-                        member.initializer,
-                    );
-                    fields[member.name.text] =
-                        this.context.compileValue(
-                            member.name,
-                        );
+                    ),
+                );
+                const bound = this.context.compileValue(member.name);
+                if (
+                    bound.kind === "callback" &&
+                    !bound.callbackRecordOwner?.recordProperties
+                ) {
+                    // A handler written in the class body closes over the
+                    // instance as well as over the enclosing scope. Keeping
+                    // both is what lets a later `on(this._handler)`
+                    // materialize the body with the same `this` -- and the
+                    // same captured locals -- the declaration had.
+                    bound.callbackRecordOwner = {
+                        ...instance,
+                        ...(bound.callbackRecordOwner?.recordScopes
+                            ? {
+                                  recordScopes:
+                                      bound.callbackRecordOwner.recordScopes,
+                              }
+                            : {}),
+                    };
                 }
+                fields[member.name.text] = bound;
             }
             if (constructorDeclaration) {
                 this.bindParameters(
@@ -622,11 +729,249 @@ export class ClassLowerer {
                     this.context.emitStatement(statement);
                 }
             }
+            if (structName) {
+                this.proveHoistedFields(
+                    structName,
+                    declaration,
+                    fields,
+                    expression,
+                );
+            }
         } finally {
             this.context.defineThis(previousThis);
             this.context.popScope();
         }
         return instance;
+    }
+
+    /**
+     * Which of a class's properties the shared object stores, paired with
+     * the source names they came from.
+     *
+     * The layout itself belongs to the registry, which settles it when the
+     * struct is minted; this only pairs each slot back with the property
+     * name the class wrote, so field bindings are keyed by that name.
+     */
+    private runtimeLayout(
+        declaration: ts.ClassDeclaration,
+        structName: string,
+    ): readonly StoredClassField[] {
+        const layout: StoredClassField[] = [];
+        for (const member of instanceProperties(declaration)) {
+            const source = member.name.text;
+            const field = this.context.dataTypes.classStructField(
+                structName,
+                source,
+            );
+            if (field) {
+                layout.push({ ...field, source });
+            }
+        }
+        return layout;
+    }
+
+    /**
+     * Fields the layout does not store and the constructor assigns straight
+     * from one of its own parameters, paired with that parameter's index
+     * and with the exact assignment that proves it.
+     *
+     * This is the whole grammar a hoist is allowed to take: `this.x = p`
+     * with `p` a parameter, at the top of the constructor body. A field
+     * computed from something else has no value the sites could be compared
+     * on, so it is left out here and the proof refuses it by name.
+     *
+     * The assignment travels with the pair because it is the only write the
+     * binding covers. A conditional one further down the constructor, or a
+     * retarget in a method, is a different node and stays a rebind.
+     */
+    private hoistedParameterFields(
+        declaration: ts.ClassDeclaration,
+        constructorDeclaration: ts.ConstructorDeclaration,
+        layout: readonly StoredClassField[],
+    ): ReadonlyMap<
+        string,
+        { index: number; assignment: ts.BinaryExpression }
+    > {
+        const hoisted = new Map<
+            string,
+            { index: number; assignment: ts.BinaryExpression }
+        >();
+        const parameterIndex = new Map<string, number>();
+        constructorDeclaration.parameters.forEach((parameter, index) => {
+            if (ts.isIdentifier(parameter.name)) {
+                parameterIndex.set(parameter.name.text, index);
+            }
+        });
+        const stored = new Set(layout.map((field) => field.source));
+        const declared = new Set(
+            instanceProperties(declaration).map(
+                (member) => member.name.text,
+            ),
+        );
+        for (const statement of constructorDeclaration.body?.statements ?? []) {
+            if (
+                !ts.isExpressionStatement(statement) ||
+                !ts.isBinaryExpression(statement.expression) ||
+                statement.expression.operatorToken.kind !==
+                    ts.SyntaxKind.EqualsToken
+            ) {
+                continue;
+            }
+            const { left, right } = statement.expression;
+            if (
+                !ts.isPropertyAccessExpression(left) ||
+                left.expression.kind !== ts.SyntaxKind.ThisKeyword ||
+                !ts.isIdentifier(left.name) ||
+                !ts.isIdentifier(right) ||
+                stored.has(left.name.text) ||
+                !declared.has(left.name.text)
+            ) {
+                continue;
+            }
+            const index = parameterIndex.get(right.text);
+            if (index !== undefined) {
+                hoisted.set(left.name.text, {
+                    index,
+                    assignment: statement.expression,
+                });
+            }
+        }
+        return hoisted;
+    }
+
+    /** The lvalue one stored field of a shared instance names. */
+    private storedFieldValue(
+        instanceCpp: string,
+        field: DataStructField,
+    ): Value {
+        const value = this.context.dataValue(
+            `${instanceCpp}->${field.name}`,
+            field.type,
+        );
+        value.nativeLvalue = true;
+        value.borrowedData = true;
+        value.classStoredField = true;
+        return value;
+    }
+
+    /**
+     * Checks that every field the layout hoisted holds the same value at
+     * this construction as at the first one.
+     *
+     * This is what makes a hoisted field sound at all: a method inlined on a
+     * receiver read out of a container cannot know which instance it has, so
+     * a field that is not stored must be the same for all of them. The proof
+     * is over every reached construction rather than the first -- a second
+     * site with a different renderer fails generation instead of silently
+     * inheriting the first one's.
+     */
+    private proveHoistedFields(
+        structName: string,
+        declaration: ts.ClassDeclaration,
+        fields: Record<string, Value>,
+        node: ts.Node,
+    ): void {
+        const hoisted = new Map<string, Value>();
+        for (const [name, value] of Object.entries(fields)) {
+            if (value.classStoredField) continue;
+            hoisted.set(name, value);
+        }
+        const known = this.hoistedClassFields.get(structName);
+        if (!known) {
+            this.hoistedClassFields.set(structName, hoisted);
+            return;
+        }
+        for (const [name, value] of hoisted) {
+            const first = known.get(name);
+            if (!first || !sameCompiledValue(first, value)) {
+                this.context.fail(
+                    node,
+                    `Field '${name}' of shared class ` +
+                        `'${declaration.name?.text ?? structName}' is not the ` +
+                        "same at every construction, so a method inlined on a " +
+                        `stored instance could not name it ` +
+                        `(${first?.kind ?? "unbound"} ${first?.cpp ?? ""} then ` +
+                        `${value.kind} ${value.cpp}).`,
+                );
+            }
+        }
+        for (const name of known.keys()) {
+            if (!hoisted.has(name)) {
+                this.context.fail(
+                    node,
+                    `Field '${name}' of shared class ` +
+                        `'${declaration.name?.text ?? structName}' is bound at ` +
+                        "one construction and not at another.",
+                );
+            }
+        }
+    }
+
+    /**
+     * Turns a stored instance back into the record the class subset
+     * inlines against: its fields are the slots of the `Ref` this value
+     * names, plus the fields the layout proved uniform.
+     *
+     * The receiver is bound to a local first when repeating its expression
+     * would repeat work or read a loop variable that has since moved on;
+     * a plain name is already stable and is used as it stands.
+     */
+    public hydrate(value: Value): Value | undefined {
+        if (
+            value.kind !== "data" ||
+            value.dataType?.kind !== "struct" ||
+            !this.context.dataTypes.isClassStruct(value.dataType.name)
+        ) {
+            return undefined;
+        }
+        const structName = value.dataType.name;
+        const binding = this.context.dataTypes.classStruct(structName);
+        if (!binding) return undefined;
+        // Every field read repeats the receiver's spelling. A plain name
+        // repeats for free; anything else -- a call, an indexed read, a
+        // member of another record -- is bound once so the instance the
+        // method runs on is the one the call named.
+        let instanceCpp = value.cpp;
+        if (!cppIdentifierPattern.test(instanceCpp)) {
+            const bound = this.context.allocateTemporaryCppName(
+                `${structName.toLowerCase()}_receiver`,
+            );
+            this.context.emit(
+                `${this.context.dataTypes.cppType(value.dataType)} ` +
+                    `${bound} = ${instanceCpp};`,
+            );
+            instanceCpp = bound;
+        }
+        const fields: Record<string, Value> = {};
+        const hoisted = this.hoistedClassFields.get(structName);
+        for (const member of instanceProperties(binding.declaration)) {
+            const source = member.name.text;
+            const stored = this.context.dataTypes.classStructField(
+                structName,
+                source,
+            );
+            const bound = stored
+                ? this.storedFieldValue(instanceCpp, stored)
+                : hoisted?.get(source);
+            if (bound) {
+                fields[source] = bound;
+            }
+        }
+        const { getters, setters } = accessorsOf(binding.declaration);
+        const typeArguments = this.context.dataTypes.typeArgumentsOf(
+            binding.declaration,
+            binding.type,
+        );
+        return {
+            ...value,
+            cpp: instanceCpp,
+            kind: "record",
+            recordProperties: fields,
+            recordGetters: getters,
+            recordSetters: setters,
+            classDeclaration: binding.declaration,
+            ...(typeArguments ? { classTypeArguments: typeArguments } : {}),
+        };
     }
 
     /** Evaluate explicit class-call arguments while the caller owns `this`. */
@@ -885,6 +1230,7 @@ export class ClassLowerer {
         instance: Value,
         setter: ts.SetAccessorDeclaration,
         value: ts.Expression,
+        evaluatedArgument?: Value,
     ): void {
         if (!setter.body || setter.parameters.length !== 1) {
             this.context.fail(
@@ -892,11 +1238,13 @@ export class ClassLowerer {
                 "A reached class setter requires one parameter and a body.",
             );
         }
-        const argumentValue = this.compileClassArguments(
-            setter,
-            [value],
-            "setter",
-        )[0]!;
+        const argumentValue =
+            evaluatedArgument ??
+            this.compileClassArguments(
+                setter,
+                [value],
+                "setter",
+            )[0]!;
         this.context.pushScope(
             this.context.allocateUserFunctionPrefix(),
         );
@@ -910,9 +1258,18 @@ export class ClassLowerer {
                 false,
                 [argumentValue],
             );
-            for (const statement of setter.body.statements) {
-                this.context.emitStatement(statement);
+            this.context.emit("[&]() -> void {");
+            this.context.increaseIndent();
+            this.context.beginNativeFunctionBody(undefined);
+            try {
+                for (const statement of setter.body.statements) {
+                    this.context.emitStatement(statement);
+                }
+            } finally {
+                this.context.endNativeFunctionBody();
+                this.context.decreaseIndent();
             }
+            this.context.emit("}();");
         } finally {
             this.context.defineThis(previousThis);
             this.context.popScope();
@@ -1253,8 +1610,10 @@ export class ClassLowerer {
                             `Guarded record property '${descriptor.name}' has an incompatible resource kind.`,
                         );
                     }
-                    this.context.emit(
-                        `${output.optionalStorageCpp} = ${value.cpp};`,
+                    this.context.assignOptionalResourceValue(
+                        output,
+                        value,
+                        descriptor.identifier,
                     );
                     if (value.engineCpp !== undefined) {
                         output.engineCpp = value.engineCpp;
@@ -1450,7 +1809,12 @@ export class ClassLowerer {
     private rejectUnsupportedMembers(
         declaration: ts.ClassDeclaration,
     ): void {
-        if (declaration.heritageClauses?.length) {
+        if (
+            declaration.heritageClauses?.some(
+                (clause) =>
+                    clause.token === ts.SyntaxKind.ExtendsKeyword,
+            )
+        ) {
             this.context.fail(
                 declaration,
                 "Class inheritance is outside the supported subset.",

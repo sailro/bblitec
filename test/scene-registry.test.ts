@@ -43,7 +43,7 @@ test("registers unique generated scene targets", () => {
                 sourceOrigin === "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "littlest-tokyo", "bath-day", "freeciv", "minecraft"],
+        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "littlest-tokyo", "bath-day", "freeciv", "sandblox", "minecraft"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is
@@ -126,6 +126,10 @@ test("registers unique generated scene targets", () => {
             ?.BBLITE_SCREENSHOT_FRAME,
         "180",
     );
+    assert.equal(getScene("sandblox").parity?.referenceFrame, 180);
+    assert.equal(getScene("sandblox").parity?.referenceSearch, "?fresh=1");
+    assert.equal(getScene("sandblox").parity?.maxFullMad, 0.2);
+    assert.equal(getScene("sandblox").parity?.maxForegroundMad, 0.2);
     assert.equal(getScene("minecraft").name, "Voxel Sandbox");
     assert.equal(getScene("minecraft").parity?.referenceFrame, 180);
     assert.equal(

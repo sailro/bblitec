@@ -117,8 +117,12 @@ namespace {
 }
 
 struct SharedShaderGeometry;
-struct SharedShaderMaterialTextures;
+struct SharedMaterialTextures;
+using SharedShaderMaterialTextures = SharedMaterialTextures;
 struct SharedComposedMaterialTextures;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+using SharedPluginMaterialTextures = SharedMaterialTextures;
+#endif
 
 struct GpuMesh {
     SDL_GPUBuffer* vertices = nullptr;
@@ -164,6 +168,11 @@ struct GpuMesh {
     SDL_GPUBuffer* instance_colors = nullptr;
 #endif
     std::uint64_t instance_version = 0;
+    // How many instance rows the buffers above were allocated for. A live
+    // pool can double past it (`addThinInstance`), and every one of them is
+    // sized from this same count, so the frame sync recreates all three
+    // together when `thin_instance_pool_grew` says so.
+    std::uint32_t instance_capacity = 0;
 #if BBLITE_GPU_MORPH_STORAGE
     SDL_GPUBuffer* morph_deltas = nullptr;
     SDL_GPUBuffer* morph_weights = nullptr;
@@ -260,6 +269,12 @@ struct GpuMesh {
     // every other material family.
     std::vector<SDL_GPUTextureSamplerBinding> shader_textures;
     SharedShaderMaterialTextures* shared_shader_textures = nullptr;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    // The textures this mesh's material plugins bound, in the order the
+    // pin's own `bindPluginTextures` pushes them. Shared per material,
+    // because the textures are the material's.
+    SharedPluginMaterialTextures* shared_plugin_textures = nullptr;
+#endif
     // PBR and Standard texture slots belong to their material. Fractured
     // meshes can contribute hundreds of render items that all retain the
     // same material; each mesh borrows this one backend upload.
@@ -315,8 +330,8 @@ struct SharedShaderGeometry {
     std::size_t users = 0;
 };
 
-/** Texture/sampler pairs belong to a shader material, not to each mesh. */
-struct SharedShaderMaterialTextures {
+/** Texture/sampler pairs belong to a material, not to each mesh. */
+struct SharedMaterialTextures {
     MaterialHandle material{};
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
     std::size_t users = 0;
@@ -1052,6 +1067,10 @@ struct GpuState {
         shared_shader_material_textures;
     std::vector<std::unique_ptr<SharedComposedMaterialTextures>>
         shared_composed_material_textures;
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    std::vector<std::unique_ptr<SharedPluginMaterialTextures>>
+        shared_plugin_material_textures;
+#endif
     std::vector<GpuRenderTarget> render_targets;
     std::vector<GpuGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -3603,6 +3622,30 @@ PinnedResource standard_resource_for(
         }
         break;
     }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    // A material plugin's own declaration. The name alone does not resolve
+    // it -- two plugin lists may declare the same WGSL name -- so the row
+    // is found by the material's own signature index, and the texture is
+    // that material's, at the position `bindPluginTextures` fills.
+    if (material != nullptr && mesh.shared_plugin_textures != nullptr) {
+        if (const upstream::StandardPluginBinding* plugin_row =
+                upstream::standard_plugin_binding_for(
+                    name,
+                    material->plugin_signature_index)) {
+            if (
+                plugin_row->ordinal >=
+                mesh.shared_plugin_textures->bindings.size()) {
+                gpu_error(
+                    ("standard variant plugin resource '" + name +
+                     "' has no bound texture.")
+                        .c_str());
+            }
+            const SDL_GPUTextureSamplerBinding& bound =
+                mesh.shared_plugin_textures->bindings[plugin_row->ordinal];
+            return {bound.texture, bound.sampler};
+        }
+    }
+#endif
 #if BBLITE_STANDARD_SHADOWS
     // Group 2, after the slot table for the reason the PBR resolver asks in
     // that order: the two name sets are disjoint, and a material texture is
@@ -5235,6 +5278,13 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
     } else {
         release_sprite_fragment_textures(state.device, mesh.shader_textures);
     }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    if (mesh.shared_plugin_textures) {
+        release_shared_user(
+            mesh.shared_plugin_textures,
+            "Plugin material texture reference count underflow.");
+    }
+#endif
 }
 
 void prune_shared_shader_geometries(GpuState& state) {
@@ -5254,6 +5304,15 @@ void prune_shared_shader_material_textures(GpuState& state) {
                 state.device,
                 textures.bindings);
         });
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    prune_unused_shared(
+        state.shared_plugin_material_textures,
+        [&](SharedPluginMaterialTextures& textures) {
+            release_sprite_fragment_textures(
+                state.device,
+                textures.bindings);
+        });
+#endif
 }
 
 void prune_shared_composed_material_textures(GpuState& state) {
@@ -5341,6 +5400,15 @@ void release(GpuState& state) {
                 state.device,
                 textures.bindings);
         });
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+    release_all_shared(
+        state.shared_plugin_material_textures,
+        [&](SharedPluginMaterialTextures& textures) {
+            release_sprite_fragment_textures(
+                state.device,
+                textures.bindings);
+        });
+#endif
     release_all_shared(
         state.shared_composed_material_textures,
         [&](SharedComposedMaterialTextures& textures) {
@@ -8249,6 +8317,9 @@ bool run_gpu_engine(Engine& engine) {
                               instance_matrices.size());
                 gpu_mesh.instance_version =
                     mesh_record.instance_version;
+                gpu_mesh.instance_capacity =
+                    static_cast<std::uint32_t>(
+                        instance_matrices.size());
 #if BBLITE_GPU_INSTANCE_COLORS
                 {
                     // One tightly-packed RGBA row per matrix-pool slot. A
@@ -8497,6 +8568,45 @@ bool run_gpu_engine(Engine& engine) {
                 }
                 ++gpu_mesh.shared_shader_textures->users;
             }
+#if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
+            // The textures this material's plugins bound, uploaded once per
+            // material through the same caller-owned slot path: the
+            // payload's own bytes, its own encoding, its own sampler and
+            // the white fallback. `standard_plugin_bindings` resolves a
+            // composed binding name to a position in this list.
+            if (material && !material->plugin_textures.empty()) {
+                gpu_mesh.shared_plugin_textures =
+                    find_shared_shader_material_textures(
+                        state.shared_plugin_material_textures,
+                        item.material);
+                if (!gpu_mesh.shared_plugin_textures) {
+                    auto created =
+                        std::make_unique<SharedPluginMaterialTextures>(
+                            SharedPluginMaterialTextures{
+                                .material = item.material,
+                                .bindings = {},
+                            });
+                    for (
+                        const MaterialPluginTexture& texture :
+                        material->plugin_textures) {
+                        created->bindings.push_back(
+                            SDL_GPUTextureSamplerBinding{
+                                upload_texture(
+                                    state.device,
+                                    texture.data,
+                                    texture.srgb,
+                                    {255, 255, 255, 255}),
+                                create_texture_sampler(
+                                    state.device,
+                                    texture.data.sampler)});
+                    }
+                    gpu_mesh.shared_plugin_textures = created.get();
+                    state.shared_plugin_material_textures.push_back(
+                        std::move(created));
+                }
+                ++gpu_mesh.shared_plugin_textures->users;
+            }
+#endif
             return gpu_mesh;
         };
         for (const upstream::RenderItem& item : render_plan.items) {
@@ -8558,8 +8668,8 @@ bool run_gpu_engine(Engine& engine) {
         cpu_startup_mark("draw-lists-ready");
         std::uint64_t synced_render_topology_version =
             scene.render_topology_version;
-        std::uint64_t synced_visibility_epoch =
-            engine.visibility_epoch;
+        std::uint64_t synced_draw_list_epoch =
+            engine.draw_list_epoch;
         std::uint32_t synced_material_family_mask =
             scene.material_family_mask;
 
@@ -8588,6 +8698,9 @@ bool run_gpu_engine(Engine& engine) {
         // packer fills it in place, so the per-draw pushes reuse one
         // allocation across draws and frames.
         std::vector<float> shader_block_scratch;
+#if BBLITE_GPU_INSTANCING && BBLITE_PBR_VARIANTS > 0
+        std::vector<std::array<float, 16>> pinned_instance_scratch;
+#endif
         // The shared drain owns the per-event contract; the scene loop
         // only adds its camera-controls dispatch, which rides the hook so
         // every event the scene receives also reaches the camera -- and
@@ -8725,14 +8838,99 @@ bool run_gpu_engine(Engine& engine) {
                     mesh.thin_instanced &&
                     gpu_mesh.instance_version !=
                         mesh.instance_version) {
+                    // A pool that grew past what registration allocated
+                    // cannot be filled by an update: the three instance
+                    // buffers are recreated at the new capacity, which is
+                    // also a full upload, so the dirty-range write below is
+                    // skipped for that frame. The old buffers are released
+                    // here because SDL retires one only once the command
+                    // buffers still holding it have finished. Nothing
+                    // caches these handles -- every pass reads GpuMesh live
+                    // at the draw -- so a shadow or depth task later this
+                    // frame binds the new buffers.
+                    const bool recreated =
+                        thin_instance_pool_grew(
+                            mesh,
+                            gpu_mesh.instance_capacity);
+                    if (recreated) {
+                        const std::size_t rows =
+                            mesh.instance_matrices.size();
+                        SDL_GPUBuffer* const previous_instances =
+                            gpu_mesh.instances;
+                        SDL_ReleaseGPUBuffer(
+                            state.device,
+                            previous_instances);
+                        gpu_mesh.instances =
+                            frame_buffer_uploads.upload(
+                                SDL_GPU_BUFFERUSAGE_VERTEX,
+                                mesh.instance_matrices.data(),
+                                rows *
+                                    sizeof(mesh.instance_matrices
+                                               .front()));
+#if BBLITE_PBR_VARIANTS > 0
+                        // The PBR family's mirror-conjugated stream is
+                        // allocated for every pool registration saw, and its
+                        // draw predicate is the LIVE record -- so a mesh
+                        // registered with no pool at all, whose first
+                        // addThinInstance lands here, has none yet and would
+                        // bind a null buffer. Allocate it whenever the
+                        // record now instances, null included, rather than
+                        // only refreshing an existing one. A build with no
+                        // PBR variant compiles this out, so Standard pays
+                        // nothing for it.
+                        if (
+                            gpu_mesh.pinned_instances &&
+                            gpu_mesh.pinned_instances !=
+                                previous_instances) {
+                            // Aliased to `instances` for some pools and
+                            // owned otherwise, exactly as release_gpu_mesh
+                            // reads it.
+                            SDL_ReleaseGPUBuffer(
+                                state.device,
+                                gpu_mesh.pinned_instances);
+                        }
+                        {
+                            pinned_instance_matrices(
+                                mesh,
+                                rows,
+                                pinned_instance_scratch);
+                            gpu_mesh.pinned_instances =
+                                frame_buffer_uploads.upload(
+                                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                                    pinned_instance_scratch.data(),
+                                    rows *
+                                        sizeof(pinned_instance_scratch
+                                                   .front()));
+                        }
+#endif
+#if BBLITE_GPU_INSTANCE_COLORS
+                        if (gpu_mesh.instance_colors) {
+                            // The colour mirror is the scene's own array
+                            // and may still be the shorter one; pad to the
+                            // pool the way registration does.
+                            std::vector<float> instance_colors =
+                                mesh.instance_colors;
+                            instance_colors.resize(rows * 4, 1.0f);
+                            SDL_ReleaseGPUBuffer(
+                                state.device,
+                                gpu_mesh.instance_colors);
+                            gpu_mesh.instance_colors =
+                                frame_buffer_uploads.upload(
+                                    SDL_GPU_BUFFERUSAGE_VERTEX,
+                                    instance_colors.data(),
+                                    instance_colors.size() *
+                                        sizeof(float));
+                        }
+#endif
+                        gpu_mesh.instance_capacity =
+                            static_cast<std::uint32_t>(rows);
+                    }
                     // Re-upload the pinned dirty range [0, count) from
                     // the record pool; slots past the active count keep
                     // their previous contents and are never drawn.
-                    const std::size_t active_count = std::min(
-                        static_cast<std::size_t>(
-                            mesh.instance_count),
-                        mesh.instance_matrices.size());
-                    if (active_count > 0) {
+                    const std::size_t active_count =
+                        thin_instance_active_count(mesh);
+                    if (!recreated && active_count > 0) {
                         frame_buffer_uploads.update(
                             gpu_mesh.instances,
                             mesh.instance_matrices.data(),
@@ -8741,14 +8939,15 @@ bool run_gpu_engine(Engine& engine) {
                                            .front()));
 #if BBLITE_PBR_VARIANTS > 0
                         if (gpu_mesh.pinned_instances) {
-                            const std::vector<std::array<float, 16>>
-                                pinned_matrices =
-                                    pinned_instance_matrices(mesh);
+                            pinned_instance_matrices(
+                                mesh,
+                                active_count,
+                                pinned_instance_scratch);
                             frame_buffer_uploads.update(
                                 gpu_mesh.pinned_instances,
-                                pinned_matrices.data(),
+                                pinned_instance_scratch.data(),
                                 active_count *
-                                    sizeof(pinned_matrices.front()));
+                                    sizeof(pinned_instance_scratch.front()));
                         }
 #endif
 #if BBLITE_GPU_INSTANCE_COLORS
@@ -8971,19 +9170,20 @@ bool run_gpu_engine(Engine& engine) {
                     frame);
                 topology_updated = true;
             } else if (
-                engine.visibility_epoch != synced_visibility_epoch) {
+                engine.draw_list_epoch != synced_draw_list_epoch) {
                 // The pin's visibility epoch re-records the cached opaque
                 // render bundles; the draw lists are this port's bundles,
                 // so only they and the task lists rebuild -- mesh GPU
-                // state is untouched. (A full topology rebuild above
-                // rebuilds them anyway.)
+                // state is untouched. A culling-enabled thin-instance pool
+                // moves the second epoch only when its live count crosses
+                // zero, matching the pin's direct-bucket membership.
                 render_plan.draw_lists =
                     upstream::build_render_draw_lists(
                         render_plan.items,
                         engine);
                 rebuild_task_draw_lists();
             }
-            synced_visibility_epoch = engine.visibility_epoch;
+            synced_draw_list_epoch = engine.draw_list_epoch;
             frame_buffer_uploads.submit();
             const double uploaded =
                 cpu_profile ? monotonic_milliseconds() : 0.0;

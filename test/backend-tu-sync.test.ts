@@ -45,9 +45,9 @@ test("a DAWN-only build removes exactly the SDL_GPU TUs featureSources names", (
 // the defect that froze quake's weapon switch — hidden at build never
 // drew, hidden after build kept drawing — and nothing at compile time
 // forces the check, so the three-part shape is pinned here as text for
-// BOTH backends: the tracked epoch, the lists-only rebuild it triggers,
+// BOTH backends: the shared membership epoch, the lists-only rebuild it triggers,
 // and the re-sync.
-test("both backends re-record the draw lists on the visibility epoch", () => {
+test("both backends re-record draw lists on membership changes", () => {
     for (const file of [
         "native/src/pal_sdl_gpu.cpp",
         "native/src/pal_dawn.cpp",
@@ -55,18 +55,61 @@ test("both backends re-record the draw lists on the visibility epoch", () => {
         const text = readFileSync(file, "utf8");
         assert.match(
             text,
-            /std::uint64_t synced_visibility_epoch =\s*\r?\n\s*engine\.visibility_epoch;/,
-            `${file} does not track the visibility epoch`,
+            /std::uint64_t synced_draw_list_epoch =\s*\r?\n\s*engine\.draw_list_epoch;/,
+            `${file} does not track the draw-list epoch`,
         );
         assert.match(
             text,
-            /engine\.visibility_epoch != synced_visibility_epoch\) \{[\s\S]{0,700}?build_render_draw_lists\([\s\S]{0,200}?rebuild_task_draw_lists\(\);/,
+            /engine\.draw_list_epoch != synced_draw_list_epoch[\s\S]{0,900}?build_render_draw_lists\([\s\S]{0,200}?rebuild_task_draw_lists\(\);/,
             `${file} does not rebuild the draw lists when the epoch moves`,
         );
         assert.match(
             text,
-            /synced_visibility_epoch = engine\.visibility_epoch;/,
-            `${file} never re-syncs the visibility epoch`,
+            /synced_draw_list_epoch = engine\.draw_list_epoch;/,
+            `${file} never re-syncs the draw-list epoch`,
+        );
+    }
+});
+
+// A thin-instance pool can come into existence AFTER registration: a mesh
+// registered with no pool, whose first `addThinInstance` runs from a frame
+// callback. The PBR family's draw predicate is the live record, so it will
+// bind `pinned_instances` from that frame on -- and the capacity-recreation
+// branch is the only place that can allocate one. Both backends must
+// therefore create it there unconditionally, null included, instead of only
+// refreshing a buffer registration already made.
+test("both backends allocate the pinned instance stream for a late pool", () => {
+    for (const [file, release, create] of [
+        [
+            "native/src/pal_sdl_gpu.cpp",
+            "SDL_ReleaseGPUBuffer(\n                                state.device,\n                                gpu_mesh.pinned_instances);",
+            "gpu_mesh.pinned_instances =",
+        ],
+        [
+            "native/src/pal_dawn.cpp",
+            "wgpuBufferRelease(dawn_mesh.pinned_instances);",
+            "dawn_mesh.pinned_instances = create_buffer(",
+        ],
+    ] as const) {
+        const text = readFileSync(file, "utf8");
+        const released = text.indexOf(release);
+        assert.ok(
+            released >= 0,
+            `${file} no longer releases the previous pinned instance stream`,
+        );
+        // The allocation must sit OUTSIDE the non-null guard that wraps the
+        // release, so a null one becomes a buffer rather than staying null.
+        const guarded = text.lastIndexOf("pinned_instances &&", released);
+        assert.ok(
+            guarded >= 0,
+            `${file} no longer guards the pinned release on ownership`,
+        );
+        const closed = text.indexOf("}", released);
+        const allocated = text.indexOf(create, closed);
+        assert.ok(
+            allocated > closed,
+            `${file} only recreates an existing pinned instance stream, so a ` +
+                "pool established after registration binds nothing",
         );
     }
 });
@@ -108,4 +151,42 @@ test("the run end closes every audio context", () => {
     const captures = text.indexOf("audio_render_pending_captures();", guard);
     const closes = text.indexOf("audio_close_all_contexts();", guard);
     assert.ok(closes > captures && captures > guard);
+});
+
+test("Dawn completes canvas readback before post-copy UI", () => {
+    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    const capture = dawn.indexOf("const bool capture_frame");
+    const copy = dawn.indexOf(
+        "wgpuCommandEncoderCopyTextureToBuffer(",
+        capture,
+    );
+    const firstSubmit = dawn.indexOf(
+        "wgpuQueueSubmit(state.queue, 1, &command);",
+        copy,
+    );
+    const map = dawn.indexOf("wgpuBufferMapAsync(", firstSubmit);
+    const deferredUi = dawn.indexOf(
+        "if (ui_after_capture_copy)",
+        map,
+    );
+    assert.ok(capture >= 0 && copy > capture);
+    assert.ok(firstSubmit > copy && map > firstSubmit);
+    assert.equal(
+        dawn.slice(copy, firstSubmit).includes("render_ui_dawn_frame("),
+        false,
+    );
+    assert.ok(deferredUi > map);
+
+    const shared = readFileSync(
+        "native/src/pal_dawn_shared.hpp",
+        "utf8",
+    );
+    assert.match(shared, /maximum_wait_nanoseconds/);
+    assert.doesNotMatch(
+        shared.slice(
+            shared.indexOf("inline void wait_for"),
+            shared.indexOf("struct DawnDevice"),
+        ),
+        /UINT64_MAX/,
+    );
 });

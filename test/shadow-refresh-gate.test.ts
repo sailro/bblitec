@@ -114,6 +114,10 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
         shared,
         /fitted_shadow_casters\(\s*engine, generator, refresh\.casters\);[\s\S]{0,700}upstream::update_esm_directional_shadow[\s\S]{0,700}upstream::update_csm_cascades[\s\S]{0,500}upstream::update_pcf_directional_shadow/,
     );
+    assert.match(
+        shared,
+        /apply_mesh_bound_overrides\(record, minimum, maximum\);/,
+    );
     // A gated frame whose block is already uploaded skips the pack, the
     // compare and the visitor: the fit did not run, so the bytes are
     // provably the uploaded ones.

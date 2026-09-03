@@ -22,6 +22,22 @@ import {
 } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
 
+const palUiRmlSource = readFileSync(
+    resolve("native/src/pal_ui_rml.cpp"),
+    "utf8",
+);
+
+function compileUiScene(body: string) {
+    return compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            ${body}
+        }
+        void main();
+    `);
+}
+
 /** A curated asset URL served from the pinned upstream tree; derived from
  *  the pin so a version bump does not churn these assertions. */
 function pinnedAssetUrl(path: string): string {
@@ -240,6 +256,27 @@ test("folds feature detection for supported Web Audio factories", () => {
     assert.match(result.cpp, /v_tail = v_block\d+_panner;/);
 });
 
+test("passes sampled-source start offsets and durations to the audio PAL", () => {
+    const result = compileSource(`
+        import { createAudioEngineAsync } from "@babylonjs/lite";
+        const audio = await createAudioEngineAsync();
+        const context = audio.audioContext;
+        const source = context.createBufferSource();
+        source.buffer = context.createBuffer(1, 48000, 48000);
+        source.start(context.currentTime, 0.25);
+        source.start(context.currentTime, 0.5, 0.75);
+    `);
+
+    assert.match(
+        result.cpp,
+        /audio_node_start\([^;]+, 0\.25,?\)/,
+    );
+    assert.match(
+        result.cpp,
+        /audio_node_start\([^;]+, 0\.5, 0\.75\)/,
+    );
+});
+
 test("runs successful nullable audio constructors and preserves source loops", () => {
     const result = compileSource(`
         import {
@@ -296,6 +333,10 @@ test("runs successful nullable audio constructors and preserves source loops", (
         result.cpp,
         /AudioParamName::PlaybackRate\), 0\.75f\);/,
     );
+    assert.match(
+        result.cpp,
+        /if \(v_fn\d+_ctx\.has_value\(\)\) \{\s+v_bblite_class_field__ctx_\d+ = \*v_fn\d+_ctx;/,
+    );
 });
 
 test("preserves Web Audio writes and nullable class resource assignments", () => {
@@ -334,11 +375,11 @@ test("preserves Web Audio writes and nullable class resource assignments", () =>
     );
     assert.match(
         result.cpp,
-        /class_field_context_\d+ = v_[^;]*engine;/,
+        /\(\*v_bblite_class_field_context_\d+\) = v_[^;]*engine;/,
     );
     assert.match(
         result.cpp,
-        /class_field_output_\d+ = v_[^;]*output;/,
+        /\(\*v_bblite_class_field_output_\d+\) = v_[^;]*output;/,
     );
     assert.match(
         result.cpp,
@@ -369,6 +410,28 @@ test("copies an empty nullable audio resource without dereferencing it", () => {
         result.cpp,
         /std::optional<bbl::pal::AudioContextHandle> v_(?:fn\d+_)?current = \(\*v_context\);/,
     );
+});
+
+test("returns a nullable audio context through early value returns", () => {
+    const result = compileSource(`
+        import { createAudioEngineAsync } from "@babylonjs/lite";
+
+        let context: BaseAudioContext | null = null;
+        function currentContext(): BaseAudioContext | null {
+            if (context) return context;
+            return null;
+        }
+        const audio = await createAudioEngineAsync();
+        context = audio.audioContext;
+        const current = currentContext();
+        if (current) current.createGain();
+    `);
+
+    assert.match(
+        result.cpp,
+        /\[\&\]\(\) -> bbl::js::Nullable<bbl::pal::AudioContextHandle>/,
+    );
+    assert.match(result.cpp, /audio_create_gain\(\(\*v_current\)\)/);
 });
 
 test("lowers a light vector set to its own kind's entry point", () => {
@@ -771,7 +834,7 @@ test("lowers imported typed user functions and constants", () => {
     );
     assert.match(
         result.cpp,
-        /v_fn1_scene\.environment\.exposure = static_cast<float>\(v_fn1_exposure\)/,
+        /v_fn1_scene\.environment\.exposure = static_cast<float>\(1\.25\)/,
     );
     assert.ok(
         result.manifest.features.includes(
@@ -857,7 +920,7 @@ test("materializes private module state observed by an exported function", () =>
     );
     assert.match(
         result.cpp,
-        new RegExp(`${values[1]}\\[bbl::js::array_index\\(v_fn\\d+_index\\)\\]`),
+        new RegExp(`${values[1]}\\[bbl::js::array_index\\(1\\.0\\)\\]`),
     );
 });
 
@@ -866,9 +929,13 @@ test("materializes mutable module state used only at call time", () => {
         `
             import {
                 activate,
+                installToggle,
                 isActive,
             } from "./fixtures/compiler-modules/module-runtime-state.js";
+            import { createEngine } from "@babylonjs/lite";
 
+            await createEngine({});
+            installToggle();
             activate();
             const selected = isActive();
         `,
@@ -879,16 +946,23 @@ test("materializes mutable module state used only at call time", () => {
     );
 
     const active = result.cpp.match(
-        /bool (v_module\d+_active) = false/,
+        /auto (v_module\d+_active) = std::make_shared<bool>\(false\)/,
     );
     assert.ok(active, "the imported module owns one native state slot");
     assert.match(
         result.cpp,
-        new RegExp(`${active[1]} = true`),
+        new RegExp(`\\(\\*${active[1]}\\) = true`),
     );
     assert.match(
         result.cpp,
-        new RegExp(`bool v_selected = ${active[1]}`),
+        new RegExp(`bool v_selected = \\(\\*${active[1]}\\)`),
+    );
+    assert.match(result.cpp, /bbl::on_pointer_down/);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `\\(\\*${active[1]}\\) = !\\(\\(\\*${active[1]}\\)\\)`,
+        ),
     );
 });
 
@@ -1123,11 +1197,11 @@ test("emits qualifying class methods once as native functions", () => {
     // default is compiled at the call site.
     assert.match(
         result.cpp,
-        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, v_bblite_class_field_total_\d+, 1\.0, 2\.0\);/,
+        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, \(\*v_bblite_class_field_total_\d+\), 1\.0, 2\.0\);/,
     );
     assert.match(
         result.cpp,
-        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, v_bblite_class_field_total_\d+, 2\.0, 1\.0\);/,
+        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, \(\*v_bblite_class_field_total_\d+\), 2\.0, 1\.0\);/,
     );
 });
 
@@ -1156,7 +1230,7 @@ test("native method field writes alias every reference to the instance", () => {
     // one field local, so each call observes the other's write.
     const calls = [
         ...result.cpp.matchAll(
-            /bblscene::Meter_bump\((v_bblite_class_field_level_\d+), /g,
+            /bblscene::Meter_bump\(\(\*(v_bblite_class_field_level_\d+)\), /g,
         ),
     ];
     assert.equal(calls.length, 2);
@@ -1420,8 +1494,9 @@ test("'??' outside its lowerable routes refuses by name", () => {
 
         async function main() {
             const engine = await createEngine({});
-            const camera = createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 });
-            const doubled = camera ?? camera;
+            const doubled =
+                createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 }) ??
+                createArcRotateCamera(1, 1, 5, { x: 0, y: 0, z: 0 });
         }
         void main();
     `),
@@ -1465,6 +1540,21 @@ test("'??' reaches sinks and conditions through the same dispatch", () => {
     assert.match(
         result.cpp,
         /if \(\(v_bblite_nullish_\d+\.has_value\(\) \? \(\*v_bblite_nullish_\d+\) : false\)\)/,
+    );
+});
+
+test("uses the value as well as presence for optional boolean truthiness", () => {
+    const result = compileSource(`
+        interface Options { receiverOnly: boolean; }
+        function pool(options?: Options): number {
+            return options?.receiverOnly ? 1 : 0;
+        }
+        const selected = pool({ receiverOnly: false });
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.has_value\(\) && \*/,
     );
 });
 
@@ -1667,6 +1757,20 @@ test("lowers nested Array.from length allocations", () => {
         /bbl::js::Array<double> v_bblite_array_from_result_\d+;/,
     );
     assert.match(result.cpp, /\.push_back\(7\.0\);/);
+});
+
+test("owns readonly arrays stored inside native records", () => {
+    const result = compileSource(`
+        interface Holder { readonly values: readonly number[]; }
+        const holders: Holder[] = [{ values: [1, 2, 3] }];
+        const value = holders[0]!.values[1];
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::js::Array<double> values;/,
+    );
+    assert.doesNotMatch(result.cpp, /Span<const double> values/);
 });
 
 test("stores homogeneous object tuples with JavaScript array identity", () => {
@@ -1990,6 +2094,156 @@ test("materializes mutable intersection-typed object locals", () => {
     assert.doesNotMatch(result.cpp, /false = true|0\.0 =/);
 });
 
+test("writes nested mutable record fields through native lvalues", () => {
+    const result = compileSource(`
+        interface Box { x: number; y: number }
+        interface Actor { box: Box; speed: number }
+        const actor: Actor = {
+            box: { x: 0, y: 70 * 2.8 },
+            speed: 1,
+        };
+        actor.box.x = 4;
+        actor.box.y += 2;
+    `);
+
+    assert.match(result.cpp, /v_actor\.box->x = 4\.0;/);
+    assert.match(result.cpp, /v_actor\.box->y \+= 2\.0;/);
+    assert.doesNotMatch(result.cpp, /0\.0 =|70\.0 \* 2\.8\) \+=/);
+});
+
+test("does not fold mutable reference-record fields into retained callbacks", () => {
+    const result = compileSource(`
+        interface View { x: number }
+        interface Reader { read: () => number }
+        const view: View = { x: 0 };
+        const views: View[] = [view];
+        const count = views.length;
+        const reader: Reader = {
+            read: () => view.x,
+        };
+        function recenter(): void {
+            view.x = 4;
+        }
+        recenter();
+        const current = reader.read();
+    `);
+
+    assert.match(
+        result.cpp,
+        /stored_callback = \[=\]\(\) mutable -> double \{\s+return v_view->x;/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /stored_callback = \[=\]\(\) mutable -> double \{\s+return 0\.0;/,
+    );
+});
+
+test("retains static facts for readonly reference-record fields", () => {
+    const result = compileSource(`
+        import { createBox, createEngine } from "@babylonjs/lite";
+        interface Config {
+            readonly enabled?: boolean;
+        }
+        const engine = await createEngine({});
+        const config: Config = { enabled: false };
+        if (config.enabled ?? true) createBox(engine);
+    `);
+
+    assert.doesNotMatch(result.cpp, /bbl::create_box/);
+    assert.ok(!result.manifest.features.includes("mesh:box"));
+});
+
+test("reads live moving-sector heights for collision", () => {
+    const result = compileSource(`
+        interface Sector {
+            floorHeight: number;
+            ceilHeight: number;
+        }
+        function blocksStep(
+            sectors: Sector[],
+            currentFloor: number,
+        ): boolean {
+            const front = sectors[0]!;
+            const back = sectors[1]!;
+            const openBottom = Math.max(
+                front.floorHeight,
+                back.floorHeight,
+            );
+            return openBottom - currentFloor > 24;
+        }
+        const sectors: Sector[] = [
+            { floorHeight: -128, ceilHeight: 128 },
+            { floorHeight: -124, ceilHeight: 128 },
+        ];
+        sectors[1]!.floorHeight = 12;
+        const blocked = blocksStep(sectors, -128);
+    `);
+
+    assert.match(result.cpp, /->floorHeight = 12\.0/);
+    assert.match(
+        result.cpp,
+        /std::max\(v_fn\d+_front->floorHeight, v_fn\d+_back->floorHeight\)/,
+    );
+    assert.doesNotMatch(result.cpp, /std::max\(-128\.0, -124\.0\)/);
+});
+
+test("shares platform input records with the animation callback", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface InputState {
+            right: boolean;
+            startPressed: boolean;
+        }
+        interface Actor {
+            box: { x: number; y: number };
+        }
+        await createEngine({});
+        const state: InputState = {
+            right: false,
+            startPressed: false,
+        };
+        const onKey = (down: boolean) => (event: KeyboardEvent): void => {
+            if (event.code === "ArrowRight") state.right = down;
+            if (down && event.code === "Enter") state.startPressed = true;
+        };
+        window.addEventListener("keydown", onKey(true));
+        window.addEventListener("keyup", onKey(false));
+        const actor: Actor = { box: { x: 0, y: 196 } };
+        requestAnimationFrame(() => {
+            if (state.startPressed) actor.box.x = 100;
+            if (state.right) actor.box.x += 4;
+        });
+    `);
+
+    const state = result.cpp.match(
+        /bblscene::InputState (v_state) = bbl::js::make_ref/,
+    );
+    assert.ok(state);
+    assert.match(
+        result.cpp,
+        new RegExp(`${state[1]}->right = true`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`if \\(${state[1]}->right\\)`),
+    );
+    assert.match(result.cpp, /v_actor->box->x \+= 4\.0/);
+});
+
+test("selects a fallback for nullable reference records by presence", () => {
+    const result = compileSource(`
+        interface Cell { x: number; y: number }
+        function finish(entries: Record<string, Cell>): Cell {
+            return entries.start ?? { x: 3, y: 11 };
+        }
+        const cell = finish({ start: { x: 2, y: 9 } });
+    `);
+
+    assert.match(result.cpp, /const auto .*nullish.* = .*\.get\("start"\);/);
+    assert.match(result.cpp, /nullish.* \? .*nullish.* : /);
+    assert.doesNotMatch(result.cpp, /static_cast<bool>\(\(\*/);
+});
+
 test("keeps returned callbacks as compile-time bindings", () => {
     const result = compileSource(`
         const makeAdder = (amount: number) => (value: number): number =>
@@ -1999,7 +2253,7 @@ test("keeps returned callbacks as compile-time bindings", () => {
     `);
 
     assert.doesNotMatch(result.cpp, /auto v_addTwo =\s*;/);
-    assert.match(result.cpp, /double v_total = \(v_fn\d+_value \+ v_fn\d+_amount\);/);
+    assert.match(result.cpp, /double v_total = \(3\.0 \+ 2\.0\);/);
 });
 
 test("coerces missing partial Record numbers to NaN in arithmetic", () => {
@@ -2054,6 +2308,35 @@ test("materializes runtime-valued static maps as native arrays", () => {
     assert.match(
         result.cpp,
         /bbl::js::array_index_checked\(v_mapped, /,
+    );
+});
+
+test("hoists module record factories out of hot dynamic lookups", () => {
+    const result = compileSource(`
+        interface Definition {
+            name: string;
+            opaque: boolean;
+        }
+        function definition(name: string, opaque = true): Definition {
+            return { name, opaque };
+        }
+        const DEFINITIONS: Record<number, Definition> = {
+            1: definition("stone"),
+            2: definition("glass", false),
+        };
+        function opaque(id: number): boolean {
+            return DEFINITIONS[id]?.opaque === true;
+        }
+        const selected = opaque(Math.random() < 0.5 ? 1 : 2);
+    `);
+
+    assert.match(
+        result.cpp,
+        /static bbl::js::Map<double, bblscene::Definition> values\{/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /bool opaque\([^)]*\) \{\s+bbl::js::Map/,
     );
 });
 
@@ -2300,18 +2583,18 @@ test("lowers a class instance into per-field bindings", () => {
     );
     assert.match(
         result.cpp,
-        /double v_bblite_class_field_total_\d+ = 0\.0/,
+        /auto v_bblite_class_field_total_\d+ = std::make_shared<double>\(0\.0\)/,
     );
     assert.doesNotMatch(result.cpp, /struct Stack/);
     // One emitted loop body; the default and explicit repeat values are
     // compiled at their call sites as ordinary arguments.
     assert.match(
         result.cpp,
-        /bblscene::Stack_add\([^)]*, 1\.0, 2\.0\);/,
+        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, \(\*v_bblite_class_field_total_\d+\), 1\.0, 2\.0\);/,
     );
     assert.match(
         result.cpp,
-        /bblscene::Stack_add\([^)]*, 2\.0, 1\.0\);/,
+        /bblscene::Stack_add\(v_bblite_class_field_heights_\d+, \(\*v_bblite_class_field_total_\d+\), 2\.0, 1\.0\);/,
     );
     assert.equal(
         (result.cpp.match(/push_back/g) ?? []).length,
@@ -2352,7 +2635,7 @@ test("evaluates constructor arguments with the caller's this", () => {
 
     assert.match(
         result.cpp,
-        /return v_bblite_class_field_value_\d+;[\s\S]*double v_selected = bbl_class_fn\d+_result;/,
+        /return \(\*v_bblite_class_field_value_\d+\);[\s\S]*double v_selected = bbl_class_fn\d+_result;/,
     );
 });
 
@@ -2378,9 +2661,13 @@ test("calls a class method on a record returned by a helper", () => {
         1,
         "probing a data method must not evaluate the selected batch twice",
     );
+    const selected = result.cpp.match(
+        /auto (v_bblite_return_select_values_\d+) = std::make_shared<bbl::js::Array<double>>\(\(v_fn\d+_useRight \? \(\*v_bblite_class_field_values_\d+\) : \(\*v_bblite_class_field_values_\d+\)\)\);/,
+    );
+    assert.ok(selected);
     assert.match(
         result.cpp,
-        /bblscene::Batch_add\(\(v_fn\d+_useRight \? v_bblite_class_field_values_\d+ : v_bblite_class_field_values_\d+\), 3\.0\)/,
+        new RegExp(`\\(\\*${selected[1]}\\)\\.push_back\\(v_fn\\d+_amount\\)`),
     );
 });
 
@@ -2427,6 +2714,73 @@ test("wires an optional class callback through a later property assignment", () 
     assert.match(result.cpp, /3\.0/);
 });
 
+test("calls a stored class callback field after a source truthiness guard", () => {
+    const result = compileSource(`
+        class Filter {
+            predicate: ((value: number) => boolean) | null = null;
+            accepts(value: number): boolean {
+                return !this.predicate || this.predicate(value);
+            }
+        }
+        const filter = new Filter();
+        const accepted = filter.accepts(3);
+    `);
+
+    assert.match(result.cpp, /std::function<bool\(double\)>/);
+    assert.match(
+        result.cpp,
+        /!\(static_cast<bool>\(\(\*v_bblite_class_field_predicate_\d+\)\)\) \|\| \(\*v_bblite_class_field_predicate_\d+\)\([^)]+\)/,
+    );
+});
+
+test("guards optional class method calls before evaluating their body", () => {
+    const result = compileSource(`
+        class Target {
+            private count = 0;
+            private _destroyed = false;
+            get destroyed(): boolean {
+                return this._destroyed;
+            }
+            detach(): void {
+                this.count += 1;
+            }
+        }
+        class Owner {
+            private readonly targets: Target[] = [];
+            target: Target | null = null;
+            constructor() {
+                const target = new Target();
+                this.targets.push(target);
+                this.target = target;
+            }
+            clear(): void {
+                if (Math.random() > 0.5) {
+                    this.target = null;
+                }
+                if (this.target?.destroyed) {
+                    this.target = null;
+                }
+                this.target?.detach();
+            }
+        }
+        const owner = new Owner();
+        owner.clear();
+    `);
+
+    assert.match(
+        result.cpp,
+        /if \(static_cast<bool>\(\(\*v_bblite_class_field_target_\d+\)\)\) \{\s*\[&\]\(\) -> void \{/,
+    );
+    assert.match(
+        result.cpp,
+        /static_cast<bool>\(v_bblite_optional_chain_\d+\) \? bbl::js::Nullable<bool>\{v_bblite_optional_chain_\d+->_destroyed\}/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /if \(v_[A-Za-z0-9_]+->_destroyed\)/,
+    );
+});
+
 test("initializes constructor parameter-properties before the body", () => {
     const result = compileSource(`
         class Accumulator {
@@ -2456,7 +2810,7 @@ test("initializes constructor parameter-properties before the body", () => {
     // path, so its compound write still targets the field local.
     assert.match(
         result.cpp,
-        /v_bblite_class_field_total_\d+ \+= \(v_fn\d+_value \* v_fn\d+_scale\)/,
+        /\(\*v_bblite_class_field_total_\d+\) \+= \(v_fn\d+_value \* v_fn\d+_scale\)/,
     );
 });
 
@@ -2737,7 +3091,7 @@ test("specializes typeof for a settled inlined union parameter", () => {
     `);
 
     assert.match(result.cpp, /double v_fromString = 3\.0/);
-    assert.match(result.cpp, /double v_fromNumber = v_fn\d+_value/);
+    assert.match(result.cpp, /double v_fromNumber = 7\.0/);
 });
 
 test("preserves existence guards for dynamically indexed object arrays", () => {
@@ -2812,7 +3166,7 @@ test("lowers typed values returned by class methods", () => {
     );
     assert.match(
         result.cpp,
-        /bblscene::Counter_value\(v_bblite_class_field_n_\d+, v_\w*enabled\)/,
+        /bblscene::Counter_value\(\(\*v_bblite_class_field_n_\d+\), v_\w*enabled\)/,
     );
 });
 
@@ -2877,6 +3231,38 @@ test("rejects class inheritance", () => {
             `),
         /inheritance is outside the supported subset/,
     );
+});
+
+test("erases type-only class implements clauses", () => {
+    const result = compileSource(`
+        interface Counter {
+            bump(): void;
+        }
+        class ImplementedCounter implements Counter {
+            value = 0;
+            bump(): void {
+                this.value++;
+            }
+        }
+        const counter = new ImplementedCounter();
+        counter.bump();
+    `);
+
+    assert.match(result.cpp, /\(\*v_bblite_class_field_value_\d+\)\+\+/);
+});
+
+test("runs a discarded local-class constructor for its side effects", () => {
+    const result = compileSource(`
+        let constructed = 0;
+        class SideEffect {
+            constructor() {
+                constructed++;
+            }
+        }
+        new SideEffect();
+    `);
+
+    assert.match(result.cpp, /v_constructed\+\+/);
 });
 
 test("materializes a constructor-assigned resource field once", () => {
@@ -3052,6 +3438,48 @@ test("lowers a Record keyed by a string union into tag-ordered slots", () => {
     );
 });
 
+test("narrows an optional string-union key before Record lookup", () => {
+    const result = compileSource(`
+        type Face = "left" | "right";
+        const normals: Readonly<Record<Face, readonly [number, number, number]>> = {
+            left: [-1, 0, 0],
+            right: [1, 0, 0],
+        };
+        class Picker {
+            face: Face | null = null;
+            read(): readonly [number, number, number] | null {
+                if (!this.face) return null;
+                return normals[this.face];
+            }
+        }
+        const picker = new Picker();
+        const normal = picker.read();
+    `);
+
+    assert.match(result.cpp, /property_key/);
+    assert.match(result.cpp, /Face::left/);
+});
+
+test("narrows an optional string-union key passed to Map.get", () => {
+    const result = compileSource(`
+        type Tool = "move" | "paint";
+        const labels = new Map<Tool, string>();
+        labels.set("move", "Move");
+        labels.set("paint", "Paint");
+        class Toolbar {
+            active: Tool | null = "move";
+            label(): string | undefined {
+                if (this.active === null) return undefined;
+                return labels.get(this.active);
+            }
+        }
+        const toolbar = new Toolbar();
+        const label = toolbar.label();
+    `);
+
+    assert.match(result.cpp, /\.get\(\(\*\(\*v_bblite_class_field_active_/);
+});
+
 test("evaluates Record slots in source order, places them in tag order", () => {
     // A slot initializer can emit statements, and JavaScript runs those
     // in the order the properties were written. Compiling in tag order
@@ -3177,6 +3605,67 @@ test("a record's methods and getter reach the scope it closed over", () => {
     );
 });
 
+test("evaluates object-literal setters in their captured scope", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createTransformNode,
+            type TransformNode,
+        } from "@babylonjs/lite";
+        function createDriver(pivot: TransformNode) {
+            let current = 0;
+            return {
+                get angle(): number { return current; },
+                set angle(next: number) {
+                    current = next * 2;
+                    pivot.rotationQuaternion.x = current;
+                },
+            };
+        }
+        await createEngine({});
+        const pivot = createTransformNode("pivot");
+        const driver = createDriver(pivot);
+        driver.angle = 3;
+        const angle = driver.angle;
+    `);
+
+    assert.match(result.cpp, /current = \([^;]+ \* 2\.0\)/);
+    assert.match(
+        result.cpp,
+        /set_transform_node_rotation_quaternion/,
+    );
+    assert.match(result.cpp, /v_angle = .*current/);
+});
+
+test("keeps an early return inside the invoked setter", () => {
+    const result = compileSource(`
+        class Target {
+            current = 1;
+            set value(next: number) {
+                if (next === this.current) {
+                    return;
+                }
+                this.current = next;
+            }
+        }
+        class Driver {
+            target = new Target();
+            completed = false;
+            run(): void {
+                this.target.value = 1;
+                this.completed = true;
+            }
+        }
+        const driver = new Driver();
+        driver.run();
+    `);
+
+    assert.match(
+        result.cpp,
+        /\[&\]\(\) -> void \{[\s\S]*?return;[\s\S]*?\}\(\);\s*[^;]*completed[^;]*= true;/,
+    );
+});
+
 test("a record getter must be a single return", () => {
     assert.throws(
         () =>
@@ -3282,13 +3771,26 @@ test("materializes a constant number array with double elements", () => {
     );
 });
 
-test("rejects indexOf where JavaScript would compare by identity", () => {
+test("compares array members the way JavaScript compares objects", () => {
+    // An object stored in an array is a `Ref`, whose equality is its control
+    // block -- the same object identity `indexOf` compares in JavaScript.
+    const result = compileSource(`
+        interface Point { x: number; }
+        const points: Point[] = [{ x: 1 }];
+        const found = points.indexOf(points[0]!);
+    `);
+    assert.match(
+        result.cpp,
+        /bbl::js::array_index_of\(v_points, bbl::js::array_at_or_default\(v_points, /,
+    );
+
+    // A tuple is a value in both languages, so searching for one would
+    // answer a question JavaScript answers by identity.
     assert.throws(
         () =>
             compileSource(`
-                interface Point { x: number; }
-                const points: Point[] = [{ x: 1 }];
-                const found = points.indexOf(points[0]!);
+                const rows: [number, number][] = [[1, 2]];
+                const found = rows.indexOf(rows[0]!);
             `),
         /JavaScript would compare by identity here/,
     );
@@ -3374,6 +3876,99 @@ test("rebinds an optional Map from a fresh constructor", () => {
     assert.match(result.cpp, /Map<double, double>\{\}/);
 });
 
+test("rebinds a nullable material cache entry from its factory", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createStandardMaterial,
+            type StandardMaterialProps,
+        } from "@babylonjs/lite";
+        await createEngine({});
+        class MaterialCache {
+            private material: StandardMaterialProps | undefined;
+            materialFor(): StandardMaterialProps {
+                let material = this.material;
+                if (!material) {
+                    material = createStandardMaterial();
+                    this.material = material;
+                }
+                return material;
+            }
+        }
+        const cache = new MaterialCache();
+        const material = cache.materialFor();
+    `);
+
+    assert.match(
+        result.cpp,
+        /std::optional<bbl::MaterialHandle> v_fn\d+_material/,
+    );
+});
+
+test("preserves missing Map handle storage in nullable locals", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            type Mesh,
+        } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const meshes = new Map<string, Mesh>();
+            let mesh = meshes.get("wall");
+            if (!mesh) {
+                mesh = createBox(engine);
+                meshes.set("wall", mesh);
+            }
+        }
+    `);
+
+    const lookup = result.cpp.match(
+        /const auto (v_bblite_map_get_\d+) = .*\.get\("wall"\);/,
+    );
+    assert.ok(lookup);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `std::optional<bbl::MeshHandle> v_mesh = ${lookup[1]}\\.to_optional\\(\\);`,
+        ),
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        new RegExp(`v_mesh = \\(\\*${lookup[1]}\\)`),
+    );
+});
+
+test("fully initializes direct property-animation targets", () => {
+    const result = compileSource(`
+        import {
+            createAnimationManager,
+            createBox,
+            createEngine,
+            createPropertyAnimationClip,
+            createPropertyAnimationGroup,
+        } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const manager = createAnimationManager();
+            const clip = createPropertyAnimationClip("move", [{
+                path: "position.x",
+                keys: [
+                    { frame: 0, value: 0 },
+                    { frame: 1, value: 1 },
+                ],
+            }]);
+            createPropertyAnimationGroup(manager, box, clip);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /PropertyAnimationTarget\{bbl::PropertyAnimationTargetKind::mesh, [^,]+\.value, \{\}\}/,
+    );
+});
+
 test("copies spread objects and destructures reference-backed array entries", () => {
     const result = compileSource(`
         interface Row {
@@ -3398,7 +3993,10 @@ test("copies spread objects and destructures reference-backed array entries", ()
         result.cpp,
         /bblscene::Row v_moved = bbl::js::make_ref<bblscene::RowData>\(\*\(v_original\)\);/,
     );
-    assert.match(result.cpp, /v_moved->row = \(v_original->row \+ 1\.0\);/);
+    assert.match(
+        result.cpp,
+        /v_moved->row = \(v_original->row \+ 1\.0\);/,
+    );
     assert.match(
         result.cpp,
         /v_bblite_item_\d+->row/,
@@ -3467,6 +4065,132 @@ test("shares explicitly typed mutable objects with stored callbacks", () => {
     assert.match(result.cpp, /stored_callback = \[=\]/);
 });
 
+test("stored callbacks may ignore arguments supplied by their container", () => {
+    const result = compileSource(`
+        const handlers = new Set<(value: number) => void>();
+        let calls = 0;
+        const handler = (): void => { calls += 1; };
+        handlers.add(handler);
+        for (const callback of handlers) callback(42);
+    `);
+
+    assert.match(
+        result.cpp,
+        /stored_callback\{?\d*u?,? \[[^\]]*\]\(\[\[maybe_unused\]\] double [^)]+\) mutable -> void/,
+    );
+});
+
+test("wires an optional callback field through nullish coalescing", () => {
+    const result = compileSource(`
+        class Toolbar {
+            private readonly _onChange: ((value: number) => void) | null;
+            constructor(options?: { onChange?: (value: number) => void }) {
+                this._onChange = options?.onChange ?? null;
+            }
+            fire(): void { this._onChange?.(3); }
+        }
+        let total = 0;
+        const toolbar = new Toolbar({
+            onChange: (value): void => { total += value; },
+        });
+        toolbar.fire();
+    `);
+
+    assert.match(result.cpp, /\(\*v_total\) \+= 3\.0/);
+});
+
+test("class-field callbacks keep lexical this across another class", () => {
+    const result = compileSource(`
+        class Manager {
+            private _count = 0;
+            readonly onChange = (): void => { this._count += 1; };
+            get count(): number { return this._count; }
+        }
+        class Host {
+            private readonly _callback: () => void;
+            constructor(callback: () => void) {
+                this._callback = callback;
+            }
+            run(): void { this._callback(); }
+        }
+        const manager = new Manager();
+        const host = new Host(manager.onChange);
+        host.run();
+        const count = manager.count;
+    `);
+
+    assert.match(result.cpp, /\(\*v_bblite_class_field__count_\d+\) \+= 1\.0/);
+});
+
+test("stores interface methods for runtime-selected implementations", () => {
+    const result = compileSource(`
+        type ToolId = "move" | "paint";
+        interface Tool {
+            activate(): void;
+            deactivate(): void;
+        }
+        class MoveTool {
+            private _active = false;
+            activate(): void { this._active = true; }
+            deactivate(): void { this._active = false; }
+        }
+        class PaintTool {
+            private _active = false;
+            activate(): void { this._active = true; }
+            deactivate(): void { this._active = false; }
+        }
+        const tools: Partial<Record<ToolId, Tool>> = {
+            move: new MoveTool(),
+            paint: new PaintTool(),
+        };
+        let active: Tool | null = null;
+        function select(id: ToolId | null): void {
+            active?.deactivate();
+            active = (id && tools[id]) || null;
+            active?.activate();
+        }
+        select("move");
+        select("paint");
+        const dynamic: ToolId | null =
+            Math.random() > 0.5 ? "move" : null;
+        select(dynamic);
+    `);
+
+    assert.match(result.cpp, /std::function<void\(\)> activate/);
+    assert.match(result.cpp, /if \([^)]*optional_receiver/);
+    assert.match(result.cpp, /->deactivate\(\)/);
+    assert.match(result.cpp, /->activate\(\)/);
+    assert.doesNotMatch(
+        result.cpp,
+        /const auto v_bblite_property_key_\d+ =/,
+    );
+    assert.match(
+        result.cpp,
+        /\(\[&\]\(const auto v_bblite_property_key_\d+\) -> decltype\(auto\)/,
+    );
+});
+
+test("maps TypeScript keyword fields to safe native struct names", () => {
+    const result = compileSource(`
+        interface Entry { delete: number; }
+        const entries: Entry[] = [{ delete: 3 }];
+        const value = entries[0]!.delete;
+    `);
+
+    assert.match(result.cpp, /double delete_;/);
+    assert.match(result.cpp, /EntryData\{3\.0\}/);
+    assert.match(result.cpp, /->delete_/);
+});
+
+test("folds a string-array join used as a general value", () => {
+    const result = compileSource(`
+        const icon = ["<svg>", "<path/>", "</svg>"].join("");
+        const wrapped = "[" + icon + "]";
+    `);
+
+    assert.match(result.cpp, /<svg><path\/><\/svg>/);
+});
+
 test("captures the live engine by reference in stored callbacks", () => {
     const result = compileSource(`
         import { createBox, createEngine } from "@babylonjs/lite";
@@ -3485,6 +4209,143 @@ test("captures the live engine by reference in stored callbacks", () => {
         /stored_callback = \[=, &v_engine\]\(\) mutable -> void/,
     );
     assert.match(result.cpp, /bbl::create_box\(v_engine,/);
+});
+
+test("shares mutable bindings across retained event callbacks", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        interface Controller { read: () => boolean }
+        async function main() {
+            await createEngine({});
+            let active = true;
+            const button = document.createElement("button");
+            const stop = (): void => { active = false; };
+            button.addEventListener("click", () => {
+                active = !active;
+            });
+            window.addEventListener("pointerdown", stop);
+            const controller: Controller = {
+                read: () => active,
+            };
+            controller.read();
+        }
+    `);
+
+    const storage = result.cpp.match(
+        /auto (v_active) = std::make_shared<bool>\(true\);/,
+    );
+    assert.ok(storage);
+    assert.equal(
+        (
+            result.cpp.match(
+                new RegExp(`\\(\\*${storage[1]}\\)`, "g"),
+            ) ?? []
+        ).length >= 3,
+        true,
+    );
+});
+
+test("shares auto-rotate state across UI, pointer, and frame callbacks", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        await createEngine({});
+        const canvas =
+            document.getElementById("renderCanvas") as HTMLCanvasElement;
+        const button = document.createElement("button");
+        let autoRotate = true;
+        let turns = 0;
+        button.addEventListener("click", () => {
+            autoRotate = !autoRotate;
+        });
+        canvas.addEventListener("pointerdown", () => {
+            autoRotate = false;
+        });
+        requestAnimationFrame(() => {
+            if (autoRotate) turns += 1;
+        });
+    `);
+
+    const storage = result.cpp.match(
+        /auto (v_autoRotate) = std::make_shared<bool>\(true\);/,
+    );
+    assert.ok(storage);
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\) = !\\(\\(\\*${storage[1]}\\)\\)`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\) = false`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`if \\(\\(\\*${storage[1]}\\)\\)`),
+    );
+});
+
+test("shares pointer press coordinates with the release callback", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        await createEngine({});
+        const canvas =
+            document.getElementById("renderCanvas") as HTMLCanvasElement;
+        let downX = 0;
+        let downY = 0;
+        let clicks = 0;
+        canvas.addEventListener("pointerdown", (event) => {
+            downX = event.clientX;
+            downY = event.clientY;
+        });
+        canvas.addEventListener("pointerup", (event) => {
+            if (Math.hypot(
+                event.clientX - downX,
+                event.clientY - downY,
+            ) < 6) {
+                clicks += 1;
+            }
+        });
+    `);
+
+    const downX = result.cpp.match(
+        /auto (v_downX) = std::make_shared<double>\(0\.0\);/,
+    );
+    const downY = result.cpp.match(
+        /auto (v_downY) = std::make_shared<double>\(0\.0\);/,
+    );
+    assert.ok(downX);
+    assert.ok(downY);
+    assert.match(
+        result.cpp,
+        new RegExp(`client_x - \\(\\*${downX[1]}\\)`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`client_y - \\(\\*${downY[1]}\\)`),
+    );
+});
+
+test("keeps listener-producing class methods on the per-instance inliner", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        class Controls {
+            private locked = false;
+            bind(canvas: HTMLCanvasElement): void {
+                canvas.addEventListener("click", () => {
+                    this.locked = true;
+                });
+            }
+        }
+        async function main() {
+            await createEngine({});
+            const canvas =
+                document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const controls = new Controls();
+            controls.bind(canvas);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::on_canvas_click/);
+    assert.doesNotMatch(result.cpp, /void Controls_bind\(/);
 });
 
 test("shares mutable primitive and render-target bindings across stored callbacks", () => {
@@ -3535,6 +4396,100 @@ test("shares mutable primitive and render-target bindings across stored callback
     assert.match(result.cpp, /\(\*v(?:_fn\d+)?_width\) = 128\.0/);
 });
 
+test("shares mutable bindings captured through stored callback helpers", () => {
+    const result = compileSource(`
+        interface Counter {
+            first(): number;
+            second(): number;
+        }
+        function createCounter(): Counter {
+            let current = 0;
+            const next = (): number => {
+                current += 1;
+                return current;
+            };
+            return {
+                first(): number { return next(); },
+                second(): number { return next(); },
+            };
+        }
+        const counter = createCounter();
+        const one = counter.first();
+        const two = counter.second();
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_fn\d+_current = std::make_shared<double>\(0\.0\);/,
+    );
+    assert.match(result.cpp, /\(\*v_fn\d+_current\) \+= 1\.0;/);
+});
+
+test("shares a reassigned array binding across stored callbacks", () => {
+    const result = compileSource(`
+        interface Queue {
+            replace(values: number[]): void;
+            take(): number;
+        }
+        function createQueue(): Queue {
+            let values: number[] = [];
+            return {
+                replace(next: number[]): void {
+                    values = next.map((value) => value);
+                },
+                take(): number {
+                    return values.shift() ?? -1;
+                },
+            };
+        }
+        const queue = createQueue();
+        queue.replace([3]);
+        const value = queue.take();
+    `);
+
+    const storage = result.cpp.match(
+        /auto (v_fn\d+_values) = std::make_shared<bbl::js::Array<double>>/,
+    );
+    assert.ok(storage);
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\) = `),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`array_shift\\(\\(\\*${storage[1]}\\)\\)`),
+    );
+});
+
+test("shares callbacks assigned after UI handlers are retained", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        await createEngine({});
+        const button = document.createElement("button");
+        let action: (() => void) | null = null;
+        button.addEventListener("click", () => {
+            action?.();
+        });
+        let count = 0;
+        action = () => {
+            count += 1;
+        };
+    `);
+
+    const storage = result.cpp.match(
+        /auto (v_action) = std::make_shared<std::function<void\(\)>>/,
+    );
+    assert.ok(storage);
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\)\\(\\)`),
+    );
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\) = `),
+    );
+});
+
 test("seeds Math.random deterministically and records the adaptation", () => {
     const result = compileSource(`
         function roll(sides: number): number {
@@ -3582,6 +4537,49 @@ test("lowers Array.every with JavaScript empty-array and early-exit semantics", 
     assert.match(result.cpp, /bool \w*_every_result_\d+ = true;/);
     assert.match(result.cpp, /if \(!\(bbl::js::hypot_js\(\{[^}]*\}\) >= 0\.0\)\) \{/);
     assert.match(result.cpp, /\w*_every_result_\d+ = false;\s+break;/);
+});
+
+test("materializes a tuple bound through an unknown parameter for Array.every", () => {
+    const result = compileSource(`
+        function finiteVector(value: unknown): boolean {
+            return Array.isArray(value) &&
+                value.every((entry) =>
+                    typeof entry === "number" && Number.isFinite(entry));
+        }
+        const dynamic = Math.random();
+        finiteVector([dynamic, 2, 3]);
+    `);
+
+    assert.match(result.cpp, /bbl::js::Array<double>\{v_dynamic, 2\.0, 3\.0\}/);
+    assert.match(result.cpp, /bool \w*_every_result_\d+ = true;/);
+});
+
+test("folds a static tuple predicate through an unknown parameter", () => {
+    const result = compileSource(`
+        function finiteVector(value: unknown): boolean {
+            return Array.isArray(value) &&
+                value.every((entry) =>
+                    typeof entry === "number" && Number.isFinite(entry));
+        }
+        const valid = finiteVector([1, 2, 3]);
+        const invalid = finiteVector([1, 1 / 0]);
+    `);
+
+    assert.match(result.cpp, /v_valid = true/);
+    assert.match(result.cpp, /v_invalid = false/);
+    assert.doesNotMatch(result.cpp, /every_result/);
+});
+
+test("specializes a generation-known read-only scalar parameter", () => {
+    const result = compileSource(`
+        function sameLength(value: unknown, expected: number): boolean {
+            return Array.isArray(value) && value.length === expected;
+        }
+        const matches = sameLength([1, 2, 3], 3);
+    `);
+
+    assert.match(result.cpp, /v_matches = true/);
+    assert.doesNotMatch(result.cpp, /expected/);
 });
 
 test("lowers typed arrays with storage-exact reads and writes", () => {
@@ -3857,6 +4855,77 @@ test("dereferences an optional scalar through an explicit type assertion", () =>
     assert.match(result.cpp, /return \(\*v_fn\d+_draft\.width\);/);
 });
 
+test("compares a missing optional scalar as absent", () => {
+    const result = compileSource(`
+        interface Entry { shape?: number }
+        const entry: Entry = {};
+        const wedge = entry.shape === 1;
+    `);
+
+    assert.match(
+        result.cpp,
+        /const auto \w+_optional_compare_\d+ = v_entry\.shape/,
+    );
+    assert.match(result.cpp, /\.has_value\(\)/);
+});
+
+test("expands a static tuple spread at a Color3 sink", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+        const COLOR: readonly [number, number, number] = [0.35, 0.6, 1];
+        await createEngine({});
+        const material = createStandardMaterial();
+        material.emissiveColor = [...COLOR] as [number, number, number];
+    `);
+
+    assert.match(
+        result.cpp,
+        /Color3\{static_cast<float>\([^[]+\[0\]\), static_cast<float>\([^[]+\[1\]\), static_cast<float>\([^[]+\[2\]\)\}/,
+    );
+});
+
+test("refreshes array-backed material fields when the UBO is marked dirty", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createStandardMaterial,
+            markMaterialUboDirty,
+        } from "@babylonjs/lite";
+
+        await createEngine({});
+        class SelectionMaterial {
+            private readonly color: [number, number, number] = [0.4, 0.75, 1];
+            private readonly material = createStandardMaterial();
+
+            constructor() {
+                this.material.emissiveColor = this.color;
+            }
+
+            setColor(color: readonly [number, number, number]): void {
+                this.color[0] = color[0];
+                this.color[1] = color[1];
+                this.color[2] = color[2];
+                markMaterialUboDirty(this.material);
+            }
+        }
+
+        const selection = new SelectionMaterial();
+        selection.setColor([1, 0.35, 0.3]);
+    `);
+
+    assert.equal(
+        result.cpp.match(/\.emissive_factor = bbl::Color3\{/g)?.length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /\.emissive_factor = bbl::Color3\{[^;]+\};\s*bbl::mark_material_ubo_dirty/,
+    );
+});
+
 test("inlines function-valued parameters at their call sites", () => {
     const result = compileSource(`
         function apply(count: number, producer: (index: number) => number): number {
@@ -3871,15 +4940,10 @@ test("inlines function-valued parameters at their call sites", () => {
         });
     `);
 
+    assert.doesNotMatch(result.cpp, /double v_fn\d+_index/);
     assert.equal(
         result.cpp.match(
-            /double v_fn\d+_index = \d\.0;/g,
-        )?.length,
-        3,
-    );
-    assert.equal(
-        result.cpp.match(
-            /v_fn0_total \+= \(v_fn\d+_index \* 2\.0\);/g,
+            /v_fn0_total \+= \(\d\.0 \* 2\.0\);/g,
         )?.length,
         3,
     );
@@ -3897,7 +4961,7 @@ test("inlines function-valued parameters at their call sites", () => {
     `);
     assert.equal(
         named.cpp.match(
-            /v_fn\d+_total \+= \(v_fn\d+_index \+ 5\.0\);/g,
+            /v_fn\d+_total \+= \(\d\.0 \+ 5\.0\);/g,
         )?.length,
         2,
     );
@@ -4927,7 +5991,7 @@ test("refuses unsupported metallic-reflectance setter inputs", () => {
     );
 });
 
-test("supports lexical block shadowing and if/else", () => {
+test("specializes if/else without breaking lexical block shadowing", () => {
     const result = compileSource(
         readFileSync(
             resolve("examples/control-flow-scene.ts"),
@@ -4941,13 +6005,13 @@ test("supports lexical block shadowing and if/else", () => {
 
     assert.match(
         result.cpp,
-        /double v_fn0_exposure = v_fn0_requestedExposure/,
+        /double v_fn0_exposure = 1\.25/,
     );
     assert.match(
         result.cpp,
         /double v_fn0_block\d+_exposure = 1\.0/,
     );
-    assert.match(result.cpp, /\} else \{/);
+    assert.doesNotMatch(result.cpp, /\} else \{/);
     assert.match(
         result.cpp,
         /\.contrast = static_cast<float>\(v_fn0_exposure\)/,
@@ -5005,6 +6069,38 @@ test("lowers numeric for and while loops", () => {
         /while \(v_fn0_remaining > 0\.0\)/,
     );
     assert.match(result.cpp, /v_fn0_remaining--/);
+});
+
+test("reevaluates inlined call setup inside loop conditions", () => {
+    const result = compileSource(`
+        import {
+            createEngine,
+            createTransformNode,
+            type TransformNode,
+        } from "@babylonjs/lite";
+
+        class Scanner {
+            private readonly marker: TransformNode;
+            constructor() {
+                this.marker = createTransformNode("marker");
+            }
+            occupied(height: number): boolean {
+                return height < this.marker.position.x + 3;
+            }
+        }
+
+        await createEngine({});
+        const scanner = new Scanner();
+        let height = 0;
+        while (scanner.occupied(height)) {
+            height++;
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /while \(\(\[&\]\(\) -> bool \{ .*?return bbl_class_fn\d+_result; \}\(\)\)\) \{/,
+    );
 });
 
 test("lowers break and continue in runtime loops", () => {
@@ -5455,6 +6551,69 @@ test("a list a loop grows decides its shape at the first push", () => {
     );
 });
 
+test("spreads a runtime numeric tuple into a numeric array", () => {
+    const result = compileSource(`
+        const rows = new Map<string, [number, number, number]>();
+        rows.set("one", [1, 2, 3]);
+        const values: number[] = [];
+        for (const row of rows.values()) {
+            values.push(...row);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.insert\([^,]+\.end\(\), [^.]+\.begin\(\), [^.]+\.end\(\)\)/,
+    );
+});
+
+test("copies a runtime numeric tuple through an array literal", () => {
+    const result = compileSource(`
+        interface Mover {
+            position: [number, number, number];
+            destination: [number, number, number];
+        }
+        function advance(mover: Mover): void {
+            mover.destination = [...mover.position];
+        }
+        const mover: Mover = {
+            position: [1, 2, 3],
+            destination: [0, 0, 0],
+        };
+        advance(mover);
+    `);
+
+    assert.match(
+        result.cpp,
+        /destination = bbl::js::clone_tuple\([^)]*position\)/,
+    );
+});
+
+test("settles nullish optional resource parameters at each inlined call", () => {
+    const result = compileSource(`
+        import {
+            createBox,
+            createEngine,
+            type EngineContext,
+            type Mesh,
+        } from "@babylonjs/lite";
+
+        function choose(engine: EngineContext, mesh?: Mesh): Mesh {
+            return mesh ?? createBox(engine);
+        }
+
+        const engine = await createEngine({});
+        const existing = createBox(engine);
+        choose(engine);
+        choose(engine, existing);
+    `);
+
+    assert.equal(
+        result.cpp.match(/bbl::create_box\(/g)?.length,
+        2,
+    );
+});
+
 test("does not snapshot a push behind a runtime condition", () => {
     const result = compileSource(`
         interface Row { value: number }
@@ -5484,6 +6643,44 @@ test("does not snapshot a Record write behind a runtime condition", () => {
 
     assert.match(result.cpp, /\.set\("one", 1\.0\);/);
     assert.match(result.cpp, /\.get\("one"\)/);
+});
+
+test("turns a conditionally spread scalar property into an optional field", () => {
+    const result = compileSource(`
+        interface Entry {
+            value: number;
+            shape?: number;
+        }
+        const wedge = Math.random() > 0.5;
+        const entry: Entry = {
+            value: 1,
+            ...(wedge ? { shape: 1 } : {}),
+        };
+        const selected = entry.shape === 1;
+    `);
+
+    assert.match(
+        result.cpp,
+        /Nullable<double>\{1\.0\} : bbl::js::Nullable<double>\{std::nullopt\}/,
+    );
+    assert.match(result.cpp, /\.has_value\(\)/);
+});
+
+test("keeps a complete snapshot when a const object is materialized then spread", () => {
+    const result = compileSource(`
+        interface Shared {
+            radius: number;
+            segments: number;
+        }
+        function consume(options: Shared): number {
+            return options.radius + options.segments;
+        }
+        const shared = { radius: 0.05, segments: 1 } as const;
+        const value = consume({ ...shared });
+    `);
+
+    assert.match(result.cpp, /0\.05/);
+    assert.match(result.cpp, /1\.0/);
 });
 
 test("shares a static element snapshot through a const array alias", () => {
@@ -6225,7 +7422,7 @@ test("snapshots scalar members of records retained by classes", () => {
     `);
     assert.match(
         result.cpp,
-        /double v_\w*return_makeVehicle_bodyRestY_\d+ = v_engine\.meshes\[v_\w*body\.value\]\.position\.y;/,
+        /auto v_\w*return_makeVehicle_bodyRestY_\d+ = std::make_shared<double>\(v_engine\.meshes\[v_\w*body\.value\]\.position\.y\);/,
     );
     assert.equal(
         (result.cpp.match(/return_makeVehicle_bodyRestY/g) ?? []).length,
@@ -6661,7 +7858,7 @@ test("erases optional DOM-local writes without dropping adjacent native state", 
         setEnabled(true);
     `);
 
-    assert.match(result.cpp, /v_enabled = v_fn\d+_on;/);
+    assert.match(result.cpp, /v_enabled = true;/);
     assert.doesNotMatch(
         result.cpp,
         /button|textContent|setAttribute|aria-pressed/,
@@ -6683,10 +7880,57 @@ test("erases event callbacks owned by an optional DOM local", () => {
         }
     `);
 
-    assert.match(result.cpp, /bool v_enabled = true;/);
+    assert.match(
+        result.cpp,
+        /auto v_enabled = std::make_shared<bool>\(true\);/,
+    );
     assert.doesNotMatch(
         result.cpp,
         /button|addEventListener|textContent/,
+    );
+});
+
+test("narrows an assigned nullable retained-UI class field", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        class Palette {
+            private root: HTMLElement | null = null;
+            build(): void {
+                this.root = document.createElement("div");
+                document.body.appendChild(this.root);
+            }
+            cleanup(): void { this.root?.remove(); }
+        }
+        await createEngine({});
+        const palette = new Palette();
+        palette.build();
+        palette.cleanup();
+    `);
+
+    assert.match(result.cpp, /ui_append_to_root/);
+    assert.match(result.cpp, /has_value\(\) \? bbl::ui_remove/);
+});
+
+test("retains stylesheet tags assigned through nullable class fields", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        class Palette {
+            private style: HTMLStyleElement | null = null;
+            build(): void {
+                this.style = document.createElement("style");
+                this.style.textContent =
+                    ".palette { position: fixed; bottom: 70px; }";
+                document.head.appendChild(this.style);
+            }
+        }
+        await createEngine({});
+        const palette = new Palette();
+        palette.build();
+    `);
+
+    assert.match(
+        result.cpp,
+        /ui_add_class_style\([^;]*"palette"[^;]*"position:absolute; bottom: 70px;"/,
     );
 });
 
@@ -6828,6 +8072,11 @@ test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
                 "display:grid;grid-template-columns:repeat(4,18px);" +
                 "grid-template-rows:repeat(4,18px);gap:2px";
             panel.appendChild(grid);
+            for (let index = 0; index < 16; index++) {
+                const cell = document.createElement("div");
+                cell.style.cssText = "width:18px;height:18px";
+                grid.appendChild(cell);
+            }
             for (const label of ["LONG INLINE CONTROL", "SECOND CONTROL"]) {
                 const button = document.createElement("button");
                 button.textContent = label;
@@ -6841,15 +8090,21 @@ test("adapts fixed retained UI grids and absolute shrink-to-fit blocks", () => {
     `);
 
     assert.match(result.cpp, /min-width:180px/);
-    assert.match(result.cpp, /;width:180px/);
+    assert.doesNotMatch(result.cpp, /min-width:180px;?width:180px/);
     assert.match(result.cpp, /--bbl-intrinsic-min-width:180px/);
     assert.doesNotMatch(result.cpp, /232\.5/);
     assert.match(result.cpp, /display:block/);
     assert.match(
         result.cpp,
-        /--bbl-grid-width:78px;--bbl-grid-gap:2px/,
+        /--bbl-grid-columns:4;--bbl-grid-cell-width:18px;--bbl-grid-width:78px;--bbl-grid-gap:2px;--bbl-grid-row-height:18px/,
     );
     assert.doesNotMatch(result.cpp, /grid-template/);
+    assert.match(
+        result.manifest.adaptations.find(
+            ({ id }) => id === "substituted-ui-runtime",
+        )?.nativeSemantics ?? "",
+        /repeat\(4, 18px\).*18px children, 2px gap/,
+    );
 });
 
 test("centres direct text in fixed-height retained flex controls", () => {
@@ -6878,6 +8133,103 @@ test("centres direct text in fixed-height retained flex controls", () => {
     assert.match(result.cpp, /line-height:64px;text-align:center/);
     assert.match(result.cpp, /display:inline-block/);
     assert.match(result.cpp, /line-height:14px;text-align:center/);
+});
+
+test("normalizes uppercase retained canvas tags", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const canvas = document.createElement("CANVAS");
+            canvas.width = 32;
+            canvas.height = 16;
+            const context = canvas.getContext("2d")!;
+            context.clearRect(0, 0, canvas.width, canvas.height);
+            document.body.appendChild(canvas);
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_create_element\([^\n]*"canvas"\)/);
+    assert.doesNotMatch(result.cpp, /ui_create_element\([^\n]*"CANVAS"\)/);
+    assert.match(result.cpp, /ui_canvas_clear/);
+
+    const host = compileSource(
+        `
+            import { createEngine } from "@babylonjs/lite";
+            async function main(): Promise<void> {
+                await createEngine({});
+            }
+            void main();
+        `,
+        {
+            nativeHostUi: {
+                sourcePath: "ui/uppercase-host.json",
+                elements: [{ tag: "CANVAS" }],
+            },
+        },
+    );
+    assert.match(host.cpp, /ui_create_element\([^\n]*"canvas"\)/);
+    assert.doesNotMatch(host.cpp, /ui_create_element\([^\n]*"CANVAS"\)/);
+});
+
+test("resolves flex text wrappers through specificity, inline, and hover cascade", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".shell div:hover { display:flex; }" +
+                "#label { display:block; }" +
+                ".label { display:flex; }";
+            document.head.appendChild(style);
+            const shell = document.createElement("section");
+            shell.className = "shell";
+            const label = document.createElement("div");
+            label.id = "label";
+            label.className = "label";
+            label.style.cssText = "display:block";
+            label.textContent = "status";
+            shell.appendChild(label);
+            document.body.appendChild(shell);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /UiStyleSelectorKind::ClassDescendantTag/);
+    assert.match(result.cpp, /ui_add_id_style[^\n]*display:block/);
+    assert.match(result.cpp, /ui_add_class_style[^\n]*display:flex/);
+
+    const projection = palUiRmlSource;
+    const resolver = projection.slice(
+        projection.indexOf("std::string resolved_style_attribute"),
+        projection.indexOf("void append_text_content"),
+    );
+    assert.match(
+        resolver,
+        /resolved_style_attribute\([\s\S]*std::string\* resolved_display/,
+    );
+    assert.match(resolver, /ui_style_rule_specificity\(rule\)/);
+    assert.match(
+        resolver,
+        /inline_specificity[\s\S]*consider_cascaded_declaration\(\s*display/,
+    );
+    assert.match(
+        resolver,
+        /\*resolved_display = display\.value/,
+    );
+    const wrapper = resolver.slice(
+        resolver.indexOf("bool text_needs_flex_wrapper"),
+    );
+    assert.doesNotMatch(wrapper, /for_each_active_style_rule/);
+    assert.match(
+        wrapper,
+        /normalized_css_keyword\(resolved_display\)/,
+    );
+    assert.match(
+        projection,
+        /resolved_style_attribute\(handle, record, &resolved_display\)[\s\S]{0,1400}text_needs_flex_wrapper\(\s*resolved_display\)/,
+    );
 });
 
 test("stores retained UI elements in explicitly typed DOM arrays", () => {
@@ -6998,6 +8350,7 @@ test("lowers dynamic retained UI innerHTML substitutions", () => {
 
     assert.match(result.cpp, /ui_set_inner_rml/);
     assert.match(result.cpp, /number_to_string/);
+    assert.match(result.cpp, /ui_escape_rml/);
     assert.match(result.cpp, /color:#ff6b6b/);
     assert.match(result.cpp, /\.empty\(\)/);
     assert.doesNotMatch(result.cpp, /__BBLITE_UI_MARKUP_/);
@@ -7053,20 +8406,126 @@ test("imports simple retained stylesheet id and class rules", () => {
 
     assert.match(result.cpp, /ui_add_id_style[^\n]*"labels"/);
     assert.match(result.cpp, /position:absolute/);
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"label"/);
+    assert.match(result.cpp, /UiStyleSelectorKind::IdDescendantClass/);
+    assert.match(result.cpp, /"labels", "label"/);
     assert.match(result.cpp, /background-color:\s*rgba\(1,2,3,.5\)/);
     // The @keyframes block is not a rule: it rides ui_set_text and the PAL
     // projects it from there, so its percentage blocks emit no rules and
     // trip no selector refusal.
     assert.doesNotMatch(result.cpp, /ui_add_class_style[^\n]*"pulse"/);
     assert.match(result.cpp, /ui_set_text[^\n]*@keyframes pulse/);
-    // The reviewed descendant form is recorded as a widened projection.
+    // The reviewed descendant form remains scoped in the typed rule IR.
     assert.ok(
         result.manifest.adaptations.some(
             (adaptation) =>
                 adaptation.id === "substituted-ui-runtime" &&
-                adaptation.nativeSemantics.includes("'#labels .label'"),
+                adaptation.nativeSemantics.includes("'#labels .label'") &&
+                adaptation.nativeSemantics.includes("remain scoped"),
         ),
+    );
+});
+
+test("orders retained UI stylesheets by live root attachment order", () => {
+    const projection = palUiRmlSource;
+    const activeSheets = projection.slice(
+        projection.indexOf("void for_each_active_style_element"),
+        projection.indexOf("void sync_style_sheet"),
+    );
+    assert.match(activeSheets, /engine\.ui_root_children/);
+    assert.doesNotMatch(
+        activeSheets,
+        /for \(const UiElementRecord& record : engine\.ui_elements\)/,
+    );
+
+    const appendRoot = projection.slice(
+        projection.indexOf("UiElementHandle ui_append_to_root"),
+        projection.indexOf("void ui_replace_children"),
+    );
+    assert.match(appendRoot, /ui_root_children\.push_back\(child\)/);
+    const remove = projection.slice(
+        projection.indexOf("void ui_remove"),
+        projection.indexOf("void ui_on_click"),
+    );
+    assert.match(remove, /ui_root_children\.erase/);
+    assert.match(
+        appendRoot,
+        /std::find_if[\s\S]*ui_root_children\.erase\(existing\)[\s\S]*ui_root_children\.push_back\(child\)/,
+    );
+});
+
+test("attaches head styles and proves grids in reattached stylesheet order", () => {
+    const result = compileUiScene(`
+            const first = document.createElement("style");
+            document.head.appendChild(first);
+            const last = document.createElement("style");
+            last.textContent = ".cell { width:24px; height:24px; }";
+            first.textContent =
+                ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                ".cell { width:20px; height:24px; }";
+            document.head.appendChild(last);
+            document.head.appendChild(first);
+            document.head.appendChild(last);
+
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+    `);
+
+    assert.equal(
+        [...result.cpp.matchAll(/ui_append_to_root\([^;]+v_(?:first|last)\)/g)]
+            .length,
+        4,
+    );
+    assert.match(
+        result.manifest.adaptations.find(
+            ({ id }) => id === "substituted-ui-runtime",
+        )?.nativeSemantics ?? "",
+        /repeat\(2, 24px\)/,
+    );
+});
+
+test("refuses a dynamically ordered fixed-grid stylesheet attachment", () => {
+    assert.throws(
+        () =>
+            compileUiScene(`
+                    const style = document.createElement("style");
+                    style.textContent =
+                        ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                        ".cell { width:24px;height:24px; }";
+                    const grid = document.createElement("div");
+                    grid.className = "grid";
+                    const cell = document.createElement("button");
+                    cell.className = "cell";
+                    grid.appendChild(cell);
+                    document.body.appendChild(grid);
+                    grid.addEventListener("click", () => {
+                        document.head.appendChild(style);
+                    });
+            `),
+        /requires a statically ordered stylesheet attachment and contents cascade/,
+    );
+    assert.throws(
+        () =>
+            compileUiScene(`
+                    const style = document.createElement("style");
+                    style.textContent =
+                        ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                        ".cell { width:24px;height:24px; }";
+                    document.head.appendChild(style);
+                    const grid = document.createElement("div");
+                    grid.className = "grid";
+                    const cell = document.createElement("button");
+                    cell.className = "cell";
+                    grid.appendChild(cell);
+                    grid.addEventListener("click", () => {
+                        style.textContent = ".grid { display:block; }";
+                    });
+                    document.body.appendChild(grid);
+            `),
+        /requires a statically ordered stylesheet attachment and contents cascade/,
     );
 });
 
@@ -7098,25 +8557,1629 @@ test("refuses stylesheet selectors outside the reviewed surface by name", () => 
     );
 });
 
-test("refuses widened descendant rules that collide on one class", () => {
+test("keeps scoped and direct class rules distinct in cascade order", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                #a .badge { color: red; }
+                .badge { color: blue; }
+            \`;
+            document.head.appendChild(style);
+            const root = document.createElement("div");
+            root.id = "a";
+            const badge = document.createElement("span");
+            badge.className = "badge";
+            root.appendChild(badge);
+            document.body.appendChild(root);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /UiStyleSelectorKind::IdDescendantClass/);
+    assert.match(result.cpp, /ui_add_class_style[^\n]*"badge"/);
+    assert.doesNotMatch(result.cpp, /global class rule/);
+});
+
+test("resolves retained UI grid metadata by CSS specificity before source order", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                #palette {
+                    display:grid;
+                    grid-template-columns:repeat(2,24px);
+                    gap:2px;
+                }
+                .palette {
+                    display:grid;
+                    grid-template-columns:repeat(3,24px);
+                    gap:2px;
+                }
+                .swatch { width:24px; height:24px; }
+            \`;
+            document.head.appendChild(style);
+            const palette = document.createElement("div");
+            palette.id = "palette";
+            palette.className = "palette";
+            for (let index = 0; index < 6; index++) {
+                const swatch = document.createElement("button");
+                swatch.className = "swatch";
+                palette.appendChild(swatch);
+            }
+            document.body.appendChild(palette);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /ui_add_id_style[^\n]*--bbl-grid-columns:2/,
+    );
+    assert.match(
+        result.cpp,
+        /ui_add_class_style[^\n]*--bbl-grid-columns:3/,
+    );
+    const projection = palUiRmlSource;
+    const resolver = projection.slice(
+        projection.indexOf("std::string resolved_style_attribute"),
+        projection.indexOf("bool text_needs_flex_wrapper"),
+    );
+    assert.match(resolver, /ui_style_rule_specificity\(rule\)/);
+    assert.match(resolver, /std::stable_sort/);
+    assert.match(
+        projection,
+        /case UiStyleSelectorKind::IdDescendantClass:[\s\S]{0,120}\+\+ids;[\s\S]{0,80}\+\+classes;/,
+    );
+});
+
+test("resolves fixed-grid activation and alignment through the complete cascade", () => {
+    for (const reset of ["block", "flex", "none"]) {
+        const resetResult = compileSource(`
+            import { createEngine } from "@babylonjs/lite";
+            async function main(): Promise<void> {
+                await createEngine({});
+                const style = document.createElement("style");
+                style.textContent =
+                    ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                    ".cell { width:20px;height:20px; }" +
+                    "#palette { display:${reset}; }";
+                document.head.appendChild(style);
+                const grid = document.createElement("div");
+                grid.id = "palette";
+                grid.className = "grid";
+                const cell = document.createElement("button");
+                cell.className = "cell";
+                grid.appendChild(cell);
+                document.body.appendChild(grid);
+            }
+            void main();
+        `);
+        assert.doesNotMatch(
+            resetResult.manifest.adaptations.find(
+                ({ id }) => id === "substituted-ui-runtime",
+            )?.nativeSemantics ?? "",
+            /repeat\(2, 24px\)/,
+        );
+    }
+
+    const aligned = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid {" +
+                "display:grid;grid-template-columns:repeat(2,24px);" +
+                "justify-content:start;" +
+                "}" +
+                ".cell { width:24px;height:24px; }" +
+                "#palette { justify-content:end; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.id = "palette";
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+        }
+        void main();
+    `);
+    assert.match(aligned.cpp, /ui_add_id_style[^\n]*justify-content:end/);
+
+    const projection = palUiRmlSource;
+    const resolver = projection.slice(
+        projection.indexOf("std::string resolved_style_attribute"),
+        projection.indexOf("bool text_needs_flex_wrapper"),
+    );
+    assert.match(resolver, /CascadedUiDeclaration display/);
+    assert.match(resolver, /display\.value != "grid"/);
+    assert.match(resolver, /record\.style_properties\.find\("display"\)/);
+    assert.match(
+        resolver,
+        /record\.style_properties\.find\("justify-content"\)/,
+    );
+    assert.match(
+        resolver,
+        /--bbl-grid-justify-content:" \+[\s\S]*resolved_justification/,
+    );
+
+    const inheritedAlignment = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                "#palette {" +
+                "display:grid;grid-template-columns:repeat(2,24px);" +
+                "}" +
+                ".grid { justify-content:end; }" +
+                ".cell { width:24px;height:24px; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.id = "palette";
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+        }
+        void main();
+    `);
+    assert.doesNotMatch(
+        inheritedAlignment.cpp,
+        /--bbl-grid-justify-(?:content|authored)/,
+    );
+    assert.match(
+        inheritedAlignment.cpp,
+        /ui_add_class_style[^\n]*justify-content:end/,
+    );
+});
+
+test("retains class-tag descendants and hover without leaking to unrelated tags", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                .panel button { color: #ddd; }
+                .panel button:hover { background: rgba(80,80,80,.75); }
+            \`;
+            document.head.appendChild(style);
+            const panel = document.createElement("div");
+            panel.className = "panel";
+            const inside = document.createElement("button");
+            panel.appendChild(inside);
+            document.body.appendChild(panel);
+            const outside = document.createElement("button");
+            document.body.appendChild(outside);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /UiStyleSelectorKind::ClassDescendantTag,\s*"panel",\s*"",\s*"button",\s*false/,
+    );
+    assert.match(
+        result.cpp,
+        /UiStyleSelectorKind::ClassDescendantTag,\s*"panel",\s*"",\s*"button",\s*true/,
+    );
+    assert.doesNotMatch(result.cpp, /ui_add_class_style[^\n]*"button"/);
+    assert.match(
+        result.manifest.adaptations.find(
+            ({ id }) => id === "substituted-ui-runtime",
+        )?.nativeSemantics ?? "",
+        /RmlUi evaluates reached :hover/,
+    );
+});
+
+test("keeps className and cssText grid proofs on reachable replacement states", () => {
+    const source = (childSetup: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            let alternate = false;
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid { display:grid;grid-template-columns:repeat(1,24px); }" +
+                ".a.b { width:24px;height:24px; }" +
+                ".cell { width:24px;height:24px; }" +
+                ".cell.active { color:red; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            ${childSetup}
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+        }
+        void main();
+    `;
+
+    assert.throws(
+        () =>
+            compileSource(
+                source(`cell.className = alternate ? "a" : "b";`),
+            ),
+        /every child must have fixed 24px width/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(`
+                    cell.style.cssText = "width:24px;height:24px";
+                    cell.style.cssText = "color:red";
+                `),
+            ),
+        /every child must have fixed 24px width/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source(`
+                    cell.style.cssText = alternate
+                        ? "width:24px;height:24px"
+                        : "color:red";
+                `),
+            ),
+        /direct-child width differs across reachable className or cssText alternatives/,
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            source(
+                `cell.className = "cell" + (alternate ? " active" : "");`,
+            ),
+        ),
+    );
+    assert.doesNotThrow(() =>
+        compileSource(
+            source(`
+                cell.style.width = "20px";
+                cell.style.cssText = "width:24px;height:24px";
+            `),
+        ),
+    );
+});
+
+test("lowers compound classes and add remove forced-toggle mutations", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".tool.active { border-color: #08c; }";
+            document.head.appendChild(style);
+            const button = document.createElement("button");
+            button.className = "tool";
+            const buttons = new Map<string, HTMLButtonElement>();
+            buttons.set("tool", button);
+            buttons.get("tool")?.classList.add("active");
+            buttons.get("tool")?.classList.remove("active");
+            button.classList.toggle("active", true);
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /UiStyleSelectorKind::CompoundClass/);
+    assert.match(result.cpp, /"tool", "active"/);
+    assert.equal(
+        [...result.cpp.matchAll(/ui_toggle_class/g)].length,
+        3,
+    );
+    assert.match(result.cpp, /"active", true/);
+    assert.match(result.cpp, /"active", false/);
+    const mapGets = [
+        ...result.cpp.matchAll(
+            /const auto (v_bblite_map_get_\d+) = [^;]+\.get\([^;]+\);/g,
+        ),
+    ];
+    assert.equal(mapGets.length, 2);
+    for (const [, temporary] of mapGets) {
+        assert.match(
+            result.cpp,
+            new RegExp(
+                `${temporary}\\.has_value\\(\\) \\? ` +
+                    `bbl::ui_toggle_class\\([^;]+\\(\\*${temporary}\\)`,
+            ),
+        );
+    }
+});
+
+test("preserves known Map UI identity and guards unknown geometry mutations", () => {
     assert.throws(
         () =>
             compileSource(`
                 import { createEngine } from "@babylonjs/lite";
-
                 async function main(): Promise<void> {
                     await createEngine({});
                     const style = document.createElement("style");
-                    style.textContent = \`
-                        #a .badge { color: red; }
-                        .badge { color: blue; }
-                    \`;
+                    style.textContent =
+                        ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                        ".cell { width:24px;height:24px; }" +
+                        ".cell.compact { width:20px; }";
                     document.head.appendChild(style);
+                    const grid = document.createElement("div");
+                    grid.className = "grid";
+                    const cell = document.createElement("button");
+                    cell.className = "cell";
+                    grid.appendChild(cell);
+                    const cells = new Map<string, HTMLButtonElement>();
+                    cells.set("one", cell);
+                    cells.get("one")?.classList.add("compact");
+                    document.body.appendChild(grid);
                 }
-
                 void main();
             `),
-        /'#a \.badge' and '\.badge' both project onto the global class rule 'badge'/,
+        /runtime class rule '\.cell\.compact' can change direct-child width/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent =
+                        ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                        ".cell { width:24px;height:24px; }" +
+                        ".cell.compact { width:20px; }";
+                    document.head.appendChild(style);
+                    const grid = document.createElement("div");
+                    grid.className = "grid";
+                    const cell = document.createElement("button");
+                    cell.className = "cell";
+                    grid.appendChild(cell);
+                    const cells = new Map<string, HTMLButtonElement>();
+                    cells.set("one", cell);
+                    window.addEventListener("keydown", (event) => {
+                        cells.get(event.code)?.classList.add("compact");
+                    });
+                    document.body.appendChild(grid);
+                }
+                void main();
+            `),
+        /class mutation 'compact' has an unknown target.*change direct-child width/,
+    );
+
+    const safe = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                ".cell { width:24px;height:24px; }" +
+                ".cell.active { box-shadow:inset 0 0 0 2px blue; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            const cells = new Map<string, HTMLButtonElement>();
+            cells.set("one", cell);
+            window.addEventListener("keydown", (event) => {
+                cells.get(event.code)?.classList.add("active");
+            });
+            document.body.appendChild(grid);
+        }
+        void main();
+    `);
+    const get = safe.cpp.match(
+        /const auto (v_bblite_map_get_\d+) = [^;]+\.get\([^;]+\);/,
+    );
+    assert.ok(get);
+    assert.match(
+        safe.cpp,
+        new RegExp(
+            `${get[1]}\\.has_value\\(\\) \\? ` +
+                `bbl::ui_toggle_class\\([^;]+\\(\\*${get[1]}\\)`,
+        ),
+    );
+    assert.equal(
+        [...safe.cpp.matchAll(new RegExp(`const auto ${get[1]} =`, "g"))]
+            .length,
+        1,
+    );
+    assert.match(safe.cpp, /UiStyleSelectorKind::CompoundClass/);
+    assert.match(safe.cpp, /--bbl-inset-outline:2px blue;/);
+});
+
+test("rejects jointly activating unknown-target grid geometry classes", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                    import { createEngine } from "@babylonjs/lite";
+                    async function main(): Promise<void> {
+                        await createEngine({});
+                        const style = document.createElement("style");
+                        style.textContent =
+                            ".grid { display:grid;grid-template-columns:repeat(1,24px); }" +
+                            ".cell { width:24px;height:24px; }" +
+                            ".compact.tight { max-width:20px; }";
+                        document.head.appendChild(style);
+                        const grid = document.createElement("div");
+                        grid.className = "grid";
+                        const cell = document.createElement("button");
+                        cell.className = "cell";
+                        grid.appendChild(cell);
+                        const cells = new Map<string, HTMLButtonElement>();
+                        cells.set("one", cell);
+                        window.addEventListener("keydown", (event) => {
+                            cells.get(event.code)?.classList.add("compact");
+                            cells.get(event.key)?.classList.add("tight");
+                        });
+                        document.body.appendChild(grid);
+                    }
+                    void main();
+                `,
+                { fileName: "test/joint-grid-classes.ts" },
+            ),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(
+                error.message,
+                /^test\/joint-grid-classes\.ts:\d+:\d+:/,
+            );
+            assert.match(
+                error.message,
+                /class mutations 'compact', 'tight'.*jointly activate geometry rule '\.compact\.tight'.*max-width/,
+            );
+            return true;
+        },
+    );
+});
+
+test("rejects runtime-unknown class and id values that can affect grid proofs", () => {
+    const mutationSource = (
+        selector: string,
+        initialAttribute: string,
+        mutation: string,
+    ): string => `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                "${selector} { display:grid;grid-template-columns:repeat(1,24px); }" +
+                ".cell { width:24px;height:24px; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            ${initialAttribute}
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+            window.addEventListener("keydown", (event) => {
+                ${mutation}
+            });
+        }
+        void main();
+    `;
+
+    assert.throws(
+        () =>
+            compileSource(
+                mutationSource(
+                    ".grid",
+                    'grid.className = "grid";',
+                    "grid.className = event.code;",
+                ),
+            ),
+        /runtime-unknown class mutation can change fixed-grid structural rule '\.grid'/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                mutationSource(
+                    "#palette",
+                    'grid.id = "palette";',
+                    "grid.id = event.code;",
+                ),
+            ),
+        /runtime-unknown id mutation can change fixed-grid structural rule '#palette'/,
+    );
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent =
+                        "#palette { display:grid;grid-template-columns:repeat(1,24px); }" +
+                        ".cell { width:24px;height:24px; }";
+                    document.head.appendChild(style);
+                    const grid = document.createElement("div");
+                    grid.id = "palette";
+                    const cell = document.createElement("button");
+                    cell.className = "cell";
+                    grid.appendChild(cell);
+                    document.body.appendChild(grid);
+                    window.addEventListener("keydown", (event) => {
+                        cell.className = event.code;
+                    });
+                }
+                void main();
+            `),
+        /runtime-unknown class mutation can alter fixed-grid child width through rule '\.cell'/,
+    );
+});
+
+test("allows runtime-unknown class and id values unrelated to a grid proof", () => {
+    assert.doesNotThrow(() =>
+        compileSource(`
+            import { createEngine } from "@babylonjs/lite";
+            async function main(): Promise<void> {
+                await createEngine({});
+                const grid = document.createElement("div");
+                grid.style.cssText =
+                    "display:grid;grid-template-columns:repeat(1,24px)";
+                const cell = document.createElement("button");
+                cell.style.cssText = "width:24px;height:24px";
+                grid.appendChild(cell);
+                document.body.appendChild(grid);
+                const status = document.createElement("div");
+                document.body.appendChild(status);
+                window.addEventListener("keydown", (event) => {
+                    status.className = event.code;
+                    status.id = event.key;
+                });
+            }
+            void main();
+        `),
+    );
+});
+
+test("retains max-width media cascade and auto resets for live resize", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                .panel { right: 8px; bottom: 8px; }
+                @media (max-width: 768px) {
+                    .panel { top: 5px; left: 5px; right: auto; bottom: auto; }
+                }
+            \`;
+            document.head.appendChild(style);
+            const panel = document.createElement("div");
+            panel.className = "panel";
+            document.body.appendChild(panel);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /UiStyleSelectorKind::Class,\s*"panel",\s*"",\s*"",\s*false,\s*768\.0/,
+    );
+    assert.match(result.cpp, /right:\s*auto;\s*bottom:\s*auto/);
+    const palUi = palUiRmlSource;
+    assert.match(palUi, /@media \(max-width:/);
+    assert.match(palUi, /context->SetDimensions/);
+});
+
+test("recomputes retained UI intrinsic width without overriding responsive width", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                @media (max-width:640px) {
+                    .panel { width:120px; }
+                }
+            \`;
+            document.head.appendChild(style);
+            const panel = document.createElement("div");
+            panel.className = "panel";
+            panel.style.cssText =
+                "position:absolute;right:8px;min-width:180px";
+            const button = document.createElement("button");
+            button.style.width = "100%";
+            panel.appendChild(button);
+            document.body.appendChild(panel);
+        }
+        void main();
+    `);
+
+    assert.match(result.cpp, /--bbl-intrinsic-min-width:180px/);
+    assert.doesNotMatch(
+        result.cpp,
+        /min-width:180px;?width:180px/,
+    );
+    const projection = palUiRmlSource;
+    assert.match(projection, /dimensions_changed[\s\S]{0,900}update_intrinsic_widths/);
+    const intrinsic = projection.slice(
+        projection.indexOf("bool has_active_authored_width"),
+        projection.indexOf("void render_canvases"),
+    );
+    assert.match(intrinsic, /intrinsic_width_applied/);
+    assert.match(intrinsic, /RemoveProperty\("width"\)/);
+    assert.match(intrinsic, /has_active_authored_width/);
+});
+
+test("switches synthetic intrinsic width with active hover width rules", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = ".shell div:hover { width:240px; }";
+            document.head.appendChild(style);
+            const shell = document.createElement("section");
+            shell.className = "shell";
+            const panel = document.createElement("div");
+            panel.style.cssText =
+                "position:absolute;right:8px;min-width:180px";
+            const child = document.createElement("button");
+            child.style.width = "100%";
+            panel.appendChild(child);
+            shell.appendChild(panel);
+            document.body.appendChild(shell);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /--bbl-intrinsic-min-width:180px/);
+
+    const projection = palUiRmlSource;
+    const matchingRules = projection.slice(
+        projection.indexOf("for_each_matching_style_rule"),
+        projection.indexOf("void sync_style_sheet"),
+    );
+    assert.match(matchingRules, /rule\.hover && !hovered/);
+    assert.match(matchingRules, /IsPseudoClassSet\("hover"\)/);
+    const intrinsic = projection.slice(
+        projection.indexOf("bool has_active_authored_width"),
+        projection.indexOf("void render_canvases"),
+    );
+    assert.match(intrinsic, /for_each_matching_style_rule/);
+    const update = projection.slice(
+        projection.indexOf("void update_ui_rml_runtime"),
+        projection.indexOf("const UiRenderFrame& record_ui_rml_frame"),
+    );
+    assert.match(update, /const bool hover_changed = runtime\.sync_hover_states/);
+    assert.match(
+        update,
+        /hover_changed[\s\S]*runtime\.sync_tree\(\)[\s\S]*hover_changed\)[\s\S]*runtime\.update_intrinsic_widths/,
+    );
+});
+
+test("substitutes only a proven fixed-column retained grid", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                .palette {
+                    position: fixed;
+                    left: 50%;
+                    display: grid;
+                    grid-template-columns: repeat(7, 24px);
+                    gap: 3px;
+                }
+                .swatch { width: 24px; height: 24px; border: none; padding: 0; }
+            \`;
+            document.head.appendChild(style);
+            const palette = document.createElement("div");
+            palette.className = "palette";
+            for (let index = 0; index < 14; index++) {
+                const swatch = document.createElement("button");
+                swatch.className = "swatch";
+                palette.appendChild(swatch);
+            }
+            document.body.appendChild(palette);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /width:186px;--bbl-grid-columns:7;--bbl-grid-cell-width:24px;--bbl-grid-width:186px;--bbl-grid-gap:3px/,
+    );
+    assert.match(
+        result.manifest.adaptations.find(
+            ({ id }) => id === "substituted-ui-runtime",
+        )?.nativeSemantics ?? "",
+        /repeat\(7, 24px\).*24px children, 3px gap/,
+    );
+});
+
+test("preserves explicit grid rows and equal min/max child constraints", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid {" +
+                "DISPLAY:GRID;GRID-TEMPLATE-COLUMNS:repeat(2,24px);" +
+                "GRID-TEMPLATE-ROWS:repeat(2,24px);JUSTIFY-CONTENT:CENTER;" +
+                "}" +
+                ".cell {" +
+                "WIDTH:24px;HEIGHT:24px;" +
+                "MIN-WIDTH:24px;MAX-WIDTH:24px;" +
+                "MIN-HEIGHT:24px;MAX-HEIGHT:24px;" +
+                "}";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            for (let index = 0; index < 4; index++) {
+                const cell = document.createElement("button");
+                cell.className = "cell";
+                grid.appendChild(cell);
+            }
+            document.body.appendChild(grid);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /--bbl-grid-row-height:24px/);
+    assert.match(result.cpp, /--bbl-grid-row-count:2/);
+    assert.match(result.cpp, /--bbl-grid-justify-content:center/);
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent =
+                        ".grid { display:grid;grid-template-columns:repeat(2,24px);" +
+                        "grid-template-rows:repeat(3,24px); }" +
+                        ".cell { width:24px;height:24px; }";
+                    document.head.appendChild(style);
+                    const grid = document.createElement("div");
+                    grid.className = "grid";
+                    for (let index = 0; index < 4; index++) {
+                        const cell = document.createElement("button");
+                        cell.className = "cell";
+                        grid.appendChild(cell);
+                    }
+                    document.body.appendChild(grid);
+                }
+                void main();
+            `),
+        /explicit 3-row template does not match the proven 2-row child layout/,
+    );
+});
+
+test("refuses hidden and out-of-flow children in explicit grid rows", () => {
+    const source = (extra: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid {" +
+                "display:grid;grid-template-columns:repeat(1,24px);" +
+                "grid-template-rows:repeat(1,24px);" +
+                "}" +
+                ".cell { width:24px;height:24px;${extra} }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+        }
+        void main();
+    `;
+
+    assert.throws(
+        () => compileSource(source("display:none;")),
+        /explicit rows require every counted child to participate in normal flow; child display is 'none'/,
+    );
+    assert.throws(
+        () => compileSource(source("position:absolute;")),
+        /explicit rows require every counted child to participate in normal flow; child position is 'absolute'/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                source("").replace(
+                    "document.body.appendChild(grid);",
+                    `let hidden = false;
+                     cell.style.display = hidden ? "none" : "block";
+                     document.body.appendChild(grid);`,
+                ),
+            ),
+        /explicit rows require every counted child to participate in normal flow; child display/,
+    );
+});
+
+test("refuses static and responsive min/max grid geometry changes", () => {
+    const source = (extraRule: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid { display:grid;grid-template-columns:repeat(1,24px); }" +
+                ".cell { width:24px;height:24px;max-width:20px; }" +
+                ${JSON.stringify(extraRule)};
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+        }
+        void main();
+    `;
+    assert.throws(
+        () => compileSource(source("")),
+        /child max-width '20px' is not proven equal to its fixed 24px geometry/,
+    );
+
+    const responsive = (rule: string): string => source(rule).replace(
+        "max-width:20px;",
+        "",
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                responsive(
+                    ".grid button:hover { max-height:20px; }",
+                ),
+            ),
+        /hover rule '\.grid button:hover' can change direct-child max-height/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                responsive(
+                    "@media (max-width:640px) { .cell { min-width:20px; } }",
+                ),
+            ),
+        /max-width rule '\.cell' can change direct-child min-width/,
+    );
+    assert.doesNotThrow(() =>
+            compileSource(
+                responsive(
+                    ".grid button:hover { max-width:24px; }" +
+                        "@media (max-width:640px) { .cell { min-height:24px; } }",
+                ),
+            ),
+    );
+});
+
+test("refuses responsive geometry changes on retained UI grid items", () => {
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                    import { createEngine } from "@babylonjs/lite";
+                    async function main(): Promise<void> {
+                        await createEngine({});
+                        const style = document.createElement("style");
+                        style.textContent = \`
+                            .palette {
+                                display:grid;
+                                grid-template-columns:repeat(2,24px);
+                                gap:2px;
+                            }
+                            .swatch { width:24px; height:24px; }
+                            @media (max-width:640px) {
+                                .swatch { width:20px; }
+                            }
+                        \`;
+                        document.head.appendChild(style);
+                        const palette = document.createElement("div");
+                        palette.className = "palette";
+                        const swatch = document.createElement("button");
+                        swatch.className = "swatch";
+                        palette.appendChild(swatch);
+                        document.body.appendChild(palette);
+                    }
+                    void main();
+                `,
+                { fileName: "test/retained-grid-media.ts" },
+            ),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(
+                error.message,
+                /^test\/retained-grid-media\.ts:\d+:\d+:/,
+            );
+            assert.match(
+                error.message,
+                /max-width rule '\.swatch' can change direct-child width/,
+            );
+            return true;
+        },
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent =
+                        ".palette { display:grid;grid-template-columns:repeat(2,24px); }" +
+                        ".swatch { width:24px;height:24px; }" +
+                        ".swatch.compact { width:20px; }";
+                    document.head.appendChild(style);
+                    const palette = document.createElement("div");
+                    palette.className = "palette";
+                    const swatch = document.createElement("button");
+                    swatch.className = "swatch";
+                    palette.appendChild(swatch);
+                    swatch.classList.add("compact");
+                    document.body.appendChild(palette);
+                }
+                void main();
+            `),
+        /runtime class rule '\.swatch\.compact' can change direct-child width/,
+    );
+});
+
+test("preserves retained UI grid track alignment", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = \`
+                .start {
+                    display:grid;
+                    grid-template-columns:repeat(2,24px);
+                }
+                .center {
+                    display:grid;
+                    grid-template-columns:repeat(2,24px);
+                    justify-content:center;
+                }
+                .swatch { width:24px; height:24px; }
+            \`;
+            document.head.appendChild(style);
+            for (const className of ["start", "center"]) {
+                const palette = document.createElement("div");
+                palette.className = className;
+                const swatch = document.createElement("button");
+                swatch.className = "swatch";
+                palette.appendChild(swatch);
+                document.body.appendChild(palette);
+            }
+        }
+        void main();
+    `);
+
+    assert.doesNotMatch(
+        result.cpp,
+        /--bbl-grid-justify-content:start/,
+    );
+    assert.match(result.cpp, /--bbl-grid-justify-content:center/);
+    const projection = palUiRmlSource;
+    const gridStyle = projection.slice(
+        projection.indexOf("std::string take_grid_children_style"),
+        projection.indexOf("std::string take_intrinsic_min_width"),
+    );
+    assert.match(gridStyle, /if \(grid\.justification == "center"\)/);
+    assert.match(
+        gridStyle,
+        /margin-left:auto;margin-right:auto/,
+    );
+    assert.doesNotMatch(
+        gridStyle,
+        /return[\s\S]{0,160}margin-left:auto/,
+    );
+});
+
+test("migrates retained UI children when a runtime class toggles grid", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".palette { display:grid;grid-template-columns:repeat(2,24px); }" +
+                ".swatch { width:24px;height:24px; }";
+            document.head.appendChild(style);
+            const palette = document.createElement("div");
+            const swatch = document.createElement("button");
+            swatch.className = "swatch";
+            palette.appendChild(swatch);
+            document.body.appendChild(palette);
+            palette.classList.add("palette");
+            palette.classList.remove("palette");
+        }
+        void main();
+    `);
+    assert.equal([...result.cpp.matchAll(/ui_toggle_class/g)].length, 2);
+
+    const projection = palUiRmlSource;
+    const migration = projection.slice(
+        projection.indexOf("void sync_grid_children_container"),
+        projection.indexOf("void append_element"),
+    );
+    assert.match(migration, /detach_authored_children/);
+    assert.match(migration, /RemoveChild\(projected\.children_container\)/);
+    assert.match(migration, /projected\.children_container = nullptr/);
+    assert.match(migration, /AppendChild\(std::move\(child\)\)/);
+});
+
+test("validates every mutable-class retained grid shape", () => {
+    const source = (tightWidth: number): string => `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".tight { display:grid;grid-template-columns:repeat(2,${tightWidth}px); }" +
+                ".wide { display:grid;grid-template-columns:repeat(4,24px); }" +
+                ".cell { width:24px;height:24px; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "wide";
+            const cell = document.createElement("button");
+            cell.className = "cell";
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+            grid.classList.remove("wide");
+            grid.classList.add("tight");
+        }
+        void main();
+    `;
+
+    assert.throws(
+        () => compileSource(source(20)),
+        /every child must have fixed 20px width/,
+    );
+    const valid = compileSource(source(24));
+    const adaptation =
+        valid.manifest.adaptations.find(
+            ({ id }) => id === "substituted-ui-runtime",
+        )?.nativeSemantics ?? "";
+    assert.match(adaptation, /repeat\(4, 24px\)/);
+    assert.match(adaptation, /repeat\(2, 24px\)/);
+});
+
+test("isolates retained UI grid implementation nodes from author selectors", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".grid { display:grid;grid-template-columns:repeat(2,24px); }" +
+                ".grid div { width:24px;height:24px;color:red; }";
+            document.head.appendChild(style);
+            const grid = document.createElement("div");
+            grid.className = "grid";
+            const cell = document.createElement("div");
+            grid.appendChild(cell);
+            document.body.appendChild(grid);
+        }
+        void main();
+    `);
+    assert.match(result.cpp, /UiStyleSelectorKind::ClassDescendantTag/);
+    const projection = palUiRmlSource;
+    const gridProjection = projection.slice(
+        projection.indexOf("void sync_grid_children_container"),
+        projection.indexOf("void mark_reachable"),
+    );
+    assert.match(
+        gridProjection,
+        /CreateElement\("bbl-grid-children"\)/,
+    );
+    assert.doesNotMatch(
+        gridProjection,
+        /CreateElement\("div"\)/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    document.createElement("bbl-grid-children");
+                }
+                void main();
+            `),
+        /is reserved for the retained projection/,
+    );
+});
+
+test("lowers scoped class queries to retained DOM-order iteration", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const root = document.createElement("div");
+            root.className = "palette";
+            const first = document.createElement("button");
+            first.className = "swatch";
+            const second = document.createElement("button");
+            second.className = "swatch";
+            root.append(first, second);
+            root.querySelectorAll(".swatch").forEach((element, index) => {
+                element.classList.toggle("active", index === 1);
+            });
+            document.body.appendChild(root);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_query_class[^\n]*"swatch"/);
+    assert.match(result.cpp, /for \(std::size_t [^;]+;/);
+    assert.match(result.cpp, /ui_toggle_class[^\n]*"active"/);
+});
+
+test("lowers dynamic rgb background strings on retained elements", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const button = document.createElement("button");
+            let red = 10;
+            button.style.background =
+                \`rgb(\${Math.round(red)}, \${20}, \${30})\`;
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_set_style_property/);
+    assert.match(result.cpp, /"background-color"/);
+    assert.match(result.cpp, /rgb\(/);
+});
+
+test("carries retained mousedown cancellation from the executed callback", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            let cancel = true;
+            const button = document.createElement("button");
+            button.addEventListener("mousedown", (event: MouseEvent) => {
+                const alias = event;
+                if (cancel) alias.preventDefault();
+                else event.preventDefault();
+            });
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /\.prevent_default\(\)/);
+    assert.equal(
+        [...result.cpp.matchAll(/\.prevent_default\(\)/g)].length,
+        2,
+    );
+    assert.match(
+        result.cpp,
+        /const auto& (v_[^ ]*alias) = v_[^;]*event;/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /(?:^|\n)\s*auto v_[^ ]*alias = v_[^;]*event;/,
+    );
+    assert.match(result.cpp, /ui_on_event[^\n]*"mousedown"/);
+    assert.doesNotMatch(result.cpp, /"mousedown", true/);
+    const projection = palUiRmlSource;
+    assert.match(
+        projection,
+        /pointer\.default_prevented[\s\S]{0,80}default_prevented = true/,
+    );
+    assert.match(
+        projection,
+        /previous_focus[\s\S]{0,500}current_focus->Blur\(\)/,
+    );
+    assert.doesNotMatch(projection, /focus:none/);
+
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const button = document.createElement("button");
+                    button.addEventListener("mousedown", (event: MouseEvent) => {
+                        const cancel = event.preventDefault;
+                        cancel();
+                    });
+                    document.body.appendChild(button);
+                }
+                void main();
+            `),
+        /Platform mouse events do not expose 'preventDefault'/,
+    );
+});
+
+test("refuses platform event aliases captured by escaping callbacks", () => {
+    const escapingCases = [
+        {
+            declaration: "const alias = event;",
+            use: "alias.preventDefault();",
+            name: "alias",
+        },
+        {
+            declaration: "const wrapped = { event };",
+            use: "wrapped.event.preventDefault();",
+            name: "wrapped",
+        },
+        {
+            declaration:
+                "const wrapped = { nested: [{ borrowed: event }] as const };" +
+                " const nested = wrapped.nested;",
+            use:
+                "const record = nested[0];" +
+                " record.borrowed.preventDefault();",
+            name: "nested",
+        },
+        {
+            declaration:
+                "const wrapped = { nested: [{ borrowed: event }] as const };",
+            use: "wrapped.nested[0].borrowed.preventDefault();",
+            name: "wrapped",
+        },
+    ];
+    for (const escaping of escapingCases) {
+        assert.throws(
+            () =>
+                compileSource(
+                    `
+                        import { createEngine } from "@babylonjs/lite";
+                        async function main(): Promise<void> {
+                            await createEngine({});
+                            const button = document.createElement("button");
+                            button.addEventListener("mousedown", (event: MouseEvent) => {
+                                ${escaping.declaration}
+                                button.addEventListener("pointerup", () => {
+                                    ${escaping.use}
+                                });
+                            });
+                            document.body.appendChild(button);
+                        }
+                        void main();
+                    `,
+                    { fileName: "test/escaped-platform-event.ts" },
+                ),
+            (error: unknown) => {
+                assert.ok(error instanceof CompileError);
+                assert.match(
+                    error.message,
+                    /^test\/escaped-platform-event\.ts:\d+:\d+:/,
+                );
+                assert.match(
+                    error.message,
+                    new RegExp(
+                        `escaping callback cannot capture platform event value '${escaping.name}'`,
+                    ),
+                );
+                return true;
+            },
+        );
+    }
+    assert.doesNotThrow(() =>
+        compileSource(`
+            import { createEngine } from "@babylonjs/lite";
+            async function main(): Promise<void> {
+                await createEngine({});
+                const button = document.createElement("button");
+                button.addEventListener("mousedown", (event: MouseEvent) => {
+                    const wrapped = { nested: [event] as const };
+                    wrapped.nested[0].preventDefault();
+                });
+                document.body.appendChild(button);
+            }
+            void main();
+        `),
+    );
+    const owned = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const button = document.createElement("button");
+            window.addEventListener("keydown", (event) => {
+                const code = event.code;
+                button.addEventListener("click", () => {
+                    button.textContent = code;
+                });
+            });
+            document.body.appendChild(button);
+        }
+        void main();
+    `);
+    assert.match(owned.cpp, /std::string v_[^ ]*code = v_[^;]*event\.code/);
+});
+
+test("accepts bounded span and SVG innerHTML with inherited currentColor", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        const ICON =
+            '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+            ' stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+            '<rect x="4" y="2" width="16" height="8" rx="2"/>' +
+            '<path d="M10 10v11a1 1 0 001 1h2a1 1 0 001-1V10"/>' +
+            '</svg>';
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent = ".tool svg { width: 36px; height: 36px; }";
+            document.head.appendChild(style);
+            const button = document.createElement("button");
+            button.className = "tool";
+            button.innerHTML =
+                ICON + '<span class="hotkey">1</span>';
+            document.body.appendChild(button);
+        }
+
+        void main();
+    `);
+
+    assert.match(result.cpp, /ui_set_inner_rml/);
+    assert.match(result.cpp, /data-bbl-current-color/);
+    assert.match(result.cpp, /stroke=\\?"white/);
+    assert.match(result.cpp, /class=\\?"hotkey/);
+    assert.ok(result.manifest.features.includes("ui:inline-svg"));
+    assert.match(
+        result.manifest.adaptations.find(
+            ({ id }) => id === "substituted-ui-runtime",
+        )?.nativeSemantics ?? "",
+        /LunaSVG/,
+    );
+});
+
+test("refuses retained UI selectors for LunaSVG path and rect internals", () => {
+    for (const target of ["path", "rect"]) {
+        assert.throws(
+            () =>
+                compileSource(
+                    `
+                        import { createEngine } from "@babylonjs/lite";
+                        async function main(): Promise<void> {
+                            await createEngine({});
+                            const style = document.createElement("style");
+                            style.textContent = ".tool ${target} { color:red; }";
+                            document.head.appendChild(style);
+                            const tool = document.createElement("button");
+                            tool.className = "tool";
+                            tool.innerHTML =
+                                '<svg viewBox="0 0 8 8">' +
+                                '<path d="M0 0L8 8"/>' +
+                                '<rect x="0" y="0" width="8" height="8"/>' +
+                                '</svg>';
+                            document.body.appendChild(tool);
+                        }
+                        void main();
+                    `,
+                    { fileName: `test/retained-svg-${target}-selector.ts` },
+                ),
+            (error: unknown) => {
+                assert.ok(error instanceof CompileError);
+                assert.match(
+                    error.message,
+                    new RegExp(
+                        `^test/retained-svg-${target}-selector\\.ts:\\d+:\\d+:`,
+                    ),
+                );
+                assert.match(
+                    error.message,
+                    /cannot target SVG path\/rect nodes/,
+                );
+                return true;
+            },
+        );
+    }
+});
+
+test("refuses mixed literal and currentColor retained SVG paints but keeps none", () => {
+    const accepted = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const tool = document.createElement("button");
+            tool.innerHTML =
+                '<svg viewBox="0 0 8 8" fill="none" stroke="currentColor">' +
+                '<path d="M0 0L8 8"/>' +
+                '</svg>';
+            document.body.appendChild(tool);
+        }
+        void main();
+    `);
+    assert.match(accepted.cpp, /data-bbl-current-color/);
+
+    const childCurrentColor = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const tool = document.createElement("button");
+            tool.innerHTML =
+                '<svg viewBox="0 0 8 8" fill="none">' +
+                '<path d="M0 0L8 8" fill="currentColor"/>' +
+                '</svg>';
+            document.body.appendChild(tool);
+        }
+        void main();
+    `);
+    assert.match(childCurrentColor.cpp, /data-bbl-current-color/);
+    assert.match(childCurrentColor.cpp, /fill=\\?"white/);
+
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                    import { createEngine } from "@babylonjs/lite";
+                    async function main(): Promise<void> {
+                        await createEngine({});
+                        const tool = document.createElement("button");
+                        tool.innerHTML =
+                            '<svg viewBox="0 0 8 8" stroke="currentColor">' +
+                            '<rect x="0" y="0" width="8" height="8" fill="#f00"/>' +
+                            '</svg>';
+                        document.body.appendChild(tool);
+                    }
+                    void main();
+                `,
+                { fileName: "test/retained-svg-paint.ts" },
+            ),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(
+                error.message,
+                /^test\/retained-svg-paint\.ts:\d+:\d+:/,
+            );
+            assert.match(
+                error.message,
+                /cannot mix currentColor with literal SVG paints/,
+            );
+            return true;
+        },
+    );
+
+    assert.throws(
+        () =>
+            compileSource(
+                `
+                    import { createEngine } from "@babylonjs/lite";
+                    async function main(): Promise<void> {
+                        await createEngine({});
+                        const tool = document.createElement("button");
+                        tool.innerHTML =
+                            '<svg viewBox="0 0 8 8" stroke="currentColor">' +
+                            '<path d="M0 0L8 8"/>' +
+                            '</svg>';
+                        document.body.appendChild(tool);
+                    }
+                    void main();
+                `,
+                { fileName: "test/retained-svg-default-paint.ts" },
+            ),
+        (error: unknown) => {
+            assert.ok(error instanceof CompileError);
+            assert.match(
+                error.message,
+                /^test\/retained-svg-default-paint\.ts:\d+:\d+:/,
+            );
+            assert.match(error.message, /implicit default fill:black/);
+            return true;
+        },
+    );
+});
+
+test("refuses unsafe or unbounded retained innerHTML", () => {
+    const withMarkup = (markup: string): string => `
+        import { createEngine } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            await createEngine({});
+            const panel = document.createElement("div");
+            panel.innerHTML = ${JSON.stringify(markup)};
+            document.body.appendChild(panel);
+        }
+        void main();
+    `;
+
+    assert.throws(
+        () => compileSource(withMarkup("<script>alert(1)</script>")),
+        /outside the bounded div\/span\/SVG subset/,
+    );
+    assert.throws(
+        () => compileSource(withMarkup('<span onclick="go()">x</span>')),
+        /attribute 'onclick' is not supported/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                withMarkup(
+                    '<svg viewBox="0 0 24 24"><path href="x" d="M0 0"/></svg>',
+                ),
+            ),
+        /attribute 'href' is not supported/,
+    );
+});
+
+test("refuses unproven scoped selectors, queries, and grid substitutions", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent = ".panel button { color: red; }";
+                    document.head.appendChild(style);
+                }
+                void main();
+            `),
+        /no statically-known descendant matches/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const root = document.createElement("div");
+                    root.querySelectorAll(".missing").forEach((element) => {
+                        element.classList.toggle("active", true);
+                    });
+                    document.body.appendChild(root);
+                }
+                void main();
+            `),
+        /requires a complete statically-known retained subtree/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+                async function main(): Promise<void> {
+                    await createEngine({});
+                    const style = document.createElement("style");
+                    style.textContent =
+                        ".grid { display:grid;grid-template-columns:repeat(2,24px);gap:2px; }" +
+                        ".cell { width:23px;height:24px; }";
+                    document.head.appendChild(style);
+                    const grid = document.createElement("div");
+                    grid.className = "grid";
+                    const cell = document.createElement("div");
+                    cell.className = "cell";
+                    grid.appendChild(cell);
+                    document.body.appendChild(grid);
+                }
+                void main();
+            `),
+        /every child must have fixed 24px width/,
     );
 });
 
@@ -7546,11 +10609,14 @@ test("stores nullable retained UI callbacks as empty native functions", () => {
         void main();
     `);
 
-    assert.match(result.cpp, /std::function<void\(\)> v_callback = std::function<void\(\)>\{\}/);
-    assert.match(result.cpp, /static_cast<bool>\(v_callback\)/);
-    assert.match(result.cpp, /v_callback\(\)/);
+    assert.match(
+        result.cpp,
+        /auto v_callback = std::make_shared<std::function<void\(\)>>/,
+    );
+    assert.match(result.cpp, /static_cast<bool>\(\(\*v_callback\)\)/);
+    assert.match(result.cpp, /\(\*v_callback\)\(\)/);
     assert.match(result.cpp, /stored_callback = \[[^\]]*\]\(\) mutable -> void/);
-    assert.match(result.cpp, /v_callback = \w+_stored_callback/);
+    assert.match(result.cpp, /\(\*v_callback\) = \w+_stored_callback/);
 });
 
 test("supplies omitted optional arguments to stored functions", () => {
@@ -7582,7 +10648,7 @@ test("lowers boolean data-field assignment expression callbacks", () => {
         invoke((value) => (state.left = value));
     `);
 
-    assert.match(result.cpp, /v_state\.left = v_[^)]+value/);
+    assert.match(result.cpp, /v_state\.left = true/);
 });
 
 test("projects an audited native host-page UI companion without changing scene source", () => {
@@ -7627,7 +10693,10 @@ test("projects an audited native host-page UI companion without changing scene s
         result.manifest.featureSites["ui:rml"],
         "ui/test-host.json (host UI companion)",
     );
-    assert.match(result.cpp, /ui_add_class_style[^\n]*"touch-controls"[^\n]*"display:none;"/);
+    assert.match(
+        result.cpp,
+        /ui_add_host_class_style[^\n]*"touch-controls"[^\n]*"display:none;"/,
+    );
     assert.match(result.cpp, /ui_create_element[^\n]*"div"/);
     assert.match(result.cpp, /ui_set_text[^\n]*"Keyboard help"/);
     assert.match(result.cpp, /position:absolute;background-color:rgba\(0,0,0,0\.5\)/);
@@ -7709,8 +10778,9 @@ test("materializes a callback returned through its own closure cycle", () => {
     assert.match(result.cpp, /std::make_shared<std::function<void\(double\)>>/);
     assert.match(result.cpp, /ui_on_click/);
     assert.match(result.cpp, /ui_set_style_property/);
-    assert.match(result.cpp, /v_update\([^)]*index/);
-    assert.match(result.cpp, /v_update = \[&\]\(double/);
+    assert.match(result.cpp, /\(\*v_update_owner\)\(1\.0\)/);
+    assert.match(result.cpp, /\(\*v_update_owner\) = \[&\]\(double/);
+    assert.doesNotMatch(result.cpp, /ui_on_click[^\n]*v_update\(1\.0\)/);
 });
 
 test("lowers retained pointer state and class toggles", () => {
@@ -7762,12 +10832,41 @@ test("lowers retained layout reads and pointer motion coordinates", () => {
     assert.match(result.cpp, /ui_on_event[^\n]*"mousemove"/);
     assert.match(
         result.cpp,
-        /\[&\]\(\[\[maybe_unused\]\] const bbl::PlatformMouseEvent&/,
+        /\[=, &v_bblite_inline_engine_\d+\]\(\[\[maybe_unused\]\] const bbl::PlatformMouseEvent&[^)]*\) mutable/,
     );
     assert.match(result.cpp, /\.client_x/);
     assert.match(result.cpp, /ui_get_client_rect[^;]*\.left/);
     assert.match(result.cpp, /ui_get_client_rect[^;]*\.width/);
     assert.doesNotMatch(result.cpp, /hasPointerCapture|getBoundingClientRect/);
+});
+
+test("captures callback-local values by value in retained UI listeners", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const trigger = document.createElement("button");
+            trigger.addEventListener("mousedown", () => {
+                const index = 4;
+                const swatch = document.createElement("button");
+                swatch.addEventListener("mousedown", () => {
+                    swatch.textContent = String(index);
+                });
+                document.body.appendChild(swatch);
+            });
+            document.body.appendChild(trigger);
+        }
+
+        void main();
+    `);
+
+    assert.equal(
+        result.cpp.match(/ui_on_event\([^\n]*"mousedown", \[=,/g)
+            ?.length,
+        2,
+    );
+    assert.doesNotMatch(result.cpp, /"mousedown", \[&\]/);
 });
 
 test("retains dynamically indexed UI handles and camelCase style properties", () => {
@@ -9845,6 +12944,120 @@ test("lowers platform listeners through generic engine callbacks", () => {
     assert.doesNotMatch(result.cpp, /addEventListener|preventDefault|document\.hidden/);
 });
 
+test("registers a callback returned by a local factory as a platform listener", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main() {
+            await createEngine({});
+            let pressed = false;
+            const onKey = (down: boolean) => (event: KeyboardEvent): void => {
+                if (event.code === "Space") pressed = down;
+            };
+            const onDown = onKey(true);
+            const onUp = onKey(false);
+            window.addEventListener("keydown", onDown);
+            window.addEventListener("keyup", onUp);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /on_key_down\([^;]*\{[\s\S]*\(\*v_onDown_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*key_event/,
+    );
+    assert.match(
+        result.cpp,
+        /on_key_up\([^;]*\{[\s\S]*\(\*v_onUp_owner\)\(bbl::js::Borrowed<const bbl::PlatformKeyboardEvent>\([^)]*key_event/,
+    );
+});
+
+test("removes a dynamically registered platform listener by callback identity", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        class Dragger {
+            private active = false;
+            private readonly onKey = (event: KeyboardEvent): void => {
+                if (this.active && event.code === "KeyR") {
+                    this.active = false;
+                }
+            };
+            begin(): void {
+                this.active = true;
+                window.addEventListener("keydown", this.onKey);
+            }
+            end(): void {
+                this.active = false;
+                window.removeEventListener("keydown", this.onKey);
+            }
+        }
+
+        async function main() {
+            await createEngine({});
+            const dragger = new Dragger();
+            window.addEventListener("mousedown", () => {
+                dragger.begin();
+                dragger.end();
+            });
+        }
+    `);
+
+    const registration = result.cpp.match(
+        /bbl::on_key_down\([^,]+, (\d+)u,/,
+    );
+    assert.ok(registration);
+    assert.match(
+        result.cpp,
+        new RegExp(
+            `bbl::off_key_down\\([^,]+, ${registration[1]}u\\)`,
+        ),
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /bbl::on_key_down\([^;]+, \[&\]/,
+    );
+});
+
+test("retained platform listeners keep live scene aliases", () => {
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+            type SceneContext,
+        } from "@babylonjs/lite";
+
+        class Picker {
+            private readonly scene: SceneContext;
+            private readonly onMove = (): void => {
+                const camera = this.scene.camera;
+                if (camera) camera.alpha += 0.1;
+            };
+            constructor(scene: SceneContext) {
+                this.scene = scene;
+                window.addEventListener("mousemove", this.onMove);
+            }
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            new Picker(scene);
+            scene.camera = createArcRotateCamera(
+                0,
+                1,
+                5,
+                { x: 0, y: 0, z: 0 },
+            );
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /bbl::on_mouse_move\([^;]*\[=, &v_bblite_class_field_scene_\d+, &v_engine\]/,
+    );
+});
+
 test("maps canvas pointer offsets to its platform-relative coordinates", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -9865,6 +13078,20 @@ test("maps canvas pointer offsets to its platform-relative coordinates", () => {
     assert.match(result.cpp, /\.button/);
     assert.doesNotMatch(result.cpp, /offset[XY]/);
     assert.match(result.cpp, /\[\[maybe_unused\]\] double v_fn\d+_state/);
+});
+
+test("projects render-canvas focus into native host state", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            canvas.focus();
+            void engine;
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::focus_canvas\(v_engine\)/);
 });
 
 test("lowers dynamic engine canvas cursor writes", () => {
@@ -10347,6 +13574,314 @@ test("lowers a direct thin-instance upload helper", () => {
 
     assert.match(result.cpp, /bbl::upload_thin_instance_matrices/);
     assert.doesNotMatch(result.cpp, /writeBuffer|_gpuBuffer|_dirtyMin/);
+});
+
+/** The pinned pool opening every dynamic thin-instance source is built on. */
+const thinInstancePoolSource = (body: string): string => `
+    import {
+        addThinInstance,
+        addToScene,
+        createBox,
+        createEngine,
+        createSceneContext,
+        enableThinInstanceGpuCulling,
+        mat4Identity,
+        removeThinInstance,
+        setThinInstanceColors,
+        setThinInstanceCount,
+        setThinInstances,
+    } from "@babylonjs/lite";
+
+    async function main() {
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        const mesh = createBox(engine);
+        setThinInstances(mesh, new Float32Array(16 * 16), 16);
+        setThinInstanceCount(mesh, 0);
+        enableThinInstanceGpuCulling(mesh);
+        addToScene(scene, mesh);
+${body}
+    }
+`;
+
+test("lowers the pinned thin-instance pool lifecycle", () => {
+    const result = compileSource(
+        thinInstancePoolSource(`
+        const first = addThinInstance(mesh, mat4Identity());
+        const second = addThinInstance(mesh, mat4Identity());
+        removeThinInstance(mesh, first);
+        removeThinInstance(mesh, second);
+        const colors = new Float32Array(64);
+        colors.fill(1, second * 4, second * 4 + 4);
+        colors.copyWithin(first * 4, second * 4, second * 4 + 4);
+        setThinInstanceColors(mesh, colors);
+        setThinInstanceCount(mesh, mesh.thinInstances!.count - 1);
+    `),
+    );
+
+    assert.deepEqual(
+        result.manifest.features.filter((feature) =>
+            feature.startsWith("mesh:thin-instance"),
+        ),
+        [
+            "mesh:thin-instances",
+            "mesh:thin-instance-colors",
+            "mesh:thin-instances-dynamic",
+            "mesh:thin-instance-gpu-culling",
+        ],
+    );
+    // The returned slot is a value the source binds and indexes with.
+    assert.match(
+        result.cpp,
+        /double v_first = bbl::add_thin_instance\(v_engine, v_mesh, bbl::js::mat4_compose\(/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::remove_thin_instance\(v_engine, v_mesh, v_first\)/,
+    );
+    // The live count read, backed by the record's active count.
+    assert.match(
+        result.cpp,
+        /bbl::thin_instance_count\(v_engine, v_mesh\)/,
+    );
+    // The pin's own `enabled = true` default, folded at the call site.
+    assert.match(
+        result.cpp,
+        /bbl::enable_thin_instance_gpu_culling\(v_engine, v_mesh, true\)/,
+    );
+    // The ranged typed-array pair, as generic helpers over the receiver.
+    assert.match(
+        result.cpp,
+        /bbl::js::array_fill_range\(v_colors, static_cast<float>\(1\.0\), \(v_second \* 4\.0\), \(\(v_second \* 4\.0\) \+ 4\.0\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::array_copy_within\(v_colors, \(v_first \* 4\.0\), \(v_second \* 4\.0\), \(\(v_second \* 4\.0\) \+ 4\.0\)\)/,
+    );
+});
+
+test("records the omitted thin-instance GPU culler as an adaptation", () => {
+    const enabled = compileSource(
+        thinInstancePoolSource("        addThinInstance(mesh, mat4Identity());"),
+    );
+    const adaptation = enabled.manifest.adaptations.find(
+        ({ id }) => id === "thin-instance-gpu-culling-omitted",
+    );
+    assert.equal(adaptation?.category, "rendering");
+    assert.equal(adaptation?.risk, "low");
+    assert.match(adaptation?.nativeSemantics ?? "", /every ACTIVE instance/);
+
+    // A statically-`false` opt-in cannot turn the culler on: upstream
+    // `_gpuCullingEnabled` starts false, so the pinned body returns at its
+    // own idempotence test. There is no omission to record, and recording
+    // one would put a fidelity entry naming a divergence that does not
+    // exist into a scene that never asked for culling.
+    const withCulling = (call: string): string => `
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            enableThinInstanceGpuCulling,
+            setThinInstances,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const mesh = createBox(engine);
+            setThinInstances(mesh, new Float32Array(16), 1);
+${call}
+            addToScene(scene, mesh);
+        }
+    `;
+    const disabled = compileSource(
+        withCulling(
+            "            enableThinInstanceGpuCulling(mesh, false);",
+        ),
+    );
+    assert.doesNotMatch(
+        disabled.cpp,
+        /enable_thin_instance_gpu_culling/,
+    );
+    assert.ok(
+        !disabled.manifest.features.includes(
+            "mesh:thin-instance-gpu-culling",
+        ),
+    );
+    assert.ok(
+        !disabled.manifest.adaptations.some(
+            ({ id }) => id === "thin-instance-gpu-culling-omitted",
+        ),
+    );
+    // The pool itself is still reached, so the scene keeps drawing through
+    // the thin-instance arm.
+    assert.ok(
+        disabled.manifest.features.includes("mesh:thin-instances"),
+    );
+
+    // The pin's own `enabled = true` default, and an explicit `true`, both
+    // reach the opt-in and record the omission.
+    for (const call of [
+        "            enableThinInstanceGpuCulling(mesh);",
+        "            enableThinInstanceGpuCulling(mesh, true);",
+    ]) {
+        const opted = compileSource(withCulling(call));
+        assert.match(
+            opted.cpp,
+            /bbl::enable_thin_instance_gpu_culling\(v_engine, v_mesh, true\)/,
+        );
+        assert.ok(
+            opted.manifest.features.includes(
+                "mesh:thin-instance-gpu-culling",
+            ),
+        );
+        assert.ok(
+            opted.manifest.adaptations.some(
+                ({ id }) => id === "thin-instance-gpu-culling-omitted",
+            ),
+        );
+    }
+
+    // A disable that FOLLOWS an enable still moves the pin's flag, so it
+    // keeps its call.
+    const toggled = compileSource(
+        withCulling(
+            "            enableThinInstanceGpuCulling(mesh);\n" +
+                "            enableThinInstanceGpuCulling(mesh, false);",
+        ),
+    );
+    assert.match(
+        toggled.cpp,
+        /bbl::enable_thin_instance_gpu_culling\(v_engine, v_mesh, false\)/,
+    );
+
+    // The pin reads `mesh.thinInstances` and throws without one; a mesh
+    // generation resolved and never bound a pool on fails at its own line,
+    // whichever way the flag was passed.
+    for (const argument of ["", ", false", ", true"]) {
+        assert.throws(
+            () =>
+                compileSource(`
+                    import {
+                        createBox,
+                        createEngine,
+                        enableThinInstanceGpuCulling,
+                    } from "@babylonjs/lite";
+
+                    async function main() {
+                        const engine = await createEngine({});
+                        const mesh = createBox(engine);
+                        enableThinInstanceGpuCulling(mesh${argument});
+                    }
+                `),
+            /requires a thin-instance pool this mesh never establishes/,
+        );
+    }
+});
+
+test("refuses thin-instance pool calls the pin cannot serve", () => {
+    const withPool = (body: string): string => `
+        import {
+            addThinInstance,
+            createBox,
+            createEngine,
+            mat4Identity,
+            removeThinInstance,
+            setThinInstances,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const mesh = createBox(engine);
+            setThinInstances(mesh, new Float32Array(16), 1);
+${body}
+        }
+    `;
+    assert.throws(
+        () => compileSource(withPool("            addThinInstance(mesh);")),
+        /Expected 2 arguments/,
+    );
+    assert.throws(
+        () =>
+            compileSource(
+                withPool(
+                    "            removeThinInstance(mesh, 0, 1);",
+                ),
+            ),
+        /Expected 2 arguments/,
+    );
+    // A mesh generation resolved and never bound a pool on has no count.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createBox,
+                    createEngine,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const mesh = createBox(engine);
+                    const count = mesh.thinInstances!.count;
+                    return count;
+                }
+            `),
+        /requires a thin-instance pool this mesh never establishes/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createBox, createEngine } from "@babylonjs/lite";
+                async function main() {
+                    const engine = await createEngine({});
+                    const mesh = createBox(engine);
+                    const values = new Float32Array(8);
+                    values.copyWithin(0);
+                }
+            `),
+        /copyWithin expects two or three arguments/,
+    );
+});
+
+test("keeps a static thin-instance scene free of the pool helpers", () => {
+    // Scene 16's shape: a pool established once and never grown. None of
+    // the growing half may reach the emitted runtime, which is what keeps
+    // every scene that does not drive a live pool byte-identical.
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            setThinInstanceColors,
+            setThinInstances,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const mesh = createBox(engine);
+            const matrices = new Float32Array(32);
+            setThinInstances(mesh, matrices, 2);
+            setThinInstanceColors(mesh, new Float32Array(8));
+            addToScene(scene, mesh);
+        }
+    `);
+
+    assert.ok(!result.manifest.features.includes("mesh:thin-instances-dynamic"));
+    assert.ok(
+        !result.manifest.features.includes("mesh:thin-instance-gpu-culling"),
+    );
+    assert.ok(
+        !result.manifest.adaptations.some(
+            ({ id }) => id === "thin-instance-gpu-culling-omitted",
+        ),
+    );
+    assert.doesNotMatch(result.cpp, /add_thin_instance/);
+    assert.doesNotMatch(result.cpp, /remove_thin_instance/);
+    assert.doesNotMatch(result.cpp, /bbl::thin_instance_count/);
+    assert.doesNotMatch(result.cpp, /enable_thin_instance_gpu_culling/);
 });
 
 test("folds static string concatenation in asset arguments", () => {
@@ -12073,7 +15608,7 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     );
     assert.match(
         result.cpp,
-        /scene146-impostor-worldPosition[\s\S]*NormalizedViewport\{\(3\.0 \* v_fn0_tileW\), v_fn0_y, v_fn0_tileW, 0\.15\}/,
+        /scene146-impostor-worldPosition[\s\S]*NormalizedViewport\{\(3\.0 \* v_fn0_tileW\), 0\.0, v_fn0_tileW, 0\.15\}/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -12163,7 +15698,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
     );
     assert.match(
         result.cpp,
-        /double v_fn\d+_y = 0\.85;/,
+        /scene145-impostor-irradiance[\s\S]*NormalizedViewport\{\(0\.0 \* v_fn\d+_tileW\), 0\.85,/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -12215,7 +15750,7 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
     assert.match(result.cpp, /bbl::on_frame_graph_update/);
     assert.match(
         result.cpp,
-        /v_from = bbl::js::make_ref<bblscene::MorphStateData>/,
+        /auto v_from = std::make_shared<bblscene::MorphState>\(bbl::js::make_ref<bblscene::MorphStateData>/,
     );
 });
 
@@ -12461,7 +15996,7 @@ test("initializes optional plain-data class fields to undefined", () => {
 
     assert.match(
         result.cpp,
-        /bbl::js::Nullable<double> v_bblite_.*class_field_timer.*\{\};/,
+        /auto v_bblite_.*class_field_timer.* = std::make_shared<bbl::js::Nullable<double>>\(\);/,
     );
     assert.match(result.cpp, /bbl::clear_timeout/);
     assert.match(result.cpp, /bbl::set_timeout/);
@@ -13419,6 +16954,98 @@ test("shares mutable enum state across functions returned in a record", () => {
     assert.match(result.cpp, /\(\*v_\w*current\)/);
 });
 
+test("shares mutable class fields across retained callbacks", () => {
+    const result = compileSource(`
+        type State = "rest" | "walk";
+
+        class Controller {
+            private _state: State = "rest";
+            private readonly _handlers = new Set<() => void>();
+
+            constructor() {
+                this._handlers.add(() => {
+                    if (this._state === "rest") this._state = "walk";
+                });
+                this._handlers.add(() => {
+                    if (this._state === "walk") this._state = "rest";
+                });
+            }
+
+            run(): void {
+                for (const handler of this._handlers) handler();
+            }
+
+            read(): State {
+                return this._state;
+            }
+        }
+
+        const controller = new Controller();
+        controller.run();
+        const state = controller.read();
+    `);
+
+    const state = result.cpp.match(
+        /auto (v_bblite_class_field__state_\d+) = std::make_shared<bblscene::State>\(bblscene::State::rest\);/,
+    );
+    assert.ok(state);
+    assert.ok(
+        (result.cpp.match(new RegExp(`\\(\\*${state[1]}\\)`, "g")) ?? [])
+            .length >= 5,
+        "both callbacks and the final read share one class-field cell",
+    );
+});
+
+test("retains mutable containers in records returned by factories", () => {
+    const result = compileSource(`
+        import { createEngine, type Engine } from "@babylonjs/lite";
+
+        interface Store {
+            readonly engine: Engine;
+            _state: {
+                values: Map<number, string>;
+            };
+        }
+
+        function createStore(engine: Engine): Store {
+            return {
+                engine,
+                _state: {
+                    values: new Map<number, string>(),
+                },
+            };
+        }
+
+        function write(store: Store, key: number, value: string): void {
+            store._state.values.set(key, value);
+        }
+
+        function read(store: Store, key: number): string | undefined {
+            return store._state.values.get(key);
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const store = createStore(engine);
+            write(store, 1, "kept");
+            const value = read(store, 1);
+        }
+
+        void main();
+    `);
+
+    const storage = result.cpp.match(
+        /auto (v_\w*values_\d+) = std::make_shared<bbl::js::Map<double, std::string>>\(bbl::js::Map<double, std::string>\{\}\);/,
+    );
+    assert.ok(storage);
+    assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\)\\.set\\(`));
+    assert.match(result.cpp, new RegExp(`\\(\\*${storage[1]}\\)\\.get\\(`));
+    assert.doesNotMatch(
+        result.cpp,
+        /bbl::js::Map<double, std::string>\{\}\.(?:set|get)\(/,
+    );
+});
+
 test("lowers recurring browser timers onto the frame conductor", () => {
     const result = compileSource(`
         import { createEngine, startEngine } from "babylon-lite";
@@ -13470,7 +17097,7 @@ test("lets recurring timers read persistent factory closure state", () => {
     `);
 
     assert.match(result.cpp, /bbl::set_interval\(v_engine, \[&\]\(\) \{/);
-    assert.match(result.cpp, /v_\w*ticks = \(v_\w*previous \+ 1\.0\)/);
+    assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
 });
 
 test("refuses recurring timers that capture an outer frame local", () => {
@@ -14882,8 +18509,6 @@ test("binds a colour helper's returned tuple instead of splicing the call", () =
         /bbl::Color3\{static_cast<float>\(bblscene::colorFor/,
     );
 });
-
-
 test("folds an emissive colour arriving through a user-function parameter", () => {
     // The same widening, at a VALUE sink rather than a refusal one:
     // `setPbrEmissive` omits the field instead of failing when the fold

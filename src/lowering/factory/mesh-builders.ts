@@ -10,7 +10,7 @@ import {
     lowerObjectComponents,
     lowerTupleComponents,
 } from "../pinned-function-lowerer.js";
-import { pinnedMeshOptionLocals } from "../../pinned-mesh-defaults.js";
+import { pinnedMeshOptionLocals, pinnedParameterFlag } from "../../pinned-mesh-defaults.js";
 
 /**
  * The names one pinned closure reads from OUTSIDE itself.
@@ -2276,6 +2276,18 @@ MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options) {
             "src/mesh/thin-instance.ts",
             "flushThinInstances",
         );
+        const dynamicPool = features.includes(
+            "mesh:thin-instances-dynamic",
+        );
+        const gpuCulling = features.includes(
+            "mesh:thin-instance-gpu-culling",
+        );
+        const poolHelpers = dynamicPool
+            ? this.thinInstancePoolHelpers()
+            : "";
+        const cullingHelper = gpuCulling
+            ? this.thinInstanceCullingHelper()
+            : "";
         const instanceColorSetter = instanceColors
             ? `// src/mesh/thin-instance.ts setThinInstanceColors: bind the
 // per-instance RGBA stream a material with useThinInstanceColors reads.
@@ -2989,6 +3001,17 @@ void copy_thin_instance_range(
     }
 }
 
+void update_thin_instance_draw_membership(
+    Engine& engine,
+    const MeshRecord& record,
+    std::uint32_t previous_count) {
+    if (
+        record.thin_instance_gpu_culling &&
+        ((previous_count == 0) != (record.instance_count == 0))) {
+        ++engine.draw_list_epoch;
+    }
+}
+
 } // namespace
 
 // src/mesh/thin-instance.ts setThinInstances: adopt the caller's matrix
@@ -3002,6 +3025,7 @@ void set_thin_instances(
     std::vector<float>& matrices,
     double count) {
     MeshRecord& record = engine.meshes[mesh.value];
+    const std::uint32_t previous_count = record.instance_count;
     const std::size_t capacity = std::min(
         static_cast<std::size_t>(count),
         matrices.size() / 16);
@@ -3014,6 +3038,10 @@ void set_thin_instances(
         static_cast<std::uint32_t>(capacity);
     record.instance_source = &matrices;
     record.instance_version += 1;
+    update_thin_instance_draw_membership(
+        engine,
+        record,
+        previous_count);
 }
 
 ${instanceColorSetter}// src/mesh/thin-instance.ts setThinInstanceCount: update only the active
@@ -3038,6 +3066,7 @@ void set_thin_instance_count(
         throw std::runtime_error(
             "setThinInstanceCount beyond the established capacity is not reached.");
     }
+    const std::uint32_t previous_count = record.instance_count;
     copy_thin_instance_range(
         record,
         *record.instance_source,
@@ -3045,6 +3074,10 @@ void set_thin_instance_count(
     record.instance_count =
         static_cast<std::uint32_t>(requested);
     record.instance_version += 1;
+    update_thin_instance_draw_membership(
+        engine,
+        record,
+        previous_count);
 }
 
 // src/mesh/thin-instance.ts setThinInstanceMatrix: overwrite one matrix in
@@ -3116,8 +3149,363 @@ void upload_thin_instance_matrices(
     record.instance_version += 1;
 }
 
-} // namespace bbl
+${poolHelpers}${cullingHelper}} // namespace bbl
 `,
         };
+    }
+
+    /**
+     * The growing half of the pinned pool: `addThinInstance` and
+     * `removeThinInstance`, plus the live `thinInstances.count` read they
+     * are written against.
+     *
+     * Both constants the pin states -- the initial capacity an
+     * `addThinInstance` that finds no pool allocates, and the factor a full
+     * pool grows by -- are READ off the declaration rather than restated,
+     * so a pin that retunes either regenerates a different runtime. The
+     * shapes the arithmetic around them depends on (the swap-remove, the
+     * count and version bumps) are asserted instead, because their meaning
+     * is the shape rather than a value.
+     */
+    private thinInstancePoolHelpers(): string {
+        const module = "src/mesh/thin-instance.ts";
+        const { file, declaration: add } =
+            this.context.functionDeclaration(module, "addThinInstance");
+        const { declaration: remove } =
+            this.context.functionDeclaration(
+                module,
+                "removeThinInstance",
+            );
+        const initialCapacity = this.context.numericValue(
+            this.context.variableInitializer(add, "capacity"),
+            file,
+        );
+        const growth = this.context.variableInitializer(add, "newCap");
+        this.context.assertExpressionShape(
+            growth,
+            "ti._capacity * 2",
+            "addThinInstance capacity growth",
+        );
+        const growthFactor = this.context.numericValue(
+            ts.isBinaryExpression(growth)
+                ? growth.right
+                : this.context.contractError(
+                      growth,
+                      "Expected addThinInstance to grow by a factor.",
+                  ),
+            file,
+        );
+        // The pin appends at the ACTIVE count, not at the capacity, and
+        // grows only when the two have met. Both halves are asserted
+        // because the emitted C++ indexes on the same pair.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(add, "index"),
+            "ti.count",
+            "addThinInstance append slot",
+        );
+        this.context.expectShapeCount(
+            add,
+            "index >= ti._capacity",
+            "addThinInstance growth test",
+        );
+        this.context.expectShapeCount(
+            add,
+            "newData.set(ti.matrices)",
+            "addThinInstance row preservation",
+        );
+        this.context.expectShapeCount(
+            add,
+            "ti.matrices.set(matrix, index * 16)",
+            "addThinInstance matrix write",
+        );
+        this.context.expectShapeCount(
+            add,
+            "ti.count++",
+            "addThinInstance count bump",
+        );
+        this.context.expectShapeCount(
+            add,
+            "ti._version++",
+            "addThinInstance version bump",
+        );
+        // The swap-remove: the LAST active row fills the freed slot, and
+        // only when the freed slot is not itself the last one.
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(remove, "last"),
+            "ti.count - 1",
+            "removeThinInstance last slot",
+        );
+        this.context.expectShapeCount(
+            remove,
+            "ti.matrices.copyWithin(index * 16, last * 16, last * 16 + 16)",
+            "removeThinInstance swap-remove",
+        );
+        this.context.expectShapeCount(
+            remove,
+            "ti.count--",
+            "removeThinInstance count drop",
+        );
+        this.context.expectShapeCount(
+            remove,
+            "ti._version++",
+            "removeThinInstance version bump",
+        );
+        const capacity = this.pinnedPoolInteger(
+            initialCapacity,
+            "addThinInstance initial capacity",
+        );
+        const factor = this.pinnedPoolInteger(
+            growthFactor,
+            "addThinInstance growth factor",
+        );
+        return `// src/mesh/thin-instance.ts addThinInstance: append one matrix at the
+// active count and return the slot it landed in, growing the pool when
+// that count has reached the capacity. A mesh with no pool gets the pin's
+// own initial capacity with the ENGINE owning the array -- that arm has no
+// caller array to alias -- held beside the mirror so every per-frame
+// helper above keeps reading one pool. The holder is a shared pointer
+// because MeshRecord moves when the scene appends a mesh, and the alias
+// must not move with it.
+double add_thin_instance(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrix) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (matrix.size() < 16) {
+        throw std::runtime_error(
+            "addThinInstance requires a 16-float matrix.");
+    }
+    if (!record.thin_instanced) {
+        if (!record.instance_matrices.empty()) {
+            throw std::runtime_error(
+                "addThinInstance on a loader-built instance pool is not reached.");
+        }
+        record.owned_instance_source =
+            std::make_shared<std::vector<float>>(
+                static_cast<std::size_t>(${capacity}) * 16,
+                0.0f);
+        record.instance_source = record.owned_instance_source.get();
+        record.instance_matrices.assign(
+            static_cast<std::size_t>(${capacity}),
+            std::array<float, 16>{});
+        record.thin_instanced = true;
+        record.instance_count = 0;
+    }
+    const std::size_t index = record.instance_count;
+    if (index >= record.instance_matrices.size()) {
+        const std::size_t grown =
+            record.instance_matrices.size() * ${factor};
+        // The pin allocates a NEW \`F32(newCap * 16)\`, copies the old rows
+        // into it and repoints \`ti.matrices\` at it. The array the scene
+        // handed setThinInstances is left untouched, at its own length --
+        // which matters because that array can be LONGER than the pool
+        // (\`setThinInstances\` takes the count as the capacity), so resizing
+        // it in place would both mutate the scene's own storage and, past a
+        // doubling it does not reach, truncate it. Everything downstream
+        // reads the alias, so repointing it detaches the pool exactly as the
+        // pin's assignment does: later matrix writes land in engine storage
+        // and the scene's array goes stale, on both sides.
+        const std::vector<float>* const previous = record.instance_source;
+        const std::size_t carried =
+            previous != nullptr ? previous->size() : 0;
+        if (carried > grown * 16) {
+            throw std::runtime_error(
+                "addThinInstance cannot grow a pool whose matrix array is longer than the grown capacity: the pinned newData.set(ti.matrices) overflows.");
+        }
+        std::shared_ptr<std::vector<float>> grown_source =
+            std::make_shared<std::vector<float>>(grown * 16, 0.0f);
+        if (carried > 0) {
+            std::copy_n(
+                previous->data(),
+                carried,
+                grown_source->data());
+        }
+        record.owned_instance_source = std::move(grown_source);
+        record.instance_source = record.owned_instance_source.get();
+        record.instance_matrices.resize(
+            grown,
+            std::array<float, 16>{});
+    }
+    // A pool established at capacity 0 -- \`setThinInstances(mesh, new
+    // F32(0), 0)\` -- doubles to 0, and the pin's own
+    // \`ti.matrices.set(matrix, index * 16)\` on that zero-length array
+    // throws. Refuse before any write rather than running off both the
+    // mirror and the source. This is a DIFFERENT state from a mesh with no
+    // pool at all, which the branch above serves with the pin's initial
+    // capacity, so it must not be floored into one.
+    if (index >= record.instance_matrices.size() ||
+        record.instance_source == nullptr ||
+        (index + 1) * 16 > record.instance_source->size()) {
+        throw std::runtime_error(
+            "addThinInstance has no room for the matrix: a thin-instance pool established at capacity 0 stays at capacity 0.");
+    }
+    std::copy_n(
+        matrix.data(),
+        16,
+        record.instance_matrices[index].data());
+    std::copy_n(
+        matrix.data(),
+        16,
+        record.instance_source->data() + index * 16);
+    record.instance_count = static_cast<std::uint32_t>(index + 1);
+    record.instance_version += 1;
+    update_thin_instance_draw_membership(
+        engine,
+        record,
+        static_cast<std::uint32_t>(index));
+    return static_cast<double>(index);
+}
+
+// src/mesh/thin-instance.ts removeThinInstance: swap-remove -- the last
+// ACTIVE row fills the freed slot -- then drop the active count. The pin
+// indexes off that count rather than off the capacity, so the slot is
+// checked against it. The index is a JavaScript number: NaN, a negative,
+// one past the active range and a FRACTIONAL slot all reach here, and the
+// pin would splice at \`index * 16\` on a typed array. This port refuses
+// each by name before touching a row rather than truncating 1.5 to 1 and
+// moving a neighbour's matrix (fidelity: a named refusal for invalid API
+// input, inside the bounded subset).
+void remove_thin_instance(
+    Engine& engine,
+    MeshHandle mesh,
+    double index) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "removeThinInstance requires thin instances bound by setThinInstances.");
+    }
+    if (!(index >= 0.0) ||
+        !(index < static_cast<double>(record.instance_count)) ||
+        index != std::floor(index)) {
+        throw std::runtime_error(
+            "removeThinInstance index is not an active thin instance.");
+    }
+    const std::size_t slot = static_cast<std::size_t>(index);
+    const std::size_t last =
+        static_cast<std::size_t>(record.instance_count) - 1;
+    if (slot != last) {
+        record.instance_matrices[slot] =
+            record.instance_matrices[last];
+        if (record.instance_source != nullptr) {
+            std::copy_n(
+                record.instance_source->data() + last * 16,
+                16,
+                record.instance_source->data() + slot * 16);
+        }
+    }
+    record.instance_count = static_cast<std::uint32_t>(last);
+    record.instance_version += 1;
+    update_thin_instance_draw_membership(
+        engine,
+        record,
+        static_cast<std::uint32_t>(last + 1));
+}
+
+// src/mesh/thin-instance.ts ThinInstanceData.count: the ACTIVE count every
+// helper above moves. Read live off the record, so a source computing the
+// last slot from it sees what the previous call left. The pin reaches it
+// through \`mesh.thinInstances!\`, so a mesh with no pool fails here rather
+// than reading a zero -- which is the same failure, at the same call.
+double thin_instance_count(const Engine& engine, MeshHandle mesh) {
+    const MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "mesh.thinInstances is not bound on this mesh.");
+    }
+    return static_cast<double>(record.instance_count);
+}
+
+`;
+    }
+
+    /**
+     * A pinned pool constant as C++ decimal text. Both of them size an
+     * allocation, so a pin that made either fractional or non-positive
+     * would produce a runtime this port cannot state; that fails here
+     * rather than emitting it.
+     */
+    private pinnedPoolInteger(value: number, label: string): string {
+        if (!Number.isInteger(value) || value < 1) {
+            this.context.contractError(
+                this.context.sourceFile("src/mesh/thin-instance.ts"),
+                `${label} is not a positive integer (${value}).`,
+            );
+        }
+        return String(value);
+    }
+
+    /**
+     * `enableThinInstanceGpuCulling`, whose compute culler this port omits.
+     *
+     * Upstream the opt-in has two effects: a compute pass compacts the
+     * visible instances, and the renderable is marked `_direct` so it
+     * leaves the cached opaque bundle -- which is what gives an application
+     * per-frame pool sync on a Standard material. This port records no
+     * bundles and re-uploads every live pool every frame from the record's
+     * own version, so the second effect is already unconditional and the
+     * first is a recorded omission (fidelity `thin-instance-gpu-culling`).
+     * The flag still lands on the record: an opt-in that compiled to
+     * nothing would be indistinguishable from one that was never reached.
+     */
+    private thinInstanceCullingHelper(): string {
+        const module = "src/mesh/thin-instance.ts";
+        const symbol = "enableThinInstanceGpuCulling";
+        const { declaration } = this.context.functionDeclaration(
+            module,
+            symbol,
+        );
+        // The default the intrinsic folds into a one-argument call site.
+        if (
+            pinnedParameterFlag(module, symbol, "enabled") !== true
+        ) {
+            this.context.contractError(
+                declaration,
+                `${symbol} no longer enables culling by default.`,
+            );
+        }
+        this.context.expectShapeCount(
+            declaration,
+            "ti._gpuCullingEnabled === enabled",
+            `${symbol} idempotence test`,
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "ti._gpuCullingEnabled = enabled",
+            `${symbol} flag write`,
+        );
+        // Both GPU stamps are reset, which is the pin's "re-upload the
+        // whole pool next sync"; native says the same with one version.
+        this.context.expectShapeCount(
+            declaration,
+            "ti._gpuVersion = -1",
+            `${symbol} matrix stamp reset`,
+        );
+        this.context.expectShapeCount(
+            declaration,
+            "ti._colorGpuVersion = -1",
+            `${symbol} colour stamp reset`,
+        );
+        return `// src/mesh/thin-instance.ts enableThinInstanceGpuCulling: the pin's
+// performance opt-in. It refuses a mesh with no pool, returns on an
+// unchanged flag, and resets both GPU stamps so the next sync re-uploads
+// the whole pool -- which native states as one version bump. The compute
+// culler itself is omitted; see the scene's fidelity.json.
+void enable_thin_instance_gpu_culling(
+    Engine& engine,
+    MeshHandle mesh,
+    bool enabled) {
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (!record.thin_instanced) {
+        throw std::runtime_error(
+            "enableThinInstanceGpuCulling requires mesh.thinInstances.");
+    }
+    if (record.thin_instance_gpu_culling == enabled) {
+        return;
+    }
+    record.thin_instance_gpu_culling = enabled;
+    record.instance_version += 1;
+}
+
+`;
     }
 }

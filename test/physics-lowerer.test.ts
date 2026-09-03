@@ -248,11 +248,7 @@ test("mesh bounds apply scene-code overrides before sizing an aggregate", () => 
     );
     assert.match(
         helper,
-        /if \(mesh\.has_bounds_min_override\) \{\n        bounds\.minimum = mesh\.bounds_min_override;/,
-    );
-    assert.match(
-        helper,
-        /if \(mesh\.has_bounds_max_override\) \{\n        bounds\.maximum = mesh\.bounds_max_override;/,
+        /apply_mesh_bound_overrides\(mesh, bounds\.minimum, bounds\.maximum\);/,
     );
     assert.match(helper, /return bounds;/);
 });

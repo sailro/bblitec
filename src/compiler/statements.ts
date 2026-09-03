@@ -30,6 +30,8 @@ export interface StatementLoweringContext {
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** The handle-collection concept: every collection operation. */
     readonly handleCollections: HandleCollections;
+    /** Whether a `new` expression constructs a reached local class. */
+    constructsLocalClass(expression: ts.NewExpression): boolean;
     lookupOptional(identifier: ts.Identifier): Value | undefined;
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
     /** Marks that a scene threw, so the generated main includes <stdexcept>. */
@@ -104,6 +106,7 @@ export interface StatementLoweringContext {
     ): void;
     emitAssignment(expression: ts.BinaryExpression): void;
     compileValue(expression: ts.Expression): Value;
+    emitDiscardedValue(value: Value): void;
     compileCondition(expression: ts.Expression): string;
     isBrowserOnlyExpression(expression: ts.Expression): boolean;
     isDeferredCallbackCall(call: ts.CallExpression): boolean;
@@ -201,6 +204,10 @@ export interface StatementLoweringContext {
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeControlFlow(): boolean;
+    enterRuntimeIteration(): void;
+    leaveRuntimeIteration(): void;
+    enterStaticIteration(): void;
+    leaveStaticIteration(): void;
     emit(line: string): void;
     rebindVariable(
         identifier: ts.Identifier,
@@ -539,6 +546,19 @@ export class StatementLowerer {
             return emitBody();
         } finally {
             context.leaveRuntimeControlFlow();
+        }
+    }
+
+    /** Compile an expression/body that a native loop can evaluate repeatedly. */
+    private inRuntimeIteration<T>(
+        context: StatementLoweringContext,
+        emitBody: () => T,
+    ): T {
+        context.enterRuntimeIteration();
+        try {
+            return emitBody();
+        } finally {
+            context.leaveRuntimeIteration();
         }
     }
 
@@ -1572,61 +1592,62 @@ export class StatementLowerer {
                     );
                 }
             }
-            const condition = statement.condition
-                ? this.inRuntimeControlFlow(context, () =>
-                      context.compileCondition(
-                          statement.condition!,
-                      ),
-                  )
-                : "";
-            // The incrementor belongs in the for-header so `continue`
-            // reaches it, matching JavaScript loop semantics.
-            let header = "";
-            if (statement.incrementor) {
-                const lines = this.inRuntimeControlFlow(
-                    context,
-                    () =>
-                        context.captureEmittedLines(() => {
-                            this.emitExpression(
-                                context,
-                                statement.incrementor!,
-                            );
-                        }),
-                );
-                if (
-                    lines.length !== 1 ||
-                    !lines[0]!.endsWith(";")
-                ) {
-                    context.fail(
-                        statement.incrementor,
-                        "Loop incrementors must lower to one native statement.",
+            this.inRuntimeIteration(context, () => {
+                const condition = statement.condition
+                    ? this.compileRepeatedCondition(
+                          context,
+                          statement.condition,
+                      )
+                    : "";
+                // The incrementor belongs in the for-header so `continue`
+                // reaches it, matching JavaScript loop semantics.
+                let header = "";
+                if (statement.incrementor) {
+                    const lines = this.inRuntimeControlFlow(
+                        context,
+                        () =>
+                            context.captureEmittedLines(() => {
+                                this.emitExpression(
+                                    context,
+                                    statement.incrementor!,
+                                );
+                            }),
                     );
-                }
-                header = lines[0]!.slice(0, -1);
-            }
-            context.emit(
-                `for (; ${condition}; ${header}) {`,
-            );
-            context.increaseIndent();
-            context.pushScope(
-                context.allocateBlockPrefix(),
-            );
-            try {
-                const statements = ts.isBlock(
-                    statement.statement,
-                )
-                    ? statement.statement.statements
-                    : [statement.statement];
-                this.inRuntimeControlFlow(context, () => {
-                    for (const nested of statements) {
-                        this.emit(context, nested);
+                    if (
+                        lines.length !== 1 ||
+                        !lines[0]!.endsWith(";")
+                    ) {
+                        context.fail(
+                            statement.incrementor,
+                            "Loop incrementors must lower to one native statement.",
+                        );
                     }
-                });
-            } finally {
-                context.popScope();
-            }
-            context.decreaseIndent();
-            context.emit("}");
+                    header = lines[0]!.slice(0, -1);
+                }
+                context.emit(
+                    `for (; ${condition}; ${header}) {`,
+                );
+                context.increaseIndent();
+                context.pushScope(
+                    context.allocateBlockPrefix(),
+                );
+                try {
+                    const statements = ts.isBlock(
+                        statement.statement,
+                    )
+                        ? statement.statement.statements
+                        : [statement.statement];
+                    this.inRuntimeControlFlow(context, () => {
+                        for (const nested of statements) {
+                            this.emit(context, nested);
+                        }
+                    });
+                } finally {
+                    context.popScope();
+                }
+                context.decreaseIndent();
+                context.emit("}");
+            });
         } finally {
             context.popScope();
             context.decreaseIndent();
@@ -1655,6 +1676,7 @@ export class StatementLowerer {
     ): void {
         context.pushScope(context.allocateBlockPrefix());
         this.staticUnrolledIterations.push(iteration);
+        context.enterStaticIteration();
         try {
             bind();
             const statements = ts.isBlock(body)
@@ -1665,6 +1687,7 @@ export class StatementLowerer {
                 if (this.terminatesAfterLowering(nested)) break;
             }
         } finally {
+            context.leaveStaticIteration();
             this.staticUnrolledIterations.pop();
             context.popScope();
         }
@@ -1934,21 +1957,44 @@ export class StatementLowerer {
         iterations: number,
         emitIteration: (at: number) => void,
     ): void {
-        const captures: string[][] = [];
+        let template: string[] | undefined;
+        let matchingPrefix = 0;
+        let divergentCaptures: string[][] | undefined;
         this.withStaticUnrollProduct(iterations, () => {
             for (let at = 0; at < iterations; at += 1) {
-                captures.push(
-                    context.captureEmittedLines(() =>
-                        emitIteration(at),
-                    ),
+                const lines = context.captureEmittedLines(() =>
+                    emitIteration(at),
                 );
+                if (divergentCaptures) {
+                    divergentCaptures.push(lines);
+                    continue;
+                }
+                if (!template) {
+                    template = lines;
+                    matchingPrefix = 1;
+                    continue;
+                }
+                const matches =
+                    lines.length === template.length &&
+                    lines.every(
+                        (line, index) => line === template![index],
+                    );
+                if (matches) {
+                    matchingPrefix += 1;
+                    continue;
+                }
+                divergentCaptures = [lines];
             }
         });
-        const template = captures[0]!;
-        if (!this.capturesAreIdentical(captures, template)) {
-            this.emitCapturedIterations(context, captures);
+        if (!template) return;
+        if (divergentCaptures) {
+            for (let iteration = 0; iteration < matchingPrefix; ++iteration) {
+                for (const line of template) context.emit(line);
+            }
+            this.emitCapturedIterations(context, divergentCaptures);
             return;
         }
+        if (template.length === 0) return;
         this.emitRepeatedTemplate(
             context,
             iterations,
@@ -1960,36 +2006,60 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.WhileStatement,
     ): void {
-        context.emit(
-            `while (${this.inRuntimeControlFlow(context, () =>
-                context.compileCondition(statement.expression),
-            )}) {`,
-        );
-        this.inRuntimeControlFlow(context, () =>
-            this.emitScopedBody(
-                context,
-                statement.statement,
-            ),
-        );
-        context.emit("}");
+        this.inRuntimeIteration(context, () => {
+            context.emit(
+                `while (${this.compileRepeatedCondition(
+                    context,
+                    statement.expression,
+                )}) {`,
+            );
+            this.inRuntimeControlFlow(context, () =>
+                this.emitScopedBody(
+                    context,
+                    statement.statement,
+                ),
+            );
+            context.emit("}");
+        });
     }
 
     private emitDo(
         context: StatementLoweringContext,
         statement: ts.DoStatement,
     ): void {
-        context.emit("do {");
-        this.inRuntimeControlFlow(context, () =>
-            this.emitScopedBody(
-                context,
-                statement.statement,
-            ),
+        this.inRuntimeIteration(context, () => {
+            context.emit("do {");
+            this.inRuntimeControlFlow(context, () =>
+                this.emitScopedBody(
+                    context,
+                    statement.statement,
+                ),
+            );
+            context.emit(
+                `} while (${this.compileRepeatedCondition(
+                    context,
+                    statement.expression,
+                )});`,
+            );
+        });
+    }
+
+    /**
+     * Keeps an inlined call's setup inside a loop condition so it runs on
+     * every test rather than once before the loop.
+     */
+    private compileRepeatedCondition(
+        context: StatementLoweringContext,
+        expression: ts.Expression,
+    ): string {
+        let condition = "";
+        const lines = this.inRuntimeControlFlow(context, () =>
+            context.captureEmittedLines(() => {
+                condition = context.compileCondition(expression);
+            }),
         );
-        context.emit(
-            `} while (${this.inRuntimeControlFlow(context, () =>
-                context.compileCondition(statement.expression),
-            )});`,
-        );
+        if (lines.length === 0) return condition;
+        return `([&]() -> bool { ${lines.join(" ")} return ${condition}; }())`;
     }
 
     private emitForOf(
@@ -2089,12 +2159,20 @@ export class StatementLowerer {
         ) {
             return;
         }
-        const staticLiteral =
+        const probedStaticLiteral =
             !this.bindsEnclosingLoop(statement.statement)
                 ? context.probeStaticArrayLiteral(
                       statement.expression,
                   )
                 : undefined;
+        // A spread is a runtime snapshot, even when the surrounding literal
+        // is statically visible. Unrolling the literal would try to bind the
+        // SpreadElement itself as one loop value and, more importantly, would
+        // iterate the live source rather than the copy JavaScript made.
+        const staticLiteral =
+            probedStaticLiteral?.elements.some(ts.isSpreadElement)
+                ? undefined
+                : probedStaticLiteral;
         // Preserve runtime iteration for destructured materialized tables.
         // Static destructuring is the fallback for tuples whose mixed or
         // optional lanes cannot be represented as one native container.
@@ -2223,14 +2301,16 @@ export class StatementLowerer {
             target,
             declaration.name,
             (loopContext) => {
-                this.inRuntimeControlFlow(loopContext, () => {
-                    const branch = bodyStatements(
-                        statement,
-                    )[0] as ts.IfStatement;
-                    this.emitScopedBody(
-                        loopContext,
-                        branch.elseStatement!,
-                    );
+                this.inRuntimeIteration(loopContext, () => {
+                    this.inRuntimeControlFlow(loopContext, () => {
+                        const branch = bodyStatements(
+                            statement,
+                        )[0] as ts.IfStatement;
+                        this.emitScopedBody(
+                            loopContext,
+                            branch.elseStatement!,
+                        );
+                    });
                 });
             },
         );
@@ -2689,10 +2769,12 @@ export class StatementLowerer {
             target,
             declaration.name,
             (loopContext) => {
-                this.inRuntimeControlFlow(loopContext, () => {
-                    for (const nested of bodyStatements(statement)) {
-                        this.emit(loopContext, nested);
-                    }
+                this.inRuntimeIteration(loopContext, () => {
+                    this.inRuntimeControlFlow(loopContext, () => {
+                        for (const nested of bodyStatements(statement)) {
+                            this.emit(loopContext, nested);
+                        }
+                    });
                 });
             },
             extraBinding,
@@ -2755,10 +2837,12 @@ export class StatementLowerer {
             )
                 ? statement.statement.statements
                 : [statement.statement];
-            this.inRuntimeControlFlow(context, () => {
-                for (const nested of statements) {
-                    this.emit(context, nested);
-                }
+            this.inRuntimeIteration(context, () => {
+                this.inRuntimeControlFlow(context, () => {
+                    for (const nested of statements) {
+                        this.emit(context, nested);
+                    }
+                });
             });
         } finally {
             context.popScope();
@@ -3065,17 +3149,7 @@ export class StatementLowerer {
         }
         if (ts.isCallExpression(unwrapped)) {
             const value = context.compileValue(unwrapped);
-            if (
-                value.kind !== "engine" &&
-                value.cpp.length > 0
-            ) {
-                context.emit(
-                    value.kind !== "void" ||
-                        value.requiresExplicitDiscard
-                        ? `static_cast<void>(${value.cpp});`
-                        : `${value.cpp};`,
-                );
-            }
+            context.emitDiscardedValue(value);
             return;
         }
         if (ts.isAwaitExpression(expression)) {
@@ -3086,6 +3160,18 @@ export class StatementLowerer {
             const latch = context.promiseLatchCondition(unwrapped);
             if (latch) {
                 context.emitStartContinuationGate(unwrapped, latch);
+                return;
+            }
+        }
+        if (ts.isNewExpression(unwrapped)) {
+            // A constructed instance the source discards. It stays ahead of
+            // nothing else: `await new Promise(...)` is a frame wait the
+            // drain below owns, and only a local class reaches here.
+            if (context.constructsLocalClass(unwrapped)) {
+                const value = context.compileValue(unwrapped);
+                if (value.cpp.length > 0) {
+                    context.emit(`static_cast<void>(${value.cpp});`);
+                }
                 return;
             }
         }
@@ -3461,7 +3547,8 @@ export class StatementLowerer {
      * touch `children`", and `setParent` is what syncs both. So a scene
      * that writes the link and pushes the child is performing two
      * operations, and this is the second -- the list `collectMeshes`, the
-     * visibility cascade and cloning walk.
+     * visibility cascade and cloning walk. SceneNode.children is one ordered
+     * mixed list, so mesh and transform-node entries share this path.
      */
     private emitTransformNodeChildPush(
         context: StatementLoweringContext,
@@ -3483,7 +3570,16 @@ export class StatementLowerer {
         }
         context.expectArgumentCount(call, 1, 1);
         const child = context.compileValue(call.arguments[0]!);
-        context.expectKind(child, "mesh", call.arguments[0]!);
+        if (
+            child.kind !== "mesh" &&
+            child.kind !== "transform-node"
+        ) {
+            context.fail(
+                call.arguments[0]!,
+                "TransformNode children.push supports exactly mesh and " +
+                    `transform-node values, received ${child.kind}.`,
+            );
+        }
         context.expectSameEngine(node, child, call);
         context.emit(
             `bbl::push_transform_node_child(` +

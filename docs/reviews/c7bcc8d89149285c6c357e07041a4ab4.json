@@ -1,0 +1,154 @@
+{
+  "angles": [
+    "reuse",
+    "simplification",
+    "efficiency",
+    "altitude"
+  ],
+  "findings": [
+    {
+      "summary": "Replace bespoke crosshair CSS metadata and markup with typed generic background-layer projection.",
+      "applied": false,
+      "blockedBy": "The typed retained-UI style and generic-layer IR does not exist yet.",
+      "filedIn": "TODO.md: retained UiLowerer and typed style IR"
+    },
+    {
+      "summary": "Generalize nullable resource mapping instead of duplicating audio node, buffer, and parameter cases.",
+      "applied": true
+    },
+    {
+      "summary": "Bound decoded browser-texture bake memoization with a byte-budgeted LRU.",
+      "applied": true
+    },
+    {
+      "summary": "Use cursor-index traversal for browser-texture module closure discovery.",
+      "applied": true
+    },
+    {
+      "summary": "Compute explicit-grid-row state once per grid parent.",
+      "applied": true
+    },
+    {
+      "summary": "Expose JsonValue string data without copying during stringify.",
+      "applied": true
+    },
+    {
+      "summary": "Cache the retained-UI PAL source once across compiler tests.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse Compiler callback identity allocation for property-animation writers.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse isJsonValue for JSON representation checks.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse repositoryRelativePath for browser-texture provenance.",
+      "applied": true
+    },
+    {
+      "summary": "Represent authored grid justification with one optional value.",
+      "applied": true
+    },
+    {
+      "summary": "Remove redundant cascade-presence state.",
+      "applied": true
+    },
+    {
+      "summary": "Derive retained-UI class state from class alternatives.",
+      "applied": true
+    },
+    {
+      "summary": "Emit one typed file descriptor instead of duplicating MIME and accept parsing policy.",
+      "applied": false,
+      "blockedBy": "The generator has no canonical typed descriptor carrying MIME types, extensions, labels, and Blob inference.",
+      "filedIn": "TODO.md: typed file-accept descriptors"
+    },
+    {
+      "summary": "Derive inline-SVG adaptation from feature reachability.",
+      "applied": true
+    },
+    {
+      "summary": "Share one module-kind-parameterized TypeScript transpiler.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse one AST module-specifier walker for bake closures and executed module graphs.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse the durable bake cache identity for browser-texture memoization.",
+      "applied": true
+    },
+    {
+      "summary": "Scope UI validation rules, parent links, and ancestor caches as one temporary state.",
+      "applied": true
+    },
+    {
+      "summary": "Split and normalize stylesheet selector lists once.",
+      "applied": true
+    },
+    {
+      "summary": "Replace repeated SVG attribute checks with shared per-tag schemas.",
+      "applied": true
+    },
+    {
+      "summary": "Replace order-sensitive platform event branches with a target/event descriptor table.",
+      "applied": true
+    },
+    {
+      "summary": "Model class demand as the boolean state actually observed.",
+      "applied": true
+    },
+    {
+      "summary": "Centralize discarded Value emission policy.",
+      "applied": true
+    },
+    {
+      "summary": "Parse private grid metadata through one shared helper.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse a retained-UI scene compiler helper in grid tests.",
+      "applied": true
+    },
+    {
+      "summary": "Remove the one-line CommonJS transpiler forwarding module.",
+      "applied": true
+    },
+    {
+      "summary": "Cache parameter read-only analysis by checker and parameter symbol.",
+      "applied": true
+    },
+    {
+      "summary": "Retain one template for uniform unroll prefixes instead of every emitted body.",
+      "applied": true
+    },
+    {
+      "summary": "Scan retained-UI class tokens without stream and string allocation.",
+      "applied": true
+    },
+    {
+      "summary": "Refresh client rectangles selectively between layout invalidations.",
+      "applied": true
+    },
+    {
+      "summary": "Reuse active-range mirror-conjugation scratch for dirty thin-instance uploads.",
+      "applied": true
+    },
+    {
+      "summary": "Derive shared closure storage from a central typed escape graph.",
+      "applied": false,
+      "blockedBy": "The typed user-code IR does not yet carry escaping function-typed sink edges.",
+      "filedIn": "TODO.md: Closures and async"
+    },
+    {
+      "summary": "Derive Standard row offsets and native Babylon loading from one ordered renderable manifest.",
+      "applied": false,
+      "blockedBy": "No generated per-asset renderable manifest exists to replace the generic runtime JSON loader walk.",
+      "filedIn": "TODO.md: Assets and materials"
+    }
+  ]
+}

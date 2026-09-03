@@ -87,6 +87,31 @@ test("loads pinned Babylon Lite TypeScript from published source maps", () => {
     assert.equal(store.resolvePublicExport("createHemisphericLight").modulePath, "src/light/hemispheric.ts");
 });
 
+test("pins the public camera view-projection cache body", () => {
+    const store = new UpstreamSourceStore();
+    assert.equal(
+        store.resolvePublicExport("getViewProjectionMatrix").modulePath,
+        "src/camera/camera.ts",
+    );
+    const source = store.getSource("src/camera/camera.ts");
+    assert.match(
+        source,
+        /export function getViewProjectionMatrix\(camera: Camera, aspectRatio: number\): Mat4/,
+    );
+    assert.match(source, /const ver = _cameraChangeKey\(camera\);/);
+    assert.match(
+        source,
+        /camera\._vpVer === ver && camera\._vpAspect === aspectRatio/,
+    );
+    assert.match(
+        source,
+        /mat4MultiplyInto\(vp, 0, getProjectionMatrix\(camera, aspectRatio\) as unknown as Mat4Storage, 0, getViewMatrix\(camera\) as unknown as Mat4Storage, 0\);/,
+    );
+    assert.match(source, /camera\._vpVer = ver;/);
+    assert.match(source, /camera\._vpAspect = aspectRatio;/);
+    assert.match(source, /return vp as unknown as Mat4;/);
+});
+
 test("generates the Babylon environment parser from upstream constants", () => {
     const lowerer = new EnvironmentLowerer(new LoweringContext());
     const lowered = lowerer.lowerParser();
@@ -233,10 +258,10 @@ test("bumps the visibility epoch only when setMeshVisible changes a flag", () =>
     );
     assert.match(
         lowered.source,
-        /if \(set_mesh_visible_cascade\(engine, mesh, visible\)\) \{[\s\S]*?\+\+engine\.visibility_epoch;/,
+        /if \(set_mesh_visible_cascade\(engine, mesh, visible\)\) \{[\s\S]*?\+\+engine\.draw_list_epoch;/,
     );
     // The bump is conditional: no unguarded increment exists.
-    const bumps = lowered.source.match(/\+\+engine\.visibility_epoch;/g);
+    const bumps = lowered.source.match(/\+\+engine\.draw_list_epoch;/g);
     assert.equal(bumps?.length, 1);
 });
 
@@ -1174,6 +1199,207 @@ test("emits the torus knot only where a scene reached it", () => {
     assert.doesNotMatch(bare.source, /#include <bblite\/js_data\.hpp>/);
 });
 
+test("emits the thin-instance pool helpers only where a scene reached them", () => {
+    // The growing half of the pool and the culling opt-in are separately
+    // reached, so a scene with a fixed-capacity pool -- Scene 16's shape --
+    // compiles neither, and one that never touches thin instances compiles
+    // nothing at all. This is what keeps a static scene byte-identical.
+    const bare = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories([]);
+    assert.doesNotMatch(bare.source, /add_thin_instance/);
+    assert.doesNotMatch(bare.source, /enable_thin_instance_gpu_culling/);
+
+    const fixed = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories(["mesh:thin-instances"]);
+    assert.match(fixed.source, /void set_thin_instances\(/);
+    assert.doesNotMatch(fixed.source, /add_thin_instance/);
+    assert.doesNotMatch(fixed.source, /remove_thin_instance/);
+    assert.doesNotMatch(fixed.source, /double thin_instance_count\(/);
+    assert.doesNotMatch(fixed.source, /enable_thin_instance_gpu_culling/);
+
+    const dynamic = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories([
+            "mesh:thin-instances",
+            "mesh:thin-instances-dynamic",
+        ]);
+    assert.match(dynamic.source, /double add_thin_instance\(/);
+    assert.match(dynamic.source, /void remove_thin_instance\(/);
+    assert.match(dynamic.source, /double thin_instance_count\(/);
+    assert.doesNotMatch(dynamic.source, /enable_thin_instance_gpu_culling/);
+});
+
+test("mirrors the pinned thin-instance pool semantics in the runtime", () => {
+    const lowered = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories([
+            "mesh:thin-instances",
+            "mesh:thin-instances-dynamic",
+            "mesh:thin-instance-gpu-culling",
+        ]);
+    assert.match(
+        lowered.source,
+        /void update_thin_instance_draw_membership\([\s\S]*\+\+engine\.draw_list_epoch;/,
+    );
+    // The pin's own constants, folded rather than restated: the initial
+    // capacity `addThinInstance` allocates when it finds no pool, and the
+    // factor a full pool grows by.
+    assert.match(
+        lowered.source,
+        /static_cast<std::size_t>\(16\) \* 16,\s*\r?\n\s*0\.0f\)/,
+    );
+    assert.match(
+        lowered.source,
+        /record\.instance_matrices\.size\(\) \* 2;/,
+    );
+    // Growth preserves the rows already written -- on the record's mirror,
+    // and in a NEW engine-owned array the alias is repointed at. The
+    // caller's array is never resized: `setThinInstances` clamps the pool
+    // to the count it was given, so a longer scene array would be silently
+    // truncated by a growth in place.
+    assert.match(
+        lowered.source,
+        /record\.instance_matrices\.resize\(\s*\r?\n?\s*grown,/,
+    );
+    assert.doesNotMatch(lowered.source, /instance_source->resize\(/);
+    assert.match(
+        lowered.source,
+        /std::make_shared<std::vector<float>>\(grown \* 16, 0\.0f\)/,
+    );
+    assert.match(
+        lowered.source,
+        /record\.owned_instance_source = std::move\(grown_source\);/,
+    );
+    assert.match(
+        lowered.source,
+        /record\.instance_source = record\.owned_instance_source\.get\(\);/,
+    );
+    // A pool established at capacity 0 doubles to 0, which is where the
+    // pin's own `matrices.set(matrix, 0)` on a zero-length array throws.
+    // Refused before either write, and distinct from the no-pool arm above.
+    assert.match(
+        lowered.source,
+        /addThinInstance has no room for the matrix/,
+    );
+    assert.match(
+        lowered.source,
+        /\(index \+ 1\) \* 16 > record\.instance_source->size\(\)/,
+    );
+    // The pin copies the WHOLE old array into the grown one, so an array
+    // longer than the grown capacity is its own RangeError.
+    assert.match(
+        lowered.source,
+        /newData\.set\(ti\.matrices\) overflows/,
+    );
+    // Append writes at the ACTIVE count and returns that slot.
+    assert.match(
+        lowered.source,
+        /const std::size_t index = record\.instance_count;/,
+    );
+    assert.match(lowered.source, /return static_cast<double>\(index\);/);
+    // Swap-remove: the last active row fills the freed slot, and the index
+    // is validated against the active count rather than the capacity --
+    // including the non-integral and NaN cases a JavaScript number reaches
+    // here, which must fail rather than truncate onto a neighbour.
+    assert.match(
+        lowered.source,
+        /!\(index < static_cast<double>\(record\.instance_count\)\)/,
+    );
+    assert.match(lowered.source, /index != std::floor\(index\)/);
+    assert.match(lowered.source, /!\(index >= 0\.0\)/);
+    assert.match(
+        lowered.source,
+        /record\.instance_matrices\[slot\] =\s*\r?\n?\s*record\.instance_matrices\[last\];/,
+    );
+    // Every mutator bumps the version both PALs gate their upload on.
+    assert.ok(
+        (lowered.source.match(/record\.instance_version \+= 1;/g) ?? [])
+            .length >= 7,
+    );
+    // The live count read raises the pin's own non-null failure.
+    assert.match(
+        lowered.source,
+        /mesh\.thinInstances is not bound on this mesh\./,
+    );
+    // The culling opt-in: refuses a mesh with no pool, is idempotent, and
+    // resets the upload stamp the pin resets two of.
+    assert.match(
+        lowered.source,
+        /enableThinInstanceGpuCulling requires mesh\.thinInstances\./,
+    );
+    assert.match(
+        lowered.source,
+        /if \(record\.thin_instance_gpu_culling == enabled\) \{/,
+    );
+    assert.match(
+        lowered.source,
+        /record\.thin_instance_gpu_culling = enabled;/,
+    );
+});
+
+test("the pinned pool states the emitted refusals mirror", async () => {
+    // The two states the emitted helper refuses are not this port's
+    // invention: they are what the pin's own code does when it is driven
+    // into them, so the pin is executed rather than reasoned about.
+    interface PinnedPool {
+        matrices: Float32Array;
+        count: number;
+        _capacity: number;
+    }
+    interface PinnedThinMesh {
+        thinInstances?: PinnedPool;
+    }
+    interface PinnedThinInstanceModule {
+        setThinInstances(
+            mesh: PinnedThinMesh,
+            matrices: Float32Array,
+            count: number,
+        ): void;
+        addThinInstance(
+            mesh: PinnedThinMesh,
+            matrix: Float32Array,
+        ): number;
+    }
+    const { importPinnedModule } = await import(
+        "../src/pinned-shader-composer.js"
+    );
+    const pinned = await importPinnedModule<PinnedThinInstanceModule>(
+        "mesh/thin-instance.js",
+    );
+    const identity = new Float32Array(16);
+    identity[0] = 1;
+    identity[5] = 1;
+    identity[10] = 1;
+    identity[15] = 1;
+
+    // 1. A pool established at capacity 0 doubles to 0, and the write into
+    //    that zero-length array throws. It is NOT the no-pool arm, which
+    //    allocates the pin's initial capacity and succeeds.
+    const empty: PinnedThinMesh = {};
+    pinned.setThinInstances(empty, new Float32Array(0), 0);
+    assert.equal(empty.thinInstances?._capacity, 0);
+    assert.throws(() => pinned.addThinInstance(empty, identity), RangeError);
+    const fresh: PinnedThinMesh = {};
+    assert.equal(pinned.addThinInstance(fresh, identity), 0);
+    assert.equal(fresh.thinInstances?._capacity, 16);
+
+    // 2. Growth allocates a new array and repoints the pool at it: the
+    //    caller's own array keeps its length and its contents, including
+    //    the tail past the count it declared as the capacity.
+    const callerArray = new Float32Array(3 * 16);
+    callerArray.set(identity, 2 * 16);
+    const aliased: PinnedThinMesh = {};
+    pinned.setThinInstances(aliased, callerArray, 2);
+    assert.equal(aliased.thinInstances?._capacity, 2);
+    pinned.addThinInstance(aliased, identity);
+    assert.equal(aliased.thinInstances?._capacity, 4);
+    assert.equal(aliased.thinInstances?.count, 3);
+    assert.notEqual(aliased.thinInstances?.matrices, callerArray);
+    assert.equal(callerArray.length, 3 * 16);
+    assert.deepEqual(
+        Array.from(callerArray.subarray(2 * 16)),
+        Array.from(identity),
+    );
+});
+
 test("generates mesh and standard-material factories from upstream defaults", () => {
     const lowerer = new FactoryLowerer(new LoweringContext());
     const mesh = lowerer.lowerMeshFactories();
@@ -1325,11 +1551,7 @@ test("default camera framing consumes scene mesh bound overrides", () => {
     ).lowerDefaultFactory();
     assert.match(
         lowered.source,
-        /if \(mesh\.has_bounds_min_override\) local_min = mesh\.bounds_min_override;/,
-    );
-    assert.match(
-        lowered.source,
-        /if \(mesh\.has_bounds_max_override\) local_max = mesh\.bounds_max_override;/,
+        /apply_mesh_bound_overrides\(mesh, local_min, local_max\);/,
     );
 });
 

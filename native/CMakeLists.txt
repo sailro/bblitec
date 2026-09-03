@@ -54,16 +54,19 @@ if(
     list(APPEND VCPKG_MANIFEST_FEATURES "ui")
 endif()
 
-# A scene reaching audio against an audio-disabled trimmed SDL would open no
-# device and throw at the first frame -- a late and uninformative way to learn
-# that a build option said no. The trimmed dependency builder writes its
-# capabilities explicitly, so refuse only incompatible or unproven installs.
-# This runs before project() so it is the first thing a bad pair reports.
-if(BBLITE_SDL_DIR AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
+# A scene reaching a subsystem against a trimmed SDL that omitted it would
+# fail late and opaquely. The builder records capabilities explicitly; load
+# them before project() so an incompatible pair is the first configure error.
+if(BBLITE_SDL_DIR)
     set(BBLITE_SDL_FEATURES "${BBLITE_SDL_DIR}/bblite-sdl-features.cmake")
     if(EXISTS "${BBLITE_SDL_FEATURES}")
         include("${BBLITE_SDL_FEATURES}")
     endif()
+endif()
+if(
+    BBLITE_SDL_DIR
+    AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES
+)
     if(NOT BBLITE_SDL_AUDIO)
         message(
             FATAL_ERROR
@@ -73,6 +76,18 @@ if(BBLITE_SDL_DIR AND "audio:engine" IN_LIST BBLITE_RUNTIME_FEATURES)
             "tools/build-sdl-min.ps1 -EnableAudio."
         )
     endif()
+endif()
+if(
+    BBLITE_SDL_DIR
+    AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES
+    AND NOT BBLITE_SDL_DIALOG
+)
+    message(
+        FATAL_ERROR
+        "This scene reaches browser:file, but BBLITE_SDL_DIR does not "
+        "declare BBLITE_SDL_DIALOG=ON. Rebuild the trimmed install with "
+        "tools/build-sdl-min.ps1 or use the toolchain SDL3."
+    )
 endif()
 
 project(babylon_lite_native LANGUAGES CXX)
@@ -392,8 +407,14 @@ if(NOT SDL3_FOUND)
     )
 endif()
 target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
-if(WIN32)
-    target_link_libraries(bblite_native PRIVATE comdlg32)
+if("browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native PRIVATE BBLITE_HAS_BROWSER_FILE=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native PRIVATE BBLITE_HAS_BROWSER_FILE=0
+    )
 endif()
 
 if(BBLITE_BACKEND_SDL_GPU)
@@ -537,15 +558,26 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
             "BBLITE_RMLUI_DIR at that install."
         )
     endif()
-    # The package config resolves Freetype::Freetype itself (RmlUi's own
-    # Dependencies.cmake), against this tree's vcpkg install via the ui
-    # manifest feature -- so the linked FreeType follows the consuming
-    # triplet and CRT while the artifact only compiled against headers.
+    # The package config resolves Freetype::Freetype and lunasvg::lunasvg
+    # itself (RmlUi's own Dependencies.cmake), against this tree's vcpkg
+    # install via the ui manifest feature -- so both linked libraries follow
+    # the consuming triplet and CRT.
     find_package(
         RmlUi CONFIG REQUIRED
         PATHS "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi"
         NO_DEFAULT_PATH
     )
+    if(
+        "ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES
+        AND NOT RMLUI_SVG_PLUGIN
+    )
+        message(
+            FATAL_ERROR
+            "This scene reaches bounded inline SVG, but the pinned RmlUi "
+            "artifact was built without its SVG plugin. Rebuild it with "
+            "tools/build-rmlui.ps1."
+        )
+    endif()
 
     find_package(SDL3_image CONFIG REQUIRED)
     target_sources(
@@ -679,6 +711,26 @@ else()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_STANDARD_UV_TRANSFORM=0
+    )
+endif()
+
+# A material plugin whose getSamplers declares a texture/sampler pair the
+# composed Standard fragment reads. The record then carries the textures the
+# plugin's bindTextures filled them with, and both backends upload and bind
+# them through the generated standard_plugin_bindings table. That table is
+# composed by the pin's own bridges, which only the opt-in registers -- so a
+# scene attaching plugins without enableMaterialPlugins composes plugin-free
+# and compiles none of this, exactly as it renders none of it.
+if("material:plugin-textures" IN_LIST BBLITE_RUNTIME_FEATURES AND
+   "material:plugins" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=1
+    )
+else()
+    target_compile_definitions(
+        bblite_native
+        PRIVATE BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES=0
     )
 endif()
 
@@ -957,10 +1009,17 @@ endif()
 
 if(
     "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
-    "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES
+    "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR
+    "data:json" IN_LIST BBLITE_RUNTIME_FEATURES
 )
     find_package(nlohmann_json CONFIG REQUIRED)
     target_link_libraries(bblite_native PRIVATE nlohmann_json::nlohmann_json)
+endif()
+
+if(
+    "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
+    "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES
+)
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GLTF=1)
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GLTF=0)

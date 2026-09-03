@@ -1,4 +1,7 @@
 #include <bblite/pal_ui.hpp>
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+#include <bblite/js_file.hpp>
+#endif
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_system_fonts.hpp>
@@ -24,6 +27,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdio>
+#include <iterator>
 #include <memory>
 #include <numbers>
 #include <optional>
@@ -36,6 +40,47 @@
 namespace bbl {
 namespace {
 
+char ascii_lower(char value) {
+    return value >= 'A' && value <= 'Z'
+        ? static_cast<char>(value + ('a' - 'A'))
+        : value;
+}
+
+bool ascii_iequals(std::string_view left, std::string_view right) {
+    return
+        left.size() == right.size() &&
+        std::equal(
+            left.begin(),
+            left.end(),
+            right.begin(),
+            [](char lhs, char rhs) {
+                return ascii_lower(lhs) == ascii_lower(rhs);
+            });
+}
+
+std::string_view trim_css_token(std::string_view value) {
+    const std::size_t first = value.find_first_not_of(" \t\r\n");
+    if (first == std::string_view::npos) return {};
+    const std::size_t last = value.find_last_not_of(" \t\r\n");
+    return value.substr(first, last - first + 1);
+}
+
+std::string normalized_css_keyword(std::string_view value) {
+    return js::string_lower(std::string(trim_css_token(value)));
+}
+
+bool is_concrete_authored_width(std::string_view value) {
+    const std::string keyword = normalized_css_keyword(value);
+    return
+        !keyword.empty() &&
+        keyword != "auto" &&
+        keyword != "initial" &&
+        keyword != "inherit" &&
+        keyword != "revert" &&
+        keyword != "revert-layer" &&
+        keyword != "unset";
+}
+
 UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
     if (handle.value >= engine.ui_elements.size()) {
         throw std::runtime_error("Native UI element handle is out of range.");
@@ -45,6 +90,46 @@ UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
 
 void mark_ui_changed(Engine& engine) {
     ++engine.ui_revision;
+}
+
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+void release_browser_file_subtree(
+    Engine& engine,
+    UiElementHandle element) {
+    UiElementRecord& record = ui_element(engine, element);
+    record.selected_file = {};
+    for (const UiElementHandle child : record.children) {
+        release_browser_file_subtree(engine, child);
+    }
+}
+#endif
+
+bool ui_record_has_class(
+    const UiElementRecord& record,
+    std::string_view class_name) {
+    const auto attribute = record.attributes.find("class");
+    if (attribute == record.attributes.end()) return false;
+    const std::string_view classes = attribute->second;
+    std::size_t position = 0;
+    while (position < classes.size()) {
+        while (
+            position < classes.size() &&
+            std::isspace(static_cast<unsigned char>(classes[position]))) {
+            ++position;
+        }
+        const std::size_t begin = position;
+        while (
+            position < classes.size() &&
+            !std::isspace(static_cast<unsigned char>(classes[position]))) {
+            ++position;
+        }
+        if (
+            begin < position &&
+            classes.substr(begin, position - begin) == class_name) {
+            return true;
+        }
+    }
+    return false;
 }
 
 } // namespace
@@ -82,7 +167,9 @@ UiElementHandle ui_get_element_by_id(
 UiClientRect ui_get_client_rect(
     Engine& engine,
     UiElementHandle element) {
-    return ui_element(engine, element).client_rect;
+    UiElementRecord& record = ui_element(engine, element);
+    record.client_rect_requested = true;
+    return record.client_rect;
 }
 
 void ui_set_text(
@@ -107,6 +194,22 @@ void ui_set_inner_rml(
     mark_ui_changed(engine);
 }
 
+std::string ui_escape_rml(std::string_view text) {
+    std::string escaped;
+    escaped.reserve(text.size());
+    for (const char character : text) {
+        switch (character) {
+        case '&': escaped += "&amp;"; break;
+        case '<': escaped += "&lt;"; break;
+        case '>': escaped += "&gt;"; break;
+        case '"': escaped += "&quot;"; break;
+        case '\'': escaped += "&#39;"; break;
+        default: escaped += character; break;
+        }
+    }
+    return escaped;
+}
+
 void ui_set_attribute(
     Engine& engine,
     UiElementHandle element,
@@ -117,11 +220,15 @@ void ui_set_attribute(
     }
     UiElementRecord& record = ui_element(engine, element);
     const auto existing = record.attributes.find(name);
+    const bool replaces_style =
+        name == "style" && !record.style_properties.empty();
     if (
         existing != record.attributes.end() &&
-        existing->second == value) {
+        existing->second == value &&
+        !replaces_style) {
         return;
     }
+    if (name == "style") record.style_properties.clear();
     record.attributes.insert_or_assign(std::move(name), std::move(value));
     mark_ui_changed(engine);
 }
@@ -156,12 +263,6 @@ std::string ui_get_style_property(
     if (dynamic != record.style_properties.end()) return dynamic->second;
     const auto attribute = record.attributes.find("style");
     if (attribute == record.attributes.end()) return {};
-    const auto trim = [](std::string_view value) {
-        const std::size_t first = value.find_first_not_of(" \t\r\n");
-        if (first == std::string_view::npos) return std::string_view{};
-        const std::size_t last = value.find_last_not_of(" \t\r\n");
-        return value.substr(first, last - first + 1);
-    };
     const std::string_view source = attribute->second;
     for (std::size_t start = 0; start <= source.size();) {
         const std::size_t end = source.find(';', start);
@@ -173,8 +274,11 @@ std::string ui_get_style_property(
         const std::size_t colon = declaration.find(':');
         if (
             colon != std::string_view::npos &&
-            trim(declaration.substr(0, colon)) == name) {
-            return std::string(trim(declaration.substr(colon + 1)));
+            ascii_iequals(
+                trim_css_token(declaration.substr(0, colon)),
+                name)) {
+            return std::string(
+                trim_css_token(declaration.substr(colon + 1)));
         }
         if (end == std::string_view::npos) break;
         start = end + 1;
@@ -221,26 +325,125 @@ void ui_toggle_class(
 
 void ui_add_class_style(
     Engine& engine,
+    UiElementHandle stylesheet,
     std::string class_name,
     std::string style) {
     if (class_name.empty()) {
         throw std::runtime_error("Native UI class style name cannot be empty.");
     }
-    engine.ui_class_style_rules.push_back(
-        {std::move(class_name), std::move(style)});
+    ui_add_style_rule(
+        engine,
+        stylesheet,
+        UiStyleSelectorKind::Class,
+        std::move(class_name),
+        {},
+        {},
+        false,
+        -1.0,
+        std::move(style));
+}
+
+void ui_clear_style_rules(
+    Engine& engine,
+    UiElementHandle stylesheet) {
+    UiElementRecord& owner = ui_element(engine, stylesheet);
+    if (owner.tag != "style") {
+        throw std::runtime_error(
+            "Native UI stylesheet rules require a <style> element.");
+    }
+    if (owner.style_rules.empty()) return;
+    owner.style_rules.clear();
     mark_ui_changed(engine);
 }
 
 void ui_add_id_style(
     Engine& engine,
+    UiElementHandle stylesheet,
     std::string id,
     std::string style) {
     if (id.empty()) {
         throw std::runtime_error("Native UI id style name cannot be empty.");
     }
-    engine.ui_id_style_rules.push_back(
-        {std::move(id), std::move(style)});
+    ui_add_style_rule(
+        engine,
+        stylesheet,
+        UiStyleSelectorKind::Id,
+        std::move(id),
+        {},
+        {},
+        false,
+        -1.0,
+        std::move(style));
+}
+
+void ui_add_style_rule(
+    Engine& engine,
+    UiElementHandle stylesheet,
+    UiStyleSelectorKind selector,
+    std::string primary,
+    std::string secondary,
+    std::string tag,
+    bool hover,
+    double max_width,
+    std::string style) {
+    UiElementRecord& owner = ui_element(engine, stylesheet);
+    if (owner.tag != "style") {
+        throw std::runtime_error(
+            "A native UI stylesheet rule must belong to a <style> element.");
+    }
+    if (primary.empty() || style.empty()) {
+        throw std::runtime_error(
+            "A native UI stylesheet rule must have a target and declarations.");
+    }
+    owner.style_rules.push_back({
+        selector,
+        std::move(primary),
+        std::move(secondary),
+        std::move(tag),
+        std::move(style),
+        max_width,
+        hover});
     mark_ui_changed(engine);
+}
+
+void ui_add_host_class_style(
+    Engine& engine,
+    std::string class_name,
+    std::string style) {
+    if (class_name.empty() || style.empty()) {
+        throw std::runtime_error(
+            "A native host UI class rule must have a target and declarations.");
+    }
+    engine.ui_host_style_rules.push_back({
+        UiStyleSelectorKind::Class,
+        std::move(class_name),
+        {},
+        {},
+        std::move(style),
+        -1.0,
+        false});
+    mark_ui_changed(engine);
+}
+
+js::Array<UiElementHandle> ui_query_class(
+    Engine& engine,
+    UiElementHandle root,
+    std::string_view class_name) {
+    if (class_name.empty()) {
+        throw std::runtime_error("Native UI class query cannot be empty.");
+    }
+    static_cast<void>(ui_element(engine, root));
+    js::Array<UiElementHandle> result;
+    const auto visit = [&](const auto& self, UiElementHandle parent) -> void {
+        for (const UiElementHandle child : ui_element(engine, parent).children) {
+            if (ui_record_has_class(ui_element(engine, child), class_name)) {
+                result.push_back(child);
+            }
+            self(self, child);
+        }
+    };
+    visit(visit, root);
+    return result;
 }
 
 UiElementHandle ui_append_child(
@@ -277,13 +480,31 @@ UiElementHandle ui_append_to_root(
     Engine& engine,
     UiElementHandle child) {
     UiElementRecord& record = ui_element(engine, child);
-    if (
-        record.parent.value != invalid_handle ||
-        record.attached_to_root) {
+    if (record.parent.value != invalid_handle) {
         throw std::runtime_error(
             "A native UI element may only be attached to one parent.");
     }
+    if (record.attached_to_root) {
+        const auto existing = std::find_if(
+            engine.ui_root_children.begin(),
+            engine.ui_root_children.end(),
+            [child](UiElementHandle candidate) {
+                return candidate.value == child.value;
+            });
+        if (
+            existing != engine.ui_root_children.end() &&
+            std::next(existing) == engine.ui_root_children.end()) {
+            return child;
+        }
+        if (existing != engine.ui_root_children.end()) {
+            engine.ui_root_children.erase(existing);
+        }
+        engine.ui_root_children.push_back(child);
+        mark_ui_changed(engine);
+        return child;
+    }
     record.attached_to_root = true;
+    engine.ui_root_children.push_back(child);
     mark_ui_changed(engine);
     return child;
 }
@@ -291,6 +512,9 @@ UiElementHandle ui_append_to_root(
 void ui_replace_children(Engine& engine, UiElementHandle parent) {
     UiElementRecord& record = ui_element(engine, parent);
     for (const UiElementHandle child : record.children) {
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+        release_browser_file_subtree(engine, child);
+#endif
         ui_element(engine, child).parent = {};
     }
     if (
@@ -310,6 +534,9 @@ void ui_remove(Engine& engine, UiElementHandle element) {
     const bool changed =
         record.parent.value != invalid_handle || record.attached_to_root;
     if (!changed) return;
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    release_browser_file_subtree(engine, element);
+#endif
     if (record.parent.value != invalid_handle) {
         UiElementRecord& parent = ui_element(engine, record.parent);
         parent.children.erase(
@@ -322,7 +549,17 @@ void ui_remove(Engine& engine, UiElementHandle element) {
             parent.children.end());
         record.parent = {};
     }
-    record.attached_to_root = false;
+    if (record.attached_to_root) {
+        engine.ui_root_children.erase(
+            std::remove_if(
+                engine.ui_root_children.begin(),
+                engine.ui_root_children.end(),
+                [element](UiElementHandle child) {
+                    return child.value == element.value;
+                }),
+            engine.ui_root_children.end());
+        record.attached_to_root = false;
+    }
     mark_ui_changed(engine);
 }
 
@@ -338,6 +575,91 @@ void ui_on_click(
     mark_ui_changed(engine);
 }
 
+void ui_click(Engine& engine, UiElementHandle element) {
+    // Copy first, matching event dispatch: a callback may mutate the retained
+    // element or register another callback without invalidating this event.
+    const auto callbacks = ui_element(engine, element).click_callbacks;
+    for (const auto& callback : callbacks) callback();
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    // Default actions carry the stable handle because opening a dialog can
+    // synchronously release pointer lock and run callbacks that grow this arena.
+    const std::string tag = ui_element(engine, element).tag;
+    if (tag == "a") {
+        js::click_download_anchor(engine, element);
+    } else if (tag == "input") {
+        js::click_file_input(engine, element);
+    }
+#endif
+}
+
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+void ui_set_download_url(
+    Engine& engine,
+    UiElementHandle element,
+    ObjectUrlHandle url) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "a") {
+        throw std::runtime_error(
+            "A native download URL may be assigned only to an <a> element.");
+    }
+    // Validate at assignment and again at click, where revocation is observable.
+    static_cast<void>(js::object_url_record(engine, url));
+    record.download_url = url;
+    mark_ui_changed(engine);
+}
+
+void ui_set_download_name(
+    Engine& engine,
+    UiElementHandle element,
+    std::string name) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "a") {
+        throw std::runtime_error(
+            "A native download name may be assigned only to an <a> element.");
+    }
+    record.download_name = std::move(name);
+    mark_ui_changed(engine);
+}
+
+void ui_set_file_input(Engine& engine, UiElementHandle element) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "input") {
+        throw std::runtime_error(
+            "Native file input type may be assigned only to an <input>.");
+    }
+    record.file_input = true;
+    record.attributes["type"] = "file";
+    mark_ui_changed(engine);
+}
+
+void ui_set_file_accept(
+    Engine& engine,
+    UiElementHandle element,
+    std::string accept) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "input" || !record.file_input) {
+        throw std::runtime_error(
+            "Native file accept requires an <input type=\"file\">.");
+    }
+    record.file_accept = std::move(accept);
+    record.attributes["accept"] = record.file_accept;
+    mark_ui_changed(engine);
+}
+
+void ui_on_file_change(
+    Engine& engine,
+    UiElementHandle element,
+    std::function<void()> callback) {
+    UiElementRecord& record = ui_element(engine, element);
+    if (record.tag != "input" || !record.file_input || !callback) {
+        throw std::runtime_error(
+            "Native file change registration requires an <input type=\"file\"> and callback.");
+    }
+    record.file_change_callbacks.push_back(std::move(callback));
+    mark_ui_changed(engine);
+}
+#endif
+
 void ui_on_event(
     Engine& engine,
     UiElementHandle element,
@@ -346,8 +668,8 @@ void ui_on_event(
     if (event.empty() || !callback) {
         throw std::runtime_error("Native UI event registration is invalid.");
     }
-    ui_element(engine, element).event_callbacks[std::move(event)].push_back(
-        std::move(callback));
+    UiElementRecord& record = ui_element(engine, element);
+    record.event_callbacks[std::move(event)].push_back(std::move(callback));
     mark_ui_changed(engine);
 }
 
@@ -768,15 +1090,17 @@ public:
     UiEventListener(
         Engine& engine,
         UiElementHandle element,
-        std::string event)
-        : engine(engine), element(element), event_type(std::move(event)) {}
+        std::string event,
+        bool& default_prevented)
+        : engine(engine),
+          element(element),
+          event_type(std::move(event)),
+          default_prevented(default_prevented) {}
 
     void ProcessEvent(Rml::Event& event) override {
         // Copy the callback list so a callback may safely mutate UI state.
-        const UiElementRecord& record = ui_element(engine, element);
         if (event_type == "click") {
-            const auto callbacks = record.click_callbacks;
-            for (const auto& callback : callbacks) callback();
+            ui_click(engine, element);
         } else {
             float fallback_x = 0.0f;
             float fallback_y = 0.0f;
@@ -805,8 +1129,12 @@ public:
                         "mouse_y",
                         static_cast<int>(fallback_y))),
             };
-            const auto callbacks = record.event_callbacks.at(event_type);
+            const auto callbacks =
+                ui_element(engine, element).event_callbacks.at(event_type);
             for (const auto& callback : callbacks) callback(pointer);
+            if (pointer.default_prevented) {
+                default_prevented = true;
+            }
         }
         event.StopPropagation();
     }
@@ -815,6 +1143,7 @@ private:
     Engine& engine;
     UiElementHandle element;
     std::string event_type;
+    bool& default_prevented;
 };
 
 /** Keep RmlUi animations on the same clock as browser-facing scene time. */
@@ -1030,12 +1359,6 @@ std::string rml_css_density_units(std::string value) {
 std::string take_css_declaration(
     std::string& style,
     std::string_view requested_name) {
-    const auto trim = [](std::string_view value) {
-        const std::size_t first = value.find_first_not_of(" \t\r\n");
-        if (first == std::string_view::npos) return std::string_view{};
-        const std::size_t last = value.find_last_not_of(" \t\r\n");
-        return value.substr(first, last - first + 1);
-    };
     std::string retained;
     std::string result;
     const std::string_view source = style;
@@ -1049,9 +1372,12 @@ std::string take_css_declaration(
         const std::size_t colon = declaration.find(':');
         if (
             colon != std::string_view::npos &&
-            trim(declaration.substr(0, colon)) == requested_name) {
-            result = std::string(trim(declaration.substr(colon + 1)));
-        } else if (!trim(declaration).empty()) {
+            ascii_iequals(
+                trim_css_token(declaration.substr(0, colon)),
+                requested_name)) {
+            result = std::string(
+                trim_css_token(declaration.substr(colon + 1)));
+        } else if (!trim_css_token(declaration).empty()) {
             if (!retained.empty()) retained += ';';
             retained += declaration;
         }
@@ -1062,16 +1388,230 @@ std::string take_css_declaration(
     return result;
 }
 
-std::string take_grid_children_style(std::string& style) {
-    const std::string width = take_css_declaration(
-        style, "--bbl-grid-width");
-    const std::string gap = take_css_declaration(
-        style, "--bbl-grid-gap");
-    if (width.empty()) return {};
+bool is_private_ui_declaration(std::string_view declaration) {
+    const std::size_t first = declaration.find_first_not_of(" \t\r\n");
     return
-        "display:flex;flex-wrap:wrap;width:" + width +
-        ";gap:" + (gap.empty() ? "0dp" : gap) +
-        ";margin-left:auto;margin-right:auto;";
+        first != std::string_view::npos &&
+        declaration.substr(first).starts_with("--bbl-");
+}
+
+std::string filter_private_ui_declarations(
+    std::string_view style,
+    bool retain_private) {
+    std::string result;
+    std::size_t start = 0;
+    int parenthesis_depth = 0;
+    for (std::size_t index = 0; index <= style.size(); ++index) {
+        const char character = index < style.size() ? style[index] : ';';
+        if (character == '(') ++parenthesis_depth;
+        if (character == ')') --parenthesis_depth;
+        if (index < style.size() &&
+            (character != ';' || parenthesis_depth > 0)) {
+            continue;
+        }
+        const std::string_view declaration = style.substr(start, index - start);
+        if (
+            !declaration.empty() &&
+            is_private_ui_declaration(declaration) == retain_private) {
+            if (!result.empty()) result += ';';
+            result += declaration;
+        }
+        start = index + 1;
+    }
+    return result;
+}
+
+bool ui_record_has_id(
+    const UiElementRecord& record,
+    std::string_view id) {
+    const auto attribute = record.attributes.find("id");
+    return
+        attribute != record.attributes.end() &&
+        attribute->second == id;
+}
+
+bool ui_style_rule_matches(
+    const Engine& engine,
+    UiElementHandle handle,
+    const UiStyleRule& rule) {
+    if (handle.value >= engine.ui_elements.size()) return false;
+    const UiElementRecord& record = engine.ui_elements[handle.value];
+    switch (rule.selector) {
+    case UiStyleSelectorKind::Class:
+        return ui_record_has_class(record, rule.primary);
+    case UiStyleSelectorKind::Id:
+        return ui_record_has_id(record, rule.primary);
+    case UiStyleSelectorKind::CompoundClass:
+        return
+            ui_record_has_class(record, rule.primary) &&
+            ui_record_has_class(record, rule.secondary);
+    case UiStyleSelectorKind::ClassDescendantTag:
+        if (record.tag != rule.tag) return false;
+        break;
+    case UiStyleSelectorKind::IdDescendantClass:
+        if (!ui_record_has_class(record, rule.secondary)) return false;
+        break;
+    }
+
+    for (
+        UiElementHandle ancestor = record.parent;
+        ancestor.value != invalid_handle;
+        ancestor = engine.ui_elements[ancestor.value].parent) {
+        const UiElementRecord& ancestor_record =
+            engine.ui_elements[ancestor.value];
+        if (
+            rule.selector == UiStyleSelectorKind::ClassDescendantTag &&
+            ui_record_has_class(ancestor_record, rule.primary)) {
+            return true;
+        }
+        if (
+            rule.selector == UiStyleSelectorKind::IdDescendantClass &&
+            ui_record_has_id(ancestor_record, rule.primary)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::string ui_style_rule_selector(const UiStyleRule& rule) {
+    std::string selector;
+    switch (rule.selector) {
+    case UiStyleSelectorKind::Class:
+        selector = "." + rule.primary;
+        break;
+    case UiStyleSelectorKind::Id:
+        selector = "#" + rule.primary;
+        break;
+    case UiStyleSelectorKind::CompoundClass:
+        selector = "." + rule.primary + "." + rule.secondary;
+        break;
+    case UiStyleSelectorKind::ClassDescendantTag:
+        selector = "." + rule.primary + " " + rule.tag;
+        break;
+    case UiStyleSelectorKind::IdDescendantClass:
+        selector = "#" + rule.primary + " ." + rule.secondary;
+        break;
+    }
+    if (rule.hover) selector += ":hover";
+    return selector;
+}
+
+std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
+    std::uint32_t ids = 0;
+    std::uint32_t classes = rule.hover ? 1u : 0u;
+    std::uint32_t tags = 0;
+    switch (rule.selector) {
+    case UiStyleSelectorKind::Class:
+        ++classes;
+        break;
+    case UiStyleSelectorKind::Id:
+        ++ids;
+        break;
+    case UiStyleSelectorKind::CompoundClass:
+        classes += 2;
+        break;
+    case UiStyleSelectorKind::ClassDescendantTag:
+        ++classes;
+        ++tags;
+        break;
+    case UiStyleSelectorKind::IdDescendantClass:
+        ++ids;
+        ++classes;
+        break;
+    }
+    return (ids << 16u) | (classes << 8u) | tags;
+}
+
+struct CascadedUiDeclaration {
+    std::uint32_t specificity = 0;
+    std::size_t source_order = 0;
+    std::string value;
+};
+
+void consider_cascaded_declaration(
+    CascadedUiDeclaration& current,
+    std::string value,
+    std::uint32_t specificity,
+    std::size_t source_order) {
+    if (
+        value.empty() ||
+        (!current.value.empty() &&
+         (specificity < current.specificity ||
+          (specificity == current.specificity &&
+           source_order < current.source_order)))) {
+        return;
+    }
+    current = {
+        specificity,
+        source_order,
+        std::move(value)};
+}
+
+struct ProjectedUiStyleSource {
+    std::string private_declarations;
+    std::string display;
+    std::string justification;
+    bool declares_pointer_events = false;
+};
+
+struct GridMetadata {
+    std::string columns;
+    std::string cell_width;
+    std::string width;
+    std::string gap;
+    std::string row_height;
+    std::string row_count;
+    std::string justification;
+};
+
+GridMetadata take_grid_metadata(std::string& style) {
+    return {
+        take_css_declaration(style, "--bbl-grid-columns"),
+        take_css_declaration(style, "--bbl-grid-cell-width"),
+        take_css_declaration(style, "--bbl-grid-width"),
+        take_css_declaration(style, "--bbl-grid-gap"),
+        take_css_declaration(style, "--bbl-grid-row-height"),
+        take_css_declaration(style, "--bbl-grid-row-count"),
+        take_css_declaration(style, "--bbl-grid-justify-content"),
+    };
+}
+
+ProjectedUiStyleSource project_ui_style_source(std::string_view style) {
+    ProjectedUiStyleSource result;
+    result.private_declarations =
+        filter_private_ui_declarations(style, true);
+    std::string private_probe = result.private_declarations;
+    const GridMetadata grid = take_grid_metadata(private_probe);
+    const bool projects_grid = !grid.width.empty();
+    std::string public_probe =
+        filter_private_ui_declarations(style, false);
+    result.declares_pointer_events =
+        !take_css_declaration(public_probe, "pointer-events").empty();
+    result.display = projects_grid
+        ? std::string("grid")
+        : normalized_css_keyword(
+              take_css_declaration(public_probe, "display"));
+    result.justification =
+        projects_grid && !grid.justification.empty()
+            ? normalized_css_keyword(grid.justification)
+            : normalized_css_keyword(take_css_declaration(
+                  public_probe,
+                  "justify-content"));
+    return result;
+}
+
+std::string take_grid_children_style(std::string& style) {
+    const GridMetadata grid = take_grid_metadata(style);
+    if (grid.width.empty()) return {};
+    std::string result =
+        "display:flex;flex-wrap:wrap;width:" + grid.width +
+        ";gap:" + (grid.gap.empty() ? "0dp" : grid.gap) + ";";
+    if (grid.justification == "center") {
+        result += "margin-left:auto;margin-right:auto;";
+    } else if (grid.justification == "end") {
+        result += "margin-left:auto;margin-right:0;";
+    }
+    return result;
 }
 
 std::string take_intrinsic_min_width(std::string& style) {
@@ -1080,6 +1620,10 @@ std::string take_intrinsic_min_width(std::string& style) {
 
 std::string take_crosshair_color(std::string& style) {
     return take_css_declaration(style, "--bbl-crosshair");
+}
+
+std::string take_inset_outline(std::string& style) {
+    return take_css_declaration(style, "--bbl-inset-outline");
 }
 
 bool is_inline_level(Rml::Style::Display display) {
@@ -1449,7 +1993,12 @@ struct ProjectedUiElement {
     std::string grid_children_style;
     std::string intrinsic_min_width;
     std::string crosshair_color;
+    std::string inset_outline;
+    Rml::Element* inset_outline_element = nullptr;
+    bool inset_outline_positioned_parent = false;
     bool text_wrapped = false;
+    bool intrinsic_width_applied = false;
+    bool hovered = false;
     bool click_listener_attached = false;
     std::unordered_map<std::string, bool> event_listeners_attached;
 };
@@ -1492,28 +2041,15 @@ public:
      * draws straight into their target carry them inert.
      */
     void append_composite_quad() {
-        const std::uint32_t composite_first_vertex =
-            static_cast<std::uint32_t>(frame.vertices.size());
         frame.composite_first_index =
             static_cast<std::uint32_t>(frame.indices.size());
-        frame.vertices.insert(
-            frame.vertices.end(),
-            {
-                UiRenderVertex{0, 0, 255, 255, 255, 255, 0, 0},
-                UiRenderVertex{static_cast<float>(frame.width), 0, 255, 255, 255, 255, 1, 0},
-                UiRenderVertex{static_cast<float>(frame.width), static_cast<float>(frame.height), 255, 255, 255, 255, 1, 1},
-                UiRenderVertex{0, static_cast<float>(frame.height), 255, 255, 255, 255, 0, 1},
-            });
-        frame.indices.insert(
-            frame.indices.end(),
-            {
-                composite_first_vertex,
-                composite_first_vertex + 1,
-                composite_first_vertex + 2,
-                composite_first_vertex,
-                composite_first_vertex + 2,
-                composite_first_vertex + 3,
-            });
+        append_ui_quad(
+            frame,
+            0,
+            0,
+            static_cast<float>(frame.width),
+            static_cast<float>(frame.height),
+            255);
     }
 
     Rml::CompiledGeometryHandle CompileGeometry(
@@ -2035,7 +2571,9 @@ struct UiRmlRuntime {
         std::uint32_t height)
         : engine(engine),
           window(window),
-          system_interface(window) {
+          system_interface(window),
+          viewport_width(width),
+          viewport_height(height) {
         try {
             Rml::SetSystemInterface(&system_interface);
             Rml::SetRenderInterface(&render_interface);
@@ -2165,6 +2703,10 @@ struct UiRmlRuntime {
             sync_tree();
             update_gradient_text();
             context->Update();
+            static_cast<void>(sync_hover_states());
+            if (sync_svg_current_colors()) {
+                context->Update();
+            }
             update_intrinsic_widths();
         } catch (...) {
             if (initialized) {
@@ -2242,13 +2784,90 @@ struct UiRmlRuntime {
         return keyframes;
     }
 
-    void sync_style_sheet() {
-        std::string source;
-        for (const UiElementRecord& record : engine.ui_elements) {
-            if (record.tag == "style") {
-                source += keyframes_from(record.text);
+    template <typename Callback>
+    void for_each_active_style_element(Callback&& callback) const {
+        for (const UiElementHandle handle : engine.ui_root_children) {
+            if (handle.value >= engine.ui_elements.size()) continue;
+            const UiElementRecord& record = engine.ui_elements[handle.value];
+            if (record.tag == "style" && record.attached_to_root) {
+                callback(record);
             }
         }
+    }
+
+    template <typename Callback>
+    void for_each_active_style_rule(Callback&& callback) const {
+        for (const UiStyleRule& rule : engine.ui_host_style_rules) {
+            callback(rule);
+        }
+        for_each_active_style_element([&callback](
+                                          const UiElementRecord& record) {
+            for (const UiStyleRule& rule : record.style_rules) {
+                callback(rule);
+            }
+        });
+    }
+
+    bool style_rule_media_matches(const UiStyleRule& rule) const {
+        return
+            rule.max_width < 0.0 ||
+            static_cast<double>(viewport_width) /
+                    std::max(1.0f, density_ratio) <=
+                rule.max_width;
+    }
+
+    template <typename Callback>
+    std::size_t for_each_matching_style_rule(
+        UiElementHandle handle,
+        Callback&& callback) const {
+        std::size_t source_order = 0;
+        for_each_active_style_rule([&](const UiStyleRule& rule) {
+            const std::size_t rule_order = source_order++;
+            const bool hovered =
+                handle.value < projected_elements.size() &&
+                projected_elements[handle.value].element &&
+                projected_elements[handle.value].element->
+                    IsPseudoClassSet("hover");
+            if (
+                (rule.hover && !hovered) ||
+                !style_rule_media_matches(rule) ||
+                !ui_style_rule_matches(engine, handle, rule)) {
+                return;
+            }
+            callback(rule, rule_order);
+        });
+        return source_order;
+    }
+
+    void sync_style_sheet() {
+        // Browser user-agent defaults belong below author rules. Keeping them
+        // in this sheet rather than on each element also lets :hover and media
+        // rules participate in the ordinary RmlUi cascade.
+        std::string source =
+            "div,canvas{display:block;}\n"
+            "button{display:inline-block;box-sizing:border-box;"
+            "text-align:center;}\n";
+        const auto append_rule = [&source](const UiStyleRule& rule) {
+            const std::string public_style =
+                filter_private_ui_declarations(rule.style, false);
+            if (public_style.empty()) return;
+            if (rule.max_width >= 0.0) {
+                source += "@media (max-width:";
+                source += std::to_string(rule.max_width);
+                source += "px){";
+            }
+            source += ui_style_rule_selector(rule);
+            source += "{";
+            source += public_style;
+            source += "}";
+            if (rule.max_width >= 0.0) source += "}";
+            source += "\n";
+        };
+        for_each_active_style_rule(append_rule);
+        for_each_active_style_element([&source](
+                                          const UiElementRecord& record) {
+            source += keyframes_from(record.text);
+        });
         source = project_css(std::move(source));
         if (
             source == projected_style_sheet_source &&
@@ -2271,20 +2890,10 @@ struct UiRmlRuntime {
         document->SetStyleSheetContainer(std::move(style_sheet));
     }
 
-    static bool has_class(
-        const UiElementRecord& record,
-        std::string_view class_name) {
-        const auto attribute = record.attributes.find("class");
-        if (attribute == record.attributes.end()) return false;
-        std::istringstream classes(attribute->second);
-        for (std::string token; classes >> token;) {
-            if (token == class_name) return true;
-        }
-        return false;
-    }
-
     std::string resolved_style_attribute(
-        const UiElementRecord& record) const {
+        UiElementHandle handle,
+        const UiElementRecord& record,
+        std::string* resolved_display = nullptr) const {
         std::string style;
         const auto append = [&style](std::string_view declaration) {
             if (declaration.empty()) return;
@@ -2292,48 +2901,148 @@ struct UiRmlRuntime {
             style += declaration;
         };
 
-        // RmlUi deliberately defaults every unknown tag to inline. Restore
-        // the small browser user-agent tag surface reached by our retained
-        // DOM so a source `div` remains a block without spelling display.
-        if (record.tag == "div" || record.tag == "canvas") {
-            append("display:block;");
-        } else if (record.tag == "button") {
-            // Browser user-agent styles size button percentages against the
-            // border box and center their labels. RmlUi's generic unknown-tag
-            // default is content-box with ordinary left-aligned text.
-            append(
-                "display:inline-block;box-sizing:border-box;"
-                "text-align:center;");
-        }
-        for (const UiClassStyleRule& rule : engine.ui_class_style_rules) {
-            if (has_class(record, rule.class_name)) append(rule.style);
-        }
-        const auto id = record.attributes.find("id");
-        if (id != record.attributes.end()) {
-            for (const UiIdStyleRule& rule : engine.ui_id_style_rules) {
-                if (id->second == rule.id) append(rule.style);
+        struct PrivateRule {
+            std::uint32_t specificity = 0;
+            std::size_t source_order = 0;
+            std::string declarations;
+        };
+        std::vector<PrivateRule> private_rules;
+        CascadedUiDeclaration display;
+        CascadedUiDeclaration justification;
+        bool source_declares_pointer_events = false;
+        std::size_t source_order = for_each_matching_style_rule(
+            handle,
+            [&](const UiStyleRule& rule, std::size_t rule_order) {
+            const std::uint32_t specificity =
+                ui_style_rule_specificity(rule);
+            ProjectedUiStyleSource source =
+                project_ui_style_source(rule.style);
+            if (!source.private_declarations.empty()) {
+                private_rules.push_back({
+                    specificity,
+                    rule_order,
+                    std::move(source.private_declarations)});
             }
+            consider_cascaded_declaration(
+                display,
+                std::move(source.display),
+                specificity,
+                rule_order);
+            consider_cascaded_declaration(
+                justification,
+                std::move(source.justification),
+                specificity,
+                rule_order);
+            source_declares_pointer_events =
+                source_declares_pointer_events ||
+                source.declares_pointer_events;
+        });
+        std::stable_sort(
+            private_rules.begin(),
+            private_rules.end(),
+            [](const PrivateRule& left, const PrivateRule& right) {
+                if (left.specificity != right.specificity) {
+                    return left.specificity < right.specificity;
+                }
+                return left.source_order < right.source_order;
+            });
+        for (const PrivateRule& rule : private_rules) {
+            append(rule.declarations);
         }
         const auto inline_style = record.attributes.find("style");
         if (inline_style != record.attributes.end()) {
+            ProjectedUiStyleSource source =
+                project_ui_style_source(inline_style->second);
+            constexpr std::uint32_t inline_specificity = 0xffffffffu;
+            consider_cascaded_declaration(
+                display,
+                std::move(source.display),
+                inline_specificity,
+                source_order);
+            consider_cascaded_declaration(
+                justification,
+                std::move(source.justification),
+                inline_specificity,
+                source_order);
             append(inline_style->second);
+        }
+        constexpr std::uint32_t cssom_specificity = 0xffffffffu;
+        if (const auto dynamic_display =
+                record.style_properties.find("display");
+            dynamic_display != record.style_properties.end()) {
+            consider_cascaded_declaration(
+                display,
+                normalized_css_keyword(dynamic_display->second),
+                cssom_specificity,
+                source_order + 1);
+        }
+        if (const auto dynamic_justification =
+                record.style_properties.find("justify-content");
+            dynamic_justification != record.style_properties.end()) {
+            consider_cascaded_declaration(
+                justification,
+                normalized_css_keyword(dynamic_justification->second),
+                cssom_specificity,
+                source_order + 1);
+        }
+        if (resolved_display) {
+            *resolved_display = display.value;
+        }
+
+        const auto remove_grid_metadata = [&style]() {
+            static_cast<void>(take_grid_metadata(style));
+        };
+        if (!display.value.empty() && display.value != "grid") {
+            remove_grid_metadata();
+        } else if (!display.value.empty()) {
+            static_cast<void>(take_css_declaration(
+                style, "--bbl-grid-justify-content"));
+            std::string resolved_justification =
+                !justification.value.empty()
+                    ? justification.value
+                    : std::string("start");
+            if (
+                resolved_justification == "normal" ||
+                resolved_justification == "flex-start" ||
+                resolved_justification == "left") {
+                resolved_justification = "start";
+            } else if (
+                resolved_justification == "flex-end" ||
+                resolved_justification == "right") {
+                resolved_justification = "end";
+            }
+            if (
+                resolved_justification != "start" &&
+                resolved_justification != "center" &&
+                resolved_justification != "end") {
+                throw std::runtime_error(
+                    "Native fixed-grid justify-content is outside "
+                    "start/center/end.");
+            }
+            append(
+                "--bbl-grid-justify-content:" +
+                resolved_justification + ";");
         }
         // The retained document covers the viewport, but browser overlays do
         // not replace the scene canvas as an input target. Keep ordinary UI
         // transparent to hit-testing and opt reached listeners back in. An
         // explicit source pointer-events declaration still wins.
+        std::string pointer_events_probe = style;
         const bool has_pointer_events =
             record.style_properties.contains("pointer-events") ||
-            style.find("pointer-events:") != std::string::npos;
+            !take_css_declaration(
+                 pointer_events_probe,
+                 "pointer-events").empty() ||
+            source_declares_pointer_events;
         if (
             !has_pointer_events &&
             (!record.click_callbacks.empty() ||
-             !record.event_callbacks.empty())) {
-            append("pointer-events:auto;");
-        }
-        if (
-            !record.text.empty() &&
-            style.find("--bbl-text-gradient:") != std::string::npos &&
+             !record.event_callbacks.empty())             ) {
+                 append("pointer-events:auto;");
+             }
+             if (
+                 !record.text.empty() &&
+                 style.find("--bbl-text-gradient:") != std::string::npos &&
             style.find("position:") == std::string::npos) {
             append("position:relative;");
         }
@@ -2341,17 +3050,10 @@ struct UiRmlRuntime {
     }
 
     bool text_needs_flex_wrapper(
-        const UiElementRecord& record,
-        const std::string& resolved_style) const {
-        const auto dynamic_display = record.style_properties.find("display");
-        if (dynamic_display != record.style_properties.end()) {
-            return dynamic_display->second == "flex" ||
-                dynamic_display->second == "inline-flex";
-        }
-        const std::size_t position = resolved_style.rfind("display:");
-        return position != std::string::npos &&
-            (resolved_style.compare(position + 8, 4, "flex") == 0 ||
-             resolved_style.compare(position + 8, 11, "inline-flex") == 0);
+        std::string_view resolved_display) const {
+        const std::string display =
+            normalized_css_keyword(resolved_display);
+        return display == "flex" || display == "inline-flex";
     }
 
     void append_text_content(
@@ -2415,6 +3117,61 @@ struct UiRmlRuntime {
         projected.crosshair_color = color;
     }
 
+    void sync_inset_outline(
+        ProjectedUiElement& projected,
+        Rml::Element& parent,
+        const std::string& outline) {
+        std::string position_probe = projected.resolved_style;
+        const bool authored_position =
+            !take_css_declaration(position_probe, "position").empty() ||
+            projected.style_properties.contains("position");
+        if (
+            projected.inset_outline_positioned_parent &&
+            (outline.empty() || authored_position)) {
+            parent.RemoveProperty("position");
+            projected.inset_outline_positioned_parent = false;
+            if (const auto authored =
+                    projected.style_properties.find("position");
+                authored != projected.style_properties.end()) {
+                parent.SetProperty(
+                    "position",
+                    project_css(authored->second));
+            }
+        }
+        if (
+            !outline.empty() &&
+            !authored_position &&
+            !projected.inset_outline_positioned_parent) {
+            parent.SetProperty("position", "relative");
+            projected.inset_outline_positioned_parent = true;
+        }
+        if (
+            projected.inset_outline == outline &&
+            (outline.empty() ||
+             (projected.inset_outline_element &&
+              projected.inset_outline_element->GetParentNode() == &parent))) {
+            return;
+        }
+        if (projected.inset_outline_element) {
+            Rml::Element* element = projected.inset_outline_element;
+            if (element->GetParentNode() == &parent) {
+                Rml::ElementPtr removed = parent.RemoveChild(element);
+            }
+            projected.inset_outline_element = nullptr;
+        }
+        projected.inset_outline = outline;
+        if (outline.empty()) return;
+
+        Rml::ElementPtr element =
+            document->CreateElement("bbl-inset-outline");
+        projected.inset_outline_element = element.get();
+        projected.inset_outline_element->SetAttribute(
+            "style",
+            "position:absolute;top:0;right:0;bottom:0;left:0;"
+            "pointer-events:none;border:" + outline + ";");
+        parent.AppendChild(std::move(element));
+    }
+
     void attach_listeners(
         ProjectedUiElement& projected,
         UiElementHandle handle) {
@@ -2425,7 +3182,8 @@ struct UiRmlRuntime {
             auto listener = std::make_unique<UiEventListener>(
                 engine,
                 handle,
-                "click");
+                "click",
+                default_prevented);
             projected.element->AddEventListener("click", listener.get());
             listeners.push_back(std::move(listener));
             projected.click_listener_attached = true;
@@ -2439,11 +3197,70 @@ struct UiRmlRuntime {
             auto listener = std::make_unique<UiEventListener>(
                 engine,
                 handle,
-                event);
+                event,
+                default_prevented);
             projected.element->AddEventListener(event, listener.get());
             listeners.push_back(std::move(listener));
             projected.event_listeners_attached[event] = true;
         }
+    }
+
+    std::vector<Rml::ElementPtr> detach_authored_children(
+        Rml::Element& parent,
+        const UiElementRecord& record) {
+        std::vector<Rml::ElementPtr> children;
+        children.reserve(record.children.size());
+        for (const UiElementHandle child : record.children) {
+            if (
+                child.value >= projected_elements.size() ||
+                ui_element(engine, child).tag == "style") {
+                continue;
+            }
+            Rml::Element* element = projected_elements[child.value].element;
+            if (element && element->GetParentNode() == &parent) {
+                children.push_back(parent.RemoveChild(element));
+            }
+        }
+        return children;
+    }
+
+    void sync_grid_children_container(
+        ProjectedUiElement& projected,
+        Rml::Element& raw,
+        const UiElementRecord& record,
+        const std::string& style) {
+        if (projected.grid_children_style == style) return;
+        if (!style.empty() && !projected.children_container) {
+            std::vector<Rml::ElementPtr> children =
+                detach_authored_children(raw, record);
+            Rml::ElementPtr container =
+                document->CreateElement("bbl-grid-children");
+            if (!container) {
+                throw std::runtime_error(
+                    "RmlUi could not create the fixed-grid child container.");
+            }
+            projected.children_container = container.get();
+            projected.children_container->SetAttribute("style", style);
+            for (Rml::ElementPtr& child : children) {
+                projected.children_container->AppendChild(std::move(child));
+            }
+            raw.AppendChild(std::move(container));
+        } else if (style.empty() && projected.children_container) {
+            std::vector<Rml::ElementPtr> children =
+                detach_authored_children(
+                    *projected.children_container,
+                    record);
+            Rml::ElementPtr removed =
+                raw.RemoveChild(projected.children_container);
+            projected.children_container = nullptr;
+            for (Rml::ElementPtr& child : children) {
+                raw.AppendChild(std::move(child));
+            }
+            static_cast<void>(removed);
+        } else if (projected.children_container) {
+            projected.children_container->SetAttribute("style", style);
+        }
+        projected.grid_children_style = style;
     }
 
     void append_element(Rml::Element& parent, UiElementHandle handle) {
@@ -2464,13 +3281,17 @@ struct UiRmlRuntime {
                 name,
                 projected_attribute_value(name, source_value));
         }
-        projected.resolved_style = resolved_style_attribute(record);
+        std::string resolved_display;
+        projected.resolved_style =
+            resolved_style_attribute(handle, record, &resolved_display);
         projected.intrinsic_min_width =
             take_intrinsic_min_width(projected.resolved_style);
         projected.grid_children_style =
             take_grid_children_style(projected.resolved_style);
         projected.crosshair_color =
             take_crosshair_color(projected.resolved_style);
+        projected.inset_outline =
+            take_inset_outline(projected.resolved_style);
         projected.gradient_text_style =
             take_gradient_text_style(projected.resolved_style);
         if (!projected.resolved_style.empty()) {
@@ -2484,7 +3305,7 @@ struct UiRmlRuntime {
             raw->SetInnerRML(record.inner_rml);
         } else if (!record.text.empty()) {
             projected.text_wrapped = text_needs_flex_wrapper(
-                record, projected.resolved_style);
+                resolved_display);
             append_text_content(
                 projected,
                 *raw,
@@ -2511,7 +3332,7 @@ struct UiRmlRuntime {
         Rml::Element* children_parent = raw;
         if (!projected.grid_children_style.empty()) {
             Rml::ElementPtr children_container =
-                document->CreateElement("div");
+                document->CreateElement("bbl-grid-children");
             projected.children_container = children_container.get();
             projected.children_container->SetAttribute(
                 "style", projected.grid_children_style);
@@ -2522,6 +3343,10 @@ struct UiRmlRuntime {
             if (ui_element(engine, child).tag == "style") continue;
             append_element(*children_parent, child);
         }
+        sync_inset_outline(
+            projected,
+            *raw,
+            projected.inset_outline);
         parent.AppendChild(std::move(element));
     }
 
@@ -2549,6 +3374,32 @@ struct UiRmlRuntime {
         projected_elements[handle.value] = {};
     }
 
+    void sync_projected_root_order() {
+        std::vector<std::uint32_t> desired;
+        for (const UiElementHandle handle : engine.ui_root_children) {
+            if (
+                handle.value < engine.ui_elements.size() &&
+                engine.ui_elements[handle.value].attached_to_root &&
+                engine.ui_elements[handle.value].tag != "style") {
+                desired.push_back(handle.value);
+            }
+        }
+        if (desired == projected_root_order) return;
+
+        std::vector<Rml::ElementPtr> roots;
+        roots.reserve(desired.size());
+        for (const std::uint32_t index : desired) {
+            Rml::Element* element = projected_elements[index].element;
+            if (element && element->GetParentNode() == document) {
+                roots.push_back(document->RemoveChild(element));
+            }
+        }
+        for (Rml::ElementPtr& root : roots) {
+            document->AppendChild(std::move(root));
+        }
+        projected_root_order = std::move(desired);
+    }
+
     void update_element(UiElementHandle handle) {
         ProjectedUiElement& projected = projected_elements[handle.value];
         UiElementRecord& record = ui_element(engine, handle);
@@ -2571,7 +3422,9 @@ struct UiRmlRuntime {
                     projected_attribute_value(name, value));
             }
         }
-        std::string resolved_style = resolved_style_attribute(record);
+        std::string resolved_display;
+        std::string resolved_style =
+            resolved_style_attribute(handle, record, &resolved_display);
         const std::string intrinsic_min_width =
             take_intrinsic_min_width(resolved_style);
         const std::string grid_children_style =
@@ -2580,6 +3433,8 @@ struct UiRmlRuntime {
             take_crosshair_color(resolved_style);
         const bool crosshair_changed =
             projected.crosshair_color != crosshair_color;
+        const std::string inset_outline =
+            take_inset_outline(resolved_style);
         const GradientTextStyle gradient_text_style =
             take_gradient_text_style(resolved_style);
         const bool gradient_text_style_changed =
@@ -2599,13 +3454,11 @@ struct UiRmlRuntime {
             }
             projected.resolved_style = resolved_style;
         }
-        if (
-            projected.grid_children_style != grid_children_style &&
-            projected.children_container) {
-            projected.children_container->SetAttribute(
-                "style", grid_children_style);
-        }
-        projected.grid_children_style = grid_children_style;
+        sync_grid_children_container(
+            projected,
+            raw,
+            record,
+            grid_children_style);
         projected.intrinsic_min_width = intrinsic_min_width;
         projected.attributes = record.attributes;
 
@@ -2629,7 +3482,7 @@ struct UiRmlRuntime {
 
         const bool text_wrapped =
             !record.text.empty() &&
-            text_needs_flex_wrapper(record, projected.resolved_style);
+            text_needs_flex_wrapper(resolved_display);
         if (
             projected.text != record.text ||
             projected.inner_rml != record.inner_rml ||
@@ -2650,6 +3503,7 @@ struct UiRmlRuntime {
                     std::to_string(record.children.size()) + ".");
             }
             while (raw.GetNumChildren() > 0) {
+                projected.inset_outline_element = nullptr;
                 Rml::ElementPtr removed = raw.RemoveChild(raw.GetChild(0));
             }
             projected.gradient_text_elements.clear();
@@ -2695,17 +3549,17 @@ struct UiRmlRuntime {
                 update_element(child);
             }
         }
+        sync_inset_outline(projected, raw, inset_outline);
     }
 
     void sync_tree() {
         ensure_projection_size();
         std::vector<bool> reachable(engine.ui_elements.size(), false);
-        for (
-            std::uint32_t index = 0;
-            index < engine.ui_elements.size();
-            ++index) {
-            if (engine.ui_elements[index].attached_to_root) {
-                mark_reachable(UiElementHandle{index}, reachable);
+        for (const UiElementHandle handle : engine.ui_root_children) {
+            if (
+                handle.value < engine.ui_elements.size() &&
+                engine.ui_elements[handle.value].attached_to_root) {
+                mark_reachable(handle, reachable);
             }
         }
 
@@ -2734,20 +3588,73 @@ struct UiRmlRuntime {
             clear_projected_subtree(UiElementHandle{index});
         }
 
-        for (
-            std::uint32_t index = 0;
-            index < engine.ui_elements.size();
-            ++index) {
+        for (const UiElementHandle handle : engine.ui_root_children) {
+            if (handle.value >= engine.ui_elements.size()) continue;
+            const std::uint32_t index = handle.value;
             if (!engine.ui_elements[index].attached_to_root) continue;
             if (engine.ui_elements[index].tag == "style") continue;
-            const UiElementHandle handle{index};
             if (!projected_elements[index].element) {
                 append_element(*document, handle);
             } else {
                 update_element(handle);
             }
         }
+        sync_projected_root_order();
+        refresh_current_color_svg_elements();
         projected_revision = engine.ui_revision;
+    }
+
+    bool has_active_authored_width(
+        UiElementHandle handle,
+        const UiElementRecord& record) const {
+        CascadedUiDeclaration width;
+        std::size_t source_order = for_each_matching_style_rule(
+            handle,
+            [&](const UiStyleRule& rule, std::size_t rule_order) {
+            std::string style =
+                filter_private_ui_declarations(rule.style, false);
+            consider_cascaded_declaration(
+                width,
+                take_css_declaration(style, "width"),
+                ui_style_rule_specificity(rule),
+                rule_order);
+        });
+        constexpr std::uint32_t inline_specificity = 0xffffffffu;
+        if (const auto inline_style = record.attributes.find("style");
+            inline_style != record.attributes.end()) {
+            std::string style = filter_private_ui_declarations(
+                inline_style->second,
+                false);
+            consider_cascaded_declaration(
+                width,
+                take_css_declaration(style, "width"),
+                inline_specificity,
+                source_order);
+        }
+        if (const auto dynamic_width =
+                record.style_properties.find("width");
+            dynamic_width != record.style_properties.end()) {
+            consider_cascaded_declaration(
+                width,
+                dynamic_width->second,
+                inline_specificity,
+                source_order + 1);
+        }
+        return !width.value.empty() &&
+            is_concrete_authored_width(width.value);
+    }
+
+    bool sync_hover_states() {
+        bool changed = false;
+        for (ProjectedUiElement& projected : projected_elements) {
+            if (!projected.element) continue;
+            const bool hovered =
+                projected.element->IsPseudoClassSet("hover");
+            if (projected.hovered == hovered) continue;
+            projected.hovered = hovered;
+            changed = true;
+        }
+        return changed;
     }
 
     void update_intrinsic_widths() {
@@ -2762,6 +3669,30 @@ struct UiRmlRuntime {
             std::vector<IntrinsicChild> children;
         };
 
+        bool cleared_width = false;
+        for (
+            std::uint32_t index = 0;
+            index < projected_elements.size() &&
+            index < engine.ui_elements.size();
+            ++index) {
+            ProjectedUiElement& projected = projected_elements[index];
+            if (!projected.element || !projected.intrinsic_width_applied) {
+                continue;
+            }
+            projected.element->RemoveProperty("width");
+            if (const auto dynamic_width =
+                    engine.ui_elements[index].style_properties.find("width");
+                dynamic_width !=
+                engine.ui_elements[index].style_properties.end()) {
+                projected.element->SetProperty(
+                    "width",
+                    project_css(dynamic_width->second));
+            }
+            projected.intrinsic_width_applied = false;
+            cleared_width = true;
+        }
+        if (cleared_width) context->Update();
+
         std::vector<IntrinsicParent> parents;
         for (
             std::uint32_t index = 0;
@@ -2769,6 +3700,11 @@ struct UiRmlRuntime {
             ++index) {
             ProjectedUiElement& projected = projected_elements[index];
             if (!projected.element || projected.intrinsic_min_width.empty()) {
+                continue;
+            }
+            if (has_active_authored_width(
+                    UiElementHandle{index},
+                    engine.ui_elements[index])) {
                 continue;
             }
 
@@ -2883,6 +3819,8 @@ struct UiRmlRuntime {
             max_content_width = std::max(max_content_width, inline_run_width);
             parent.element->SetProperty(
                 "width", std::to_string(max_content_width) + "px");
+            projected_elements[parent.handle.value].intrinsic_width_applied =
+                true;
 
             for (const IntrinsicChild& child : parent.children) {
                 if (child.width.empty()) {
@@ -3137,25 +4075,61 @@ struct UiRmlRuntime {
         }
     }
 
-    void sync_client_rects() {
+    void sync_client_rects(bool all_elements) {
         for (
             std::uint32_t index = 0;
             index < projected_elements.size() &&
             index < engine.ui_elements.size();
             ++index) {
+            UiElementRecord& record = engine.ui_elements[index];
+            if (!all_elements && !record.client_rect_requested) continue;
             Rml::Element* element = projected_elements[index].element;
             if (!element) {
-                engine.ui_elements[index].client_rect = {};
+                record.client_rect = {};
                 continue;
             }
             const Rml::Vector2f offset = element->GetAbsoluteOffset(
                 Rml::BoxArea::Border);
-            engine.ui_elements[index].client_rect = {
+            record.client_rect = {
                 static_cast<double>(offset.x),
                 static_cast<double>(offset.y),
                 static_cast<double>(element->GetClientWidth()),
                 static_cast<double>(element->GetClientHeight())};
         }
+    }
+
+    void refresh_current_color_svg_elements() {
+        Rml::ElementList svg_elements;
+        document->GetElementsByTagName(svg_elements, "svg");
+        current_color_svg_elements.clear();
+        current_color_svg_elements.reserve(svg_elements.size());
+        for (Rml::Element* element : svg_elements) {
+            if (element->HasAttribute("data-bbl-current-color")) {
+                current_color_svg_elements.push_back(element);
+            }
+        }
+    }
+
+    bool sync_svg_current_colors() {
+        bool changed = false;
+        for (Rml::Element* element : current_color_svg_elements) {
+            const Rml::Style::ComputedValues& computed =
+                element->GetComputedValues();
+            const Rml::Colourb color = computed.color();
+            const Rml::Colourb image_color = computed.image_color();
+            if (color == image_color) continue;
+            const std::string value =
+                "rgba(" + std::to_string(color.red) + "," +
+                std::to_string(color.green) + "," +
+                std::to_string(color.blue) + "," +
+                std::to_string(color.alpha) + ")";
+            if (!element->SetProperty("image-color", value)) {
+                throw std::runtime_error(
+                    "RmlUi could not apply inherited currentColor to inline SVG.");
+            }
+            changed = true;
+        }
+        return changed;
     }
 
     Engine& engine;
@@ -3166,12 +4140,17 @@ struct UiRmlRuntime {
     Rml::ElementDocument* document = nullptr;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
     std::vector<ProjectedUiElement> projected_elements;
+    std::vector<Rml::Element*> current_color_svg_elements;
+    std::vector<std::uint32_t> projected_root_order;
     std::uint64_t projected_revision = invalid_handle;
     std::string css_font_family;
     std::string css_sans_family;
     std::string css_monospace_family;
     std::string projected_style_sheet_source;
     float density_ratio = 0.0f;
+    std::uint32_t viewport_width = 0;
+    std::uint32_t viewport_height = 0;
+    bool default_prevented = false;
     bool initialized = false;
 };
 
@@ -3200,13 +4179,32 @@ bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
          event.type == SDL_EVENT_MOUSE_WHEEL)) {
         return true;
     }
-    return RmlSDL::InputEventHandler(runtime.context, runtime.window, event);
+    runtime.default_prevented = false;
+    Rml::Element* previous_focus = runtime.context->GetFocusElement();
+    const bool result =
+        RmlSDL::InputEventHandler(runtime.context, runtime.window, event);
+    if (
+        runtime.default_prevented &&
+        event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        Rml::Element* current_focus = runtime.context->GetFocusElement();
+        if (previous_focus) {
+            previous_focus->Focus();
+        } else if (current_focus) {
+            current_focus->Blur();
+        }
+    }
+    return result;
 }
 
 void update_ui_rml_runtime(
     UiRmlRuntime& runtime,
     std::uint32_t width,
     std::uint32_t height) {
+    const bool dimensions_changed =
+        runtime.viewport_width != width ||
+        runtime.viewport_height != height;
+    runtime.viewport_width = width;
+    runtime.viewport_height = height;
     runtime.context->SetDimensions(Rml::Vector2i{
         static_cast<int>(width),
         static_cast<int>(height)});
@@ -3219,10 +4217,29 @@ void update_ui_rml_runtime(
     }
     runtime.update_gradient_text();
     runtime.context->Update();
-    if (tree_changed || density_changed) {
+    const bool hover_changed = runtime.sync_hover_states();
+    if (hover_changed) {
+        // Public :hover declarations are handled by RmlUi itself. Re-run the
+        // private structural projection so fixed-grid metadata and synthetic
+        // intrinsic widths observe the same active selector set.
+        runtime.sync_tree();
+        runtime.context->Update();
+    }
+    if (runtime.sync_svg_current_colors()) {
+        runtime.context->Update();
+    }
+    if (
+        tree_changed ||
+        density_changed ||
+        dimensions_changed ||
+        hover_changed) {
         runtime.update_intrinsic_widths();
     }
-    runtime.sync_client_rects();
+    runtime.sync_client_rects(
+        tree_changed ||
+        density_changed ||
+        dimensions_changed ||
+        hover_changed);
 }
 
 const UiRenderFrame& record_ui_rml_frame(
@@ -3235,6 +4252,9 @@ const UiRenderFrame& record_ui_rml_frame(
     // first, then let RmlUi draw the interactive tree above it.
     runtime.render_canvases();
     runtime.context->Render();
+    if (runtime.engine.canvas_focused) {
+        append_canvas_focus_outline(runtime.render_interface.frame);
+    }
     runtime.render_interface.append_composite_quad();
     return runtime.render_interface.frame;
 }

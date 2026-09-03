@@ -815,6 +815,7 @@ inline void write_mesh(
     json.handle("material", mesh.material.value);
     json.handle("geometry", mesh.geometry);
     json.field("visible", mesh.visible);
+    json.field("receivesShadows", mesh.receives_shadows);
     json.field("bakedWorldScale", mesh.baked_world_scale);
     json.field("clockwiseFrontFace", mesh.clockwise_front_face);
     json.field("gpuDeformation", mesh.gpu_deformation);
@@ -822,6 +823,16 @@ inline void write_mesh(
     json.field("thinInstanced", mesh.thin_instanced);
     json.field("instanceCount", mesh.instance_count);
     json.field("loaderInstanceCount", mesh.instance_matrices.size());
+    if (
+        mesh.thin_instanced &&
+        mesh.instance_source &&
+        mesh.instance_source->size() >=
+            static_cast<std::size_t>(mesh.instance_count) * 16u) {
+        json.field(
+            "instanceMatrices",
+            mesh.instance_source->data(),
+            static_cast<std::size_t>(mesh.instance_count) * 16u);
+    }
     json.field("morphWeights", mesh.morph_weights.data(), 4);
     if (!mesh.morph_storage_weights.empty()) {
         json.field(
@@ -1075,6 +1086,30 @@ inline void write_draw_list(
         json.handle("material", draw.item.material.value);
         json.handle("geometry", draw.item.geometry);
         json.field("shaderVariant", draw.item.shader_variant);
+#if BBLITE_STANDARD_VARIANTS > 0
+        if (
+            draw.item.material_kind ==
+            upstream::RenderMaterialKind::standard) {
+            StandardVariantKey key;
+            const std::size_t variant = standard_variant_for_draw(
+                scene,
+                engine,
+                draw,
+                npos,
+                &key);
+            json.field("standardFeatures", key.features);
+            json.field("standardMeshFeatures", key.mesh_features);
+            json.field(
+                "composedVariant",
+                variant == npos ? invalid_handle : variant);
+            json.field(
+                "shadowBindingCount",
+                variant == npos
+                    ? 0u
+                    : upstream::standard_variants[variant]
+                          .shadow_binding_count);
+        }
+#endif
         if (draw.item.geometry < engine.geometries.size()) {
             const ModelGeometry& geometry =
                 engine.geometries[draw.item.geometry];
@@ -1096,6 +1131,67 @@ inline void write_draw_list(
         json.end_object();
     }
 }
+
+#if BBLITE_SHADOW_RECEIVERS
+inline void write_shadow_generator(
+    JsonWriter& json,
+    const Engine& engine,
+    ShadowGeneratorHandle handle,
+    LightHandle light,
+    std::size_t slot) {
+    const ShadowGeneratorRecord& generator =
+        engine.shadow_generators[handle.value];
+    json.begin_object();
+    json.handle("index", handle.value);
+    json.handle("light", light.value);
+    json.field("lightSlot", slot);
+    json.field(
+        "filter",
+        static_cast<std::uint32_t>(generator.filter));
+    json.field("mapSize", generator.map_size);
+    json.field("bias", generator.bias);
+    json.field("darkness", generator.darkness);
+    json.field("nearPlane", generator.near_plane);
+    json.field("farPlane", generator.far_plane);
+    json.field(
+        "forceRefreshEveryFrame",
+        generator.force_refresh_every_frame);
+    json.handle("mapTarget", generator.map_target.value);
+    json.field(
+        "lightMatrix",
+        generator.light_matrix.data(),
+        generator.light_matrix.size());
+    json.field(
+        "casterView",
+        generator.caster_view.data(),
+        generator.caster_view.size());
+    json.field(
+        "casterViewProjection",
+        generator.caster_view_projection.data(),
+        generator.caster_view_projection.size());
+    json.key("casterMeshes");
+    json.begin_array();
+    for (const MeshHandle mesh : generator.caster_meshes) {
+        json.value(mesh.value);
+    }
+    json.end_array();
+    json.key("casterTasks");
+    json.begin_array();
+    for (const TaskHandle task_handle : generator.caster_tasks) {
+        json.begin_object();
+        json.handle("task", task_handle.value);
+        if (task_handle.value < engine.frame_tasks.size()) {
+            const FrameTaskRecord& task =
+                engine.frame_tasks[task_handle.value];
+            json.field("renderMeshes", task.render_meshes.size());
+            json.handle("target", task.render.target.value);
+        }
+        json.end_object();
+    }
+    json.end_array();
+    json.end_object();
+}
+#endif
 
 #if BBLITE_HAS_SPLATS
 /**
@@ -1674,6 +1770,18 @@ inline void write_render_capture(
         write_light(json, handle.value, engine.lights[handle.value]);
     }
     json.end_array();
+
+#if BBLITE_SHADOW_RECEIVERS
+    json.key("shadowGenerators");
+    json.begin_array();
+    for_each_shadow_generator(
+        scene,
+        engine,
+        [&](ShadowGeneratorHandle handle, LightHandle light, std::size_t slot) {
+            write_shadow_generator(json, engine, handle, light, slot);
+        });
+    json.end_array();
+#endif
 
     json.key("meshes");
     json.begin_array();

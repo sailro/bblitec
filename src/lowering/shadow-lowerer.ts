@@ -1575,6 +1575,7 @@ ${directions}
 
 // ${provenance}
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 
@@ -1703,6 +1704,7 @@ export function pinnedShadowHeader(context: LoweringContext): string {
 // ${context.provenance(baseModule, "buildLightViewMatrix")}
 // ${context.provenance(spotModule, "createPcfSpotlightShadowGenerator")}
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
@@ -1910,9 +1912,9 @@ struct ShadowCaster {
  * One caster's \`mesh.worldMatrix\`, composed by the pin's own writer.
  *
  * \`computeDirectionalLightMatrix\` multiplies each caster's AABB corners
- * through it. A scene-code mesh has no parent, so its world matrix IS its
- * local TRS -- the same composition \`nav_mesh_world\` multiplies CPU
- * positions through, from the same single home.
+ * through it. An unparented mesh keeps the double-width local composition;
+ * a parented one reads the shared scene-graph composition, because the pin's
+ * world matrix includes every mesh/transform-node ancestor.
  *
  * Kept at the composition's own DOUBLE width, unlike the narrowed world every
  * GPU consumer takes: the fit's first act is to subtract the eye from cell
@@ -1921,49 +1923,26 @@ struct ShadowCaster {
  * inside the fold would round the large coordinate first, which at five
  * million units is half a unit of shadow-volume placement.
  */
-inline std::array<double, 16> shadow_caster_world(const MeshRecord& mesh) {
+inline std::array<double, 16> shadow_caster_local(
+    const MeshRecord& mesh) {
 ${trs.composeLocalBody}\
-    // A cloned imported hierarchy keeps its placement as an outer root
-    // transform while the child mesh's local TRS remains authored. The pin's
-    // \`mesh.worldMatrix\` already includes that parent. Apply the same XYZ
-    // rotation and translation here before folding the caster bounds, at the
-    // double width this fit deliberately retains.
-    if (
-        mesh.outer_rotation.x != 0.0f ||
-        mesh.outer_rotation.y != 0.0f ||
-        mesh.outer_rotation.z != 0.0f) {
-        const double sin_x = std::sin(
-            static_cast<double>(mesh.outer_rotation.x));
-        const double cos_x = std::cos(
-            static_cast<double>(mesh.outer_rotation.x));
-        const double sin_y = std::sin(
-            static_cast<double>(mesh.outer_rotation.y));
-        const double cos_y = std::cos(
-            static_cast<double>(mesh.outer_rotation.y));
-        const double sin_z = std::sin(
-            static_cast<double>(mesh.outer_rotation.z));
-        const double cos_z = std::cos(
-            static_cast<double>(mesh.outer_rotation.z));
-        for (std::size_t column = 0; column < 4; ++column) {
-            const std::size_t offset = column * 4;
-            const double x0 = local[offset];
-            const double y0 = local[offset + 1];
-            const double z0 = local[offset + 2];
-            const double x1 = x0;
-            const double y1 = y0 * cos_x - z0 * sin_x;
-            const double z1 = y0 * sin_x + z0 * cos_x;
-            const double x2 = x1 * cos_y + z1 * sin_y;
-            const double y2 = y1;
-            const double z2 = -x1 * sin_y + z1 * cos_y;
-            local[offset] = x2 * cos_z - y2 * sin_z;
-            local[offset + 1] = x2 * sin_z + y2 * cos_z;
-            local[offset + 2] = z2;
-        }
-    }
-    local[12] += static_cast<double>(mesh.outer_position.x);
-    local[13] += static_cast<double>(mesh.outer_position.y);
-    local[14] += static_cast<double>(mesh.outer_position.z);
     return local;
+}
+
+inline std::array<double, 16> shadow_caster_world(
+    const Engine& engine,
+    const MeshRecord& mesh) {
+    std::array<double, 16> local{};
+    if (
+        mesh.parent.value < engine.meshes.size() ||
+        mesh.transform_parent.value < engine.transform_nodes.size()) {
+        const std::array<float, 16> parented =
+            mesh_world_matrix(engine, mesh);
+        std::copy(parented.begin(), parented.end(), local.begin());
+    } else {
+        local = shadow_caster_local(mesh);
+    }
+    return apply_mesh_outer_transform(mesh, local);
 }
 
 /** The pin's own \`mesh.boundMin ?? [...]\` fallback, for a caster with none. */

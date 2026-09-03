@@ -19,6 +19,7 @@ import ts from "typescript";
 import { cachedBakeSync, moduleIdentity } from "../bake-cache.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
 import { runGenerationChild } from "./generation-child.js";
+import { transpileCommonJs } from "../typescript-transpile.js";
 
 // Same-process fast path in front of the durable bake cache: a scene
 // that calls the same helper twice pays neither a subprocess nor a
@@ -94,13 +95,7 @@ export function browserGeneratedString(
         `${functionName}(${argumentsText});\n`;
     const javascript =
         "const exports = {};\n" +
-        ts.transpileModule(sourceText, {
-            compilerOptions: {
-                target: ts.ScriptTarget.ES2022,
-                module: ts.ModuleKind.CommonJS,
-            },
-            fileName: source.fileName,
-        }).outputText;
+        transpileCommonJs(sourceText, source.fileName);
 
     const value = cachedBrowserGeneratedString(
         javascript,

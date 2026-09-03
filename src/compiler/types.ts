@@ -11,6 +11,7 @@ import type {
   NodeParticleStep,
 } from "../pinned-node-particle.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
+import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type { CsgSolidPlan } from "../pinned-csg.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 
@@ -142,6 +143,8 @@ export interface CompileManifest {
    * resolves its variant by material index, so no index travels.
    */
   standardMaterialPlugins: MaterialPluginManifest[][];
+  /** Actual Standard material states observed for each plugin signature. */
+  standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
   /** Every scene-code material creation, any family, for the handle count. */
   sceneMaterialCount: number;
   /** glTF load count at each scene material creation, across all families. */
@@ -355,6 +358,8 @@ export interface SceneMeshManifest {
   gltfAssetsBefore: number;
   /** This creation site is assigned a scene-code Standard material. */
   standardMaterial?: true;
+  /** The 1-based Standard plugin signature assigned to this mesh. */
+  standardMaterialPluginIndex?: number;
   /** A material read from an asset mesh can be assigned to this row. */
   assetPbrMaterial?: true;
   /**
@@ -389,6 +394,13 @@ export interface SceneMeshManifest {
   /** Whether this exact mesh reaches thin instancing before rendering, or
    *  can acquire it later from a callback. */
   thinInstances?: "always" | "possible";
+  /**
+   * Whether an `enableThinInstanceGpuCulling` that can turn the pin's
+   * `_gpuCullingEnabled` ON has already been lowered for this mesh. A
+   * statically-`false` opt-in on a mesh without one is the pin's own
+   * idempotent early return, so it lowers to nothing.
+   */
+  thinInstanceGpuCulling?: true;
   /** Whether the mesh also carries the per-instance RGBA stream. */
   thinInstanceColors?: true;
   /**
@@ -1103,7 +1115,15 @@ export type ValueKind =
   | "asset-root"
   | "asset"
   | "boolean"
+  /** A bounded native Blob containing the source parts' concatenated bytes. */
+  | "blob"
   | "browser"
+  /** An engine-owned opaque URL token referring to one live native Blob. */
+  | "object-url"
+  /** A one-selection snapshot returned by a retained file input. */
+  | "file-list"
+  /** A shared opaque handle to immutable bytes returned by the host picker. */
+  | "file"
   /** A DOM element created by reached scene code and owned by the native UI IR. */
   | "ui-element"
   | "callback"
@@ -1147,6 +1167,13 @@ export type ValueKind =
   | "material"
   | "mesh"
   | "transform-node"
+  /**
+   * `mesh.thinInstances` — the pin's own `ThinInstanceData`. It is a live
+   * view of the pool rather than a handle of its own: the only member the
+   * reached slice reads is `count`, which is `MeshRecord::instance_count`,
+   * so the value carries the mesh it was read from and nothing else.
+   */
+  | "thin-instance-pool"
   | "morph-targets"
   /**
    * The baked vertex-animation texture `bakeVat` returns: the pin's
@@ -1197,6 +1224,7 @@ export type ValueKind =
   | "physics-aggregate"
   | "physics-body"
   | "physics-shape"
+  | "property-animation-group"
   /** Callback-local platform keyboard data; it has no storable JS shape. */
   | "platform-keyboard-event"
   /** Callback-local platform mouse data; it has no storable JS shape. */
@@ -1405,6 +1433,23 @@ export function isNodeParticleValue(kind: ValueKind): boolean {
   );
 }
 
+/**
+ * Whether two compiled values name the same thing.
+ *
+ * A compile-time record is its property table -- the same object travels
+ * through every alias of one record -- and everything else is its native
+ * spelling, which is what makes two reads of one local, one handle or one
+ * shared object equal.
+ */
+export function sameCompiledValue(left: Value, right: Value): boolean {
+  if (left === right) return true;
+  if (left.kind !== right.kind) return false;
+  if (left.recordProperties || right.recordProperties) {
+    return left.recordProperties === right.recordProperties;
+  }
+  return left.cpp === right.cpp;
+}
+
 export type FrameCallbackSignature =
   "delta" | "timestamp" | "interval" | "void";
 
@@ -1445,6 +1490,12 @@ export interface Value {
   cpp: string;
   /** Generation-known tag for scene-created retained DOM elements. */
   uiTag?: string;
+  /**
+   * Generation-known identity for one retained element construction site.
+   * Runtime loops may evaluate the site more than once, but every resulting
+   * element has the same statically-proven tag, classes, and child shape.
+   */
+  uiStaticId?: number;
   /** Browser document.body carried through an inlined UI helper parameter. */
   uiRoot?: true;
   /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
@@ -1458,6 +1509,8 @@ export interface Value {
   uiCanvasId?: number;
   /** The 2D drawing-context view of the canvas handle in `cpp`. */
   uiCanvasContext?: true;
+  /** A retained input whose source assigned the static type "file". */
+  uiFileInput?: true;
   /**
    * Exact members held by a native array at this point in the source walk.
    * Runtime storage preserves JavaScript array semantics while this complete
@@ -1488,6 +1541,10 @@ export interface Value {
   borrowedData?: true;
   /** The C++ spelling is an lvalue that can bind to a mutable reference. */
   nativeLvalue?: true;
+  /** Main-lifetime C++ reference a retained native closure must capture by reference. */
+  retainedReferenceCapture?: string;
+  /** Binding order used to exclude references declared inside the closure body. */
+  retainedReferenceSequence?: number;
   /** The data expression is already a native std::vector, not a JS Array. */
   nativeVectorData?: true;
   /** The expression creates an owning data container at this read. */
@@ -1517,8 +1574,47 @@ export interface Value {
   nativeCallbackReturnType?: DataType;
   /** Scope-carrying record a function-valued property was read from. */
   callbackRecordOwner?: Value;
+  /**
+   * The function/object expression producing this callback is emitted inside
+   * a native iteration and would create a fresh JavaScript function object on
+   * every execution.
+   */
+  repeatedCallbackEvaluation?: true;
+  /** Distinguishes one statically emitted evaluation of a function expression. */
+  callbackEvaluationIdentity?: object;
+  /** JavaScript function identity retained by a materialized native callback. */
+  platformCallbackIdentity?: number;
   /** Constructed class identity, retained when an inlined return wraps Value. */
   classDeclaration?: ts.ClassDeclaration;
+  /**
+   * What the class's own type parameters stand for on this instance.
+   *
+   * A generic class's method body is written against `P`, and the checker
+   * answers with `P` wherever it is asked at the declaration. Carrying the
+   * instantiation on the receiver lets the type mapper substitute it while
+   * that body is inlined, so `new Workspace<Part>()` resolves `P[]` to
+   * `Part[]` and `new Workspace<Other>()` does not collide with it.
+   */
+  classTypeArguments?: ReadonlyMap<ts.Symbol, ts.Type>;
+  /**
+   * The expression names a slot inside a shared class instance rather than
+   * a binding of its own.
+   *
+   * Construction uses it to tell the fields its layout stores from the ones
+   * it hoisted, and the hoisting proof reads the same mark.
+   */
+  classStoredField?: true;
+  /**
+   * The one constructor assignment the hoisting proof selected, already
+   * performed from the constructor argument the caller evaluated.
+   *
+   * The node itself is the mark, not a boolean: the field binding outlives
+   * the construction -- a method inlined on a stored instance reads it back
+   * out of the proven hoisted map -- so a boolean would make every later
+   * `this.x = ...` look like the write that already happened. Only this
+   * exact assignment is the one that did.
+   */
+  classHoistedAssignment?: ts.BinaryExpression;
   /** The concrete native texture record produced by a texture factory. */
   textureStorage?: "file" | "pixels" | "solid" | "render";
   textureFile?: {
@@ -1579,6 +1675,20 @@ export interface Value {
    * here.
    */
   standardMaterial?: true;
+  /** The 1-based Standard plugin signature baked into this material. */
+  standardMaterialPluginIndex?: number;
+  /** Feature-bearing Standard properties accumulated on this material. */
+  standardMaterialInput?: PinnedStandardMaterialInput;
+  /**
+   * Native material fields whose source values are mutable JavaScript arrays.
+   *
+   * Babylon material objects retain those arrays by reference, so
+   * `markMaterialUboDirty(material)` must re-read their current components
+   * rather than keep the snapshot written by the original assignment. The
+   * map is shared by Value copies so a material stored in a class field keeps
+   * the bindings registered on its construction-site value.
+   */
+  materialUboArrayFields?: Map<string, string>;
   /**
    * Which composed node graph a material value names.
    *
@@ -1722,8 +1832,22 @@ export interface Value {
   optionalFoundCpp?: string;
   /** JavaScript truthiness when it differs from mere optional presence. */
   truthinessCpp?: string;
+  /**
+   * A nullable string whose JavaScript falsiness includes the empty
+   * string, not only absence. `localStorage.getItem` is the one producer:
+   * an unset key and a key holding "" are different states that the
+   * source's own `if (!raw)` treats alike. The flag rides the value
+   * through a binding so the condition is right wherever it is tested.
+   */
+  nullableStringFalsy?: true;
   /** Storage behind a nullable resource value whose `cpp` is its dereference. */
   optionalStorageCpp?: string;
+  /**
+   * The borrowed DOM Event base view. It reuses the mouse-event Value kind so
+   * preventDefault follows the existing path, but exposes no typed mouse
+   * fields through an unsafe assertion.
+   */
+  platformEventBase?: true;
   /** Native pointer token carrying JavaScript identity for a data object. */
   objectIdentityCpp?: string;
   /**
@@ -1826,7 +1950,9 @@ export interface Value {
    * created with, so the clip and the target have to agree; the closed
    * path table decides which kind each one names.
    */
-  animationTargetKind?: "mesh" | "camera";
+  animationTargetKind?: "mesh" | "camera" | "record";
+  /** Static property paths carried from a property-animation clip. */
+  animationPaths?: readonly string[];
   staticNumber?: number;
   /** Generation-known boolean retained across readonly scalar bindings. */
   staticBoolean?: boolean;
@@ -1876,8 +2002,14 @@ export interface Value {
    * rather than its value, so each read re-evaluates it.
    */
   recordGetters?: Record<string, ts.GetAccessorDeclaration>;
-  /** Class properties declared with `set`; assignment evaluates the body. */
+  /** Class or object properties declared with `set`; assignment evaluates the body. */
   recordSetters?: Record<string, ts.SetAccessorDeclaration>;
+  /** Function-local native map materialized for a runtime-valued record. */
+  runtimeRecordCpp?: string;
+  /** Heap scalar shared by every closure that captures an escaping record. */
+  sharedRecordScalar?: true;
+  /** Heap container retained by an escaping compile-time record. */
+  sharedRecordContainer?: true;
   /**
    * The scope chain in force where a record carrying methods or
    * getters was built. A record can outlive the scope its state
@@ -1949,6 +2081,7 @@ export type Feature =
   | "camera:default"
   | "camera:free"
   | "camera:orthographic"
+  | "camera:view-projection"
   | "environment:ibl"
   | "environment:env"
   | "environment:hdr"
@@ -2008,6 +2141,7 @@ export type Feature =
   | "mesh:thin-instances"
   | "mesh:thin-instance-colors"
   | "mesh:thin-instances-dynamic"
+  | "mesh:thin-instance-gpu-culling"
   | "mesh:cylinder"
   | "mesh:extrude"
   | "mesh:polyhedron"
@@ -2107,6 +2241,7 @@ export type Feature =
   | "material:standard-uv-transform"
   | "material:plugins"
   | "material:plugin-index"
+  | "material:plugin-textures"
   | "material:standard-emissive-render-texture"
   | "material:standard-diffuse-file-texture"
   | "material:standard-emissive-file-texture"
@@ -2132,10 +2267,26 @@ export type Feature =
   | "renderer:post-process"
   | "renderer:high-precision-matrix"
   | "renderer:floating-origin"
+  /**
+   * The bounded browser Blob/object-URL/download/file-input bridge. Its PAL
+   * translation unit owns dialogs and selected-path file IO.
+   */
+  | "browser:file"
   // Scene-created DOM lowered to the retained UI IR and rendered by RmlUi.
   | "ui:rml"
+  // The bounded inline svg/path/rect grammar rendered by RmlUi's SVG plugin.
+  | "ui:inline-svg"
   | "background:image-skybox"
-  | "background:solid-skybox";
+  | "background:solid-skybox"
+  /**
+   * `JSON.stringify` and `JSON.parse` over the plain-data model: the
+   * generic JSON bridge and the generated codecs for the records it
+   * reaches. Brings the header-only JSON parser with it, so a scene that
+   * never writes or reads a document links nothing for it.
+   */
+  | "data:json"
+  /** Web Storage: the durable per-user key/value store behind `localStorage`. */
+  | "storage:local";
 
 export interface ResolvedCompileOptions {
   fileName: string;

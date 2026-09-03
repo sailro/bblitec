@@ -14,6 +14,7 @@ interface CompiledAnimationClip {
     frameRate: string;
     duration: string;
     target: PropertyAnimationTargetKind;
+    paths: readonly string[];
 }
 
 export interface AnimationIntrinsicContext
@@ -27,6 +28,11 @@ export interface AnimationIntrinsicContext
         expression: ts.Expression | undefined,
         clip: Value,
     ): string;
+    compilePropertyAnimationTargets(
+        target: Value,
+        paths: readonly string[],
+        node: ts.Expression,
+    ): { cpp: string; engineCpp: string };
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -277,6 +283,7 @@ export function compileAnimationIntrinsic(
                 animationFrameRate: compiled.frameRate,
                 animationDuration: compiled.duration,
                 animationTargetKind: compiled.target,
+                animationPaths: compiled.paths,
             };
         }
 
@@ -303,11 +310,46 @@ export function compileAnimationIntrinsic(
             // fixed: a mesh clip binds a mesh, a camera clip a camera.
             const targetKind =
                 clip.animationTargetKind ?? "mesh";
-            context.expectKind(
-                target,
-                targetKind,
-                call.arguments[1]!,
-            );
+            const paths = clip.animationPaths ?? [];
+            if (paths.length === 0) {
+                context.fail(
+                    call.arguments[2]!,
+                    "Property animation clip is missing its static paths.",
+                );
+            }
+            let targetsCpp: string;
+            let engine: string;
+            if (targetKind === "record") {
+                context.expectKind(
+                    target,
+                    "record",
+                    call.arguments[1]!,
+                );
+                const compiled =
+                    context.compilePropertyAnimationTargets(
+                        target,
+                        paths,
+                        call.arguments[1]!,
+                    );
+                targetsCpp = compiled.cpp;
+                engine = compiled.engineCpp;
+            } else {
+                context.expectKind(
+                    target,
+                    targetKind,
+                    call.arguments[1]!,
+                );
+                engine = context.requireEngine(target, call);
+                targetsCpp = `{${paths
+                    .map(
+                        () =>
+                            `bbl::PropertyAnimationTarget{` +
+                            `bbl::PropertyAnimationTargetKind::${targetKind}, ` +
+                            `${target.cpp}.value, {}}`,
+                    )
+                    .join(", ")}}`;
+                context.expectSameEngine(manager, target, call);
+            }
             const options =
                 context.compilePropertyAnimationGroupOptions(
                     call.arguments[3],
@@ -317,19 +359,19 @@ export function compileAnimationIntrinsic(
             // the first property target bound into it. The pin stores that
             // association on each manager-owned task; carrying it on the
             // lowered manager lets an explicit update use the same engine.
-            context.expectSameEngine(manager, target, call);
-            const engine = context.requireEngine(target, call);
             associateManagerEngine(context, manager, engine, call);
             context.reachFeature("animation:property", call);
             return {
                 kind: "animation-group",
                 animationGroupSource: "property",
+                dataType: {
+                    kind: "handle",
+                    handle: "property-animation-group",
+                },
                 cpp:
                     `bbl::create_property_animation_group(` +
                     `${manager.cpp}, ${engine}, ` +
-                    `bbl::PropertyAnimationTarget{` +
-                    `bbl::PropertyAnimationTargetKind::` +
-                    `${targetKind}, ${target.cpp}.value}, ` +
+                    `${targetsCpp}, ` +
                     `${clip.cpp}, ${options})`,
                 engineCpp: engine,
             };
@@ -715,17 +757,14 @@ export function compileAnimationIntrinsic(
                 "animation-group",
                 call.arguments[0]!,
             );
-            // A paused property group remains manager-owned and sampled by
-            // the weighted mixer; only its time advancement stops. That is
-            // the final step in Scene 156's deterministic seek arm.
-            if (
-                importedName === "pauseAnimation" &&
-                group.animationGroupSource === "property"
-            ) {
+            // Property groups remain manager-owned and sampled; these
+            // operations update their public playback state in place.
+            if (group.animationGroupSource === "property") {
                 context.reachFeature("animation:property", call);
+                const native = groupOperationNatives[importedName]!;
                 return {
                     kind: "void",
-                    cpp: `bbl::pause_animation(${group.cpp})`,
+                    cpp: `bbl::${native}(${group.cpp})`,
                 };
             }
             requireGroupSource(

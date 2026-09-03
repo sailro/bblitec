@@ -1323,6 +1323,11 @@ std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh);
 std::array<float, 16> mesh_world_matrix(
     const Engine& engine,
     const MeshRecord& mesh);
+// Apply the imported clone root's outer rotation and translation without
+// narrowing the matrix. Shadow fitting and floating-origin packing share it.
+std::array<double, 16> apply_mesh_outer_transform(
+    const MeshRecord& mesh,
+    std::array<double, 16> world);
 // The corresponding world matrix for the parent kind setParent accepts.
 std::array<float, 16> transform_node_world(
     const Engine& engine,
@@ -2210,6 +2215,41 @@ std::array<float, 16> mesh_local_matrix(const MeshRecord& mesh) {
 ${meshTrs.composeWorldBody}    return world;
 }
 
+std::array<double, 16> apply_mesh_outer_transform(
+    const MeshRecord& mesh,
+    std::array<double, 16> world) {
+    if (
+        mesh.outer_rotation.x != 0.0f ||
+        mesh.outer_rotation.y != 0.0f ||
+        mesh.outer_rotation.z != 0.0f) {
+        const double sin_x = std::sin(static_cast<double>(mesh.outer_rotation.x));
+        const double cos_x = std::cos(static_cast<double>(mesh.outer_rotation.x));
+        const double sin_y = std::sin(static_cast<double>(mesh.outer_rotation.y));
+        const double cos_y = std::cos(static_cast<double>(mesh.outer_rotation.y));
+        const double sin_z = std::sin(static_cast<double>(mesh.outer_rotation.z));
+        const double cos_z = std::cos(static_cast<double>(mesh.outer_rotation.z));
+        for (std::size_t column = 0; column < 4; ++column) {
+            const std::size_t offset = column * 4;
+            const double x0 = world[offset];
+            const double y0 = world[offset + 1];
+            const double z0 = world[offset + 2];
+            const double x1 = x0;
+            const double y1 = y0 * cos_x - z0 * sin_x;
+            const double z1 = y0 * sin_x + z0 * cos_x;
+            const double x2 = x1 * cos_y + z1 * sin_y;
+            const double y2 = y1;
+            const double z2 = -x1 * sin_y + z1 * cos_y;
+            world[offset] = x2 * cos_z - y2 * sin_z;
+            world[offset + 1] = x2 * sin_z + y2 * cos_z;
+            world[offset + 2] = z2;
+        }
+    }
+    world[12] += static_cast<double>(mesh.outer_position.x);
+    world[13] += static_cast<double>(mesh.outer_position.y);
+    world[14] += static_cast<double>(mesh.outer_position.z);
+    return world;
+}
+
 ${options.floatingOrigin
     ? `// The eye-relative world of one mesh, declared above.
 //
@@ -2239,38 +2279,7 @@ ${meshTrs.composeLocalBody}\
             world_local[row * 4 + column] = sum;
         }
     }
-    // A cloned imported root's transform, folded in at full width rather
-    // than added to the narrowed result -- adding it after the store would
-    // put a large coordinate straight back.
-    if (
-        mesh.outer_rotation.x != 0.0f ||
-        mesh.outer_rotation.y != 0.0f ||
-        mesh.outer_rotation.z != 0.0f) {
-        const double sin_x = std::sin(static_cast<double>(mesh.outer_rotation.x));
-        const double cos_x = std::cos(static_cast<double>(mesh.outer_rotation.x));
-        const double sin_y = std::sin(static_cast<double>(mesh.outer_rotation.y));
-        const double cos_y = std::cos(static_cast<double>(mesh.outer_rotation.y));
-        const double sin_z = std::sin(static_cast<double>(mesh.outer_rotation.z));
-        const double cos_z = std::cos(static_cast<double>(mesh.outer_rotation.z));
-        for (std::size_t column = 0; column < 4; ++column) {
-            const std::size_t offset = column * 4;
-            const double x0 = world_local[offset];
-            const double y0 = world_local[offset + 1];
-            const double z0 = world_local[offset + 2];
-            const double x1 = x0;
-            const double y1 = y0 * cos_x - z0 * sin_x;
-            const double z1 = y0 * sin_x + z0 * cos_x;
-            const double x2 = x1 * cos_y + z1 * sin_y;
-            const double y2 = y1;
-            const double z2 = -x1 * sin_y + z1 * cos_y;
-            world_local[offset] = x2 * cos_z - y2 * sin_z;
-            world_local[offset + 1] = x2 * sin_z + y2 * cos_z;
-            world_local[offset + 2] = z2;
-        }
-    }
-    world_local[12] += static_cast<double>(mesh.outer_position.x);
-    world_local[13] += static_cast<double>(mesh.outer_position.y);
-    world_local[14] += static_cast<double>(mesh.outer_position.z);
+    world_local = apply_mesh_outer_transform(mesh, world_local);
     world_local[12] -= eye.x;
     world_local[13] -= eye.y;
     world_local[14] -= eye.z;
@@ -2323,10 +2332,13 @@ bool pick_candidate(const MeshRecord& mesh) {
 `
     : ""}// scene-node.ts visible, written by scene code and materialized per mesh by
 // the KHR_node_visibility loader and the animation pointer, exactly as the
-// pinned setSubtreeVisible materializes it per node.
-bool mesh_draws(const MeshRecord& mesh) {
-    return mesh.visible;
-}
+    // pinned setSubtreeVisible materializes it per node. A thin-instance pool with
+    // no active rows issues no draw upstream; filter it before either backend asks
+    // for a pipeline, because no shader variant is needed for zero invocations.
+    bool mesh_draws(const MeshRecord& mesh) {
+        return mesh.visible &&
+            (!mesh.thin_instanced || mesh.instance_count != 0);
+    }
 
 // src/render/lights-ubo.ts affectsMesh.
 bool light_affects_mesh(

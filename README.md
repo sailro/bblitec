@@ -13,11 +13,11 @@ Unsupported syntax and APIs fail at compile time with source locations.
 
 | [<img src="docs/images/scenes/scene1.png" alt="Scene 1" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene5.png" alt="Scene 5" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene7.png" alt="Scene 7" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Scene 14" width="170">](docs/status.md#curated-parity-scenes) |
 | :-: | :-: | :-: | :-: |
-| [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene176.png" alt="Scene 176" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/minecraft.png" alt="Voxel Sandbox demo" width="170">](docs/status.md#upstream-application-gates) |
+| [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/sandblox.png" alt="Sandblox demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/minecraft.png" alt="Voxel Sandbox demo" width="170">](docs/status.md#upstream-application-gates) |
 | [<img src="docs/images/scenes/tetris.png" alt="Tetris demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/doom.png" alt="Doom demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/racer.png" alt="Racer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/littlest-tokyo.png" alt="Littlest Tokyo demo" width="170">](docs/status.md#upstream-application-gates) |
 | [<img src="docs/images/scenes/platformer.png" alt="Platformer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/quake.png" alt="LibreQuake demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/bath-day.png" alt="Bath Day demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/freeciv.png" alt="Freeciv demo" width="170">](docs/status.md#upstream-application-gates) |
 
-*A few of the 213 curated parity scenes and 11 demos, compiled to native C++
+*A few of the 213 curated parity scenes and 12 demos, compiled to native C++
 and rendered on both GPU backends — click any frame for the measured numbers.*
 
 ## Current proof points

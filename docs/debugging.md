@@ -154,13 +154,15 @@ reports where they part:
 - **Browser side** (`scene -- capture`): the pinned Babylon Lite package
   rendered in headless Chromium with every WebGPU entry point hooked —
   the composed WGSL modules, every uploaded buffer with its bytes, the
-  texture uploads, and the draw census across pass *and render-bundle*
-  encoders.
+  texture uploads, and the direct/indirect draw census across pass *and
+  render-bundle* encoders.
 - **Native side** (`scene -- capture <id> --native`): our runtime's
   description of the same frame — every uniform block it builds, the draw
   list in submission order, including scene renderables outside the mesh
   render plan such as Gaussian splats, and the scene, camera, light, mesh
-  and material records those are built from.
+  and material records those are built from. Shadow captures also report
+  each generator's fitted matrices, caster list/task, and the composed
+  receiver variant selected for every Standard draw.
 
 The report is ordered so that a difference appears above everything it
 can cause:

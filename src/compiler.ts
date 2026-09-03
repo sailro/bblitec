@@ -32,7 +32,13 @@ import {
     BrowserErasure,
     type BrowserErasureContext,
 } from "./compiler/browser-erasure.js";
+import {
+    compileBrowserFileProperty,
+    isNativeBrowserFileExpression,
+    validateFileAccept,
+} from "./compiler/browser-file.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
+import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
 import { bakeFetchedCanvasAtlas } from "./compiler/fetched-canvas-atlas.js";
 import {
     compileEnvironmentOptions,
@@ -99,6 +105,7 @@ import {
 import {
     compilePropertyAnimationClip,
     compilePropertyAnimationGroupOptions,
+    PropertyAnimationTargetLowerer,
     type PropertyAnimationContext,
 } from "./compiler/property-animation.js";
 import {
@@ -138,6 +145,7 @@ import {
     doubleLiteral as dataDoubleLiteral,
     isHandleKind,
     passesByReference,
+    passesByReferenceKind,
     type DataIterationElement,
     type DataType,
     type TypedArrayKind,
@@ -186,6 +194,7 @@ import {
     aliasedMutationScan,
     type AliasedMutationScan,
     callArgumentIsReadOnly,
+    isSupportedFunction,
     parameterIsReadOnly,
     recursiveStorageEscapes,
     writesThroughTrackedRoot,
@@ -286,6 +295,138 @@ interface CanvasSizeProperty {
     client: boolean;
 }
 
+type UiStyleSelectorKind =
+    | "class"
+    | "id"
+    | "compound-class"
+    | "class-descendant-tag"
+    | "id-descendant-class";
+
+interface UiGridProjection {
+    columns: number;
+    cellWidth: number;
+    gap: number;
+    width: number;
+    rowCount?: number;
+    rowHeight?: number;
+    /** Absent means CSS's initial `normal`, projected as start alignment. */
+    authoredJustifyContent?: "start" | "center" | "end";
+}
+
+interface LoweredUiStyleRule {
+    kind: UiStyleSelectorKind;
+    primary: string;
+    secondary?: string;
+    tag?: string;
+    hover: boolean;
+    maxWidth?: number;
+    style: string;
+    selector: string;
+    site?: ts.Node;
+    ownerId?: number;
+    grid?: UiGridProjection;
+}
+
+interface UiStaticMarkupNode {
+    tag: string;
+    classes: ReadonlySet<string>;
+    children: UiStaticMarkupNode[];
+}
+
+interface UiStaticElement {
+    tag: string;
+    /** Every exact class set the element can have at a projected boundary. */
+    classAlternatives: Set<string>[];
+    classMayMutateDynamically: boolean;
+    ids: Set<string>;
+    children: Set<number>;
+    markupChildren: UiStaticMarkupNode[];
+    /** Reachable complete inline declaration lists, not assignment history. */
+    styles: string[];
+    styleShapeKnown: boolean;
+    styleMayMutateDynamically: boolean;
+    mutableClasses: Set<string>;
+    classShapeKnown: boolean;
+    /** False when known child construction sites can occur a runtime number of times. */
+    childCardinalityKnown: boolean;
+    childShapeKnown: boolean;
+}
+
+interface UiValidationState {
+    activeRules: readonly LoweredUiStyleRule[];
+    parentsByChild: ReadonlyMap<number, readonly number[]>;
+    ancestorsById: Map<number, UiStaticElement[]>;
+}
+
+interface UiPendingClassQuery {
+    root: Value;
+    className: string;
+    site: ts.Node;
+}
+
+interface UiUnknownClassMutation {
+    className: string;
+    site: ts.Node;
+}
+
+interface UiUnknownAttributeMutation {
+    attribute: "class" | "id";
+    /** Known construction target; absent when a runtime lookup selected it. */
+    targetId?: number;
+    site: ts.Node;
+}
+
+type PlatformEventTarget = "window" | "document" | "canvas";
+interface PlatformEventDescriptor {
+    channel: string;
+    parameter: "none" | "keyboard" | "mouse" | "visibility";
+}
+const PLATFORM_EVENT_DESCRIPTORS: Readonly<
+    Record<
+        PlatformEventTarget,
+        Readonly<Record<string, PlatformEventDescriptor>>
+    >
+> = {
+    window: {
+        resize: { channel: "window_resize", parameter: "none" },
+        keydown: { channel: "key_down", parameter: "keyboard" },
+        keyup: { channel: "key_up", parameter: "keyboard" },
+        pointerdown: { channel: "pointer_down", parameter: "none" },
+        mousedown: { channel: "mouse_down", parameter: "mouse" },
+        mouseup: { channel: "mouse_up", parameter: "mouse" },
+        pointerup: { channel: "mouse_up", parameter: "mouse" },
+        pointermove: { channel: "mouse_move", parameter: "mouse" },
+        mousemove: { channel: "mouse_move", parameter: "mouse" },
+        wheel: { channel: "mouse_wheel", parameter: "mouse" },
+        pointercancel: { channel: "mouse_cancel", parameter: "mouse" },
+    },
+    document: {
+        pointermove: { channel: "mouse_move", parameter: "mouse" },
+        mousemove: { channel: "mouse_move", parameter: "mouse" },
+        pointerlockchange: {
+            channel: "pointer_lock_change",
+            parameter: "none",
+        },
+        visibilitychange: {
+            channel: "visibility_change",
+            parameter: "visibility",
+        },
+    },
+    canvas: {
+        keydown: { channel: "key_down", parameter: "keyboard" },
+        keyup: { channel: "key_up", parameter: "keyboard" },
+        click: { channel: "canvas_click", parameter: "none" },
+        mousedown: { channel: "mouse_down", parameter: "mouse" },
+        mouseup: { channel: "mouse_up", parameter: "mouse" },
+        pointerdown: { channel: "mouse_down", parameter: "mouse" },
+        pointerup: { channel: "mouse_up", parameter: "mouse" },
+        pointermove: { channel: "mouse_move", parameter: "mouse" },
+        mousemove: { channel: "mouse_move", parameter: "mouse" },
+        wheel: { channel: "mouse_wheel", parameter: "mouse" },
+        pointercancel: { channel: "mouse_cancel", parameter: "mouse" },
+    },
+};
+
 const CANVAS_SIZE_AXES = new Map<string, CanvasSizeProperty>([
     ["width", { axis: "width", client: false }],
     ["height", { axis: "height", client: false }],
@@ -300,6 +441,39 @@ const KEY_EVENT_FIELDS = new Map<string, string>([
     ["altKey", "alt_key"],
     ["metaKey", "meta_key"],
 ]);
+
+/** The closure key for a callback the program evaluates once, at module scope. */
+const unownedCallbackScope: object = {};
+
+/** Whether a node is written inside another. */
+function isDeclaredInside(
+    node: ts.Node,
+    target: ts.Node | undefined,
+): boolean {
+    return target !== undefined &&
+        ts.findAncestor(node, (owner) => owner === target) !== undefined;
+}
+
+/**
+ * The nearest construct whose evaluation mints a new function object for a
+ * callback declaration: the class whose instance owns it, or the function
+ * body it was written in. Undefined means module scope, which the program
+ * evaluates once.
+ *
+ * An object literal is deliberately not one of them. It carries no scope of
+ * its own, so a method written in a module-level literal is as singular as a
+ * module-level function, and one written inside a function is distinguished
+ * by that function's evaluation.
+ */
+function callbackClosureContainer(
+    declaration: ts.Node,
+): ts.ClassLikeDeclaration | ts.SignatureDeclaration | undefined {
+    return ts.findAncestor(declaration.parent, (owner) =>
+        ts.isSourceFile(owner)
+            ? "quit"
+            : ts.isClassLike(owner) || ts.isFunctionLike(owner),
+    ) as ts.ClassLikeDeclaration | ts.SignatureDeclaration | undefined;
+}
 
 export class CompileError extends Error {
     public readonly fileName: string;
@@ -400,6 +574,13 @@ class Compiler
     public imageDecodeReached = false;
     public jsRandomReached = false;
     public voxelFileStorageReached = false;
+    /**
+     * The bounded canvas-owning functions this compilation executed at
+     * generation, by name. It is the fidelity adaptation's reach test: the
+     * assets they produce are ordinary data-URL payloads by the time they
+     * reach the manifest, so nothing downstream can tell them apart.
+     */
+    public readonly browserTextureFunctions = new Set<string>();
     /** Whether a scene threw one of its own preconditions. */
     public throwReached = false;
     private assetRootsReachableAnswer: boolean | undefined;
@@ -445,6 +626,20 @@ class Compiler
     private readonly reachedEffects_: EffectManifest[] = [];
     private thisInstance: Value | undefined;
     private readonly classInstances = new Map<Value, ts.ClassDeclaration>();
+    /**
+     * JavaScript identities minted for materialized callbacks, per
+     * declaration and per owning object.
+     */
+    private readonly callbackIdentities = new Map<
+        ts.Node,
+        Map<object, number>
+    >();
+    private nextCallbackIdentity = 0;
+    private nextRetainedReferenceSequence = 0;
+    private readonly retainedCaptureStack: Array<{
+        boundary: number;
+        references: Set<string>;
+    }> = [];
     private readonly body: string[] = [];
     /**
      * Collision listeners are registered before every startup assignment has
@@ -570,11 +765,11 @@ class Compiler
             (expression) =>
                 this.canvasSizeValue(expression) ??
                 this.enumMemberValue(expression) ??
-                this.lookupRecordProperty(expression) ??
                 this.dataLowerer.compileDataPath(
                     expression,
                     "read",
                 ) ??
+                this.lookupRecordProperty(expression) ??
                 this.compilePropertyAccess(expression),
             (expression) => this.compileValue(expression),
             (expression) => this.compileValue(expression),
@@ -621,6 +816,7 @@ class Compiler
         // After every feature has settled: retained UI must land on a frame
         // loop that presents it (NA-26).
         this.refuseUiWithoutPresentation();
+        this.validateUiStaticProjection();
 
         const features = featureOrder.filter((feature) => this.features.has(feature));
         // Emitted in `features` order so the parallel record serializes
@@ -705,6 +901,8 @@ class Compiler
                 ),
                 standardMaterialPlugins:
                     this.sceneMaterials.standardMaterialPlugins,
+                standardMaterialPluginInputs:
+                    this.sceneMaterials.standardMaterialPluginInputs,
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMaterialGltfAssetsBefore:
                     this.sceneMaterialGltfAssetsBefore,
@@ -791,7 +989,7 @@ class Compiler
                 );
             }
             emitted.push(
-                `${indent}bbl::ui_add_class_style(${engine}, ` +
+                `${indent}bbl::ui_add_host_class_style(${engine}, ` +
                     `${this.cppString(rule.className)}, ` +
                     `${this.cppString(this.lowerUiAttributeLiteral("style", rule.style))});`,
             );
@@ -801,9 +999,17 @@ class Compiler
             element: NativeHostUiElement,
             parent?: string,
         ): string => {
+            const normalizedTag = element.tag.toLowerCase();
             if (!/^[a-z][a-z0-9-]*$/i.test(element.tag)) {
                 this.failAtFile(
                     `Native host UI element tag '${element.tag}' is not valid.`,
+                );
+            }
+            if (
+                Compiler.UI_IMPLEMENTATION_TAGS.has(normalizedTag)
+            ) {
+                this.failAtFile(
+                    `Native host UI element tag '${element.tag}' is reserved for the retained projection.`,
                 );
             }
             const handle = this.allocateTemporaryCppName(
@@ -811,7 +1017,7 @@ class Compiler
             );
             emitted.push(
                 `${indent}const auto ${handle} = ` +
-                    `bbl::ui_create_element(${engine}, ${this.cppString(element.tag)});`,
+                    `bbl::ui_create_element(${engine}, ${this.cppString(normalizedTag)});`,
             );
             if (element.text !== undefined) {
                 emitted.push(
@@ -1274,20 +1480,22 @@ class Compiler
 
     private nullableResourceKind(
         node: ts.Node,
+        allowDirect = false,
     ):
         | { kind: ValueKind; cppType: string }
         | undefined {
         const type = this.checker.getTypeAtLocation(node);
-        if ((type.flags & ts.TypeFlags.Union) === 0) {
-            return undefined;
-        }
-        const members = (type as ts.UnionType).types.filter(
-            (member) =>
-                (member.flags &
-                    (ts.TypeFlags.Null |
-                        ts.TypeFlags.Undefined)) ===
-                0,
-        );
+        const members = (type.flags & ts.TypeFlags.Union) !== 0
+            ? (type as ts.UnionType).types.filter(
+                  (member) =>
+                      (member.flags &
+                          (ts.TypeFlags.Null |
+                              ts.TypeFlags.Undefined)) ===
+                      0,
+              )
+            : allowDirect
+              ? [type]
+              : [];
         if (members.length !== 1) return undefined;
         const name = members[0]!.symbol?.name;
         if (name === "AudioEngine") {
@@ -1365,6 +1573,12 @@ class Compiler
                 cppType: "bbl::MeshHandle",
             };
         }
+        if (this.typeIsOrExtendsNamed(members[0]!, "Material")) {
+            return {
+                kind: "material",
+                cppType: "bbl::MaterialHandle",
+            };
+        }
         // `let handle: VatHandle | null = null` then a guarded assignment
         // inside the "did the asset carry a skinned mesh and clips" arm:
         // the shape both VAT scenes are written in.
@@ -1389,6 +1603,37 @@ class Compiler
             };
         }
         return undefined;
+    }
+
+    private typeIsOrExtendsNamed(
+        type: ts.Type,
+        name: string,
+        visited = new Set<ts.Type>(),
+    ): boolean {
+        if (type.symbol?.name === name) return true;
+        if (
+            visited.has(type) ||
+            (type.flags & ts.TypeFlags.Object) === 0
+        ) {
+            return false;
+        }
+        visited.add(type);
+        const objectType = type as ts.ObjectType;
+        if (
+            (objectType.objectFlags &
+                (ts.ObjectFlags.Class |
+                    ts.ObjectFlags.Interface)) ===
+            0
+        ) {
+            return false;
+        }
+        return (
+            this.checker
+                .getBaseTypes(type as ts.InterfaceType)
+                ?.some((base) =>
+                    this.typeIsOrExtendsNamed(base, name, visited),
+                ) ?? false
+        );
     }
 
     /** Whether a nullable local is later filled by one pinned factory. */
@@ -1434,11 +1679,20 @@ class Compiler
         this.statements.emitExpression(this, expression);
     }
 
+    public emitDiscardedValue(value: Value): void {
+        if (value.kind === "engine" || value.cpp.length === 0) return;
+        this.emit(
+            value.kind !== "void" || value.requiresExplicitDiscard
+                ? `static_cast<void>(${value.cpp});`
+                : `${value.cpp};`,
+        );
+    }
+
     /**
-     * JavaScript record methods capture mutable bindings, not snapshots of
-     * their current values. A `let` read by a function-valued object member
-     * therefore needs a shared native cell: separately inlined methods and
-     * stored callbacks all dereference the same storage.
+     * JavaScript stored callbacks capture mutable bindings, not snapshots of
+     * their current values. A `let` read by a function-valued object member or
+     * retained file-change listener therefore needs a shared native cell:
+     * separately emitted callbacks all dereference the same storage.
      */
     private needsSharedClosureStorage(
         declaration: ts.VariableDeclaration,
@@ -1450,6 +1704,13 @@ class Compiler
             (declaration.parent.flags & ts.NodeFlags.Const) !== 0
         ) {
             return false;
+        }
+        if (
+            ts.isVariableStatement(declaration.parent.parent) &&
+            ts.isSourceFile(declaration.parent.parent.parent) &&
+            declaration.getSourceFile() !== this.sourceFile
+        ) {
+            return true;
         }
         const symbol = this.symbols.valueSymbol(declaration.name);
         if (!symbol) return false;
@@ -1472,6 +1733,14 @@ class Compiler
         const captured = new Set<ts.Symbol>();
         const storedLocalFunctions = new Set<ts.Symbol>();
         const storedLocalFunctionNames = new Set<string>();
+        const isRetainedEventRegistration = (
+            node: ts.Node,
+        ): node is ts.CallExpression =>
+            ts.isCallExpression(node) &&
+            ts.isPropertyAccessExpression(this.unwrap(node.expression)) &&
+            (this.unwrap(node.expression) as ts.PropertyAccessExpression)
+                .name.text === "addEventListener" &&
+            node.arguments.length >= 2;
         const collectStoredFunctions = (node: ts.Node): void => {
             if (ts.isShorthandPropertyAssignment(node)) {
                 storedLocalFunctionNames.add(node.name.text);
@@ -1488,10 +1757,82 @@ class Compiler
                     this.unwrap(node.initializer) as ts.Identifier,
                 );
                 if (symbol) storedLocalFunctions.add(symbol);
+            } else if (isRetainedEventRegistration(node)) {
+                const callback = node.arguments[1]
+                    ? this.unwrap(node.arguments[1])
+                    : undefined;
+                if (callback && ts.isIdentifier(callback)) {
+                    storedLocalFunctionNames.add(callback.text);
+                    const symbol = this.symbols.valueSymbol(callback);
+                    if (symbol) storedLocalFunctions.add(symbol);
+                }
             }
             ts.forEachChild(node, collectStoredFunctions);
         };
         collectStoredFunctions(owner);
+
+        const localFunctions = new Map<
+            ts.Symbol,
+            ts.FunctionLikeDeclaration
+        >();
+        const storedCallbackRoots: ts.FunctionLikeDeclaration[] = [];
+        const collectFunctionGraph = (node: ts.Node): void => {
+            if (
+                ts.isFunctionDeclaration(node) &&
+                node.name
+            ) {
+                const symbol = this.symbols.valueSymbol(node.name);
+                if (symbol) localFunctions.set(symbol, node);
+            } else if (
+                (ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node)) &&
+                ts.isVariableDeclaration(node.parent) &&
+                ts.isIdentifier(node.parent.name)
+            ) {
+                const symbol = this.symbols.valueSymbol(node.parent.name);
+                if (symbol) localFunctions.set(symbol, node);
+            }
+            if (
+                (ts.isMethodDeclaration(node) &&
+                    ts.isObjectLiteralExpression(node.parent)) ||
+                ((ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node)) &&
+                    ts.isPropertyAssignment(node.parent) &&
+                    ts.isObjectLiteralExpression(node.parent.parent))
+            ) {
+                storedCallbackRoots.push(node);
+            }
+            ts.forEachChild(node, collectFunctionGraph);
+        };
+        collectFunctionGraph(owner);
+        for (const symbol of storedLocalFunctions) {
+            const declaration = localFunctions.get(symbol);
+            if (declaration) storedCallbackRoots.push(declaration);
+        }
+        const visitedCallbacks = new Set<ts.FunctionLikeDeclaration>();
+        for (let index = 0; index < storedCallbackRoots.length; ++index) {
+            const callback = storedCallbackRoots[index]!;
+            if (visitedCallbacks.has(callback)) continue;
+            visitedCallbacks.add(callback);
+            const collectReferencedFunctions = (node: ts.Node): void => {
+                if (ts.isIdentifier(node)) {
+                    const symbol = this.symbols.valueSymbol(node);
+                    const declaration = symbol
+                        ? localFunctions.get(symbol)
+                        : undefined;
+                    if (
+                        symbol &&
+                        declaration &&
+                        !storedLocalFunctions.has(symbol)
+                    ) {
+                        storedLocalFunctions.add(symbol);
+                        storedCallbackRoots.push(declaration);
+                    }
+                }
+                ts.forEachChild(node, collectReferencedFunctions);
+            };
+            collectReferencedFunctions(callback);
+        }
 
         const visit = (
             node: ts.Node,
@@ -1530,10 +1871,18 @@ class Compiler
                     ts.isFunctionExpression(node)) &&
                     ts.isPropertyAssignment(node.parent) &&
                     ts.isObjectLiteralExpression(node.parent.parent));
+            const retainedEventCallback =
+                node !== owner &&
+                (ts.isArrowFunction(node) ||
+                    ts.isFunctionExpression(node)) &&
+                ts.isCallExpression(node.parent) &&
+                node.parent.arguments[1] === node &&
+                isRetainedEventRegistration(node.parent);
             const inside =
                 insideStoredRecordCallback ||
                 storedRecordCallback ||
-                storedLocalCallback;
+                storedLocalCallback ||
+                retainedEventCallback;
             if (
                 inside &&
                 ts.isIdentifier(node)
@@ -1607,14 +1956,32 @@ class Compiler
                     `Constant '${sourceName}' requires an initializer.`,
                 );
             }
-            const dataType = this.dataTypes.fromTsType(
+            let dataType = this.dataTypes.fromTsType(
                 this.checker.getTypeAtLocation(declaration.name),
                 declaration.name,
             );
+            if (
+                !dataType &&
+                declaration.type?.kind === ts.SyntaxKind.UnknownKeyword
+            ) {
+                // A JSON.parse result is deliberately dynamic until the
+                // source's own guards inspect it. `let json: unknown;` is the
+                // corresponding uninitialized slot in that model; every later
+                // assignment still has to be a JsonValue, so this does not
+                // turn arbitrary unknown values into a permissive catch-all.
+                dataType = { kind: "json" };
+                this.reachJson();
+            }
             if (!dataType) {
                 this.fail(
                     declaration,
                     `Variable '${sourceName}' needs a native data type before it can be assigned.`,
+                );
+            }
+            if (dataType.kind === "borrowed-platform-event") {
+                this.fail(
+                    declaration,
+                    `Variable '${sourceName}' cannot default-construct a borrowed DOM event; bind it from an active platform callback.`,
                 );
             }
             if (
@@ -1626,27 +1993,26 @@ class Compiler
             }
             const cppType = this.dataTypes.cppType(dataType);
             this.emit(
-                sharedClosureStorage &&
-                    this.isSharedClosureScalar(dataType.kind)
+                sharedClosureStorage
                     ? `auto ${cppName} = std::make_shared<${cppType}>();`
                     : `${cppType} ${cppName};`,
             );
+            const boundCpp = sharedClosureStorage
+                ? `(*${cppName})`
+                : cppName;
             if (
                 dataType.kind !== "number" &&
                 dataType.kind !== "boolean"
             ) {
                 this.dataLowerer.registerLocal(
-                    cppName,
+                    boundCpp,
                     "owned",
                 );
             }
             this.defineVariable(
                 declaration.name,
                 this.dataLowerer.leafValue(
-                    sharedClosureStorage &&
-                        this.isSharedClosureScalar(dataType.kind)
-                        ? `(*${cppName})`
-                        : cppName,
+                    boundCpp,
                     dataType,
                 ),
             );
@@ -1678,6 +2044,7 @@ class Compiler
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
+                sharedClosureStorage,
             )
         ) {
             return;
@@ -1783,6 +2150,7 @@ class Compiler
             this.emitAnnotatedDataDeclaration(
                 declaration,
                 cppName,
+                sharedClosureStorage,
             )
         ) {
             return;
@@ -1797,7 +2165,6 @@ class Compiler
         if (forwardCallback) {
             this.completeForwardFunctionResult(
                 declaration,
-                cppName,
                 forwardCallback,
                 value,
             );
@@ -1975,8 +2342,16 @@ class Compiler
             const localType = narrowed.nativeVectorData
                 ? "auto"
                 : this.dataTypes.cppType(narrowed.dataType);
+            const sharedDataBinding =
+                sharedClosureStorage &&
+                this.identifierIsRebound(declaration.name);
+            const boundCpp = sharedDataBinding
+                ? `(*${cppName})`
+                : cppName;
             this.emit(
-                `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
+                sharedDataBinding
+                    ? `auto ${cppName} = std::make_shared<${localType}>(${narrowed.cpp});`
+                    : `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
             );
             if (optionalFoundCpp && referenceStruct) {
                 // Reference-backed records already use an empty shared
@@ -1985,7 +2360,7 @@ class Compiler
                 // branch preparation it may contain) just to learn whether
                 // the result exists.
                 this.emit(
-                    `[[maybe_unused]] const bool ${optionalFoundCpp} = static_cast<bool>(${cppName});`,
+                    `[[maybe_unused]] const bool ${optionalFoundCpp} = static_cast<bool>(${boundCpp});`,
                 );
             }
             if (aliases) {
@@ -1995,7 +2370,7 @@ class Compiler
                 );
             } else {
                 this.dataLowerer.registerLocal(
-                    cppName,
+                    boundCpp,
                     constructs || referenceStruct || narrowed.freshData
                         ? "owned"
                         : "copy",
@@ -2006,7 +2381,7 @@ class Compiler
                 : undefined;
             this.defineVariable(declaration.name, {
                 kind: "data",
-                cpp: cppName,
+                cpp: boundCpp,
                 dataType: narrowed.dataType,
                 ...(staticElementsOwner
                     ? {
@@ -2029,12 +2404,30 @@ class Compiler
                 ...(optionalFoundCpp
                     ? { optionalFoundCpp }
                     : {}),
+                ...(narrowed.truthinessCpp
+                    ? {
+                          truthinessCpp:
+                              narrowed.truthinessCpp.replaceAll(
+                                  narrowed.cpp,
+                                  boundCpp,
+                              ),
+                      }
+                    : {}),
+                // A nullable string whose falsiness includes the empty
+                // string keeps that rule through the binding: the local
+                // holds the same two-state value the producer answered.
+                ...(narrowed.nullableStringFalsy
+                    ? { nullableStringFalsy: true as const }
+                    : {}),
             });
             return;
         }
 
         const nativeType =
-            value.kind === "number"
+            value.kind === "platform-keyboard-event" ||
+            value.kind === "platform-mouse-event"
+                ? "const auto&"
+            : value.kind === "number"
                 ? "double"
                 : value.kind === "boolean"
                   ? "bool"
@@ -2056,14 +2449,34 @@ class Compiler
                     ? "enum"
                     : value.kind,
             );
+        const boundCpp = sharedPrimitive ? `(*${cppName})` : cppName;
+        const optionalFoundCpp =
+            value.optionalFoundCpp === undefined ||
+            value.optionalFoundCpp === "true" ||
+            value.optionalFoundCpp === "false"
+                ? undefined
+                : this.allocateTemporaryCppName("element_found");
         this.emit(sharedPrimitive
             ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
             : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`);
+        if (optionalFoundCpp) {
+            // A local initialized from any maybe-absent handle snapshots both
+            // the handle and whether it was present. Derive presence from the
+            // bound handle where possible rather than re-reading an owner
+            // whose slot may move later.
+            const presence = value.cpp.length > 0
+                ? value.optionalFoundCpp!.replaceAll(value.cpp, boundCpp)
+                : value.optionalFoundCpp!;
+            this.emit(
+                `[[maybe_unused]] const bool ${optionalFoundCpp} = ${presence};`,
+            );
+        }
         // Either spelling reads through the emitted variable, so a static
         // value the initializer carried must not fold past it.
         const stored: Value = {
             ...value,
-            cpp: sharedPrimitive ? `(*${cppName})` : cppName,
+            cpp: boundCpp,
+            ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
             nativeBinding: true,
         };
         if (value.kind === "animation-clip") {
@@ -2115,6 +2528,7 @@ class Compiler
         | {
               parameterTypes: readonly DataType[];
               parameterNames: readonly string[];
+              storageCpp: string;
           }
         | undefined {
         if (!declaration.initializer) return undefined;
@@ -2173,22 +2587,25 @@ class Compiler
             // when an event fires after the builder returned -- the
             // forward edge always escapes.
             true,
+            false,
         );
+        const storageCpp =
+            this.nativeCallbackStorageExpression(cppName);
         this.defineVariable(declaration.name as ts.Identifier, {
             kind: "callback",
-            cpp: cppName,
+            cpp: storageCpp,
             nativeCallbackParameterTypes: parameterTypes,
         });
-        return { parameterTypes, parameterNames };
+        return { parameterTypes, parameterNames, storageCpp };
     }
 
     /** Fills the native slot opened by prepareForwardFunctionResult. */
     private completeForwardFunctionResult(
         declaration: ts.VariableDeclaration,
-        cppName: string,
         forward: {
             parameterTypes: readonly DataType[];
             parameterNames: readonly string[];
+            storageCpp: string;
         },
         value: Value,
     ): void {
@@ -2218,23 +2635,26 @@ class Compiler
                       compile,
                   )
                 : compile();
-            if (result.cpp.length > 0) {
-                this.emit(
-                    result.requiresExplicitDiscard
-                        ? `static_cast<void>(${result.cpp});`
-                        : `${result.cpp};`,
-                );
-            }
+            this.emitDiscardedValue(result);
         });
         const parameters = forward.parameterTypes.map(
             (type, index) =>
                 `${this.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
         );
-        this.emit(`${cppName} = [&](${parameters.join(", ")}) {`);
+        this.emit(`${forward.storageCpp} = [&](${parameters.join(", ")}) {`);
         this.increaseIndent();
         for (const line of lines) this.emit(line);
         this.decreaseIndent();
         this.emit("};");
+        this.rebindVariable(declaration.name as ts.Identifier, {
+            kind: "callback",
+            cpp: forward.storageCpp,
+            nativeCallbackParameterTypes: forward.parameterTypes,
+            platformCallbackIdentity: this.callbackIdentity(
+                value.callbackDeclaration,
+                value.callbackRecordOwner,
+            ),
+        });
     }
 
     /**
@@ -2378,6 +2798,12 @@ class Compiler
                 new Set<SupportedFunction>([callback]),
                 [enclosingBody],
             );
+        if (escapes) {
+            this.refuseEscapingPlatformEventCapturesIn(
+                callback,
+                this.variableScopes.length,
+            );
+        }
         this.emitNativeCallbackStorage(
             cppName,
             `${returnCpp}(${parameterTypes.join(", ")})`,
@@ -2427,9 +2853,102 @@ class Compiler
      * (including through a reached local-function parameter) materializes the
      * object's native data storage.
      */
+    private initializerProducesAccessorRecord(
+        expression: ts.Expression,
+        seen = new Set<ts.Node>(),
+    ): boolean {
+        const unwrapped = this.unwrap(expression);
+        if (seen.has(unwrapped)) return false;
+        seen.add(unwrapped);
+        if (ts.isObjectLiteralExpression(unwrapped)) {
+            if (
+                unwrapped.properties.some(
+                    (property) =>
+                        ts.isGetAccessorDeclaration(property) ||
+                        ts.isSetAccessorDeclaration(property),
+                )
+            ) {
+                return true;
+            }
+            return unwrapped.properties.some((property) => {
+                if (ts.isPropertyAssignment(property)) {
+                    return this.initializerProducesAccessorRecord(
+                        property.initializer,
+                        seen,
+                    );
+                }
+                if (ts.isSpreadAssignment(property)) {
+                    return this.initializerProducesAccessorRecord(
+                        property.expression,
+                        seen,
+                    );
+                }
+                if (ts.isShorthandPropertyAssignment(property)) {
+                    return this.initializerProducesAccessorRecord(
+                        property.name,
+                        seen,
+                    );
+                }
+                return false;
+            });
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            const declaration =
+                this.symbols.valueSymbol(unwrapped)
+                    ?.valueDeclaration;
+            return Boolean(
+                declaration &&
+                    ts.isVariableDeclaration(declaration) &&
+                    declaration.initializer &&
+                    this.initializerProducesAccessorRecord(
+                        declaration.initializer,
+                        seen,
+                    ),
+            );
+        }
+        if (ts.isCallExpression(unwrapped)) {
+            const declaration =
+                this.checker.getResolvedSignature(unwrapped)
+                    ?.declaration;
+            if (
+                !declaration ||
+                !isSupportedFunction(declaration) ||
+                !declaration.body
+            ) {
+                return false;
+            }
+            if (!ts.isBlock(declaration.body)) {
+                return this.initializerProducesAccessorRecord(
+                    declaration.body,
+                    seen,
+                );
+            }
+            let found = false;
+            const visit = (node: ts.Node): void => {
+                if (found || ts.isFunctionLike(node)) return;
+                if (
+                    ts.isReturnStatement(node) &&
+                    node.expression &&
+                    this.initializerProducesAccessorRecord(
+                        node.expression,
+                        seen,
+                    )
+                ) {
+                    found = true;
+                    return;
+                }
+                ts.forEachChild(node, visit);
+            };
+            declaration.body.statements.forEach(visit);
+            return found;
+        }
+        return false;
+    }
+
     private emitAnnotatedDataDeclaration(
         declaration: ts.VariableDeclaration,
         cppName: string,
+        sharedClosureStorage: boolean,
     ): boolean {
         if (!declaration.initializer) {
             return false;
@@ -2454,7 +2973,7 @@ class Compiler
         }
         if (
             annotated?.kind === "enum" &&
-            this.needsSharedClosureStorage(declaration)
+            sharedClosureStorage
         ) {
             const initializer = this.compileValue(declaration.initializer);
             const cppType = this.dataTypes.cppType(annotated);
@@ -2488,7 +3007,7 @@ class Compiler
         if (
             annotatedOpenRecordLiteral &&
             !this.openRecordContainerIsMutated(declaration.name as ts.Identifier) &&
-            !this.inferredObjectIsRebound(declaration.name as ts.Identifier)
+            !this.identifierIsRebound(declaration.name as ts.Identifier)
         ) {
             // An immutable Record literal stays a compile-time record. A
             // dynamic read materializes the existing namespace-scope Map,
@@ -2500,12 +3019,19 @@ class Compiler
             annotated?.kind === "struct" ||
             (annotated?.kind === "optional" &&
                 annotated.inner.kind === "struct");
+        if (
+            !declaration.type &&
+            inferredPlainObject &&
+            this.initializerProducesAccessorRecord(initializer)
+        ) {
+            return false;
+        }
         const mutablePlainObject =
             ts.isIdentifier(declaration.name) &&
             inferredPlainObject &&
             (ts.isObjectLiteralExpression(initializer)
                 ? this.inferredObjectIsMutated(declaration.name)
-                : this.inferredObjectIsRebound(declaration.name));
+                : this.identifierIsRebound(declaration.name));
         const inferredMutableObject =
             !declaration.type && mutablePlainObject;
         const explicitlyTypedMutableEntryObject =
@@ -2610,6 +3136,19 @@ class Compiler
                     annotated.inner.kind === "struct"
                   ? annotated.inner
                   : undefined;
+        const literalSnapshot =
+            spreadTarget &&
+            ts.isObjectLiteralExpression(initializer) &&
+            !initializer.properties.some(ts.isSpreadAssignment)
+                ? this.compileValue(initializer)
+                : undefined;
+        const sharedDataBinding =
+            sharedClosureStorage &&
+            ts.isIdentifier(declaration.name) &&
+            this.identifierIsRebound(declaration.name);
+        const boundCpp = sharedDataBinding
+            ? `(*${cppName})`
+            : cppName;
         if (
             spreadTarget &&
             ts.isObjectLiteralExpression(initializer) &&
@@ -2617,18 +3156,35 @@ class Compiler
                 ts.isSpreadAssignment(property),
             )
         ) {
+            const targetCpp = sharedDataBinding
+                ? this.allocateTemporaryCppName("shared_initial")
+                : cppName;
             this.dataLowerer.emitSpreadStructDeclaration(
-                cppName,
+                targetCpp,
                 initializer,
                 spreadTarget,
             );
+            if (sharedDataBinding) {
+                this.emit(
+                    `auto ${cppName} = std::make_shared<${this.dataTypes.cppType(annotated)}>(std::move(${targetCpp}));`,
+                );
+            }
         } else {
-            const initializerCpp = this.dataLowerer.compileForSink(
-                declaration.initializer,
-                annotated,
-            );
+            const initializerCpp =
+                literalSnapshot?.kind === "record"
+                    ? this.dataLowerer.compileKnownValueForSink(
+                          literalSnapshot,
+                          annotated,
+                          declaration.initializer,
+                      )
+                    : this.dataLowerer.compileForSink(
+                          declaration.initializer,
+                          annotated,
+                      );
             this.emit(
-                `${this.dataTypes.cppType(annotated)} ${cppName} = ${initializerCpp};`,
+                sharedDataBinding
+                    ? `auto ${cppName} = std::make_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp});`
+                    : `${this.dataTypes.cppType(annotated)} ${cppName} = ${initializerCpp};`,
             );
         }
         if (
@@ -2637,12 +3193,12 @@ class Compiler
             isNeverResized(declaration.name)
         ) {
             this.dataLowerer.registerFixedLength(
-                cppName,
+                boundCpp,
                 initializer.elements.length,
             );
         }
         this.dataLowerer.registerLocal(
-            cppName,
+            boundCpp,
             (annotated.kind === "struct" &&
                 this.dataTypes.isReferenceStruct(annotated.name)) ||
                 ts.isCallExpression(initializer) ||
@@ -2652,8 +3208,11 @@ class Compiler
                 ? "owned"
                 : "copy",
         );
-        const staticRecordProperties: Record<string, Value> = {};
+        const staticRecordProperties: Record<string, Value> = {
+            ...(literalSnapshot?.recordProperties ?? {}),
+        };
         if (
+            Object.keys(staticRecordProperties).length === 0 &&
             annotated.kind === "struct" &&
             ts.isObjectLiteralExpression(initializer)
         ) {
@@ -2674,7 +3233,7 @@ class Compiler
         }
         this.defineVariable(declaration.name as ts.Identifier, {
             kind: "data",
-            cpp: cppName,
+            cpp: boundCpp,
             dataType: annotated,
             ...(annotated.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&
@@ -2683,7 +3242,9 @@ class Compiler
                 : Object.keys(staticRecordProperties).length > 0
                 ? { recordProperties: staticRecordProperties }
                 : {}),
-            ...(staticElements ? { staticElements } : {}),
+            ...(staticElements && !sharedDataBinding
+                ? { staticElements }
+                : {}),
         });
         return true;
     }
@@ -2815,7 +3376,7 @@ class Compiler
     }
 
     /** A non-literal inferred struct needs storage only when its binding changes. */
-    private inferredObjectIsRebound(identifier: ts.Identifier): boolean {
+    private identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) return false;
         let rebound = false;
@@ -2823,7 +3384,8 @@ class Compiler
             if (rebound) return;
             if (
                 ts.isBinaryExpression(node) &&
-                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
                 ts.isIdentifier(node.left) &&
                 this.symbols.valueSymbol(node.left) === symbol
             ) {
@@ -3363,6 +3925,17 @@ class Compiler
         ) {
             return;
         }
+        const left = this.unwrap(expression.left);
+        if (
+            expression.operatorToken.kind ===
+                ts.SyntaxKind.EqualsToken &&
+            ts.isPropertyAccessExpression(left) &&
+            this.resolveRecordValue(left.expression)
+                ?.recordSetters?.[left.name.text]
+        ) {
+            emitPropertyAssignment(this, expression);
+            return;
+        }
         if (this.dataLowerer.emitAssignment(expression)) {
             return;
         }
@@ -3377,22 +3950,95 @@ class Compiler
         expression: ts.Expression,
     ): Value | undefined {
         const owner = this.unwrap(expression);
+        const asElement = (
+            value: Value | undefined,
+        ): Value | undefined => {
+            const storedMetadata = value
+                ? this.uiElementMetadataByDataStorage.get(value.cpp) ??
+                  (value.optionalStorageCpp
+                      ? this.uiElementMetadataByDataStorage.get(
+                            value.optionalStorageCpp,
+                        )
+                      : undefined)
+                : undefined;
+            const trackedTag = value
+                ? value.uiTag ??
+                  storedMetadata?.tag
+                : undefined;
+            const trackedId = value
+                ? value.uiStaticId ??
+                  storedMetadata?.staticId
+                : undefined;
+            const withTrackedTag = (element: Value): Value =>
+                (trackedTag !== undefined &&
+                    element.uiTag === undefined) ||
+                (trackedId !== undefined &&
+                    element.uiStaticId === undefined)
+                    ? {
+                          ...element,
+                          ...(trackedTag === undefined ||
+                          element.uiTag !== undefined
+                              ? {}
+                              : { uiTag: trackedTag }),
+                          ...(trackedId === undefined ||
+                          element.uiStaticId !== undefined
+                              ? {}
+                              : { uiStaticId: trackedId }),
+                      }
+                    : element;
+            if (value?.kind === "ui-element") {
+                return withTrackedTag(value);
+            }
+            if (value?.kind !== "data" || !value.dataType) {
+                return undefined;
+            }
+            const narrowed = this.dataLowerer.narrowOptional(
+                value,
+                owner,
+            );
+            if (narrowed.kind === "ui-element") {
+                return withTrackedTag(narrowed);
+            }
+            if (
+                value.dataType.kind !== "optional" ||
+                value.dataType.inner.kind !== "handle" ||
+                value.dataType.inner.handle !== "ui-element"
+            ) {
+                return undefined;
+            }
+            return withTrackedTag({
+                ...value,
+                kind: "ui-element",
+                cpp: `(*${value.cpp})`,
+                dataType: value.dataType.inner,
+                optionalFoundCpp:
+                    value.optionalFoundCpp ??
+                    `${value.cpp}.has_value()`,
+                ...(value.engineCpp ?? this.defaultEngineCpp
+                    ? {
+                          engineCpp:
+                              value.engineCpp ??
+                              this.defaultEngineCpp!,
+                      }
+                    : {}),
+            });
+        };
         if (ts.isIdentifier(owner)) {
-            const value = this.lookupOptional(owner);
-            return value?.kind === "ui-element" ? value : undefined;
+            return asElement(this.lookupOptional(owner));
         }
         if (
             ts.isPropertyAccessExpression(owner) &&
             owner.expression.kind === ts.SyntaxKind.ThisKeyword
         ) {
-            const value = this.resolveThisField(owner.name.text);
-            return value?.kind === "ui-element" ? value : undefined;
+            return asElement(
+                this.resolveThisField(owner.name.text),
+            );
         }
         if (ts.isPropertyAccessExpression(owner)) {
             const value =
                 this.resolveRecordMember(owner) ??
                 this.dataLowerer.compileDataPath(owner, "read");
-            return value?.kind === "ui-element" ? value : undefined;
+            return asElement(value);
         }
         if (ts.isCallExpression(owner)) {
             const callee = this.unwrap(owner.expression);
@@ -3412,7 +4058,8 @@ class Compiler
     private uiCreatedElementTag(
         expression: ts.Expression,
     ): string | undefined {
-        const direct = this.uiElementValue(expression)?.uiTag;
+        const resolvedElement = this.uiElementValue(expression);
+        const direct = resolvedElement?.uiTag;
         if (direct) return direct;
         const owner = this.unwrap(expression);
         if (!ts.isIdentifier(owner)) return undefined;
@@ -3424,17 +4071,80 @@ class Compiler
         ) {
             return undefined;
         }
-        const initializer = this.unwrap(declaration.initializer);
-        if (
-            !ts.isCallExpression(initializer) ||
-            !ts.isPropertyAccessExpression(initializer.expression) ||
-            initializer.expression.name.text !== "createElement" ||
-            initializer.arguments.length !== 1
-        ) {
-            return undefined;
-        }
-        const tag = this.tryUiStaticString(initializer.arguments[0]!);
+        return this.uiCreationTag(declaration.initializer);
+    }
+
+    private uiCreationTag(
+        expression: ts.Expression,
+    ): string | undefined {
+        const creation = this.uiCreationCall(expression);
+        const tag = creation
+            ? this.tryUiStaticString(creation.arguments[0]!)
+            : undefined;
         return tag?.toLowerCase();
+    }
+
+    private uiCreationCall(
+        expression: ts.Expression,
+    ): ts.CallExpression | undefined {
+        const initializer = this.unwrap(expression);
+        return ts.isCallExpression(initializer) &&
+            ts.isPropertyAccessExpression(initializer.expression) &&
+            initializer.expression.name.text === "createElement" &&
+            initializer.arguments.length === 1
+            ? initializer
+            : undefined;
+    }
+
+    public recordDataAssignmentMetadata(
+        target: Value,
+        source: ts.Expression,
+    ): void {
+        const dataType = target.dataType;
+        const storedType =
+            dataType?.kind === "optional"
+                ? dataType.inner
+                : dataType;
+        if (
+            storedType?.kind !== "handle" ||
+            storedType.handle !== "ui-element"
+        ) {
+            return;
+        }
+        const tag =
+            this.uiCreationTag(source) ??
+            this.uiCreatedElementTag(source);
+        if (!tag) return;
+        const creation = this.uiCreationCall(source);
+        const staticId = creation
+            ? this.uiStaticIdsByCreation.get(creation)
+            : undefined;
+        const keys = [
+            target.cpp,
+            target.optionalStorageCpp,
+        ].filter((key): key is string => key !== undefined);
+        for (const key of keys) {
+            const existing =
+                this.uiElementMetadataByDataStorage.get(key);
+            if (existing !== undefined && existing.tag !== tag) {
+                this.fail(
+                    source,
+                    `Nullable retained UI storage cannot hold both <${existing.tag}> and <${tag}> elements.`,
+                );
+            }
+            const retainedStaticId =
+                staticId ?? existing?.staticId;
+            this.uiElementMetadataByDataStorage.set(key, {
+                tag,
+                ...(retainedStaticId === undefined
+                    ? {}
+                    : { staticId: retainedStaticId }),
+            });
+        }
+        target.uiTag = tag;
+        if (staticId !== undefined) {
+            target.uiStaticId = staticId;
+        }
     }
 
     /** Whether an expression is already known to produce retained UI state. */
@@ -3602,6 +4312,342 @@ class Compiler
         );
     }
 
+    private createUiStaticElement(tag: string): number {
+        const id = this.uiElementIds++;
+        this.uiStaticElements.set(id, {
+            tag,
+            classAlternatives: [new Set()],
+            classMayMutateDynamically: false,
+            ids: new Set(),
+            children: new Set(),
+            markupChildren: [],
+            styles: [""],
+            styleShapeKnown: true,
+            styleMayMutateDynamically: false,
+            mutableClasses: new Set(),
+            classShapeKnown: true,
+            childCardinalityKnown: true,
+            childShapeKnown: true,
+        });
+        return id;
+    }
+
+    private uiStaticElement(value: Value): UiStaticElement | undefined {
+        return value.uiStaticId === undefined
+            ? undefined
+            : this.uiStaticElements.get(value.uiStaticId);
+    }
+
+    private uiStringCandidates(
+        expression: ts.Expression,
+        budget = 32,
+    ): string[] | undefined {
+        const exact = this.tryUiStaticString(expression);
+        if (exact !== undefined) return [exact];
+        const value = this.unwrap(expression);
+        if (ts.isConditionalExpression(value)) {
+            const whenTrue = this.uiStringCandidates(value.whenTrue, budget);
+            const whenFalse = this.uiStringCandidates(value.whenFalse, budget);
+            if (!whenTrue || !whenFalse) return undefined;
+            return [...new Set([...whenTrue, ...whenFalse])].slice(0, budget);
+        }
+        if (
+            ts.isBinaryExpression(value) &&
+            value.operatorToken.kind === ts.SyntaxKind.PlusToken
+        ) {
+            const left = this.uiStringCandidates(value.left, budget);
+            const right = this.uiStringCandidates(value.right, budget);
+            if (!left || !right || left.length * right.length > budget) {
+                return undefined;
+            }
+            return left.flatMap((prefix) =>
+                right.map((suffix) => prefix + suffix),
+            );
+        }
+        return undefined;
+    }
+
+    private static uiClassSetKey(classes: ReadonlySet<string>): string {
+        return [...classes].sort().join("\u0000");
+    }
+
+    private setUiClassAlternatives(
+        element: UiStaticElement,
+        alternatives: readonly ReadonlySet<string>[],
+    ): void {
+        const unique = new Map<string, Set<string>>();
+        for (const alternative of alternatives) {
+            const stored = new Set(alternative);
+            unique.set(Compiler.uiClassSetKey(stored), stored);
+        }
+        if (unique.size > 32) {
+            element.classShapeKnown = false;
+            return;
+        }
+        element.classAlternatives = [...unique.values()];
+    }
+
+    private recordUiStaticAttribute(
+        value: Value,
+        name: string,
+        expression: ts.Expression,
+    ): void {
+        const element = this.uiStaticElement(value);
+        const candidates = this.uiStringCandidates(expression);
+        if (!element || !candidates) {
+            this.uiUnknownAttributeMutations.push({
+                attribute: name as "class" | "id",
+                ...(value.uiStaticId === undefined
+                    ? {}
+                    : { targetId: value.uiStaticId }),
+                site: expression,
+            });
+        }
+        if (!element) return;
+        if (name === "class") {
+            if (!candidates) {
+                element.classShapeKnown = false;
+                return;
+            }
+            const alternatives: Set<string>[] = [];
+            for (const candidate of candidates) {
+                const classes = new Set<string>();
+                for (const token of candidate.split(/\s+/).filter(Boolean)) {
+                    if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(token)) {
+                        classes.add(token);
+                    } else {
+                        element.classShapeKnown = false;
+                    }
+                }
+                alternatives.push(classes);
+            }
+            const dynamic = this.uiStaticMutationIsDynamic();
+            if (dynamic) element.classMayMutateDynamically = true;
+            this.setUiClassAlternatives(
+                element,
+                dynamic || element.classMayMutateDynamically
+                    ? [...element.classAlternatives, ...alternatives]
+                    : alternatives,
+            );
+        } else if (name === "id") {
+            if (!candidates) return;
+            for (const candidate of candidates) {
+                if (/^[A-Za-z_][A-Za-z0-9_-]*$/.test(candidate)) {
+                    element.ids.add(candidate);
+                }
+            }
+        }
+    }
+
+    private recordUiStaticClass(
+        value: Value,
+        name: string,
+        method: "add" | "remove" | "toggle",
+        enabled: string,
+    ): void {
+        const element = this.uiStaticElement(value);
+        if (!element) return;
+        if (this.uiStaticMutationIsDynamic()) {
+            element.classMayMutateDynamically = true;
+        }
+        element.mutableClasses.add(name);
+        const alternatives: Set<string>[] = [...element.classAlternatives];
+        for (const current of element.classAlternatives) {
+            const mutate = (add: boolean): void => {
+                const next = new Set(current);
+                if (add) next.add(name);
+                else next.delete(name);
+                alternatives.push(next);
+            };
+            if (method === "add" || (method === "toggle" && enabled === "true")) {
+                mutate(true);
+            } else if (
+                method === "remove" ||
+                (method === "toggle" && enabled === "false")
+            ) {
+                mutate(false);
+            } else {
+                mutate(true);
+                mutate(false);
+            }
+        }
+        this.setUiClassAlternatives(element, alternatives);
+    }
+
+    private recordUiStaticStyles(
+        element: UiStaticElement,
+        styles: readonly string[],
+    ): void {
+        const wasKnown = element.styleShapeKnown;
+        const currentMutationIsDynamic =
+            this.uiStaticMutationIsDynamic();
+        if (currentMutationIsDynamic) {
+            element.styleMayMutateDynamically = true;
+        }
+        const mayReplaceLater =
+            currentMutationIsDynamic ||
+            element.styleMayMutateDynamically;
+        element.styles = mayReplaceLater
+            ? [...new Set([...element.styles, ...styles])]
+            : [...new Set(styles)];
+        element.styleShapeKnown = mayReplaceLater ? wasKnown : true;
+    }
+
+    private recordUiStaticStyle(value: Value, style: string): void {
+        const element = this.uiStaticElement(value);
+        if (!element) return;
+        this.recordUiStaticStyles(element, [style]);
+    }
+
+    private recordUiUnknownStaticStyle(value: Value): void {
+        const element = this.uiStaticElement(value);
+        if (!element) return;
+        if (this.uiStaticMutationIsDynamic()) {
+            element.styleMayMutateDynamically = true;
+        }
+        element.styleShapeKnown = false;
+    }
+
+    private static uiStyleWithProperty(
+        style: string,
+        name: string,
+        value: string,
+    ): string {
+        const declarations: string[] = [];
+        Compiler.forEachUiStyleDeclaration(style, (declaration) => {
+            const colon = declaration.indexOf(":");
+            if (
+                colon < 0 ||
+                declaration.slice(0, colon).trim().toLowerCase() !== name
+            ) {
+                if (declaration.trim()) declarations.push(declaration);
+            }
+        });
+        declarations.push(`${name}:${value}`);
+        return declarations.join(";");
+    }
+
+    private recordUiStaticStyleProperty(
+        value: Value,
+        name: string,
+        expression: ts.Expression,
+    ): void {
+        const element = this.uiStaticElement(value);
+        if (!element) return;
+        const staticValue = this.tryUiStaticString(expression);
+        const updated = element.styles.map((style) =>
+            Compiler.uiStyleWithProperty(
+                style,
+                name,
+                staticValue ?? "__bbl_dynamic_style_value__",
+            ),
+        );
+        const currentMutationIsDynamic =
+            this.uiStaticMutationIsDynamic();
+        if (currentMutationIsDynamic) {
+            element.styleMayMutateDynamically = true;
+        }
+        element.styles =
+            currentMutationIsDynamic ||
+            element.styleMayMutateDynamically
+            ? [...new Set([...element.styles, ...updated])]
+            : [...new Set(updated)];
+    }
+
+    private recordUiStaticAppend(parent: Value, child: Value): void {
+        const parentElement = this.uiStaticElement(parent);
+        if (!parentElement) return;
+        if (child.uiStaticId === undefined) {
+            parentElement.childCardinalityKnown = false;
+            parentElement.childShapeKnown = false;
+            return;
+        }
+        if (this.uiStaticMutationIsDynamic()) {
+            parentElement.children.add(child.uiStaticId);
+            parentElement.childCardinalityKnown = false;
+            for (const element of this.uiStaticElements.values()) {
+                if (element.children.has(child.uiStaticId)) {
+                    element.childCardinalityKnown = false;
+                }
+            }
+            return;
+        }
+        for (const element of this.uiStaticElements.values()) {
+            element.children.delete(child.uiStaticId);
+        }
+        parentElement.children.add(child.uiStaticId);
+    }
+
+    private recordUiStaticReplaceChildren(parent: Value): void {
+        const element = this.uiStaticElement(parent);
+        if (!element) return;
+        if (this.uiStaticMutationIsDynamic()) {
+            element.childCardinalityKnown = false;
+            return;
+        }
+        element.children.clear();
+        element.markupChildren = [];
+    }
+
+    private uiStaticMutationIsDynamic(): boolean {
+        return this.runtimeControlFlowDepth > 0 || this.frameCallbackDepth > 0;
+    }
+
+    private recordUiStaticRootAppend(child: Value): void {
+        const id = child.uiStaticId;
+        const element = this.uiStaticElement(child);
+        if (
+            id === undefined ||
+            !element ||
+            this.uiStaticMutationIsDynamic()
+        ) {
+            if (!element || element.tag === "style") {
+                this.uiStaticStyleCascadeKnown = false;
+            }
+            return;
+        }
+        const previous = this.uiStaticRootOrder.indexOf(id);
+        if (previous >= 0) this.uiStaticRootOrder.splice(previous, 1);
+        this.uiStaticRootOrder.push(id);
+    }
+
+    private recordUiStaticRemoval(element: Value): void {
+        const id = element.uiStaticId;
+        const staticElement = this.uiStaticElement(element);
+        if (
+            id === undefined ||
+            !staticElement
+        ) {
+            if (!staticElement || staticElement.tag === "style") {
+                this.uiStaticStyleCascadeKnown = false;
+            }
+            return;
+        }
+        const dynamic = this.uiStaticMutationIsDynamic();
+        for (const parent of this.uiStaticElements.values()) {
+            if (!parent.children.has(id)) continue;
+            if (dynamic) parent.childCardinalityKnown = false;
+            else parent.children.delete(id);
+        }
+        if (dynamic) {
+            if (staticElement.tag === "style") {
+                this.uiStaticStyleCascadeKnown = false;
+            }
+            return;
+        }
+        const rootIndex = this.uiStaticRootOrder.indexOf(id);
+        if (rootIndex >= 0) this.uiStaticRootOrder.splice(rootIndex, 1);
+    }
+
+    private recordUiStaticMarkup(
+        ownerId: number | undefined,
+        children: UiStaticMarkupNode[],
+    ): void {
+        if (ownerId === undefined) return;
+        const owner = this.uiStaticElements.get(ownerId);
+        if (owner) owner.markupChildren.push(...children);
+    }
+
     /**
      * The reviewed retained-UI style surface (AP-3). Every property here was
      * reached by the pinned applications, the audited host companions, or the
@@ -3637,7 +4683,9 @@ class Compiler
         "margin",
         "margin-bottom",
         "margin-top",
+        "max-height",
         "max-width",
+        "min-height",
         "min-width",
         "opacity",
         "overflow",
@@ -3663,6 +4711,7 @@ class Compiler
      * retained canvas commands already carry per blit.
      */
     private static readonly INERT_UI_STYLE_PROPERTIES = new Set<string>([
+        "-webkit-user-select",
         "image-rendering",
         "touch-action",
         "user-select",
@@ -3683,6 +4732,15 @@ class Compiler
         "box-shadow",
         "font-variant-numeric",
     ]);
+
+    private static insetOutlineBorder(value: string): string | undefined {
+        const match = value.match(
+            /^inset\s+0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+([0-9]+(?:\.[0-9]*)?px)\s+(.+)$/i,
+        );
+        return match
+            ? `${match[1]} ${match[2]!.trim()}`
+            : undefined;
+    }
 
     /**
      * Properties consumed by the gradient-text projection (the reached
@@ -3708,6 +4766,54 @@ class Compiler
     /** The reached CSS-grid combination the block projection lowers. */
     private static readonly GRID_TEMPLATE_COLUMNS_PATTERN =
         /\bgrid-template-columns\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
+    private static readonly GRID_TEMPLATE_ROWS_PATTERN =
+        /\bgrid-template-rows\s*:\s*repeat\(\s*(\d+)\s*,\s*([0-9]+(?:\.[0-9]*)?)px\s*\)\s*;?/i;
+    private static readonly GRID_GAP_PATTERN =
+        /(?:^|;)\s*gap\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*(?:;|$)/i;
+    private static readonly UI_GRID_CHILD_GEOMETRY_PROPERTIES = [
+        "width",
+        "height",
+        "min-width",
+        "max-width",
+        "min-height",
+        "max-height",
+        "margin",
+        "margin-left",
+        "margin-right",
+        "margin-top",
+        "margin-bottom",
+        "padding",
+        "padding-left",
+        "padding-right",
+        "padding-top",
+        "padding-bottom",
+        "border",
+        "border-width",
+        "border-left-width",
+        "border-right-width",
+        "border-top-width",
+        "border-bottom-width",
+        "box-sizing",
+    ] as const;
+    private static readonly UI_GRID_CHILD_SPACING_PROPERTIES =
+        Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES.filter(
+            (property) =>
+                property === "margin" ||
+                property.startsWith("margin-") ||
+                property === "padding" ||
+                property.startsWith("padding-"),
+        );
+    private static readonly UI_GRID_CHILD_BORDER_WIDTH_PROPERTIES =
+        Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES.filter(
+            (property) =>
+                property === "border-width" ||
+                /^border-(?:left|right|top|bottom)-width$/.test(
+                    property,
+                ),
+        );
+    private static readonly UI_IMPLEMENTATION_TAGS = new Set([
+        "bbl-grid-children",
+    ]);
 
     /** The gradient-text projection trigger both the audit and the
      *  projection test on one declaration list. */
@@ -3723,6 +4829,29 @@ class Compiler
     private static readonly DISPLAY_GRID_PATTERN =
         /\bdisplay\s*:\s*grid\b/i;
 
+    private static uiLastStyleProperty(
+        declarations: string,
+        property: string,
+    ): string | undefined {
+        let result: string | undefined;
+        Compiler.forEachUiStyleDeclaration(
+            declarations,
+            (declaration) => {
+                const colon = declaration.indexOf(":");
+                if (
+                    colon >= 0 &&
+                    declaration
+                        .slice(0, colon)
+                        .trim()
+                        .toLowerCase() === property
+                ) {
+                    result = declaration.slice(colon + 1).trim();
+                }
+            },
+        );
+        return result;
+    }
+
     /** The grid projection's pairing rule, stated once for the audit and
      *  the projection: `display:grid` lowers only beside the reached
      *  `grid-template-columns:repeat(N, px)` form in the same list. */
@@ -3731,6 +4860,107 @@ class Compiler
             Compiler.DISPLAY_GRID_PATTERN.test(declarations) &&
             Compiler.GRID_TEMPLATE_COLUMNS_PATTERN.test(declarations)
         );
+    }
+
+    private static normalizeUiGridJustification(
+        value: string | undefined,
+    ): "start" | "center" | "end" | undefined {
+        const normalized = value?.trim().toLowerCase();
+        if (
+            normalized === undefined ||
+            normalized === "normal" ||
+            normalized === "start" ||
+            normalized === "flex-start" ||
+            normalized === "left"
+        ) {
+            return "start";
+        }
+        if (normalized === "center") return "center";
+        if (
+            normalized === "end" ||
+            normalized === "flex-end" ||
+            normalized === "right"
+        ) {
+            return "end";
+        }
+        return undefined;
+    }
+
+    private static uiGridProjection(
+        declarations: string,
+    ): UiGridProjection | undefined {
+        if (!Compiler.projectsUiGrid(declarations)) return undefined;
+        const columnsValue = Compiler.uiLastStyleProperty(
+            declarations,
+            "grid-template-columns",
+        );
+        const columns = columnsValue
+            ? `grid-template-columns:${columnsValue};`.match(
+                  Compiler.GRID_TEMPLATE_COLUMNS_PATTERN,
+              )
+            : undefined;
+        if (!columns) return undefined;
+        const count = Number(columns[1]);
+        const cellWidth = Number(columns[2]);
+        const gapValue = Compiler.uiLastStyleProperty(
+            declarations,
+            "gap",
+        );
+        const gapMatch = gapValue
+            ? `gap:${gapValue};`.match(
+                  Compiler.GRID_GAP_PATTERN,
+              )
+            : undefined;
+        if (gapValue !== undefined && !gapMatch) return undefined;
+        const gap = Number(gapMatch?.[1] ?? "0");
+        const rowsValue = Compiler.uiLastStyleProperty(
+            declarations,
+            "grid-template-rows",
+        );
+        const rows = rowsValue
+            ? `grid-template-rows:${rowsValue};`.match(
+                  Compiler.GRID_TEMPLATE_ROWS_PATTERN,
+              )
+            : undefined;
+        if (rowsValue !== undefined && !rows) return undefined;
+        const rowCount = rows ? Number(rows[1]) : undefined;
+        const rowHeight = rows ? Number(rows[2]) : undefined;
+        const authoredJustification = Compiler.uiLastStyleProperty(
+            declarations,
+            "justify-content",
+        )
+            ?.trim()
+            .toLowerCase();
+        const justifyContent =
+            Compiler.normalizeUiGridJustification(
+                authoredJustification,
+            );
+        if (
+            !Number.isInteger(count) ||
+            count < 1 ||
+            !Number.isFinite(cellWidth) ||
+            cellWidth <= 0 ||
+            !Number.isFinite(gap) ||
+            gap < 0 ||
+            (rowCount !== undefined &&
+                (!Number.isInteger(rowCount) || rowCount < 1)) ||
+            (rowHeight !== undefined &&
+                (!Number.isFinite(rowHeight) || rowHeight <= 0)) ||
+            justifyContent === undefined
+        ) {
+            return undefined;
+        }
+        return {
+            columns: count,
+            cellWidth,
+            gap,
+            width: count * cellWidth + Math.max(0, count - 1) * gap,
+            ...(authoredJustification === undefined
+                ? {}
+                : { authoredJustifyContent: justifyContent }),
+            ...(rowCount === undefined ? {} : { rowCount }),
+            ...(rowHeight === undefined ? {} : { rowHeight }),
+        };
     }
 
     /**
@@ -3795,16 +5025,45 @@ class Compiler
     public readonly uiDegradedStyleProperties = new Set<string>();
 
     /**
-     * Reviewed `#id .class` sheet selectors this scene projects as global
-     * class rules, recorded in the `substituted-ui-runtime` adaptation.
+     * Reviewed scoped selectors retained in typed form instead of widened to
+     * global rules, recorded in the `substituted-ui-runtime` adaptation.
      */
-    public readonly uiWidenedSheetSelectors = new Set<string>();
+    public readonly uiScopedSheetSelectors = new Set<string>();
 
-    /** Sheet rule targets seen so far, for widened-selector collisions. */
-    private readonly uiSheetRuleTargets = new Map<
+    /** Fixed-grid shapes structurally projected through wrapping flex. */
+    public readonly uiGridSubstitutions = new Set<string>();
+    /** True even if a later stylesheet assignment replaces the grid rules. */
+    private uiSawGridDeclaration = false;
+
+    /** Every compiler-validated author rule, retained for static proofs. */
+    private readonly uiStyleRules: LoweredUiStyleRule[] = [];
+
+    /** Construction-site topology used only to prove bounded DOM projections. */
+    private readonly uiStaticElements = new Map<number, UiStaticElement>();
+    /** Static element metadata assigned into nullable UI-handle storage. */
+    private readonly uiElementMetadataByDataStorage = new Map<
         string,
-        { selector: string; style: string; widened: boolean }
+        { tag: string; staticId?: number }
     >();
+    /** Most recently lowered identity for a createElement expression. */
+    private readonly uiStaticIdsByCreation = new WeakMap<
+        ts.CallExpression,
+        number
+    >();
+    private readonly uiPendingClassQueries: UiPendingClassQuery[] = [];
+    private readonly uiUnknownClassMutations: UiUnknownClassMutation[] = [];
+    private readonly uiUnknownAttributeMutations: UiUnknownAttributeMutation[] =
+        [];
+    /** Final direct-document order for statically sequenced root mutations. */
+    private readonly uiStaticRootOrder: number[] = [];
+    private uiValidation: UiValidationState | undefined;
+    /**
+     * False once a stylesheet attachment or contents mutation can execute on
+     * a path generation cannot order. A fixed-grid proof may not guess which
+     * cascade the browser will expose.
+     */
+    private uiStaticStyleCascadeKnown = true;
+    private uiElementIds = 0;
 
     /**
      * Logical sizes that reached `scale()` calls map exactly onto a retained
@@ -3866,6 +5125,78 @@ class Compiler
         const hasGradientBackground =
             Compiler.GRADIENT_TEXT_BACKGROUND_PATTERN.test(value);
         const projectsGrid = Compiler.projectsUiGrid(value);
+        const gridProjection = Compiler.uiGridProjection(value);
+        const finalDisplay = Compiler.uiLastStyleProperty(
+            value,
+            "display",
+        )
+            ?.trim()
+            .toLowerCase();
+        const gridJustification = Compiler.uiLastStyleProperty(
+            value,
+            "justify-content",
+        )
+            ?.trim()
+            .toLowerCase();
+        if (projectsGrid && finalDisplay !== "grid") {
+            this.uiStyleRefusal(
+                site,
+                "display",
+                "conflicting display declarations in one fixed-grid rule are ambiguous; put the reset in a separate cascade rule",
+            );
+        }
+        if (
+            projectsGrid &&
+            gridJustification !== undefined &&
+            !/^(?:normal|start|flex-start|left|center|end|flex-end|right)$/.test(
+                gridJustification,
+            )
+        ) {
+            this.uiStyleRefusal(
+                site,
+                "justify-content",
+                `the fixed-grid substitution supports start, center, and end track alignment, not '${gridJustification}'`,
+            );
+        }
+        if (projectsGrid && !gridProjection) {
+            this.uiStyleRefusal(
+                site,
+                "grid-template-columns",
+                "the fixed-grid substitution requires repeat(a positive integer, a positive px width) and a non-negative px gap",
+            );
+        }
+        if (
+            projectsGrid &&
+            Compiler.uiLastStyleProperty(value, "gap") !== undefined &&
+            !/^([0-9]+(?:\.[0-9]*)?)px$/i.test(
+                Compiler.uiLastStyleProperty(value, "gap")!,
+            )
+        ) {
+            this.uiStyleRefusal(
+                site,
+                "gap",
+                "the fixed-grid substitution requires a static non-negative px gap",
+            );
+        }
+        if (
+            projectsGrid &&
+            Compiler.uiLastStyleProperty(
+                value,
+                "grid-template-rows",
+            ) !== undefined &&
+            !/^repeat\(\s*\d+\s*,\s*[0-9]+(?:\.[0-9]*)?px\s*\)$/i.test(
+                Compiler.uiLastStyleProperty(
+                    value,
+                    "grid-template-rows",
+                )!,
+            )
+        ) {
+            this.uiStyleRefusal(
+                site,
+                "grid-template-rows",
+                "the optional fixed row template must be repeat(integer, px)",
+            );
+        }
         Compiler.forEachUiStyleDeclaration(value, (declaration) => {
             const colon = declaration.indexOf(":");
             if (colon < 0) {
@@ -3893,9 +5224,23 @@ class Compiler
                 this.uiDegradedStyleProperties.add(property);
                 return;
             }
+            if (
+                property === "box-shadow" &&
+                Compiler.insetOutlineBorder(literalValue) !== undefined
+            ) {
+                return;
+            }
             if (Compiler.DEGRADED_UI_STYLE_PROPERTIES.has(property)) {
                 this.uiDegradedStyleProperties.add(property);
                 return;
+            }
+            if (property === "outline") {
+                if (literalValue === "none") return;
+                this.uiStyleRefusal(
+                    site,
+                    property,
+                    "only outline:none is inert under RmlUi's focus styling",
+                );
             }
             if (Compiler.INERT_UI_STYLE_PROPERTIES.has(property)) return;
             if (
@@ -3951,7 +5296,16 @@ class Compiler
                 property === "grid-template-columns" ||
                 property === "grid-template-rows"
             ) {
-                if (!projectsGrid) {
+                if (
+                    !projectsGrid ||
+                    (property === "grid-template-rows" &&
+                        !/^repeat\(\s*\d+\s*,\s*[0-9]+(?:\.[0-9]*)?px\s*\)$/i.test(
+                            Compiler.uiLastStyleProperty(
+                                value,
+                                "grid-template-rows",
+                            ) ?? "",
+                        ))
+                ) {
                     this.uiStyleRefusal(
                         site,
                         property,
@@ -4383,7 +5737,17 @@ class Compiler
             // browser background shorthand used by the reached HUDs.
             .replace(/\bbackground\s*:/gi, "background-color:")
             .replace(/\bbackdrop-filter\s*:[^;]*;?/gi, "")
-            .replace(/\bbox-shadow\s*:[^;]*;?/gi, "")
+            .replace(
+                /\bbox-shadow\s*:\s*([^;]+)\s*;?/gi,
+                (_match, shadow) => {
+                    const border = Compiler.insetOutlineBorder(
+                        String(shadow).trim(),
+                    );
+                    return border
+                        ? `--bbl-inset-outline:${border};`
+                        : "";
+                },
+            )
             .replace(/\bmix-blend-mode\s*:[^;]*;?/gi, "")
             // RmlUi's border shorthand is `width color`; it deliberately
             // omits CSS border-style because every non-zero border is solid.
@@ -4445,23 +5809,33 @@ class Compiler
         // those boxes separate matters: in the browser the Tetris preview's
         // background spans the panel while only its 4x4 cells are centred.
         if (Compiler.projectsUiGrid(lowered)) {
-            const gridColumns = lowered.match(
-                Compiler.GRID_TEMPLATE_COLUMNS_PATTERN,
-            )!;
-            const count = Number(gridColumns[1]);
-            const cell = Number(gridColumns[2]);
-            const gap = Number(
-                lowered.match(/\bgap\s*:\s*([0-9]+(?:\.[0-9]*)?)px/i)?.[1] ??
-                    "0",
-            );
-            const width = count * cell + Math.max(0, count - 1) * gap;
+            this.uiSawGridDeclaration = true;
+            const grid = Compiler.uiGridProjection(lowered)!;
+            const shrinkToTracks =
+                /\bposition\s*:\s*absolute\b/i.test(lowered) &&
+                !/(?:^|;)\s*width\s*:/i.test(lowered) &&
+                (/(?:^|;)\s*left\s*:/i.test(lowered) !==
+                    /(?:^|;)\s*right\s*:/i.test(lowered));
             lowered = lowered
                 .replace(/\bdisplay\s*:\s*grid\b/gi, "display:block")
                 .replace(/\bgrid-template-columns\s*:[^;]+;?/gi, "")
                 .replace(/\bgrid-template-rows\s*:[^;]+;?/gi, "")
                 .replace(/\bgap\s*:[^;]+;?/gi, "")
-                .replace(/\bjustify-content\s*:\s*center\s*;?/gi, "") +
-                `;--bbl-grid-width:${width}px;--bbl-grid-gap:${gap}px;`;
+                .replace(/\bjustify-content\s*:[^;]+;?/gi, "") +
+                (shrinkToTracks ? `;width:${grid.width}px` : "") +
+                `;--bbl-grid-columns:${grid.columns};` +
+                `--bbl-grid-cell-width:${grid.cellWidth}px;` +
+                `--bbl-grid-width:${grid.width}px;` +
+                `--bbl-grid-gap:${grid.gap}px;` +
+                (grid.authoredJustifyContent === undefined
+                    ? ""
+                    : `--bbl-grid-justify-content:${grid.authoredJustifyContent};`) +
+                (grid.rowHeight === undefined
+                    ? ""
+                    : `--bbl-grid-row-height:${grid.rowHeight}px;`) +
+                (grid.rowCount === undefined
+                    ? ""
+                    : `--bbl-grid-row-count:${grid.rowCount};`);
         }
 
         if (/\bposition\s*:\s*absolute\b/i.test(lowered)) {
@@ -4475,8 +5849,7 @@ class Compiler
                 // max-content size. Start from the authored minimum and leave
                 // generic measurement metadata for the retained PAL pass.
                 lowered +=
-                    `;width:${minimum};` +
-                    `--bbl-intrinsic-min-width:${minimum};`;
+                    `;--bbl-intrinsic-min-width:${minimum};`;
             } else if (
                 !hasWidth &&
                 !minimum &&
@@ -4554,106 +5927,1619 @@ class Compiler
     }
 
     /**
-     * The reviewed `<style>` sheet surface (AP-4): exact `.class` and `#id`
-     * rules, the audited `#id .class` descendant form, and `@keyframes`
-     * blocks. A descendant rule is projected as a global class rule -- the
-     * retained IR carries no scoped rules -- which is sound for the reached
-     * sheets because they attach those classes only inside the id's own
-     * subtree; the projection is recorded per scene in the
-     * `substituted-ui-runtime` adaptation, and a second rule targeting the
-     * same class with a different body refuses because the global merge
-     * could not preserve the browser cascade. Any other selector refuses by
-     * name instead of silently skipping.
+     * Parse the bounded author-sheet surface into typed retained rules. RmlUi
+     * receives only selectors this parser names, so its selector engine
+     * evaluates hover and max-width state without making arbitrary browser CSS
+     * part of the generated runtime.
      */
     private lowerUiStyleSheetLiteral(
         value: string,
         site?: ts.Node,
-    ): Array<{
-        kind: "class" | "id";
-        name: string;
-        style: string;
-    }> {
-        const rules: Array<{
-            kind: "class" | "id";
-            name: string;
-            style: string;
-        }> = [];
+        ownerId?: number,
+    ): LoweredUiStyleRule[] {
+        if (
+            ownerId !== undefined &&
+            this.uiStaticMutationIsDynamic()
+        ) {
+            this.uiStaticStyleCascadeKnown = false;
+        }
+        if (ownerId !== undefined) {
+            for (let index = this.uiStyleRules.length - 1; index >= 0; index--) {
+                if (this.uiStyleRules[index]!.ownerId === ownerId) {
+                    this.uiStyleRules.splice(index, 1);
+                }
+            }
+        }
+        const rules: LoweredUiStyleRule[] = [];
         const refuseSelector = (selector: string): never => {
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
-                "lowered: the reviewed sheet surface is exact '.class' " +
-                "and '#id' rules, the '#id .class' descendant form " +
-                "(projected as a global class rule), and '@keyframes' " +
-                "blocks.";
+                "lowered: the reviewed sheet surface is exact '.class' and " +
+                "'#id' rules, '.classA.classB', statically-proven " +
+                "'.ancestor tag' (optionally ':hover'), '#id .class', " +
+                "'@media (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.fail(site, message);
             this.failAtFile(message);
         };
         const source = Compiler.stripUiKeyframesBlocks(
             value.replace(/\/\*[\s\S]*?\*\//g, ""),
         );
-        const blocks = /([^{}]+)\{([^{}]*)\}/g;
-        for (let match = blocks.exec(source); match; match = blocks.exec(source)) {
-            const style = this.lowerUiAttributeLiteral(
-                "style",
-                match[2]!.trim(),
-                site,
-            );
-            for (const rawSelector of match[1]!.split(",")) {
-                const selector = rawSelector.trim();
-                const exact = selector.match(
-                    /^([.#])([A-Za-z_][A-Za-z0-9_-]*)$/,
-                );
-                const descendant = selector.match(
-                    /^#[A-Za-z_][A-Za-z0-9_-]*\s+\.([A-Za-z_][A-Za-z0-9_-]*)$/,
-                );
-                if (!exact && !descendant) refuseSelector(selector);
-                const kind =
-                    exact && exact[1] === "#" ? "id" : ("class" as const);
-                const name = exact ? exact[2]! : descendant![1]!;
-                const widened = descendant !== null;
-                const key = `${kind}:${name}`;
-                const previous = this.uiSheetRuleTargets.get(key);
-                if (
-                    previous &&
-                    previous.style !== style &&
-                    (previous.widened || widened)
+
+        const parseBlocks = (
+            text: string,
+            inheritedMaxWidth?: number,
+        ): void => {
+            let cursor = 0;
+            while (cursor < text.length) {
+                while (
+                    cursor < text.length &&
+                    /[\s;]/.test(text[cursor]!)
                 ) {
-                    const message =
-                        `Retained stylesheet selectors '${previous.selector}' ` +
-                        `and '${selector}' both project onto the global ` +
-                        `${kind} rule '${name}' with different bodies; the ` +
-                        "widened projection cannot preserve the browser " +
-                        "cascade between them.";
-                    if (site) this.fail(site, message);
-                    this.failAtFile(message);
+                    cursor++;
                 }
-                this.uiSheetRuleTargets.set(key, {
-                    selector,
-                    style,
-                    widened:
-                        widened || (previous?.widened ?? false),
-                });
-                if (widened) this.uiWidenedSheetSelectors.add(selector);
-                if (!style) continue;
-                rules.push({ kind, name, style });
+                if (cursor >= text.length) break;
+                const opening = text.indexOf("{", cursor);
+                if (opening < 0) {
+                    refuseSelector(text.slice(cursor).trim());
+                }
+                const header = text.slice(cursor, opening).trim();
+                let quote = "";
+                let depth = 1;
+                let end = opening + 1;
+                for (; end < text.length && depth > 0; end++) {
+                    const character = text[end]!;
+                    if (quote) {
+                        if (character === quote && text[end - 1] !== "\\") {
+                            quote = "";
+                        }
+                    } else if (character === "'" || character === '"') {
+                        quote = character;
+                    } else if (character === "{") {
+                        depth++;
+                    } else if (character === "}") {
+                        depth--;
+                    }
+                }
+                if (depth !== 0) refuseSelector(header);
+                const body = text.slice(opening + 1, end - 1);
+                cursor = end;
+
+                if (/^@media\b/i.test(header)) {
+                    if (inheritedMaxWidth !== undefined) {
+                        refuseSelector(header);
+                    }
+                    const media = header.match(
+                        /^@media\s*\(\s*max-width\s*:\s*([0-9]+(?:\.[0-9]*)?)px\s*\)$/i,
+                    );
+                    const maxWidth = Number(media?.[1]);
+                    if (!media || !Number.isFinite(maxWidth) || maxWidth < 0) {
+                        refuseSelector(header);
+                    }
+                    parseBlocks(body, maxWidth);
+                    continue;
+                }
+                if (header.startsWith("@")) refuseSelector(header);
+                if (body.includes("{") || body.includes("}")) {
+                    refuseSelector(header);
+                }
+
+                const sourceStyle = body.trim();
+                if (inheritedMaxWidth !== undefined) {
+                    const mediaProperties = new Set([
+                        "bottom",
+                        "font-size",
+                        "height",
+                        "left",
+                        "max-height",
+                        "max-width",
+                        "min-height",
+                        "min-width",
+                        "right",
+                        "top",
+                        "width",
+                    ]);
+                    Compiler.forEachUiStyleDeclaration(
+                        sourceStyle,
+                        (declaration) => {
+                            const colon = declaration.indexOf(":");
+                            if (colon < 0) return;
+                            const property = declaration
+                                .slice(0, colon)
+                                .trim()
+                                .toLowerCase();
+                            if (!mediaProperties.has(property)) {
+                                this.uiStyleRefusal(
+                                    site,
+                                    property,
+                                    "max-width rules are bounded to the reached position, size, and font-size overrides",
+                                );
+                            }
+                        },
+                    );
+                }
+                const grid = Compiler.uiGridProjection(sourceStyle);
+                if (grid && inheritedMaxWidth !== undefined) {
+                    this.uiStyleRefusal(
+                        site,
+                        "display",
+                        "the structural fixed-grid substitution is not accepted inside a media query",
+                    );
+                }
+                const selectors = header
+                    .split(",")
+                    .map((selector) => selector.trim());
+                for (const selector of selectors) {
+                    if (
+                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\s+(?:path|rect)(?::hover)?$/i.test(
+                            selector,
+                        )
+                    ) {
+                        const message =
+                            `Retained stylesheet selector '${selector}' cannot ` +
+                            "target SVG path/rect nodes: LunaSVG receives the " +
+                            "validated SVG contents as image data, not RmlUi elements.";
+                        if (site) this.fail(site, message);
+                        this.failAtFile(message);
+                    }
+                }
+                const style = this.lowerUiAttributeLiteral(
+                    "style",
+                    sourceStyle,
+                    site,
+                );
+                for (const selector of selectors) {
+                    const idDescendant = selector.match(
+                        /^#([A-Za-z_][A-Za-z0-9_-]*)\s+\.([A-Za-z_][A-Za-z0-9_-]*)$/,
+                    );
+                    const classDescendantTag = selector.match(
+                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\s+([a-z][a-z0-9-]*)(:hover)?$/i,
+                    );
+                    const compound = selector.match(
+                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\.([A-Za-z_][A-Za-z0-9_-]*)$/,
+                    );
+                    const exact = selector.match(
+                        /^([.#])([A-Za-z_][A-Za-z0-9_-]*)$/,
+                    );
+                    if (
+                        !idDescendant &&
+                        !classDescendantTag &&
+                        !compound &&
+                        !exact
+                    ) {
+                        refuseSelector(selector);
+                    }
+                    const rule: LoweredUiStyleRule = idDescendant
+                        ? {
+                              kind: "id-descendant-class",
+                              primary: idDescendant[1]!,
+                              secondary: idDescendant[2]!,
+                              hover: false,
+                              style,
+                              selector,
+                          }
+                        : classDescendantTag
+                          ? {
+                                kind: "class-descendant-tag",
+                                primary: classDescendantTag[1]!,
+                                tag: classDescendantTag[2]!.toLowerCase(),
+                                hover: classDescendantTag[3] !== undefined,
+                                style,
+                                selector,
+                            }
+                          : compound
+                            ? {
+                                  kind: "compound-class",
+                                  primary: compound[1]!,
+                                  secondary: compound[2]!,
+                                  hover: false,
+                                  style,
+                                  selector,
+                              }
+                            : {
+                                  kind:
+                                      exact![1] === "#" ? "id" : "class",
+                                  primary: exact![2]!,
+                                  hover: false,
+                                  style,
+                                  selector,
+                              };
+                    if (inheritedMaxWidth !== undefined) {
+                        rule.maxWidth = inheritedMaxWidth;
+                    }
+                    if (site) rule.site = site;
+                    if (ownerId !== undefined) rule.ownerId = ownerId;
+                    if (grid) {
+                        if (
+                            rule.hover ||
+                            (rule.kind !== "class" && rule.kind !== "id")
+                        ) {
+                            this.uiStyleRefusal(
+                                site,
+                                "display",
+                                "the structural fixed-grid substitution requires one stable '.class' or '#id' target",
+                            );
+                        }
+                        rule.grid = grid;
+                    }
+                    if (
+                        rule.kind === "class-descendant-tag" ||
+                        rule.kind === "id-descendant-class"
+                    ) {
+                        this.uiScopedSheetSelectors.add(selector);
+                    }
+                    if (!style) continue;
+                    rules.push(rule);
+                    this.uiStyleRules.push(rule);
+                }
             }
-        }
+        };
+        parseBlocks(source);
         return rules;
     }
 
-    private compileUiStyleString(expression: ts.Expression): string {
-        const staticValue = this.tryUiStaticString(expression);
-        if (staticValue !== undefined) {
-            return this.cppString(
-                this.lowerUiAttributeLiteral(
-                    "style",
-                    staticValue,
-                    expression,
-                ),
+    private uiStaticDescendants(rootId: number): {
+        elements: Set<number>;
+        markup: UiStaticMarkupNode[];
+        complete: boolean;
+    } {
+        const elements = new Set<number>();
+        const markup: UiStaticMarkupNode[] = [];
+        let complete = true;
+        const addMarkup = (node: UiStaticMarkupNode): void => {
+            markup.push(node);
+            for (const child of node.children) addMarkup(child);
+        };
+        const visit = (id: number): void => {
+            const parent = this.uiStaticElements.get(id);
+            if (!parent) {
+                complete = false;
+                return;
+            }
+            complete = complete && parent.childShapeKnown;
+            for (const node of parent.markupChildren) addMarkup(node);
+            for (const childId of parent.children) {
+                if (elements.has(childId)) continue;
+                elements.add(childId);
+                visit(childId);
+            }
+        };
+        visit(rootId);
+        return { elements, markup, complete };
+    }
+
+    private uiRuleMatchesDirectWithClasses(
+        rule: LoweredUiStyleRule,
+        element: UiStaticElement,
+        classes: ReadonlySet<string>,
+    ): boolean {
+        switch (rule.kind) {
+            case "class":
+                return classes.has(rule.primary);
+            case "id":
+                return element.ids.has(rule.primary);
+            case "compound-class":
+                return (
+                    classes.has(rule.primary) &&
+                    classes.has(rule.secondary!)
+                );
+            case "class-descendant-tag":
+            case "id-descendant-class":
+                return false;
+        }
+    }
+
+    private uiRuleMatchesDirect(
+        rule: LoweredUiStyleRule,
+        element: UiStaticElement,
+    ): boolean {
+        return element.classAlternatives.some((classes) =>
+            this.uiRuleMatchesDirectWithClasses(rule, element, classes),
+        );
+    }
+
+    private uiStaticElementAlwaysHasClass(
+        element: UiStaticElement,
+        className: string,
+    ): boolean {
+        return (
+            element.classAlternatives.length > 0 &&
+            element.classAlternatives.every((classes) =>
+                classes.has(className),
+            )
+        );
+    }
+
+    private uiRuleSpecificity(rule: LoweredUiStyleRule): number {
+        const hover = rule.hover ? 1 : 0;
+        switch (rule.kind) {
+            case "class":
+                return (1 + hover) * 0x100;
+            case "id":
+                return 0x10000 + hover * 0x100;
+            case "compound-class":
+                return (2 + hover) * 0x100;
+            case "class-descendant-tag":
+                return (1 + hover) * 0x100 + 1;
+            case "id-descendant-class":
+                return 0x10000 + (1 + hover) * 0x100;
+        }
+    }
+
+    /**
+     * Scene-created sheets participate only while directly attached to the
+     * document, in that live order. Rule creation/population order is not CSS
+     * source order across sheets.
+     */
+    private uiActiveStyleRulesInCascade(): readonly LoweredUiStyleRule[] {
+        if (this.uiValidation) {
+            return this.uiValidation.activeRules;
+        }
+        const rulesByOwner = new Map<number, LoweredUiStyleRule[]>();
+        for (const rule of this.uiStyleRules) {
+            if (rule.ownerId === undefined) continue;
+            const owned = rulesByOwner.get(rule.ownerId) ?? [];
+            owned.push(rule);
+            rulesByOwner.set(rule.ownerId, owned);
+        }
+        return this.uiStaticRootOrder.flatMap(
+            (ownerId) => rulesByOwner.get(ownerId) ?? [],
+        );
+    }
+
+    private uiStaticAncestors(id: number): UiStaticElement[] {
+        const cached = this.uiValidation?.ancestorsById.get(id);
+        if (cached) return cached;
+        const ancestors: UiStaticElement[] = [];
+        const pending = [id];
+        const visited = new Set<number>(pending);
+        while (pending.length > 0) {
+            const child = pending.pop()!;
+            const parentIds = this.uiValidation?.parentsByChild.get(child);
+            const candidates = parentIds
+                ? parentIds.map(
+                      (candidateId) =>
+                          [candidateId, this.uiStaticElements.get(candidateId)!] as const,
+                  )
+                : [...this.uiStaticElements].filter(([, candidate]) =>
+                      candidate.children.has(child),
+                  );
+            for (const [candidateId, candidate] of candidates) {
+                if (visited.has(candidateId)) continue;
+                visited.add(candidateId);
+                ancestors.push(candidate);
+                pending.push(candidateId);
+            }
+        }
+        this.uiValidation?.ancestorsById.set(id, ancestors);
+        return ancestors;
+    }
+
+    private uiRuleMatchesStaticElement(
+        rule: LoweredUiStyleRule,
+        id: number,
+        element: UiStaticElement,
+    ): boolean {
+        return element.classAlternatives.some((classes) =>
+            this.uiRuleMatchesStaticElementWithClasses(
+                rule,
+                id,
+                element,
+                classes,
+            ),
+        );
+    }
+
+    private uiRuleMatchesStaticElementWithClasses(
+        rule: LoweredUiStyleRule,
+        id: number,
+        element: UiStaticElement,
+        classes: ReadonlySet<string>,
+    ): boolean {
+        if (
+            rule.kind !== "class-descendant-tag" &&
+            rule.kind !== "id-descendant-class"
+        ) {
+            return this.uiRuleMatchesDirectWithClasses(
+                rule,
+                element,
+                classes,
             );
         }
+        const ancestors = this.uiStaticAncestors(id);
+        return rule.kind === "class-descendant-tag"
+            ? element.tag === rule.tag &&
+                  ancestors.some((ancestor) =>
+                      ancestor.classAlternatives.some((ancestorClasses) =>
+                          ancestorClasses.has(rule.primary),
+                      ),
+                  )
+            : classes.has(rule.secondary!) &&
+                  ancestors.some((ancestor) =>
+                      ancestor.ids.has(rule.primary),
+                  );
+    }
+
+    private uiRuleDependsOnMutableClass(
+        rule: LoweredUiStyleRule,
+        id: number,
+        element: UiStaticElement,
+    ): boolean {
+        switch (rule.kind) {
+            case "class":
+                return element.mutableClasses.has(rule.primary);
+            case "id":
+                return false;
+            case "compound-class":
+                return (
+                    element.mutableClasses.has(rule.primary) ||
+                    element.mutableClasses.has(rule.secondary!)
+                );
+            case "class-descendant-tag":
+                return this.uiStaticAncestors(id).some((ancestor) =>
+                    ancestor.mutableClasses.has(rule.primary),
+                );
+            case "id-descendant-class":
+                return element.mutableClasses.has(rule.secondary!);
+        }
+    }
+
+    private uiRuleMentionsClass(
+        rule: LoweredUiStyleRule,
+        className: string,
+    ): boolean {
+        switch (rule.kind) {
+            case "class":
+            case "class-descendant-tag":
+                return rule.primary === className;
+            case "compound-class":
+                return (
+                    rule.primary === className ||
+                    rule.secondary === className
+                );
+            case "id-descendant-class":
+                return rule.secondary === className;
+            case "id":
+                return false;
+        }
+    }
+
+    private uiRuleCouldMatchGridChildAfterUnknownClassMutation(
+        rule: LoweredUiStyleRule,
+        className: string,
+        childId: number,
+        child: UiStaticElement,
+    ): boolean {
+        switch (rule.kind) {
+            case "class":
+                return rule.primary === className;
+            case "id":
+                return false;
+            case "compound-class":
+                return (
+                    (rule.primary === className &&
+                        child.classAlternatives.some((classes) =>
+                            classes.has(rule.secondary!),
+                        )) ||
+                    (rule.secondary === className &&
+                        child.classAlternatives.some((classes) =>
+                            classes.has(rule.primary),
+                        ))
+                );
+            case "class-descendant-tag":
+                return (
+                    rule.primary === className &&
+                    child.tag === rule.tag
+                );
+            case "id-descendant-class":
+                return (
+                    rule.secondary === className &&
+                    this.uiStaticAncestors(childId).some((ancestor) =>
+                        ancestor.ids.has(rule.primary),
+                    )
+                );
+        }
+    }
+
+    private uiUnknownAttributeCouldAffectRule(
+        mutation: UiUnknownAttributeMutation,
+        rule: LoweredUiStyleRule,
+        elementId: number,
+        element: UiStaticElement,
+    ): boolean {
+        const sameTarget =
+            mutation.targetId === undefined ||
+            mutation.targetId === elementId;
+        const target =
+            mutation.targetId === undefined
+                ? undefined
+                : this.uiStaticElements.get(mutation.targetId);
+        const targetIsAncestor =
+            mutation.targetId === undefined ||
+            (target !== undefined &&
+                this.uiStaticAncestors(elementId).includes(target));
+        if (mutation.attribute === "class") {
+            switch (rule.kind) {
+                case "class":
+                case "compound-class":
+                    return sameTarget;
+                case "class-descendant-tag":
+                    return targetIsAncestor && element.tag === rule.tag;
+                case "id-descendant-class":
+                    return (
+                        sameTarget &&
+                        this.uiStaticAncestors(elementId).some((ancestor) =>
+                            ancestor.ids.has(rule.primary),
+                        )
+                    );
+                case "id":
+                    return false;
+            }
+        }
+        switch (rule.kind) {
+            case "id":
+                return sameTarget;
+            case "id-descendant-class":
+                return (
+                    targetIsAncestor &&
+                    element.classAlternatives.some((classes) =>
+                        classes.has(rule.secondary!),
+                    )
+                );
+            case "class":
+            case "compound-class":
+            case "class-descendant-tag":
+                return false;
+        }
+    }
+
+    private uiGridChildGeometryProperty(
+        rule: LoweredUiStyleRule,
+        includeExplicitRowFlow = false,
+    ): string | undefined {
+        if (includeExplicitRowFlow) {
+            const display = this.uiStaticStyleProperty(
+                rule.style,
+                "display",
+            )?.trim().toLowerCase();
+            if (display === "none") return "display";
+            const position = this.uiStaticStyleProperty(
+                rule.style,
+                "position",
+            )?.trim().toLowerCase();
+            if (position === "absolute" || position === "fixed") {
+                return "position";
+            }
+        }
+        return Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES.find(
+            (property) =>
+                this.uiStaticStyleProperty(rule.style, property) !== undefined,
+        );
+    }
+
+    private uiStaticStyleProperty(
+        style: string,
+        property: string,
+    ): string | undefined {
+        return Compiler.uiLastStyleProperty(style, property);
+    }
+
+    private uiStaticElementStylePropertyForState(
+        id: number,
+        property: string,
+        classes: ReadonlySet<string>,
+        inlineStyle: string,
+    ): string | undefined {
+        const element = this.uiStaticElements.get(id);
+        if (!element) return undefined;
+        let result: string | undefined;
+        let specificity = -1;
+        let sourceOrder = -1;
+        const activeRules = this.uiActiveStyleRulesInCascade();
+        for (let index = 0; index < activeRules.length; index++) {
+            const rule = activeRules[index]!;
+            if (
+                rule.hover ||
+                rule.maxWidth !== undefined ||
+                !this.uiRuleMatchesStaticElementWithClasses(
+                    rule,
+                    id,
+                    element,
+                    classes,
+                )
+            ) {
+                continue;
+            }
+            const value = this.uiStaticStyleProperty(rule.style, property);
+            if (value === undefined) continue;
+            const candidateSpecificity = this.uiRuleSpecificity(rule);
+            if (
+                candidateSpecificity > specificity ||
+                (candidateSpecificity === specificity &&
+                    index > sourceOrder)
+            ) {
+                result = value;
+                specificity = candidateSpecificity;
+                sourceOrder = index;
+            }
+        }
+        result =
+            this.uiStaticStyleProperty(inlineStyle, property) ?? result;
+        return result;
+    }
+
+    private uiStaticElementStylePropertyValues(
+        id: number,
+        property: string,
+    ): Set<string | undefined> {
+        const element = this.uiStaticElements.get(id);
+        if (!element) return new Set([undefined]);
+        const values = new Set<string | undefined>();
+        for (const classes of element.classAlternatives) {
+            for (const style of element.styles) {
+                values.add(
+                    this.uiStaticElementStylePropertyForState(
+                        id,
+                        property,
+                        classes,
+                        style,
+                    ),
+                );
+            }
+        }
+        return values;
+    }
+
+    private uiStaticEffectiveGrid(
+        id: number,
+        classes: ReadonlySet<string>,
+    ):
+        | {
+              grid: UiGridProjection;
+              label: string;
+              site?: ts.Node;
+          }
+        | undefined {
+        const element = this.uiStaticElements.get(id);
+        if (!element) return undefined;
+        interface CascadedValue<T> {
+            value: T;
+            specificity: number;
+            sourceOrder: number;
+        }
+        let display:
+            | CascadedValue<{
+                  value: string;
+                  grid?: UiGridProjection;
+                  label: string;
+                  site?: ts.Node;
+              }>
+            | undefined;
+        let justification: CascadedValue<string> | undefined;
+        const wins = <T>(
+            current: CascadedValue<T> | undefined,
+            specificity: number,
+            sourceOrder: number,
+        ): boolean =>
+            current === undefined ||
+            specificity > current.specificity ||
+            (specificity === current.specificity &&
+                sourceOrder >= current.sourceOrder);
+        const activeRules = this.uiActiveStyleRulesInCascade();
+        const normalizedKeyword = (
+            value: string | undefined,
+        ): string | undefined => value?.trim().toLowerCase();
+        const possibleGrid =
+            activeRules.some(
+                (rule) =>
+                   rule.grid !== undefined &&
+                   this.uiRuleMatchesStaticElementWithClasses(
+                       rule,
+                       id,
+                       element,
+                       classes,
+                   ),
+            ) ||
+            element.styles.some(
+                (style) => this.uiGridFromLoweredStyle(style) !== undefined,
+            );
+        const refuseAlternative = (
+            reason: string,
+            rule?: LoweredUiStyleRule,
+        ): never => {
+            const message =
+                `Retained UI fixed-grid projection on <${element.tag}> ` +
+                `construction site ${id} ${reason}.`;
+            if (rule?.site) this.fail(rule.site, message);
+            this.failAtFile(message);
+        };
+        if (possibleGrid && !element.styleShapeKnown) {
+            refuseAlternative(
+                "has a runtime cssText replacement whose final declarations are unknown",
+            );
+        }
+        if (possibleGrid && element.styles.length > 1) {
+            const signatures = element.styles.map((style) =>
+                JSON.stringify({
+                   display: normalizedKeyword(
+                       this.uiStaticStyleProperty(style, "display"),
+                   ),
+                   grid: this.uiGridFromLoweredStyle(style),
+                   justification: normalizedKeyword(
+                       this.uiStaticStyleProperty(
+                           style,
+                           "justify-content",
+                       ),
+                   ),
+                }),
+            );
+            if (new Set(signatures).size > 1) {
+                refuseAlternative(
+                   "depends on mutually exclusive cssText replacement alternatives",
+                );
+            }
+        }
+        const applyCascadeCandidate = (
+            style: string,
+            grid: UiGridProjection | undefined,
+            label: string,
+            specificity: number,
+            sourceOrder: number,
+            site?: ts.Node,
+        ): void => {
+            const displayValue = grid
+                ? "grid"
+                : normalizedKeyword(
+                      this.uiStaticStyleProperty(style, "display"),
+                  );
+            if (
+                displayValue !== undefined &&
+                wins(display, specificity, sourceOrder)
+            ) {
+                display = {
+                    value: {
+                        value: displayValue,
+                        ...(grid ? { grid } : {}),
+                        label,
+                        ...(site ? { site } : {}),
+                    },
+                    specificity,
+                    sourceOrder,
+                };
+            }
+            const justifyValue =
+                grid?.authoredJustifyContent ??
+                normalizedKeyword(
+                    this.uiStaticStyleProperty(style, "justify-content"),
+                );
+            if (
+                justifyValue !== undefined &&
+                wins(justification, specificity, sourceOrder)
+            ) {
+                justification = {
+                    value: justifyValue,
+                    specificity,
+                    sourceOrder,
+                };
+            }
+        };
+        for (let index = 0; index < activeRules.length; index++) {
+            const rule = activeRules[index]!;
+            if (
+                rule.hover ||
+                rule.maxWidth !== undefined ||
+                !this.uiRuleMatchesStaticElementWithClasses(
+                    rule,
+                    id,
+                    element,
+                    classes,
+                )
+            ) {
+                continue;
+            }
+            applyCascadeCandidate(
+                rule.style,
+                rule.grid,
+                rule.selector,
+                this.uiRuleSpecificity(rule),
+                index,
+                rule.site,
+            );
+        }
+
+        const inlineSpecificity = 0x1000000;
+        for (let index = 0; index < element.styles.length; index++) {
+            const style = element.styles[index]!;
+            const sourceOrder = activeRules.length + index;
+            const grid = this.uiGridFromLoweredStyle(style);
+            applyCascadeCandidate(
+                style,
+                grid,
+                `<${element.tag}> construction site ${id}`,
+                inlineSpecificity,
+                sourceOrder,
+            );
+        }
+
+        if (
+            possibleGrid &&
+            (display?.value.value === "__bbl_dynamic_style_value__" ||
+                justification?.value === "__bbl_dynamic_style_value__")
+        ) {
+            const message =
+                `Retained UI fixed-grid projection '${display?.value.label ?? `<${element.tag}> construction site ${id}`}' ` +
+                "has a runtime structural display or alignment override.";
+            if (display?.value.site) this.fail(display.value.site, message);
+            this.failAtFile(message);
+        }
+        if (
+            display?.value.value === "grid" &&
+            !display.value.grid
+        ) {
+            const message =
+                `Retained UI fixed-grid projection '${display.value.label}' ` +
+                "is activated by a separate display:grid override whose " +
+                "track metadata cannot be proven.";
+            if (display.value.site) this.fail(display.value.site, message);
+            this.failAtFile(message);
+        }
+        if (display?.value.value !== "grid" || !display.value.grid) {
+            return undefined;
+        }
+        const authored = justification?.value
+            .trim()
+            .toLowerCase();
+        const normalized =
+            Compiler.normalizeUiGridJustification(authored);
+        if (normalized === undefined) {
+            const message =
+                `Retained UI fixed-grid projection '${display.value.label}' ` +
+                `cannot preserve justify-content '${authored}'.`;
+            if (display.value.site) this.fail(display.value.site, message);
+            this.failAtFile(message);
+        }
+        return {
+            grid: {
+                ...display.value.grid,
+                ...(justification === undefined
+                    ? {}
+                    : { authoredJustifyContent: normalized }),
+            },
+            label: display.value.label,
+            ...(display.value.site
+                ? { site: display.value.site }
+                : {}),
+        };
+    }
+
+    private uiGridFromLoweredStyle(
+        style: string,
+    ): UiGridProjection | undefined {
+        const columns = Number(
+            this.uiStaticStyleProperty(style, "--bbl-grid-columns"),
+        );
+        const cellWidth = Number.parseFloat(
+            this.uiStaticStyleProperty(
+                style,
+                "--bbl-grid-cell-width",
+            ) ?? "",
+        );
+        const width = Number.parseFloat(
+            this.uiStaticStyleProperty(style, "--bbl-grid-width") ?? "",
+        );
+        const gap = Number.parseFloat(
+            this.uiStaticStyleProperty(style, "--bbl-grid-gap") ?? "",
+        );
+        const row = this.uiStaticStyleProperty(
+            style,
+            "--bbl-grid-row-height",
+        );
+        const rowCount = this.uiStaticStyleProperty(
+            style,
+            "--bbl-grid-row-count",
+        );
+        const justification = this.uiStaticStyleProperty(
+            style,
+            "--bbl-grid-justify-content",
+        );
+        if (
+            !Number.isInteger(columns) ||
+            columns < 1 ||
+            !Number.isFinite(cellWidth) ||
+            !Number.isFinite(width) ||
+            !Number.isFinite(gap) ||
+            (row !== undefined && !Number.isFinite(Number.parseFloat(row))) ||
+            (rowCount !== undefined &&
+                (!Number.isInteger(Number(rowCount)) ||
+                    Number(rowCount) < 1))
+        ) {
+            return undefined;
+        }
+        return {
+            columns,
+            cellWidth,
+            width,
+            gap,
+            ...(justification === undefined
+                ? {}
+                : {
+                      authoredJustifyContent:
+                          justification === "center" ||
+                          justification === "end"
+                              ? justification
+                              : "start",
+                  }),
+            ...(row === undefined
+                ? {}
+                : { rowHeight: Number.parseFloat(row) }),
+            ...(rowCount === undefined
+                ? {}
+                : { rowCount: Number(rowCount) }),
+        };
+    }
+
+    private validateUiGridProjection(
+        parentId: number,
+        grid: UiGridProjection,
+        label: string,
+        site?: ts.Node,
+    ): void {
+        const fail = (reason: string): never => {
+            const message =
+                `Retained UI fixed-grid projection '${label}' is not ` +
+                `provably equivalent to wrapping flex: ${reason}.`;
+            if (site) this.fail(site, message);
+            this.failAtFile(message);
+        };
+        const parent =
+            this.uiStaticElements.get(parentId) ??
+            fail("its target construction site is unknown");
+        if (!parent.childShapeKnown || parent.children.size === 0) {
+            fail("its complete direct-child shape is not statically known");
+        }
+        if (grid.rowCount !== undefined) {
+            if (!parent.childCardinalityKnown) {
+                fail(
+                    "its explicit row template requires a statically known child count",
+                );
+            }
+            const actualRows = Math.ceil(
+                parent.children.size / grid.columns,
+            );
+            if (grid.rowCount !== actualRows) {
+                fail(
+                    `the explicit ${grid.rowCount}-row template does not match ` +
+                        `the proven ${actualRows}-row child layout`,
+                );
+            }
+        }
+        let childHeight: number | undefined;
+        for (const childId of parent.children) {
+            const child = this.uiStaticElements.get(childId)!;
+            if (!child) {
+                fail("a direct child has an unknown construction shape");
+            }
+            if (
+                !child.classShapeKnown &&
+                !this.uiUnknownAttributeMutations.some(
+                    (mutation) =>
+                        mutation.attribute === "class" &&
+                        mutation.targetId === childId,
+                )
+            ) {
+                fail("a direct child has an unknown class or construction shape");
+            }
+            if (!child.styleShapeKnown) {
+                fail("a direct child has an unknown final cssText shape");
+            }
+            const geometryProperties = [
+                ...Compiler.UI_GRID_CHILD_GEOMETRY_PROPERTIES,
+                ...(grid.rowCount === undefined
+                    ? []
+                    : ["display", "position"]),
+            ];
+            const parsePixels = (
+                value: string | undefined,
+            ): number | undefined => {
+                const match = value?.match(
+                    /^([0-9]+(?:\.[0-9]*)?)px$/i,
+                );
+                return match ? Number(match[1]) : undefined;
+            };
+            const heightValues =
+                this.uiStaticElementStylePropertyValues(
+                    childId,
+                    "height",
+                );
+            const fixedHeight =
+                heightValues.size === 1
+                    ? parsePixels(heightValues.values().next().value)
+                    : undefined;
+            const geometryValueIsProvenEqual = (
+                property: string,
+                value: string | undefined,
+            ): boolean => {
+                const normalized = value?.trim().toLowerCase();
+                if (property === "display") {
+                    return (
+                        normalized !== "none" &&
+                        normalized !== "__bbl_dynamic_style_value__"
+                    );
+                }
+                if (property === "position") {
+                    return (
+                        normalized !== "absolute" &&
+                        normalized !== "fixed" &&
+                        normalized !== "__bbl_dynamic_style_value__"
+                    );
+                }
+                const expected = /^(?:min-|max-)?width$/.test(property)
+                    ? grid.cellWidth
+                    : /^(?:min-|max-)?height$/.test(property)
+                      ? fixedHeight
+                      : undefined;
+                return (
+                    expected !== undefined &&
+                    parsePixels(value) === expected
+                );
+            };
+            const activeRules = this.uiActiveStyleRulesInCascade();
+            const changedGeometryProperty = (
+                rule: LoweredUiStyleRule,
+            ): string | undefined =>
+                geometryProperties.find((property) => {
+                    const value = this.uiStaticStyleProperty(
+                        rule.style,
+                        property,
+                    );
+                    return (
+                        value !== undefined &&
+                        !geometryValueIsProvenEqual(property, value)
+                    );
+                });
+            const unknownClassSites = new Map<string, ts.Node>();
+            for (const mutation of this.uiUnknownClassMutations) {
+                unknownClassSites.set(mutation.className, mutation.site);
+            }
+            for (const rule of activeRules) {
+                if (rule.kind !== "compound-class") continue;
+                const property = changedGeometryProperty(rule);
+                if (!property) continue;
+                const required = new Set([
+                    rule.primary,
+                    rule.secondary!,
+                ]);
+                if (
+                    [...required].every((name) =>
+                        unknownClassSites.has(name),
+                    )
+                ) {
+                    const lastMutation = [...this.uiUnknownClassMutations]
+                        .reverse()
+                        .find((mutation) =>
+                            required.has(mutation.className),
+                        )!;
+                    this.fail(
+                        lastMutation.site,
+                        `Retained UI class mutations '${[...required].join(
+                            "', '",
+                        )}' have unknown targets and can jointly activate ` +
+                            `geometry rule '${rule.selector}', changing ` +
+                            `direct-child ${property}.`,
+                    );
+                }
+            }
+            for (const rule of activeRules) {
+                if (
+                    !this.uiRuleMatchesStaticElement(
+                        rule,
+                        childId,
+                        child,
+                    ) ||
+                    (rule.maxWidth === undefined &&
+                        !rule.hover &&
+                        !this.uiRuleDependsOnMutableClass(
+                            rule,
+                            childId,
+                            child,
+                        ))
+                ) {
+                    continue;
+                }
+                const property = changedGeometryProperty(rule);
+                if (property) {
+                    const trigger =
+                        rule.maxWidth !== undefined
+                            ? `max-width rule '${rule.selector}'`
+                            : rule.hover
+                              ? `hover rule '${rule.selector}'`
+                              : `runtime class rule '${rule.selector}'`;
+                    fail(
+                        `${trigger} can change direct-child ${property}`,
+                    );
+                }
+            }
+            for (const mutation of this.uiUnknownClassMutations) {
+                const rule = activeRules.find(
+                    (candidate) =>
+                        this.uiRuleCouldMatchGridChildAfterUnknownClassMutation(
+                            candidate,
+                            mutation.className,
+                            childId,
+                            child,
+                        ) &&
+                        changedGeometryProperty(candidate) !== undefined,
+                );
+                if (rule) {
+                    const property = changedGeometryProperty(rule)!;
+                    fail(
+                        `class mutation '${mutation.className}' has an ` +
+                            `unknown target and rule '${rule.selector}' can ` +
+                            `change direct-child ${property}`,
+                    );
+                }
+            }
+            const singleProperty = (
+                property: string,
+            ): string | undefined => {
+                const values = this.uiStaticElementStylePropertyValues(
+                    childId,
+                    property,
+                );
+                if (values.size !== 1) {
+                    fail(
+                        `direct-child ${property} differs across reachable ` +
+                            "className or cssText alternatives",
+                    );
+                }
+                return values.values().next().value;
+            };
+            if (grid.rowCount !== undefined) {
+                for (const [property, values] of [
+                    [
+                        "display",
+                        this.uiStaticElementStylePropertyValues(
+                            childId,
+                            "display",
+                        ),
+                    ],
+                    [
+                        "position",
+                        this.uiStaticElementStylePropertyValues(
+                            childId,
+                            "position",
+                        ),
+                    ],
+                ] as const) {
+                    const value = [...values].find(
+                        (candidate) =>
+                            candidate !== undefined &&
+                            !geometryValueIsProvenEqual(
+                                property,
+                                candidate,
+                            ),
+                    );
+                    if (value !== undefined) {
+                        fail(
+                            `explicit rows require every counted child to ` +
+                                `participate in normal flow; child ${property} ` +
+                                `is '${value}'`,
+                        );
+                    }
+                }
+            }
+            const width = singleProperty("width");
+            const height = singleProperty("height");
+            const widthPixels = parsePixels(width);
+            const heightPixels = parsePixels(height);
+            if (widthPixels !== grid.cellWidth || heightPixels === undefined) {
+                fail(
+                    `every child must have fixed ${grid.cellWidth}px width ` +
+                        "and a fixed px height",
+                );
+            }
+            if (
+                childHeight !== undefined &&
+                childHeight !== heightPixels
+            ) {
+                fail("direct-child heights are not uniform");
+            }
+            childHeight = heightPixels;
+            for (const [property, expected] of [
+                ["min-width", widthPixels],
+                ["max-width", widthPixels],
+                ["min-height", heightPixels],
+                ["max-height", heightPixels],
+            ] as const) {
+                const value = singleProperty(property);
+                if (
+                    value !== undefined &&
+                    parsePixels(value) !== expected
+                ) {
+                    fail(
+                        `child ${property} '${value}' is not proven equal to ` +
+                            `its fixed ${expected}px geometry`,
+                    );
+                }
+            }
+            if (
+                grid.rowHeight !== undefined &&
+                grid.rowHeight !== heightPixels
+            ) {
+                fail(
+                    `the ${grid.rowHeight}px row track does not match the ` +
+                        `${heightPixels}px child height`,
+                );
+            }
+            for (const property of Compiler.UI_GRID_CHILD_SPACING_PROPERTIES) {
+                const value = singleProperty(property);
+                if (
+                    value !== undefined &&
+                    !/^(?:0(?:px)?)(?:\s+0(?:px)?){0,3}$/i.test(value)
+                ) {
+                    fail(`child ${property} '${value}' changes the fixed track`);
+                }
+            }
+            const border = singleProperty("border");
+            if (
+                border !== undefined &&
+                !/^(?:none|0(?:px)?(?:\s+transparent)?)$/i.test(border)
+            ) {
+                fail(`child border '${border}' changes the fixed track`);
+            }
+            for (const property of
+                Compiler.UI_GRID_CHILD_BORDER_WIDTH_PROPERTIES) {
+                const value = singleProperty(property);
+                if (
+                    value !== undefined &&
+                    !/^0(?:px)?$/i.test(value)
+                ) {
+                    fail(`child ${property} '${value}' changes the fixed track`);
+                }
+            }
+        }
+        this.uiGridSubstitutions.add(
+            `${label}: repeat(${grid.columns}, ${grid.cellWidth}px), ` +
+                `${childHeight}px children, ${grid.gap}px gap` +
+                (grid.rowCount === undefined
+                    ? ""
+                    : `, ${grid.rowCount} explicit rows`),
+        );
+    }
+
+    private validateUiStaticProjection(): void {
+        const activeRules = this.uiActiveStyleRulesInCascade();
+        const parentsByChild = new Map<number, number[]>();
+        for (const [parentId, parent] of this.uiStaticElements) {
+            for (const childId of parent.children) {
+                const parents = parentsByChild.get(childId) ?? [];
+                parents.push(parentId);
+                parentsByChild.set(childId, parents);
+            }
+        }
+        this.uiValidation = {
+            activeRules,
+            parentsByChild,
+            ancestorsById: new Map(),
+        };
+        try {
+        const anyGrid =
+            this.uiSawGridDeclaration ||
+            this.uiStyleRules.some((rule) => rule.grid !== undefined) ||
+            [...this.uiStaticElements.values()].some((element) =>
+                element.styles.some(
+                    (style) =>
+                        this.uiGridFromLoweredStyle(style) !== undefined,
+                ),
+            );
+        if (!this.uiStaticStyleCascadeKnown && anyGrid) {
+            const gridRule = this.uiStyleRules.find(
+                (rule) => rule.grid !== undefined,
+            );
+            const message =
+                "Retained UI fixed-grid projection requires a statically " +
+                "ordered stylesheet attachment and contents cascade.";
+            if (gridRule?.site) this.fail(gridRule.site, message);
+            this.failAtFile(message);
+        }
+        for (const mutation of this.uiUnknownClassMutations) {
+            const gridRule = activeRules.find(
+                (rule) =>
+                    rule.grid !== undefined &&
+                    this.uiRuleMentionsClass(
+                        rule,
+                        mutation.className,
+                    ),
+            );
+            if (gridRule) {
+                this.fail(
+                    mutation.site,
+                    `Retained UI class mutation '${mutation.className}' has ` +
+                        `an unknown target and can activate fixed-grid rule ` +
+                        `'${gridRule.selector}'.`,
+                );
+            }
+        }
+        const scopedMatches = (
+            rule: LoweredUiStyleRule,
+        ): {
+            retained: number;
+            markup: number;
+            complete: boolean;
+        } => {
+            let retained = 0;
+            let markup = 0;
+            let complete = true;
+            const ancestors = [...this.uiStaticElements.entries()].filter(
+                ([_id, element]) =>
+                    rule.kind === "class-descendant-tag"
+                        ? element.classAlternatives.some((classes) =>
+                              classes.has(rule.primary),
+                          )
+                        : element.ids.has(rule.primary),
+            );
+            for (const [id] of ancestors) {
+                const descendants = this.uiStaticDescendants(id);
+                complete = complete && descendants.complete;
+                if (rule.kind === "class-descendant-tag") {
+                    retained += [...descendants.elements].filter(
+                        (childId) =>
+                            this.uiStaticElements.get(childId)?.tag ===
+                            rule.tag,
+                    ).length;
+                    markup += descendants.markup.filter(
+                        (node) => node.tag === rule.tag,
+                    ).length;
+                } else {
+                    retained += [...descendants.elements].filter((childId) =>
+                        this.uiStaticElements
+                            .get(childId)
+                            ?.classAlternatives.some((classes) =>
+                                classes.has(rule.secondary!),
+                            ),
+                    ).length;
+                    markup += descendants.markup.filter((node) =>
+                        node.classes.has(rule.secondary!),
+                    ).length;
+                }
+            }
+            return { retained, markup, complete };
+        };
+
+        for (const rule of activeRules) {
+            if (
+                rule.kind === "class-descendant-tag" ||
+                rule.kind === "id-descendant-class"
+            ) {
+                const matches = scopedMatches(rule);
+                if (
+                    !matches.complete ||
+                    matches.retained + matches.markup === 0
+                ) {
+                    const reason = !matches.complete
+                        ? "the ancestor has a dynamically-shaped retained subtree"
+                        : "no statically-known descendant matches it";
+                    if (rule.site) {
+                        this.fail(
+                            rule.site,
+                            `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
+                        );
+                    }
+                    this.failAtFile(
+                        `Retained stylesheet selector '${rule.selector}' cannot be projected: ${reason}.`,
+                    );
+                }
+            }
+        }
+
+        const activeGridRules = activeRules.filter(
+            (rule) => rule.grid !== undefined,
+        );
+        for (const rule of activeGridRules) {
+            const hasTarget = [...this.uiStaticElements.values()].some(
+                (element) =>
+                    this.uiRuleMatchesDirect(rule, element),
+            );
+            if (!hasTarget) {
+                if (rule.site) {
+                    this.fail(
+                        rule.site,
+                        `Retained UI fixed-grid selector '${rule.selector}' has no statically-known target.`,
+                    );
+                }
+                this.failAtFile(
+                    `Retained UI fixed-grid selector '${rule.selector}' has no statically-known target.`,
+                );
+            }
+        }
+        const effectiveGrids = new Map<
+            number,
+            Array<{
+                grid: UiGridProjection;
+                label: string;
+                site?: ts.Node;
+            }>
+        >();
+        for (const [id, element] of this.uiStaticElements) {
+            for (const classes of element.classAlternatives) {
+                const effective = this.uiStaticEffectiveGrid(id, classes);
+                if (effective) {
+                    const states = effectiveGrids.get(id) ?? [];
+                    states.push(effective);
+                    effectiveGrids.set(id, states);
+                }
+            }
+        }
+        for (const mutation of this.uiUnknownAttributeMutations) {
+            for (const [id, element] of this.uiStaticElements) {
+                const structuralRule = activeRules.find(
+                    (rule) =>
+                        (rule.grid !== undefined ||
+                            this.uiStaticStyleProperty(
+                                rule.style,
+                                "display",
+                            ) !== undefined ||
+                            this.uiStaticStyleProperty(
+                                rule.style,
+                                "justify-content",
+                            ) !== undefined) &&
+                        (rule.grid !== undefined || effectiveGrids.has(id)) &&
+                        this.uiUnknownAttributeCouldAffectRule(
+                            mutation,
+                            rule,
+                            id,
+                            element,
+                        ),
+                );
+                if (structuralRule) {
+                    this.fail(
+                        mutation.site,
+                        `Retained UI runtime-unknown ${mutation.attribute} ` +
+                            `mutation can change fixed-grid structural rule ` +
+                            `'${structuralRule.selector}'.`,
+                    );
+                }
+            }
+        }
+        for (const mutation of this.uiUnknownAttributeMutations) {
+            for (const parentId of effectiveGrids.keys()) {
+                const parent = this.uiStaticElements.get(parentId)!;
+                const includesExplicitRows = effectiveGrids
+                    .get(parentId)!
+                    .some(
+                        (effective) =>
+                            effective.grid.rowCount !== undefined,
+                    );
+                for (const childId of parent.children) {
+                    const child = this.uiStaticElements.get(childId);
+                    if (!child) continue;
+                    const geometryRule = activeRules.find(
+                        (rule) =>
+                            this.uiGridChildGeometryProperty(
+                                rule,
+                                includesExplicitRows,
+                            ) !==
+                                undefined &&
+                            this.uiUnknownAttributeCouldAffectRule(
+                                mutation,
+                                rule,
+                                childId,
+                                child,
+                            ),
+                    );
+                    if (geometryRule) {
+                        this.fail(
+                            mutation.site,
+                            `Retained UI runtime-unknown ${mutation.attribute} ` +
+                                `mutation can alter fixed-grid child ` +
+                                `${this.uiGridChildGeometryProperty(
+                                    geometryRule,
+                                    includesExplicitRows,
+                                )} ` +
+                                `through rule '${geometryRule.selector}'.`,
+                        );
+                    }
+                }
+            }
+        }
+        for (const [id, states] of effectiveGrids) {
+            for (const effective of states) {
+                this.validateUiGridProjection(
+                    id,
+                    effective.grid,
+                    effective.label,
+                    effective.site,
+                );
+            }
+        }
+
+        for (const query of this.uiPendingClassQueries) {
+            if (query.root.uiStaticId === undefined) {
+                this.fail(
+                    query.site,
+                    "Retained UI querySelectorAll requires a statically-known retained root.",
+                );
+            }
+            const descendants = this.uiStaticDescendants(
+                query.root.uiStaticId,
+            );
+            const unknownClass = [...descendants.elements].some(
+                (id) => !this.uiStaticElements.get(id)?.classShapeKnown,
+            );
+            const retainedMatches = [...descendants.elements].filter((id) =>
+                {
+                    const element = this.uiStaticElements.get(id);
+                    return (
+                        element !== undefined &&
+                        this.uiStaticElementAlwaysHasClass(
+                            element,
+                            query.className,
+                        )
+                    );
+                },
+            );
+            const markupMatches = descendants.markup.filter((node) =>
+                node.classes.has(query.className),
+            );
+            if (
+                !descendants.complete ||
+                unknownClass ||
+                retainedMatches.length === 0 ||
+                markupMatches.length > 0
+            ) {
+                this.fail(
+                    query.site,
+                    `Retained UI querySelectorAll('.${query.className}') ` +
+                        "requires a complete statically-known retained subtree " +
+                        "with at least one matching retained element and no " +
+                        "matching innerHTML-only node.",
+                );
+            }
+        }
+        } finally {
+            this.uiValidation = undefined;
+        }
+    }
+
+    private compileUiStyleString(
+        expression: ts.Expression,
+        ownerId?: number,
+    ): string {
+        const staticValue = this.tryUiStaticString(expression);
+        if (staticValue !== undefined) {
+            const lowered = this.lowerUiAttributeLiteral(
+                "style",
+                staticValue,
+                expression,
+            );
+            if (ownerId !== undefined) {
+                const owner = this.uiStaticElements.get(ownerId);
+                if (owner) this.recordUiStaticStyles(owner, [lowered]);
+            }
+            return this.cppString(lowered);
+        }
         const unwrapped = this.unwrap(expression);
+        const recordCandidates = (candidate: ts.Expression): void => {
+            if (ownerId === undefined) return;
+            const owner = this.uiStaticElements.get(ownerId);
+            if (!owner) return;
+            const candidates = this.uiStringCandidates(candidate);
+            if (!candidates) {
+                owner.styleShapeKnown = false;
+                return;
+            }
+            this.recordUiStaticStyles(
+                owner,
+                candidates.map((value) =>
+                    this.lowerUiAttributeLiteral(
+                        "style",
+                        value,
+                        expression,
+                    ),
+                ),
+            );
+        };
         if (ts.isConditionalExpression(unwrapped)) {
+            recordCandidates(unwrapped);
             return (
                 `(${this.compileCondition(unwrapped.condition)} ? ` +
                 `${this.compileUiStyleString(unwrapped.whenTrue)} : ` +
@@ -4676,8 +7562,11 @@ class Compiler
                 );
             };
             if (containsConditional(unwrapped)) {
+                recordCandidates(unwrapped);
                 return (
-                    `std::string(${this.compileUiStyleString(unwrapped.left)}) + ` +
+                    `std::string(${this.compileUiStyleString(
+                        unwrapped.left,
+                    )}) + ` +
                     this.compileUiStyleString(unwrapped.right)
                 );
             }
@@ -4699,6 +7588,10 @@ class Compiler
                 source,
                 expression,
             );
+            if (ownerId !== undefined) {
+                const owner = this.uiStaticElements.get(ownerId);
+                if (owner) this.recordUiStaticStyles(owner, [lowered]);
+            }
             const chunks = lowered.split(
                 /(__BBLITE_UI_(?:STYLE|ASSET)_\d+__)/g,
             );
@@ -4730,36 +7623,428 @@ class Compiler
     private lowerUiMarkupLiteral(
         value: string,
         site?: ts.Node,
+        ownerId?: number,
     ): string {
-        // Elements parsed by SetInnerRML do not pass through the retained
-        // record projector's tiny browser-UA defaults. Preserve HTML div
-        // block flow directly in the bounded static markup we accept.
-        let lowered = value
-            .replace(
-                /<(?:div|span)\s+style=(['"])(.*?)\1\s*>/gi,
-                (match, quote, style) =>
-                    match.toLowerCase().startsWith("<div")
-                        ? `<div style=${quote}display:block;${this.lowerUiAttributeLiteral("style", String(style), site)}${quote}>`
-                        : `<span style=${quote}${this.lowerUiAttributeLiteral("style", String(style), site)}${quote}>`,
-            )
-            .replace(/<div\s*>/gi, '<div style="display:block">');
+        const fail = (message: string): never => {
+            if (site) this.fail(site, `Native UI innerHTML ${message}`);
+            this.failAtFile(`Native UI innerHTML ${message}`);
+        };
+        const roots: UiStaticMarkupNode[] = [];
+        const stack: UiStaticMarkupNode[] = [];
+        const output: string[] = [];
+        const svgPaintStack: Array<{
+            usesCurrentColor: boolean;
+            usesLiteralPaint: boolean;
+            fill: string;
+            stroke: string;
+            openingOutputIndex?: number;
+        }> = [];
+        const escapeAttribute = (text: string): string =>
+            text
+                .replaceAll("&", "&amp;")
+                .replaceAll('"', "&quot;")
+                .replaceAll("<", "&lt;")
+                .replaceAll(">", "&gt;");
+        const numeric = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/;
+        const color =
+            /^(?:none|currentColor|#[0-9a-f]{3,8}|rgba?\([^)]*\)|[a-z][a-z0-9-]*)$/i;
+        const pathData =
+            /^(?:(?:[MmLlHhVvCcSsQqTtAaZz])|(?:[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)|[\s,])*$/;
+        const svgAttributeSchemas: Record<
+            "svg" | "path" | "rect",
+            {
+                allowed: ReadonlySet<string>;
+                numeric: ReadonlySet<string>;
+            }
+        > = {
+            svg: {
+                allowed: new Set([
+                    "viewbox",
+                    "fill",
+                    "stroke",
+                    "stroke-width",
+                    "stroke-linecap",
+                    "stroke-linejoin",
+                    "width",
+                    "height",
+                    "xmlns",
+                ]),
+                numeric: new Set(["width", "height", "stroke-width"]),
+            },
+            path: {
+                allowed: new Set([
+                    "d",
+                    "fill",
+                    "stroke",
+                    "stroke-width",
+                    "stroke-linecap",
+                    "stroke-linejoin",
+                ]),
+                numeric: new Set(["stroke-width"]),
+            },
+            rect: {
+                allowed: new Set([
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "rx",
+                    "ry",
+                    "fill",
+                    "stroke",
+                    "stroke-width",
+                ]),
+                numeric: new Set([
+                    "x",
+                    "y",
+                    "width",
+                    "height",
+                    "rx",
+                    "ry",
+                    "stroke-width",
+                ]),
+            },
+        };
+        let cursor = 0;
+        while (cursor < value.length) {
+            const opening = value.indexOf("<", cursor);
+            if (opening < 0) {
+                const text = value.slice(cursor);
+                if (
+                    stack.some((node) => node.tag === "svg") &&
+                    text.trim().length > 0
+                ) {
+                    fail("does not support text inside <svg>.");
+                }
+                output.push(text);
+                break;
+            }
+            const text = value.slice(cursor, opening);
+            if (
+                stack.some((node) => node.tag === "svg") &&
+                text.trim().length > 0
+            ) {
+                fail("does not support text inside <svg>.");
+            }
+            output.push(text);
 
-        return lowered;
+            let quote = "";
+            let closing = opening + 1;
+            for (; closing < value.length; closing++) {
+                const character = value[closing]!;
+                if (quote) {
+                    if (character === quote && value[closing - 1] !== "\\") {
+                        quote = "";
+                    }
+                } else if (character === "'" || character === '"') {
+                    quote = character;
+                } else if (character === ">") {
+                    break;
+                }
+            }
+            if (closing >= value.length) fail("contains an unterminated tag.");
+            let token = value.slice(opening + 1, closing).trim();
+            cursor = closing + 1;
+            if (
+                token.startsWith("!") ||
+                token.startsWith("?")
+            ) {
+                fail(`does not support '<${token}>'.`);
+            }
+            if (token.startsWith("/")) {
+                const tag = token.slice(1).trim().toLowerCase();
+                if (!/^(?:div|span|svg)$/.test(tag)) {
+                    fail(`does not support closing tag '</${tag}>'.`);
+                }
+                const current = stack.pop();
+                if (!current || current.tag !== tag) {
+                    fail(`has mismatched closing tag '</${tag}>'.`);
+                }
+                if (tag === "svg") {
+                    const paint = svgPaintStack.pop()!;
+                    if (
+                        paint.usesCurrentColor &&
+                        paint.openingOutputIndex !== undefined
+                    ) {
+                        const openingTag =
+                            output[paint.openingOutputIndex]!;
+                        output[paint.openingOutputIndex] =
+                            openingTag.slice(0, -1) +
+                            ' data-bbl-current-color="true">';
+                    }
+                }
+                output.push(`</${tag}>`);
+                continue;
+            }
+
+            const selfClosing = /\/\s*$/.test(token);
+            if (selfClosing) token = token.replace(/\/\s*$/, "").trim();
+            const tagMatch =
+                token.match(/^([A-Za-z][A-Za-z0-9-]*)/) ??
+                fail(`contains invalid tag '<${token}>'.`);
+            const tag = tagMatch[1]!.toLowerCase();
+            const insideSvg = stack.some((node) => node.tag === "svg");
+            const svgPaint =
+                tag === "svg"
+                    ? {
+                          usesCurrentColor: false,
+                          usesLiteralPaint: false,
+                          fill: "black",
+                          stroke: "none",
+                      }
+                    : insideSvg
+                      ? svgPaintStack[svgPaintStack.length - 1]
+                      : undefined;
+            if (
+                (!insideSvg && !/^(?:div|span|svg)$/.test(tag)) ||
+                (insideSvg && !/^(?:path|rect)$/.test(tag))
+            ) {
+                fail(`tag '<${tag}>' is outside the bounded div/span/SVG subset.`);
+            }
+            if ((tag === "path" || tag === "rect") !== selfClosing) {
+                fail(`<${tag}> must use the self-closing form.`);
+            }
+            if ((tag === "div" || tag === "span" || tag === "svg") && selfClosing) {
+                fail(`<${tag}> must have an explicit closing tag.`);
+            }
+
+            const attributes: Array<{ name: string; value: string }> = [];
+            let attributeText = token.slice(tagMatch[0].length);
+            while (attributeText.trim().length > 0) {
+                attributeText = attributeText.trimStart();
+                const attribute =
+                    attributeText.match(
+                        /^([A-Za-z_:][A-Za-z0-9_:.-]*)\s*=\s*(["'])([\s\S]*?)\2/,
+                    ) ??
+                    fail(
+                        `tag '<${tag}>' has an invalid or unquoted attribute.`,
+                    );
+                attributes.push({
+                    name: attribute[1]!,
+                    value: attribute[3]!,
+                });
+                attributeText = attributeText.slice(attribute[0].length);
+            }
+
+            const classes = new Set<string>();
+            const attributeNames = new Set<string>();
+            const loweredAttributes: Array<{ name: string; value: string }> = [];
+            const validateSharedSvgAttribute = (
+                name: string,
+                lowerName: string,
+                value: string,
+            ): string => {
+                if (
+                    (lowerName === "fill" || lowerName === "stroke") &&
+                    !color.test(value)
+                ) {
+                    fail(
+                        `attribute '${name}' on <${tag}> has an unsupported color.`,
+                    );
+                }
+                if (
+                    lowerName === "stroke-linecap" &&
+                    !/^(?:butt|round|square)$/.test(value)
+                ) {
+                    fail(
+                        "attribute 'stroke-linecap' has an unsupported value.",
+                    );
+                }
+                if (
+                    lowerName === "stroke-linejoin" &&
+                    !/^(?:miter|round|bevel)$/.test(value)
+                ) {
+                    fail(
+                        "attribute 'stroke-linejoin' has an unsupported value.",
+                    );
+                }
+                return value.toLowerCase() === "currentcolor"
+                    ? "white"
+                    : value;
+            };
+            for (const attribute of attributes) {
+                const name = attribute.name;
+                const lowerName = name.toLowerCase();
+                if (attributeNames.has(lowerName)) {
+                    fail(`attribute '${name}' is duplicated on <${tag}>.`);
+                }
+                attributeNames.add(lowerName);
+                if (attribute.value.includes("__BBLITE_UI_MARKUP_")) {
+                    fail(`requires static attribute '${name}' on <${tag}>.`);
+                }
+                let attributeValue = attribute.value;
+                if (tag === "div" || tag === "span") {
+                    if (lowerName !== "class" && lowerName !== "style") {
+                        fail(`attribute '${name}' is not supported on <${tag}>.`);
+                    }
+                    if (lowerName === "class") {
+                        for (const className of attributeValue
+                            .split(/\s+/)
+                            .filter(Boolean)) {
+                            if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(className)) {
+                                fail(`class '${className}' is not valid.`);
+                            }
+                            classes.add(className);
+                        }
+                    } else {
+                        attributeValue = this.lowerUiAttributeLiteral(
+                            "style",
+                            attributeValue,
+                            site,
+                        );
+                        if (tag === "div") {
+                            attributeValue = `display:block;${attributeValue}`;
+                        }
+                    }
+                } else {
+                    const svgTag = tag as keyof typeof svgAttributeSchemas;
+                    const schema = svgAttributeSchemas[svgTag];
+                    if (!schema.allowed.has(lowerName)) {
+                        fail(`attribute '${name}' is not supported on <${tag}>.`);
+                    }
+                    if (
+                        schema.numeric.has(lowerName) &&
+                        !numeric.test(attributeValue)
+                    ) {
+                        fail(`attribute '${name}' on <${tag}> must be numeric.`);
+                    }
+                    if (
+                        tag === "path" &&
+                        lowerName === "d" &&
+                        !pathData.test(attributeValue)
+                    ) {
+                        fail("attribute 'd' contains unsupported SVG path data.");
+                    }
+                    if (
+                        tag === "svg" &&
+                        lowerName === "viewbox" &&
+                        !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:\s+[+-]?(?:\d+(?:\.\d*)?|\.\d+)){3}$/.test(
+                            attributeValue.trim(),
+                        )
+                    ) {
+                        fail("attribute 'viewBox' must contain four numbers.");
+                    }
+                    if (
+                        tag === "svg" &&
+                        lowerName === "xmlns" &&
+                        attributeValue !== "http://www.w3.org/2000/svg"
+                    ) {
+                        fail("attribute 'xmlns' has an unsupported value.");
+                    }
+                }
+                if (tag === "svg" || tag === "path" || tag === "rect") {
+                    attributeValue = validateSharedSvgAttribute(
+                        name,
+                        lowerName,
+                        attributeValue,
+                    );
+                }
+                if (
+                    tag === "svg" &&
+                    svgPaint &&
+                    (lowerName === "fill" || lowerName === "stroke")
+                ) {
+                    svgPaint[lowerName] =
+                        attribute.value.trim().toLowerCase();
+                }
+                loweredAttributes.push({
+                    name: lowerName === "viewbox" ? "viewBox" : name,
+                    value: attributeValue,
+                });
+            }
+            if ((tag === "path" || tag === "rect") && svgPaint) {
+                const declaredPaint = (
+                    name: "fill" | "stroke",
+                ): string =>
+                    attributes
+                        .find(
+                            (attribute) =>
+                                attribute.name.toLowerCase() === name,
+                        )
+                        ?.value.trim()
+                        .toLowerCase() ?? svgPaint[name];
+                for (const paint of [
+                    declaredPaint("fill"),
+                    declaredPaint("stroke"),
+                ]) {
+                    if (paint === "none") continue;
+                    if (paint === "currentcolor") {
+                        svgPaint.usesCurrentColor = true;
+                    } else {
+                        svgPaint.usesLiteralPaint = true;
+                    }
+                }
+                if (
+                    svgPaint.usesCurrentColor &&
+                    svgPaint.usesLiteralPaint
+                ) {
+                    fail(
+                        "cannot mix currentColor with literal SVG paints (including the implicit default fill:black) because whole-image tinting would recolor the other paint; 'none' is non-paint.",
+                    );
+                }
+            }
+            if (tag === "path" && !attributeNames.has("d")) {
+                fail("<path> requires static path data in attribute 'd'.");
+            }
+            if (
+                tag === "rect" &&
+                !["x", "y", "width", "height"].every((name) =>
+                    attributeNames.has(name),
+                )
+            ) {
+                fail("<rect> requires static x, y, width, and height.");
+            }
+            const node: UiStaticMarkupNode = {
+                tag,
+                classes,
+                children: [],
+            };
+            const parent = stack[stack.length - 1];
+            if (parent) parent.children.push(node);
+            else roots.push(node);
+            const renderedAttributes = loweredAttributes
+                .map(
+                    ({ name, value: attributeValue }) =>
+                        ` ${name}="${escapeAttribute(attributeValue)}"`,
+                )
+                .join("");
+            output.push(
+                `<${tag}${renderedAttributes}${selfClosing ? "/" : ""}>`,
+            );
+            if (tag === "svg") {
+                svgPaint!.openingOutputIndex = output.length - 1;
+            }
+            if (!selfClosing) {
+                stack.push(node);
+                if (tag === "svg") svgPaintStack.push(svgPaint!);
+            }
+            if (tag === "svg") {
+                this.reachFeature("ui:inline-svg", site);
+            }
+        }
+        if (stack.length > 0) {
+            fail(`is missing closing tag '</${stack[stack.length - 1]!.tag}>'.`);
+        }
+        this.recordUiStaticMarkup(ownerId, roots);
+        return output.join("");
     }
 
-    private compileUiMarkupString(expression: ts.Expression): string {
+    private compileUiMarkupString(
+        expression: ts.Expression,
+        ownerId?: number,
+    ): string {
         const staticValue = this.tryUiStaticString(expression);
         if (staticValue !== undefined) {
             return this.cppString(
-                this.lowerUiMarkupLiteral(staticValue, expression),
+                this.lowerUiMarkupLiteral(staticValue, expression, ownerId),
             );
         }
         const unwrapped = this.unwrap(expression);
         if (ts.isConditionalExpression(unwrapped)) {
             return (
                 `(${this.compileCondition(unwrapped.condition)} ? ` +
-                `${this.compileUiMarkupString(unwrapped.whenTrue)} : ` +
-                `${this.compileUiMarkupString(unwrapped.whenFalse)})`
+                `${this.compileUiMarkupString(unwrapped.whenTrue, ownerId)} : ` +
+                `${this.compileUiMarkupString(unwrapped.whenFalse, ownerId)})`
             );
         }
         const sourceParts = this.collectUiStringParts(unwrapped);
@@ -4779,7 +8064,7 @@ class Compiler
                 substitutions.push(part);
             }
         }
-        const lowered = this.lowerUiMarkupLiteral(source);
+        const lowered = this.lowerUiMarkupLiteral(source, expression, ownerId);
         const chunks = lowered.split(/(__BBLITE_UI_MARKUP_\d+__)/g);
         const parts: string[] = [];
         for (const chunk of chunks) {
@@ -4789,14 +8074,85 @@ class Compiler
                 parts.push(this.cppString(chunk));
                 continue;
             }
-            parts.push(this.uiTemplateSubstitutionCpp(
-                substitutions[Number(marker[1])]!,
-                "Native UI innerHTML",
-                true,
-            ));
+            parts.push(
+                `bbl::ui_escape_rml(${this.uiTemplateSubstitutionCpp(
+                    substitutions[Number(marker[1])]!,
+                    "Native UI innerHTML",
+                    true,
+                )})`,
+            );
         }
         this.reachJsData();
         return `bbl::js::concat(${parts.join(", ")})`;
+    }
+
+    private compileUiBrowserFileAttribute(
+        element: Value,
+        engine: string,
+        name: string,
+        value: ts.Expression,
+        site: ts.Node,
+        syntax: "property" | "attribute",
+    ): string | undefined {
+        if (element.uiTag === "input") {
+            if (
+                name === "multiple" ||
+                name === "webkitdirectory" ||
+                name === "directory"
+            ) {
+                this.fail(
+                    site,
+                    `File input ${syntax} '${name}' is not supported; the native picker accepts one file and no directories.`,
+                );
+            }
+            if (name === "type") {
+                const inputType =
+                    this.compileStringLiteral(value).toLowerCase();
+                if (inputType !== "file") {
+                    this.fail(
+                        value,
+                        `Retained native <input> supports only the static type 'file', not '${inputType}'.`,
+                    );
+                }
+                element.uiFileInput = true;
+                this.reachFeature("browser:file", site);
+                return `bbl::ui_set_file_input(${engine}, ${element.cpp})`;
+            }
+            if (name === "accept") {
+                if (!element.uiFileInput) {
+                    this.fail(
+                        site,
+                        "input accept requires a preceding static type='file'.",
+                    );
+                }
+                const accept = validateFileAccept(
+                    this,
+                    this.compileStringLiteral(value),
+                    value,
+                );
+                this.reachFeature("browser:file", site);
+                return (
+                    `bbl::ui_set_file_accept(${engine}, ${element.cpp}, ` +
+                    `${this.cppString(accept)})`
+                );
+            }
+        }
+        if (element.uiTag !== "a") return undefined;
+        if (name === "href") {
+            const url = this.compileValue(value);
+            this.expectKind(url, "object-url", value);
+            this.expectSameEngine(element, url, site);
+            this.reachFeature("browser:file", site);
+            return `bbl::ui_set_download_url(${engine}, ${element.cpp}, ${url.cpp})`;
+        }
+        if (name === "download") {
+            this.reachFeature("browser:file", site);
+            return (
+                `bbl::ui_set_download_name(${engine}, ${element.cpp}, ` +
+                `${this.uiStringCpp(value, "anchor download")})`
+            );
+        }
+        return undefined;
     }
 
     public emitUiPropertyAssignment(
@@ -4817,6 +8173,18 @@ class Compiler
                 directElement,
                 expression.left,
             );
+            const browserFile = this.compileUiBrowserFileAttribute(
+                directElement,
+                engine,
+                property,
+                expression.right,
+                expression,
+                "property",
+            );
+            if (browserFile) {
+                this.emit(`${browserFile};`);
+                return true;
+            }
             if (
                 directElement.uiCanvas &&
                 !directElement.uiCanvasContext &&
@@ -4922,15 +8290,46 @@ class Compiler
                     ) === "style"
                 ) {
                     const sheet = this.compileStringLiteral(expression.right);
+                    this.emit(
+                        `bbl::ui_clear_style_rules(${engine}, ${directElement.cpp});`,
+                    );
                     for (const rule of this.lowerUiStyleSheetLiteral(
                         sheet,
                         expression.right,
+                        directElement.uiStaticId,
                     )) {
-                        this.emit(
-                            `bbl::ui_add_${rule.kind}_style(${engine}, ` +
-                                `${this.cppString(rule.name)}, ` +
-                                `${this.cppString(rule.style)});`,
-                        );
+                        if (
+                            (rule.kind === "class" || rule.kind === "id") &&
+                            !rule.hover &&
+                            rule.maxWidth === undefined
+                        ) {
+                            this.emit(
+                                `bbl::ui_add_${rule.kind}_style(${engine}, ` +
+                                    `${directElement.cpp}, ` +
+                                    `${this.cppString(rule.primary)}, ` +
+                                    `${this.cppString(rule.style)});`,
+                            );
+                        } else {
+                            const kind = {
+                                class: "Class",
+                                id: "Id",
+                                "compound-class": "CompoundClass",
+                                "class-descendant-tag":
+                                    "ClassDescendantTag",
+                                "id-descendant-class":
+                                    "IdDescendantClass",
+                            }[rule.kind];
+                            this.emit(
+                                `bbl::ui_add_style_rule(${engine}, ${directElement.cpp}, ` +
+                                    `bbl::UiStyleSelectorKind::${kind}, ` +
+                                    `${this.cppString(rule.primary)}, ` +
+                                    `${this.cppString(rule.secondary ?? "")}, ` +
+                                    `${this.cppString(rule.tag ?? "")}, ` +
+                                    `${rule.hover ? "true" : "false"}, ` +
+                                    `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
+                                    `${this.cppString(rule.style)});`,
+                            );
+                        }
                     }
                 }
                 this.emit(
@@ -4942,7 +8341,10 @@ class Compiler
             if (property === "innerHTML") {
                 this.emit(
                     `bbl::ui_set_inner_rml(${engine}, ${directElement.cpp}, ` +
-                        `${this.compileUiMarkupString(expression.right)});`,
+                        `${this.compileUiMarkupString(
+                            expression.right,
+                            directElement.uiStaticId,
+                        )});`,
                 );
                 return true;
             }
@@ -4953,6 +8355,13 @@ class Compiler
                       ? property
                       : undefined;
             if (attribute) {
+                if (attribute === "class" || attribute === "id") {
+                    this.recordUiStaticAttribute(
+                        directElement,
+                        attribute,
+                        expression.right,
+                    );
+                }
                 this.emit(
                     `bbl::ui_set_attribute(${engine}, ${directElement.cpp}, ` +
                         `${this.cppString(attribute)}, ` +
@@ -4984,12 +8393,20 @@ class Compiler
         if (property === "cssText") {
             this.emit(
                 `bbl::ui_set_attribute(${engine}, ${styleElement.cpp}, ` +
-                    `${this.cppString("style")}, ${this.compileUiStyleString(expression.right)});`,
+                    `${this.cppString("style")}, ${this.compileUiStyleString(
+                        expression.right,
+                        styleElement.uiStaticId,
+                    )});`,
             );
             return true;
         }
         const nativeProperty = this.nativeUiStyleProperty(property);
         this.auditUiStylePropertyName(nativeProperty, expression.left.name);
+        this.recordUiStaticStyleProperty(
+            styleElement,
+            nativeProperty,
+            expression.right,
+        );
         this.emit(
             `bbl::ui_set_style_property(${engine}, ${styleElement.cpp}, ` +
                 `${this.cppString(nativeProperty)}, ` +
@@ -5013,8 +8430,13 @@ class Compiler
             value.dataType.element.kind === "string"
         ) {
             const strings = this.staticStringElements(expression);
-            if (strings) return { ...value, staticStrings: strings };
+            if (strings) {
+                const withStrings = { ...value, staticStrings: strings };
+                this.trackRetainedReference(withStrings);
+                return withStrings;
+            }
         }
+        this.trackRetainedReference(value);
         return value;
     }
 
@@ -5289,7 +8711,8 @@ class Compiler
             }
         }
         if (
-            expression.name.text === "body" &&
+            (expression.name.text === "body" ||
+                expression.name.text === "head") &&
             ts.isIdentifier(ownerExpression) &&
             ownerExpression.text === "document" &&
             this.isDefaultLibraryIdentifier(ownerExpression)
@@ -5355,7 +8778,9 @@ class Compiler
                 }
                 this.fail(
                     expression,
-                    `Field '${expression.name.text}' is not assigned before this read.`,
+                    `Field '${expression.name.text}' is not assigned before this read ` +
+                        `(class ${instance.classDeclaration?.name?.text ?? "unknown"}; ` +
+                        `fields ${Object.keys(instance.recordProperties ?? {}).join(", ") || "none"}).`,
                 );
             }
             return field;
@@ -5380,8 +8805,54 @@ class Compiler
         // as the path it is written as. Unknown identifiers still fail
         // in lookup at the end of that chain, and an owner that is
         // itself unsupported fails naming the sub-path that failed.
-        const owner = this.compileValue(ownerExpression);
+        const rawOwner = this.compileValue(ownerExpression);
+        // A shared class instance read back out of a container is a `Ref`
+        // with no compile-time shape of its own. Hydrating it here is what
+        // gives the ordinary record path its fields, getters and setters,
+        // so `part.locked` and `part.size` read the same way whether the
+        // receiver was just constructed or came out of an array.
+        const owner =
+            this.classLowerer.hydrate(rawOwner) ?? rawOwner;
         const property = expression.name.text;
+        if (
+            owner.kind === "animation-group" &&
+            owner.animationGroupSource === "property"
+        ) {
+            if (
+                property === "loopAnimation" ||
+                property === "isPlaying"
+            ) {
+                return {
+                    kind: "boolean",
+                    cpp:
+                        `${owner.cpp}->` +
+                        (property === "loopAnimation"
+                            ? "loop"
+                            : "playing"),
+                    dataType: { kind: "boolean" },
+                };
+            }
+            const field = {
+                currentTime: "current_time",
+                speedRatio: "speed_ratio",
+                weight: "weight",
+            }[property];
+            if (field) {
+                return {
+                    kind: "number",
+                    cpp: `${owner.cpp}->${field}`,
+                    dataType: { kind: "number" },
+                };
+            }
+        }
+        const browserFileProperty = compileBrowserFileProperty(
+            this,
+            owner,
+            expression,
+        );
+        if (browserFileProperty) {
+            return browserFileProperty;
+        }
         const ownerTsType = this.checker.getTypeAtLocation(ownerExpression);
         const ownerTsMembers =
             (ownerTsType.flags & ts.TypeFlags.Union) !== 0
@@ -5410,6 +8881,12 @@ class Compiler
             // carries one. Keeping that null in the value model lets the
             // source's optional chain and fallback lower unchanged.
             return { kind: "json-null", cpp: "std::nullopt" };
+        }
+        if (owner.platformEventBase) {
+            this.fail(
+                expression.name,
+                `Borrowed DOM Event values do not expose '${property}'; only preventDefault is supported on the base Event view.`,
+            );
         }
         if (owner.kind === "platform-keyboard-event") {
             const field = KEY_EVENT_FIELDS.get(property);
@@ -5577,14 +9054,9 @@ class Compiler
         }
         if (owner.kind === "record") {
             const accessor = owner.recordGetters?.[property];
-            if (accessor) {
-                return this.compileRecordGetter(
-                    owner,
-                    accessor,
-                );
-            }
-            const value =
-                owner.recordProperties?.[property];
+            const value = accessor
+                ? this.compileRecordGetter(owner, accessor)
+                : owner.recordProperties?.[property];
             if (!value) {
                 const declared =
                     this.dataLowerer.dataTypeAt(expression);
@@ -5612,13 +9084,20 @@ class Compiler
                         `class: ${owner.classDeclaration?.name?.text ?? "none"}).`,
                 );
             }
-            if (owner.optionalFoundCpp === undefined) {
+            const ownerPresent =
+                owner.optionalFoundCpp ??
+                (expression.questionDotToken &&
+                owner.dataType?.kind === "struct" &&
+                this.dataTypes.isReferenceStruct(owner.dataType.name)
+                    ? `static_cast<bool>(${owner.cpp})`
+                    : undefined);
+            if (ownerPresent === undefined) {
                 return value;
             }
             const present =
                 value.optionalFoundCpp === undefined
-                    ? owner.optionalFoundCpp
-                    : `(${owner.optionalFoundCpp} && ${value.optionalFoundCpp})`;
+                    ? ownerPresent
+                    : `(${ownerPresent} && ${value.optionalFoundCpp})`;
             return { ...value, optionalFoundCpp: present };
         }
         // `baked.clips`: the bake's own row map. It carries the bake and
@@ -6171,7 +9650,8 @@ class Compiler
         cpp: string;
         frameRate: string;
         duration: string;
-        target: "mesh" | "camera";
+        target: "mesh" | "camera" | "record";
+        paths: readonly string[];
     } {
         return compilePropertyAnimationClip(
             this,
@@ -6179,6 +9659,31 @@ class Compiler
             tracksExpression,
             optionsExpression,
         );
+    }
+
+    private readonly propertyAnimationTargets =
+        new PropertyAnimationTargetLowerer();
+
+    public compilePropertyAnimationTargets(
+        target: Value,
+        paths: readonly string[],
+        node: ts.Expression,
+    ): { cpp: string; engineCpp: string } {
+        return this.propertyAnimationTargets.compile(
+            this,
+            target,
+            paths,
+            node,
+        );
+    }
+
+    public compileRecordSetterValue(
+        owner: Value,
+        setter: ts.SetAccessorDeclaration,
+        node: ts.Expression,
+        value: Value,
+    ): void {
+        this.classLowerer.compileSetter(owner, setter, node, value);
     }
 
     public compilePropertyAnimationGroupOptions(
@@ -6937,6 +10442,9 @@ class Compiler
                 // selected value is the condition — the call arm's
                 // delegate-and-kind-check shape below.
                 const value = this.compileValue(unwrapped);
+                if (value.staticBoolean !== undefined) {
+                    return value.staticBoolean ? "true" : "false";
+                }
                 if (value.kind === "boolean") {
                     return value.cpp;
                 }
@@ -7021,6 +10529,25 @@ class Compiler
                 );
             }
             if (
+                leftValue.kind === "object-url" &&
+                rightValue.kind === "object-url" &&
+                (unwrapped.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsEqualsEqualsToken ||
+                    unwrapped.operatorToken.kind ===
+                        ts.SyntaxKind.ExclamationEqualsEqualsToken)
+            ) {
+                this.expectSameEngine(
+                    leftValue,
+                    rightValue,
+                    unwrapped,
+                );
+                return (
+                    `${leftValue.cpp} ` +
+                    `${unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? "==" : "!="} ` +
+                    `${rightValue.cpp}`
+                );
+            }
+            if (
                 staticLeft !== undefined &&
                 staticRight !== undefined &&
                 Number.isFinite(staticLeft) &&
@@ -7061,7 +10588,6 @@ class Compiler
             return `${this.castNumber(leftValue, "double")} ${operator} ${this.castNumber(rightValue, "double")}`;
         }
         if (
-            ts.isIdentifier(unwrapped) ||
             ts.isPropertyAccessExpression(unwrapped) ||
             ts.isElementAccessExpression(unwrapped)
         ) {
@@ -7097,20 +10623,26 @@ class Compiler
         }
         if (
             unwrapped.kind === ts.SyntaxKind.TrueKeyword ||
-            unwrapped.kind === ts.SyntaxKind.FalseKeyword ||
-            ts.isIdentifier(unwrapped)
+            unwrapped.kind === ts.SyntaxKind.FalseKeyword
         ) {
-            if (ts.isIdentifier(unwrapped)) {
-                const value =
-                    this.lookupOptional(unwrapped);
-                if (value?.kind === "callback") {
+            return this.compileBoolean(unwrapped);
+        }
+        if (ts.isIdentifier(unwrapped)) {
+            const value = this.lookupOptional(unwrapped);
+            if (value) {
+                const dataCondition =
+                    this.dataLowerer.conditionFromValue(value);
+                if (dataCondition !== undefined) {
+                    return dataCondition;
+                }
+                if (
+                    value.kind === "callback" ||
+                    value.kind === "ui-element"
+                ) {
                     return "true";
                 }
-                if (value?.kind === "json-null") {
+                if (value.kind === "json-null") {
                     return "false";
-                }
-                if (value?.kind === "ui-element") {
-                    return value.truthinessCpp ?? "true";
                 }
             }
             return this.compileBoolean(unwrapped);
@@ -7127,7 +10659,10 @@ class Compiler
                 (value.kind === "data" &&
                     value.dataType?.kind === "boolean")
             ) {
-                return value.cpp;
+                return (
+                    this.dataLowerer.conditionFromValue(value) ??
+                    value.cpp
+                );
             }
             if (value.truthinessCpp !== undefined) {
                 return value.truthinessCpp;
@@ -7160,6 +10695,10 @@ class Compiler
     private frameCallbackDepth = 0;
     /** Native path-dependent bodies currently being lowered. */
     private runtimeControlFlowDepth = 0;
+    /** Native loop expressions/bodies currently being lowered. */
+    private runtimeIterationDepth = 0;
+    /** Per-iteration scope keys while a loop is being statically emitted. */
+    private readonly staticCallbackEvaluationIdentities: object[] = [];
 
     public meshTransformDirtyEntry():
         | "mark_mesh_dirty"
@@ -7240,6 +10779,13 @@ class Compiler
         }
         const previousDeferredFloor = this.deferredCaptureFloor;
         const previousDeferredCeiling = this.deferredCaptureCeiling;
+        const previousPlatformEventCaptureFloor =
+            this.escapingPlatformEventCaptureFloor;
+        if (this.frameCallbackDepth > 0) {
+            this.escapingPlatformEventCaptureFloor =
+                this.variableScopes.length;
+        }
+        this.refuseEscapingPlatformEventCapturesIn(unwrapped);
         this.deferredCaptureFloor =
             signature === "void" || signature === "interval"
             ? this.frameCallbackScopeFloor
@@ -7288,6 +10834,8 @@ class Compiler
             this.popScope();
             this.deferredCaptureFloor = previousDeferredFloor;
             this.deferredCaptureCeiling = previousDeferredCeiling;
+            this.escapingPlatformEventCaptureFloor =
+                previousPlatformEventCaptureFloor;
             this.frameCallbackScopeFloor = previousFrameFloor;
             this.indentLevel = previousIndent;
         }
@@ -7329,6 +10877,13 @@ class Compiler
             : this.allocateTemporaryCppName("frame_callback_value");
         const previousDeferredFloor = this.deferredCaptureFloor;
         const previousDeferredCeiling = this.deferredCaptureCeiling;
+        const previousPlatformEventCaptureFloor =
+            this.escapingPlatformEventCaptureFloor;
+        if (this.frameCallbackDepth > 0) {
+            this.escapingPlatformEventCaptureFloor =
+                this.variableScopes.length;
+        }
+        this.refuseEscapingPlatformEventCapturesIn(identifier);
         if (signature === "interval") {
             this.deferredCaptureFloor = this.frameCallbackScopeFloor;
             this.deferredCaptureCeiling =
@@ -7352,6 +10907,8 @@ class Compiler
             this.frameCallbackDepth -= 1;
             this.deferredCaptureFloor = previousDeferredFloor;
             this.deferredCaptureCeiling = previousDeferredCeiling;
+            this.escapingPlatformEventCaptureFloor =
+                previousPlatformEventCaptureFloor;
             this.indentLevel = previousIndent;
         }
         const callbackBody = this.body.splice(start);
@@ -7940,6 +11497,9 @@ class Compiler
             cpp: cppName,
             engineCpp: cppName,
             msaaSamples,
+            retainedReferenceCapture: cppName,
+            retainedReferenceSequence:
+                ++this.nextRetainedReferenceSequence,
         };
     }
 
@@ -8475,8 +12035,22 @@ class Compiler
         this.jsDataReached = true;
     }
 
+    /** Whether a `new` expression constructs a reached local class. */
+    public constructsLocalClass(expression: ts.NewExpression): boolean {
+        return this.classLowerer.resolveClass(expression) !== undefined;
+    }
+
     public reachVoxelFileStorage(): void {
         this.voxelFileStorageReached = true;
+        this.reachFeature("browser:file");
+    }
+
+    public reachJson(): void {
+        this.reachFeature("data:json");
+    }
+
+    public reachLocalStorage(): void {
+        this.reachFeature("storage:local");
     }
 
     /** Native host-file-dialog adapter for the pinned voxel save/load module. */
@@ -8578,8 +12152,40 @@ class Compiler
         return this.runtimeControlFlowDepth > 0;
     }
 
+    public enterRuntimeIteration(): void {
+        this.runtimeIterationDepth += 1;
+    }
+
+    public leaveRuntimeIteration(): void {
+        this.runtimeIterationDepth -= 1;
+    }
+
+    public isInRuntimeIteration(): boolean {
+        return this.runtimeIterationDepth > 0;
+    }
+
+    public enterStaticIteration(): void {
+        this.staticCallbackEvaluationIdentities.push(
+            this.variableScopes.at(-1)!,
+        );
+    }
+
+    public leaveStaticIteration(): void {
+        this.staticCallbackEvaluationIdentities.pop();
+    }
+
+    public callbackEvaluationIdentity(): object | undefined {
+        return this.staticCallbackEvaluationIdentities.at(-1);
+    }
+
     public defineThis(instance: Value | undefined): void {
         this.thisInstance = instance;
+        // A generic receiver carries what its type parameters stand for.
+        // Installing it with `this` is what makes an inlined method body
+        // resolve `P` through the construction site rather than through the
+        // declaration, and every existing save/restore of `this` restores
+        // the substitution with it.
+        this.dataTypes.setActiveTypeArguments(instance?.classTypeArguments);
     }
 
     /**
@@ -8664,8 +12270,29 @@ class Compiler
         setter: ts.SetAccessorDeclaration,
         value: ts.Expression,
     ): void {
+        const parameter = setter.parameters[0];
+        if (
+            !parameter ||
+            !ts.isIdentifier(parameter.name)
+        ) {
+            this.classLowerer.compileSetter(
+                owner,
+                setter,
+                value,
+            );
+            return;
+        }
+        const argument = this.compileClassParameterValue(
+            parameter.name,
+            value,
+        );
         this.withRecordScopes(owner, () =>
-            this.classLowerer.compileSetter(owner, setter, value),
+            this.classLowerer.compileSetter(
+                owner,
+                setter,
+                value,
+                argument,
+            ),
         );
     }
 
@@ -8678,17 +12305,26 @@ class Compiler
         owner: Value,
         work: () => T,
     ): T {
-        if (!owner.recordScopes) {
+        if (!owner.recordScopes && !owner.classDeclaration) {
             return work();
         }
         const saved = [...this.variableScopes];
-        this.variableScopes.length = 0;
-        this.variableScopes.push(...owner.recordScopes);
+        const previousThis = this.activeThis();
+        if (owner.recordScopes) {
+            this.variableScopes.length = 0;
+            this.variableScopes.push(...owner.recordScopes);
+        }
+        if (owner.classDeclaration) {
+            this.defineThis(owner);
+        }
         try {
             return work();
         } finally {
-            this.variableScopes.length = 0;
-            this.variableScopes.push(...saved);
+            this.defineThis(previousThis);
+            if (owner.recordScopes) {
+                this.variableScopes.length = 0;
+                this.variableScopes.push(...saved);
+            }
         }
     }
 
@@ -8741,7 +12377,28 @@ class Compiler
     public bindClassField(
         name: ts.Identifier,
         initializer: ts.Expression,
+        declared?: DataType,
     ): void {
+        const sharedStorage = this.classFieldNeedsSharedStorage(name);
+        const declaredData =
+            declared ?? this.dataLowerer.dataTypeAt(name);
+        const unwrappedInitializer = this.unwrap(initializer);
+        if (
+            declaredData &&
+            this.dataTypes.carriesBorrowedPlatformEvent(declaredData) &&
+            unwrappedInitializer.kind !== ts.SyntaxKind.NullKeyword &&
+            !(
+                ts.isIdentifier(unwrappedInitializer) &&
+                unwrappedInitializer.text === "undefined" &&
+                !this.lookupOptional(unwrappedInitializer)
+            )
+        ) {
+            this.refuseBorrowedPlatformEventEscape(
+                this.compileValue(initializer),
+                initializer,
+                "class field assignment",
+            );
+        }
         const nullableResource =
             this.nullableResourceKind(name);
         const nullableInitializer = nullableResource
@@ -8754,22 +12411,25 @@ class Compiler
             const cppName = this.allocateTemporaryCppName(
                 `class_field_${name.text}`,
             );
-            this.emit(
-                `std::optional<${nullableResource.cppType}> ${cppName};`,
-            );
+            const storage = sharedStorage
+                ? `(*${cppName})`
+                : cppName;
+            this.emit(sharedStorage
+                ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>();`
+                : `std::optional<${nullableResource.cppType}> ${cppName};`);
             this.defineVariable(name, {
                 kind: nullableResource.kind,
-                cpp: `(*${cppName})`,
+                cpp: `(*${storage})`,
                 ...(nullableResource.kind === "ui-element" &&
                 this.defaultEngineCpp
                     ? { engineCpp: this.defaultEngineCpp }
                     : {}),
-                optionalFoundCpp: `${cppName}.has_value()`,
-                optionalStorageCpp: cppName,
+                optionalFoundCpp: `${storage}.has_value()`,
+                optionalStorageCpp: storage,
             });
             return;
         }
-        if (this.bindClassDataField(name, initializer)) {
+        if (this.bindClassDataField(name, initializer, declared)) {
             return;
         }
         this.bindLocalOrParameterValue(
@@ -8779,6 +12439,27 @@ class Compiler
             this.allocateTemporaryCppName(
                 `class_field_${name.text}`,
             ),
+            sharedStorage,
+        );
+    }
+
+    private classFieldNeedsSharedStorage(name: ts.Identifier): boolean {
+        const symbol = this.symbols.valueSymbol(name);
+        const declaration = symbol?.declarations?.find(
+            (candidate) =>
+                ts.isPropertyDeclaration(candidate) ||
+                (ts.isParameter(candidate) &&
+                    candidate.parent !== undefined &&
+                    ts.isParameterPropertyDeclaration(
+                        candidate,
+                        candidate.parent,
+                    )),
+        );
+        return (
+            declaration !== undefined &&
+            (ts.getCombinedModifierFlags(declaration) &
+                ts.ModifierFlags.Readonly) ===
+                0
         );
     }
 
@@ -8788,20 +12469,24 @@ class Compiler
     ): Value | undefined {
         const resource = this.nullableResourceKind(name);
         if (!resource) return undefined;
+        const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        this.emit(
-            `std::optional<${resource.cppType}> ${cppName};`,
-        );
+        const storage = sharedStorage
+            ? `(*${cppName})`
+            : cppName;
+        this.emit(sharedStorage
+            ? `auto ${cppName} = std::make_shared<std::optional<${resource.cppType}>>();`
+            : `std::optional<${resource.cppType}> ${cppName};`);
         const value: Value = {
             kind: resource.kind,
-            cpp: `(*${cppName})`,
+            cpp: `(*${storage})`,
             ...(resource.kind === "ui-element" && this.defaultEngineCpp
                 ? { engineCpp: this.defaultEngineCpp }
                 : {}),
-            optionalFoundCpp: `${cppName}.has_value()`,
-            optionalStorageCpp: cppName,
+            optionalFoundCpp: `${storage}.has_value()`,
+            optionalStorageCpp: storage,
         };
         this.defineVariable(name, value);
         return value;
@@ -8810,17 +12495,25 @@ class Compiler
     /** Predeclare an optional plain-data class field at JavaScript undefined. */
     public bindUninitializedClassDataField(
         name: ts.Identifier,
+        declared?: DataType,
     ): Value | undefined {
-        const dataType = this.dataLowerer.dataTypeAt(name);
+        const dataType = declared ?? this.dataLowerer.dataTypeAt(name);
         if (dataType?.kind !== "optional") {
             return undefined;
         }
+        const sharedStorage = this.classFieldNeedsSharedStorage(name);
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
-        this.emit(`${this.dataTypes.cppType(dataType)} ${cppName}{};`);
-        this.dataLowerer.registerLocal(cppName, "owned");
-        const value = this.dataLowerer.leafValue(cppName, dataType);
+        const storage = sharedStorage
+            ? `(*${cppName})`
+            : cppName;
+        const cppType = this.dataTypes.cppType(dataType);
+        this.emit(sharedStorage
+            ? `auto ${cppName} = std::make_shared<${cppType}>();`
+            : `${cppType} ${cppName}{};`);
+        this.dataLowerer.registerLocal(storage, "owned");
+        const value = this.dataLowerer.leafValue(storage, dataType);
         value.nativeLvalue = true;
         this.defineVariable(name, value);
         return value;
@@ -8830,25 +12523,7 @@ class Compiler
     public bindOptionalResourceValue(
         name: ts.Identifier,
     ): Value | undefined {
-        const declared = this.nullableResourceKind(name);
-        const typeName = this.checker.getTypeAtLocation(name).symbol?.name;
-        const direct = typeName?.endsWith("Node")
-            ? {
-                  kind: "audio-node" as const,
-                  cppType: "bbl::pal::AudioNodeHandle",
-              }
-            : typeName === "AudioBuffer"
-              ? {
-                    kind: "audio-buffer" as const,
-                    cppType: "bbl::pal::AudioBufferHandle",
-                }
-              : typeName === "AudioParam"
-                ? {
-                      kind: "audio-param" as const,
-                      cppType: "bbl::pal::AudioParamHandle",
-                  }
-                : undefined;
-        const resource = declared ?? direct;
+        const resource = this.nullableResourceKind(name, true);
         if (!resource) return undefined;
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
@@ -8879,30 +12554,36 @@ class Compiler
     public bindClassDataField(
         name: ts.Identifier,
         initializer: ts.Expression,
+        declared?: DataType,
     ): Value | undefined {
         const dataType =
-            this.dataLowerer.dataTypeAt(name);
+            declared ?? this.dataLowerer.dataTypeAt(name);
         if (!dataType || dataType.kind === "handle") {
             return undefined;
         }
         const cppName = this.allocateTemporaryCppName(
             `class_field_${name.text}`,
         );
+        const sharedStorage = this.classFieldNeedsSharedStorage(name);
+        const storage = sharedStorage
+            ? `(*${cppName})`
+            : cppName;
         const cpp = this.dataLowerer.compileForSink(
             initializer,
             dataType,
         );
-        this.emit(
-            `${this.dataTypes.cppType(dataType)} ${cppName} = ${cpp};`,
-        );
+        const cppType = this.dataTypes.cppType(dataType);
+        this.emit(sharedStorage
+            ? `auto ${cppName} = std::make_shared<${cppType}>(${cpp});`
+            : `${cppType} ${cppName} = ${cpp};`);
         this.dataLowerer.registerLocal(
-            cppName,
+            storage,
             "owned",
         );
         // Leaves use the same surface as a container read: numbers stay
         // numeric and stored resource handles remain resources.
         const value = this.dataLowerer.leafValue(
-            cppName,
+            storage,
             dataType,
         );
         value.nativeLvalue = true;
@@ -8934,6 +12615,144 @@ class Compiler
         return instance.classDeclaration ?? this.classInstances.get(instance);
     }
 
+    /**
+     * The JavaScript identity of one materialized callback.
+     *
+     * Evaluating a function expression mints a function object, so the
+     * identity is the declaration *and* the thing whose evaluation produced
+     * it -- the instance a class-body handler was declared on, or the scope
+     * an inline literal closed over. That is the declaration's own closure,
+     * never whichever receiver happened to be bound where the callback was
+     * materialized: a module-level `onTick` added inside a constructor and
+     * removed at module scope is one function object, and two instances
+     * adding it add the same one.
+     *
+     * A declaration owned by a shared class has no such owner to key on --
+     * its `this` is rebuilt at every access, and one identity would make
+     * every instance's handler the same handler. That is refused rather
+     * than conflated, as is a closure this cannot name at all.
+     */
+    public callbackIdentity(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): number {
+        const key = this.callbackClosureKey(declaration, owner);
+        const perClosure =
+            this.callbackIdentities.get(declaration) ??
+            new Map<object, number>();
+        this.callbackIdentities.set(declaration, perClosure);
+        const existing = perClosure.get(key);
+        if (existing !== undefined) {
+            return existing;
+        }
+        const identity = ++this.nextCallbackIdentity;
+        perClosure.set(key, identity);
+        return identity;
+    }
+
+    /**
+     * The object a callback declaration closes over, as one comparable key.
+     *
+     * An object literal is transparent here: it mints no scope of its own,
+     * so a method written in one at module scope is as singular as a
+     * module-level function. What mints a new function object per evaluation
+     * is an enclosing class instance or an enclosing function body, and
+     * those are exactly the two the key names.
+     */
+    private callbackClosureKey(
+        declaration: ts.Node,
+        owner: Value | undefined,
+    ): object {
+        const container = callbackClosureContainer(declaration);
+        if (!container) {
+            if (owner?.callbackEvaluationIdentity) {
+                return owner.callbackEvaluationIdentity;
+            }
+            // Module scope: the program evaluates the declaration once, so
+            // every materialization names the same function object.
+            return unownedCallbackScope;
+        }
+        if (ts.isClassLike(container)) {
+            const receiver = this.thisInstance;
+            // A materialization that supplied no owner may still be standing
+            // on the declaring instance -- but only that one counts, so the
+            // receiver is checked against the class the declaration is
+            // written in rather than assumed to own it.
+            const instance =
+                owner?.recordProperties
+                    ? owner
+                    : receiver &&
+                        isDeclaredInside(declaration, this.classOf(receiver))
+                      ? receiver
+                      : undefined;
+            if (
+                instance?.dataType?.kind === "struct" &&
+                this.dataTypes.isClassStruct(instance.dataType.name)
+            ) {
+                this.fail(
+                    declaration,
+                    "A callback declared per instance of a shared class has " +
+                        "no identity a container could compare: every " +
+                        "instance would register the same handler.",
+                );
+            }
+            const properties = instance?.recordProperties;
+            if (!properties) {
+                this.fail(
+                    declaration,
+                    "A callback declared in a class body is one function " +
+                        "object per instance, and this materialization names " +
+                        "no instance to compare it by.",
+                );
+            }
+            return properties;
+        }
+        if (
+            ts.isConstructorDeclaration(container) &&
+            owner?.recordProperties &&
+            owner.classDeclaration === container.parent
+        ) {
+            if (
+                owner.dataType?.kind === "struct" &&
+                this.dataTypes.isClassStruct(
+                    owner.dataType.name,
+                )
+            ) {
+                this.fail(
+                    declaration,
+                    "A callback declared by a shared class constructor has " +
+                        "no per-instance identity a container could compare.",
+                );
+            }
+            // A constructor evaluates once for this exact instance, so its
+            // field record is also the identity of every function literal
+            // created by that evaluation.
+            return owner.recordProperties;
+        }
+        // Declared inside a function: one function object per evaluation of
+        // that body, and the innermost scope the evaluation pushed is what
+        // the declaration closed over.
+        const scope = owner?.recordScopes?.at(-1);
+        if (scope) return scope;
+        // A body emitted once as a native function runs many times behind one
+        // emission, so its evaluations have no compile-time scope to tell
+        // them apart and are refused rather than conflated.
+        if (this.returnFrames.some((frame) => frame.kind === "native")) {
+            this.fail(
+                declaration,
+                "A callback declared inside a function emitted as a native " +
+                    "function is a new function object at every call, and " +
+                    "one identity would make them all the same handler.",
+            );
+        }
+        this.fail(
+            declaration,
+            "A callback declared inside a function is a new function " +
+                "object at every evaluation, and this materialization " +
+                "carries no closure to tell those evaluations apart.",
+        );
+    }
+
     public defaultEngine(): string | undefined {
         return this.defaultEngineCpp;
     }
@@ -8957,6 +12776,7 @@ class Compiler
         cppName: string,
         signature: string,
         escapesEmittingScope: boolean,
+        exposeReference = true,
     ): void {
         const engine = this.defaultEngine();
         if (
@@ -8974,11 +12794,21 @@ class Compiler
             `auto ${owner} = std::make_shared<std::function<${signature}>>();`,
         );
         if (escapesEmittingScope) {
+            this.trackRetainedCaptureName(engine);
             this.emit(
                 `${engine}.native_callback_owners.push_back(${owner});`,
             );
         }
-        this.emit(`auto& ${cppName} = *${owner};`);
+        if (exposeReference) {
+            this.emit(`auto& ${cppName} = *${owner};`);
+        }
+    }
+
+    private nativeCallbackStorageExpression(cppName: string): string {
+        return this.defaultEngine() &&
+            this.activeNativeReturnType() === undefined
+            ? `(*${cppName}_owner)`
+            : cppName;
     }
 
     /**
@@ -9125,13 +12955,27 @@ class Compiler
      */
     private readonly staticRecordAccessors = new Map<string, string>();
 
-    public staticRecordAccessor(
+    public recordAccessor(
+        owner: Value,
         mapType: string,
         entries: readonly string[],
+        canHoist: boolean,
     ): string {
+        if (!canHoist) {
+            if (!owner.runtimeRecordCpp) {
+                owner.runtimeRecordCpp =
+                    this.allocateTemporaryCppName(
+                        "record_table",
+                    );
+                this.emit(
+                    `${mapType} ${owner.runtimeRecordCpp}{${entries.join(", ")}};`,
+                );
+            }
+            return owner.runtimeRecordCpp;
+        }
         const initializer = `${mapType} values{${entries.join(", ")}};`;
         const existing = this.staticRecordAccessors.get(initializer);
-        if (existing) return existing;
+        if (existing) return `bblscene::${existing}()`;
         const name = `bbl_static_table_${this.staticRecordAccessors.size}`;
         this.registerNativeFunction(`${mapType}& ${name}();`, [
             `${mapType}& ${name}() {`,
@@ -9140,7 +12984,7 @@ class Compiler
             `}`,
         ]);
         this.staticRecordAccessors.set(initializer, name);
-        return name;
+        return `bblscene::${name}()`;
     }
 
     public registerNativeFunction(
@@ -9170,15 +13014,59 @@ class Compiler
     }
 
     /**
-     * Stored callbacks retain their defining locals, but an entry callback
-     * must keep using the one live engine rather than mutating a copied scene.
-     * Namespace data-function closures have no entry engine in their scope.
+     * Emit one retained callback body while recording the main-lifetime
+     * engine/scene references it actually reads. A binding created inside the
+     * body has a sequence after this capture's boundary and remains a local;
+     * nested captures still see it as an outer reference of their own.
      */
-    public storedDataFunctionCapture(lines: readonly string[]): string {
-        const engine = this.defaultEngine();
-        return engine && lines.some((line) => line.includes(engine))
-            ? `[=, &${engine}]`
-            : "[=]";
+    public captureStoredDataFunctionLines(
+        emitBody: () => void,
+    ): { lines: string[]; capture: string } {
+        const state = {
+            boundary: this.nextRetainedReferenceSequence,
+            references: new Set<string>(),
+        };
+        this.retainedCaptureStack.push(state);
+        let lines: string[];
+        try {
+            lines = this.captureEmittedLines(emitBody);
+        } finally {
+            this.retainedCaptureStack.pop();
+        }
+        return {
+            lines,
+            capture:
+                state.references.size > 0
+                    ? `[=, ${[...state.references]
+                          .map((name) => `&${name}`)
+                          .join(", ")}]`
+                    : "[=]",
+        };
+    }
+
+    private trackRetainedCaptureName(name: string): void {
+        for (const capture of this.retainedCaptureStack) {
+            capture.references.add(name);
+        }
+    }
+
+    private trackRetainedReference(value: Value): void {
+        if (
+            !value.retainedReferenceCapture ||
+            value.retainedReferenceSequence === undefined
+        ) {
+            return;
+        }
+        for (const capture of this.retainedCaptureStack) {
+            if (
+                value.retainedReferenceSequence <=
+                capture.boundary
+            ) {
+                capture.references.add(
+                    value.retainedReferenceCapture,
+                );
+            }
+        }
     }
 
     public beginInlineFrame(wrapped: boolean): void {
@@ -9253,6 +13141,14 @@ class Compiler
             );
             return;
         }
+        if (this.dataTypes.carriesBorrowedPlatformEvent(returnType)) {
+            const value = this.compileValue(statement.expression);
+            this.refuseBorrowedPlatformEventEscape(
+                value,
+                statement.expression,
+                "a function return",
+            );
+        }
         this.emit(
             `return ${this.dataLowerer.compileForSink(statement.expression, returnType)};`,
         );
@@ -9274,6 +13170,51 @@ class Compiler
         );
     }
 
+    public assignOptionalResourceValue(
+        target: Value,
+        value: Value,
+        node: ts.Node,
+    ): void {
+        const storage =
+            target.optionalStorageCpp ??
+            this.fail(
+                node,
+                `Nullable ${target.kind} value has no optional storage.`,
+            );
+        if (
+            value.kind === "data" &&
+            value.dataType?.kind === "optional" &&
+            value.dataType.inner.kind === "handle" &&
+            value.dataType.inner.handle === target.kind
+        ) {
+            this.emit(`if (${value.cpp}.has_value()) {`);
+            this.emit(`    ${storage} = *${value.cpp};`);
+            this.emit("} else {");
+            this.emit(`    ${storage}.reset();`);
+            this.emit("}");
+            return;
+        }
+        if (value.kind !== target.kind) {
+            this.fail(
+                node,
+                `Nullable ${target.kind} assignment received ${value.kind}.`,
+            );
+        }
+        if (value.optionalFoundCpp !== undefined) {
+            // A nullable handle property is represented by the invalid native
+            // handle, while local nullable storage is std::optional. Do not
+            // engage that optional with the sentinel: the next guarded read
+            // would then index a collection with invalid_handle.
+            this.emit(`if (${value.optionalFoundCpp}) {`);
+            this.emit(`    ${storage} = ${value.cpp};`);
+            this.emit("} else {");
+            this.emit(`    ${storage}.reset();`);
+            this.emit("}");
+        } else {
+            this.emit(`${storage} = ${value.cpp};`);
+        }
+    }
+
     public emitOptionalResourceAssignment(
         expression: ts.BinaryExpression,
         target: Value,
@@ -9292,35 +13233,7 @@ class Compiler
             delete target.spriteDepthMode;
             return true;
         }
-        if (
-            value.kind === "data" &&
-            value.dataType?.kind === "optional" &&
-            value.dataType.inner.kind === "handle" &&
-            value.dataType.inner.handle === target.kind
-        ) {
-            this.emit(`${storage} = ${value.cpp};`);
-            delete target.spriteDepthMode;
-            return true;
-        }
-        if (value.kind !== target.kind) {
-            this.fail(
-                right,
-                `Nullable ${target.kind} assignment received ${value.kind}.`,
-            );
-        }
-        if (value.optionalFoundCpp !== undefined) {
-            // A nullable handle property is represented by the invalid native
-            // handle, while local nullable storage is std::optional. Do not
-            // engage that optional with the sentinel: the next guarded read
-            // would then index a collection with invalid_handle.
-            this.emit(`if (${value.optionalFoundCpp}) {`);
-            this.emit(`    ${storage} = ${value.cpp};`);
-            this.emit("} else {");
-            this.emit(`    ${storage}.reset();`);
-            this.emit("}");
-        } else {
-            this.emit(`${storage} = ${value.cpp};`);
-        }
+        this.assignOptionalResourceValue(target, value, right);
         if (value.audioContextCpp !== undefined) {
             target.audioContextCpp =
                 value.audioContextCpp;
@@ -9331,6 +13244,12 @@ class Compiler
         }
         if (value.engineCpp !== undefined) {
             target.engineCpp = value.engineCpp;
+        }
+        if (target.kind === "ui-element") {
+            if (value.uiStaticId === undefined) delete target.uiStaticId;
+            else target.uiStaticId = value.uiStaticId;
+            if (value.uiTag === undefined) delete target.uiTag;
+            else target.uiTag = value.uiTag;
         }
         if (value.spriteDepthMode === undefined) {
             delete target.spriteDepthMode;
@@ -9544,6 +13463,21 @@ class Compiler
         expression: ts.Expression,
     ): { cpp: string; source: string } | undefined {
         return probePixelsAsset(this, expression);
+    }
+
+    /**
+     * A local call that PRODUCES its textures with a browser canvas.
+     *
+     * Attempted ahead of ordinary inlining because the body it would inline
+     * is a canvas the native runtime does not have; the structural gate in
+     * `browser-texture-function.ts` decides, and a call that is not that
+     * shape falls straight through to the inliner.
+     */
+    public compileBrowserTextureFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        return compileBrowserTextureFunctionCall(this, call, callee);
     }
 
     public registerSpriteAtlasAsset(
@@ -9814,14 +13748,6 @@ class Compiler
     private requireClosedBoundedFrameYield(
         allowed: ts.Expression,
     ): true {
-        const belongsToAllowed = (node: ts.Node): boolean => {
-            let current: ts.Node | undefined = node;
-            while (current) {
-                if (current === allowed) return true;
-                current = current.parent;
-            }
-            return false;
-        };
         let other: ts.CallExpression | undefined;
         const visit = (node: ts.Node): void => {
             if (other) return;
@@ -9830,7 +13756,7 @@ class Compiler
                 this.browserErasure.isDefaultRequestAnimationFrameCall(
                     node,
                 ) &&
-                !belongsToAllowed(node)
+                !isDeclaredInside(node, allowed)
             ) {
                 other = node;
                 return;
@@ -9894,6 +13820,12 @@ class Compiler
                 ts.isElementAccessExpression(unwrapped)) &&
             this.isBrowserDomValue(unwrapped.expression)
         );
+    }
+
+    public isNativeBrowserFileExpression(
+        expression: ts.Expression,
+    ): boolean {
+        return isNativeBrowserFileExpression(this, expression);
     }
 
     /** See `BrowserErasure.isDeferredCallbackCall`. */
@@ -9971,20 +13903,35 @@ class Compiler
             ) {
                 this.expectArgumentCount(call, 1, 1);
                 const tag = this.compileStringLiteral(call.arguments[0]!);
+                const normalizedTag = tag.toLowerCase();
                 if (!/^[a-z][a-z0-9-]*$/i.test(tag)) {
                     this.fail(
                         call.arguments[0]!,
                         `Native UI element tag '${tag}' is not valid.`,
                     );
                 }
+                if (Compiler.UI_IMPLEMENTATION_TAGS.has(normalizedTag)) {
+                    this.fail(
+                        call.arguments[0]!,
+                        `Native UI element tag '${tag}' is reserved for the retained projection.`,
+                    );
+                }
                 const engine = this.requireDefaultEngine(call);
                 this.reachFeature("ui:rml", call);
+                const uiStaticId = this.createUiStaticElement(
+                    normalizedTag,
+                );
+                this.uiStaticIdsByCreation.set(
+                    call,
+                    uiStaticId,
+                );
                 return {
                     kind: "ui-element",
-                    cpp: `bbl::ui_create_element(${engine}, ${this.cppString(tag)})`,
+                    cpp: `bbl::ui_create_element(${engine}, ${this.cppString(normalizedTag)})`,
                     engineCpp: engine,
-                    uiTag: tag.toLowerCase(),
-                    ...(tag.toLowerCase() === "canvas"
+                    uiTag: normalizedTag,
+                    uiStaticId,
+                    ...(normalizedTag === "canvas"
                         ? {
                               uiCanvas: true as const,
                               uiCanvasId: this.uiCanvasIds++,
@@ -9993,7 +13940,15 @@ class Compiler
                 };
             }
 
-            const element = this.uiElementValue(callee.expression);
+            const classListMutation =
+                ts.isPropertyAccessExpression(callee.expression) &&
+                callee.expression.name.text === "classList" &&
+                (callee.name.text === "add" ||
+                    callee.name.text === "remove" ||
+                    callee.name.text === "toggle");
+            const element = classListMutation
+                ? undefined
+                : this.uiElementValue(callee.expression);
             if (
                 element?.uiTag === "image-bitmap" &&
                 callee.name.text === "close"
@@ -10247,9 +14202,80 @@ class Compiler
                         };
                 }
             }
+            if (element && callee.name.text === "click") {
+                this.expectArgumentCount(call, 0, 0);
+                if (element.uiTag === "input") {
+                    if (!element.uiFileInput) {
+                        this.fail(
+                            call,
+                            "Programmatic <input>.click() requires the static type 'file'.",
+                        );
+                    }
+                    this.reachFeature("browser:file", call);
+                } else if (element.uiTag === "a") {
+                    this.reachFeature("browser:file", call);
+                }
+                const engine = this.requireEngine(element, call);
+                return {
+                    kind: "void",
+                    cpp: `bbl::ui_click(${engine}, ${element.cpp})`,
+                };
+            }
+            if (element && callee.name.text === "querySelectorAll") {
+                this.expectArgumentCount(call, 1, 1);
+                const selector = this.compileStringLiteral(call.arguments[0]!);
+                const matched = selector.match(
+                    /^\.([A-Za-z_][A-Za-z0-9_-]*)$/,
+                );
+                if (!matched) {
+                    this.fail(
+                        call.arguments[0]!,
+                        `Retained UI querySelectorAll selector '${selector}' is not lowered; only a static '.class' scoped query is supported.`,
+                    );
+                }
+                this.uiPendingClassQueries.push({
+                    root: element,
+                    className: matched[1]!,
+                    site: call,
+                });
+                const engine = this.requireEngine(element, call);
+                this.reachJsData();
+                return {
+                    kind: "data",
+                    cpp: element.optionalFoundCpp
+                        ? `(${element.optionalFoundCpp} ? ` +
+                          `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
+                          `${this.cppString(matched[1]!)}) : ` +
+                          "bbl::js::Array<bbl::UiElementHandle>{})"
+                        : `bbl::ui_query_class(${engine}, ${element.cpp}, ` +
+                          `${this.cppString(matched[1]!)})`,
+                    dataType: {
+                        kind: "vector",
+                        element: {
+                            kind: "handle",
+                            handle: "ui-element",
+                        },
+                    },
+                };
+            }
             if (element && callee.name.text === "setAttribute") {
                 this.expectArgumentCount(call, 2, 2);
                 const name = this.compileStringLiteral(call.arguments[0]!);
+                const engine = this.requireEngine(element, call);
+                const browserFile = this.compileUiBrowserFileAttribute(
+                    element,
+                    engine,
+                    name,
+                    call.arguments[1]!,
+                    call,
+                    "attribute",
+                );
+                if (browserFile) {
+                    return {
+                        kind: "void",
+                        cpp: browserFile,
+                    };
+                }
                 const staticValue = this.tryUiStaticString(
                     call.arguments[1]!,
                 );
@@ -10279,7 +14305,24 @@ class Compiler
                               ),
                           )
                         : sourceValue!.cpp;
-                const engine = this.requireEngine(element, call);
+                if (name === "class" || name === "id") {
+                    this.recordUiStaticAttribute(
+                        element,
+                        name,
+                        call.arguments[1]!,
+                    );
+                } else if (name === "style" && staticValue !== undefined) {
+                    this.recordUiStaticStyle(
+                        element,
+                        this.lowerUiAttributeLiteral(
+                            "style",
+                            staticValue,
+                            call.arguments[1]!,
+                        ),
+                    );
+                } else if (name === "style") {
+                    this.recordUiUnknownStaticStyle(element);
+                }
                 return {
                     kind: "void",
                     cpp:
@@ -10299,8 +14342,13 @@ class Compiler
                     element.uiRoot ? child : element,
                     call,
                 );
+                if (element.uiRoot) {
+                    this.recordUiStaticRootAppend(child);
+                } else {
+                    this.recordUiStaticAppend(element, child);
+                }
                 return {
-                    kind: "ui-element",
+                    ...child,
                     cpp: element.uiRoot
                         ? `bbl::ui_append_to_root(${engine}, ${child.cpp})`
                         : `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`,
@@ -10323,9 +14371,11 @@ class Compiler
                 const appends = children.map((child) => {
                     if (element.uiRoot) {
                         this.expectSameEngine(children[0]!, child, call);
+                        this.recordUiStaticRootAppend(child);
                         return `bbl::ui_append_to_root(${engine}, ${child.cpp})`;
                     }
                     this.expectSameEngine(element, child, call);
+                    this.recordUiStaticAppend(element, child);
                     return `bbl::ui_append_child(${engine}, ${element.cpp}, ${child.cpp})`;
                 });
                 return { kind: "void", cpp: appends.join(", ") };
@@ -10333,6 +14383,7 @@ class Compiler
             if (element && callee.name.text === "replaceChildren") {
                 this.expectArgumentCount(call, 0, 0);
                 const engine = this.requireEngine(element, call);
+                this.recordUiStaticReplaceChildren(element);
                 return {
                     kind: "void",
                     cpp: `bbl::ui_replace_children(${engine}, ${element.cpp})`,
@@ -10341,9 +14392,14 @@ class Compiler
             if (element && callee.name.text === "remove") {
                 this.expectArgumentCount(call, 0, 0);
                 const engine = this.requireEngine(element, call);
+                this.recordUiStaticRemoval(element);
                 return {
                     kind: "void",
-                    cpp: `bbl::ui_remove(${engine}, ${element.cpp})`,
+                    cpp: element.optionalFoundCpp
+                        ? `(${element.optionalFoundCpp} ? ` +
+                          `bbl::ui_remove(${engine}, ${element.cpp}) : ` +
+                          "static_cast<void>(0))"
+                        : `bbl::ui_remove(${engine}, ${element.cpp})`,
                 };
             }
             if (element && callee.name.text === "getBoundingClientRect") {
@@ -10397,34 +14453,67 @@ class Compiler
                 // Listener identity/removal is deferred with DOM lifecycle.
                 return { kind: "void", cpp: "" };
             }
-            if (
-                callee.name.text === "toggle" &&
-                ts.isPropertyAccessExpression(callee.expression) &&
-                callee.expression.name.text === "classList"
-            ) {
-                const classElement = this.uiElementValue(
-                    callee.expression.expression,
-                );
+            if (classListMutation) {
+                const classOwner = callee.expression.expression;
+                let classElement = this.uiElementValue(classOwner);
+                if (!classElement && ts.isCallExpression(this.unwrap(classOwner))) {
+                    const compiled = this.compileValue(classOwner);
+                    if (compiled.kind === "ui-element") {
+                        classElement = compiled;
+                    }
+                }
                 if (classElement) {
-                    this.expectArgumentCount(call, 2, 2);
-                    const name = this.compileStringLiteral(call.arguments[0]!);
-                    const enabled = this.uiBooleanCpp(
-                        call.arguments[1]!,
-                        "UI classList.toggle",
+                    const method = callee.name.text;
+                    this.expectArgumentCount(
+                        call,
+                        method === "toggle" ? 2 : 1,
+                        method === "toggle" ? 2 : 1,
                     );
+                    const name = this.compileStringLiteral(call.arguments[0]!);
+                    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
+                        this.fail(
+                            call.arguments[0]!,
+                            `Native UI class name '${name}' is not valid.`,
+                        );
+                    }
+                    const enabled =
+                        method === "toggle"
+                            ? this.uiBooleanCpp(
+                                  call.arguments[1]!,
+                                  "UI classList.toggle",
+                              )
+                            : method === "add"
+                              ? "true"
+                              : "false";
+                    this.recordUiStaticClass(
+                        classElement,
+                        name,
+                        method as "add" | "remove" | "toggle",
+                        enabled,
+                    );
+                    if (classElement.uiStaticId === undefined) {
+                        this.uiUnknownClassMutations.push({
+                            className: name,
+                            site: call,
+                        });
+                    }
                     const engine = this.requireEngine(classElement, call);
+                    const mutation =
+                        `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
+                        `${this.cppString(name)}, ${enabled})`;
                     return {
                         kind: "void",
-                        cpp:
-                            `bbl::ui_toggle_class(${engine}, ${classElement.cpp}, ` +
-                            `${this.cppString(name)}, ${enabled})`,
+                        cpp: classElement.optionalFoundCpp
+                            ? `(${classElement.optionalFoundCpp} ? ${mutation} : static_cast<void>(0))`
+                            : mutation,
                     };
                 }
             }
             if (
                 callee.name.text === "appendChild" &&
                 ts.isPropertyAccessExpression(callee.expression) &&
-                callee.expression.name.text === "body" &&
+                (callee.expression.name.text === "body" ||
+                    callee.expression.name.text === "head") &&
                 ts.isIdentifier(callee.expression.expression) &&
                 callee.expression.expression.text === "document" &&
                 this.isDefaultLibraryIdentifier(
@@ -10435,8 +14524,9 @@ class Compiler
                 const child = this.compileValue(call.arguments[0]!);
                 this.expectKind(child, "ui-element", call.arguments[0]!);
                 const engine = this.requireEngine(child, call);
+                this.recordUiStaticRootAppend(child);
                 return {
-                    kind: "ui-element",
+                    ...child,
                     cpp: `bbl::ui_append_to_root(${engine}, ${child.cpp})`,
                     engineCpp: engine,
                 };
@@ -10566,16 +14656,34 @@ class Compiler
         }
         if (
             callee.name.text === "preventDefault" &&
+            call.arguments.length === 0
+        ) {
+            const platformEvent = ts.isIdentifier(receiver)
+                ? this.lookupOptional(receiver)
+                : ts.isPropertyAccessExpression(receiver) ||
+                    ts.isElementAccessExpression(receiver)
+                  ? this.compileValue(receiver)
+                  : undefined;
+            if (
+                platformEvent?.kind === "platform-keyboard-event" ||
+                platformEvent?.kind === "platform-mouse-event"
+            ) {
+                return {
+                    kind: "void",
+                    cpp: `${platformEvent.cpp}.prevent_default()`,
+                };
+            }
+        }
+        if (
+            callee.name.text === "focus" &&
             call.arguments.length === 0 &&
             ts.isIdentifier(receiver) &&
-            (this.lookupOptional(receiver)?.kind ===
-                "platform-keyboard-event" ||
-                this.lookupOptional(receiver)?.kind ===
-                    "platform-mouse-event")
+            this.isCanvasElement(receiver)
         ) {
-            // The native window already owns key dispatch; there is no
-            // browser default action to cancel.
-            return { kind: "void", cpp: "" };
+            return {
+                kind: "void",
+                cpp: `bbl::focus_canvas(${this.requireDefaultEngine(call)})`,
+            };
         }
         if (
             callee.name.text === "requestPointerLock" &&
@@ -10698,24 +14806,36 @@ class Compiler
         };
     }
 
-    /**
-     * Lowers the browser listener shapes that have a native platform event.
-     * Unknown event targets stay on the browser-erasure path.
-     */
     public emitPlatformEventListener(
         call: ts.CallExpression,
     ): boolean {
         const callee = this.unwrap(call.expression);
         if (
             !ts.isPropertyAccessExpression(callee) ||
-            callee.name.text !== "addEventListener"
+            (callee.name.text !== "addEventListener" &&
+                callee.name.text !== "removeEventListener")
         ) {
             return false;
         }
+        const removing =
+            callee.name.text === "removeEventListener";
         const uiElement = this.uiElementValue(callee.expression);
         if (uiElement) {
+            if (removing) return false;
             this.expectArgumentCount(call, 2, 2);
             const event = this.compileStringLiteral(call.arguments[0]!);
+            if (event === "change") {
+                if (
+                    uiElement.uiTag !== "input" ||
+                    !uiElement.uiFileInput
+                ) {
+                    this.fail(
+                        call.arguments[0]!,
+                        "The native 'change' event is supported only on a retained <input type=\"file\">.",
+                    );
+                }
+                this.reachFeature("browser:file", call);
+            }
             const mappedEvent =
                 event === "pointerdown"
                     ? "mousedown"
@@ -10729,11 +14849,13 @@ class Compiler
                         : event;
             if (
                 event !== "click" &&
+                event !== "mousedown" &&
                 event !== "pointerdown" &&
                 event !== "pointerup" &&
                 event !== "pointermove" &&
                 event !== "pointercancel" &&
                 event !== "lostpointercapture" &&
+                event !== "change" &&
                 event !== "contextmenu"
             ) {
                 this.fail(
@@ -10757,19 +14879,34 @@ class Compiler
             };
             const lambda = this.compilePlatformCallback(
                 callback,
-                event === "click"
+                event === "click" || event === "change"
                     ? undefined
                     : {
                           cppType: "const bbl::PlatformMouseEvent&",
                           name: parameter,
                       },
-                event === "click" ? [] : [pointerValue],
+                event === "click" || event === "change"
+                    ? []
+                    : [pointerValue],
+                undefined,
+                true,
+                false,
             );
+            const registration =
+                event === "click"
+                    ? "ui_on_click"
+                    : event === "change"
+                      ? "ui_on_file_change"
+                      : "ui_on_event";
             this.emit(
-                `bbl::${event === "click" ? "ui_on_click" : "ui_on_event"}(` +
+                `bbl::${registration}(` +
                     `${engine}, ${uiElement.cpp}, ` +
-                    `${event === "click" ? "" : `${this.cppString(mappedEvent)}, `}` +
-                    `${lambda});`,
+                    `${
+                        event === "click" || event === "change"
+                            ? ""
+                            : `${this.cppString(mappedEvent)}, `
+                    }` +
+                    `${lambda.cpp});`,
             );
             return true;
         }
@@ -10798,7 +14935,7 @@ class Compiler
         const callback = call.arguments[1]!;
         this.hoistForwardCallbackBindings(callback, call.pos);
         let once = false;
-        if (call.arguments[2]) {
+        if (!removing && call.arguments[2]) {
             const options = this.unwrap(call.arguments[2]);
             if (!ts.isObjectLiteralExpression(options)) {
                 this.fail(
@@ -10819,160 +14956,101 @@ class Compiler
             }
         }
         const engine = this.requireDefaultEngine(call);
-        if (target === "window" && event === "resize") {
-            this.emit(
-                `bbl::on_window_resize(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
-            );
-            return true;
-        }
-        if (
-            (target === "window" || target === "canvas") &&
-            (event === "keydown" || event === "keyup")
-        ) {
-            const parameter =
-                this.allocateTemporaryCppName("key_event");
-            const lambda = this.compilePlatformCallback(
+        const descriptor = this.platformEventDescriptor(
+            target,
+            event,
+        );
+        if (!descriptor) return false;
+        if (removing) {
+            const callbackValue = this.compileValue(callback);
+            const identity = this.platformEventCallbackIdentity(
+                callbackValue,
                 callback,
-                {
-                    cppType: "const bbl::PlatformKeyboardEvent&",
-                    name: parameter,
-                },
-                [
-                    {
-                        kind: "platform-keyboard-event",
-                        cpp: parameter,
-                        readOnly: true,
-                    },
-                ],
-                undefined,
-                once,
             );
             this.emit(
-                `bbl::on_key_${event === "keydown" ? "down" : "up"}(${engine}, ${lambda});`,
+                `bbl::off_${descriptor.channel}(${engine}, ${identity}u);`,
             );
             return true;
         }
-        if (target === "window" && event === "pointerdown") {
-            this.emit(
-                `bbl::on_pointer_down(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
-            );
-            return true;
-        }
-        if (target === "canvas" && event === "click") {
-            this.emit(
-                `bbl::on_canvas_click(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
-            );
-            return true;
-        }
-        if (
-            (target === "window" || target === "canvas") &&
-            (event === "mousedown" ||
-                event === "mouseup" ||
-                event === "pointerdown" ||
-                event === "pointerup")
-        ) {
-            const parameter =
-                this.allocateTemporaryCppName("mouse_event");
-            const lambda = this.compilePlatformCallback(
-                callback,
-                {
-                    cppType: "const bbl::PlatformMouseEvent&",
-                    name: parameter,
-                },
-                [
-                    {
-                        kind: "platform-mouse-event",
-                        cpp: parameter,
-                        readOnly: true,
-                    },
-                ],
-                undefined,
-                once,
-            );
-            this.emit(
-                `bbl::on_mouse_${event === "mousedown" || event === "pointerdown" ? "down" : "up"}(${engine}, ${lambda});`,
-            );
-            return true;
-        }
-        if (
-            ((target === "window" ||
-                target === "document" ||
-                target === "canvas") &&
-                (event === "pointermove" || event === "mousemove")) ||
-            ((target === "window" || target === "canvas") &&
-                event === "wheel")
-        ) {
-            const parameter =
-                this.allocateTemporaryCppName("mouse_event");
-            const lambda = this.compilePlatformCallback(
-                callback,
-                {
-                    cppType: "const bbl::PlatformMouseEvent&",
-                    name: parameter,
-                },
-                [
-                    {
-                        kind: "platform-mouse-event",
-                        cpp: parameter,
-                        readOnly: true,
-                    },
-                ],
-                undefined,
-                once,
-            );
-            this.emit(
-                `bbl::on_mouse_${event === "wheel" ? "wheel" : "move"}(${engine}, ${lambda});`,
-            );
-            return true;
-        }
-        if (
-            (target === "window" || target === "canvas") &&
-            event === "pointercancel"
-        ) {
-            const parameter =
-                this.allocateTemporaryCppName("mouse_event");
-            const lambda = this.compilePlatformCallback(
-                callback,
-                {
-                    cppType: "const bbl::PlatformMouseEvent&",
-                    name: parameter,
-                },
-                [
-                    {
-                        kind: "platform-mouse-event",
-                        cpp: parameter,
-                        readOnly: true,
-                    },
-                ],
-                undefined,
-                once,
-            );
-            this.emit(
-                `bbl::on_mouse_cancel(${engine}, ${lambda});`,
-            );
-            return true;
-        }
-        if (target === "document" && event === "pointerlockchange") {
-            this.emit(
-                `bbl::on_pointer_lock_change(${engine}, ${this.compilePlatformCallback(callback, undefined, [], undefined, once)});`,
-            );
-            return true;
-        }
-        if (
-            target === "document" &&
-            event === "visibilitychange"
-        ) {
-            const parameter =
+        let parameter:
+            | { cppType: string; name: string }
+            | undefined;
+        let values: Value[] = [];
+        let documentHiddenCpp: string | undefined;
+        if (descriptor.parameter === "keyboard") {
+            const name = this.allocateTemporaryCppName("key_event");
+            parameter = {
+                cppType: "const bbl::PlatformKeyboardEvent&",
+                name,
+            };
+            values = [{
+                kind: "platform-keyboard-event",
+                cpp: name,
+                readOnly: true,
+            }];
+        } else if (descriptor.parameter === "mouse") {
+            const name = this.allocateTemporaryCppName("mouse_event");
+            parameter = {
+                cppType: "const bbl::PlatformMouseEvent&",
+                name,
+            };
+            values = [{
+                kind: "platform-mouse-event",
+                cpp: name,
+                readOnly: true,
+            }];
+        } else if (descriptor.parameter === "visibility") {
+            const name =
                 this.allocateTemporaryCppName("document_hidden");
-            this.emit(
-                `bbl::on_visibility_change(${engine}, ${this.compilePlatformCallback(callback, { cppType: "bool", name: parameter }, [], parameter, once)});`,
-            );
-            return true;
+            parameter = { cppType: "bool", name };
+            documentHiddenCpp = name;
         }
-        return false;
+        const listener = this.compilePlatformCallback(
+            callback,
+            parameter,
+            values,
+            documentHiddenCpp,
+        );
+        this.emit(
+            `bbl::on_${descriptor.channel}(` +
+                `${engine}, ${listener.identity}u, ${listener.cpp}` +
+                `${once ? ", true" : ""});`,
+        );
+        return true;
     }
 
-    private isCanvasElement(expression: ts.Expression): boolean {
+    private platformEventDescriptor(
+        target: PlatformEventTarget,
+        event: string | undefined,
+    ): PlatformEventDescriptor | undefined {
+        return event === undefined
+            ? undefined
+            : PLATFORM_EVENT_DESCRIPTORS[target][event];
+    }
+
+    private platformEventCallbackIdentity(
+        callback: Value,
+        node: ts.Node,
+    ): number {
+        if (callback.kind !== "callback") {
+            this.fail(node, "Platform event listener is not a callback.");
+        }
+        if (callback.platformCallbackIdentity !== undefined) {
+            return callback.platformCallbackIdentity;
+        }
+        if (!callback.callbackDeclaration) {
+            this.fail(
+                node,
+                "Platform event listener has no stable callback identity.",
+            );
+        }
+        return this.callbackIdentity(
+            callback.callbackDeclaration,
+            callback.callbackRecordOwner,
+        );
+    }
+
+    public isCanvasElement(expression: ts.Expression): boolean {
         const type = this.checker.getTypeAtLocation(expression);
         const members =
             (type.flags & ts.TypeFlags.Union) !== 0
@@ -11003,14 +15081,6 @@ class Compiler
         before: number,
     ): void {
         const candidates = new Map<ts.Symbol, ts.VariableDeclaration>();
-        const belongsToCallback = (declaration: ts.Node): boolean => {
-            let current: ts.Node | undefined = declaration;
-            while (current) {
-                if (current === callback) return true;
-                current = current.parent;
-            }
-            return false;
-        };
         const visit = (node: ts.Node): void => {
             if (ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
@@ -11022,7 +15092,7 @@ class Compiler
                     declaration.initializer &&
                     declaration.pos > before &&
                     ts.isIdentifier(declaration.name) &&
-                    !belongsToCallback(declaration) &&
+                    !isDeclaredInside(declaration, callback) &&
                     !this.lookupOptional(declaration.name)
                 ) {
                     candidates.set(symbol, declaration);
@@ -11049,19 +15119,35 @@ class Compiler
         parameter: { cppType: string; name: string } | undefined,
         values: readonly Value[],
         documentHiddenCpp?: string,
-        once = false,
-    ): string {
+        captureByValue = true,
+        assignIdentity = true,
+    ): { cpp: string; identity: number } {
         const previousHidden = this.platformDocumentHiddenCpp;
         const previousFrameFloor = this.frameCallbackScopeFloor;
+        const previousPlatformEventCaptureFloor =
+            this.escapingPlatformEventCaptureFloor;
         if (this.frameCallbackDepth === 0) {
             this.frameCallbackScopeFloor =
                 this.variableScopes.length;
+        } else {
+            this.escapingPlatformEventCaptureFloor =
+                this.variableScopes.length;
         }
+        this.refuseEscapingPlatformEventCapturesIn(callback);
+        // The scan above compares against the enclosing handler's live scope
+        // chain. Callback records may restore the scope chain they closed over
+        // while their own body is compiled, so that numeric floor cannot stay
+        // active across the restore. Any callback created by this body performs
+        // its own scan against the restored chain before it escapes.
+        this.escapingPlatformEventCaptureFloor =
+            previousPlatformEventCaptureFloor;
         this.platformDocumentHiddenCpp = documentHiddenCpp;
         this.frameCallbackDepth += 1;
         let lines: string[];
+        let baseCapture = "[&]";
+        let identity: number | undefined;
         try {
-            lines = this.captureEmittedLines(() => {
+            const compiled = this.captureStoredDataFunctionLines(() => {
                 const unwrapped = this.unwrap(callback) as
                     | ts.Identifier
                     | ts.PropertyAccessExpression
@@ -11069,12 +15155,69 @@ class Compiler
                     | ts.FunctionExpression;
                 const bound =
                     ts.isIdentifier(unwrapped)
-                        ? this.lookupOptional(unwrapped)
-                        : ts.isPropertyAccessExpression(unwrapped)
-                          ? this.compileValue(unwrapped)
-                          : undefined;
+                        ? this.lookupOptional(unwrapped) ??
+                          (() => {
+                              const declaration =
+                                  tryResolveFunctionDeclaration(
+                                      this.checker,
+                                      unwrapped,
+                                  );
+                              return declaration
+                                  ? ({
+                                        kind: "callback",
+                                        cpp: "",
+                                        callbackDeclaration:
+                                            declaration,
+                                        callbackRecordOwner: {
+                                            kind: "record",
+                                            cpp: "",
+                                            recordScopes: [
+                                                ...this.variableScopes,
+                                            ],
+                                        },
+                                    } satisfies Value)
+                                  : this.compileValue(unwrapped);
+                          })()
+                        : this.compileValue(unwrapped);
+                if (assignIdentity) {
+                    identity = this.platformEventCallbackIdentity(
+                        bound,
+                        callback,
+                    );
+                }
+                if (
+                    bound.kind === "callback" &&
+                    !bound.callbackDeclaration &&
+                    bound.cpp.length > 0
+                ) {
+                    const parameterTypes =
+                        bound.nativeCallbackParameterTypes;
+                    if (
+                        parameterTypes &&
+                        parameterTypes.length !== values.length
+                    ) {
+                        this.fail(
+                            callback,
+                            "Stored platform callback received the wrong number of arguments.",
+                        );
+                    }
+                    const argumentsCpp = values.map((value, index) => {
+                        const type = parameterTypes?.[index];
+                        return type
+                            ? this.dataLowerer.compileKnownValueForSink(
+                                  value,
+                                  type,
+                                  callback,
+                              )
+                            : value.cpp;
+                    });
+                    this.emit(
+                        `${bound.cpp}(${argumentsCpp.join(", ")});`,
+                    );
+                    return;
+                }
                 const declaration =
-                    bound?.kind === "callback" &&
+                    bound.kind === "callback" &&
                     bound.callbackDeclaration &&
                     !ts.isMethodDeclaration(bound.callbackDeclaration)
                         ? bound.callbackDeclaration
@@ -11090,37 +15233,38 @@ class Compiler
                         values,
                         callback,
                     );
-                const result = bound?.callbackRecordOwner
+                const result = bound.callbackRecordOwner
                     ? this.withRecordScopes(
                           bound.callbackRecordOwner,
                           compile,
                       )
                     : compile();
-                if (result.cpp.length > 0) {
-                    this.emit(
-                        result.requiresExplicitDiscard
-                            ? `static_cast<void>(${result.cpp});`
-                            : `${result.cpp};`,
-                    );
-                }
+                this.emitDiscardedValue(result);
             });
+            lines = compiled.lines;
+            if (captureByValue) baseCapture = compiled.capture;
         } finally {
             this.frameCallbackDepth -= 1;
             this.platformDocumentHiddenCpp = previousHidden;
             this.frameCallbackScopeFloor = previousFrameFloor;
+            this.escapingPlatformEventCaptureFloor =
+                previousPlatformEventCaptureFloor;
         }
-        const onceName = once
-            ? this.allocateTemporaryCppName("event_once")
-            : undefined;
         const cppParameter = parameter
             ? `[[maybe_unused]] ${parameter.cppType} ${parameter.name}`
             : "";
-        const prefix = onceName
-            ? `            if (${onceName}) return;\n            ${onceName} = true;\n`
-            : "";
-        return `[&${onceName ? `, ${onceName} = false` : ""}](${cppParameter})${onceName ? " mutable" : ""} {\n${prefix}${lines
-            .map((line) => `            ${line}`)
-            .join("\n")}\n        }`;
+        if (assignIdentity && identity === undefined) {
+            this.fail(
+                callback,
+                "Platform event listener has no stable callback identity.",
+            );
+        }
+        return {
+            identity: identity ?? 0,
+            cpp: `${baseCapture}(${cppParameter})${captureByValue ? " mutable" : ""} {\n${lines
+                .map((line) => `            ${line}`)
+                .join("\n")}\n        }`,
+        };
     }
 
     public isFrameYield(expression: ts.Expression): boolean {
@@ -11397,6 +15541,11 @@ class Compiler
                     index,
                     binding.frameLocal === true,
                 );
+                this.refuseEscapingPlatformEventCapture(
+                    identifier,
+                    index,
+                    binding.value,
+                );
                 this.refusePoisonedRebind(identifier, binding);
                 return binding.value;
             }
@@ -11449,6 +15598,175 @@ class Compiler
                     "callback.",
             );
         }
+    }
+
+    private refuseEscapingPlatformEventCapture(
+        identifier: ts.Identifier,
+        scopeIndex: number,
+        value: Value,
+        floor = this.escapingPlatformEventCaptureFloor,
+    ): void {
+        if (
+            floor !== undefined &&
+            scopeIndex < floor &&
+            this.valueContainsPlatformEvent(value)
+        ) {
+            this.fail(
+                identifier,
+                `An escaping callback cannot capture platform event value ` +
+                    `'${identifier.text}': the event is borrowed only while ` +
+                    "its current handler executes. Copy the specific owned " +
+                    "field needed by the later callback instead.",
+            );
+        }
+    }
+
+    private refuseEscapingPlatformEventCapturesIn(
+        node: ts.Node,
+        floor = this.escapingPlatformEventCaptureFloor,
+    ): void {
+        if (floor === undefined) return;
+        const roots: ts.Node[] = [node];
+        if (ts.isIdentifier(node)) {
+            const declaration = this.symbols.valueSymbol(node)?.valueDeclaration;
+            if (declaration && ts.isFunctionLike(declaration)) {
+                roots.push(declaration);
+            } else if (
+                declaration &&
+                ts.isVariableDeclaration(declaration) &&
+                declaration.initializer &&
+                (ts.isArrowFunction(declaration.initializer) ||
+                    ts.isFunctionExpression(declaration.initializer))
+            ) {
+                roots.push(declaration.initializer);
+            }
+        }
+        const visitedSymbols = new Set<ts.Symbol>();
+        const visitedFunctions = new Set<ts.Node>();
+        const containingFunction = (
+            declaration: ts.Declaration | undefined,
+        ): ts.SignatureDeclaration | undefined => {
+            let current: ts.Node | undefined = declaration;
+            while (current) {
+                if (ts.isFunctionLike(current)) {
+                    return current;
+                }
+                current = current.parent;
+            }
+            return undefined;
+        };
+        const visit = (
+            current: ts.Node,
+            activeFunction?: ts.SignatureDeclaration,
+        ): void => {
+            const functionScope = ts.isFunctionLike(current)
+                ? current
+                : activeFunction;
+            if (ts.isIdentifier(current)) {
+                const symbol = this.symbols.valueSymbol(current);
+                const declaration =
+                    symbol?.valueDeclaration ??
+                    symbol?.declarations?.[0];
+                if (
+                    symbol &&
+                    containingFunction(declaration) !==
+                        functionScope &&
+                    !visitedSymbols.has(symbol)
+                ) {
+                    visitedSymbols.add(symbol);
+                    for (
+                        let index = Math.min(
+                            floor - 1,
+                            this.variableScopes.length - 1,
+                        );
+                        index >= 0;
+                        index -= 1
+                    ) {
+                        const binding = this.variableScopes[index]!.get(symbol);
+                        if (!binding) continue;
+                        this.refuseEscapingPlatformEventCapture(
+                            current,
+                            index,
+                            binding.value,
+                            floor,
+                        );
+                        break;
+                    }
+                }
+            }
+            if (ts.isCallExpression(current)) {
+                const declaration =
+                    this.checker.getResolvedSignature(current)
+                        ?.declaration;
+                if (
+                    isSupportedFunction(declaration) &&
+                    declaration.body &&
+                    !visitedFunctions.has(declaration)
+                ) {
+                    visitedFunctions.add(declaration);
+                    visit(declaration);
+                }
+            }
+            ts.forEachChild(current, (child) =>
+                visit(child, functionScope),
+            );
+        };
+        for (const root of roots) {
+            if (ts.isFunctionLike(root)) {
+                if (visitedFunctions.has(root)) continue;
+                visitedFunctions.add(root);
+            }
+            visit(root);
+        }
+    }
+
+    private valueContainsPlatformEvent(
+        value: Value,
+        seen = new Set<Value>(),
+    ): boolean {
+        if (seen.has(value)) return false;
+        seen.add(value);
+        if (
+            value.kind === "platform-keyboard-event" ||
+            value.kind === "platform-mouse-event"
+        ) {
+            return true;
+        }
+        if (
+            value.dataType &&
+            this.dataTypes.carriesBorrowedPlatformEvent(value.dataType)
+        ) {
+            return true;
+        }
+        const nested: Value[] = [
+            ...Object.values(value.recordProperties ?? {}),
+            ...(value.tupleElements ?? []),
+            ...(value.staticElements ?? []),
+            ...(value.nativeCallbackStaticArguments ?? []).filter(
+                (candidate): candidate is Value => candidate !== undefined,
+            ),
+        ];
+        if (value.staticElementsOwner) nested.push(value.staticElementsOwner);
+        if (value.callbackRecordOwner) nested.push(value.callbackRecordOwner);
+        if (value.sceneCamera) nested.push(value.sceneCamera);
+        for (const scope of value.recordScopes ?? []) {
+            for (const binding of scope.values()) nested.push(binding.value);
+        }
+        return nested.some((candidate) =>
+            this.valueContainsPlatformEvent(candidate, seen),
+        );
+    }
+
+    public refuseBorrowedPlatformEventEscape(
+        value: Value,
+        node: ts.Node,
+        destination: string,
+    ): void {
+        if (!this.valueContainsPlatformEvent(value)) return;
+        this.fail(
+            node,
+            `A borrowed platform event cannot escape its synchronous dispatch frame through ${destination}. Copy only owned scalar/string fields needed later.`,
+        );
     }
 
     private lookupRecordProperty(
@@ -11527,7 +15845,10 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        return this.readOwnerProperty(owner, expression);
+        return this.readOwnerProperty(
+            this.classLowerer.hydrate(owner) ?? owner,
+            expression,
+        );
     }
 
     /**
@@ -11561,6 +15882,16 @@ class Compiler
             return staticProperty;
         }
         if (owner.kind === "record") {
+            const accessor =
+                owner.recordGetters?.[
+                    expression.name.text
+                ];
+            if (accessor) {
+                return this.compileRecordGetter(
+                    owner,
+                    accessor,
+                );
+            }
             return undefined;
         }
         // A handle collection's size. The concept's other operations are
@@ -11682,8 +16013,14 @@ class Compiler
             const engine = this.requireEngine(owner, expression);
             const collection =
                 owner.kind === "mesh" ? "meshes" : "transform_nodes";
-            const field = expression.name.text;
-            const component = (name: "x" | "y" | "z"): Value => ({
+            const quaternion =
+                expression.name.text === "rotationQuaternion";
+            const field = quaternion
+                ? "rotation_quaternion"
+                : expression.name.text;
+            const component = (
+                name: "x" | "y" | "z" | "w",
+            ): Value => ({
                 kind: "number",
                 cpp:
                     `${engine}.${collection}[${owner.cpp}.value].` +
@@ -11698,6 +16035,9 @@ class Compiler
                     x: component("x"),
                     y: component("y"),
                     z: component("z"),
+                    ...(quaternion
+                        ? { w: component("w") }
+                        : {}),
                 },
             };
         }
@@ -11869,6 +16209,11 @@ class Compiler
                     identifier,
                     index,
                     binding.frameLocal === true,
+                );
+                this.refuseEscapingPlatformEventCapture(
+                    identifier,
+                    index,
+                    binding.value,
                 );
                 this.refusePoisonedRebind(identifier, binding);
                 return binding.value;
@@ -12098,6 +16443,18 @@ class Compiler
         ) {
             const actual = this.compileValue(unwrapped);
             if (
+                actual.kind === "record" &&
+                this.dataTypes.carriesHandle(dataType)
+            ) {
+                // The caller holds a compile-time record of engine handles.
+                // Materializing it for the declared struct would mint a
+                // SECOND object naming the same handles at every call, so
+                // the parameter keeps the one object the caller named --
+                // which is what a parameter typed outside the data model
+                // already does.
+                return actual;
+            }
+            if (
                 actual.kind === "data" &&
                 ((actual.dataType?.kind === "vector" &&
                     dataType.kind === "vector" &&
@@ -12117,15 +16474,29 @@ class Compiler
             argument,
             dataType,
         );
-        return this.dataLowerer.leafValue(cpp, dataType);
+        return this.dataLowerer.leafValue(
+            dataType.kind === "optional" &&
+                cpp === "std::nullopt"
+                ? `${this.dataTypes.cppType(dataType)}{std::nullopt}`
+                : cpp,
+            dataType,
+        );
     }
 
-    /** Materialize scalar members when a compile-time value escapes. */
+    /** Materialize mutable members when a compile-time value escapes. */
     public materializeEscapingValue(
         value: Value,
         label: string,
     ): Value {
         if (value.kind === "record") {
+            if (
+                value.dataType?.kind === "struct" &&
+                this.dataTypes.isReferenceStruct(
+                    value.dataType.name,
+                )
+            ) {
+                return value;
+            }
             return this.materializeRecordScalars(value, label, true);
         }
         if (value.kind === "tuple" && value.tupleElements) {
@@ -12162,6 +16533,14 @@ class Compiler
      */
     public pinValueToTemporary(value: Value, label: string): Value {
         if (value.kind === "record") {
+            if (
+                value.dataType?.kind === "struct" &&
+                this.dataTypes.isReferenceStruct(
+                    value.dataType.name,
+                )
+            ) {
+                return value;
+            }
             return this.materializeRecordScalars(value, label, true);
         }
         if (value.kind === "tuple" && value.tupleElements) {
@@ -12214,7 +16593,7 @@ class Compiler
         return cppName;
     }
 
-    /** Materialize scalar members when a compile-time record escapes. */
+    /** Materialize mutable members when a compile-time record escapes. */
     private materializeRecordScalars(
         record: Value,
         label: string,
@@ -12224,12 +16603,42 @@ class Compiler
         for (const [name, property] of Object.entries(
             record.recordProperties ?? {},
         )) {
+            if (property.sharedRecordScalar) {
+                properties[name] = property;
+                continue;
+            }
+            if (property.sharedRecordContainer) {
+                properties[name] = property;
+                continue;
+            }
             if (property.kind === "record") {
                 properties[name] = this.materializeRecordScalars(
                     property,
                     `${label}_${name}`,
                     preserveIdentity,
                 );
+                continue;
+            }
+            if (
+                property.kind === "data" &&
+                property.dataType &&
+                !property.nativeBinding &&
+                this.isMutableRecordContainer(property.dataType)
+            ) {
+                const cppName = this.allocateTemporaryCppName(
+                    `${label}_${name}`,
+                );
+                const cppType = this.dataTypes.cppType(
+                    property.dataType,
+                );
+                this.emit(
+                    `[[maybe_unused]] auto ${cppName} = std::make_shared<${cppType}>(${property.cpp});`,
+                );
+                properties[name] = {
+                    ...property,
+                    cpp: `(*${cppName})`,
+                    sharedRecordContainer: true,
+                };
                 continue;
             }
             const cppName = this.allocateTemporaryCppName(
@@ -12241,37 +16650,40 @@ class Compiler
                     ...dynamicProperty
                 } = property;
                 this.emit(
-                    `[[maybe_unused]] double ${cppName} = ${
+                    `[[maybe_unused]] auto ${cppName} = std::make_shared<double>(${
                         property.staticNumber === undefined
                             ? property.cpp
                             : doubleLiteral(property.staticNumber)
-                    };`,
+                    });`,
                 );
                 properties[name] = {
                     ...dynamicProperty,
-                    cpp: cppName,
+                    cpp: `(*${cppName})`,
+                    sharedRecordScalar: true,
                 };
                 continue;
             }
             if (property.kind === "boolean") {
                 this.emit(
-                    `[[maybe_unused]] bool ${cppName} = ${property.cpp};`,
+                    `[[maybe_unused]] auto ${cppName} = std::make_shared<bool>(${property.cpp});`,
                 );
                 properties[name] = {
                     ...property,
-                    cpp: cppName,
+                    cpp: `(*${cppName})`,
+                    sharedRecordScalar: true,
                 };
                 continue;
             }
             if (property.staticString !== undefined) {
                 this.emit(
-                    `[[maybe_unused]] std::string ${cppName} = ${this.cppString(property.staticString)};`,
+                    `[[maybe_unused]] auto ${cppName} = std::make_shared<std::string>(${this.cppString(property.staticString)});`,
                 );
                 properties[name] = {
                     kind: "data",
-                    cpp: cppName,
+                    cpp: `(*${cppName})`,
                     dataType: { kind: "string" },
                     staticString: property.staticString,
+                    sharedRecordScalar: true,
                 };
                 continue;
             }
@@ -12282,6 +16694,17 @@ class Compiler
             return record;
         }
         return { ...record, recordProperties: properties };
+    }
+
+    private isMutableRecordContainer(dataType: DataType): boolean {
+        if (dataType.kind === "optional") {
+            return this.isMutableRecordContainer(dataType.inner);
+        }
+        return (
+            passesByReferenceKind(dataType) &&
+            dataType.kind !== "tuple" &&
+            dataType.kind !== "enummap"
+        );
     }
 
     public compileCallbackWithValues(
@@ -12319,13 +16742,87 @@ class Compiler
         dataType: DataType & { kind: "function" },
         owner?: Value,
     ): string {
-        const compile = (): string =>
-            this.userFunctions.compileStoredDataFunction(
+        const expressionIsFunctionObject =
+            ts.isArrowFunction(expression) ||
+            ts.isFunctionExpression(expression) ||
+            ts.isMethodDeclaration(expression);
+        const evaluationIdentity =
+            this.callbackEvaluationIdentity();
+        const lexicalThis =
+            ts.isArrowFunction(expression)
+                ? this.activeThis()
+                : undefined;
+        const effectiveOwner: Value | undefined =
+            owner ??
+            (expressionIsFunctionObject
+                ? {
+                      ...(lexicalThis ?? {
+                          kind: "record" as const,
+                          cpp: "",
+                      }),
+                      recordScopes: [...this.variableScopes],
+                      ...(this.isInRuntimeIteration()
+                          ? {
+                                repeatedCallbackEvaluation:
+                                    true as const,
+                            }
+                          : {}),
+                      ...(evaluationIdentity
+                          ? {
+                                callbackEvaluationIdentity:
+                                    evaluationIdentity,
+                            }
+                          : {}),
+                  }
+                : undefined);
+        const compile = (): string => {
+            if (
+                expressionIsFunctionObject &&
+                effectiveOwner?.repeatedCallbackEvaluation === true &&
+                dataType.identity === true
+            ) {
+                this.fail(
+                    expression,
+                    "A callback expression evaluated by a runtime loop " +
+                        "creates a new JavaScript function on every " +
+                        "iteration; bind one callback outside the loop or " +
+                        "use a statically unrolled iteration.",
+                );
+            }
+            this.refuseEscapingPlatformEventCapturesIn(
+                expression,
+                this.variableScopes.length,
+            );
+            return this.userFunctions.compileStoredDataFunction(
                 this,
                 expression,
                 dataType,
+                effectiveOwner,
             );
-        return owner ? this.withRecordScopes(owner, compile) : compile();
+        };
+        if (!effectiveOwner) {
+            return compile();
+        }
+        return this.withRecordScopes(effectiveOwner, () => {
+            if (!effectiveOwner.recordProperties) {
+                // A scope-only owner carries the captured variables of an
+                // inline literal and no receiver; `this` stays whatever the
+                // literal was written under.
+                return compile();
+            }
+            // A method or arrow declared in an object or class body closes
+            // over that object. Materializing it from a field read has to
+            // restore the same `this` its declaration ran under, or the
+            // body would resolve its fields against whichever receiver the
+            // enclosing inlined method happened to leave bound.
+            const previousThis = this.thisInstance;
+            this.defineThis(effectiveOwner);
+            try {
+                return compile();
+            } finally {
+                this.defineThis(previousThis);
+            }
+        });
     }
 
     public compilePredicateWithValues(
@@ -12428,13 +16925,7 @@ class Compiler
                         [info],
                         deferred.node,
                     );
-                    if (result.cpp.length > 0) {
-                        this.emit(
-                            result.requiresExplicitDiscard
-                                ? `static_cast<void>(${result.cpp});`
-                                : `${result.cpp};`,
-                        );
-                    }
+                    this.emitDiscardedValue(result);
                 });
                 const indent = "    ".repeat(2);
                 // The signature is the pin's, so the parameter stays whether
@@ -12463,6 +16954,7 @@ class Compiler
         value: Value,
         parameter: boolean,
         explicitCppName?: string,
+        sharedStorage = false,
     ): void {
         if (value.kind === "void") {
             this.fail(
@@ -12500,7 +16992,12 @@ class Compiler
             (this.dataLowerer.dataTypeAt(identifier)?.kind ===
                 "handle" ||
                 isHandleKind(value.kind));
-        const nativeType = reference
+        const platformEvent =
+            value.kind === "platform-keyboard-event" ||
+            value.kind === "platform-mouse-event";
+        const nativeType = platformEvent
+            ? "const auto&"
+            : reference
             ? "auto&"
             : value.kind === "number"
               ? "double"
@@ -12521,12 +17018,42 @@ class Compiler
             value.kind === "boolean" || parameter
                 ? "[[maybe_unused]] "
                 : "";
-        this.emit(
-            `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
-        );
+        if (sharedStorage) {
+            if (isHandleKind(value.kind)) {
+                const cppType = this.dataTypes.cppType({
+                    kind: "handle",
+                    handle: value.kind,
+                });
+                this.emit(
+                    `${maybeUnused}auto ${cppName} = std::make_shared<${cppType}>(${initializerCpp});`,
+                );
+            } else {
+                const initial = this.allocateTemporaryCppName(
+                    `${identifier.text}_initial`,
+                );
+                this.emit(`auto ${initial} = ${initializerCpp};`);
+                this.emit(
+                    `${maybeUnused}auto ${cppName} = std::make_shared<std::decay_t<decltype(${initial})>>(std::move(${initial}));`,
+                );
+            }
+        } else {
+            this.emit(
+                `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
+            );
+        }
+        const storedCpp = sharedStorage
+            ? `(*${cppName})`
+            : cppName;
         const stored: Value = {
             ...value,
-            cpp: cppName,
+            cpp: storedCpp,
+            ...(reference
+                ? {
+                      retainedReferenceCapture: cppName,
+                      retainedReferenceSequence:
+                          ++this.nextRetainedReferenceSequence,
+                  }
+                : {}),
             ...(parameter ? { parameterBinding: true } : {}),
             ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
@@ -12541,13 +17068,13 @@ class Compiler
             value.dataType?.kind === "struct" &&
             this.dataTypes.isReferenceStruct(value.dataType.name)
         ) {
-            stored.objectIdentityCpp = `${cppName}.get()`;
+            stored.objectIdentityCpp = `${storedCpp}.get()`;
         }
         if (value.kind === "animation-clip") {
             stored.animationFrameRate =
-                `${cppName}.frame_rate`;
+                `${storedCpp}.frame_rate`;
             stored.animationDuration =
-                `${cppName}.duration`;
+                `${storedCpp}.duration`;
         }
         this.defineVariable(identifier, stored);
     }
@@ -12644,6 +17171,13 @@ class Compiler
     /** First callback-owned scope, which is safe for that callback to read. */
     private deferredCaptureCeiling: number | undefined;
 
+    /**
+     * Scope depth at which a nested persistent callback begins. Platform event
+     * objects are borrowed from the dispatch stack, so only bindings introduced
+     * at or below this callback may refer to one.
+     */
+    private escapingPlatformEventCaptureFloor: number | undefined;
+
     public pushScope(cppPrefix: string): void {
         this.variableScopes.push(new Map());
         this.cppNamePrefixes.push(cppPrefix);
@@ -12688,13 +17222,23 @@ class Compiler
         if (!value.engineCpp) {
             this.fail(node, `A ${value.kind} value is not associated with an engine.`);
         }
+        this.trackRetainedCaptureName(value.engineCpp);
         return value.engineCpp;
+    }
+
+    public engineFor(value: Value, node: ts.Node): string {
+        if (value.engineCpp) {
+            this.trackRetainedCaptureName(value.engineCpp);
+            return value.engineCpp;
+        }
+        return this.requireDefaultEngine(node);
     }
 
     public requireDefaultEngine(node: ts.Node): string {
         if (!this.defaultEngineCpp) {
             this.fail(node, "This intrinsic requires createEngine to run first.");
         }
+        this.trackRetainedCaptureName(this.defaultEngineCpp);
         return this.defaultEngineCpp;
     }
 
@@ -12757,8 +17301,44 @@ class Compiler
 
     public recordStandardMaterialPlugins(
         plugins: readonly MaterialPluginManifest[],
+        material: NonNullable<Value["standardMaterialInput"]>,
     ): number {
-        return this.sceneMaterials.recordStandardMaterialPlugins(plugins);
+        return this.sceneMaterials.recordStandardMaterialPlugins(
+            plugins,
+            material,
+        );
+    }
+
+    /**
+     * Runs `work` with an inlined function's parameters bound in a scope of
+     * its own -- the same binding the user-function inliner performs before
+     * it lowers a body, exposed for the folds that read a body instead.
+     *
+     * A `MaterialPlugin` returned by a local factory closes over the
+     * arguments, so folding its members means resolving the factory's
+     * parameter names to what the call site passed; nothing else about the
+     * body is entered.
+     *
+     * The scope takes an allocated prefix, exactly as every other inliner's
+     * does. A binding still DECLARES a native local, so an empty prefix
+     * spells one `v_<parameter>` per call: two calls of one factory would
+     * redefine it, and a parameter sharing a name with a scene local would
+     * collide with that local's own declaration.
+     */
+    public withBoundParameters<T>(
+        parameters: readonly { name: ts.Identifier; value: Value }[],
+        work: () => T,
+    ): T {
+        if (parameters.length === 0) return work();
+        this.pushScope(this.allocateBlockPrefix());
+        try {
+            for (const parameter of parameters) {
+                this.bindParameterValue(parameter.name, parameter.value);
+            }
+            return work();
+        } finally {
+            this.popScope();
+        }
     }
 
     public recordScenePbrSheen(
@@ -12990,7 +17570,18 @@ class Compiler
     public recordThinInstanceColorMesh(
         sceneMeshIndex: number | undefined,
     ): void {
-        if (sceneMeshIndex === undefined) return;
+        if (sceneMeshIndex === undefined) {
+            // A handle selected from a runtime pool has lost its one static
+            // scene index, but it can only name a mesh that already owns a
+            // thin-instance pool. Keep every such row's coloured arm; the
+            // runtime key still selects it only after colors are attached.
+            for (const mesh of this.sceneMeshes) {
+                if (mesh.thinInstances) {
+                    mesh.thinInstanceColors = true;
+                }
+            }
+            return;
+        }
         const mesh = this.sceneMeshes[sceneMeshIndex];
         if (mesh) mesh.thinInstanceColors = true;
     }
@@ -13026,6 +17617,7 @@ class Compiler
             pbrMaterial: number | null;
             nodeMaterial: number | null;
             standardMaterial: boolean;
+            standardMaterialPluginIndex?: number | undefined;
             sceneShaderVariant?: string | undefined;
         },
     ): void {
@@ -13035,7 +17627,16 @@ class Compiler
         });
         if (material.standardMaterial) {
             const mesh = this.sceneMeshes[meshIndex];
-            if (mesh) mesh.standardMaterial = true;
+            if (mesh) {
+                mesh.standardMaterial = true;
+                if (
+                    material.standardMaterialPluginIndex !==
+                    undefined
+                ) {
+                    mesh.standardMaterialPluginIndex =
+                        material.standardMaterialPluginIndex;
+                }
+            }
         }
         if (material.sceneShaderVariant !== undefined) {
             const mesh = this.sceneMeshes[meshIndex];
@@ -13256,6 +17857,56 @@ class Compiler
         } else {
             mesh.thinInstances = "always";
         }
+    }
+
+    /**
+     * Whether a `mesh.thinInstances` read on this value can stand.
+     *
+     * A mesh whose scene identity generation resolved is answered from what
+     * it recorded, so a source reading the pool of a mesh that never binds
+     * one is refused at its own line. A mesh that arrives as a runtime
+     * handle -- read out of plain data, indexed out of a collection -- has
+     * no compile-time identity to ask about, so the question is the
+     * runtime's: the emitted read raises the pin's own non-null failure.
+     */
+    public meshHasThinInstancePool(owner: Value): boolean {
+        return (
+            owner.sceneMeshIndex === undefined ||
+            this.sceneMeshes[owner.sceneMeshIndex]?.thinInstances !==
+                undefined
+        );
+    }
+
+    /**
+     * Records that this mesh reached an `enableThinInstanceGpuCulling` that
+     * can leave the pin's `_gpuCullingEnabled` set.
+     */
+    public recordThinInstanceGpuCulling(
+        sceneMeshIndex: number | undefined,
+    ): void {
+        if (sceneMeshIndex === undefined) return;
+        const mesh = this.sceneMeshes[sceneMeshIndex];
+        if (!mesh) return;
+        mesh.thinInstanceGpuCulling = true;
+    }
+
+    /**
+     * Whether a statically-`false` culling opt-in on this value still has
+     * something to say.
+     *
+     * `_gpuCullingEnabled` starts false, so a `false` call is the pin's own
+     * idempotent early return unless an enabling call already ran on the
+     * same mesh — which is a question about this mesh's own state, answered
+     * from what it recorded during the same single deterministic walk that
+     * records its pool. A mesh with no compile-time identity has no such
+     * state to read, so the call stands and the runtime decides.
+     */
+    public meshMayHaveThinInstanceGpuCulling(owner: Value): boolean {
+        return (
+            owner.sceneMeshIndex === undefined ||
+            this.sceneMeshes[owner.sceneMeshIndex]
+                ?.thinInstanceGpuCulling === true
+        );
     }
 
     /** Records a scene-code mesh creation for the per-renderable variant key. */

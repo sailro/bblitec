@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <deque>
+#include <functional>
 #include <limits>
 #include <list>
 #include <memory>
@@ -157,6 +158,90 @@ template <typename T, typename... Args>
         T(std::forward<Args>(args)...),
     });
 }
+
+/**
+ * A non-owning reference whose constructor cannot represent null.
+ *
+ * Platform event payloads use this only while their synchronous dispatch
+ * frame is active. The compiler rejects every retained copy; the wrapper
+ * keeps ordinary record copies cheap without making the event an owning or
+ * default-constructible JavaScript value.
+ */
+template <typename T>
+class Borrowed {
+  public:
+    explicit Borrowed(T& value) noexcept : value_(std::addressof(value)) {}
+
+    [[nodiscard]] T& get() const noexcept { return *value_; }
+
+  private:
+    T* value_;
+};
+
+/**
+ * The common DOM Event view: only preventDefault survives on the base type.
+ *
+ * MouseEvent and KeyboardEvent retain their typed Borrowed<T> wrappers. This
+ * erased facade accepts either without introducing a third platform-event
+ * record or making arbitrary DOM objects storable.
+ */
+class BorrowedEvent {
+  public:
+    template <typename T>
+        requires requires(const T& value) { value.prevent_default(); }
+    explicit BorrowedEvent(const T& value) noexcept
+        : value_(std::addressof(value)),
+          prevent_default_([](const void* borrowed) noexcept {
+              static_cast<const T*>(borrowed)->prevent_default();
+          }) {}
+
+    [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
+    void prevent_default() const noexcept { prevent_default_(value_); }
+
+  private:
+    const void* value_;
+    void (*prevent_default_)(const void*) noexcept;
+};
+
+/**
+ * A JavaScript function value with identity.
+ *
+ * `std::function` compares nothing, so a Set of handlers could neither
+ * refuse a duplicate `add` nor honour a `delete`, and a Map could not key
+ * by one. JavaScript compares function values by object identity, and a
+ * program mints one function object per function expression it evaluates --
+ * so what a compiled callback carries is the identity of the function object
+ * that evaluation produced. Statically repeated expressions receive distinct
+ * generation identities; references to one declared callback share one.
+ * `off(handler)` then removes exactly what `on(handler)` added.
+ */
+template <typename Sig>
+class Callback;
+
+template <typename R, typename... Args>
+class Callback<R(Args...)> {
+  public:
+    Callback() = default;
+    template <typename F>
+    Callback(std::size_t identity, F&& body)
+        : identity_(identity), body_(std::forward<F>(body)) {}
+
+    R operator()(Args... args) const {
+        return body_(std::forward<Args>(args)...);
+    }
+    explicit operator bool() const { return static_cast<bool>(body_); }
+    [[nodiscard]] std::size_t identity() const { return identity_; }
+
+    [[nodiscard]] friend bool operator==(
+        const Callback& left,
+        const Callback& right) {
+        return left.identity_ == right.identity_;
+    }
+
+  private:
+    std::size_t identity_ = 0;
+    std::function<R(Args...)> body_;
+};
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
 class U8Array {
@@ -455,7 +540,9 @@ class Nullable {
     Nullable(const T& value) : owned_(value) {}
     Nullable(T&& value) : owned_(std::move(value)) {}
     template <typename U>
-        requires std::is_constructible_v<T, U&&>
+        requires (
+            !std::is_same_v<std::remove_cvref_t<U>, Nullable> &&
+            std::is_constructible_v<T, U&&>)
     Nullable(U&& value)
         : owned_(std::in_place, std::forward<U>(value)) {}
 
@@ -481,6 +568,11 @@ class Nullable {
     [[nodiscard]] T* operator->() { return &value(); }
     [[nodiscard]] const T* operator->() const { return &value(); }
     explicit operator bool() const { return has_value(); }
+    [[nodiscard]] std::optional<T> to_optional() const {
+        return has_value()
+            ? std::optional<T>{value()}
+            : std::nullopt;
+    }
 
     Nullable& operator=(std::nullopt_t) {
         reference_ = nullptr;
@@ -828,6 +920,15 @@ struct ValueHash {
         } else {
             return std::hash<T>{}(value);
         }
+    }
+};
+
+/** A stored function hashes by the identity its equality already uses. */
+template <typename Sig>
+struct ValueHash<Callback<Sig>> {
+    [[nodiscard]] std::size_t operator()(
+        const Callback<Sig>& value) const noexcept {
+        return std::hash<std::size_t>{}(value.identity());
     }
 };
 
@@ -1248,28 +1349,35 @@ template <typename... Parts>
     return value > 0.0 ? 1.0 : -1.0;
 }
 
+/**
+ * ECMA-262's relative-index rule: a negative index counts back from the
+ * end, and either sign clamps into `[0, length]`. Every ranged builtin the
+ * lowerer serves -- `slice`, `fill`, `copyWithin` -- resolves each of its
+ * endpoints through exactly this, so it is stated once here rather than
+ * once per operation.
+ */
+[[nodiscard]] inline std::size_t relative_index(
+    std::size_t length,
+    double raw) {
+    const auto size = static_cast<std::ptrdiff_t>(length);
+    auto index = static_cast<std::ptrdiff_t>(std::trunc(raw));
+    if (index < 0) {
+        index = std::max<std::ptrdiff_t>(0, size + index);
+    }
+    return static_cast<std::size_t>(std::min(size, index));
+}
+
 [[nodiscard]] inline std::pair<std::size_t, std::size_t>
 relative_slice_bounds(
     std::size_t length,
     double begin_value,
     double end_value) {
-    const auto size = static_cast<std::ptrdiff_t>(length);
-    const auto clamp = [size](double raw) {
-        auto index = static_cast<std::ptrdiff_t>(
-            std::trunc(raw));
-        if (index < 0) {
-            index = std::max<std::ptrdiff_t>(
-                0,
-                size + index);
-        }
-        return std::min(size, index);
-    };
-    const auto begin = clamp(begin_value);
-    const auto end = std::max(begin, clamp(end_value));
-    return {
-        static_cast<std::size_t>(begin),
-        static_cast<std::size_t>(end),
-    };
+    const auto begin = relative_index(length, begin_value);
+    // An end before the begin is an empty range in every one of these
+    // operations -- the spec writes it as a `max(final - from, 0)` count
+    // rather than as a clamp, and the two agree on every input.
+    const auto end = std::max(begin, relative_index(length, end_value));
+    return {begin, end};
 }
 
 [[nodiscard]] inline std::string string_slice(
@@ -1666,6 +1774,68 @@ inline void array_fill(Array<T>& values, const T& value) {
 template <typename T>
 inline void array_fill(std::vector<T>& values, const T& value) {
     std::fill(values.begin(), values.end(), value);
+}
+
+/**
+ * `fill(value, start, end)` — the ranged form, over any container the
+ * lowerer serves. Both endpoints are relative indices, so a negative one
+ * counts back from the end and an end at or before the start writes
+ * nothing; `relative_slice_bounds` is that rule, shared with `slice`.
+ */
+template <typename Values, typename T>
+inline void array_fill_range(
+    Values& values,
+    const T& value,
+    double start,
+    double end) {
+    const auto [from, to] = relative_slice_bounds(
+        values.size(),
+        start,
+        end);
+    std::fill(
+        values.begin() + static_cast<std::ptrdiff_t>(from),
+        values.begin() + static_cast<std::ptrdiff_t>(to),
+        value);
+}
+
+/**
+ * `%TypedArray%.prototype.copyWithin(target, start, end)`.
+ *
+ * The spec copies `min(final - from, len - to)` elements and states that
+ * the copy behaves as if through an intermediate list, so an overlapping
+ * run keeps the source bytes -- `std::copy` cannot promise that when the
+ * target is inside the source, and `std::memmove` is exactly what can, so
+ * the trivially-copyable element types these containers hold move through
+ * `std::copy_backward` when the run overlaps forwards.
+ */
+template <typename Values>
+inline void array_copy_within(
+    Values& values,
+    double target,
+    double start,
+    double end) {
+    const auto to = relative_index(values.size(), target);
+    const auto [from, final] = relative_slice_bounds(
+        values.size(),
+        start,
+        end);
+    const auto count = std::min(final - from, values.size() - to);
+    if (count == 0 || from == to) return;
+    const auto begin = values.begin();
+    const auto offset = [](std::size_t index) {
+        return static_cast<std::ptrdiff_t>(index);
+    };
+    if (to < from) {
+        std::copy(
+            begin + offset(from),
+            begin + offset(from + count),
+            begin + offset(to));
+        return;
+    }
+    std::copy_backward(
+        begin + offset(from),
+        begin + offset(from + count),
+        begin + offset(to + count));
 }
 
 // `new Array<T>(count).fill(value)`.

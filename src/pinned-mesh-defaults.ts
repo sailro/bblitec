@@ -182,6 +182,41 @@ export function pinnedMeshOptionFlag(
 }
 
 /**
+ * A pinned function's own boolean parameter default.
+ *
+ * `enableThinInstanceGpuCulling(mesh, enabled = true)` states what an
+ * omitted argument means in its declaration rather than through the `??`
+ * the builders use, so an intrinsic folding that call site reads it here.
+ * Same contract as the readers above: a pin that retunes the default moves
+ * the emitted call with it, and a pin that renames the parameter fails
+ * naming the one it no longer has.
+ */
+export function pinnedParameterFlag(
+    modulePath: string,
+    functionName: string,
+    parameter: string,
+): boolean {
+    const context = reader();
+    const { declaration } = context.functionDeclaration(
+        modulePath,
+        functionName,
+    );
+    const declared = declaration.parameters.find(
+        (candidate) =>
+            ts.isIdentifier(candidate.name) &&
+            candidate.name.text === parameter,
+    );
+    const initializer = declared?.initializer;
+    if (initializer?.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (initializer?.kind === ts.SyntaxKind.FalseKeyword) return false;
+    return context.contractError(
+        declared ?? declaration,
+        `${modulePath}#${functionName} does not default '${parameter}' ` +
+            "to a flag.",
+    );
+}
+
+/**
  * `createTransformNode`'s own parameter defaults.
  *
  * A different read from the `??` one above, and the same question: the

@@ -7,3 +7,9 @@ export function activate(): void {
 export function isActive(): boolean {
     return active;
 }
+
+export function installToggle(): void {
+    window.addEventListener("pointerdown", () => {
+        active = !active;
+    });
+}

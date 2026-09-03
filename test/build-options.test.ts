@@ -120,6 +120,66 @@ test("keeps RmlUi recording backend-neutral and realizes it in scene and sprite 
     }
 });
 
+test("normalizes retained CSS cascade keywords and measures width resets", () => {
+    const projection = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    const declarations = projection.slice(
+        projection.indexOf("std::string take_css_declaration"),
+        projection.indexOf("bool is_private_ui_declaration"),
+    );
+    assert.match(declarations, /ascii_iequals/);
+    assert.match(
+        declarations,
+        /result = std::string\(\s*trim_css_token/,
+    );
+    assert.doesNotMatch(declarations, /result = ascii_lower/);
+
+    const gridCascade = projection.slice(
+        projection.indexOf("std::string resolved_style_attribute"),
+        projection.indexOf("bool text_needs_flex_wrapper"),
+    );
+    const styleSource = projection.slice(
+        projection.indexOf("ProjectedUiStyleSource project_ui_style_source"),
+        projection.indexOf("std::string take_grid_children_style"),
+    );
+    assert.match(
+        styleSource,
+        /normalized_css_keyword\([\s\S]{0,100}take_css_declaration\(public_probe, "display"\)/,
+    );
+    assert.match(gridCascade, /project_ui_style_source\(rule\.style\)/);
+    assert.match(
+        gridCascade,
+        /normalized_css_keyword\(dynamic_display->second\)/,
+    );
+    assert.match(
+        gridCascade,
+        /normalized_css_keyword\(dynamic_justification->second\)/,
+    );
+
+    const intrinsic = projection.slice(
+        projection.indexOf("bool has_active_authored_width"),
+        projection.indexOf("bool sync_hover_states"),
+    );
+    assert.match(intrinsic, /CascadedUiDeclaration width/);
+    assert.match(intrinsic, /consider_cascaded_declaration/);
+    assert.match(intrinsic, /ui_style_rule_specificity\(rule\)/);
+    assert.match(intrinsic, /is_concrete_authored_width\(width\.value\)/);
+    const concreteWidth = projection.slice(
+        projection.indexOf("bool is_concrete_authored_width"),
+        projection.indexOf("UiElementRecord& ui_element"),
+    );
+    for (const reset of ["auto", "initial", "unset"]) {
+        assert.match(concreteWidth, new RegExp(`keyword != "${reset}"`));
+    }
+    const setAttribute = projection.slice(
+        projection.indexOf("void ui_set_attribute"),
+        projection.indexOf("void ui_set_style_property"),
+    );
+    assert.match(
+        setAttribute,
+        /name == "style"[\s\S]{0,120}record\.style_properties\.clear\(\)/,
+    );
+});
+
 test("canonicalizes the build-time backend flag", () => {
     assert.equal(defaultDevelopmentBackend("win32"), "BOTH");
     assert.equal(defaultDevelopmentBackend("linux"), "SDL_GPU");
@@ -185,11 +245,18 @@ test("the trimmed SDL build has a separate audio-capable variant", () => {
     assert.match(script, /\[switch\]\$EnableAudio/);
     assert.match(script, /sdl-min-audio/);
     assert.match(script, /-DSDL_AUDIO=\$audioSetting/);
+    assert.match(script, /-DSDL_DIALOG=ON/);
+    assert.match(script, /BBLITE_SDL_DIALOG ON/);
     assert.match(script, /bblite-sdl-features\.cmake/);
 
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     assert.match(cmake, /include\("\$\{BBLITE_SDL_FEATURES\}"\)/);
     assert.match(cmake, /NOT BBLITE_SDL_AUDIO/);
+    assert.match(
+        cmake,
+        /"browser:file" IN_LIST BBLITE_RUNTIME_FEATURES[\s\S]{0,100}NOT BBLITE_SDL_DIALOG/,
+    );
+    assert.doesNotMatch(cmake, /comdlg32/);
 });
 
 test("minimal audio dependencies use a static runtime and ship their notices", () => {
@@ -240,6 +307,8 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(builder, /rmlui-premultiplied-rounding\.patch/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
+    assert.match(builder, /RMLUI_SVG_PLUGIN=ON/);
+    assert.match(builder, /lunasvgConfig\.cmake/);
     // The SDL platform pair RmlUi itself never installs, and the license
     // the packager copies out of the artifact.
     assert.match(builder, /RmlUi_Platform_SDL\.cpp/);
@@ -252,6 +321,8 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.doesNotMatch(cmake, /FetchContent/);
     assert.match(cmake, /tools\/build-rmlui\.ps1/);
     assert.match(cmake, /NOT BBLITE_RMLUI_STATIC_RUNTIME/);
+    assert.match(cmake, /ui:inline-svg/);
+    assert.match(cmake, /NOT RMLUI_SVG_PLUGIN/);
     assert.match(
         cmake,
         /\$\{BBLITE_RMLUI_DIR\}\/Backends\/RmlUi_Platform_SDL\.cpp/,
@@ -260,6 +331,8 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     const packager = readFileSync("tools/package-demo.ps1", "utf8");
     assert.match(packager, /BBLITE_RMLUI_DIR/);
     assert.match(packager, /RmlUi-LICENSE\.txt/);
+    assert.match(packager, /LunaSVG\.txt.*lunasvg/s);
+    assert.match(packager, /PlutoVG\.txt.*plutovg/s);
 });
 
 test("shader compilation gates non-target formats", () => {

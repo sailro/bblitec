@@ -3894,6 +3894,28 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "sandblox",
+        name: "Sandblox",
+        source: "corpus/babylon-lite/lab/lite/src/demos/sandblox.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Sandblox",
+        parity: {
+            referenceFrame: 180,
+            referenceSearch: "?fresh=1",
+            maxFullMad: 0.2,
+            maxForegroundMad: 0.2,
+            // The scene canvas is byte-identical on both backends. The
+            // remaining full-page residual is retained text/icon rasterization.
+            canvasThresholds: {
+                maxFullMad: 0.001,
+                maxForegroundMad: 0.001,
+            },
+            backgroundColor: [184, 215, 232],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "minecraft",
         name: "Voxel Sandbox",
         source: "corpus/babylon-lite/lab/lite/src/demos/minecraft.ts",

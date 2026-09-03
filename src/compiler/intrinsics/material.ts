@@ -798,14 +798,21 @@ export function compileMaterialIntrinsic(
                 "material",
                 call.arguments[0]!,
             );
+            const engine = context.requireEngine(
+                material,
+                call,
+            );
+            for (const [field, value] of
+                material.materialUboArrayFields ?? []) {
+                context.emit(
+                    `${engine}.materials[${material.cpp}.value].${field} = ${value};`,
+                );
+            }
             return {
                 kind: "void",
                 cpp:
                     `bbl::mark_material_ubo_dirty(` +
-                    `${context.requireEngine(
-                        material,
-                        call,
-                    )}, ${material.cpp})`,
+                    `${engine}, ${material.cpp})`,
             };
         }
 
@@ -1024,6 +1031,10 @@ export function compileMaterialIntrinsic(
             const colorExpression = call.arguments[1]!;
             const channels = staticColor3Value(context, colorExpression);
             const color = context.compileColor3(colorExpression);
+            const bindings =
+                material.materialUboArrayFields ??
+                (material.materialUboArrayFields = new Map());
+            bindings.set("emissive_factor", color);
             context.recordScenePbrEmissive(
                 channels,
                 material.scenePbrMaterialIndex,
@@ -1571,6 +1582,7 @@ export function compileMaterialIntrinsic(
                 cpp: `bbl::create_standard_material(${engine})`,
                 engineCpp: engine,
                 standardMaterial: true,
+                standardMaterialInput: {},
             };
         }
 

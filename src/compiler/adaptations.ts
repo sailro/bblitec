@@ -23,14 +23,18 @@ export interface AdaptationContext {
     readonly jsDataReached: boolean;
     readonly jsRandomReached: boolean;
     readonly voxelFileStorageReached: boolean;
+    /** The canvas-owning texture producers this compilation executed. */
+    readonly browserTextureFunctions: ReadonlySet<string>;
     readonly assets: ReadonlyMap<string, CompileAsset>;
     readonly reachedShaderPrograms: readonly CompiledShaderProgram[];
     readonly geometryOutputTasks: readonly GeometryOutputTaskManifest[];
     readonly defaultRenderTaskAdapted: boolean;
     /** Style properties this scene reached that render degraded (AP-3). */
     readonly uiDegradedStyleProperties: ReadonlySet<string>;
-    /** `#id .class` sheet rules this scene projects as global class rules. */
-    readonly uiWidenedSheetSelectors: ReadonlySet<string>;
+    /** Descendant sheet selectors kept as typed, non-widened scopes. */
+    readonly uiScopedSheetSelectors: ReadonlySet<string>;
+    /** Fixed-grid shapes structurally substituted by wrapping flex. */
+    readonly uiGridSubstitutions: ReadonlySet<string>;
 }
 
 export function compileAdaptations(
@@ -191,6 +195,58 @@ export function compileAdaptations(
             ],
         });
     }
+    if (
+        features.includes("browser:file") &&
+        !context.voxelFileStorageReached
+    ) {
+        adaptations.push({
+            id: "native-browser-file-bridge",
+            category: "platform",
+            sourceSemantics:
+                "Blob URLs retain in-memory bytes; an anchor download and a file input invoke asynchronous browser pickers, and the input dispatches change after selection.",
+            nativeSemantics:
+                "A generation-checked object-URL registry retains the same bytes. Anchor and file-input clicks synchronously wait on SDL's portable asynchronous dialogs without dispatching application events; an accepted open choice is bounded and snapshotted before native sets the one-file list and invokes change before click returns. Input, FileList, and File values share reclaimable immutable snapshots under a per-engine aggregate cap; cancellation preserves the previous list.",
+            risk: "medium",
+            validation: [
+                "browser file bridge compiler tests",
+                "native Blob/object-URL/file-input contract check with stub dialogs",
+                "PAL bounded-snapshot and exclusive atomic-write check",
+                "exact Sandblox compile",
+            ],
+        });
+    }
+    if (features.includes("data:json")) {
+        adaptations.push({
+            id: "json-data-bridge",
+            category: "language",
+            sourceSemantics:
+                "JSON.stringify walks a live JavaScript object graph and JSON.parse answers a value of any shape, both decided entirely at run time.",
+            nativeSemantics:
+                "JSON.stringify writes through codecs generated for exactly the records it reaches, in their declaration order, with a generation-known indent and no replacer; a property the source declared optional is omitted when absent, as an undefined member is. JSON.parse answers one dynamic document value: a missing or wrong-typed field reads as undefined rather than throwing, so the source's own shape guards decide, and a malformed document throws where the browser's SyntaxError does. A record that reaches itself is refused at generation rather than recursing.",
+            risk: "medium",
+            validation: [
+                "JSON bridge compiler tests",
+                "native document round-trip check (exact compact and pretty bytes)",
+                "generated-tree neutrality",
+            ],
+        });
+    }
+    if (features.includes("storage:local")) {
+        adaptations.push({
+            id: "native-web-storage",
+            category: "browser-erasure",
+            sourceSemantics:
+                "localStorage is per-origin browser storage: getItem answers a string or null, and setItem throws when the origin's quota is exhausted or storage is unavailable.",
+            nativeSemantics:
+                "The three reached methods read and write one file per key under the host's own preference directory (SDL_GetPrefPath) in a bblitec namespace. Keys are encoded injectively, so no key names a path or collides with another; a write is staged and moved into place, so an interrupted save leaves the previous value; removing an absent key succeeds. A platform failure throws, which is the arm a scene's try/catch around a save already takes.",
+            risk: "medium",
+            validation: [
+                "Web Storage compiler tests",
+                "native storage contract check against a temporary root",
+                "nullable getItem falsiness test",
+            ],
+        });
+    }
     if (context.jsDataReached) {
         adaptations.push({
             id: "plain-data-value-model",
@@ -277,6 +333,36 @@ export function compileAdaptations(
             validation: [
                 "Voxel Sandbox browser-golden parity",
                 "transitive-input-keyed atlas bake cache",
+            ],
+        });
+    }
+    if (context.browserTextureFunctions.size > 0) {
+        adaptations.push({
+            id: "browser-produced-textures",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene builds a texture in a browser canvas at run time " +
+                `(${[...context.browserTextureFunctions].sort().join(", ")}) ` +
+                "and hands it to createTexture2DFromPixels, or encodes it to a " +
+                "PNG blob and loads that object URL through loadTexture2D.",
+            nativeSemantics:
+                "Generation executes the same function in headless Chromium " +
+                "against a stub that records only those two pinned factories, " +
+                "and packages exactly what they were handed: the raw RGBA with " +
+                "its width, height and sampler options, or the object URL's " +
+                "blob byte-for-byte with its sampler, invertY and sRGB options. " +
+                "Neither side is lowerable here -- a rasterized face is a " +
+                "browser rasterizer's antialiasing, and the arithmetic tile " +
+                "rounds through a Math.round this data model does not carry and " +
+                "then crosses a browser PNG encode. Every other pinned import " +
+                "throws if reached and the engine argument is a proxy that " +
+                "throws on any property read, so an unbounded reach fails " +
+                "generation. The bytes depend on the Chrome that compiled them, " +
+                "exactly as the drawn atlas and the pinned GGX prefilter do.",
+            risk: "medium",
+            validation: [
+                "browser-texture structural detection and refusal tests",
+                "byte-stable across repeated compilations",
             ],
         });
     }
@@ -427,6 +513,41 @@ export function compileAdaptations(
             ],
         });
     }
+    if (features.includes("mesh:thin-instance-gpu-culling")) {
+        adaptations.push({
+            id: "thin-instance-gpu-culling-omitted",
+            category: "rendering",
+            sourceSemantics:
+                "`enableThinInstanceGpuCulling(mesh)` opts a pool into the " +
+                "pin's compute frustum culler: a compute pass compacts the " +
+                "in-frustum instances into a visible buffer and the mesh " +
+                "draws them indirectly. It also marks the renderable " +
+                "`_direct`, which takes it out of the cached opaque render " +
+                "bundle -- which is what gives an application per-frame " +
+                "thin-instance buffer sync on a Standard material. The " +
+                "pin states the visible output is unchanged: culling is " +
+                "conservative, and a pool it cannot cull falls back to " +
+                "drawing every instance.",
+            nativeSemantics:
+                "The opt-in is recorded on the mesh and the culler is " +
+                "omitted: every ACTIVE instance is drawn, which is the " +
+                "pin's own fallback and therefore the same pixels. The " +
+                "second effect needs nothing, because this port records no " +
+                "render bundles at all -- both backends re-upload every " +
+                "live pool from the record's version and bind the mesh's " +
+                "buffers at the draw, every frame, whether or not culling " +
+                "was asked for. What is given up is the performance: a " +
+                "far-off-screen instance still costs a vertex fetch.",
+            risk: "low",
+            validation: [
+                "the recorded flag keeps an opted-in pool distinguishable " +
+                    "from one that never asked",
+                "compiler thin-instance tests over the pinned enable body",
+                "regression-thin-instance-pool on both backends: a pool " +
+                    "that grows, shrinks and empties draws what its count says",
+            ],
+        });
+    }
     if (features.includes("physics:world")) {
         adaptations.push({
             id: "substituted-physics-solver",
@@ -528,7 +649,8 @@ export function compileAdaptations(
 
     if (features.includes("ui:rml")) {
         const degraded = [...context.uiDegradedStyleProperties].sort();
-        const widened = [...context.uiWidenedSheetSelectors].sort();
+        const scoped = [...context.uiScopedSheetSelectors].sort();
+        const grids = [...context.uiGridSubstitutions].sort();
         adaptations.push({
             id: "substituted-ui-runtime",
             category: "platform",
@@ -543,19 +665,29 @@ export function compileAdaptations(
                 "scene's own GPU backend. The projection is reviewed but " +
                 "not the browser: platform fonts (DirectWrite, CoreText, " +
                 "fontconfig) rasterize glyphs differently from the " +
-                "browser's font stack; `element.animate()` and " +
-                "`removeEventListener` lower to no-ops (CSS @keyframes " +
+                "browser's font stack; `element.animate()` and retained-UI " +
+                "`element.removeEventListener()` lower to no-ops (CSS @keyframes " +
                 "animation is projected, and retained records share the " +
                 "engine lifetime); CSS `steps()`/`step-start`/`step-end` " +
                 "easings play as `linear-in-out` and the `ease*` family " +
                 "as `sine*`; canvas overlays composite below the DOM " +
-                "chrome regardless of z-index" +
-                (widened.length > 0
-                    ? `; the reviewed sheet rule(s) ${widened
-                          .map((selector) => `'${selector}'`)
-                          .join(", ")} are projected as global class ` +
-                      "rules (the reached sheets attach those classes " +
-                      "only inside the id's own subtree)"
+                "chrome regardless of z-index; typed author rules retain " +
+                "source order and specificity, and RmlUi evaluates reached " +
+                ":hover and max-width state against the live viewport" +
+                (scoped.length > 0
+                    ? `; the statically-proven descendant rule(s) ${scoped
+                         .map((selector) => `'${selector}'`)
+                         .join(", ")} remain scoped in the retained rule IR`
+                    : "") +
+                (grids.length > 0
+                    ? `; RmlUi has no grid formatting context, so ${grids
+                         .map((grid) => `'${grid}'`)
+                         .join(", ")} use an equivalent fixed-width wrapping-flex child container`
+                    : "") +
+                (features.includes("ui:inline-svg")
+                    ? "; bounded static svg/path/rect markup is rasterized " +
+                      "by RmlUi's LunaSVG plugin, with inherited currentColor " +
+                      "applied as the generated image tint"
                     : "") +
                 (degraded.length > 0
                     ? `; and the reached style ${

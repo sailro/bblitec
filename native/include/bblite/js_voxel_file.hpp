@@ -13,9 +13,6 @@
 
 #include <cmath>
 #include <cstdlib>
-#include <filesystem>
-#include <fstream>
-#include <iterator>
 #include <string>
 #include <string_view>
 #include <type_traits>
@@ -28,13 +25,7 @@ inline const pal::FileDialogOptions voxel_file_dialog_options{
     .suggested_name = "world.voxelsave.json",
     .filter_name = "Voxel world save (*.json)",
     .filter_pattern = "*.json",
-    .default_extension = "json",
 };
-
-[[nodiscard]] inline std::filesystem::path voxel_file_path(
-    const std::string& utf8) {
-    return std::filesystem::path{std::u8string(utf8.begin(), utf8.end())};
-}
 
 /**
  * `saveToFile(data)`: the pin's compact `JSON.stringify` of the save record,
@@ -51,12 +42,6 @@ template <typename SaveData>
     options.title = "Save Voxel World";
     const auto path = pal::choose_save_file(engine, options);
     if (!path) return false;
-    std::ofstream output(
-        voxel_file_path(*path),
-        std::ios::binary | std::ios::trunc);
-    if (!output) {
-        return false;
-    }
     const auto number = [](double value) { return NumberPart(value); };
     std::string text = concat(
         "{\"v\":1,\"seed\":", number(data->seed),
@@ -72,8 +57,8 @@ template <typename SaveData>
         concat_append(text, number(data->edits[index]));
     }
     text.append("]}");
-    output << text;
-    return output.good();
+    pal::write_selected_file_atomically(*path, text);
+    return true;
 }
 
 /** The reader for the document `save_voxel_world` writes, key by key. */
@@ -127,15 +112,9 @@ template <typename SaveData>
     Engine& engine) {
     pal::FileDialogOptions options = voxel_file_dialog_options;
     options.title = "Load Voxel World";
-    const auto path = pal::choose_open_file(engine, options);
-    if (!path) return {};
-    std::ifstream input(voxel_file_path(*path), std::ios::binary);
-    if (!input) {
-        return {};
-    }
-    std::string text{
-        std::istreambuf_iterator<char>(input),
-        std::istreambuf_iterator<char>()};
+    const auto file = pal::choose_open_file(engine, options);
+    if (!file) return {};
+    std::string text(file->bytes.begin(), file->bytes.end());
     VoxelSaveJsonReader reader(std::move(text));
     using SaveRecord = typename SaveData::element_type;
     SaveData data = make_ref<SaveRecord>();

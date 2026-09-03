@@ -126,13 +126,24 @@ export class CompilerSymbols {
      */
     private importModuleSpecifier(
         identifier: ts.Identifier,
-    ): { specifier: string; named?: ts.ImportSpecifier } | undefined {
+    ):
+        | {
+              specifier: string;
+              named?: ts.ImportSpecifier;
+              nonNamed?: true;
+              typeOnly?: true;
+          }
+        | undefined {
         const declarations =
             this.checker.getSymbolAtLocation(identifier)?.declarations;
         const named = declarations?.find(ts.isImportSpecifier);
+        const namespace = declarations?.find(ts.isNamespaceImport);
+        const clause =
+            declarations?.find(ts.isImportClause) ??
+            namespace?.parent;
         const importDeclaration = named
             ? named.parent.parent.parent
-            : declarations?.find(ts.isImportClause)?.parent;
+            : clause?.parent;
         if (
             !importDeclaration ||
             !ts.isImportDeclaration(importDeclaration) ||
@@ -143,6 +154,10 @@ export class CompilerSymbols {
         return {
             specifier: importDeclaration.moduleSpecifier.text,
             ...(named ? { named } : {}),
+            ...(!named ? { nonNamed: true as const } : {}),
+            ...(named?.isTypeOnly || clause?.isTypeOnly
+                ? { typeOnly: true as const }
+                : {}),
         };
     }
 
@@ -168,5 +183,27 @@ export class CompilerSymbols {
         }
         return imported.named.propertyName?.text ??
             imported.named.name.text;
+    }
+
+    /**
+     * A pinned named import, or `*` when a default/namespace binding hides
+     * which export is reached. Used by bounded executors that must reject the
+     * latter rather than mistake it for a local value.
+     */
+    public babylonImportName(
+        identifier: ts.Identifier,
+    ): string | undefined {
+        const imported = this.importModuleSpecifier(identifier);
+        if (
+            !imported ||
+            imported.typeOnly ||
+            !isBabylonModule(imported.specifier)
+        ) {
+            return undefined;
+        }
+        return imported.nonNamed
+            ? "*"
+            : imported.named?.propertyName?.text ??
+                  imported.named?.name.text;
     }
 }

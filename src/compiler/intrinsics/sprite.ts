@@ -12,6 +12,7 @@ import {
 } from "../data-types.js";
 import {
     addressModeByPin,
+    pixelsTexture2DOptionFields,
     pixelsTextureOptionsCpp,
 } from "../../pinned-address-modes.js";
 import {
@@ -35,6 +36,7 @@ export interface SpriteIntrinsicContext
     unwrap(expression: ts.Expression): ts.Expression;
     requireDefaultEngine(node: ts.Node): string;
     requireEngine(value: Value, node: ts.Node): string;
+    engineFor(value: Value, node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     compileVec3(
         expression: ts.Expression,
@@ -323,12 +325,7 @@ function pixelsSamplerOptions(
             continue;
         }
         if (
-            ![
-                "addressModeU",
-                "addressModeV",
-                "minFilter",
-                "magFilter",
-            ].includes(field)
+            !pixelsTexture2DOptionFields.includes(field)
         ) {
             context.fail(
                 expression,
@@ -580,7 +577,7 @@ export function compileSpriteIntrinsic(
             }
             const engineCpp = firstLayer
                 ? context.requireEngine(firstLayer, call)
-                : layers.engineCpp ?? context.requireDefaultEngine(call);
+                : context.engineFor(layers, call);
             const layerList = dataLayers
                 ? spriteLayerVectorCpp(layers)
                 : `std::vector<bbl::Sprite2DLayerHandle>{${(tupleLayers ?? [])
@@ -794,8 +791,7 @@ export function compileSpriteIntrinsic(
                 options,
                 "premultipliedAlpha",
             );
-            const engine =
-                texture.engineCpp ?? context.requireDefaultEngine(call);
+            const engine = context.engineFor(texture, call);
             const numberValue = (
                 value: Value,
                 name: string,
@@ -1016,9 +1012,7 @@ export function compileSpriteIntrinsic(
                 "sprite",
                 call.arguments[1] ?? call,
             );
-            const engineCpp =
-                atlas.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(atlas, call);
             const depthMode = (depth?.staticString ?? "none") as NonNullable<
                 Value["spriteDepthMode"]
             >;
@@ -1066,9 +1060,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "addSprite2DIndex",
             );
-            const engineCpp =
-                layer.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
             return {
                 kind: "number",
@@ -1098,8 +1090,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "addSprite2D",
             );
-            const engineCpp =
-                layer.engineCpp ?? context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
             return {
                 kind: "sprite-2d-handle",
@@ -1142,9 +1133,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[1]!,
                 "double",
             );
-            const engineCpp =
-                layer.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
             const options = call.arguments[2]!;
             const updateCpp = (expression: ts.Expression): string => {
@@ -1265,8 +1254,7 @@ export function compileSpriteIntrinsic(
                         "generation rather than read as false.",
                 );
             }
-            const engineCpp =
-                manager.engineCpp ?? context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(manager, call);
             if (sprite2d && target.spriteLayerCpp === undefined) {
                 context.fail(
                     call.arguments[1]!,
@@ -1318,8 +1306,7 @@ export function compileSpriteIntrinsic(
                 "sprite-animation-manager",
                 call.arguments[0]!,
             );
-            const engineCpp =
-                manager.engineCpp ?? context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(manager, call);
             context.reachFeature("sprite:animation", call);
             return {
                 kind: "void",
@@ -1360,9 +1347,7 @@ export function compileSpriteIntrinsic(
                 "sprite-layer",
                 call.arguments[0]!,
             );
-            const engineCpp =
-                layer.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
             return {
                 kind: "void",
@@ -1437,9 +1422,7 @@ export function compileSpriteIntrinsic(
             const axisCpp = locked
                 ? context.compileVec3(call.arguments[1]!)
                 : "bbl::Vec3{0.0f, 0.0f, 0.0f}";
-            const engineCpp =
-                atlas.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(atlas, call);
             context.reachFeature("sprite:billboard", call);
             if (locked) {
                 context.reachFeature(
@@ -1494,9 +1477,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "addBillboardSpriteIndex",
             );
-            const engineCpp =
-                system.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(system, call);
             context.reachFeature("sprite:billboard", call);
             return {
                 kind: "number",
@@ -1517,8 +1498,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "addBillboardSprite",
             );
-            const engineCpp =
-                system.engineCpp ?? context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(system, call);
             context.reachFeature("sprite:billboard", call);
             return {
                 kind: "billboard-sprite",
@@ -1538,8 +1518,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[1],
                 "updateBillboardSprite",
             );
-            const engineCpp =
-                handle.engineCpp ?? context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(handle, call);
             context.reachFeature("sprite:billboard", call);
             return {
                 kind: "void",
@@ -1553,8 +1532,7 @@ export function compileSpriteIntrinsic(
             context.expectArgumentCount(call, 1, 1);
             const handle = context.compileValue(call.arguments[0]!);
             context.expectKind(handle, "billboard-sprite", call.arguments[0]!);
-            const engineCpp =
-                handle.engineCpp ?? context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(handle, call);
             context.reachFeature("sprite:billboard", call);
             return {
                 kind: "void",
@@ -1572,9 +1550,7 @@ export function compileSpriteIntrinsic(
                 "billboard-system",
                 call.arguments[0]!,
             );
-            const engineCpp =
-                system.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(system, call);
             context.reachFeature("sprite:billboard", call);
             return {
                 kind: "void",
@@ -1763,9 +1739,7 @@ export function compileSpriteIntrinsic(
                 call.arguments[0]!,
             );
             const params = context.compileVec4(call.arguments[1]!);
-            const engineCpp =
-                target.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(target, call);
             context.emit(
                 `bbl::${
                     sprite
@@ -1791,9 +1765,7 @@ export function compileSpriteIntrinsic(
             const enabled = context.compileBoolean(
                 call.arguments[1]!,
             );
-            const engineCpp =
-                target.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(target, call);
             context.reachFeature(
                 target.kind === "sprite-layer"
                     ? "sprite:2d"
@@ -1870,9 +1842,7 @@ export function compileSpriteIntrinsic(
             );
             const index = context.compileNumber(call.arguments[1]!);
             const offset = context.compileVec2(call.arguments[2]!);
-            const engineCpp =
-                layer.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(layer, call);
             context.reachFeature("sprite:2d", call);
             // Importing the setter is the pin's own opt-in trigger for the
             // widened layout, so reaching it here is what selects the
@@ -1963,10 +1933,7 @@ export function compileSpriteIntrinsic(
             context.reachFeature("renderer:sprite", call);
             return {
                 kind: "void",
-                cpp: `bbl::register_sprite_renderer(${
-                    renderer.engineCpp ??
-                    context.requireDefaultEngine(call)
-                }, ${renderer.cpp})`,
+                cpp: `bbl::register_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
             };
         }
 
@@ -1981,7 +1948,7 @@ export function compileSpriteIntrinsic(
             context.reachFeature("renderer:sprite", call);
             return {
                 kind: "void",
-                cpp: `bbl::unregister_sprite_renderer(${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ${renderer.cpp})`,
+                cpp: `bbl::unregister_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
             };
         }
 
@@ -2006,7 +1973,7 @@ export function compileSpriteIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::set_sprite_renderer_target(` +
-                    `${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ` +
+                    `${context.engineFor(renderer, call)}, ` +
                     `${renderer.cpp}, ` +
                     `${absent ? "bbl::SpriteRenderTextureHandle{}" : target.cpp}, ` +
                     `${absent ? "false" : "true"})`,
@@ -2036,10 +2003,10 @@ export function compileSpriteIntrinsic(
                 "sprite-layer",
                 call.arguments[1]!,
             );
-            const engineCpp =
-                renderer.engineCpp ??
-                layer.engineCpp ??
-                context.requireDefaultEngine(call);
+            const engineCpp = context.engineFor(
+                renderer.engineCpp ? renderer : layer,
+                call,
+            );
             context.reachFeature("renderer:sprite", call);
             const removes =
                 importedName === "removeSpriteRendererLayer";
@@ -2076,10 +2043,7 @@ export function compileSpriteIntrinsic(
             context.reachFeature("renderer:sprite", call);
             return {
                 kind: "void",
-                cpp: `bbl::dispose_sprite_renderer(${
-                    renderer.engineCpp ??
-                    context.requireDefaultEngine(call)
-                }, ${renderer.cpp})`,
+                cpp: `bbl::dispose_sprite_renderer(${context.engineFor(renderer, call)}, ${renderer.cpp})`,
             };
         }
 

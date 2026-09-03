@@ -57,14 +57,17 @@ Primary source ownership:
 | `native/src/pal_sdl_gpu.cpp`, `native/src/pal_dawn.cpp` | consume recorded UI frames through renderer-owned texture caches, transparent multisample layers, resolve, and final composition |
 | `ui/*.json` | audited static host-page chrome projected beside immutable scene-created UI |
 | `native/src/pal_system_fonts.cpp` | retained-UI font resolution through the host's own service — DirectWrite, CoreText or fontconfig — behind `pal_system_fonts.hpp` |
-| `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables) and generated definition emission |
+| `src/compiler/data-types.ts` | plain-data type mapping (structs, enums, optionals, arrays, tables, and borrowed platform-event fields) and generated definition emission, including the `json_write` codecs emitted for exactly the records `JSON.stringify` reaches |
+| `src/compiler/json-bridge.ts` | `JSON.stringify`/`JSON.parse` and the surface a parsed document is interrogated with: the dynamic value's reads, `Array.isArray`, `typeof`, and the strict comparison |
+| `src/compiler/web-storage.ts` | the three reached `localStorage` methods, recognised by the DOM global they read rather than by name |
+| `src/compiler/browser-file.ts` | the default-global `Blob`/`URL` slice and its opaque values: ordered string/byte parts, object-URL lifetime, one-file list indexing, `File.text()`, and static accept validation |
 | `src/compiler/data-lowering.ts` | data paths, typed literals/sinks, container methods, runtime `Math`, aliasing contracts, destructuring |
 | `src/compiler/data-methods.ts` | the shared read/mutate/store classification for plain-data methods |
 | `src/compiler/module-initializers.ts` | reachability and dependency planning for observable imported-module state |
 | `src/compiler/native-functions.ts` | once-emitted real C++ functions for fully data-typed user functions |
 | `src/compiler/user-functions.ts` | inline lowering for handle-touching local functions, calls, parameters, and returns |
 | `src/compiler/statements.ts` | statement dispatch, conditions, expression statements, and method calls |
-| `src/compiler/classes.ts` | reached local class identity, fields, constructors, inlined methods and getters |
+| `src/compiler/classes.ts` | reached local class identity, fields, constructors, inlined methods and getters, and the shared-instance form a native data position demands: the `Ref<XData>` allocation, the hoisting proof, and the hydration a stored receiver inlines through |
 | `src/compiler/handle-collections.ts` | the one value kind for a generation-known collection of engine handles, and every entry-compiler operation over one: iteration frames, pushes, the runtime find, the imported-walk proofs |
 | `src/compiler/sprite-atlas-record.ts` | typed data-record projection into the native sprite-atlas handle model |
 | `src/compiler/promises.ts` | immediate AOT `Promise<T>` lowering |
@@ -77,6 +80,7 @@ Primary source ownership:
 | `src/compiler/shader-material.ts` | shader-material variant matching by IR identity and scene-local variant registration |
 | `src/compiler/assets.ts` | asset registration from scene URLs to packaged local files |
 | `src/executed-module-assets.ts` | assets a scene module produces rather than fetches — a drawn canvas2D atlas, a computed pixel buffer — run in headless Chromium and baked |
+| `src/compiler/browser-texture-function.ts` | the structural gate over a canvas-owning scene function whose textures are produced rather than fetched, its bounded Chromium execution against a stub that records only `createTexture2DFromPixels`/`loadTexture2D`, and the packaged RGBA or PNG blob each one becomes |
 | `src/compiler/adaptations.ts` | the reached-adaptation manifest entries generation records |
 | `src/compiler/option-helpers.ts` | the shared option-object validation contracts |
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
@@ -112,7 +116,7 @@ Primary source ownership:
 | `src/lowering/audio-lowerer.ts` | the drift gate on the audio engine's folded output graph: every statement `bus.ts` and `createAudioEngineAsync` declare, asserted |
 | `src/compiler/intrinsics/audio.ts` | the Babylon half of the audio surface: the engine lifecycle reached, and every sound/bus/spatial entry point that refuses by name |
 | `src/compiler/audio-surface.ts` | the browser half: Web Audio method calls and property writes on the context the engine hands back |
-| `src/lowering/shadow-lowerer.ts` | the shadow family: light-space basis, spot volume, 4x4 multiply, caster bias, the generator's GPU contracts, and the depth-only render task `ensurePcfShadowTaskState` builds |
+| `src/lowering/shadow-lowerer.ts` | the shadow family: light-space basis, spot/directional volume, parented caster worlds and live `boundMin`/`boundMax` overrides, 4x4 multiply, caster bias, the generator's GPU contracts, and the depth-only render task `ensurePcfShadowTaskState` builds |
 | `src/compiler/intrinsics/shadow.ts` | which shadow surface a scene reached: the generator factory, its caster-mesh task input, the registration installing the shadow task |
 | `src/pinned-shadow-slots.ts` | which lights a receiving mesh samples and with which filter: the pin's `ShadowLightSlot` rows both receiver families share |
 | `src/pinned-esm-shadow.ts` | the ESM generator's GPU resources, read by running the pinned factory against a recording device — its four textures, the two-pass blur and the kernel-folded tap table |
@@ -131,7 +135,8 @@ Primary source ownership:
 | `src/pinned-standard-variants.ts` | the Standard sibling: derives the pin's own feature words and composes the Standard colour and geometry variants |
 | `src/pinned-material-input.ts` | maps a glTF material to the shape `_computePbrMaterialFeatures` reads, by executing the loader's own extension builders against a recording stub |
 | `src/pinned-material-arms.ts` | composes every material a scene loads and refuses a fragment missing an arm one of them reaches |
-| `src/pinned-material-plugins.ts` | material plugins composed through the pin's own `pbrPluginExt`/`stdPluginExt` bridges, behind the same `enableMaterialPlugins` opt-in |
+| `src/pinned-material-plugins.ts` | material plugins composed through the pin's own `pbrPluginExt`/`stdPluginExt` bridges, behind the same `enableMaterialPlugins` opt-in; also reads the composed sampler binding pairs back off the Standard bridge for the generated table |
+| `src/compiler/material-plugin.ts` | the scene's own `MaterialPlugin` folded to plain data: its name, its custom code per injection point, its sampler declarations, and the ordered textures its `bindTextures`/`getActiveTextures` pair fills them with |
 | `src/pinned-scene-arms.ts` | the scene half of composition: light modes, tone mapping, fog bits |
 | `src/pinned-light-mode.ts` | the pin's light-arm rule — `rebuildSingle`'s none/single/multi resolution — stated once for the runtime's variant key and generation's composed set |
 | `src/pinned-mesh-features.ts` | the pin's mesh feature bits, imported rather than restated |
@@ -150,6 +155,11 @@ Primary source ownership:
 | `upstream/babylon-lite-corpus.json` | immutable scene, support-module, and application paths with SHA-256 evidence |
 | `native/include/bblite/` | typed runtime records, handles, PAL contracts |
 | `native/src/pal.cpp` | filesystem, paths, environment, timing, host engine |
+| `native/src/pal_storage.cpp` | Web Storage's platform half: one file per key under the host's own preference directory (`SDL_GetPrefPath`), injectively encoded names, staged writes. Its own translation unit, so an executable that never stores anything carries none of it |
+| `native/include/bblite/js_json.hpp` | the generic JSON bridge: the ordered writer `JSON.stringify` emits through, the dynamic value `JSON.parse` answers, and the parser behind it |
+| `native/include/bblite/js_storage.hpp` | the three reached `localStorage` methods as JavaScript shapes over the PAL store — nullable read, throwing write and remove |
+| `native/include/bblite/js_file.hpp` | bounded Blob bytes, per-engine generation-checked object URLs, reference-owned and aggregate-bounded File/FileList snapshots, and the browser default actions over PAL dialogs; it exposes no path to scene code |
+| `native/src/pal_file.cpp`, `native/src/pal_file_io.hpp` | feature-selected SDL3 save/open dialogs, bounded immutable selected-file snapshots, UTF-safe paths, and randomized exclusive same-directory atomic replacement shared with Web Storage and the legacy voxel picker |
 | `native/src/pal_sdl.cpp` | image decode, and the engine entry point that dispatches to a GPU backend |
 | `native/include/bblite/pal_physics.hpp` | the rigid-body solver contract: the `HP_*` surface the pinned physics layer calls on the module it is handed |
 | `native/src/pal_physics_bullet.cpp` | that surface over Bullet: ordering repairs, convex mass frames, Havok body defaults, contact convergence and opt-in CPU counters ([fidelity](fidelity.md#physics-contract)) |
@@ -343,7 +353,20 @@ solver ever holds a scene record, so the interlocked increment a
 `std::shared_ptr` copy performs would pay for a race that cannot happen. A
 `Map` or `Set` of such objects looks a value up by that same reference, and a
 lookup answers with a reference into the map's own slot so an optional chain
-that reads one field copies nothing. The two other shapes JavaScript strings
+that reads one field copies nothing. `map.get(key)?.delete(value)` first copies
+the retrieved Set wrapper into owned optional storage, preserving its shared
+Set identity even when evaluating `value` erases, clears, or replaces the map
+slot, and mutates it only when the lookup was present.
+
+A synchronous platform callback may lend its `MouseEvent`, `KeyboardEvent`, or
+base `Event` view to a plain-data payload. The field is a non-null, non-owning
+`Borrowed` wrapper and an event-bearing payload record is reference-backed, so
+handler writes to another payload field remain visible to the dispatch loop.
+The compiler recursively rejects an actual borrowed value at every retained
+container, class field, closure, listener, or timer boundary; a callback
+signature that merely accepts the payload remains storable.
+
+The two other shapes JavaScript strings
 and arrays take at run time are built the same way: a concatenation or
 template literal fills one buffer (`bbl::js::concat`, numbers spelled
 straight into it), and an array literal that then grows starts at a small

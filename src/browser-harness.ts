@@ -62,7 +62,7 @@
 //   these paths can produce.
 import type { Server } from "node:http";
 import { chromium, type Page } from "playwright-core";
-import ts from "typescript";
+import { transpileForBrowser } from "./typescript-transpile.js";
 import { resolveBrowserPath } from "./browser-path.js";
 import { captureSettleMilliseconds } from "./capture-timing.js";
 
@@ -248,14 +248,19 @@ export async function waitForSceneReady(
  * cannot disagree about what a screenshot contains.
  *
  * Every scene keeps its own page otherwise: this hides siblings of the
- * canvas, it does not touch the scene, the canvas, or anything the scene
- * drew into it. A scene whose behaviour depends on DOM the port does not
+ * canvas, it does not touch the scene or anything the scene drew into the
+ * canvas. It does suppress the canvas's host focus outline: that decoration
+ * is retained UI, not a canvas pixel, and otherwise survives after every
+ * sibling was hidden. A scene whose behaviour depends on DOM the port does not
  * reproduce (a control that must be clicked before the frame under test)
  * is out of scope -- see docs/fidelity.md.
  */
 export async function hideNonCanvasChrome(page: Page): Promise<void> {
     await page.evaluate(() => {
         const canvas = document.getElementById("renderCanvas");
+        if (canvas instanceof HTMLElement) {
+            canvas.style.outline = "none";
+        }
         for (const element of Array.from(document.body.children)) {
             if (element !== canvas) {
                 (element as HTMLElement).style.visibility = "hidden";
@@ -340,15 +345,4 @@ export async function gotoScenePage(
  * module), and settings drifting between them would make "the same
  * scene" mean different JavaScript per tool.
  */
-export function transpileForBrowser(
-    source: string,
-    fileName: string,
-): string {
-    return ts.transpileModule(source, {
-        compilerOptions: {
-            module: ts.ModuleKind.ES2022,
-            target: ts.ScriptTarget.ES2022,
-        },
-        fileName,
-    }).outputText;
-}
+export { transpileForBrowser };

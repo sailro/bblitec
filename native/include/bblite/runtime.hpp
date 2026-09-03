@@ -3,15 +3,19 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <list>
 #include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -94,6 +98,11 @@ struct PlatformKeyboardEvent {
     bool ctrl_key = false;
     bool alt_key = false;
     bool meta_key = false;
+    mutable bool default_prevented = false;
+
+    void prevent_default() const noexcept {
+        default_prevented = true;
+    }
 };
 
 /** Browser-neutral mouse data delivered by the platform event loop. */
@@ -105,6 +114,109 @@ struct PlatformMouseEvent {
     double movement_x = 0.0;
     double movement_y = 0.0;
     double delta_y = 0.0;
+    mutable bool default_prevented = false;
+
+    void prevent_default() const noexcept {
+        default_prevented = true;
+    }
+};
+
+/**
+ * DOM event listeners keyed by JavaScript callback identity.
+ *
+ * List nodes stay stable while callbacks add or remove listeners. Each
+ * dispatch records the next sequence number and ignores later additions;
+ * removals tombstone entries until the outermost dispatch finishes. A
+ * one-shot listener is tombstoned before invocation, matching DOM reentrancy.
+ */
+template <typename Signature>
+class PlatformEventListeners;
+
+template <typename... Args>
+class PlatformEventListeners<void(Args...)> {
+  public:
+    using Callback = std::function<void(Args...)>;
+
+    void add(
+        std::size_t identity,
+        Callback callback,
+        bool once = false) {
+        const auto duplicate = std::find_if(
+            entries_.begin(),
+            entries_.end(),
+            [identity](const auto& entry) {
+                return entry.active && entry.identity == identity;
+            });
+        if (duplicate != entries_.end()) return;
+        entries_.push_back(Entry{
+            identity,
+            next_sequence_++,
+            std::move(callback),
+            true,
+            once});
+    }
+
+    void remove(std::size_t identity) {
+        for (Entry& entry : entries_) {
+            if (entry.identity == identity && entry.active) {
+                entry.active = false;
+                needs_compaction_ = true;
+            }
+        }
+        compact_if_idle();
+    }
+
+    void clear() {
+        for (Entry& entry : entries_) {
+            if (!entry.active) continue;
+            entry.active = false;
+            needs_compaction_ = true;
+        }
+        compact_if_idle();
+    }
+
+    void dispatch(Args... args) {
+        const std::size_t boundary = next_sequence_;
+        ++dispatch_depth_;
+        try {
+            for (Entry& entry : entries_) {
+                if (entry.sequence >= boundary) break;
+                if (!entry.active) continue;
+                if (entry.once) {
+                    entry.active = false;
+                    needs_compaction_ = true;
+                }
+                entry.callback(args...);
+            }
+        } catch (...) {
+            --dispatch_depth_;
+            compact_if_idle();
+            throw;
+        }
+        --dispatch_depth_;
+        compact_if_idle();
+    }
+
+  private:
+    struct Entry {
+        std::size_t identity = 0;
+        std::size_t sequence = 0;
+        Callback callback;
+        bool active = true;
+        bool once = false;
+    };
+    void compact_if_idle() {
+        if (dispatch_depth_ != 0 || !needs_compaction_) return;
+        std::erase_if(
+            entries_,
+            [](const Entry& entry) { return !entry.active; });
+        needs_compaction_ = false;
+    }
+
+    std::list<Entry> entries_;
+    std::size_t next_sequence_ = 0;
+    std::size_t dispatch_depth_ = 0;
+    bool needs_compaction_ = false;
 };
 
 /**
@@ -117,6 +229,41 @@ struct PlatformMouseEvent {
  */
 struct UiElementHandle {
     std::uint32_t value = invalid_handle;
+};
+
+/** Opaque URL token for one engine-owned Blob payload. */
+struct ObjectUrlHandle {
+    std::uint32_t slot = invalid_handle;
+    std::uint32_t generation = 0;
+
+    [[nodiscard]] bool operator==(const ObjectUrlHandle&) const = default;
+};
+
+struct BrowserFileRecord;
+
+/** Shared handle to one immutable file snapshot returned by the host dialog. */
+class BrowserFileHandle {
+  public:
+    BrowserFileHandle() = default;
+    explicit BrowserFileHandle(std::shared_ptr<BrowserFileRecord> record)
+        : record_(std::move(record)) {}
+
+    explicit operator bool() const noexcept {
+        return static_cast<bool>(record_);
+    }
+    [[nodiscard]] BrowserFileRecord* get() const noexcept {
+        return record_.get();
+    }
+    [[nodiscard]] bool unique() const noexcept {
+        return record_.use_count() == 1;
+    }
+
+    [[nodiscard]] friend bool operator==(
+        const BrowserFileHandle&,
+        const BrowserFileHandle&) = default;
+
+  private:
+    std::shared_ptr<BrowserFileRecord> record_;
 };
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
@@ -158,6 +305,15 @@ struct TransformNodeHandle {
     [[nodiscard]] bool operator==(
         const TransformNodeHandle&) const = default;
 };
+
+/**
+ * One entry in a TransformNode's public traversal list.
+ *
+ * SceneNode.children is one ordered list upstream: mesh and transform-node
+ * entries may interleave, and addToScene observes that exact order.
+ */
+using TransformNodeChild =
+    std::variant<MeshHandle, TransformNodeHandle>;
 
 struct AssetHandle {
     std::uint32_t value = invalid_handle;
@@ -695,6 +851,7 @@ enum class PropertyAnimationPath {
     scaling,
     rotation_quaternion,
     camera_alpha,
+    record_scalar,
 };
 
 /**
@@ -720,12 +877,14 @@ enum class PropertyAnimationComponent {
 enum class PropertyAnimationTargetKind {
     mesh,
     camera,
+    callback,
 };
 
 struct PropertyAnimationTarget {
     PropertyAnimationTargetKind kind =
         PropertyAnimationTargetKind::mesh;
     std::uint32_t index = 0;
+    std::function<void(float)> write_scalar;
 };
 
 enum class PropertyAnimationInterpolation {
@@ -1384,6 +1543,21 @@ struct PixelsTexture {
 // texture or caller-supplied pixels without changing the source type.
 using StoredTexture = std::variant<FileTexture, PixelsTexture>;
 
+/**
+ * One texture a `MaterialPlugin` binds (`plugin-bridge-shared.ts`).
+ *
+ * `getSamplers()` declares the binding pair and `bindTextures(out)` fills
+ * it, so what the record has to carry is the texture payload plus the
+ * encoding its view takes -- the same two halves every material slot binds
+ * through, without the source dimensions a decoded file also reports. Both
+ * reached producers land here: `createTexture2DFromPixels` texels (which
+ * `TextureData::rgba_width`/`rgba_height` mark) and a loaded image.
+ */
+struct MaterialPluginTexture {
+    TextureData data{};
+    bool srgb = false;
+};
+
 struct ModelVertex {
     Vec3 position{};
     Vec3 normal{0.0f, 1.0f, 0.0f};
@@ -1557,7 +1731,7 @@ struct TransformNodeRecord {
      * `child.parent = node` write drives the transform math and leaves
      * `children` alone, so the two are recorded apart here as well.
      */
-    std::vector<MeshHandle> children;
+    std::vector<TransformNodeChild> children;
     /**
      * What the parent SETTER registered, which is the pin's own
      * `_addChild`: the list `invalidate()` recurses into when this node's
@@ -1772,6 +1946,22 @@ struct MeshRecord {
     std::uint32_t instance_count = 0;
     std::uint64_t instance_version = 0;
     std::vector<float>* instance_source = nullptr;
+    // The pool the engine owns rather than aliases: allocated by an
+    // `addThinInstance` that found no pool (the pin's own `new F32(capacity
+    // * 16)`, which has no caller array to adopt) and again by every growth,
+    // where the pin allocates a longer array and repoints `ti.matrices` at
+    // it. Growth therefore DETACHES the record from the scene's own array
+    // instead of resizing it: the caller keeps its array at its own length,
+    // exactly as upstream, and later writes land here. Held through a shared
+    // pointer so the alias above survives a `meshes` reallocation, which a
+    // runtime mesh append can cause.
+    std::shared_ptr<std::vector<float>> owned_instance_source;
+    // `ThinInstanceData._gpuCullingEnabled`, the pin's opt-in to compute
+    // frustum culling and indirect draws. This port omits the culler and
+    // draws every active instance (fidelity: thin-instance-gpu-culling),
+    // so the flag records the opt-in and keeps its renderable in the pin's
+    // live direct-draw path: it does not enable a native compute culler.
+    bool thin_instance_gpu_culling = false;
     // The per-instance RGBA stream `setThinInstanceColors` bound, as the
     // pin's own tightly-packed float4 rows. Empty where the mesh has none.
     std::vector<float> instance_colors;
@@ -1788,6 +1978,18 @@ struct MeshRecord {
     std::vector<float> morph_storage_weights;
     std::uint64_t morph_weights_version = 0;
 };
+
+inline void apply_mesh_bound_overrides(
+    const MeshRecord& mesh,
+    Vec3& minimum,
+    Vec3& maximum) {
+    if (mesh.has_bounds_min_override) {
+        minimum = mesh.bounds_min_override;
+    }
+    if (mesh.has_bounds_max_override) {
+        maximum = mesh.bounds_max_override;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Sprites (src/sprite/*). A sprite layer is pure data upstream and stays pure
@@ -2182,7 +2384,7 @@ struct PropertyAnimationClip {
 };
 
 struct PropertyAnimationGroupRecord {
-    PropertyAnimationTarget target{};
+    std::vector<PropertyAnimationTarget> targets;
     PropertyAnimationClip clip;
     float from_time = 0.0f;
     float to_time = 0.0f;
@@ -2505,6 +2707,15 @@ struct MaterialRecord {
     // whole tail across an alignment boundary, costing eight bytes per
     // material rather than none. Generation refuses a mask this cannot hold.
     std::uint8_t plugin_signature_index = 0;
+    // The textures that list's plugins bind, in the order
+    // `bindPluginTextures` pushes them -- plugin by plugin, and within one
+    // plugin in `bindTextures` order, which is the order its `getSamplers`
+    // pairs were declared and therefore composed in. The list is per
+    // MATERIAL rather than per signature, exactly as the pin's own
+    // per-material plugin state is: two materials sharing one plugin shape
+    // keep different texture values, and the composed variant they share
+    // resolves each binding by name against this list's position.
+    std::vector<MaterialPluginTexture> plugin_textures;
     bool double_sided = false;
     // The pin's opacityFromRGB (createStandardMaterial default false; the
     // .babylon loader sets it from opacityTexture.getAlphaFromRGB,
@@ -3046,6 +3257,32 @@ struct ShadowGeneratorRecord {
 };
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+enum class UiStyleSelectorKind : std::uint8_t {
+    Class,
+    Id,
+    CompoundClass,
+    ClassDescendantTag,
+    IdDescendantClass,
+};
+
+/**
+ * One compiler-validated stylesheet rule.
+ *
+ * The typed selector is deliberately smaller than CSS. It is sufficient to
+ * serialize an exact RmlUi selector and to inspect private structural
+ * adaptation metadata without adding a browser selector engine to the PAL.
+ */
+struct UiStyleRule {
+    UiStyleSelectorKind selector = UiStyleSelectorKind::Class;
+    std::string primary;
+    std::string secondary;
+    std::string tag;
+    std::string style;
+    /** A negative value means the rule is not inside a max-width query. */
+    double max_width = -1.0;
+    bool hover = false;
+};
+
 /**
  * The retained UI representation produced by DOM lowering.
  *
@@ -3107,6 +3344,8 @@ struct UiElementRecord {
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
     std::unordered_map<std::string, std::string> style_properties;
+    /** Rules owned by this retained <style> element, in source order. */
+    std::vector<UiStyleRule> style_rules;
     UiElementHandle parent{};
     std::vector<UiElementHandle> children;
     std::vector<std::function<void()>> click_callbacks;
@@ -3114,19 +3353,122 @@ struct UiElementRecord {
         std::string,
         std::vector<std::function<void(const PlatformMouseEvent&)>>>
         event_callbacks;
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    /** Browser-file state exists only for retained <a>/<input> elements. */
+    ObjectUrlHandle download_url{};
+    BrowserFileHandle selected_file{};
+    std::string download_name;
+    std::string file_accept;
+    std::vector<std::function<void()>> file_change_callbacks;
+    bool file_input = false;
+#endif
     UiClientRect client_rect{};
+    bool client_rect_requested = false;
     std::optional<CanvasState> canvas;
     bool attached_to_root = false;
 };
 
-/** One bounded `.class { ... }` rule imported from a browser host page. */
-struct UiClassStyleRule {
-    std::string class_name;
-    std::string style;
+#endif
+
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+/** One recyclable object-URL slot. Generation prevents stale-handle reuse. */
+struct ObjectUrlRecord {
+    std::shared_ptr<const std::vector<std::uint8_t>> bytes;
+    std::string mime_type;
+    std::uint32_t generation = 1;
+    bool active = false;
 };
-struct UiIdStyleRule {
-    std::string id;
-    std::string style;
+
+inline constexpr std::size_t maximum_browser_file_snapshots = 4096u;
+inline constexpr std::size_t maximum_browser_file_snapshot_bytes =
+    256u * 1024u * 1024u;
+
+/** Per-engine accounting shared with snapshots that outlive their input. */
+class BrowserFileStorage {
+  public:
+    explicit BrowserFileStorage(
+        std::size_t maximum_bytes = maximum_browser_file_snapshot_bytes)
+        : maximum_bytes_(maximum_bytes) {}
+
+    [[nodiscard]] std::size_t retained_bytes() const noexcept {
+        return retained_bytes_;
+    }
+    [[nodiscard]] std::size_t snapshot_count() const noexcept {
+        return snapshot_count_;
+    }
+
+    void retain(std::size_t bytes) {
+        if (snapshot_count_ >= maximum_browser_file_snapshots) {
+            throw std::runtime_error(
+                "Native selected-file storage exceeds its 4096-live-snapshot bound.");
+        }
+        if (bytes > maximum_bytes_ - retained_bytes_) {
+            throw std::runtime_error(
+                "Native selected-file storage exceeds its per-engine aggregate byte bound.");
+        }
+        retained_bytes_ += bytes;
+        ++snapshot_count_;
+    }
+
+    void resize(std::size_t old_bytes, std::size_t new_bytes) {
+        const std::size_t retained_without_old = retained_bytes_ - old_bytes;
+        if (new_bytes > maximum_bytes_ - retained_without_old) {
+            throw std::runtime_error(
+                "Native selected-file storage exceeds its per-engine aggregate byte bound.");
+        }
+        retained_bytes_ = retained_without_old + new_bytes;
+    }
+
+    void release(std::size_t bytes) noexcept {
+        retained_bytes_ -= bytes;
+        --snapshot_count_;
+    }
+
+  private:
+    std::size_t maximum_bytes_ = 0;
+    std::size_t retained_bytes_ = 0;
+    std::size_t snapshot_count_ = 0;
+};
+
+/** Exact bytes consented to at selection time; no pathname is retained. */
+struct BrowserFileRecord {
+    BrowserFileRecord(
+        std::vector<std::uint8_t> selected_bytes,
+        std::string selected_display_name,
+        std::shared_ptr<BrowserFileStorage> selected_storage)
+        : bytes(std::move(selected_bytes)),
+          display_name(std::move(selected_display_name)),
+          storage(std::move(selected_storage)) {
+        if (!storage) {
+            throw std::runtime_error(
+                "Native selected-file storage is unavailable.");
+        }
+        storage->retain(bytes.size());
+    }
+    BrowserFileRecord(const BrowserFileRecord&) = delete;
+    BrowserFileRecord& operator=(const BrowserFileRecord&) = delete;
+    ~BrowserFileRecord() {
+        storage->release(bytes.size());
+    }
+
+    void replace(
+        std::vector<std::uint8_t> selected_bytes,
+        std::string selected_display_name) {
+        storage->resize(bytes.size(), selected_bytes.size());
+        bytes.swap(selected_bytes);
+        display_name.swap(selected_display_name);
+    }
+
+    [[nodiscard]] bool belongs_to(
+        const std::shared_ptr<BrowserFileStorage>& owner) const noexcept {
+        return storage == owner;
+    }
+
+    std::vector<std::uint8_t> bytes;
+    std::string display_name;
+
+  private:
+    std::shared_ptr<BrowserFileStorage> storage;
 };
 #endif
 
@@ -3324,43 +3666,53 @@ struct Engine {
     };
     std::vector<IntervalCallback> interval_callbacks;
     std::uint64_t next_interval_id = 1;
-    /** Input callbacks registered before the platform frame loop starts. */
-    std::vector<std::function<void(const PlatformKeyboardEvent&)>>
+    /** Platform callbacks with DOM listener identity and removal semantics. */
+    PlatformEventListeners<void(const PlatformKeyboardEvent&)>
         key_down_callbacks;
-    std::vector<std::function<void(const PlatformKeyboardEvent&)>>
+    PlatformEventListeners<void(const PlatformKeyboardEvent&)>
         key_up_callbacks;
-    std::vector<std::function<void()>> pointer_down_callbacks;
-    std::vector<std::function<void()>> canvas_click_callbacks;
+    PlatformEventListeners<void()> pointer_down_callbacks;
+    PlatformEventListeners<void()> canvas_click_callbacks;
     /** Primary-button canvas press awaiting its matching in-canvas release. */
     bool canvas_click_armed = false;
-    std::vector<std::function<void(const PlatformMouseEvent&)>>
+    PlatformEventListeners<void(const PlatformMouseEvent&)>
         mouse_down_callbacks;
-    std::vector<std::function<void(const PlatformMouseEvent&)>>
+    PlatformEventListeners<void(const PlatformMouseEvent&)>
         mouse_up_callbacks;
-    std::vector<std::function<void(const PlatformMouseEvent&)>>
+    PlatformEventListeners<void(const PlatformMouseEvent&)>
         mouse_move_callbacks;
-    std::vector<std::function<void(const PlatformMouseEvent&)>>
+    PlatformEventListeners<void(const PlatformMouseEvent&)>
         mouse_wheel_callbacks;
-    std::vector<std::function<void(const PlatformMouseEvent&)>>
+    PlatformEventListeners<void(const PlatformMouseEvent&)>
         mouse_cancel_callbacks;
     /** Browser `window.resize` callbacks, dispatched after canvas size sync. */
-    std::vector<std::function<void()>> window_resize_callbacks;
-    std::vector<std::function<void()>> pointer_lock_change_callbacks;
+    PlatformEventListeners<void()> window_resize_callbacks;
+    PlatformEventListeners<void()> pointer_lock_change_callbacks;
     /** Desired and applied equivalents of the browser pointer-lock state. */
     bool pointer_lock_requested = false;
     bool pointer_locked = false;
     /** CSS cursor requested on the engine's browser canvas. */
     std::string canvas_cursor;
-    std::vector<std::function<void(bool)>> visibility_change_callbacks;
+    /** Programmatic focus requested by the source render canvas. */
+    bool canvas_focused = false;
+    PlatformEventListeners<void(bool)> visibility_change_callbacks;
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
-    /** Static host-page class rules applied below inline element styles. */
-    std::vector<UiClassStyleRule> ui_class_style_rules;
-    /** Static source stylesheet id rules applied below inline styles. */
-    std::vector<UiIdStyleRule> ui_id_style_rules;
+    /** Direct document children in live DOM attachment order. */
+    std::vector<UiElementHandle> ui_root_children;
+    /** Audited host-page rules, preceding scene-created sheets in cascade. */
+    std::vector<UiStyleRule> ui_host_style_rules;
     /** Any tree/text/style/listener mutation invalidates the PAL projection. */
     std::uint64_t ui_revision = 0;
+#endif
+#if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
+    /** Per-engine Blob URL registry; revoked slots are cleared and recycled. */
+    std::vector<ObjectUrlRecord> object_urls;
+    std::vector<std::uint32_t> free_object_url_slots;
+    /** Live input/File/FileList values share reclaimable picker snapshots. */
+    std::shared_ptr<BrowserFileStorage> browser_file_storage =
+        std::make_shared<BrowserFileStorage>();
 #endif
     /**
      * Application-owned `requestAnimationFrame` callbacks registered before
@@ -3395,13 +3747,11 @@ struct Engine {
      */
     std::vector<PropertyAnimationManager> animation_managers;
     std::vector<MeshRecord> meshes;
-    // The pin's visibility epoch (src/scene/visibility.ts): bumped only by
-    // setMeshVisible, and only when a flag actually changed -- a bare
-    // `visible` field write deliberately defers to the next draw-list
-    // rebuild, which is the pin's opaque-bundle rule and what the
-    // regression-mesh-flags gate measures. The backends re-record their
-    // cached draw lists when this moves, touching no mesh GPU state.
-    std::uint64_t visibility_epoch = 0;
+    // Every source event that changes draw-list membership: the pin's
+    // setMeshVisible epoch (only when a flag actually changes), and a
+    // culling-enabled thin-instance pool crossing zero active rows. Matrix or
+    // count changes within one membership state touch no draw-list storage.
+    std::uint64_t draw_list_epoch = 0;
     /** Whether original meshes and their clones have stable feature rows. */
     bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
@@ -3983,6 +4333,28 @@ void set_thin_instance_count(
     Engine& engine,
     MeshHandle mesh,
     double count);
+/**
+ * The growing half of the pool, emitted where a scene reaches it.
+ *
+ * `add_thin_instance` appends at the active count and returns the slot,
+ * doubling the pool when the two have met; `remove_thin_instance`
+ * swap-removes; `thin_instance_count` is the live `thinInstances.count`
+ * read those two are written against.
+ */
+double add_thin_instance(
+    Engine& engine,
+    MeshHandle mesh,
+    const std::vector<float>& matrix);
+void remove_thin_instance(
+    Engine& engine,
+    MeshHandle mesh,
+    double index);
+double thin_instance_count(const Engine& engine, MeshHandle mesh);
+/** The pinned GPU-culling opt-in; see MeshRecord::thin_instance_gpu_culling. */
+void enable_thin_instance_gpu_culling(
+    Engine& engine,
+    MeshHandle mesh,
+    bool enabled);
 void set_thin_instance_matrix(
     Engine& engine,
     MeshHandle mesh,
@@ -4316,6 +4688,18 @@ void set_material_plugins(
     Engine& engine,
     MaterialHandle material,
     std::uint8_t signature_index);
+// The textures a plugin's `bindTextures` fills its declared bindings with,
+// appended in push order. `set_material_plugins` clears the list first, so
+// a second `material.plugins = [...]` replaces them the way it replaces the
+// plugin list upstream.
+void add_material_plugin_pixels_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const PixelsTexture& texture);
+void add_material_plugin_file_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const FileTexture& texture);
 LightHandle create_hemispheric_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_directional_light(Engine& engine, Vec3 direction, float intensity = 1.0f);
 LightHandle create_point_light(Engine& engine, Vec3 position, float intensity = 1.0f);
@@ -4390,6 +4774,10 @@ void push_transform_node_child(
     Engine& engine,
     TransformNodeHandle node,
     MeshHandle child);
+void push_transform_node_child(
+    Engine& engine,
+    TransformNodeHandle node,
+    TransformNodeHandle child);
 // src/gizmo/*: the display-gizmo family. Every one of these is generated
 // into upstream/src/gizmo.cpp from the pinned modules that declare it.
 UtilityLayerHandle create_utility_layer(Engine& engine, Scene& main_scene);
@@ -4703,43 +5091,80 @@ void on_scene_dispose(
     std::function<void()> callback);
 void on_key_down(
     Engine& engine,
-    std::function<void(const PlatformKeyboardEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformKeyboardEvent&)> callback,
+    bool once = false);
+void off_key_down(Engine& engine, std::size_t identity);
 void on_key_up(
     Engine& engine,
-    std::function<void(const PlatformKeyboardEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformKeyboardEvent&)> callback,
+    bool once = false);
+void off_key_up(Engine& engine, std::size_t identity);
 void on_pointer_down(
     Engine& engine,
-    std::function<void()> callback);
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once = false);
+void off_pointer_down(Engine& engine, std::size_t identity);
 void on_canvas_click(
     Engine& engine,
-    std::function<void()> callback);
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once = false);
+void off_canvas_click(Engine& engine, std::size_t identity);
 void on_mouse_down(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once = false);
+void off_mouse_down(Engine& engine, std::size_t identity);
 void on_mouse_up(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once = false);
+void off_mouse_up(Engine& engine, std::size_t identity);
 void on_mouse_move(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once = false);
+void off_mouse_move(Engine& engine, std::size_t identity);
 void on_mouse_wheel(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once = false);
+void off_mouse_wheel(Engine& engine, std::size_t identity);
 void on_mouse_cancel(
     Engine& engine,
-    std::function<void(const PlatformMouseEvent&)> callback);
+    std::size_t identity,
+    std::function<void(const PlatformMouseEvent&)> callback,
+    bool once = false);
+void off_mouse_cancel(Engine& engine, std::size_t identity);
 void on_window_resize(
     Engine& engine,
-    std::function<void()> callback);
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once = false);
+void off_window_resize(Engine& engine, std::size_t identity);
 void on_pointer_lock_change(
     Engine& engine,
-    std::function<void()> callback);
+    std::size_t identity,
+    std::function<void()> callback,
+    bool once = false);
+void off_pointer_lock_change(Engine& engine, std::size_t identity);
 void set_canvas_cursor(Engine& engine, std::string cursor);
+void focus_canvas(Engine& engine);
 void request_pointer_lock(Engine& engine);
 void exit_pointer_lock(Engine& engine);
 void on_visibility_change(
     Engine& engine,
-    std::function<void(bool)> callback);
+    std::size_t identity,
+    std::function<void(bool)> callback,
+    bool once = false);
+void off_visibility_change(Engine& engine, std::size_t identity);
 PropertyAnimationManager create_animation_manager();
 PropertyAnimationClip create_property_animation_clip(
     std::string name,
@@ -4748,7 +5173,7 @@ PropertyAnimationClip create_property_animation_clip(
 PropertyAnimationGroup create_property_animation_group(
     PropertyAnimationManager manager,
     Engine& engine,
-    PropertyAnimationTarget target,
+    std::vector<PropertyAnimationTarget> targets,
     PropertyAnimationClip clip,
     PropertyAnimationGroupOptions options);
 void set_animation_weight(
@@ -4796,8 +5221,10 @@ void go_to_frame(
     float frame,
     bool with_engine);
 void play_animation(Engine& engine, AnimationGroupHandle group);
+void play_animation(PropertyAnimationGroup group);
 void pause_animation(PropertyAnimationGroup group);
 void pause_animation(Engine& engine, AnimationGroupHandle group);
+void stop_animation(PropertyAnimationGroup group);
 void stop_animation(Engine& engine, AnimationGroupHandle group);
 // src/vat/vat-baker.ts: the baked vertex-animation surface. Emitted only
 // for a scene that reached mesh:vat, which is the pin's own opt-in --

@@ -12,6 +12,7 @@ import {
     materialPluginListKey,
     type MaterialPluginManifest,
 } from "../pinned-material-plugins.js";
+import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 
 /**
  * A no-colour view of one scene PBR material, at the runtime handle it will
@@ -71,6 +72,8 @@ export function pbrEsmShadowView(
 export class SceneMaterialRecorder {
     public readonly scenePbrMaterials: ScenePbrMaterialManifest[] = [];
     public readonly standardMaterialPlugins: MaterialPluginManifest[][] = [];
+    public readonly standardMaterialPluginInputs:
+        PinnedStandardMaterialInput[][] = [];
     private readonly pluginIndexByKey = new Map<string, number>();
     private sceneMaterialCount = 0;
 
@@ -102,12 +105,21 @@ export class SceneMaterialRecorder {
      */
     public recordStandardMaterialPlugins(
         plugins: readonly MaterialPluginManifest[],
+        material: PinnedStandardMaterialInput,
     ): number {
         const key = materialPluginListKey(plugins);
         const existing = this.pluginIndexByKey.get(key);
-        if (existing !== undefined) return existing;
+        if (existing !== undefined) {
+            material.pluginIndex = existing;
+            const inputs =
+                this.standardMaterialPluginInputs[existing - 1]!;
+            if (!inputs.includes(material)) inputs.push(material);
+            return existing;
+        }
         this.standardMaterialPlugins.push([...plugins]);
         const index = this.standardMaterialPlugins.length;
+        material.pluginIndex = index;
+        this.standardMaterialPluginInputs.push([material]);
         this.pluginIndexByKey.set(key, index);
         return index;
     }
