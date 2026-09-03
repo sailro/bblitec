@@ -1696,6 +1696,15 @@ class Compiler
             return;
         }
 
+        // A promise whose executor only escapes its own `resolve`, which
+        // the scene later calls from a frame callback: a latch plus a
+        // resolver, and an await that defers behind the latch.
+        if (
+            this.emitEscapingResolvePromise(declaration, cppName)
+        ) {
+            return;
+        }
+
         // `const original = Math.random`, which the corpus writes only to
         // put the generator back after a seeded window. It names the
         // function itself rather than a value, so it emits nothing and the
@@ -11168,6 +11177,15 @@ class Compiler
         "__bblite_frame_yield_requeue__;";
 
     /**
+     * The line a gated continuation cut leaves behind, carrying the latch
+     * the rest of the continuation waits on. Spelled the same
+     * C++-invalid way as the yield marker and checked the same way, so
+     * one that escaped the hoist refuses rather than shipping.
+     */
+    private static readonly startContinuationGatePrefix =
+        "__bblite_start_continuation_until__(";
+
+    /**
      * A frame yield lowered after `startEngine` sits inside the hoisted
      * continuation, which `finish_frame` drains at the END of a frame --
      * after that frame's uploads and render. Erasing the yield there would
@@ -11210,6 +11228,118 @@ class Compiler
             );
         }
         this.emit(Compiler.frameYieldRequeueMarker);
+    }
+
+    /**
+     * The latch a `new Promise` binding waits on, keyed by the binding's
+     * symbol. Empty for every scene but the one that writes the escaping
+     * handshake, and the reason the promise value itself has no native
+     * representation: what a scene can do with one of these is await it.
+     */
+    private readonly promiseLatches = new Map<ts.Symbol, string>();
+
+    /**
+     * Declare the latch behind `const p = new Promise((resolve) => {
+     * target = resolve; })` and bind `resolve` to it.
+     *
+     * The executor runs synchronously in JavaScript, so running it here is
+     * the faithful reading: after this statement the target holds a
+     * callable, and calling it is what the await ends on. The callable is
+     * emitted rather than routed through the stored-callback path on
+     * purpose -- a stored callback closes over its captures BY VALUE
+     * (`plain-data-value-model`), so a generic lowering would latch a copy
+     * and the wait would never end.
+     */
+    private emitEscapingResolvePromise(
+        declaration: ts.VariableDeclaration,
+        cppName: string,
+    ): boolean {
+        if (!declaration.initializer) return false;
+        const target = this.browserErasure.escapingResolveTarget(
+            declaration.initializer,
+        );
+        if (!target) return false;
+        if (this.engineStartMark) {
+            this.fail(
+                declaration,
+                "A promise a scene callback resolves is the handshake " +
+                    "installed before startEngine; after it the " +
+                    "continuation is already running at frame boundaries.",
+            );
+        }
+        const bound = this.lookupOptional(target);
+        if (!bound) {
+            this.fail(
+                target,
+                `Unable to resolve the binding '${target.text}' the ` +
+                    "promise's resolve escapes into.",
+            );
+        }
+        const symbol = ts.isIdentifier(declaration.name)
+            ? this.symbols.valueSymbol(declaration.name)
+            : undefined;
+        if (!symbol) {
+            this.fail(
+                declaration,
+                "A promise a scene callback resolves needs a named binding.",
+            );
+        }
+        this.emit(`bool ${cppName} = false;`);
+        this.emit(
+            `${bound.cpp} = [&${cppName}]() { ${cppName} = true; };`,
+        );
+        this.promiseLatches.set(symbol, cppName);
+        return true;
+    }
+
+    /**
+     * The latch `await <binding>` waits on, or undefined when the awaited
+     * expression is not one of this scene's handshake promises.
+     */
+    public promiseLatchCondition(
+        expression: ts.Expression,
+    ): string | undefined {
+        if (!ts.isIdentifier(expression)) return undefined;
+        const symbol = this.symbols.valueSymbol(expression);
+        return symbol ? this.promiseLatches.get(symbol) : undefined;
+    }
+
+    /**
+     * `await <handshake promise>`: park the rest of the continuation until
+     * the scene's own callback resolves it.
+     *
+     * This is the frame-yield cut with a condition on it. A yield names a
+     * COUNT of boundaries; this names none -- the scene installed a
+     * callback and the wait ends when that callback runs -- so the
+     * re-queue repeats until the latch is set instead of once. The
+     * capture gate rides along unchanged, because a start continuation
+     * that has not run yet already holds it.
+     */
+    public emitStartContinuationGate(
+        expression: ts.Expression,
+        latch: string,
+    ): void {
+        const mark = this.engineStartMark;
+        if (!mark) {
+            this.fail(
+                expression,
+                "A promise a scene callback resolves is awaited after " +
+                    "startEngine, where the frame boundaries that run " +
+                    "that callback exist.",
+            );
+        }
+        if (this.indentLevel !== mark.indentLevel) {
+            this.fail(
+                expression,
+                "Awaiting a scene-resolved promise parks the rest of the " +
+                    "continuation, which needs the await to lower at the " +
+                    "entry body's own level; inside a block there is no " +
+                    "statement boundary to cut at.",
+            );
+        }
+        this.emit(
+            `${Compiler.startContinuationGatePrefix}${latch});`,
+        );
     }
 
     /**
@@ -13549,12 +13679,32 @@ class Compiler
         // everything after its yield. The outer hoist is part 0's own
         // wrap, so the loop runs down to it and the deferred-callback
         // shape is emitted in exactly one place.
-        const parts: string[][] = [[]];
+        // A part's `gate` is the latch its own wrap waits on: a plain
+        // frame yield has none and runs at the next boundary, while an
+        // awaited handshake promise runs at the first boundary after the
+        // scene's callback resolved it.
+        const parts: { gate?: string; lines: string[] }[] = [
+            { lines: [] },
+        ];
         for (const line of persistentTail) {
-            if (line.trim() === Compiler.frameYieldRequeueMarker) {
-                parts.push([]);
+            const trimmed = line.trim();
+            if (trimmed === Compiler.frameYieldRequeueMarker) {
+                parts.push({ lines: [] });
+            } else if (
+                trimmed.startsWith(
+                    Compiler.startContinuationGatePrefix,
+                ) &&
+                trimmed.endsWith(");")
+            ) {
+                parts.push({
+                    gate: trimmed.slice(
+                        Compiler.startContinuationGatePrefix.length,
+                        -2,
+                    ),
+                    lines: [],
+                });
             } else {
-                parts.at(-1)!.push(line);
+                parts.at(-1)!.lines.push(line);
             }
         }
         let nested: string[] = [];
@@ -13568,10 +13718,15 @@ class Compiler
         const maxIndentedDepth = 8;
         for (let part = parts.length - 1; part >= 0; part -= 1) {
             const step = parts.length - part <= maxIndentedDepth ? "    " : "";
+            const gate = parts[part]!.gate;
             nested = [
-                `${indent}bbl::defer_start_continuation(` +
-                    `${mark.engine}, [&]() {`,
-                ...[...parts[part]!, ...nested].map(
+                gate === undefined
+                    ? `${indent}bbl::defer_start_continuation(` +
+                      `${mark.engine}, [&]() {`
+                    : `${indent}bbl::defer_start_continuation_until(` +
+                      `${mark.engine}, [&]() { return ${gate}; }, ` +
+                      `[&]() {`,
+                ...[...parts[part]!.lines, ...nested].map(
                     (line) => `${step}${line}`,
                 ),
                 `${indent}});`,
@@ -13612,6 +13767,21 @@ class Compiler
                     "hoisted continuation; the frame boundary it parks " +
                     "the rest of the continuation behind was never " +
                     "emitted.",
+            );
+        }
+        if (
+            this.body.some((line) =>
+                line
+                    .trim()
+                    .startsWith(
+                        Compiler.startContinuationGatePrefix,
+                    ),
+            )
+        ) {
+            this.failAtFile(
+                "A gated continuation marker survived outside the " +
+                    "hoisted continuation; the latch it parks the rest " +
+                    "of the continuation behind was never emitted.",
             );
         }
         this.markUnreadNumericLocals();

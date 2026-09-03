@@ -1733,6 +1733,25 @@ struct MeshRecord {
     // draw path consults it, because a non-pickable mesh still renders.
     bool pickable = true;
     std::vector<std::array<float, 16>> bone_matrices;
+    /**
+     * The animated node's own world matrix, in this port's convention.
+     *
+     * A skinned mesh's transform travels inside its palette, so
+     * `mesh_world_matrix` answers the identity for one and the record's
+     * TRS stays at rest. That is right for every draw -- applying the
+     * transform twice is exactly what `pinned_draw_conventions` avoids --
+     * and wrong for one reader: the pin's detailed pick transforms the
+     * REST normal by `mesh.worldMatrix`, which is this node world and
+     * deliberately NOT the skin. Written by the glTF pose pass only for a
+     * build whose picker draws the deform projection, and read only
+     * there.
+     */
+    std::array<float, 16> deform_node_world{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f,
+    };
     std::array<float, 16> instance_parent_matrix{
         1.0f, 0.0f, 0.0f, 0.0f,
         0.0f, 1.0f, 0.0f, 0.0f,
@@ -1942,6 +1961,15 @@ struct SplatMeshRecord {
     // otherwise, which is the same reach boundary every other generated
     // capability draws.
     std::vector<std::uint8_t> rows;
+    // The spherical-harmonic degree the packaged container parsed to, and
+    // the payloads `attachGaussianSplattingMeshSH` packs from it -- one
+    // per rgba32uint texture, in binding order after the four above.
+    // Upstream reads `mesh.shDegree` off the parse and forks the whole
+    // pipeline on it; here the fork happened at generation, so a cloud
+    // with none leaves both of these at their empty defaults and the
+    // scene compiles no SH pipeline at all.
+    std::uint32_t sh_degree = 0;
+    std::vector<std::vector<std::uint8_t>> sh_textures;
 };
 
 struct Sprite2DLayerRecord {
@@ -5257,6 +5285,14 @@ void defer_callback(Engine& engine, std::function<void()> callback);
 /** Source following `await startEngine`, completed after the initial render. */
 void defer_start_continuation(
     Engine& engine,
+    std::function<void()> callback);
+/**
+ * The same continuation, held at frame boundaries until `resolved` answers
+ * yes: source following an `await` on a promise a scene callback resolves.
+ */
+void defer_start_continuation_until(
+    Engine& engine,
+    std::function<bool()> resolved,
     std::function<void()> callback);
 /** Browser `setTimeout` with a real delay, serviced by the frame conductor. */
 double set_timeout(

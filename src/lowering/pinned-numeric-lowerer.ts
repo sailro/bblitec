@@ -122,7 +122,7 @@ export interface PinnedBinding {
      */
     mutable?: true;
     /**
-     * `f32`/`u32` are owned buffers whose stores round to that width;
+     * `f32`/`u32`/`u8` are owned buffers whose stores round to that width;
      * `f32-view`/`u8-view` are read-only aliases over a byte buffer;
      * `f64-list` is a GROWABLE `number[]` the pin pushes onto, which holds
      * its elements at the pin's own double width until a `new F32(list)`
@@ -138,6 +138,7 @@ export interface PinnedBinding {
     type:
         | "f32"
         | "u32"
+        | "u8"
         | "f32-view"
         | "u8-view"
         | "f64-list"
@@ -721,6 +722,7 @@ export class PinnedNumericLowerer {
                 alias &&
                 (alias.type === "f32" ||
                     alias.type === "u32" ||
+                    alias.type === "u8" ||
                     alias.type === "f32-view" ||
                     alias.type === "u8-view" ||
                     alias.absentCpp !== undefined)
@@ -1012,6 +1014,21 @@ export class PinnedNumericLowerer {
                     fixed !== undefined
                         ? `std::array<std::uint32_t, ${fixed}> ${name}{};`
                         : `std::vector<std::uint32_t> ${name}(` +
+                            `static_cast<std::size_t>(${count}), 0u);`,
+            };
+        }
+        // `new U8(n)` over a COUNT: the pin's own zeroed byte scratch, which
+        // the SH payload packer fills a texel at a time. The aliasing form
+        // (`new U8(buffer)`) was taken by the branch above; only a length
+        // reaches here, and the zero fill is what a texture wider than the
+        // splats it carries relies on.
+        if (constructor === "U8") {
+            return {
+                type: "u8",
+                declare: (name) =>
+                    fixed !== undefined
+                        ? `std::array<std::uint8_t, ${fixed}> ${name}{};`
+                        : `std::vector<std::uint8_t> ${name}(` +
                             `static_cast<std::size_t>(${count}), 0u);`,
             };
         }
@@ -1335,6 +1352,7 @@ export class PinnedNumericLowerer {
         const binding = this.elementOwner(target);
         if (binding?.type === "f32") return "float";
         if (binding?.type === "u32") return "std::uint32_t";
+        if (binding?.type === "u8") return "std::uint8_t";
         // A mutable view rounds at its own element width, exactly as the
         // typed array the pin stores through does. A read-only view never
         // reaches here: `assignmentTarget` refuses the store first.
@@ -1802,6 +1820,7 @@ export class PinnedNumericLowerer {
             if (
                 binding.type === "f32" ||
                 binding.type === "u32" ||
+                binding.type === "u8" ||
                 isListShape(binding.type)
             ) {
                 return `static_cast<double>(${binding.cpp}.size())`;

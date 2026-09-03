@@ -36,6 +36,12 @@ import {
 } from "../src/upstream-lower.js";
 import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
 import { composeBillboardPickingShader } from "../src/pinned-picking-shaders.js";
+import { composeSplatShModule } from "../src/pinned-splat-fragments.js";
+import {
+    pinnedSplatShShader,
+    splatFragmentWgsl,
+    splatVertexWgsl,
+} from "../src/shader-builtins-splat.js";
 import { shadowFactorySource } from "../src/lowering/shadow-lowerer.js";
 import {
     bakeCsgMesh,
@@ -2791,4 +2797,63 @@ test("spells a baked CSG float at float32 round-trip width", () => {
     });
     assert.deepEqual(empty.lines, []);
     assert.equal(empty.positions, "std::vector<float>{}");
+});
+
+test("splits the pin's own spherical-harmonic splat module", async () => {
+    // Executed rather than lifted: this module's WGSL is BUILT per degree,
+    // so there is no packaged literal to extract and the only way to get
+    // the text the browser compiles is to run the pin's builder.
+    const module = await composeSplatShModule(3, []);
+    assert.equal(module.degree, 3);
+    // The pin's own SH_TEXTURE_COUNT table, not a ceiling division here.
+    assert.equal(module.textureCount, 3);
+    assert.equal(module.wgsl, module.base);
+
+    const split = pinnedSplatShShader(module);
+    assert.equal(split.spliced, false);
+    // The split is the ONLY edit: every byte of both stages is the pin's,
+    // and together they carry the whole module.
+    assert.ok(
+        module.wgsl.includes(split.vertexStage),
+        "the vertex stage is a verbatim span of the pinned module",
+    );
+    // The fragment stage is the same span with the plugin slot comments
+    // removed -- the one edit the split makes -- so it is checked line by
+    // line against the module rather than as one substring.
+    const moduleLines = new Set(
+        module.wgsl.split("\n").map((line) => line.trimEnd()),
+    );
+    assert.deepEqual(
+        split.fragmentStage
+            .split("\n")
+            .map((line) => line.trimEnd())
+            .filter((line) => line.length > 0 && !moduleLines.has(line)),
+        [],
+    );
+    // What separates this arm from the stock one: the uint payload textures
+    // the vertex stage loads, and the eye the view direction is built from.
+    const vertex = splatVertexWgsl("provenance", split);
+    for (const declaration of [
+        "@group(1) @binding(6) var shTexture0: texture_2d<u32>;",
+        "@group(1) @binding(7) var shTexture1: texture_2d<u32>;",
+        "@group(1) @binding(8) var shTexture2: texture_2d<u32>;",
+        "eyePosition: vec3<f32>",
+        "fn computeSH(",
+    ]) {
+        assert.ok(
+            vertex.includes(declaration),
+            `the SH vertex stage declares ${declaration}`,
+        );
+    }
+    // The fragment stage still reads varyings alone, which is what lets
+    // both PALs keep binding nothing to it.
+    const fragment = splatFragmentWgsl("provenance", split);
+    assert.ok(!fragment.includes("@group("), "the SH fragment binds nothing");
+    assert.ok(fragment.includes("struct VOut {"));
+
+    // A degree the pin's table does not cover refuses instead of guessing.
+    await assert.rejects(
+        () => composeSplatShModule(0, []),
+        /SH_TEXTURE_COUNT table does not cover/,
+    );
 });

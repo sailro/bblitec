@@ -79,12 +79,19 @@ import { join } from "node:path";
  * `BBLITE_MSAA=1`. That is the same band and the same bisection as the rest
  * of the splat family, which is what makes it the family's wobble rather
  * than a property of the new glTF route it loads through.
+ *
+ * Scene 124 joined the same way on 2026-09-03: four runs per backend give a
+ * worst run-to-run move of 4.2e-5 on SDL_GPU and 1.46e-4 on Dawn, each one
+ * byte on one channel, and three consecutive `BBLITE_MSAA=1` runs are
+ * byte-identical. Same band, same bisection -- so the spherical-harmonic
+ * pipeline it is the first scene to reach is not what moves it.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
+    ["scene124", new Set(["dawn", "sdl_gpu"])],
     ["scene125", new Set(["dawn", "sdl_gpu"])],
     ["scene126", new Set(["dawn", "sdl_gpu"])],
     ["scene128", new Set(["dawn", "sdl_gpu"])],

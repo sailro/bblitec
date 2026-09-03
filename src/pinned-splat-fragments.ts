@@ -29,12 +29,27 @@ import type { SplatFragmentManifest } from "./compiler/types.js";
 import {
     extractPackagedStringLiteral,
     importPinnedModule,
+    importPinnedModuleWithExports,
     readPinnedLibraryModule,
 } from "./pinned-shader-composer.js";
 
 /** The pinned module that ships both the WGSL and the splicer. */
 export const splatPipelineModule =
     "mesh/GaussianSplatting/gaussian-splatting-pipeline.js";
+
+/**
+ * The pinned module `attachParsedSplat` dynamically imports when a parse
+ * came back carrying spherical harmonics.
+ *
+ * Its WGSL is BUILT rather than packaged: `buildShShaderSource(degree)`
+ * emits one texture binding, one `textureLoad`, one unpack line per
+ * coefficient and one polynomial band per degree, so there is no literal to
+ * lift. It is module-local, like the DDS loader's `computeSH`, so it is
+ * reached through the pin's own text with the symbol re-exported rather
+ * than transcribed.
+ */
+export const splatShPipelineModule =
+    "mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.js";
 
 /** One plugin, in the shape `applyGsFragments` reads. */
 export interface SplatShaderFragment {
@@ -119,14 +134,69 @@ export function pinnedSplatModuleWgsl(): string {
     );
 }
 
+/** One spherical-harmonic degree's module, and what its layout declares. */
+export interface PinnedSplatShModule {
+    degree: number;
+    /** `buildShShaderSource(degree)` exactly as the pin built it. */
+    base: string;
+    /** The same, with this scene's plugins spliced in when it named any. */
+    wgsl: string;
+    /**
+     * The `rgba32uint` payload textures the pin's own bind-group layout
+     * appends at binding 6, from its own `SH_TEXTURE_COUNT` table rather
+     * than from the ceiling division retyped here.
+     */
+    textureCount: number;
+}
+
 /**
- * The module the browser compiles for one plugin list: the pin's own
- * `applyGsFragments` over the pin's own WGSL.
+ * The module the browser compiles for a cloud carrying harmonics.
  *
- * The list is in the order the `loadSplat` call wrote it, because that is
- * the order upstream concatenates two plugins sharing a slot in.
+ * `getOrCreateShPipeline` builds it as `buildShShaderSource(shDegree)`, run
+ * through `applyGsFragments` exactly when the `loadSplat` call named
+ * plugins — the same splice the stock pipeline performs, so the two arms
+ * share one composer.
  */
-export async function composeSplatModule(
+export async function composeSplatShModule(
+    degree: number,
+    fragments: readonly SplatShaderFragment[],
+): Promise<PinnedSplatShModule> {
+    const module = await importPinnedModuleWithExports<{
+        buildShShaderSource?: (degree: number) => string;
+        SH_TEXTURE_COUNT?: readonly number[];
+    }>(splatShPipelineModule, ["buildShShaderSource", "SH_TEXTURE_COUNT"]);
+    if (
+        typeof module.buildShShaderSource !== "function" ||
+        !Array.isArray(module.SH_TEXTURE_COUNT)
+    ) {
+        throw new Error(
+            `The pinned module ${splatShPipelineModule} no longer declares ` +
+                "buildShShaderSource beside its SH_TEXTURE_COUNT table.",
+        );
+    }
+    const textureCount = module.SH_TEXTURE_COUNT[degree];
+    if (textureCount === undefined || textureCount <= 0) {
+        throw new Error(
+            `A Gaussian-splat asset parsed to spherical-harmonic degree ` +
+                `${degree}, which the pinned SH_TEXTURE_COUNT table does ` +
+                "not cover.",
+        );
+    }
+    const base = module.buildShShaderSource(degree);
+    return {
+        degree,
+        textureCount,
+        base,
+        wgsl:
+            fragments.length > 0
+                ? await applySplatFragments(base, fragments)
+                : base,
+    };
+}
+
+/** The pin's own splicer over one base module. */
+async function applySplatFragments(
+    base: string,
     fragments: readonly SplatShaderFragment[],
 ): Promise<string> {
     const pipeline = await importPinnedModule<{
@@ -141,5 +211,18 @@ export async function composeSplatModule(
                 "applyGsFragments.",
         );
     }
-    return pipeline.applyGsFragments(pinnedSplatModuleWgsl(), fragments);
+    return pipeline.applyGsFragments(base, fragments);
+}
+
+/**
+ * The module the browser compiles for one plugin list: the pin's own
+ * `applyGsFragments` over the pin's own WGSL.
+ *
+ * The list is in the order the `loadSplat` call wrote it, because that is
+ * the order upstream concatenates two plugins sharing a slot in.
+ */
+export async function composeSplatModule(
+    fragments: readonly SplatShaderFragment[],
+): Promise<string> {
+    return await applySplatFragments(pinnedSplatModuleWgsl(), fragments);
 }

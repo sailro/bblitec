@@ -393,6 +393,19 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "#bakeCurrentTransformIntoVertices",
         consumers: CMAKE,
     },
+    "loader:splat-sh": {
+        provenance:
+            "src/loader-splat/splat-ply-compressed.ts" +
+            "#convertCompressedPlyToParsedSplat + " +
+            "src/loader-splat/load-splat.ts#attachParsedSplat (the " +
+            "parsed.shDegree arm) + " +
+            "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts",
+        consumers: [
+            "features.cmake",
+            "render_capabilities.hpp",
+            "deployed shaders",
+        ],
+    },
     "material:pbr": {
         provenance: "src/material/pbr/pbr-material.ts",
         consumers: CMAKE,
@@ -1252,6 +1265,58 @@ function capabilityRows(
             ["render_capabilities.hpp"],
         ),
         checkedRow(
+            "BBLITE_DEFORM_PICKING",
+            "capability",
+            emit.pickingShaders?.deform !== undefined,
+            // ONE reason, and deliberately so: `activation` above combines
+            // parts by DISJUNCTION -- any recorded reason activates the
+            // row -- and this gate is a conjunction of three. Splitting it
+            // into three parts makes the row claim itself active whenever
+            // any one holds, which is how it first failed. The cross-check
+            // is therefore weak here by construction; the three inputs are
+            // named in the provenance below so a reader can still see
+            // them.
+            [
+                [
+                    emit.pickingShaders?.deform !== undefined,
+                    "a detailed pick draws a live pose through the pin's " +
+                        "deform vertex projection",
+                ],
+            ],
+            "no detailed pick over a mesh whose pose the pin's own " +
+                "per-bone palette texture carries",
+            "src/picking/deform-picking-projection.ts: upstream lazily " +
+                "imports that module only when a pick candidate carries a " +
+                "skeleton or morph targets, so a scene with nothing to " +
+                "deform composes neither the module nor the pipeline. The " +
+                "generation gate is that condition's three inputs -- a " +
+                "detailed pick, an animated asset, and the composed " +
+                "skeleton variant that publishes the palette the " +
+                "projection samples",
+            ["render_capabilities.hpp", "deployed shaders"],
+        ),
+        checkedRow(
+            "BBLITE_DEFORM_PICKING_MORPH",
+            "capability",
+            emit.pickingShaders?.deformMorph ?? false,
+            [
+                [
+                    emit.pickingShaders?.deformMorph ?? false,
+                    "the composed deform projection is the pin's morph arm",
+                ],
+            ],
+            "the composed deform projection samples the bone palette alone",
+            "src/picking/deform-picking-projection.ts projectionFor: the " +
+                "morph arm declares two storage bindings beside the palette " +
+                "and the nomorph arm declares the palette alone, so a " +
+                "backend that sizes its bind group from anything but the " +
+                "arm actually composed mismatches the shader it deployed. " +
+                "Recorded separately from BBLITE_GPU_MORPH_STORAGE, which " +
+                "is a wider disjunction taking a node-material variant's " +
+                "morph bindings too",
+            ["render_capabilities.hpp"],
+        ),
+        checkedRow(
             "BBLITE_VAT",
             "capability",
             has("mesh:vat"),
@@ -1789,6 +1854,39 @@ function capabilityRows(
             "not reached",
             "src/material/pbr/background-solid-skybox.ts",
             ["render_capabilities.hpp"],
+        ),
+        checkedRow(
+            "BBLITE_SPLAT_SH",
+            "capability",
+            has("loader:splat-sh"),
+            [
+                [
+                    has("loader:splat-sh"),
+                    "a packaged Gaussian cloud parsed to a non-zero " +
+                        "spherical-harmonic degree",
+                ],
+            ],
+            "no packaged cloud carries harmonics",
+            "src/loader-splat/load-splat.ts#attachParsedSplat (the " +
+                "parsed.sh && parsed.shDegree fork) + " +
+                "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts",
+            ["render_capabilities.hpp", "deployed shaders"],
+        ),
+        checkedRow(
+            "BBLITE_SPLAT_SH_TEXTURES",
+            "capability",
+            has("loader:splat-sh"),
+            [
+                [
+                    has("loader:splat-sh"),
+                    "the rgba32uint payloads that degree's bind-group " +
+                        "layout appends at binding 6",
+                ],
+            ],
+            "no packaged cloud carries harmonics",
+            "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts " +
+                "SH_TEXTURE_COUNT, indexed by the parsed degree",
+            ["render_capabilities.hpp", "deployed shaders"],
         ),
         row(
             "BBLITE_PBR_VARIANTS",

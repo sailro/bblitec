@@ -43,6 +43,7 @@ import {
     pinnedNumericMathCalls,
 } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
+import { SPLAT_HARMONICS_SUFFIX } from "../compiler/assets.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -50,6 +51,15 @@ const SORT_MODULE_MESH =
     "src/mesh/GaussianSplatting/gaussian-splatting-mesh.ts";
 const PIPELINE_MODULE =
     "src/mesh/GaussianSplatting/gaussian-splatting-pipeline.ts";
+/**
+ * The pipeline `attachParsedSplat` dynamically imports for a cloud whose
+ * parse carried harmonics. Everything the renderer reads off it differs
+ * from its sibling's -- a wider UBO, a view direction built from the eye,
+ * and N packed payload textures -- so the arm is selected by module here
+ * rather than by a flag inside one lowering.
+ */
+const SH_PIPELINE_MODULE =
+    "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts";
 const BAKE_MODULE = "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts";
 
 /**
@@ -113,7 +123,45 @@ const MATH_CALLS: ReadonlyMap<
 ]);
 
 export class SplatLowerer {
-    public constructor(private readonly context: LoweringContext) {}
+    /**
+     * @param shDegree The spherical-harmonic degree the packaged container
+     * parsed to, or 0 for a cloud carrying none. It selects which of the
+     * pin's two pipeline modules every arm below reads, exactly as
+     * `attachParsedSplat`'s own `parsed.shDegree > 0` fork does.
+     */
+    public constructor(
+        private readonly context: LoweringContext,
+        private readonly shDegree: number = 0,
+    ) {}
+
+    /** Which of the pin's two pipeline modules this scene's cloud reaches. */
+    private get pipelineModule(): string {
+        return this.shDegree > 0 ? SH_PIPELINE_MODULE : PIPELINE_MODULE;
+    }
+
+    /**
+     * The UBO's float count, from the pinned `UBO_BYTES` its own renderable
+     * builder sizes the buffer and the CPU mirror with.
+     *
+     * Folded rather than read as a literal because the pin writes it as a
+     * product of the layout it describes (`16 * 4 * 3 + 8 * 4`), and the two
+     * pipelines differ by exactly the trailing `+ 4 * 4` the eye position
+     * occupies. A number typed here would agree with one of them at best.
+     */
+    private uniformBlockFloats(): number {
+        const file = this.context.sourceFile(this.pipelineModule);
+        const bytes = this.context.numericValue(
+            this.context.variableInitializer(file, "UBO_BYTES"),
+            file,
+        );
+        if (!Number.isInteger(bytes) || bytes <= 0 || bytes % 4 !== 0) {
+            throw new Error(
+                `Pinned splat UBO_BYTES folded to ${bytes}, which is not a ` +
+                    "whole number of floats.",
+            );
+        }
+        return bytes / 4;
+    }
 
     private declaration(
         modulePath: string,
@@ -364,8 +412,10 @@ ${body}
             );
         // The payload order, from the pipeline's own bind-group entries:
         // the texture views bind in the order the WGSL reads them, and the
-        // uploads a PAL performs must land slot for slot on that order.
-        const pipelineFile = this.context.sourceFile(PIPELINE_MODULE);
+        // uploads a PAL performs must land slot for slot on that order. The
+        // SH pipeline names the same four ahead of its own `shViews[i]`
+        // pushes, which are element accesses and so not payload views here.
+        const pipelineFile = this.context.sourceFile(this.pipelineModule);
         const payloadEntries = this.context
             .findNodes(
                 pipelineFile,
@@ -749,8 +799,7 @@ ${body}
      * order buffer, and posting the sort. Those arrive here as parameters.
      */
     private lowerUniformWriter(): string {
-        const modulePath = PIPELINE_MODULE;
-        const file = this.context.sourceFile(modulePath);
+        const file = this.context.sourceFile(this.pipelineModule);
         const update = this.context
             .findNodes(
                 file,
@@ -777,10 +826,16 @@ ${body}
                 ts.isExpressionStatement(statement) &&
                 statement.expression.getText(file).startsWith("cpu"),
         );
-        if (writes.length !== 7) {
+        // The SH hook writes the same seven plus the four eye-position
+        // lanes its wider block carries; either count is the whole set of
+        // statements that touch the mirror, so a pin that adds one refuses
+        // rather than silently leaving a lane unwritten.
+        const expected = this.shDegree > 0 ? 11 : 7;
+        if (writes.length !== expected) {
             return this.context.contractError(
                 update,
-                `Expected 7 UBO writes in the splat update hook, found ${writes.length}.`,
+                `Expected ${expected} UBO writes in the splat update hook, ` +
+                    `found ${writes.length}.`,
             );
         }
         const bindings = new Map<string, PinnedBinding>([
@@ -790,6 +845,12 @@ ${body}
             ["proj", { cpp: "projection", type: "f32" }],
             ["size.width", { cpp: "width", type: "scalar" }],
             ["size.height", { cpp: "height", type: "scalar" }],
+            // `getCameraPosition` reads the camera world matrix's own
+            // translation lanes, which is what this port's shared
+            // `shader_camera_position` returns; the caller passes them in.
+            ["camPos.x", { cpp: "eye_position[0]", type: "scalar" }],
+            ["camPos.y", { cpp: "eye_position[1]", type: "scalar" }],
+            ["camPos.z", { cpp: "eye_position[2]", type: "scalar" }],
         ]);
         const lowerer = new PinnedNumericLowerer(file, {
             bindings,
@@ -840,9 +901,34 @@ ${body}
             this.context.contractError(
                 declaration,
                 "Expected attachParsedSplat to fork on shDegree; the " +
-                    "spherical-harmonic pipeline is not lowered.",
+                    "spherical-harmonic pipeline arm is selected by it.",
             );
         }
+        // The pin's fork is on the PARSE result, and generation already
+        // took it: the packaged container either carried harmonics or it
+        // did not, and this scene's shader was built for the answer. So the
+        // arm is emitted rather than tested, and a scene reaching neither
+        // compiles none of the SH read.
+        const harmonics =
+            this.shDegree > 0
+                ? `    // attachParsedSplat: a parse carrying harmonics attaches the SH
+    // pipeline instead, which binds the packed payloads below beside the
+    // four the stock one reads. They package to a sidecar named off the
+    // row buffer, because the row file is upstream's own .splat layout.
+    SplatMeshRecord& record =
+        scene.engine->splat_meshes[handle.value];
+    record.sh_degree = upstream::splat_sh_degree;
+    record.sh_textures = upstream::build_splat_sh_textures(
+        pal::read_binary_file(path + "${SPLAT_HARMONICS_SUFFIX}"),
+        static_cast<double>(record.texture_width),
+        static_cast<double>(record.texture_height),
+        static_cast<double>(record.vertex_count));
+`
+                : "";
+        const harmonicsInclude =
+            this.shDegree > 0
+                ? "#include <bblite/upstream/splat_harmonics.hpp>\n"
+                : "";
         return {
             modulePath: "src/loader-splat/load-splat.ts",
             symbolName,
@@ -854,7 +940,7 @@ ${body}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
 #include <bblite/upstream/splat_geometry.hpp>
-
+${harmonicsInclude}
 #include <stdexcept>
 #include <utility>
 
@@ -924,11 +1010,240 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
     // had. Every reached read of splat.name is a scene that wrote one.
     const SplatMeshHandle handle = create_gaussian_splatting_mesh(
         *scene.engine, "", pal::read_binary_file(path));
-    attach_gaussian_splatting_mesh(scene, handle);
+${harmonics}    attach_gaussian_splatting_mesh(scene, handle);
     return handle;
 }
 
 } // namespace bbl
+`,
+        };
+    }
+
+    /**
+     * `attachGaussianSplattingMeshSH`'s packing half, folded.
+     *
+     * The pinned function interleaves two things: arithmetic over a fixed
+     * layout -- how many coefficients a degree carries, how many
+     * sixteen-byte textures that needs, and which source byte lands in
+     * which texel -- and the GPU calls that create and upload the textures.
+     * The first is a fold, for the reason `buildSplatGeometry` beside it is
+     * one: fixed math over a fixed layout, where the SHAPE is the contract.
+     * The second belongs to the PALs, so it is ASSERTED here rather than
+     * emitted, exactly as the sort's worker boundary is: the anchors below
+     * are what make "everything this function does that is not a GPU call
+     * is folded" a true statement instead of a hope.
+     */
+    public lowerHarmonics(): LoweredSource {
+        const symbolName = "attachGaussianSplattingMeshSH";
+        const { file, declaration } = this.declaration(
+            SH_PIPELINE_MODULE,
+            symbolName,
+        );
+        // The GPU half this port owns. Their presence is what bounds the
+        // fold below; a pin that stops making them means the packing this
+        // function performs is no longer what a texture upload consumes.
+        for (const anchor of [
+            "createTexture",
+            "writeTexture",
+            "createView",
+        ]) {
+            if (!this.context.hasCall(declaration, anchor)) {
+                this.context.contractError(
+                    declaration,
+                    `Expected ${symbolName} to call ${anchor}; the GPU ` +
+                        "boundary this fold stops at has moved.",
+                );
+            }
+        }
+        const statements = declaration.body!.statements;
+        const loop = statements.find((statement) =>
+            ts.isForStatement(statement),
+        );
+        if (!loop || !ts.isForStatement(loop) || !ts.isBlock(loop.statement)) {
+            return this.context.contractError(
+                declaration,
+                `Expected ${symbolName} to pack its payloads in a for loop.`,
+            );
+        }
+
+        const bindings = new Map<string, PinnedBinding>([
+            // The degree is a generation-time constant: the packaged
+            // container parsed to exactly one, and the emitted shader was
+            // built for that one.
+            [
+                "mesh.shDegree",
+                {
+                    cpp: "static_cast<double>(splat_sh_degree)",
+                    type: "scalar",
+                },
+            ],
+            ["mesh.textureWidth", { cpp: "texture_width", type: "scalar" }],
+            ["mesh.textureHeight", { cpp: "texture_height", type: "scalar" }],
+            ["mesh.vertexCount", { cpp: "splat_count", type: "scalar" }],
+            [
+                "shFlat",
+                {
+                    cpp: "sh_flat.data()",
+                    bytesCpp: "sh_flat.size()",
+                    type: "u8-view",
+                },
+            ],
+            // The outer loop is emitted below rather than folded, because
+            // its body ends in the GPU calls; its induction variable is
+            // still the pin's own and every offset reads it.
+            ["t", { cpp: "t", type: "scalar" }],
+        ]);
+        const lowerer = new PinnedNumericLowerer(file, {
+            bindings,
+            calls: MATH_CALLS,
+        });
+
+        // Everything ahead of the loop except the four GPU-side bindings,
+        // named by the shape each has rather than by position.
+        const gpuPrologue = [
+            "scene.surface.engine",
+            "engine._device",
+        ];
+        let skipped = 0;
+        const prologue: string[] = [];
+        for (const statement of statements) {
+            if (statement === loop) break;
+            if (
+                ts.isVariableStatement(statement) &&
+                statement.declarationList.declarations.length === 1
+            ) {
+                const initializer =
+                    statement.declarationList.declarations[0]!.initializer;
+                const text = initializer?.getText(file) ?? "";
+                if (
+                    gpuPrologue.includes(text) ||
+                    (initializer !== undefined &&
+                        ts.isArrayLiteralExpression(
+                            this.context.unwrapExpression(initializer),
+                        ))
+                ) {
+                    skipped += 1;
+                    continue;
+                }
+            }
+            prologue.push(...lowerer.statement(statement, "    "));
+        }
+        if (skipped !== gpuPrologue.length + 2) {
+            this.context.contractError(
+                declaration,
+                `Expected ${symbolName} to open with the device handles and ` +
+                    "the two GPU arrays this fold does not carry.",
+            );
+        }
+
+        // The loop body up to the first GPU call: the destination buffer,
+        // its per-texture window and the scatter that fills it.
+        const packing: ts.Statement[] = [];
+        for (const statement of loop.statement.statements) {
+            if (
+                ts.isVariableStatement(statement) &&
+                (statement.declarationList.declarations[0]?.initializer
+                    ?.getText(file)
+                    .includes("device.createTexture") ??
+                    false)
+            ) {
+                break;
+            }
+            packing.push(statement);
+        }
+        if (packing.length !== loop.statement.statements.length - 4) {
+            this.context.contractError(
+                loop,
+                "Expected the pinned SH pack loop to end in the four GPU " +
+                    "statements this port owns.",
+            );
+        }
+        const body = packing
+            .flatMap((statement) => lowerer.statement(statement, "        "))
+            .join("\n");
+
+        return {
+            modulePath: SH_PIPELINE_MODULE,
+            symbolName,
+            header: `#pragma once
+
+#include <bblite/runtime.hpp>
+#include <bblite/upstream/render_capabilities.hpp>
+
+#include <cstddef>
+#include <cstdint>
+#include <vector>
+
+namespace bbl::upstream {
+
+/** The spherical-harmonic degree this scene's packaged cloud parsed to. */
+inline constexpr std::uint32_t splat_sh_degree = ${this.shDegree}u;
+
+/**
+ * The rgba32uint payloads that degree binds, from the pin's own
+ * \`SH_TEXTURE_COUNT\` table by way of the generated capability define. The
+ * packer below folds the pin's OTHER statement of the same quantity
+ * (\`Math.ceil(shCoefficientCount / 16)\`) and refuses if the two disagree,
+ * which is the only way this port can tell that one of them moved.
+ */
+inline constexpr std::size_t splat_sh_texture_count =
+    static_cast<std::size_t>(BBLITE_SPLAT_SH_TEXTURES);
+
+/**
+ * One cloud's packed SH payloads, one per texture, in binding order.
+ *
+ * Each is width * height * 16 bytes, zero where the grid runs past the
+ * splats, which is what the pin's own zero-initialized \`new U8\` gives it.
+ */
+std::vector<std::vector<std::uint8_t>> build_splat_sh_textures(
+    const std::vector<std::uint8_t>& sh_flat,
+    double texture_width,
+    double texture_height,
+    double splat_count);
+
+} // namespace bbl::upstream
+`,
+            source: `// ${this.context.provenance(
+                SH_PIPELINE_MODULE,
+                symbolName,
+            )}
+#include <bblite/js_data.hpp>
+#include <bblite/upstream/splat_harmonics.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <stdexcept>
+#include <utility>
+
+namespace bbl::upstream {
+
+std::vector<std::vector<std::uint8_t>> build_splat_sh_textures(
+    const std::vector<std::uint8_t>& sh_flat,
+    double texture_width,
+    double texture_height,
+    double splat_count) {
+${prologue.join("\n")}
+    if (static_cast<std::size_t>(textureCount) != splat_sh_texture_count) {
+        throw std::runtime_error(
+            "Pinned SH texture count disagrees with the layout the "
+            "generated pipeline binds.");
+    }
+    if (sh_flat.size() !=
+        static_cast<std::size_t>(splat_count * shCoefficientCount)) {
+        throw std::runtime_error(
+            "Packaged splat harmonics are not one coefficient set per "
+            "splat.");
+    }
+    std::vector<std::vector<std::uint8_t>> payloads;
+    payloads.reserve(splat_sh_texture_count);
+    for (std::int64_t t = 0; t < textureCount; t++) {
+${body}
+        payloads.push_back(std::move(dst));
+    }
+    return payloads;
+}
+
+} // namespace bbl::upstream
 `,
         };
     }
@@ -1421,6 +1736,15 @@ void bake_current_transform_into_vertices(
         const bits = this.declaration(SORT_MODULE, "splatSortBucketBits");
         const sortDirty = this.lowerSortDirty();
         const uniformWriter = this.lowerUniformWriter();
+        const blockFloats = this.uniformBlockFloats();
+        // The one parameter the two pipelines' update hooks disagree about.
+        // Emitted only where the pin reads it: a stock cloud's hook never
+        // touches the camera, and an ignored parameter here would be this
+        // port's invention rather than the pin's shape.
+        const eyeParameterDeclaration =
+            this.shDegree > 0
+                ? ",\n    const std::array<float, 4>& eye_position"
+                : "";
         // The pin's own TRS composition, shared with the thin-instance
         // parent world: a splat cloud is a SceneNode and composes its
         // world matrix through the same writer.
@@ -1511,9 +1835,11 @@ SplatSortScratch create_splat_sort_scratch(double vertex_count);
  */
 std::array<float, 16> build_splat_world(const SplatMeshRecord& mesh);
 
-/** The pin's own splat UBO: three matrices then viewport/focal/dataSize. */
+/** The pin's own splat UBO: three matrices then viewport/focal/dataSize${
+                this.shDegree > 0 ? ",\n *  then the eye position the SH view direction is built from" : ""
+            }. */
 struct SplatUniforms {
-    std::array<float, 56> block{};
+    std::array<float, ${blockFloats}> block{};
 };
 
 /**
@@ -1528,7 +1854,7 @@ void write_splat_uniforms(
     double width,
     double height,
     double texture_width,
-    double texture_height);
+    double texture_height${eyeParameterDeclaration});
 
 /**
  * Whether the view-depth kernel drifted far enough to re-sort, updating
@@ -1575,8 +1901,8 @@ void write_splat_uniforms(
     double width,
     double height,
     double texture_width,
-    double texture_height) {
-    std::array<float, 56>& block = uniforms.block;
+    double texture_height${eyeParameterDeclaration}) {
+    std::array<float, ${blockFloats}>& block = uniforms.block;
 ${uniformWriter}
     // dataSize and alpha are pre-written at construction upstream, where the
     // texture size is known and nothing a reached scene does changes either.

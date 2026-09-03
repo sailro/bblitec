@@ -689,12 +689,17 @@ compiled away:
 `loadSplat` loads a Gaussian-splat cloud, split across the two halves of the
 pipeline the way each half is best at:
 
-- The **container parse runs at generation**. A `.ply` header is a
-  per-exporter property list, so what must not drift is the parsed value
-  rather than the parser's shape, and only the pin's own parser can promise
-  that. What is packaged is the 32-byte-per-splat row buffer — upstream's own
-  `.splat` files are that buffer written to disk, so a `.ply` scene and a
-  `.splat` scene package to the same bytes and the runtime reads one layout.
+- The **container parse runs at generation**, on both of the pin's parsers.
+  A `.ply` header is a per-exporter property list, so what must not drift is
+  the parsed value rather than the parser's shape, and only the pin's own
+  parser can promise that; the pin forks on `isPlyCompressedOrSH` into a
+  second, dynamically-imported one, and that runs at generation too. What is
+  packaged is the 32-byte-per-splat row buffer — upstream's own `.splat`
+  files are that buffer written to disk, so a `.ply` scene and a `.splat`
+  scene package to the same bytes and the runtime reads one layout. A
+  compressed container also yields a spherical-harmonic byte stream, and
+  keeping that invariant is why it packages to a SIDECAR beside the rows
+  rather than into them.
 - The **geometry build and the depth sort are folded** from their pinned
   declarations: the rotate-then-scale covariance whose six unique entries
   become two RGB triples, and the uniform-key counting sort that puts splats
@@ -729,10 +734,14 @@ scene that reaches it and drops them otherwise
 ([fidelity](fidelity.md#shader-contract) carries the Euler-proxy rule the
 reset turns on).
 
-The reached slice is the plain `.ply` and `.splat` row layout. A compressed or
-spherical-harmonic PLY refuses at generation, because it needs the pin's second
-parser and its own SH pipeline; `.sog` and `.spz` need a ZIP and a gzip decoder
-first. The sort runs on the frame's own thread before the draw that reads it
+The reached slice is the plain `.ply` and `.splat` row layout plus the
+compressed / spherical-harmonic `.ply`, which lowers through the pin's second
+pipeline (`gaussian-splatting-pipeline-sh`): one to five `rgba32uint`
+payload textures the VERTEX stage `textureLoad`s, counted by the pin's own
+`SH_TEXTURE_COUNT` table, and the eye position its view
+direction is built from. The degree is a generation-time constant, so a scene
+whose clouds disagree on degree refuses — generation deploys one stage pair.
+`.sog` and `.spz` still refuse, pending a ZIP and a gzip decoder. The sort runs on the frame's own thread before the draw that reads it
 rather than in a worker, which is the state `mesh.firstSortReady` waits for
 ([fidelity](fidelity.md#semantic-contract)).
 
@@ -1662,11 +1671,40 @@ basic shader, and the CPU half -- the barycentric solve, the tiny-weight
 clamp, the world normal transform and the facing test -- is lowered from the
 pinned bodies.
 
-It refuses when paired with billboard picking, splats or thin instances.
-That is the pin's own granularity rather than a port limit: upstream those
-contributors take their own `detailed` shader arms, and a thin-instanced
-candidate flips the whole pass onto the ADVANCED pipeline, which this port
-does not compose.
+It refuses when paired with billboard picking or splats. That is the pin's
+own granularity rather than a port limit: upstream those contributors take
+their own `detailed` shader arms, which this port does not compose. A
+thin-instanced candidate still refuses, because upstream it flips the whole
+pass onto the ADVANCED pipeline.
+
+**A deforming mesh picks against its posed geometry, not its bind pose.** The
+pin's `deform-picking-projection` is executed and fed to the detailed
+pipeline's own `shader(rule, projection)`, so one extra vertex stage deploys
+and shares the plain detailed fragment byte for byte. Both backends bind the
+pose the frame already uploaded — the bone palette texture and the morph
+storage pair at `@group(3)` — and read joints and weights out of the
+interleaved vertex at its own pitch. The composed arm is the SKINNED one, and one arm serves the whole
+scene where the pin builds one per mesh -- sound because a mesh with no
+targets of its own gets an empty weights header whose zero count makes the
+pin's accumulation loop a no-op.
+
+Two of the pin's five arms are not composed, and they are not the same kind
+of omission. `skin8-*` is REFUSED, because this port's vertex carries one
+joint quad and the `four-influence-skinning` adaptation already records
+that. `noskin-morph` is a GAP: a mesh whose only deformation is morph
+targets takes the affine projection and is picked at its un-morphed pose,
+with nothing refusing it. The zero-weight-quad reason above is why the
+SKINNED arm cannot serve such a mesh; it is not a reason the pin's own
+`noskin-morph` arm could not. No registered scene puts one in front of a
+detailed pick, which is why it is a gap rather than a bug today.
+
+Two consequences follow from where a skinned mesh keeps its transform, and
+both were defects until scene 115 measured them. The detail attachment's
+position is NOT un-baked for such a mesh: its vertex buffer carries no world,
+so there is nothing to undo, and undoing it anyway put the barycentrics two
+orders of magnitude out. And the rest normal is transformed by the mesh's own
+NODE world, which the pose pass keeps on the record — `mesh_world_matrix` is
+the identity for a skinned record, since its transform lives in the palette.
 
 ### Display gizmos
 
