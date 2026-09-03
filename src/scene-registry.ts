@@ -1263,6 +1263,44 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene123",
+        name: "Scene 123 - Gaussian Splatting SPZ",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene123.ts",
+        title: "Babylon Lite Native - Gaussian Splatting SPZ",
+        // The pin's second splat entry point, executed at generation: the
+        // gzip fork, the module-local parseSpz and the half turn about X
+        // it writes on the cloud it attached. 786,233 splats at SH degree
+        // 3, covering 99.6% of the frame.
+        //
+        // From artifacts/parity/scene123/report-{gpu,dawn}.json:
+        //   SDL_GPU  full 0.0013154659, region 0.0013167910, max 2,
+        //            921,595 of 921,600 pixels within one count
+        //   Dawn     full 0.0012905093, region 0.0012920966, max 2,
+        //            921,596 within one count
+        // over a 917,888-px mask.
+        //
+        // In the splat family's multisample band: worst run-to-run move
+        // 7.6e-4 (SDL_GPU) and 8.6e-4 (Dawn) from
+        // artifacts/parity/scene123/stability-*.json, five runs each
+        // byte-identical at BBLITE_MSAA=1. The browser's own two
+        // consecutive captures differ by 0.0008818, which is where most of
+        // the residual comes from -- recompute with compareImages over
+        // artifacts/capture/scene123/screenshot.png and the golden.
+        //
+        // The gate OBSERVES the SPZ arm rather than merely reaching it:
+        // neutralizing the rotation the pinned loader writes measures
+        // 48.2756 MAD at max 226, with 25 of 921,600 pixels still
+        // matching. Artifact:
+        // artifacts/parity/scene123/probe-no-spz-rotation/ (taken at an
+        // earlier build stamp than the numbers above).
+        parity: {
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.007,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene124",
         name: "Scene 124 - Compressed PLY Gaussian Splatting",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene124.ts",

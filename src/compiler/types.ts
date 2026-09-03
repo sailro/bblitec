@@ -892,6 +892,12 @@ export interface CompileAsset {
     // A Gaussian-splat container, packaged into the interchange row
     // buffer the pin's own `.splat` files already are.
     | "splat"
+    // The same interchange rows, out of the container `loadSPZ` reads.
+    // A separate kind because the pin has a separate loader for it and the
+    // call site is what selects one -- neither entry point sniffs the
+    // other's container -- and because that loader packages a rotation
+    // beside the rows.
+    | "spz"
     // A Basis Universal texture, transcoded by the pin's own loader at
     // generation and packaged as the KTX1 container the runtime's one
     // compressed-texture reader takes.
@@ -1968,6 +1974,7 @@ export type Feature =
   | "loader:splat"
   | "loader:splat-bake"
   | "loader:splat-sh"
+  | "loader:splat-spz"
   | "material:pbr"
   | "material:clearcoat"
   | "material:sheen"

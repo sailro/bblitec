@@ -100,6 +100,7 @@ import {
     splatFragmentRecords,
 } from "./pinned-splat-fragments.js";
 import {
+    SPLAT_ASSET_KINDS,
     SPLAT_HARMONICS_SUFFIX,
     assetRecord,
 } from "./compiler/assets.js";
@@ -372,6 +373,14 @@ async function assetBytes(
  */
 interface MaterializedAssetFacts {
     splatHarmonicDegree: number;
+    /**
+     * The Euler rotation the pinned `loadSPZ` left on the cloud it attached,
+     * observed by running that loader rather than restated. Present only for
+     * an SPZ container -- the pin's `loadSOG` writes the same lane, so this
+     * is one of two rather than the only one, which is why the recorder that
+     * observes it is shared rather than local to the SPZ arm.
+     */
+    spzRotation?: readonly [number, number, number];
 }
 
 async function materializeAsset(
@@ -440,18 +449,33 @@ async function materializeAsset(
         return;
     }
 
-    if (asset.kind === "splat") {
-        const { packageSplat } = await import("./splat-packager.js");
-        const packaged = packageSplat(await assetBytes(source, inputPath));
-        // The rows alone, so a `.ply` and a `.splat` of the same cloud
-        // still package to identical bytes.
-        writeFileSync(destination, packaged.rows);
-        if (!packaged.harmonics) return { splatHarmonicDegree: 0 };
-        writeFileSync(
-            `${destination}${SPLAT_HARMONICS_SUFFIX}`,
-            packaged.harmonics.bytes,
+    if (SPLAT_ASSET_KINDS.has(asset.kind)) {
+        const { packageSplat, packageSpz } = await import(
+            "./splat-packager.js"
         );
-        return { splatHarmonicDegree: packaged.harmonics.degree };
+        const bytes = await assetBytes(source, inputPath);
+        // The one lane a pinned loader writes on the cloud it attached rides
+        // the facts rather than the packaged file, for the reason the
+        // harmonics ride a sidecar: the row buffer is upstream's own `.splat`
+        // layout and nothing may be appended to it.
+        const spz =
+            asset.kind === "spz"
+                ? await packageSpz(bytes, source)
+                : undefined;
+        const packaged = spz ?? packageSplat(bytes);
+        // The rows alone, so a `.ply`, a `.splat` and an `.spz` of the same
+        // cloud still package to identical bytes.
+        writeFileSync(destination, packaged.rows);
+        if (packaged.harmonics) {
+            writeFileSync(
+                `${destination}${SPLAT_HARMONICS_SUFFIX}`,
+                packaged.harmonics.bytes,
+            );
+        }
+        return {
+            splatHarmonicDegree: packaged.harmonics?.degree ?? 0,
+            ...(spz ? { spzRotation: spz.rotation } : {}),
+        };
     }
 
     if (asset.kind === "basis") {
@@ -785,6 +809,26 @@ async function main(): Promise<void> {
     const splatHarmonicDegree = [...splatHarmonicDegrees].find(
         (degree) => degree > 0,
     );
+    // The rotation the pinned `loadSPZ` writes on every cloud it attaches,
+    // observed once per SPZ container. Two containers cannot disagree -- it
+    // is a constant of the loader, not of the asset -- so a scene whose
+    // observations differ means the pin grew a per-container arm this port
+    // does not model, and refuses rather than emitting one of them.
+    const spzRotations = materializedFacts
+        .map((facts) => facts?.spzRotation)
+        .filter((rotation) => rotation !== undefined);
+    const distinctSpzRotations = new Set(
+        spzRotations.map((rotation) => rotation.join(",")),
+    );
+    if (distinctSpzRotations.size > 1) {
+        throw new Error(
+            "This scene's SPZ containers attach clouds at different " +
+                `rotations (${[...distinctSpzRotations].join("; ")}); the ` +
+                "pinned loadSPZ writes one, so a difference means it now " +
+                "forks on the container.",
+        );
+    }
+    const splatSpzRotation = spzRotations[0];
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
     if (specializationFeatures.eightInfluenceSkinning) {
@@ -1005,9 +1049,16 @@ async function main(): Promise<void> {
     // above. It selects the payload packer and the SH capability defines;
     // `loader:splat` is already reached by the `loadSplat` call itself.
     if (splatHarmonicDegree !== undefined) {
-        const splatAsset = result.manifest.assets.find(
-            (asset) => asset.kind === "splat",
-        );
+        // The container that carried them, not merely the first splat asset:
+        // the facts are positional over the manifest's assets, so a scene
+        // holding a plain cloud beside one with harmonics still attributes
+        // the feature -- and names the parser below -- from the one that
+        // answered the degree.
+        const splatAsset = result.manifest.assets[
+            materializedFacts.findIndex(
+                (facts) => (facts?.splatHarmonicDegree ?? 0) > 0,
+            )
+        ];
         result.manifest.features.push("loader:splat-sh");
         assetJoinedFeatures.set(
             "loader:splat-sh",
@@ -1024,7 +1075,13 @@ async function main(): Promise<void> {
             id: "splat-harmonics-sidecar",
             category: "asset-materialization",
             sourceSemantics:
-                "convertCompressedPlyToParsedSplat returns the 32-byte rows " +
+                // The parser that produced them, which is the container's
+                // answer rather than a fixed one: the compressed PLY and the
+                // SPZ both reach the SH pipeline through this same fork.
+                (splatAsset?.kind === "spz"
+                    ? "parseSpz"
+                    : "convertCompressedPlyToParsedSplat") +
+                " returns the 32-byte rows " +
                 "beside a flat spherical-harmonic byte stream, and " +
                 "attachParsedSplat hands both to the SH pipeline in one call.",
             nativeSemantics:
@@ -1041,6 +1098,40 @@ async function main(): Promise<void> {
                 "scene 124 parity against the browser golden on both backends",
                 "the browser's own compiled module is byte-identical to " +
                     "buildShShaderSource(3)",
+            ],
+        });
+    }
+    // The SPZ container, recorded here for the same reason its sibling above
+    // is: `compileAdaptations` runs over the entry AST, and the VALUE this
+    // entry records -- the rotation the pinned loader wrote, which is the
+    // whole point of executing it -- is not known until the container has
+    // been fetched and it has run over it. The reach itself is AST-derived
+    // (`loader:splat-spz`), so only the observation pins it here.
+    if (splatSpzRotation !== undefined) {
+        result.manifest.adaptations.push({
+            id: "spz-loader-at-generation",
+            category: "asset-materialization",
+            sourceSemantics:
+                "loadSPZ fetches the container, tests the two gzip magic " +
+                "bytes, inflates a match through DecompressionStream, reads " +
+                "the 32-byte rows and the flat spherical-harmonic stream " +
+                "out of the result with the module-local parseSpz, and " +
+                "writes a half turn about X on the cloud it attached.",
+            nativeSemantics:
+                "That whole loader runs at generation, with its two " +
+                "boundaries stood in for: fetch answers from the bytes the " +
+                "download cache holds, and attachParsedSplat records " +
+                "instead of building a GPU mesh. So the gzip fork and the " +
+                "parse are taken there, the rows and harmonics package " +
+                "exactly as every other splat container's do, and the " +
+                "rotation the loader wrote is observed from that run rather " +
+                "than restated -- the generated load_spz applies the " +
+                `observed ${splatSpzRotation.join(", ")}.`,
+            risk: "low",
+            validation: [
+                "scene 123 parity against the browser golden on both backends",
+                "the packaged rows and sidecar are what the pin's own " +
+                    "loadSPZ handed attachParsedSplat",
             ],
         });
     }
@@ -1327,6 +1418,9 @@ async function main(): Promise<void> {
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
         ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
         ...(splatSh !== undefined ? { splatSh } : {}),
+        ...(splatSpzRotation !== undefined
+            ? { splatSpzRotation }
+            : {}),
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,

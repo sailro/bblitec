@@ -385,6 +385,17 @@ export interface UpstreamEmitOptions {
      */
     splatSh?: PinnedSplatShModule;
     /**
+     * The Euler rotation the pinned `loadSPZ` writes on every cloud it
+     * attaches, observed by running that loader over this scene's container.
+     *
+     * Present exactly when a `loadSPZ` call registered an SPZ asset, which
+     * is what selects the generated `load_spz` beside `load_splat`: the
+     * rotation is the one thing the second entry point does that the first
+     * does not, and it is a value the pin wrote rather than one this port
+     * chose.
+     */
+    splatSpzRotation?: readonly [number, number, number];
+    /**
      * What each ESM shadow generator's own factory built, in reach order.
      *
      * Present only when a scene reaches one; the resources and both blur
@@ -1370,7 +1381,16 @@ ${wgsl}`,
             );
             this.writeSource(
                 "upstream/src/splat_loader.cpp",
-                splats.lowerLoader({ retainRows: bakesTransform }),
+                splats.lowerLoader({
+                    retainRows: bakesTransform,
+                    // The second entry point emits only where the scene
+                    // reached it, on the same feature the call site does --
+                    // the definition and the call it satisfies cannot
+                    // disagree. Its rotation comes from the packaging run,
+                    // and a reached call without one refuses there.
+                    spzReached: features.includes("loader:splat-spz"),
+                    spzRotation: options.splatSpzRotation,
+                }),
                 generated,
             );
             if (options.splatSh) {

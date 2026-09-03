@@ -12574,6 +12574,15 @@ test("keeps generated scene locals and equality conditions warning-clean", () =>
         /\[\[maybe_unused\]\] auto v_splat = bbl::load_splat/,
     );
 
+    // The pin's second splat entry point is its own loader, not a container
+    // sniff on the first one's: the call site selects it, so the emitted
+    // call does too.
+    const spz = compileScene("scene123");
+    assert.match(
+        spz,
+        /\[\[maybe_unused\]\] auto v_splat = bbl::load_spz/,
+    );
+
     const importedCamera = compileScene("scene250");
     assert.match(
         importedCamera,
@@ -14874,3 +14883,200 @@ test("binds a colour helper's returned tuple instead of splicing the call", () =
     );
 });
 
+
+test("folds an emissive colour arriving through a user-function parameter", () => {
+    // The same widening, at a VALUE sink rather than a refusal one:
+    // `setPbrEmissive` omits the field instead of failing when the fold
+    // misses, so before this the colour silently defaulted to black in the
+    // composed variant. Tested separately because that difference is what
+    // makes the whole-tree neutrality proof load-bearing for this sink and
+    // a formality for the unlit one.
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            setPbrEmissive,
+        } from "@babylonjs/lite";
+
+        type ColorTuple = [number, number, number];
+
+        function glow(color: ColorTuple) {
+            const material = createPbrMaterial({});
+            setPbrEmissive(material, color);
+            return material;
+        }
+
+        async function main() {
+            await createEngine({});
+            glow([0.125, 0.25, 0.5]);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /set_pbr_emissive\(.*bbl::Color3\{0\.125f, 0\.25f, 0\.5f\}\)/,
+    );
+});
+
+test("folds a setter's tint arriving through a user-function parameter", () => {
+    // `requiredStaticColor3` needs the channels at generation because they
+    // enter the composed PBR variant, and syntactic resolution stops at a
+    // parameter binding. The emitted half already reads that binding out
+    // of the value model; this is the folded half reading the same tuple,
+    // through two nested inlined frames.
+    const result = compileSource(`
+        import {
+            createEngine,
+            createPbrMaterial,
+            createSolidTexture2D,
+            setPbrUnlit,
+        } from "@babylonjs/lite";
+        import type { EngineContext } from "@babylonjs/lite";
+
+        type ColorTuple = [number, number, number];
+
+        function unlit(engine: EngineContext, color: ColorTuple) {
+            const material = createPbrMaterial({
+                baseColorTexture: createSolidTexture2D(engine, color[0], color[1], color[2]),
+            });
+            setPbrUnlit(material, color);
+            return material;
+        }
+
+        function outer(engine: EngineContext, color: ColorTuple) {
+            return unlit(engine, color);
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            outer(engine, [0.25, 0.5, 0.75]);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /set_pbr_unlit\(.*bbl::Color3\{0\.25f, 0\.5f, 0\.75f\}\)/,
+    );
+});
+
+test("refuses a setter tint whose channels are not generation-known", () => {
+    // The value model answers a runtime tuple too, and its lanes have no
+    // static number: the channels the composed variant needs are genuinely
+    // absent, so the fold must still refuse rather than read zeroes.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    createPbrMaterial,
+                    createSolidTexture2D,
+                    setPbrUnlit,
+                } from "@babylonjs/lite";
+                import type { EngineContext } from "@babylonjs/lite";
+
+                type ColorTuple = [number, number, number];
+
+                function unlit(engine: EngineContext, color: ColorTuple) {
+                    const material = createPbrMaterial({
+                        baseColorTexture: createSolidTexture2D(engine, 1, 1, 1),
+                    });
+                    setPbrUnlit(material, color);
+                    return material;
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const tint: ColorTuple = [Math.random(), 0.5, 0.75];
+                    unlit(engine, tint);
+                }
+            `),
+        /setPbrUnlit's tint must be a static linear RGB colour/,
+    );
+});
+
+test("converts a TypedArray.set source the target's own kind does not match", () => {
+    // The spec reads each element as a number and stores it through the
+    // TARGET's store, which is exactly what the constructor's
+    // `<stem>_array_from` applies to the same sequence -- so a plain array,
+    // a runtime tuple and another typed array all reach `typed_array_set`
+    // through one conversion, and a same-kind source still copies directly.
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        type ColorTuple = [number, number, number];
+
+        function shade(color: ColorTuple): ColorTuple {
+            return [color[0] * 0.5, color[1] * 0.5, color[2] * 0.5];
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            void engine;
+            const values = new Float32Array(12);
+            values.set([1, 0, 0, 0], 0);
+            values.set(shade([0.2, 0.4, 0.6]), 4);
+            const source = new Float32Array([9, 8, 7]);
+            values.set(source, 8);
+            const lanes = new Float32Array([1, 2, 3, 4]);
+            const wide = new Uint16Array(4);
+            wide.set(lanes, 0);
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /typed_array_set\([^;]*bbl::js::f32_array_from\(bbl::js::Array<double>\{1\.0, 0\.0, 0\.0, 0\.0\}\)[^;]*, 0\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /typed_array_set\([^;]*bbl::js::f32_array_from\([^;]*\), 4\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /typed_array_set\([^;]*, 8\.0\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /typed_array_set\([^;]*bbl::js::f32_array_from\([^;]*\), 8\.0\)/,
+    );
+    assert.match(
+        result.cpp,
+        /typed_array_set\([^;]*bbl::js::u16_array_from\([^;]*\), 0\.0\)/,
+    );
+});
+
+test("refuses a TypedArray.set source that is not a numeric sequence", () => {
+    // A bound container of the wrong element type reaches the shared
+    // conversion and is refused by the sink rather than by luck.
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    void engine;
+                    const names = ["a", "b"];
+                    const values = new Float32Array(4);
+                    values.set(names as unknown as number[], 0);
+                }
+            `),
+        /TypedArray\.set expects a numeric sequence/,
+    );
+    // A literal is refused one level lower, per element, which is the
+    // message the constructor's own array-literal arm already gives.
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    void engine;
+                    const values = new Float32Array(4);
+                    values.set(["a", "b"] as unknown as number[], 0);
+                }
+            `),
+        /Expected a compileable number/,
+    );
+});

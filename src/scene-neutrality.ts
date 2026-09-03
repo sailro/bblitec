@@ -37,6 +37,8 @@ import { join } from "node:path";
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
  * | 120 | Dawn | differ | byte-identical |
  * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
+ * | 123 | Dawn | differ, worst MAD 0.000856, max 1 | byte-identical |
+ * | 123 | SDL_GPU | differ, worst MAD 0.000760, max 2 | byte-identical |
  * | 126 | Dawn | differ, worst MAD 0.001657, max 18 | byte-identical |
  * | 126 | SDL_GPU | differ, worst MAD 0.000081, max 2 | byte-identical |
  * | 128 | Dawn | differ, worst MAD 0.000035, max 1 | byte-identical |
@@ -85,12 +87,24 @@ import { join } from "node:path";
  * byte on one channel, and three consecutive `BBLITE_MSAA=1` runs are
  * byte-identical. Same band, same bisection -- so the spherical-harmonic
  * pipeline it is the first scene to reach is not what moves it.
+ *
+ * Scene 123 joined on its own integration and paid the fee up front, like
+ * 226 did: five runs per backend at 4x give a worst run-to-run move of
+ * 7.6e-4 (max 2) on SDL_GPU and 8.6e-4 (max 1) on Dawn, and five runs per
+ * backend at one sample are byte-identical. Its cloud is the family's
+ * largest -- 786,233 splats covering 99.6% of the frame against scene 124's
+ * 59,973-px mask -- so the same per-pixel coverage wobble is averaged over
+ * far more pixels, which is why the band sits where it does. It is not the
+ * family's widest: scene 126's Dawn band above is 1.7e-3 at max 18. Its
+ * published rows are 0.001 against thresholds of 0.003 and 0.007, about
+ * four and eight times the band.
  */
 export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
+    ["scene123", new Set(["dawn", "sdl_gpu"])],
     ["scene124", new Set(["dawn", "sdl_gpu"])],
     ["scene125", new Set(["dawn", "sdl_gpu"])],
     ["scene126", new Set(["dawn", "sdl_gpu"])],

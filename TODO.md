@@ -210,6 +210,12 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   either moves emitted bytes for every shadow or glTF-camera scene, so it
   wants its own differential sweep, and fixing only one leaves the contract
   half-kept.
+  `typedArrayStem` in `src/compiler/data-types.ts` is a third copy of the
+  same seven-arm table in one file, and its own docstring names the second
+  (`cppType`) as though it already read from it; `typeKey` returns the
+  identical seven stems. Collapsing both onto the stem is mechanical and
+  emission-neutral, but it touches the type spelling for every typed array
+  in the compiler and wants its own whole-tree diff.
   Two frictions before it generalizes: the helper has
   to move onto `LoweringContext` beside the other shared contract checks, and
   each body needs its inventory READ from the pin once rather than guessed —
@@ -335,8 +341,8 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (11 scenes):**
-91, 114, 121-123,
+**Integrate first (10 scenes):**
+91, 114, 121, 122,
 149,
 231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
@@ -398,18 +404,35 @@ an `isLocal` node-particle system.
   textured environment skybox arms need the pin's skybox rotation patch in the
   native background shaders.
 - [ ] Extend the splat slice past what scenes 120, 125, 126, 127, 128 and
-  124 and 129 measure ([fidelity](docs/fidelity.md#gaussian-splats) carries
-  the shipped contracts, spherical harmonics included). What remains, each refusing by name:
+  123, 124 and 129 measure ([fidelity](docs/fidelity.md#gaussian-splats)
+  carries the shipped contracts, spherical harmonics and the executed SPZ
+  loader included). What remains, each refusing by name:
   - 121: `splatsData` + `updateData` — the row buffer handed back as a
     mutable `ArrayBuffer` and re-uploaded, which also needs `new
     Float32Array(buf)` over it and an indexed element assignment.
-  - `loadSOG` (122) needs a ZIP and a WebP decoder; `loadSPZ` (123) needs
-    gzip. 123 is now the cheaper of the two by some way: the SH pipeline
-    scene 124 built is what it was waiting on, so it adds only the loader
-    intrinsic and a gzip parse, both Node-runnable. 122 still wants a
-    browser-executed WebP decode, whose canvas round-trip can perturb RGB
-    where alpha is under 255 -- and the SOG quats plane stores its mode in
-    alpha, so that is a fidelity hazard rather than a convenience.
+  - `loadSOG` (122) needs a ZIP and a WebP decoder. Its loader would
+    execute through the two seams scene 123 added --
+    `importPinnedModuleFetching` and the shared `attachParsedSplat`
+    recorder, which already covers the identical `mesh.rotation.x =
+    Math.PI` it writes. What still blocks it is the browser-executed WebP
+    decode, whose canvas round-trip can perturb RGB where alpha is under
+    255 -- and the SOG quats plane stores its mode in alpha, so that is a
+    fidelity hazard rather than a convenience.
+  Three review findings sit on the SPZ seam, all measured 2026-09-03.
+  `packageSpz` is not bake-cached and the reason written beside it was
+  wrong: the key already covers the pin, the packager's own source and the
+  input bytes, so a hit implies the run its four contracts passed. Caching
+  it is worth 283 ms against a 19 ms replay per recompile, but the OBSERVED
+  rotation has to ride along in the payload, which means re-versioning the
+  12-byte frame a second time on one branch -- it wants its own change.
+  The new cross-kind splat refusal re-implements an output-collision check
+  `registerUiImageAsset` already owns forty lines below, and misses the
+  `basis`-vs-`texture` pair on a URL ending `.ktx`; the general fix
+  reorders asset registration for every kind. And an observed rotation
+  cannot see a per-container fork -- a pin that grew a version-conditional
+  rotation would be observed for the one container a scene loads and
+  emitted scene-wide; the belt is one assertion that the pinned write is
+  not under a branch.
   The `.ply`-equals-`.splat` packaging identity the harmonics sidecar's
   design turns on is asserted by no test: nothing compares a `.ply`-packaged
   row buffer against a `.splat`-packaged one for the same cloud. Writing that
@@ -440,6 +463,29 @@ an `isLocal` node-particle system.
     CPU position and normal arrays `detailed-picking.ts` interpolates.
   - `pickAsync`'s `filter`, `discard` and `ignore` options, which select
     `picking-advanced-pipeline.ts` and `picking-ignore.ts`.
+  - **Scene 114** is an arm of this entry rather than a scene of its own.
+    Sized by probe AND capture 2026-09-03, which corrected its old entry in
+    three places. **Two of its contracts shipped in wave 9** -- the
+    `setPbrUnlit` tint through an inlined parameter, and `TypedArray.set` from
+    any sequence the matching constructor accepts. The compile ladder past
+    them is `mesh.skeleton = createSkeleton(engine, joints, weights, 2,
+    boneData)` (raw bone matrices, not a glTF skin), `createBoxData`,
+    `pickInRegion`'s early value returns typed `PickingInfo | null`, and
+    `PickingInfo.bu`/`.bv` READS -- the record fields exist but
+    `properties.ts` declares no rows for them, and scene 115 only writes them
+    into an erased `canvas.dataset`, so no shipped gate exercises the read.
+    Behind the compile ladder sit two contracts **no compile error reports**:
+    the pin hands its deform projection to the BASIC pick pipeline too, which
+    this port composes without one, and the scene's morph-only quad needs the
+    `noskin-morph` arm -- the browser composes SIX pick modules for this scene,
+    three per pass, against this port's two. With the compile ladder stubbed
+    the scene builds clean, so those two would ship as a wrong picture rather
+    than a refusal: the quad's bind pose sits at x = -1.65 and its posed
+    position at x = -0.30, and the scan region covers only the posed one, so a
+    bind-pose pick misses and the marker stays parked off-frame. The `skin4`
+    arm cannot stand in -- a morph-only vertex has a zero weight quad, which
+    collapses the mesh to the origin. A capture is at
+    `artifacts/capture/scene114/shaders/`.
   - a thin-instanced or VAT candidate: both need the advanced pipeline's
     instance-composed id. The morph/skeleton arm SHIPPED with scene 115 --
     `deform-picking-projection.ts` is executed and fed to the detailed
@@ -672,17 +718,6 @@ an `isLocal` node-particle system.
   toolchain for the first time. `src/pinned-csg.ts` already replays v1 plans
   under Node and caches them, so the bake shape exists; `createMeshesFromCsg2`
   (one mesh per material slot) is the one genuinely new contract.
-- [ ] Scene 114: an arm of the GPU-picking entry below rather than a scene
-  of its own. **Scene 113 is integrated and published**, so detailed picking,
-  `normalizeVec3` and N-ary `Math.hypot` all ship -- what 114 adds beyond
-  them is no longer deform picking -- scene 115 shipped that. **114 is not the one-contract
-  scene this entry used to claim** -- probed, its ladder is `setPbrUnlit`'s tint
-  through two levels of user-function parameter, then `TypedArray.set` from
-  a plain array, then a scene-code `createSkeleton(engine, joints, weights,
-  2, boneData)` assigned to `mesh.skeleton` (raw bone matrices, not a glTF
-  skin), and behind that the whole detailed-picking arm PLUS
-  `deform-picking-projection.ts`, because both of its pick targets are
-  deformed.
 - [ ] Scene 149: `break`/`continue` in the consuming loop over a container's
   mesh walk (the walk itself lowers), then the node family's
   `GeometryTextureOutputBlock`. Needs `shared/scene149-nme.ts` copied out of

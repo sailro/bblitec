@@ -61,6 +61,12 @@ const PIPELINE_MODULE =
 const SH_PIPELINE_MODULE =
     "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts";
 const BAKE_MODULE = "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts";
+/**
+ * The pin's second splat entry point. Its container parse runs at generation
+ * like its sibling's, so the only thing left of it to lower is the TRS lane
+ * it writes on the cloud it attached.
+ */
+const SPZ_MODULE = "src/loader-splat/load-spz.ts";
 
 /**
  * The pinned splat texture views, in the record-field spelling the runtime
@@ -864,7 +870,24 @@ ${body}
             .join("\n");
     }
 
-    public lowerLoader(options: { retainRows: boolean }): LoweredSource {
+    public lowerLoader(options: {
+        retainRows: boolean;
+        /**
+         * Whether the scene reached `loadSPZ`, which is what emits the
+         * second entry point below. It is the same feature the intrinsic
+         * reaches to emit the CALL, so the definition and the call it
+         * satisfies cannot disagree.
+         */
+        spzReached: boolean;
+        /**
+         * The Euler rotation that loader wrote on the cloud it attached,
+         * observed by running it at generation (`src/splat-packager.ts`).
+         * The two arrive separately because they are answered by different
+         * halves of generation, and a reached call with no observation
+         * refuses rather than emitting a restated constant.
+         */
+        spzRotation: readonly [number, number, number] | undefined;
+    }): LoweredSource {
         const symbolName = "attachParsedSplat";
         // Upstream retains every cloud's rows (`splatsData`); this port
         // retains them where a reached call reads them back, which today is
@@ -929,6 +952,9 @@ ${body}
             this.shDegree > 0
                 ? "#include <bblite/upstream/splat_harmonics.hpp>\n"
                 : "";
+        const spz = options.spzReached
+            ? this.lowerSpzLoader(options.spzRotation)
+            : "";
         return {
             modulePath: "src/loader-splat/load-splat.ts",
             symbolName,
@@ -936,6 +962,9 @@ ${body}
             source: `// ${this.context.provenance(
                 "src/loader-splat/load-splat.ts",
                 symbolName,
+                options.spzReached
+                    ? `${SPZ_MODULE}#loadSPZ`
+                    : undefined,
             )}
 #include <bblite/pal.hpp>
 #include <bblite/runtime.hpp>
@@ -1013,10 +1042,65 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
 ${harmonics}    attach_gaussian_splatting_mesh(scene, handle);
     return handle;
 }
-
+${spz}
 } // namespace bbl
 `,
         };
+    }
+
+    /**
+     * `loadSPZ` minus the fetch and the parse, which is `load_splat` plus one
+     * lane.
+     *
+     * The pin's second splat entry point differs from its first in three
+     * places, and generation has already answered two of them: the container
+     * is an SPZ rather than a PLY, which the packager settled by running that
+     * loader over the fetched bytes, and there is no shader-plugin parameter.
+     * What is left at run time is the third -- a half turn the loader writes
+     * on the cloud after attaching it -- and that value is OBSERVED from the
+     * same run rather than restated here, so a pin that moves it moves this
+     * emission with it.
+     *
+     * The delegation is the contract worth asserting: this emits
+     * `load_splat` for the attach, which is only faithful while the pinned
+     * loader still ends on `attachParsedSplat`.
+     */
+    private lowerSpzLoader(
+        rotation: readonly [number, number, number] | undefined,
+    ): string {
+        const { declaration } = this.declaration(SPZ_MODULE, "loadSPZ");
+        if (!this.context.hasCall(declaration, "attachParsedSplat")) {
+            this.context.contractError(
+                declaration,
+                "Expected loadSPZ to attach through attachParsedSplat; the " +
+                    "generated load_spz delegates its build and registration " +
+                    "to load_splat, which is that call.",
+            );
+        }
+        if (rotation === undefined) {
+            this.context.contractError(
+                declaration,
+                "This scene reached loadSPZ but no SPZ container was " +
+                    "packaged, so the rotation the pinned loader writes was " +
+                    "never observed; the emitted load_spz would be a " +
+                    "restatement rather than a port.",
+            );
+        }
+        const [x, y, z] = rotation;
+        return `
+SplatMeshHandle load_spz(Scene& scene, const std::string& path) {
+    // The attach is what load_splat above performs: both entry points end on
+    // attachParsedSplat, and the container parse ran at generation for both.
+    const SplatMeshHandle handle = load_splat(scene, path);
+    // The one lane loadSPZ writes on the cloud it attached, observed by
+    // running that loader at generation rather than restated here.
+    scene.engine->splat_meshes[handle.value].rotation =
+        Vec3{${this.context.floatLiteral(x)}, ${
+            this.context.floatLiteral(y)
+        }, ${this.context.floatLiteral(z)}};
+    return handle;
+}
+`;
     }
 
     /**

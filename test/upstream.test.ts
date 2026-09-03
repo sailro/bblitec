@@ -50,6 +50,8 @@ import {
     type CsgSourceMesh,
 } from "../src/pinned-csg.js";
 import { float32Literal } from "../src/cpp-literals.js";
+import { gzipSync } from "node:zlib";
+import { packageSpz } from "../src/splat-packager.js";
 import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
@@ -2642,6 +2644,106 @@ test("refuses a Gaussian-splat primitive that is also Draco-compressed", async (
                 "splat-draco.glb",
             ),
         /also declares KHR_draco_mesh_compression/,
+    );
+});
+
+/**
+ * The smallest SPZ the pin's own `parseSpz` accepts, in its own layout.
+ *
+ * Version 2, so the rotations plane is three bytes per splat rather than
+ * four. The planes are written in the order the parser reads them, which is
+ * the only thing this fixture asserts about the format -- everything the
+ * test then checks is what the PIN made of these bytes.
+ */
+function spzContainer(shDegree = 0): Uint8Array {
+    const splats = 2;
+    const shComponents = ((shDegree + 1) ** 2 - 1) * 3;
+    const bytes = new Uint8Array(
+        16 + splats * 9 + splats * 4 + splats * 3 + splats * 3 +
+            splats * shComponents,
+    );
+    const header = new DataView(bytes.buffer);
+    header.setUint32(0, 0x5053474e, true); // "NGSP"
+    header.setUint32(4, 2, true); // version
+    header.setUint32(8, splats, true);
+    bytes[12] = shDegree;
+    bytes[13] = 12; // fractionalBits: positions scale by 1 / 4096
+    let at = 16;
+    for (let splat = 0; splat < splats; splat++) {
+        // 4096, 8192 and -4096 in 24-bit two's complement, which the pin's
+        // own `read24bComponent` turns into 1, 2 and -1.
+        for (const value of [0x001000, 0x002000, 0xfff000]) {
+            bytes[at++] = value & 0xff;
+            bytes[at++] = (value >>> 8) & 0xff;
+            bytes[at++] = (value >>> 16) & 0xff;
+        }
+    }
+    const plane = (value: number, count: number): void => {
+        for (let index = 0; index < count; index++) bytes[at++] = value;
+    };
+    plane(255, splats); // opacity
+    // Colour: the byte the pin maps through (v - 127.5) / (0.15 * 255) and
+    // then the degree-zero SH basis, which sends 128 to mid grey.
+    plane(128, splats * 3);
+    plane(160, splats * 3); // scales
+    plane(128, splats * 3); // rotations, version 2's three-byte form
+    for (let index = 0; index < splats * shComponents; index++) {
+        bytes[at++] = index & 0xff;
+    }
+    return bytes;
+}
+
+test("packages an SPZ container by running the pinned loadSPZ", async () => {
+    const url = "https://example.invalid/cloud.spz";
+    const packaged = await packageSpz(
+        new Uint8Array(gzipSync(spzContainer())),
+        url,
+    );
+    // The one TRS lane the pinned loader writes on the cloud it attached --
+    // observed rather than restated, which is what the generated load_spz
+    // emits.
+    assert.deepEqual([...packaged.rotation], [Math.PI, 0, 0]);
+    assert.equal(packaged.harmonics, undefined);
+    // Two splats at the pin's 32-byte row stride, with the positions its
+    // 24-bit fixed-point read produced.
+    assert.equal(packaged.rows.byteLength, 64);
+    const rows = Buffer.from(
+        packaged.rows.buffer,
+        packaged.rows.byteOffset,
+        packaged.rows.byteLength,
+    );
+    assert.deepEqual(
+        [0, 4, 8].map((at) => rows.readFloatLE(at)),
+        [1, 2, -1],
+    );
+    assert.equal(rows[24 + 3], 255);
+});
+
+test("takes the pinned loadSPZ's own gzip fork", async () => {
+    const container = spzContainer();
+    const url = "https://example.invalid/cloud.spz";
+    // A raw container and a gzipped one differ only in what the pin's own
+    // two-magic-byte test does with them, so they must package identically:
+    // the fork is the pin's, taken at generation.
+    const raw = await packageSpz(container, url);
+    const zipped = await packageSpz(
+        new Uint8Array(gzipSync(container)),
+        url,
+    );
+    assert.deepEqual([...raw.rows], [...zipped.rows]);
+});
+
+test("carries an SPZ container's harmonics to the sidecar", async () => {
+    const packaged = await packageSpz(
+        spzContainer(1),
+        "https://example.invalid/sh.spz",
+    );
+    assert.equal(packaged.harmonics?.degree, 1);
+    // ((1 + 1)^2 - 1) * 3 coefficients per splat, flat, for two splats.
+    assert.equal(packaged.harmonics?.bytes.byteLength, 18);
+    assert.deepEqual(
+        [...(packaged.harmonics?.bytes ?? [])].slice(0, 4),
+        [0, 1, 2, 3],
     );
 });
 
