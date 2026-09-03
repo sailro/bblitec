@@ -25,12 +25,14 @@ A scene that does not reach zero carries a recorded adaptation: every
 generated scene writes a `fidelity.json` giving the source and native
 semantics side by side, with its risk and validation.
 
-Scenes 40, 44, 45 and 100 compare Bullet with Havok at the same moving pose,
-not two renderers over one simulation -- so their numbers, and scene 45's
-1.831 in particular, size a solver difference rather than a rendering one. Scene 100's golden is byte-identical to
-scene 40's, which makes it the collision-event variant of that scene; scene
-44 freezes two stacks mid-collapse, one of them started asleep
-([fidelity](fidelity.md#physics-contract)).
+Scenes 40, 44, 45, 100 and 101 compare Bullet with Havok at the same moving
+pose, not two renderers over one simulation -- so their numbers size a
+solver difference rather than a rendering one: what remains after Bullet is
+stepped on Havok's measured model, and each is attributed against the
+pinned solver's own trajectory ([fidelity](fidelity.md#physics-contract)).
+Scene 100's golden is byte-identical to scene 40's, which makes it the
+collision-event variant of that scene; scene 44 freezes two stacks
+mid-collapse, one of them started asleep.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -73,11 +75,11 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 37 | <img src="images/scenes/scene37.png" alt="Scene 37 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Sheen Wood Leather Sofa |
 | 38 | <img src="images/scenes/scene38.png" alt="Scene 38 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Builder Gallery |
 | 39 | <img src="images/scenes/scene39.png" alt="Scene 39 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Animated Waterfall |
-| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok sphere-drop solver delta; not a renderer-fidelity value. |
+| 40 | <img src="images/scenes/scene40.png" alt="Scene 40 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Bullet on Havok's sub-steps, speculative landing and rebound; a solver delta, not a renderer-fidelity value. |
 | 42 | <img src="images/scenes/scene42.png" alt="Scene 42 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Clone Pre-Step |
 | 43 | <img src="images/scenes/scene43.png" alt="Scene 43 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Parametric Proximity Path |
-| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.007}} / \color{#1a7f37}{\textsf{0.047}}$ | $\color{#1a7f37}{\textsf{0.007}} / \color{#1a7f37}{\textsf{0.047}}$ | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |
-| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | $\color{#9a6700}{\textsf{0.808}} / \color{#cf222e}{\textsf{1.831}}$ | $\color{#9a6700}{\textsf{0.808}} / \color{#cf222e}{\textsf{1.831}}$ | Bullet/Havok settling time under -1 gravity; the engines agree at rest. |
+| 44 | <img src="images/scenes/scene44.png" alt="Scene 44 rendering" width="160"> | 0.006 / 0.037 | 0.006 / 0.037 | Bullet/Havok sleeping-tower solver delta; not a renderer-fidelity value. |
+| 45 | <img src="images/scenes/scene45.png" alt="Scene 45 rendering" width="160"> | 0.037 / 0.070 | 0.037 / 0.070 | Bullet/Havok landing hops under -1 gravity; a solver delta, not a renderer-fidelity value. |
 | 50 | <img src="images/scenes/scene50.png" alt="Scene 50 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Grid |
 | 51 | <img src="images/scenes/scene51.png" alt="Scene 51 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Soft-Edged Sprite Grid |
 | 52 | <img src="images/scenes/scene52.png" alt="Scene 52 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | HUD on 3D |
@@ -126,8 +128,8 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 97 | <img src="images/scenes/scene97.png" alt="Scene 97 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Multiply Blend |
 | 98 | <img src="images/scenes/scene98.png" alt="Scene 98 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprites |
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bone Control |
-| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | $\color{#1a7f37}{\textsf{0.332}} / \color{#9a6700}{\textsf{0.777}}$ | Bullet/Havok collision-event solver delta; not a renderer-fidelity value. |
-| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | $\color{#cf222e}{\textsf{1.102}} / \color{#cf222e}{\textsf{7.144}}$ | $\color{#cf222e}{\textsf{1.102}} / \color{#cf222e}{\textsf{7.144}}$ | Bullet/Havok trigger-drop solver phase after two elastic bounces; not a renderer-fidelity value. |
+| 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value. |
+| 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
@@ -258,18 +260,18 @@ parity scene intentionally does not.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
-| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.333}} / \color{#cf222e}{\textsf{1.004}}$ | $\color{#cf222e}{\textsf{1.333}} / \color{#cf222e}{\textsf{1.004}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
+| Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.208}} / \color{#cf222e}{\textsf{1.038}}$ | $\color{#cf222e}{\textsf{1.208}} / \color{#cf222e}{\textsf{1.038}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.058 / 0.058 | 0.058 / 0.058 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.078 / 0.150 | 0.078 / 0.150 | Frame graph; offscreen effects; bloom. |
-| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#cf222e}{\textsf{1.046}} / \color{#cf222e}{\textsf{1.046}}$ | $\color{#cf222e}{\textsf{1.044}} / \color{#cf222e}{\textsf{1.044}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.013 / 0.013, Dawn 0.010 / 0.010. |
+| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.984}} / \color{#9a6700}{\textsf{0.984}}$ | $\color{#9a6700}{\textsf{0.981}} / \color{#9a6700}{\textsf{0.981}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.013 / 0.013, Dawn 0.010 / 0.010. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Voronoi fracture; PBR; physics. |
 | Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#9a6700}{\textsf{0.654}} / \color{#9a6700}{\textsf{0.654}}$ | $\color{#9a6700}{\textsf{0.654}} / \color{#9a6700}{\textsf{0.654}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.003 / 0.003, Dawn 0.003 / 0.003. |
-| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.161 / 0.121 | 0.161 / 0.121 | Animated glTF; PBR/IBL; retained chrome. |
-| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.134 / 0.185 | 0.134 / 0.185 | Skinned Draco/WebP glTF; transmission; retained chrome. |
+| Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.145 / 0.104 | 0.145 / 0.104 | Animated glTF; PBR/IBL; retained chrome. |
+| Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.120 / 0.166 | 0.120 / 0.166 | Skinned Draco/WebP glTF; transmission; retained chrome. |
 | Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.175 / 0.172 | 0.158 / 0.155 | Strategy map; sprites; picking; retained cursor/tooltips. |
 | Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.110 / 0.116 | 0.110 / 0.116 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000 / 0.000 on both backends. |
-| Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#cf222e}{\textsf{1.414}} / \color{#cf222e}{\textsf{1.414}}$ | $\color{#cf222e}{\textsf{1.413}} / \color{#cf222e}{\textsf{1.414}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: SDL_GPU 0.000 / 0.000, Dawn 0.000 / 0.000. |
+| Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#cf222e}{\textsf{1.104}} / \color{#cf222e}{\textsf{1.104}}$ | $\color{#cf222e}{\textsf{1.103}} / \color{#cf222e}{\textsf{1.103}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.000, Dawn 0.000 / 0.000. |
 
 ## Project-owned differential gates
 

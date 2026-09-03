@@ -182,7 +182,7 @@ set(
 
 # Installed pinned RmlUi root (tools/build-rmlui.ps1). vcpkg carries an
 # rmlui port, but not at the revision pinned in upstream/rmlui.json and
-# not carrying the premultiplied-rounding patch, so the library is built
+# not carrying the native/patches/rmlui-*.patch files, so the library is built
 # once into artifacts/tools the way Dawn, Tint and LabSound are. Unlike
 # LabSound it is consumed through find_package: RmlUi's root-project
 # install exports exactly the targets it built, so its package config

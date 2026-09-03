@@ -103,6 +103,9 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     ["scene9", new Set(["dawn"])],
     ["scene14", new Set(["sdl_gpu"])],
     ["scene37", new Set(["dawn", "sdl_gpu"])],
+    // Its 2000 ms drop is a wall-clock timer (TODO.md, physics): the
+    // collapse pose rolls 0.005--0.006 / 0.033--0.037 between runs.
+    ["scene44", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
     ["scene123", new Set(["dawn", "sdl_gpu"])],
     ["scene124", new Set(["dawn", "sdl_gpu"])],
