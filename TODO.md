@@ -182,12 +182,34 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   different pose. Its sibling two lines above shows the right depth
   (`assertExpressionShape` on the frame-count formula, and now on its frame
   rate too). Related duplication on the same seam:
+  Two more transcriptions on the same footing, both measured 2026-09-03:
+  `populate_pick_ray` re-types the pin's `createPickingRay` line for line --
+  the NDC expressions, the near/far unprojection, the `1e-10` guard -- in a
+  file that lowers the module-private `unprojectPoint` from the AST; lowering
+  it needs a `returns` shape `lowerPinnedFunction` lacks (an optional record
+  built from a pinned object literal). And `ensure_morph_target_ranges` is a
+  third hand-typed copy of `computeAabb`'s local arm, beside
+  `mesh-builders.ts` and `line-lowerer.ts`, in a repo that already lowers
+  that pinned function in `gizmo-lowerer.ts` -- collapsing them moves emitted
+  bytes in every mesh-builder and line scene, so it wants a differential
+  sweep with a generated-tree byte diff as its proof.
   `compileAssetSkinnedDescendantSearch` and `isAssetSkinnedDescendantSearch`
   in `src/compiler/handle-collections.ts` are ~120 lines cloned from the
   name-search pair beside them; a shared `emitAssetMeshSearch(root, engine,
   label, predicateCpp)` plus a parameterised matcher collapses most of it,
   and leaves one copy of the shadow-name and walk-body logic instead of two
   that must stay in step.
+  A contract stated and only half-kept, on the same footing:
+  `pinned-operators.ts:126-133` says a lowering reaching `Math.hypot` at all
+  must spell it `bbl::js::hypot_js`, because `<cmath>`'s two- or
+  three-argument `hypot` rounds differently. Scene code now obeys it, but
+  two lowerers still emit `std::hypot` for calls the pin spells
+  `Math.hypot`: `src/lowering/shadow-lowerer.ts:2403` (the cascade fit's
+  light-direction normalize) and `src/lowering/gltf/cameras.ts:1008-1016`
+  (the three decomposed scale lanes). Both predate this branch; fixing
+  either moves emitted bytes for every shadow or glTF-camera scene, so it
+  wants its own differential sweep, and fixing only one leaves the contract
+  half-kept.
   Two frictions before it generalizes: the helper has
   to move onto `LoweringContext` beside the other shared contract checks, and
   each body needs its inventory READ from the pin once rather than guessed —
@@ -267,8 +289,8 @@ Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
 `createUtilityLayer` 5 (221, 222, 223 and 224 shipped; 49 is a physics
 scene), the GPU
-picker 5 (113 and 115 also want the frame-yield-in-a-loop this runtime refuses
-by design), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
+picker 5 (113 shipped; the frame-yield-in-a-loop this note once called
+refused now unrolls, and 118 proves it), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
 also need two `_shared` modules the corpus does not carry).
 
 ### What the recent releases added
@@ -313,9 +335,9 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (15 scenes):**
+**Integrate first (14 scenes):**
 91, 113-115, 121-124,
-140, 149,
+149,
 231, 241, 261, 275, 300.
 Includes CSG2, compressed assets
 and splats, and deterministic picking (113-115). Every navigation scene
@@ -397,10 +419,18 @@ an `isLocal` node-particle system.
   map, `has`, `names`, `load`) is written twice — `src/pinned-tone-mapping.ts`
   and `src/pinned-splat-fragments.ts` — and a third such family would justify
   one generic form over the two distinct refusal wordings.
-- [ ] Extend GPU picking past what scene 129 measures
-  ([features](docs/features.md#picking)). The reached slice is one
-  non-detailed pick over meshes and one cloud; each remaining arm refuses by
-  name:
+- [ ] Extend GPU picking past what scenes 113 and 129 measure
+  ([features](docs/features.md#picking)). Detailed picking now ships. One
+  efficiency item measured 2026-09-03: a detailed pick materializes 197,916
+  bytes of mesh arrays to read 48, because `mesh_cpu_indices` and its two
+  siblings return by value. The indices one is a straight return of the
+  geometry's own vector and could be a reference, but those copies exist to
+  preserve typed-array value semantics for SCENE code, so changing the
+  return type touches every scene-facing read of the three properties.
+  Scene 113 picks once and no gate can see it; the cost is on the hover path
+  a real app takes, so it wants its own measured pass. The reached slice was
+  one non-detailed pick over meshes and one cloud; each remaining arm
+  refuses by name:
   - `enableDetailedPicking` and `getPickedNormal` (114): a third
     rgba32uint attachment, the primitive and barycentric readback, and the
     CPU position and normal arrays `detailed-picking.ts` interpolates.
@@ -528,8 +558,17 @@ an `isLocal` node-particle system.
   widen the env pair's visibility from fragment-only to vertex|fragment. Until
   then each node capability served adds another hand-written block.
 
-- [ ] Extend the shadow family past the slice scenes 4, 18, 22, 65, 66, 141,
-  207, 214, 215 and 271 measure. The shipped slice is in
+- [ ] Extend the shadow family past the slice scenes 4, 18, 22, 65, 66, 140,
+  141, 207, 214, 215 and 271 measure. Two items the morph-bounds provider
+  left, both measured 2026-09-03 and both wanting a sweep of their own: the
+  expansion accumulates in FLOAT where the pin accumulates in double over a
+  plain array, and widening the caster carrier's bounds changes the fit's
+  inputs for every shadow scene rather than the one morph scene; and
+  `expand_morph_caster_bounds`/`ensure_morph_target_ranges` land in 15 trees
+  that cannot reach them (62,655 bytes), which needs a compile define rather
+  than a generation-time conditional, because the PAL calls them at runtime
+  and `pinnedShadowHeader` takes no feature list -- the same limitation the
+  CSM gating item below is blocked on. The shipped slice is in
   [features](docs/features.md#shadows); the cascade array, its cross-cascade
   blend and both receiver families ship, so what is left is per-item. Each
   remaining item fails by name:
@@ -614,13 +653,20 @@ an `isLocal` node-particle system.
   `SceneContext`s on one engine rendered into split camera viewports, and
   `parseNodeMaterialFromSnippet` with a per-class `blockLoader` of dynamic
   imports.
-- [ ] Scene 91: support `initializeCsg2Async`.
-- [ ] Scenes 113 and 114: past the frame-yield contract, which now unrolls
-  their `waitFrames(4)`, both are arms of the GPU-picking entry below rather
-  than scenes of their own. 113 wants
-  `enableDetailedPicking`/`getPickedNormal` plus the N-ary `Math.hypot` the
-  hypot-spelling entry blocks. **114 is not the one-contract scene this
-  entry used to claim** -- probed, its ladder is `setPbrUnlit`'s tint
+- [ ] Scene 91: support `initializeCsg2Async`. Sized 2026-09-03: it is scene
+  90 with CSG v1 swapped for CSG2, and 90 already ships at 0.000, so the
+  label textures, `Promise.all` and every builder are proven. The cost is
+  entirely that the pin delegates all of CSG2 to the `manifold-3d` WASM
+  package, which is not in `node_modules`, `package.json` or the pin's peer
+  dependencies -- a third-party WASM runtime entering the generation
+  toolchain for the first time. `src/pinned-csg.ts` already replays v1 plans
+  under Node and caches them, so the bake shape exists; `createMeshesFromCsg2`
+  (one mesh per material slot) is the one genuinely new contract.
+- [ ] Scene 114: an arm of the GPU-picking entry below rather than a scene
+  of its own. **Scene 113 is integrated and published**, so detailed picking,
+  `normalizeVec3` and N-ary `Math.hypot` all ship -- what 114 adds beyond
+  them is deform picking, which 115 shares. **114 is not the one-contract
+  scene this entry used to claim** -- probed, its ladder is `setPbrUnlit`'s tint
   through two levels of user-function parameter, then `TypedArray.set` from
   a plain array, then a scene-code `createSkeleton(engine, joints, weights,
   2, boneData)` assigned to `mesh.skeleton` (raw bone matrices, not a glTF
@@ -630,9 +676,16 @@ an `isLocal` node-particle system.
 - [ ] Scene 149: `break`/`continue` in the consuming loop over a container's
   mesh walk (the walk itself lowers), then the node family's
   `GeometryTextureOutputBlock`. Needs `shared/scene149-nme.ts` copied out of
-  the pinned tree and pinned.
-- [ ] Scene 140: the PCF directional generator's refused
-  `forceRefreshEveryFrame` option (scene140.ts:73), then a node material.
+  the pinned tree and pinned. Sized 2026-09-03 and it is a SUBSYSTEM, not
+  the single contract this line reads as: the refusal at
+  `statements.ts:2242-2263` is over-broad relative to its own stated reason
+  (it calls `bindsEnclosingLoop`, which does not separate `break` from
+  `continue`, while only `break` depends on an order the walk does not fix
+  -- the tuple for-of arm 110 lines below already draws that line with
+  `breaksEnclosingLoop`), but behind it sit a `Map<Material, Mesh[]>` over
+  handle kinds, a `blockLoader` the pin writes as an `if` plus a delegate,
+  and the node MRT/geometry compose arm, which is a third arm beside the
+  receiver and the two caster arms in `pinned-node-material.ts`.
 - [ ] Extend the line slice past what scenes 278 and 279 measure. The
   polylines themselves are the scene's own static literals, materialized as
   the nested data the generated flatten reads, so a system whose points are

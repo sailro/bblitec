@@ -12,6 +12,7 @@ import {
 import {
     composeBillboardPickingShader,
     composeCloudPickingShader,
+    composeDetailedMeshPickingShader,
     composeMeshPickingShader,
 } from "./pinned-picking-shaders.js";
 import type { CompiledShaderProgram } from "./compiler.js";
@@ -1020,6 +1021,11 @@ async function main(): Promise<void> {
     const pickingShaders = result.manifest.features.includes("picking:gpu")
         ? {
               mesh: await composeMeshPickingShader(),
+              // The detailed pipeline is a second pinned module rather
+              // than an option, composed only where a scene armed it.
+              ...(result.manifest.features.includes("picking:detailed")
+                  ? { detailed: await composeDetailedMeshPickingShader() }
+                  : {}),
               ...(result.manifest.features.includes("loader:splat")
                   ? { cloud: await composeCloudPickingShader() }
                   : {}),

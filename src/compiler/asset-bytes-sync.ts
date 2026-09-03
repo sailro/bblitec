@@ -14,10 +14,10 @@
 // repository's own `downloadCached` — which also warms the cache for the
 // materialization that follows. The child is the cache module, not a
 // second copy of it, so the cache layout stays single-sourced.
-import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { parseDataUrl } from "../data-url.js";
+import { runGenerationChild } from "./generation-child.js";
 
 /** One decode per (source) within a compile; documents are small. */
 const bytesBySource = new Map<string, Uint8Array>();
@@ -101,25 +101,18 @@ function downloadCachedSyncBridge(url: string): Uint8Array {
         `        console.error(String(error?.message ?? error));\n` +
         `        process.exit(1);\n` +
         `    });\n`;
-    const child = spawnSync(
-        process.execPath,
-        ["--input-type=module", "-e", script],
-        {
-            cwd: process.cwd(),
-            env: {
-                ...process.env,
-                BBLITE_SYNC_ASSET_URL: url,
-                BBLITE_SYNC_ASSET_MODULE: cacheModule,
-            },
-            encoding: "utf8",
-            maxBuffer: 512 * 1024 * 1024,
-        },
+    return new Uint8Array(
+        Buffer.from(
+            runGenerationChild({
+                script,
+                label: `Reading '${url}' at generation`,
+                env: {
+                    BBLITE_SYNC_ASSET_URL: url,
+                    BBLITE_SYNC_ASSET_MODULE: cacheModule,
+                },
+                maxBuffer: 512 * 1024 * 1024,
+            }),
+            "base64",
+        ),
     );
-    if (child.status !== 0) {
-        throw new Error(
-            `Reading '${url}' at generation failed: ` +
-                `${(child.stderr || child.error?.message || "no output").trim()}`,
-        );
-    }
-    return new Uint8Array(Buffer.from(child.stdout.trim(), "base64"));
 }

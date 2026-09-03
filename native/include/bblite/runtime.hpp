@@ -444,11 +444,60 @@ enum class PickedNodeKind : std::uint8_t {
 };
 
 /**
+ * The pin's `Ray`, which only a DETAILED pick produces
+ * (`gpu-picker.ts`: `info.ray = detailed ? pickRay : null`). The pin's
+ * `createPickingRay` is what fills it, and the detailed CPU solve reads
+ * its direction to decide whether a surface normal faces the pick.
+ */
+struct PickRay {
+    std::array<double, 3> origin{};
+    std::array<double, 3> direction{};
+    double length = 0.0;
+};
+
+/**
+ * What the detailed pass read out of its third attachment, before the
+ * pin's CPU solve runs over it.
+ *
+ * Transport between the backend's one-pixel pass and the generated
+ * continuation: the backend owns the readback and the space its vertex
+ * stream was in, and `populateDetailedMeshInfo` -- which is Babylon
+ * behaviour and therefore generated -- owns everything derived from it.
+ */
+struct PickDetailReadback {
+    /** `@builtin(primitive_index)` of the winning fragment, -1 on a miss. */
+    double primitive_index = -1.0;
+    /** The interpolated vertex position, in the space the pass drew. */
+    std::array<double, 3> point{};
+    /**
+     * The winning mesh's DRAW-TIME world, which upstream snapshots with
+     * `copyDetailedWorldMatrix` before the asynchronous readback for the
+     * same reason it is carried here: the scene may move the mesh between
+     * the pick and the read.
+     */
+    std::array<float, 16> world{};
+    /**
+     * Whether `point` arrived in WORLD space rather than the mesh's own.
+     *
+     * The pin's pick vertex stage forwards the raw local position, and so
+     * does this port's -- but an ordinary mesh's vertex buffer is baked to
+     * world here (`transformed_vertices`, the contract in
+     * `fidelity.md`'s picking section), so the varying comes back world-
+     * space and the continuation maps it back through `world` before the
+     * pin's rest-space solve. A mesh whose transform travels as a matrix
+     * instead needs no map, and clears this.
+     */
+    bool world_baked = false;
+};
+
+/**
  * The pin's `PickingInfo`, at the slice this port resolves.
  *
- * WHAT WAS HIT plus the basic pipeline's reconstructed world point. `ray`,
- * `bu`, `bv` and `thinInstanceIndex` belong to the detailed and advanced
- * pipelines and remain outside this record.
+ * WHAT WAS HIT, the basic pipeline's reconstructed world point, and the
+ * detailed pipeline's own members -- the exact primitive, its barycentric
+ * weights and the four normals `populateDetailedMeshInfo` derives.
+ * `subMeshId` and `thinInstanceIndex` belong to pipelines this port does
+ * not reach and remain outside this record.
  */
 struct PickingInfo {
     bool hit = false;
@@ -471,6 +520,25 @@ struct PickingInfo {
      */
     std::uint32_t picked_range_offset = 0;
     std::optional<std::array<double, 3>> picked_point{};
+    /**
+     * `createEmptyPickingInfo`'s own detailed defaults: `faceId` is -1
+     * ("no primitive"), the weights are zero and every normal is null.
+     * A basic pick leaves all of them, which is exactly what upstream's
+     * empty record carries when `populateDetailedMeshInfo` never runs.
+     */
+    double face_id = -1.0;
+    double bu = 0.0;
+    double bv = 0.0;
+    std::optional<PickRay> ray{};
+    std::optional<std::array<double, 3>> picked_normal{};
+    std::optional<std::array<double, 3>> picked_normal_world{};
+    std::optional<std::array<double, 3>> picked_face_normal{};
+    std::optional<std::array<double, 3>> picked_face_normal_world{};
+    /** The pin's `_normalsInvalid`: a custom vertex world adjustment left
+     *  the primitive and weights valid while invalidating CPU normals. */
+    bool normals_invalid = false;
+    /** The third attachment's readback, on the pick that had one. */
+    std::optional<PickDetailReadback> detail{};
 };
 
 
@@ -481,6 +549,13 @@ struct PickingInfo {
  */
 struct GpuPickerRecord {
     bool disposed = false;
+    /**
+     * The pin's `_detailedPicking`, which `enableDetailedPicking` arms and
+     * every later `pickAsync` on this picker reads. It selects a different
+     * pinned PIPELINE MODULE upstream, and here a different pipeline and a
+     * third attachment, so it belongs to the picker rather than the call.
+     */
+    bool detailed = false;
 };
 
 /** One light in a clustered container, at the pin's own resolved defaults. */
@@ -1378,6 +1453,20 @@ struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
     std::vector<std::vector<Vec3>> morph_positions;
+    // Each morph target's own delta AABB, filled on first use by the
+    // shadow header's ensure_morph_target_ranges and then kept. Upstream
+    // this is a WeakMap cache keyed on the mesh and invalidated when its
+    // positions or target list change; a geometry's deltas cannot change
+    // once loaded, so there is nothing here to invalidate. Empty in every
+    // scene that never enables morph-target shadows.
+    //
+    // `mutable` because it is memoization of immutable data and nothing
+    // else: the caster collector reads the engine through a const
+    // reference -- the fit observes the scene rather than changing it --
+    // and folding a delta buffer's own AABB cannot make that observation
+    // differ. The alternative is folding it afresh every frame for every
+    // target, which is what the pin's cache exists to avoid.
+    mutable std::vector<std::array<Vec3, 2>> morph_bounds;
     std::vector<std::vector<Vec3>> morph_normals;
     std::vector<std::vector<Vec3>> morph_tangents;
     std::vector<std::uint32_t> indices;
@@ -1438,6 +1527,7 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
     release_storage(geometry.bind_vertices);
     release_storage(geometry.morph_positions);
+    release_storage(geometry.morph_bounds);
     release_storage(geometry.morph_normals);
     release_storage(geometry.morph_tangents);
     release_storage(geometry.indices);
@@ -2875,6 +2965,10 @@ struct ShadowGeneratorRecord {
      * this counter is that identity change, read by the render gate.
      */
     std::uint64_t caster_list_version = 0;
+    // enableMorphTargetShadows: bound each caster by its morph-expanded
+    // AABB rather than its unmorphed geometry box. Off unless the scene
+    // asks, exactly as upstream installs no provider unless it is called.
+    bool morph_shadow_bounds = false;
     /**
      * `sg._config._forceRefreshEveryFrame`: when set, the pinned render
      * gate never skips (`renderEsmShadowMap` / `renderPcfShadowMap` /
@@ -4479,12 +4573,14 @@ struct EsmDirectionalShadowOptions {
  * The spot generator's own three, plus the ortho volume the caster fit
  * projects into — a directional light has no position to project from, so
  * `near`/`far` are replaced by the pair `computeDirectionalLightMatrix`
- * takes. `normalBias` and `forceRefreshEveryFrame` are unreached on the two
- * PCF factories and refuse by name — generation anchors each factory's
- * `?? false` default, so a pin that changes what those factories carry
- * refuses here rather than drifting silently; the ESM and CSM factories
- * carry `forceRefreshEveryFrame` into the record, where it disables the
- * pinned render gate (break-meshes reaches it).
+ * takes. `normalBias` is unreached on the two PCF factories and refuses by
+ * name — generation anchors each factory's `?? false` default, so a pin that
+ * changes what those factories carry refuses here rather than drifting
+ * silently. `forceRefreshEveryFrame` rides into the record, where it
+ * disables the pinned render gate: the ESM and CSM factories already carry
+ * it (break-meshes reaches those), and the PCF DIRECTIONAL factory carries
+ * it for scene 140. The PCF SPOT factory still refuses it, because no
+ * corpus scene reaches it there.
  */
 struct PcfDirectionalShadowOptions {
     // No initialisers: generation writes every field from the factory's own
@@ -4496,6 +4592,7 @@ struct PcfDirectionalShadowOptions {
     double darkness;
     double ortho_min_z;
     double ortho_max_z;
+    bool force_refresh_every_frame;
 };
 
 /**
@@ -4542,6 +4639,9 @@ void set_shadow_task_caster_meshes(
     Engine& engine,
     ShadowGeneratorHandle generator,
     std::vector<MeshHandle> caster_meshes);
+void enable_morph_target_shadows(
+    Engine& engine,
+    ShadowGeneratorHandle generator);
 void add_render_task_mesh(
     Engine& engine,
     TaskHandle task,
@@ -5233,12 +5333,36 @@ void populate_picked_point(
     double width,
     double height,
     float depth);
+/**
+ * `createPickingRay(x, y, vp, w, h)` over the pick's own sample, which
+ * only a detailed pick asks for. Emitted with the detailed half.
+ */
+void populate_pick_ray(
+    PickingInfo& info,
+    const std::array<float, 16>& view_projection,
+    double sample_x,
+    double sample_y,
+    double width,
+    double height);
 /** `pickAsync(picker, x, y)`, resolved before the call returns. */
 PickingInfo gpu_pick(
     Engine& engine,
     GpuPickerHandle picker,
     double x,
     double y);
+/**
+ * `enableDetailedPicking(picker)`. Emitted with the detailed half; every
+ * later pick on this picker draws the third attachment.
+ */
+void enable_detailed_picking(Engine& engine, GpuPickerHandle picker);
+/**
+ * `getPickedNormal(info, useWorldCoordinates)`. Emitted with the detailed
+ * half, because it is the only pipeline that fills what it reads.
+ */
+[[nodiscard]] js::Nullable<js::Tuple<3>> picked_normal(
+    const Engine& engine,
+    const PickingInfo& info,
+    bool use_world_coordinates);
 /** `disposePicker(picker)`. */
 void dispose_picker(Engine& engine, GpuPickerHandle picker);
 /**

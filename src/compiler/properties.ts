@@ -312,7 +312,14 @@ export function readHandleCollection(
   return ruleFor(handleCollections, owner, property);
 }
 
-const propertyRules: readonly PropertyRule[] = [
+/**
+ * Exported for the table-validation test beside it, which is what keeps
+ * a container-returning helper from shipping without
+ * `helperReturnsFreshData` -- the flag whose absence bound a C++
+ * reference into a returned temporary and made a pick point alternate
+ * between two values run to run.
+ */
+export const propertyRules: readonly PropertyRule[] = [
   // --- Display gizmos -------------------------------------------------
   // `gizmo.root` is the node the per-frame follow drives, and the one
   // member the reached slice reads: scene 223 places the hemispheric
@@ -656,6 +663,14 @@ const propertyRules: readonly PropertyRule[] = [
       inner: { kind: "tuple", arity: 3 },
     },
     helper: "bbl::picked_point",
+    // `picked_point` BUILDS its nullable from the record's own array, so
+    // the value is owned rather than aliased storage. Without this a
+    // `const point = info.pickedPoint` after the pin's own null guard
+    // binds a C++ reference into the helper's returned temporary and
+    // reads freed memory afterwards -- which scene 113 caught as a pick
+    // point that alternated between two values run to run while every
+    // input to it stayed bit-identical.
+    helperReturnsFreshData: true,
   },
   {
     // The pinned Mesh name — see MeshRecord::name for who fills it.

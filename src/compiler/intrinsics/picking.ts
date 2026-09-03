@@ -17,6 +17,8 @@ export interface PickingIntrinsicContext
         precision?: "float" | "double",
     ): string;
     requireEngine(value: Value, node: ts.Node): string;
+    requireDefaultEngine(node: ts.Node): string;
+    compileCondition(expression: ts.Expression): string;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -199,16 +201,73 @@ export function compilePickingIntrinsic(
             };
         }
 
-        case "enableDetailedPicking":
-        case "getPickedNormal":
-            context.fail(
-                call,
-                `'${importedName}' needs the pin's detailed-picking ` +
-                    "pipeline: a third rgba32uint attachment, the " +
-                    "primitive and barycentric readback, and the CPU " +
-                    "position and normal arrays it interpolates. No " +
-                    "reached scene composes it.",
-            );
+        // The pin's own opt-in for the detailed pipeline: a picker armed
+        // here draws a third `rgba32uint` attachment carrying the winning
+        // `@builtin(primitive_index)` and the interpolated rest position,
+        // and every later `pickAsync` on it runs the CPU solve over that
+        // readback. `detailed-picking.ts` imports `normalizeVec3` and
+        // reads `mesh._cpuPositions`/`_cpuNormals`/`_cpuIndices`, so
+        // reaching it reaches those two features exactly as the pin's own
+        // module graph does.
+        case "enableDetailedPicking": {
+            context.expectArgumentCount(call, 1, 1);
+            const picker = context.compileValue(call.arguments[0]!);
+            context.expectKind(picker, "gpu-picker", call.arguments[0]!);
+            context.reachFeature("picking:detailed", call);
+            context.reachFeature("math:normalize-vec3", call);
+            context.reachFeature("mesh:geometry-access", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::enable_detailed_picking(` +
+                    `${context.requireEngine(picker, call)}, ` +
+                    `${picker.cpp})`,
+            };
+        }
+
+        // `picking-helpers.ts`. The second argument selects the world
+        // normal over the local one; the pin defaults it to false and the
+        // emitted signature carries that same default, so an omitted one
+        // is the pin's own answer rather than this port's.
+        case "getPickedNormal": {
+            context.expectArgumentCount(call, 1, 2);
+            // The same three the arming call reaches. `picking-helpers.ts`
+            // imports `normalizeVec3` and reads the mesh's CPU normals and
+            // indices, and the emitted body is the detailed half's -- so a
+            // scene that reads a normal without arming a detailed pick
+            // would otherwise generate clean and fail at link.
+            context.reachFeature("picking:detailed", call);
+            context.reachFeature("math:normalize-vec3", call);
+            context.reachFeature("mesh:geometry-access", call);
+            const info = context.compileValue(call.arguments[0]!);
+            context.expectKind(info, "picking-info", call.arguments[0]!);
+            // The engine the pick's own value carries, or the scene's
+            // only one: upstream reads the mesh through a live node
+            // reference, so an info that crossed a function boundary --
+            // which is exactly how scene 113 hands its result to a
+            // placement helper -- still has to reach the collections the
+            // handle indexes.
+            const engine =
+                info.engineCpp ?? context.requireDefaultEngine(call);
+            return {
+                kind: "data",
+                cpp:
+                    `bbl::picked_normal(${engine}, ${info.cpp}, ` +
+                    `${
+                        call.arguments.length === 2
+                            ? context.compileCondition(call.arguments[1]!)
+                            : "false"
+                    })`,
+                dataType: {
+                    kind: "optional",
+                    inner: { kind: "tuple", arity: 3 },
+                },
+                // The helper builds its nullable rather than aliasing a
+                // record field, so a `const` bound to it owns a copy
+                // instead of referencing the returned temporary.
+                freshData: true,
+            };
+        }
 
         default:
             return undefined;

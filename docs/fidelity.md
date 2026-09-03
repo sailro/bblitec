@@ -150,7 +150,20 @@ early is not a rounding-sized error.
 Two conversions are the pin's rule rather than C's: `Math.round` rounds halves
 toward +Infinity (`bbl::js::round_js`), and `Math.hypot` is
 implementation-approximated by the spec, so `bbl::js::hypot_js` is the plain
-root of the sum of squares — recorded as `splat-hypot-approximation`. The five
+root of the sum of squares — recorded as `splat-hypot-approximation`. SCENE
+code now takes that spelling too, where it used to emit `std::hypot`: the
+contract is that any lowering reaching `Math.hypot` spells it one way, and
+`<cmath>`'s two- or three-argument `hypot` has no spelling at all for the
+four-argument call a quaternion length makes. The trade is real and worth
+stating plainly — `std::hypot` is the overflow-safe scaled form and V8's is
+too, so this moves scene code toward the LESS accurate of the two for the
+sake of one spelling. It was measured rather than assumed: all nine affected
+scenes and demos were rebuilt and re-measured against their committed
+goldens, and every published number is unchanged, because the operands these
+scenes hand it are nowhere near the range where scaling matters. Two
+lowerers still emit `std::hypot` and are tracked in `TODO.md`; until they
+move, the contract is kept by everything that goes through the shared
+operator map rather than by everything in the tree. The five
 integer-valued one-argument `Math` functions fold at generation over a constant
 argument, where the folded value and the emitted call agree exactly; the
 transcendental ones deliberately do not, because V8 and a native maths library
@@ -215,6 +228,39 @@ rather than binding the frame's: the pinned vertex stage offsets the cube by
 the eye, and the clip row reaching its dither seed has to be exact.
 
 ### Shadows
+
+**A caster that discards its own fragments moves the shadow edge, and that is
+scene 140's whole residual.** It publishes 0.006 / 0.048 where scene 66 --
+the same graph, the same `?freeze=1` pose, the same lights -- publishes
+0.000017 / 0.000133. The difference is not diffuse: every hotspot sits on the
+ground INSIDE the shadow, ringing the holes the caster's alpha discard
+punches through the depth map. A discarded fragment moves the shadow's edge
+by whatever fraction of a shadow texel the two rasterizations disagree on,
+and the PCF kernel then spreads that disagreement over each hole's rim. 96.3%
+of the region is exact, 99.8% is within five counts, and all of it is in
+those rims; both backends measure the same number and differ from each other
+by at most one count. Scene 66 has no discard, which is why it has no such
+band -- the residual is what the feature costs, not what the port lost.
+
+**A morph-target caster's bounds are computed live, and scene 140 does not
+prove them.** `enableMorphTargetShadows` expands each caster's AABB by its
+targets' weighted delta ranges every frame, which is the pin's own provider.
+An A/B run by disabling the provider in the lowerer measured 0.006 / 0.047
+against the shipped 0.006 / 0.048 -- so the expansion is not unobservable,
+it is very slightly WORSE than not expanding at this pose. A difference that
+small at a frozen weight says the expanded box barely moves the ortho fit,
+not that it moves it correctly; the honest reading is that this gate
+observes the feature compiling and running, and measures its arithmetic only
+to about a thousandth of a MAD. A scene that animates a weight and depends
+on the expansion is what would validate it, and none is registered.
+
+The other half of the pin's provider is the refresh signal, and that one IS
+reproduced: upstream the proxy mesh overrides `worldMatrixVersion` so a
+weight change re-renders the shadow map, and this port sums the mesh's
+`morph_weights_version` into the caster change signal for exactly the
+generators that asked for the provider. Scene 140 cannot observe that either
+-- it sets `forceRefreshEveryFrame`, which short-circuits the gate before the
+version sum is read.
 
 **A shadow map is the pin's one standard-Z target, and its bias reaches one of
 two matrices.** `createShadowRenderTarget` names `dFormat: "depth32float"`,
@@ -1864,9 +1910,31 @@ fragment-kill semantics.
 ## Picking contract
 
 A pick renders rather than intersects, so what it answers is the renderer's
-and both backends run the pin's own two modules. Two facts are this port's:
-where a mesh's transform lives, and which boundary the picking continuation
-runs at.
+and both backends run the pin's own modules -- three of them once detailed
+picking is reached. Three facts are this port's: where a mesh's transform
+lives, which boundary the picking continuation runs at, and how the detailed
+pipeline is enabled.
+
+**`enableDetailedPicking` answers yes or throws, where the pin can answer
+no.** Upstream it is a feature PROBE -- `picker._detailedPicking =
+engine._device.features.has("primitive-index")` -- with no fallback: a device
+without the feature leaves picking silently coarse, and a scene that asked
+for a face id gets none. This port answers true unconditionally. It can,
+because both backends already carry the feature: Dawn requests
+`PrimitiveIndex` from the adapter, and Tint lowers `@builtin(primitive_index)`
+onto D3D12's core `SV_PrimitiveId` for SDL_GPU. A device that could not would
+fail the detailed module's own shader compile, which is the answer -- the
+silently-coarse arm is not composed, because a degraded path that renders a
+different picture is the one thing this port does not build.
+
+**The detail attachment's position arrives in WORLD space for a baked mesh.**
+The pin solves barycentrics against the REST triangle, and the attachment
+carries the interpolated vertex position; where this port has baked a mesh's
+transform into its vertices, that interpolation is already world-space, so it
+is mapped back through the same `mesh_world_matrix` the bake used before the
+rest-space solve. Barycentrics are affine-invariant, so this is a change of
+basis rather than of answer. The face NORMAL is what needs it: it comes from
+triangle edges, which a transform does change.
 
 **A mesh's pick block carries the identity, because its vertices are already
 world-space.** `transformed_vertices` bakes the node's world matrix into the

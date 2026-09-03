@@ -104,7 +104,7 @@ Primary source ownership:
 | `src/compiler/intrinsics/vat.ts` | which VAT calls a scene reached — `bakeVat`/`attachVat` are the pin's own opt-in — and the three writers a `VatHandle` carries |
 | `src/lowering/sprite-animation-lowerer.ts` | the sprite frame stepper and its delay normalisation, lowered from their own pinned declarations, plus the tagged target the two families share |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
-| `src/pinned-picking-shaders.ts` | the two modules a GPU pick draws through, composed by running the pin's own builders |
+| `src/pinned-picking-shaders.ts` | the three modules a GPU pick draws through -- mesh, cloud and the detailed pipeline -- composed by running the pin's own builders |
 | `src/lowering/picking-lowerer.ts` | the picker's bookkeeping; every answer belongs to the backend that owns the buffers |
 | `src/lowering/gizmo-lowerer.ts` | the gizmo family from `src/gizmo/*`: the utility layer, the camera and light displays, the four editing widgets, the three composites, the three per-frame follows the pin writes for them, and the assertion that the pointer-drag dispatcher map is inert |
 | `src/lowering/physics-lowerer.ts` | the rigid-body family from `havok.ts` and the trigger volumes from `havok-trigger.ts`: the step gate, the four frame phases, the aggregate ordering, `_buildShapeParams`' shape sizing, and the primitive-shape factory both shape paths fork on |
@@ -138,6 +138,7 @@ Primary source ownership:
 | `src/pinned-pbr-variant-cpp.ts` | C++ mirrors of each variant's UBO layout with offsets cross-checked against the composer, plus the variant-selector and texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
 | `src/lowering/pinned-trs.ts` | a record's local world matrix from `eulerToQuat` and `mat4ComposeInto` — one home for every emission that needs it |
+| `src/lowering/pinned-normalize-vec3.ts` | the pin's `normalizeVec3` lowered whole, its `1e-10` epsilon included, for the detailed pick's normal and ray |
 | `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
 | `src/lowering/post-process-lowerer.ts` | the pass's contracts (internal target, viewport, bind-group order, blend table) and each effect's `writeUniforms`, from the pin's AST |
 | `src/lowering/context.ts` | source-located AST declarations, expression contracts, and diagnostics |
@@ -181,7 +182,7 @@ Primary source ownership:
 | `native/src/pal_dawn_sprite.hpp` | the Dawn sprite pass mechanics its `.cpp` driver draws through |
 | `native/src/pal_sprite_ui_sdl.hpp`, `native/src/pal_sprite_ui_dawn.hpp` | the recorded RmlUi frame blended directly into the standalone sprite driver's single-sample target, per backend |
 | `native/src/pal_sdl_gpu_billboard.hpp`, `native/src/pal_dawn_billboard.hpp` | the world-space billboard pass each backend composes into the scene's own render pass, after the transparent meshes and against the scene depth |
-| `native/src/pal_sdl_gpu_picking.hpp`, `native/src/pal_dawn_picking.hpp` | GPU picking per backend: the pin's one-pixel sheared-VP candidate render, the id/depth attachments and their readback |
+| `native/src/pal_sdl_gpu_picking.hpp`, `native/src/pal_dawn_picking.hpp` | GPU picking per backend: the pin's one-pixel sheared-VP candidate render, the id/depth attachments and their readback, plus the detailed pass's third `rgba32uint` attachment |
 | `native/src/pal_sdl_gpu_splat.hpp`, `native/src/pal_dawn_splat.hpp` | the Gaussian-splat pass per backend — the cloud's own pipeline, sort resources and draw, composed into a frame another renderer owns |
 
 `generated\` is disposable and never the source of a fix.

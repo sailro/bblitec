@@ -3580,7 +3580,7 @@ test("lowers Array.every with JavaScript empty-array and early-exit semantics", 
     `);
 
     assert.match(result.cpp, /bool \w*_every_result_\d+ = true;/);
-    assert.match(result.cpp, /if \(!\(std::hypot\([^)]*\) >= 0\.0\)\) \{/);
+    assert.match(result.cpp, /if \(!\(bbl::js::hypot_js\(\{[^}]*\}\) >= 0\.0\)\) \{/);
     assert.match(result.cpp, /\w*_every_result_\d+ = false;\s+break;/);
 });
 

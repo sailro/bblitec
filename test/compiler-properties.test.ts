@@ -10,6 +10,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { compileSource } from "../src/compiler.js";
+import { type DataType, passesByReferenceKind } from "../src/compiler/data-types.js";
+import { propertyRules } from "../src/compiler/properties.js";
 
 /** A scene with an ArcRotateCamera, which most reads hang off. */
 function sceneWithCamera(
@@ -239,4 +241,36 @@ test("rejects an undeclared property on a known owner", () => {
             ),
         /Unsupported property value 'camera\.delta'/,
     );
+});
+
+// A `helper:` rule is a function CALL, so its answer is a prvalue. Where
+// the answer is a container -- one the declaration path would otherwise
+// bind by reference, because a JavaScript `const` aliases the same array
+// -- that reference points into the helper's returned temporary and is
+// dangling by the next statement. `helperReturnsFreshData` is what tells
+// the declaration path to copy instead, and scene 113 is the scene that
+// found the missing one the expensive way: a picked point that alternated
+// between two values run to run while every input to it stayed
+// bit-identical. Asserted over the whole table so the next
+// container-returning helper cannot be added without it.
+test("every container-returning property helper declares fresh data", () => {
+    // Asked of the type the aliasing decision actually runs on: a scene
+    // reads `info.pickedPoint` through the pin's own null guard, so the
+    // binding is made from the NARROWED type and an optional's own kind
+    // never reaches that decision. Testing the wrapper would have filtered
+    // out the one rule this test exists for -- `picked_point` is
+    // `optional<tuple3>` -- and stayed green with the defect restored.
+    const decided = (dataType: DataType): DataType =>
+        dataType.kind === "optional" ? dataType.inner : dataType;
+    const missing = propertyRules
+        .filter(
+            (rule) =>
+                "helper" in rule &&
+                rule.helper !== undefined &&
+                rule.dataType !== undefined &&
+                passesByReferenceKind(decided(rule.dataType)) &&
+                !rule.helperReturnsFreshData,
+        )
+        .map((rule) => `${rule.owner}.${rule.property}`);
+    assert.deepEqual(missing, []);
 });

@@ -90,6 +90,24 @@ export interface PinnedBinding {
     /** For a view, the C++ expression giving its byte length. */
     bytesCpp?: string;
     /**
+     * The C++ test for this binding being ABSENT, where the pin tests a
+     * nullable container's own truthiness (`!positions`,
+     * `normals && ...`). A native container has no JavaScript truthiness,
+     * and `!vector` does not compile at all -- so the binding that stands
+     * in for `Float32Array | undefined` says how absence is spelled, and
+     * the two boolean positions the pin uses read it. Every other
+     * position still names the container itself.
+     */
+    absentCpp?: string;
+    /**
+     * This binding stands in for a value the reached slice NEVER supplies
+     * -- a pinned optional parameter no caller passes. A guard on it takes
+     * its else arm at generation and its then arm is not translated, which
+     * is what keeps the machinery behind such a parameter out of a port
+     * that has none of it.
+     */
+    staticallyAbsent?: true;
+    /**
      * Whether a view aliases storage the body may WRITE through.
      *
      * A view is read-only by default, which is what every reading fold
@@ -362,6 +380,21 @@ export class PinnedNumericLowerer {
             ];
         }
         if (ts.isIfStatement(statement)) {
+            // A guard on a binding the caller declared statically ABSENT
+            // -- a pinned optional parameter the reached slice never
+            // supplies -- takes its else arm, and its then arm is not
+            // translated at all. That is the point: the arm behind such a
+            // parameter reaches machinery this port does not have (the
+            // deformed-triangle scratch behind `deformTriangle`), and
+            // emitting a dead call to it would be inventing a native name
+            // for something no scene reaches. The parameter's own name and
+            // annotation are still asserted, so the pin cannot move the
+            // seam without failing here.
+            if (this.staticallyAbsent(statement.expression)) {
+                return statement.elseStatement
+                    ? this.statement(statement.elseStatement, indent)
+                    : [];
+            }
             const lines = [
                 `${indent}if (${this.condition(statement.expression)}) {`,
                 ...this.branch(statement.thenStatement, indent),
@@ -674,14 +707,23 @@ export class PinnedNumericLowerer {
                     ts.SyntaxKind.QuestionQuestionToken &&
                 ts.isArrayLiteralExpression(this.unwrap(aliasSource.right))
                     ? this.unwrap(aliasSource.left).getText(this.file)
-                    : declaration.initializer.getText(this.file);
+                    // The UNWRAPPED text: `const mi = info.pickedMesh as
+                    // Mesh | undefined` names the same binding the read
+                    // beside it does, and keeping the assertion in the key
+                    // would miss it and copy a nullable into a double.
+                    : aliasSource.getText(this.file);
             const alias = this.scope.bindings.get(aliasKey);
+            // A binding the caller declared NULLABLE aliases for the same
+            // reason a buffer does: `const ray = info.ray` names the same
+            // optional, and copying it into a double would lose both its
+            // presence test and the members the body reads off it.
             if (
                 alias &&
                 (alias.type === "f32" ||
                     alias.type === "u32" ||
                     alias.type === "f32-view" ||
-                    alias.type === "u8-view")
+                    alias.type === "u8-view" ||
+                    alias.absentCpp !== undefined)
             ) {
                 this.scope.bindings.set(name, alias);
                 continue;
@@ -1025,13 +1067,29 @@ export class PinnedNumericLowerer {
         target: ts.Expression,
         value: ts.Expression,
     ): string {
-        const text = this.expression(value);
         const unwrapped = this.unwrap(target);
-        if (ts.isIdentifier(unwrapped)) {
-            const binding = this.scope.bindings.get(unwrapped.text);
-            if (binding?.type === "index") {
-                return `static_cast<std::int64_t>(${text})`;
-            }
+        const literal = this.unwrap(value);
+        const binding = ts.isIdentifier(unwrapped)
+            ? this.scope.bindings.get(unwrapped.text)
+            : undefined;
+        // Rebinding a FIXED tuple to a literal of its own shape --
+        // `localNormal = [-localNormal[0], ...]` after the facing test
+        // flipped it. The storage is the `std::array<double, N>` the
+        // caller's arity declared, so the literal stays a braced
+        // initializer instead of becoming the growable list an untyped
+        // array literal is everywhere else. Taken before the value is
+        // translated, because that translation is what would type it.
+        if (
+            binding?.type === "f64-buffer" &&
+            ts.isArrayLiteralExpression(literal)
+        ) {
+            return `{${literal.elements
+                .map((element) => this.expression(element))
+                .join(", ")}}`;
+        }
+        const text = this.expression(value);
+        if (binding?.type === "index") {
+            return `static_cast<std::int64_t>(${text})`;
         }
         const element = this.elementType(target);
         if (element === "float") return `static_cast<float>(${text})`;
@@ -1454,6 +1512,10 @@ export class PinnedNumericLowerer {
                         ? "!"
                         : undefined;
             if (!operator) this.fail(node, "prefix operator");
+            if (operator === "!") {
+                const absent = this.absenceTest(node.operand);
+                if (absent) return `(${absent})`;
+            }
             return `(${operator}${this.expression(node.operand)})`;
         }
         // `[ar1, ar2]` -- a list of lists written out. The pin builds one
@@ -1584,6 +1646,36 @@ export class PinnedNumericLowerer {
             return this.expression(property.initializer);
         });
         return spell(components[0]!, components[1]!, components[2]!);
+    }
+
+    /** Whether `expression` names a binding the caller declared absent. */
+    private staticallyAbsent(expression: ts.Expression): boolean {
+        const node = this.unwrap(expression);
+        return (
+            this.scope.bindings.get(node.getText(this.file))
+                ?.staticallyAbsent === true
+        );
+    }
+
+    /**
+     * The C++ test for `expression` being ABSENT, where it names a
+     * binding whose caller declared one. Undefined for everything else,
+     * which leaves the ordinary spelling in place.
+     */
+    private absenceTest(expression: ts.Expression): string | undefined {
+        const node = this.unwrap(expression);
+        // By full source text, which is how a MEMBER binding is keyed:
+        // the pin tests `!mi._cpuNormals` as readily as `!positions`.
+        return this.scope.bindings.get(node.getText(this.file))?.absentCpp;
+    }
+
+    /**
+     * One operand of the pin's `&&`/`||`, where a nullable container in a
+     * boolean position means "it is there".
+     */
+    private booleanOperand(expression: ts.Expression): string {
+        const absent = this.absenceTest(expression);
+        return absent ? `!(${absent})` : this.expression(expression);
     }
 
     /** One property read off a binding the pin treats as optional. */
@@ -1911,8 +2003,8 @@ export class PinnedNumericLowerer {
             case ts.SyntaxKind.BarBarToken:
                 if (this.scope.booleanOr) {
                     return (
-                        `(${this.expression(node.left)} || ` +
-                        `${this.expression(node.right)})`
+                        `(${this.booleanOperand(node.left)} || ` +
+                        `${this.booleanOperand(node.right)})`
                     );
                 }
                 // JS `a || b` evaluates to `a` when `a` is truthy and to `b`
@@ -1931,8 +2023,8 @@ export class PinnedNumericLowerer {
             case ts.SyntaxKind.AmpersandAmpersandToken:
                 if (this.scope.booleanAnd) {
                     return (
-                        `(${this.expression(node.left)} && ` +
-                        `${this.expression(node.right)})`
+                        `(${this.booleanOperand(node.left)} && ` +
+                        `${this.booleanOperand(node.right)})`
                     );
                 }
                 // The same hazard in the other direction. No pinned body

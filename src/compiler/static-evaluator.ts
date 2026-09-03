@@ -8,7 +8,10 @@ import {
     doubleLiteral as cppDoubleLiteral,
     floatLiteral as cppFloatLiteral,
 } from "../cpp-literals.js";
-import { staticNumberValue } from "./option-helpers.js";
+import {
+    selectedStaticExpression,
+    staticNumberValue,
+} from "./option-helpers.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 type Lookup = (identifier: ts.Identifier) => Value;
@@ -1017,8 +1020,25 @@ export class StaticEvaluator {
     public expectStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression {
+        // Same selection the array probe makes, through the same helper:
+        // a list a scene chooses with a generation-known condition is
+        // still a static list. Scene 140 writes `sg ? [sg] : undefined`
+        // for its shadow lights, behind a query flag that folds. A live
+        // condition selects nothing and falls to this position's own
+        // refusal, which names an array rather than a condition.
         const resolved =
-            this.resolveStaticExpression(expression);
+            selectedStaticExpression(
+                {
+                    // The two members the fold reads, handed over
+                    // explicitly because this evaluator keeps its
+                    // condition compiler private.
+                    compileCondition: (node) =>
+                        this.compileCondition(node),
+                    resolveStaticExpression: (node) =>
+                        this.resolveStaticExpression(node),
+                },
+                expression,
+            ) ?? this.resolveStaticExpression(expression);
         if (!ts.isArrayLiteralExpression(resolved)) {
             this.fail(
                 resolved,

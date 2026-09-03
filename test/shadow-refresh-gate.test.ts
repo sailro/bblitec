@@ -174,10 +174,11 @@ test("resolves forceRefreshEveryFrame into the emitted options", () => {
     );
 });
 
-test("still refuses forceRefreshEveryFrame on the PCF factories", () => {
-    assert.throws(
-        () =>
-            compileSource(`
+test("carries forceRefreshEveryFrame on the PCF directional factory", () => {
+    // Scene 140 reaches it, so the DIRECTIONAL factory carries it into the
+    // record the way the ESM and CSM factories already did -- the gate the
+    // emitted render loop reads is the same one for all three.
+    const emitted = compileSource(`
         import {
             addToScene,
             createDirectionalLight,
@@ -197,11 +198,46 @@ test("still refuses forceRefreshEveryFrame on the PCF factories", () => {
         }
 
         void main();
+    `).cpp;
+    assert.match(
+        emitted,
+        /PcfDirectionalShadowOptions\{[^}]*true\}/,
+    );
+});
+
+test("still refuses forceRefreshEveryFrame on the PCF SPOT factory", () => {
+    // Deliberately asymmetric with the directional arm above: no corpus
+    // scene reaches it here, and the convention is to reach a capability
+    // where the pin's own callers reach it. Generation still anchors this
+    // factory's `?? false` default, so a pin that changed what it carries
+    // fails rather than drifting past this refusal.
+    assert.throws(
+        () =>
+            compileSource(`
+        import {
+            addToScene,
+            createEngine,
+            createPcfSpotlightShadowGenerator,
+            createSceneContext,
+            createSpotLight,
+        } from "babylon-lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const light = createSpotLight([0, 5, 0], [0, -1, 0], 1.0, 2, 1);
+            addToScene(scene, light);
+            createPcfSpotlightShadowGenerator(engine, light, {
+                forceRefreshEveryFrame: true,
+            });
+        }
+
+        void main();
     `),
         (error: unknown) =>
             error instanceof CompileError &&
             // validateObjectProperties refuses with the factory's own
             // options label; the offending name is in the source span.
-            /A PCF directional shadow generator options/.test(error.message),
+            /A PCF spotlight shadow generator options/.test(error.message),
     );
 });

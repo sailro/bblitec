@@ -977,6 +977,21 @@ struct GpuState {
     /** The same two in the fragment stage, which keeps fewer. */
     int pick_frag_scene_slot = -1;
     int pick_frag_mesh_slot = -1;
+#if BBLITE_HAS_DETAILED_PICKING
+    /**
+     * The DETAILED pipeline and its own four slots. A second pipeline
+     * rather than a flag on the first, because the pin's own split is a
+     * second module: `picking-detailed-pipeline.ts` composes a third
+     * `rgba32uint` target and a `@builtin(primitive_index)` the basic
+     * fragment does not read, and its stages therefore go through Tint's
+     * register remap on their own.
+     */
+    SDL_GPUGraphicsPipeline* pick_detailed_pipeline = nullptr;
+    int pick_detailed_scene_slot = -1;
+    int pick_detailed_uniform_slot = -1;
+    int pick_detailed_frag_scene_slot = -1;
+    int pick_detailed_frag_mesh_slot = -1;
+#endif
 #if BBLITE_HAS_SPLATS
     SDL_GPUGraphicsPipeline* pick_cloud_pipeline = nullptr;
     int pick_cloud_scene_slot = -1;
@@ -5256,6 +5271,13 @@ void release(GpuState& state) {
             state.device, state.pick_mesh_pipeline);
         state.pick_mesh_pipeline = nullptr;
     }
+#if BBLITE_HAS_DETAILED_PICKING
+    if (state.pick_detailed_pipeline) {
+        SDL_ReleaseGPUGraphicsPipeline(
+            state.device, state.pick_detailed_pipeline);
+        state.pick_detailed_pipeline = nullptr;
+    }
+#endif
 #if BBLITE_HAS_SPLATS
     if (state.pick_cloud_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(
@@ -5995,6 +6017,68 @@ inline void ensure_pick_pipelines(GpuState& state) {
     if (!state.pick_mesh_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking");
     }
+
+#if BBLITE_HAS_DETAILED_PICKING
+    // The pin's second picking module, drawn instead of the first when
+    // `enableDetailedPicking` armed the picker. Everything but the target
+    // list and the stages is the basic pipeline's, so `info` is reused:
+    // the same interleaved position stream, the same reverse-Z GREATER
+    // test, the same single sample.
+    const PinnedStageSlots detailed_vertex_slots =
+        read_pinned_stage_slots("picking-detailed.vert");
+    const PinnedStageSlots detailed_fragment_slots =
+        read_pinned_stage_slots("picking-detailed.frag");
+    state.pick_detailed_scene_slot =
+        stage_uniform_slot(detailed_vertex_slots, "scene");
+    state.pick_detailed_uniform_slot =
+        stage_uniform_slot(detailed_vertex_slots, "mesh");
+    if (state.pick_detailed_scene_slot < 0 ||
+        state.pick_detailed_uniform_slot < 0) {
+        gpu_error(
+            "picking-detailed.vert kept neither the scene nor the mesh "
+            "block");
+    }
+    state.pick_detailed_frag_scene_slot =
+        stage_uniform_slot(detailed_fragment_slots, "scene");
+    state.pick_detailed_frag_mesh_slot =
+        stage_uniform_slot(detailed_fragment_slots, "mesh");
+
+    SDL_GPUShader* detailed_vertex = load_shader(
+        state.device,
+        "picking-detailed.vert",
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        0,
+        static_cast<std::uint32_t>(detailed_vertex_slots.uniforms.size()),
+        "vs");
+    SDL_GPUShader* detailed_fragment = load_shader(
+        state.device,
+        "picking-detailed.frag",
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        0,
+        static_cast<std::uint32_t>(
+            detailed_fragment_slots.uniforms.size()),
+        "fs");
+
+    SDL_GPUColorTargetDescription detailed_targets[3]{};
+    detailed_targets[0].format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+    detailed_targets[1].format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
+    detailed_targets[2].format =
+        SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT;
+
+    SDL_GPUGraphicsPipelineCreateInfo detailed_info = info;
+    detailed_info.vertex_shader = detailed_vertex;
+    detailed_info.fragment_shader = detailed_fragment;
+    detailed_info.target_info.color_target_descriptions = detailed_targets;
+    detailed_info.target_info.num_color_targets = 3;
+
+    state.pick_detailed_pipeline =
+        SDL_CreateGPUGraphicsPipeline(state.device, &detailed_info);
+    SDL_ReleaseGPUShader(state.device, detailed_vertex);
+    SDL_ReleaseGPUShader(state.device, detailed_fragment);
+    if (!state.pick_detailed_pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline picking-detailed");
+    }
+#endif
 
 #if BBLITE_HAS_SPLATS
     const PinnedStageSlots cloud_vertex_slots =
@@ -7549,7 +7633,14 @@ bool run_gpu_engine(Engine& engine) {
              ,
              &billboard_pick
 #endif
-        ](GpuPickerHandle, double x, double y) -> PickingInfo {
+        ]([[maybe_unused]] GpuPickerHandle picker, double x, double y) -> PickingInfo {
+#if BBLITE_HAS_DETAILED_PICKING
+            // `picker._detailedPicking`, which `enableDetailedPicking`
+            // armed: it selects the pin's second pipeline module and the
+            // third attachment, so it is read per pick rather than per
+            // picker resource.
+            const bool detailed = detailed_pick_armed(engine, picker);
+#endif
             const CameraRecord* camera_record =
                 scene.camera.value < engine.cameras.size()
                     ? &engine.cameras[scene.camera.value]
@@ -7590,7 +7681,7 @@ bool run_gpu_engine(Engine& engine) {
                 SDL_AcquireGPUCommandBuffer(state.device);
             if (!command) gpu_error("SDL_AcquireGPUCommandBuffer pick");
 
-            SDL_GPUColorTargetInfo color_targets[2]{};
+            SDL_GPUColorTargetInfo color_targets[pick_color_targets]{};
             color_targets[0].texture = state.pick_targets.color;
             color_targets[0].load_op = SDL_GPU_LOADOP_CLEAR;
             color_targets[0].store_op = SDL_GPU_STOREOP_STORE;
@@ -7602,6 +7693,22 @@ bool run_gpu_engine(Engine& engine) {
             // buffer to 0: the colour lane holds the winning fragment's
             // clip depth, and 1 is "nothing here" under reverse-Z.
             color_targets[1].clear_color = {1.0f, 0.0f, 0.0f, 0.0f};
+            Uint32 color_target_count = 2;
+#if BBLITE_HAS_DETAILED_PICKING
+            if (detailed) {
+                color_targets[2].texture = state.pick_targets.detail;
+                color_targets[2].load_op = SDL_GPU_LOADOP_CLEAR;
+                color_targets[2].store_op = SDL_GPU_STOREOP_STORE;
+                // The pin's own 0xffffffff, which `readDetailTarget`
+                // reads back as "no primitive". Only a MISS reads it --
+                // a resolved id means the winning fragment wrote this
+                // attachment in the same draw.
+                color_targets[2].clear_color = {
+                    static_cast<float>(pick_detail_clear_red),
+                    0.0f, 0.0f, 0.0f};
+                color_target_count = 3;
+            }
+#endif
 
             SDL_GPUDepthStencilTargetInfo depth_target{};
             depth_target.texture = state.pick_targets.depth;
@@ -7611,7 +7718,7 @@ bool run_gpu_engine(Engine& engine) {
             depth_target.cycle = true;
 
             SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(
-                command, color_targets, 2, &depth_target);
+                command, color_targets, color_target_count, &depth_target);
             if (!pass) gpu_error("SDL_BeginGPURenderPass pick");
 
             // Ids start at 1 so that 0 stays "nothing", which is what the
@@ -7633,29 +7740,52 @@ bool run_gpu_engine(Engine& engine) {
                     ranges,
                     next_id);
 
+#if BBLITE_HAS_DETAILED_PICKING
+            const int mesh_scene_slot = detailed
+                ? state.pick_detailed_scene_slot
+                : state.pick_mesh_scene_slot;
+            const int mesh_uniform_slot = detailed
+                ? state.pick_detailed_uniform_slot
+                : state.pick_mesh_uniform_slot;
+            const int frag_scene_slot = detailed
+                ? state.pick_detailed_frag_scene_slot
+                : state.pick_frag_scene_slot;
+            const int frag_mesh_slot = detailed
+                ? state.pick_detailed_frag_mesh_slot
+                : state.pick_frag_mesh_slot;
+            SDL_BindGPUGraphicsPipeline(
+                pass,
+                detailed ? state.pick_detailed_pipeline
+                         : state.pick_mesh_pipeline);
+#else
+            const int mesh_scene_slot = state.pick_mesh_scene_slot;
+            const int mesh_uniform_slot = state.pick_mesh_uniform_slot;
+            const int frag_scene_slot = state.pick_frag_scene_slot;
+            const int frag_mesh_slot = state.pick_frag_mesh_slot;
             SDL_BindGPUGraphicsPipeline(pass, state.pick_mesh_pipeline);
+#endif
             // Loop-invariant: pushed uniform state persists across draws,
             // and every cloud draw below rebinds its own slots.
             SDL_PushGPUVertexUniformData(
                 command,
-                static_cast<Uint32>(state.pick_mesh_scene_slot),
+                static_cast<Uint32>(mesh_scene_slot),
                 &scene_uniforms,
                 sizeof(scene_uniforms));
             push_stage_uniform(
                 command,
-                state.pick_frag_scene_slot,
+                frag_scene_slot,
                 &scene_uniforms,
                 sizeof(scene_uniforms));
             for (const PickMeshCandidate& candidate : candidates) {
                 const GpuMesh& gpu = state.meshes[candidate.item_index];
                 SDL_PushGPUVertexUniformData(
                     command,
-                    static_cast<Uint32>(state.pick_mesh_uniform_slot),
+                    static_cast<Uint32>(mesh_uniform_slot),
                     &candidate.uniforms,
                     sizeof(candidate.uniforms));
                 push_stage_uniform(
                     command,
-                    state.pick_frag_mesh_slot,
+                    frag_mesh_slot,
                     &candidate.uniforms,
                     sizeof(candidate.uniforms));
                 SDL_GPUBufferBinding vertex_binding{};
@@ -7720,8 +7850,15 @@ bool run_gpu_engine(Engine& engine) {
             destination.offset = 0;
             SDL_DownloadFromGPUTexture(copy, &region, &destination);
             region.texture = state.pick_targets.depth_color;
-            destination.offset = 256;
+            destination.offset = pick_depth_offset;
             SDL_DownloadFromGPUTexture(copy, &region, &destination);
+#if BBLITE_HAS_DETAILED_PICKING
+            if (detailed) {
+                region.texture = state.pick_targets.detail;
+                destination.offset = pick_detail_offset;
+                SDL_DownloadFromGPUTexture(copy, &region, &destination);
+            }
+#endif
             SDL_EndGPUCopyPass(copy);
 
             SDL_GPUFence* fence =
@@ -7742,7 +7879,13 @@ bool run_gpu_engine(Engine& engine) {
             const std::uint32_t pick_id = decode_pick_id(mapped);
             float pick_depth = 1.0f;
             std::memcpy(
-                &pick_depth, mapped + 256, sizeof(pick_depth));
+                &pick_depth, mapped + pick_depth_offset, sizeof(pick_depth));
+#if BBLITE_HAS_DETAILED_PICKING
+            const PickDetailReadback pick_detail =
+                detailed
+                    ? decode_pick_detail(mapped + pick_detail_offset)
+                    : PickDetailReadback{};
+#endif
             SDL_UnmapGPUTransferBuffer(
                 state.device, state.pick_targets.staging);
 
@@ -7755,6 +7898,19 @@ bool run_gpu_engine(Engine& engine) {
                 width,
                 height,
                 pick_depth);
+#if BBLITE_HAS_DETAILED_PICKING
+            if (detailed) {
+                finish_detailed_pick(
+                    engine,
+                    info,
+                    pick_detail,
+                    view_projection,
+                    x,
+                    y,
+                    width,
+                    height);
+            }
+#endif
             return info;
         };
 #endif

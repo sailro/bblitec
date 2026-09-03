@@ -131,6 +131,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
+| 113 | <img src="images/scenes/scene113.png" alt="Scene 113 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Picking Precision |
 | 116 | <img src="images/scenes/scene116.png" alt="Scene 116 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | No-Color Depth Views |
 | 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 2D Sprite Picking |
 | 118 | <img src="images/scenes/scene118.png" alt="Scene 118 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprite Picking |
@@ -140,6 +141,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 127 | <img src="images/scenes/scene127.png" alt="Scene 127 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Linear Depth |
 | 128 | <img src="images/scenes/scene128.png" alt="Scene 128 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Alpha-Blended Depth |
 | 129 | <img src="images/scenes/scene129.png" alt="Scene 129 rendering" width="160"> | 0.001 / 0.004 | 0.001 / 0.004 | Gaussian Splat GPU Picking |
+| 140 | <img src="images/scenes/scene140.png" alt="Scene 140 rendering" width="160"> | 0.006 / 0.048 | 0.006 / 0.048 | NME Alpha-Discard Shadows |
 | 141 | <img src="images/scenes/scene141.png" alt="Scene 141 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node, Standard and PBR ESM Casters |
 | 142 | <img src="images/scenes/scene142.png" alt="Scene 142 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Viewports |
 | 143 | <img src="images/scenes/scene143.png" alt="Scene 143 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Post-Process Chain |

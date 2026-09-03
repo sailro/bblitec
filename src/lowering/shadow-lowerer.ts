@@ -1435,11 +1435,12 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
             "~~(mesh.thinInstances?._version as number)",
         "casterVersionSum per-caster term",
     );
-    // `forceRefreshEveryFrame ?? false` on all four factories. ESM and CSM
-    // carry it into the record: what the emitted gate's disable flag
-    // defaults from. The two PCF factories read the same default while the
-    // port refuses the option there, so these anchors hold the shape a
-    // future pin could quietly start carrying somewhere the port drops it.
+    // `forceRefreshEveryFrame ?? false` on all four factories. ESM, CSM and
+    // PCF DIRECTIONAL carry it into the record: what the emitted gate's
+    // disable flag defaults from. The PCF SPOT factory reads the same
+    // default while the port still refuses the option there, so its anchor
+    // holds the shape a future pin could quietly start carrying somewhere
+    // the port drops it.
     const { declaration: esmFactory } = context.functionDeclaration(
         esmModule,
         "createEsmDirectionalShadowGenerator",
@@ -1476,6 +1477,26 @@ function assertShadowRenderGateContracts(context: LoweringContext): void {
         spotFactory,
         "cfg.forceRefreshEveryFrame ?? false",
         "PCF spot forceRefreshEveryFrame default",
+    );
+    // The morph-bounds provider. Its expansion is transcribed rather than
+    // lowered -- the pinned body is a method on an object literal, which
+    // `lowerPinnedFunction` does not reach -- so the shape is pinned here
+    // instead, and these two lines are what a pinned change has to survive.
+    // Without them an upstream edit to the weighting compiles clean and
+    // fits a different volume.
+    const { declaration: morphProvider } = context.functionDeclaration(
+        "src/shadow/enable-morph-target-shadows.ts",
+        "enableMorphTargetShadows",
+    );
+    context.expectShapeCount(
+        morphProvider,
+        "enableDeformableShadowBounds(generator, morphBoundsProvider)",
+        "morph-target shadow bounds registration",
+    );
+    context.expectShapeCount(
+        context.sourceFile("src/shadow/enable-morph-target-shadows.ts"),
+        "min[axis] = min[axis]! + targetMin[axis]! * weight",
+        "morph-target shadow bounds expansion",
     );
 }
 
@@ -1951,6 +1972,92 @@ inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_min{
 inline constexpr std::array<float, 3> shadow_caster_bounds_fallback_max{
     ${floats(casterFallback.max)}};
 
+
+/**
+ * enableMorphTargetShadows' bounds provider, as the caster fit reads it.
+ *
+ * The pin builds a PROXY mesh over the caster whose boundMin/boundMax are
+ * these, and bumps a version so the fit refreshes; this port has one caster
+ * carrier and fills its bounds directly, which is the same thing without the
+ * prototype chain. The base is the mesh's own AABB -- upstream
+ * computeAabb(mesh._cpuPositions), which is exactly what this port already
+ * folded into geometry.bounds_min/max at load.
+ *
+ * Each target contributes its DELTA buffer's own AABB scaled by that
+ * target's weight, and a NEGATIVE weight swaps which end of the range moves
+ * which bound. Live, not folded at creation: the weights are what the scene
+ * animates, and the whole point of the provider is that the ortho volume
+ * follows them. Without it the fit bounds a scrambled mesh by its unmorphed
+ * box and clips the caster.
+ */
+inline void expand_morph_caster_bounds(
+    const std::vector<std::array<Vec3, 2>>& target_ranges,
+    const float* weights,
+    std::size_t weight_count,
+    std::array<float, 3>& bounds_min,
+    std::array<float, 3>& bounds_max) {
+    for (std::size_t target = 0; target < target_ranges.size(); ++target) {
+        const float weight =
+            target < weight_count ? weights[target] : 0.0f;
+        // The pin's guard tests the weight for FALSINESS, so a NaN weight
+        // skips the target rather than poisoning the box. An equality
+        // test against zero would let one through, and a NaN bound makes
+        // the whole ortho fit NaN rather than one caster wrong.
+        if (!(weight != 0.0f)) continue;
+        const Vec3& low = target_ranges[target][0];
+        const Vec3& high = target_ranges[target][1];
+        const Vec3& target_min = weight < 0.0f ? high : low;
+        const Vec3& target_max = weight < 0.0f ? low : high;
+        const std::array<float, 3> min_axes{
+            target_min.x, target_min.y, target_min.z};
+        const std::array<float, 3> max_axes{
+            target_max.x, target_max.y, target_max.z};
+        for (std::size_t axis = 0; axis < 3; ++axis) {
+            bounds_min[axis] = bounds_min[axis] + min_axes[axis] * weight;
+            bounds_max[axis] = bounds_max[axis] + max_axes[axis] * weight;
+        }
+    }
+}
+
+/**
+ * The pin's cached per-target computeAabb, filled on first use.
+ *
+ * Upstream this is a WeakMap keyed on the mesh and invalidated when its
+ * positions or target list change. Here the deltas live on the geometry,
+ * and the one writer that can replace them -- createMorphTargets -- drops
+ * this cache in the same breath, which is the same invalidation moved to
+ * the write. The length test below is therefore a fill test, not the
+ * freshness test it would have to be on its own: a replacement that kept
+ * the length would not change it.
+ */
+inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
+    if (geometry.morph_bounds.size() == geometry.morph_positions.size()) {
+        return;
+    }
+    geometry.morph_bounds.clear();
+    geometry.morph_bounds.reserve(geometry.morph_positions.size());
+    for (const std::vector<Vec3>& deltas : geometry.morph_positions) {
+        Vec3 low{
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity(),
+            std::numeric_limits<float>::infinity()};
+        Vec3 high{
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity(),
+            -std::numeric_limits<float>::infinity()};
+        for (const Vec3& delta : deltas) {
+            low.x = std::min(low.x, delta.x);
+            low.y = std::min(low.y, delta.y);
+            low.z = std::min(low.z, delta.z);
+            high.x = std::max(high.x, delta.x);
+            high.y = std::max(high.y, delta.y);
+            high.z = std::max(high.z, delta.z);
+        }
+        geometry.morph_bounds.push_back(
+            std::array<Vec3, 2>{low, high});
+    }
+}
+
 ${lowerBuildLightViewMatrix(context)}
 
 ${lowerMultiply4x4(context)}
@@ -2053,15 +2160,27 @@ inline ShadowReceiverBlock shadow_receiver_block(
  * pool's \`_version\`, with \`~~\` mapping an absent pool to the zero an
  * unbound \`instance_version\` holds. Versions only grow, so an equal sum
  * means no term moved.
+ *
+ * A caster of a generator with morph-target bounds carries a THIRD term,
+ * which is the pin's proxy mesh: \`enableDeformableShadowBounds\` defines
+ * the proxy's \`worldMatrixVersion\` as the source's plus its own
+ * \`_version\`, and bumps that whenever the recomputed bounds change. The
+ * fit reads the proxy, so upstream a morph WEIGHT change re-renders the
+ * shadow map even though no transform moved. Summing the weight version
+ * here is that same signal: without it a scene that animates weights and
+ * does not also force a refresh would hold a shadow map for a pose the
+ * mesh has left.
  */
 inline std::uint64_t shadow_caster_version_sum(
     const Engine& engine,
-    const std::vector<MeshHandle>& caster_meshes) {
+    const std::vector<MeshHandle>& caster_meshes,
+    bool morph_shadow_bounds) {
     std::uint64_t sum = 0;
     for (const MeshHandle handle : caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& mesh = engine.meshes[handle.value];
         sum += mesh.transform_version + mesh.instance_version;
+        if (morph_shadow_bounds) sum += mesh.morph_weights_version;
     }
     return sum;
 }
@@ -2145,8 +2264,8 @@ inline bool shadow_refresh_due(
     // here is that same order, minus the version sum and the lane updates
     // a flag fixed at creation makes unreadable.
     if (generator.force_refresh_every_frame) return true;
-    const std::uint64_t caster_version =
-        shadow_caster_version_sum(engine, generator.caster_meshes);
+    const std::uint64_t caster_version = shadow_caster_version_sum(
+        engine, generator.caster_meshes, generator.morph_shadow_bounds);
     const bool camera_unchanged = csm_camera == nullptr
         ? eye.x == gate.last_fo_offset.x &&
             eye.y == gate.last_fo_offset.y &&
@@ -2804,6 +2923,7 @@ ${!pcfDirectionalShadows ? "" : shadowGeneratorFactory({
         "darkness",
         "ortho_min_z",
         "ortho_max_z",
+        "force_refresh_every_frame",
     ],
 })}
 ${!csmShadows ? "" : shadowGeneratorFactory({
@@ -2913,6 +3033,21 @@ void refresh_shadow_task_meshes(
 }
 
 } // namespace
+
+// src/shadow/enable-morph-target-shadows.ts enableMorphTargetShadows:
+// register the morph bounds provider on this generator. Upstream that
+// installs a provider object into a WeakMap and wraps each caster in a
+// proxy mesh whose boundMin/boundMax it rewrites per frame; this port has
+// one caster carrier per fit, so the flag is read where that carrier is
+// filled and the proxy has nothing left to do.
+void enable_morph_target_shadows(
+    Engine& engine,
+    ShadowGeneratorHandle generator) {
+    if (generator.value >= engine.shadow_generators.size()) {
+        throw std::runtime_error("Invalid shadow generator handle.");
+    }
+    engine.shadow_generators[generator.value].morph_shadow_bounds = true;
+}
 
 void set_shadow_task_caster_meshes(
     Engine& engine,

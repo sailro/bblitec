@@ -18,6 +18,7 @@
  * contract error instead of binding positionally or failing later in C++.
  */
 import ts from "typescript";
+import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
 import {
     type PinnedBinding,
@@ -77,6 +78,31 @@ export interface PinnedFunctionParameter {
      * caller's, which a const binding would refuse at the store.
      */
     mutableRecord?: boolean;
+    /**
+     * Carry the pin's OWN default initializer through as the C++ default
+     * argument.
+     *
+     * A defaulted pinned parameter is a value every caller that omits it
+     * supplies, so a port that dropped the default would either refuse
+     * those callers or restate the number beside them --
+     * `normalizeVec3(x, y, z)` is the pin's own three-argument spelling in
+     * `detailed-picking.ts` and `picking-helpers.ts`, and `1e-10` is not
+     * this port's to retype. Only a numeric literal is accepted, because a
+     * defaulted expression is a body the translator has not been given.
+     */
+    pinnedDefault?: true;
+    /**
+     * A pinned OPTIONAL parameter the reached slice never supplies.
+     *
+     * It contributes no C++ parameter and binds statically absent, so the
+     * arm the pin guards on it does not translate -- which is the whole
+     * reason: `populateDetailedMeshInfo`'s `deformTriangle` reaches the
+     * deformed-vertex module behind it, and no scene composes a detailed
+     * pick of a skinned or morphed mesh. The pinned parameter's name,
+     * annotation and `?` are all still asserted, so the pin cannot move
+     * the seam silently; only what is behind the guard goes untranslated.
+     */
+    absent?: true;
 }
 
 const parameterKinds: Readonly<
@@ -463,16 +489,50 @@ export function lowerPinnedFunction(
         const spec = parameters[index]!;
         const kind = parameterKinds[spec.kind];
         const annotation = spec.annotation ?? kind.annotation;
+        // A defaulted pinned parameter is usually left unannotated, and
+        // its type is then its own initializer's -- `epsilon = 1e-10` is
+        // a `number` as surely as `epsilon: number` would be. Read that
+        // way rather than exempted, so a default that stopped being a
+        // number still fails the annotation check by name.
+        const defaulted = parameter.initializer
+            ? context.unwrapExpression(parameter.initializer)
+            : undefined;
+        const defaultAnnotation = !defaulted
+            ? undefined
+            : ts.isNumericLiteral(defaulted)
+              ? "number"
+              : defaulted.kind === ts.SyntaxKind.TrueKeyword ||
+                  defaulted.kind === ts.SyntaxKind.FalseKeyword
+                ? "boolean"
+                : undefined;
+        const pinnedAnnotation =
+            parameter.type?.getText(file) ?? defaultAnnotation;
         if (
             !ts.isIdentifier(parameter.name) ||
             parameter.name.text !== spec.pinned ||
-            parameter.type?.getText(file) !== annotation
+            pinnedAnnotation !== annotation
         ) {
             context.contractError(
                 parameter,
                 `Expected pinned ${symbolName} parameter ${index} to be ` +
                     `'${spec.pinned}: ${annotation}'.`,
             );
+        }
+        if (spec.absent) {
+            if (!parameter.questionToken) {
+                context.contractError(
+                    parameter,
+                    `Expected pinned ${symbolName} parameter ` +
+                        `'${spec.pinned}' to stay optional; the reached ` +
+                        "slice supplies none.",
+                );
+            }
+            bindings.set(spec.pinned, {
+                cpp: "false",
+                type: "bool",
+                staticallyAbsent: true,
+            });
+            return;
         }
         bindings.set(
             spec.pinned,
@@ -487,11 +547,23 @@ export function lowerPinnedFunction(
                         : "scalar",
             },
         );
+        const declared = spec.cppType
+            ? `${spec.mutableRecord ? "" : "const "}${spec.cppType}& ` +
+              `${spec.cpp}`
+            : kind.declare(spec.cpp);
+        if (spec.pinnedDefault && defaultAnnotation !== "number") {
+            context.contractError(
+                parameter,
+                `Expected pinned ${symbolName} parameter ` +
+                    `'${spec.pinned}' to carry a numeric default.`,
+            );
+        }
         signature.push(
-            spec.cppType
-                ? `${spec.mutableRecord ? "" : "const "}${spec.cppType}& ` +
-                  `${spec.cpp}`
-                : kind.declare(spec.cpp),
+            spec.pinnedDefault && defaulted
+                ? `${declared} = ${doubleLiteral(
+                      context.numericValue(defaulted, file),
+                  )}`
+                : declared,
         );
         if (spec.kind === "record" && !spec.cppType) {
             context.contractError(

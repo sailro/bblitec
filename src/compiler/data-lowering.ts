@@ -1,5 +1,5 @@
 import ts from "typescript";
-import { pinnedMathSpelling } from "../lowering/pinned-operators.js";
+import { pinnedHypotCall, pinnedMathSpelling } from "../lowering/pinned-operators.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import {
     foldableMathUnary,
@@ -3190,18 +3190,25 @@ export class DataLowerer {
             };
         }
         if (method === "hypot") {
-            if (
-                call.arguments.length < 2 ||
-                call.arguments.length > 3
-            ) {
+            if (call.arguments.length < 2) {
                 this.context.fail(
                     call,
-                    "Math.hypot supports two or three arguments.",
+                    "Math.hypot expects at least two arguments.",
                 );
             }
+            // Not `std::hypot`: it is two- or three-argument, so a
+            // quaternion length has no spelling there at all, and it
+            // rounds differently from JavaScript's besides. `hypot_js`
+            // is the whole-list root of the sum of squares every pinned
+            // lowering already reaches through
+            // `pinnedNumericMathCallsWithHypot`, and the one spelling
+            // `fidelity.md` records as `splat-hypot-approximation` --
+            // so scene code and pinned code agree on it rather than
+            // this one call site being the exception.
+            this.context.reachJsData();
             return {
                 kind: "number",
-                cpp: `std::hypot(${numbers().join(", ")})`,
+                cpp: pinnedHypotCall(numbers()),
                 dataType: { kind: "number" },
             };
         }

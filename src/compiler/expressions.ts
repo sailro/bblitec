@@ -1006,11 +1006,50 @@ export class ExpressionLowerer {
                 foldedCondition === "true" ||
                 foldedCondition === "false"
             ) {
-                return this.compileValue(
+                const taken =
                     foldedCondition === "true"
                         ? unwrapped.whenTrue
-                        : unwrapped.whenFalse,
-                );
+                        : unwrapped.whenFalse;
+                const dropped =
+                    foldedCondition === "true"
+                        ? unwrapped.whenFalse
+                        : unwrapped.whenTrue;
+                const selected = this.compileValue(taken);
+                // When the arm generation just discarded was the NULL one,
+                // the binding it feeds can no longer be absent -- and the
+                // scene's own guard over it is therefore settled. Say so on
+                // the value, the way a find the materialized asset resolved
+                // at generation carries the constant "true": the guard then
+                // folds through the ordinary optional path instead of
+                // needing a per-kind truthiness rule. Scene 140 writes
+                // `const sg = noShadows ? null : createPcf(...)` and then
+                // `if (sg)`, with `noShadows` folded from its query.
+                const droppedNode = this.context.unwrap(dropped);
+                const droppedIsNullish =
+                    droppedNode.kind === ts.SyntaxKind.NullKeyword ||
+                    (ts.isIdentifier(droppedNode) &&
+                        droppedNode.text === "undefined");
+                // Only for a RESOURCE, because `optionalFoundCpp` means
+                // presence and the consumers read it as truthiness. Those
+                // two agree for a handle -- a mesh that exists is truthy
+                // -- and part company for a value JavaScript can call
+                // falsy while holding it: `flag ? 0 : null` surviving as
+                // 0 would fold `if (n)` to true. A data or primitive arm
+                // keeps whatever truthiness the ordinary path gives it.
+                const survivorIsResource =
+                    selected.kind !== "number" &&
+                    selected.kind !== "string" &&
+                    selected.kind !== "boolean" &&
+                    selected.kind !== "data";
+                if (
+                    droppedIsNullish &&
+                    survivorIsResource &&
+                    selected.optionalFoundCpp === undefined &&
+                    selected.truthinessCpp === undefined
+                ) {
+                    return { ...selected, optionalFoundCpp: "true" };
+                }
+                return selected;
             }
             const conditionalType =
                 this.context.dataLowerer.dataTypeAt(
@@ -2246,6 +2285,45 @@ export class ExpressionLowerer {
                     : value;
             whenTrue = asStringData(whenTrue);
             whenFalse = asStringData(whenFalse);
+        }
+        // A tuple LITERAL and a tuple a call RETURNED are the same type,
+        // and only the kinds differ: one is a compile-time element list,
+        // the other native storage. The literal side widens, the way the
+        // string pair above does -- selecting element by element instead
+        // would evaluate the returning branch once per element, which is
+        // what `normalizeVec3(...) : [0, 0, -1]` would turn into.
+        const tupleArity = (value: Value): number | undefined =>
+            value.kind === "tuple"
+                ? value.tupleElements?.length
+                : value.kind === "data" &&
+                    value.dataType?.kind === "tuple"
+                  ? value.dataType.arity
+                  : undefined;
+        const sharedArity = tupleArity(whenTrue);
+        if (
+            whenTrue.kind !== whenFalse.kind &&
+            sharedArity !== undefined &&
+            sharedArity === tupleArity(whenFalse)
+        ) {
+            this.context.reachJsData();
+            const asTupleData = (value: Value): Value =>
+                value.kind === "tuple"
+                    ? {
+                          kind: "data",
+                          cpp: this.context.dataLowerer
+                              .compileKnownValueForSink(
+                                  value,
+                                  { kind: "tuple", arity: sharedArity },
+                                  node,
+                              ),
+                          dataType: {
+                              kind: "tuple",
+                              arity: sharedArity,
+                          },
+                      }
+                    : value;
+            whenTrue = asTupleData(whenTrue);
+            whenFalse = asTupleData(whenFalse);
         }
         if (
             whenTrue.kind !== whenFalse.kind ||

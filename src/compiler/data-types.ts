@@ -291,6 +291,18 @@ export function passesByReference(
   return (
     (dataType.kind === "struct" &&
       !dataTypes.isReferenceStruct(dataType.name)) ||
+    passesByReferenceKind(dataType)
+  );
+}
+
+/**
+ * The reference-passed kinds a data type answers for by ITSELF -- every
+ * one but `struct`, which needs the registry to say whether the struct is
+ * reference-backed. Split out because a table-validation pass has rules
+ * rather than a compiled program, and so has no registry to ask.
+ */
+export function passesByReferenceKind(dataType: DataType): boolean {
+  return (
     dataType.kind === "vector" ||
     dataType.kind === "map" ||
     dataType.kind === "set" ||

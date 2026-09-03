@@ -31,6 +31,7 @@ import {
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
+import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
@@ -298,6 +299,7 @@ export interface UpstreamEmitOptions {
      */
     pickingShaders?: {
         mesh: string;
+        detailed?: string;
         cloud?: string;
         billboard?: { facing: string; axisLocked?: string };
     };
@@ -832,6 +834,16 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             "upstream/include/bblite/upstream/pinned_inverse_image_processing.hpp",
             pinnedInverseImageProcessingHeader(new LoweringContext(this.store)),
         );
+        // The pin's tuple normalization, where a scene calls it or the
+        // detailed pick's own two bodies import it. Gated rather than
+        // always emitted because nothing else reaches it, and the header
+        // is what its consumers on both sides of the split include.
+        if (features.includes("math:normalize-vec3")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_normalize_vec3.hpp",
+                pinnedNormalizeVec3Header(new LoweringContext(this.store)),
+            );
+        }
         // The texture-slot table both render backends execute. Emitted for
         // every scene beside the capability defines above (the base slots
         // serve the Standard family too, so it cannot ride pbr_variants.hpp,
@@ -2219,6 +2231,31 @@ ${shadow.blurFragmentWgsl}`,
                     "so their id ranges would not follow the order " +
                     "the scene registered them in.",
             ],
+            [
+                "picking:detailed",
+                "picking:billboard",
+                "A detailed pick draws a third rgba32uint attachment, " +
+                    "and every contributor in the pass has to write it " +
+                    "-- the pin's own `makeBillboardPickWgsl` takes a " +
+                    "`detailed` arm for exactly that, and no reached " +
+                    "scene composes it.",
+            ],
+            [
+                "picking:detailed",
+                "loader:splat",
+                "The same third attachment: `buildPickingWgsl(true)` is " +
+                    "the cloud contributor's detailed arm, and no " +
+                    "reached scene composes it.",
+            ],
+            [
+                "picking:detailed",
+                "mesh:thin-instances",
+                "The pin's detailed solve composes the draw-time world " +
+                    "with the selected thin-instance matrix " +
+                    "(`detailedWorldMatrix`), and a thin-instanced mesh " +
+                    "picks through the advanced pipeline this port does " +
+                    "not build.",
+            ],
             // A cascaded generator and a thin-instanced mesh are NOT a
             // refusable pair: what matters is whether that mesh is one of
             // THIS generator's casters, and the caster list is a runtime
@@ -2252,6 +2289,7 @@ ${shadow.blurFragmentWgsl}`,
                 "upstream/src/picking.cpp",
                 new PickingLowerer(context).lower(
                     features.includes("picking:billboard"),
+                    features.includes("picking:detailed"),
                 ),
                 generated,
             );
@@ -2277,6 +2315,20 @@ ${shadow.blurFragmentWgsl}`,
                         "pin's composed picking module.",
                 );
             }
+            const detailedPickingProvenance = context.provenance(
+                "src/picking/picking-detailed-pipeline.ts",
+                "shader",
+            );
+            const detailedPickingWgsl = options.pickingShaders?.detailed;
+            if (
+                features.includes("picking:detailed") &&
+                detailedPickingWgsl === undefined
+            ) {
+                throw new Error(
+                    "A scene reaching picking:detailed must arrive with " +
+                        "the pin's composed detailed picking module.",
+                );
+            }
             const cloudPickingWgsl = options.pickingShaders?.cloud;
             const billboardPickingProvenance = context.provenance(
                 "src/picking/billboard-pick-pipeline.ts",
@@ -2299,6 +2351,18 @@ ${shadow.blurFragmentWgsl}`,
                     data: `// ${pickingProvenance}\n${meshPickingWgsl}`,
                     family: "picking",
                 });
+                if (detailedPickingWgsl !== undefined) {
+                    composedShaders.push({
+                        output:
+                            `upstream/shaders/picking-detailed.${stage}` +
+                            ".native.wgsl",
+                        data:
+                            `// ${detailedPickingProvenance}
+` +
+                            detailedPickingWgsl,
+                        family: "picking",
+                    });
+                }
                 if (cloudPickingWgsl !== undefined) {
                     composedShaders.push({
                         output:

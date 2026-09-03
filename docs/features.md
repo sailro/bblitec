@@ -1174,6 +1174,27 @@ compatibility walk that restores a missing connection `inputName` from
 `name`. The resulting record is what the pin compiles; no decompressor or
 compressed graph ships in the executable.
 
+A graph a scene DERIVES from another is executed rather than restated. Scene
+140's caster graph is scene 66's receiver graph with an alpha discard wired
+in, which the corpus writes as 36 lines of its own TypeScript; generation
+runs that function on the decoded document instead of the port carrying a
+second copy of the wiring. What keeps it narrow is the argument gate — every
+argument has to be generation-known JSON, and the declaration has to be
+annotated as returning one. That is not a proof of purity and is not claimed
+as one: such a function can still read a clock or throw, and
+`createScene66FinalAlphaDiscardJson` does throw on a malformed document, so
+a scene's runtime failure becomes a generation failure. What the gate buys
+is that the inputs are settled, which is what makes the result a document
+rather than a computation over live state; a call whose inputs are not falls
+straight through to the ordinary call path.
+
+It runs under NODE, through `executed-module-graph` — the executed-module
+route whose own header argues that a graph is structure, and that assembling
+one cannot differ between two ECMAScript engines. That is why this route
+costs no browser launch and earns no adaptation where the pixel routes do,
+and it was checked rather than assumed: the tree the Node run produces is
+byte-identical to the one a Chromium run produced.
+
 **Run time: the draw.** A node draw binds the pin's own group scheme — the
 per-pass scene block and lights in group 0, the graph's mesh block and uniform
 block in group 1 — and both backends execute the compiled stages, entered at
@@ -1622,11 +1643,30 @@ for it,
 because upstream `pickedMesh` is a live node reference and a scene may
 rename the node between the pick and the read. Basic picking also consumes
 the depth attachment to reconstruct `pickedPoint` by the pin's inverse-VP
-formula. A non-detailed pick deliberately has a null `ray` upstream; the
-remaining unsupported members refuse at the read site rather than returning
-a value this port cannot fill.
-[fidelity](fidelity.md#picking-contract) carries the two contracts the port
+formula. A non-detailed pick deliberately has a null `ray` upstream.
+[fidelity](fidelity.md#picking-contract) carries the contracts the port
 owns, and the family's remaining arms are in `TODO.md`.
+
+**Detailed picking** is the pin's second pipeline, reached at
+`enableDetailedPicking` and gated by `picking:detailed`. It adds a third
+`rgba32uint` attachment to the one-pixel pass, cleared to `0xFFFFFFFF` and
+carrying `vec4u(primitiveIndex, bitcast<u32>(localPos.xyz))` -- not
+barycentrics: the interpolated REST position is what crosses, and `bu`/`bv`
+are solved on the CPU against the rest triangle, which is exact because
+barycentrics are affine-invariant. That fills `faceId`, `bu`, `bv`, the
+picked normal and the pick ray, which a basic pick leaves absent. Per sample
+it costs 24 bytes, under the default 32-byte attachment budget, so no limit
+is raised. The WGSL is the pin's own `picking-detailed-pipeline` module
+re-exported and executed at generation rather than an option bolted onto the
+basic shader, and the CPU half -- the barycentric solve, the tiny-weight
+clamp, the world normal transform and the facing test -- is lowered from the
+pinned bodies.
+
+It refuses when paired with billboard picking, splats or thin instances.
+That is the pin's own granularity rather than a port limit: upstream those
+contributors take their own `detailed` shader arms, and a thin-instanced
+candidate flips the whole pass onto the ADVANCED pipeline, which this port
+does not compose.
 
 ### Display gizmos
 
@@ -1995,10 +2035,30 @@ lane; a dynamic caster list is evaluated when the shadow task runs.
 What refuses at generation, by name: a `receiveShadows` written to anything
 but a statically known boolean (the Standard/PBR variant is selected at
 generation), and generator controls outside the reached factory sets.
-`normalBias` remains refused everywhere, `forceRefreshEveryFrame` on the two
-PCF factories — the ESM and CSM factories validate it as generation-known and
-carry it into the record, where it disables the pinned render gate the way
-`renderEsmShadowMap`'s own first test does. `shadowMaxZ`,
+`normalBias` remains refused everywhere, and `forceRefreshEveryFrame` on the
+PCF SPOT factory alone — the ESM, CSM and PCF directional factories validate
+it as generation-known and carry it into the record, where it disables the
+pinned render gate the way `renderEsmShadowMap`'s own first test does. The
+spot asymmetry is deliberate: no corpus scene reaches it there, and
+generation still anchors that factory's own `?? false` default, so a pin
+that started carrying it fails rather than drifting past the refusal.
+
+**Morph-target caster bounds.** `enableMorphTargetShadows` bounds a caster by
+its live morph-expanded AABB instead of its unmorphed geometry box. Upstream
+installs a provider into a WeakMap and wraps each caster in a proxy mesh
+whose `boundMin`/`boundMax` it rewrites per frame; this port fills one caster
+carrier per fit, so the flag is read where that carrier is filled. The proxy
+has a second job, which is reproduced rather than dropped: it also overrides
+`worldMatrixVersion` as the source's plus its own, bumped whenever the
+recomputed bounds change, so a morph WEIGHT change re-renders the shadow map
+even though no transform moved. This port sums the mesh's weight version into
+the caster change signal for exactly the generators that asked for the
+provider, which is the same signal reached the same way. Each target contributes its own delta buffer's
+AABB scaled by that target's weight, with a negative weight swapping which
+end of the range moves which bound — the pin's arithmetic, over the delta
+ranges the pin also caches. Live rather than folded at creation: the weights
+are what a scene animates, and following them is the whole point of the
+provider. `shadowMaxZ`,
 `cascadeBlendPercentage` and `frustumEdgeFalloff` are supported now that the
 cascade array is, while `stabilizeCascades` and `worldSpaceBias` refuse beside
 `normalBias`: they are unbuilt arms of the generator rather than controls over
