@@ -741,7 +741,17 @@ payload textures the VERTEX stage `textureLoad`s, counted by the pin's own
 `SH_TEXTURE_COUNT` table, and the eye position its view
 direction is built from. The degree is a generation-time constant, so a scene
 whose clouds disagree on degree refuses — generation deploys one stage pair.
-`.sog` and `.spz` still refuse, pending a ZIP and a gzip decoder. The sort runs on the frame's own thread before the draw that reads it
+The gzipped `.spz` lowers too, through the pin's own second entry point.
+`.sog` still refuses, pending a ZIP and a WebP decoder.
+
+`loadSPZ` is the pin's second entry point and its own loader, not a
+container sniff on the first one's: the call site selects it. Generation
+runs that whole loader -- the two-magic-byte gzip test, the
+`DecompressionStream` inflate, the module-local `parseSpz`, and the half
+turn about X it then writes on the cloud it attached -- with its two
+boundaries stood in for, so it packages the same row buffer and harmonics
+sidecar every other container does, and the rotation is OBSERVED rather
+than restated ([fidelity](fidelity.md#gaussian-splats)). The sort runs on the frame's own thread before the draw that reads it
 rather than in a worker, which is the state `mesh.firstSortReady` waits for
 ([fidelity](fidelity.md#semantic-contract)).
 
@@ -1696,7 +1706,16 @@ targets takes the affine projection and is picked at its un-morphed pose,
 with nothing refusing it. The zero-weight-quad reason above is why the
 SKINNED arm cannot serve such a mesh; it is not a reason the pin's own
 `noskin-morph` arm could not. No registered scene puts one in front of a
-detailed pick, which is why it is a gap rather than a bug today.
+detailed pick, which is why it is a gap rather than a bug today -- but
+corpus scene 114 puts one in front of both a basic and a detailed pick, so
+integrating it closes the gap rather than working around it.
+
+A second limit belongs beside that one: the projection reaches only the
+DETAILED pass here, where upstream hands it to both. `gpu-picker`'s
+candidate loop asks `getDeformPickingProjection` once and passes the answer
+to whichever pipeline set it builds, basic or detailed alike; this port
+composes the basic stage without one, so a basic pick over a deforming mesh
+draws its bind pose. Nothing registered reaches that combination either.
 
 Two consequences follow from where a skinned mesh keeps its transform, and
 both were defects until scene 115 measured them. The detail attachment's

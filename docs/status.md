@@ -137,6 +137,7 @@ scene 40's, which makes it the collision-event variant of that scene; scene
 | 117 | <img src="images/scenes/scene117.png" alt="Scene 117 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | 2D Sprite Picking |
 | 118 | <img src="images/scenes/scene118.png" alt="Scene 118 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Sprite Picking |
 | 120 | <img src="images/scenes/scene120.png" alt="Scene 120 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting |
+| 123 | <img src="images/scenes/scene123.png" alt="Scene 123 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | Gaussian Splatting SPZ |
 | 124 | <img src="images/scenes/scene124.png" alt="Scene 124 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.003 | Compressed PLY Gaussian Splatting |
 | 125 | <img src="images/scenes/scene125.png" alt="Scene 125 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Gaussian Splat Transform Bake |
 | 126 | <img src="images/scenes/scene126.png" alt="Scene 126 rendering" width="160"> | 0.000 / 0.001 | 0.002 / 0.005 | Gaussian Splat Shader Plugin |

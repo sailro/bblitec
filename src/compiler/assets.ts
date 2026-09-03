@@ -67,6 +67,21 @@ function basenameWithoutExtension(name: string): string {
  */
 export const SPLAT_HARMONICS_SUFFIX = ".sh";
 
+/**
+ * The asset kinds that package to the one splat row layout.
+ *
+ * Two kinds because the pin has two loaders and the call site picks one --
+ * neither sniffs the other's container -- but one packaged form, so every
+ * question about the *output* (its name, the sidecar beside it, the feature
+ * it joins) is asked of the set rather than of a kind. A third container
+ * that lands here without joining the set would package under its source
+ * extension and be missed by both.
+ */
+export const SPLAT_ASSET_KINDS: ReadonlySet<CompileAsset["kind"]> = new Set([
+    "splat",
+    "spz",
+]);
+
 export function registerAsset(
     context: AssetRegistryContext,
     source: string,
@@ -85,6 +100,25 @@ export function registerAsset(
     const existing = context.assets.get(key);
     if (existing) {
         return existing;
+    }
+    // The registry key carries the kind but the packaged name does not, and
+    // the two splat kinds both package to `<stem>.splat` -- so one URL loaded
+    // through both entry points would register twice and materialize two
+    // different byte sequences into one file, concurrently. No scene does
+    // that; it refuses here rather than racing.
+    if (SPLAT_ASSET_KINDS.has(kind)) {
+        for (const other of SPLAT_ASSET_KINDS) {
+            if (
+                other !== kind &&
+                context.assets.has(`${other}:${source}:${faceSize ?? ""}`)
+            ) {
+                throw new Error(
+                    `'${source}' is loaded as both a '${other}' and a ` +
+                        `'${kind}' container; the two pinned loaders parse ` +
+                        "it differently and both package to the same file.",
+                );
+            }
+        }
     }
     const asset = assetRecord(
         source,
@@ -213,7 +247,7 @@ export function assetRecord(
             // Every splat container packages to the one row layout, so the
             // extension names what lands beside the executable, not what the
             // scene fetched.
-            : kind === "splat"
+            : SPLAT_ASSET_KINDS.has(kind)
                 ? `${basenameWithoutExtension(sourceName)}.splat`
             // A transcoded Basis texture packages as the KTX1 container the
             // runtime's one compressed-texture reader takes.

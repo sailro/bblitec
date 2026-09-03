@@ -253,6 +253,30 @@ export function isTypedArrayType(
   );
 }
 
+/**
+ * The runtime spelling stem for one typed-array kind: the `bbl::js::`
+ * `<stem>_array_from` / `<stem>_array_sized` family, and the `<STEM>Array`
+ * alias its elements are stored in.
+ */
+export function typedArrayStem(kind: TypedArrayKind): string {
+  switch (kind) {
+    case "u8array":
+      return "u8";
+    case "f64array":
+      return "f64";
+    case "f32array":
+      return "f32";
+    case "u16array":
+      return "u16";
+    case "i16array":
+      return "i16";
+    case "u32array":
+      return "u32";
+    case "i32array":
+      return "i32";
+  }
+}
+
 /** Apply the reached ECMAScript store conversion for one typed-array lane. */
 export function typedArrayStoreExpression(
   kind: TypedArrayKind,

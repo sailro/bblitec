@@ -23,6 +23,7 @@
 import {
     assertPinnedSync,
     importPinnedModule,
+    importPinnedModuleFetching,
     importPinnedModuleUnasynced,
     installPinnedImportHook,
 } from "./pinned-shader-composer.js";
@@ -107,6 +108,31 @@ function frameParsedSplat(parsed: ParsedSplat): Uint8Array {
     return framed;
 }
 
+/**
+ * One parse's two outputs as the packaged pair, wherever they came from.
+ *
+ * Both pinned containers answer in the same shape and this port asks the
+ * same question of both — are there harmonics, and does this cloud have
+ * splats at all — so the rule lives once. It is the `attachParsedSplat`
+ * fork itself (`parsed.sh && parsed.shDegree > 0`), taken at generation.
+ */
+function packagedSplat(
+    rows: Uint8Array,
+    sh: Uint8Array | undefined,
+    degree: number,
+): PackagedSplat {
+    // The stride is not re-typed here: `SplatLowerer` reads ROW_LENGTH off
+    // the pinned declaration and the generated loader checks the packaged
+    // bytes against it, so a moved stride refuses there rather than agreeing
+    // with a copy that can drift.
+    if (rows.byteLength === 0) {
+        throw new Error("Splat asset carries no splats.");
+    }
+    return sh === undefined || sh.byteLength === 0 || degree === 0
+        ? { rows }
+        : { rows, harmonics: { degree, bytes: sh } };
+}
+
 function unframeParsedSplat(framed: Uint8Array): PackagedSplat {
     const header = new DataView(
         framed.buffer,
@@ -115,24 +141,14 @@ function unframeParsedSplat(framed: Uint8Array): PackagedSplat {
     );
     const rowBytes = header.getUint32(0, true);
     const shBytes = header.getUint32(4, true);
-    const degree = header.getUint32(8, true);
-    const rows = framed.subarray(
-        CACHE_PREFIX_BYTES,
-        CACHE_PREFIX_BYTES + rowBytes,
+    return packagedSplat(
+        framed.subarray(CACHE_PREFIX_BYTES, CACHE_PREFIX_BYTES + rowBytes),
+        framed.subarray(
+            CACHE_PREFIX_BYTES + rowBytes,
+            CACHE_PREFIX_BYTES + rowBytes + shBytes,
+        ),
+        header.getUint32(8, true),
     );
-    if (shBytes === 0 || degree === 0) {
-        return { rows };
-    }
-    return {
-        rows,
-        harmonics: {
-            degree,
-            bytes: framed.subarray(
-                CACHE_PREFIX_BYTES + rowBytes,
-                CACHE_PREFIX_BYTES + rowBytes + shBytes,
-            ),
-        },
-    };
 }
 
 /**
@@ -142,7 +158,8 @@ function unframeParsedSplat(framed: Uint8Array): PackagedSplat {
  * `loadSplat` takes: `isPlyCompressedOrSH` selects the chunked/SH parser the
  * pin dynamically imports, and either one yields the same 32-byte rows plus,
  * for the compressed container, a flat spherical-harmonic byte stream.
- * A `.sog`/`.spz` still refuses — those need a ZIP/gzip decoder first.
+ * An `.spz` is a different pinned loader and goes to `packageSpz` below;
+ * `.sog` still refuses, pending a ZIP and a WebP decoder.
  */
 export function packageSplat(bytes: Uint8Array): PackagedSplat {
     // `assetBytes` hands back a freshly-allocated array, so the common case
@@ -157,51 +174,204 @@ export function packageSplat(bytes: Uint8Array): PackagedSplat {
                   bytes.byteOffset + bytes.byteLength,
               ) as ArrayBuffer);
 
-    let packaged: PackagedSplat;
-    if (pinnedPlyParser.isPly(data)) {
-        const compressed = pinnedPlyParser.isPlyCompressedOrSH(data);
-        // The pin's text parse over a multi-megabyte PLY is deterministic
-        // in (asset bytes, pin); a repeat compile replays the row buffer.
-        // The `.splat` fast path below stays uncached — caching a copy of
-        // the input would only spend disk on a no-op.
-        packaged = unframeParsedSplat(
-            cachedBakeSync(
-                {
-                    kind: "splat-ply",
-                    version: "2",
-                    module: moduleIdentity(import.meta.url),
-                    browser: false,
-                    parameters: {},
-                    inputs: [bytes],
-                },
-                () => {
-                    const parsed = compressed
-                        ? pinnedCompressedPlyParser
-                              .convertCompressedPlyToParsedSplat(data)
-                        : pinnedPlyParser.convertPlyToSplat(data);
-                    if (parsed.data.byteLength === 0) {
-                        throw new Error(
-                            "Splat PLY parsed to an empty row buffer (unsupported property layout).",
-                        );
-                    }
-                    return frameParsedSplat(parsed);
-                },
-            ),
-        );
-    } else {
+    if (!pinnedPlyParser.isPly(data)) {
         // A pre-converted `.splat` is already the row layout; the pin takes
         // this same fast path.
-        packaged = { rows: new Uint8Array(data) };
+        return packagedSplat(new Uint8Array(data), undefined, 0);
     }
+    const compressed = pinnedPlyParser.isPlyCompressedOrSH(data);
+    // The pin's text parse over a multi-megabyte PLY is deterministic
+    // in (asset bytes, pin); a repeat compile replays the row buffer.
+    // The `.splat` fast path above stays uncached — caching a copy of
+    // the input would only spend disk on a no-op.
+    return unframeParsedSplat(
+        cachedBakeSync(
+            {
+                kind: "splat-ply",
+                version: "2",
+                module: moduleIdentity(import.meta.url),
+                browser: false,
+                parameters: {},
+                inputs: [bytes],
+            },
+            () => {
+                const parsed = compressed
+                    ? pinnedCompressedPlyParser
+                          .convertCompressedPlyToParsedSplat(data)
+                    : pinnedPlyParser.convertPlyToSplat(data);
+                if (parsed.data.byteLength === 0) {
+                    throw new Error(
+                        "Splat PLY parsed to an empty row buffer (unsupported property layout).",
+                    );
+                }
+                return frameParsedSplat(parsed);
+            },
+        ),
+    );
+}
 
-    // The stride is not re-typed here: `SplatLowerer` reads ROW_LENGTH off
-    // the pinned declaration and the generated loader checks the packaged
-    // bytes against it, so a moved stride refuses there rather than agreeing
-    // with a copy that can drift.
-    if (packaged.rows.byteLength === 0) {
-        throw new Error("Splat asset carries no splats.");
+/** What the redirected `attachParsedSplat` records for one call. */
+interface RecordedAttach {
+    name: string;
+    parsed: ParsedSplat;
+    mesh: { rotation: { x: number; y: number; z: number } };
+    fragments: unknown;
+}
+
+/**
+ * The stand-in for `attachParsedSplat`, which both pinned loaders end on.
+ *
+ * It uploads textures and spawns a sort worker, neither of which exists
+ * here. The redirect keeps the pin's own call — its arguments, and the TRS
+ * its caller then writes, are what generation needs — and stands in only for
+ * the GPU half the native runtime owns. One copy, because the glTF feature's
+ * `_sceneSetup` and `loadSPZ` write the cloud's rotation the same way and a
+ * second recorder is a second thing to keep in step.
+ */
+function attachParsedSplatRecorder(hook: string): string {
+    return javascriptModuleUrl(
+        [
+            "export function attachParsedSplat(scene, name, parsed, fragments) {",
+            "    const mesh = { rotation: { x: 0, y: 0, z: 0 } };",
+            `    globalThis[${JSON.stringify(hook)}](`,
+            "        { name, parsed, mesh, fragments });",
+            // A synchronous thenable, so the pin's own `.then` callback runs
+            // before this returns and the TRS it writes is observed.
+            "    return { then: (resolve) => resolve(mesh) };",
+            "}",
+        ].join("\n"),
+    );
+}
+
+/**
+ * One recorded attach checked against the slice this port carries out of a
+ * pinned loader: the shader plugins it may not pass, and the one TRS lane
+ * its caller may write.
+ *
+ * Both pinned callers of `attachParsedSplat` observed here are checked the
+ * same way, because both are the same claim — that everything the pin did
+ * to the cloud after building it is the rotation this returns.
+ */
+function recordedRotation(
+    entry: RecordedAttach,
+    what: string,
+): readonly [number, number, number] {
+    if (entry.fragments !== undefined) {
+        throw new Error(
+            `${what} attached '${entry.name}' with shader fragments; only ` +
+                "a loadSplat call names those, and the generated pipeline " +
+                "composes them from that call alone.",
+        );
     }
-    return packaged;
+    const written = Object.keys(entry.mesh).sort();
+    if (written.length !== 1 || written[0] !== "rotation") {
+        throw new Error(
+            `${what} wrote ${written.join(", ")} on the attached cloud; ` +
+                "this pass carries its rotation alone.",
+        );
+    }
+    return [
+        entry.mesh.rotation.x,
+        entry.mesh.rotation.y,
+        entry.mesh.rotation.z,
+    ];
+}
+
+const SPZ_MODULE = "loader-splat/load-spz.js";
+
+/** The export surface `packageSpz` asks the pinned SPZ loader for. */
+interface PinnedSpzModule {
+    loadSPZ?: (scene: unknown, url: string) => Promise<unknown>;
+}
+
+/** The pin's `loadSPZ` result, as generation reads it. */
+export interface PackagedSpz extends PackagedSplat {
+    /** The Euler rotation `loadSPZ` left on the cloud it attached. */
+    rotation: readonly [number, number, number];
+}
+
+/**
+ * Packages an SPZ container by running the pin's own `loadSPZ`.
+ *
+ * The whole loader executes, not just its parse: it tests the two gzip magic
+ * bytes, inflates through `DecompressionStream`, runs the module-local
+ * `parseSpz` over the result and then writes a half turn about X on the cloud
+ * it attached. Every one of those is something this port would otherwise
+ * restate, and the last one is not even in a function generation could
+ * import — so the loader is executed end to end with its two boundaries
+ * stood in for: `fetch` answers from the bytes the download cache already
+ * holds, and `attachParsedSplat` records instead of building a GPU mesh.
+ *
+ * Not bake-cached, unlike the PLY parse beside it. Replaying bytes would
+ * skip the four contracts below — that exactly one cloud was attached, that
+ * the loader returned the one it attached, that it passed no shader
+ * fragments, and that the only lane it wrote is the rotation — and those are
+ * what make the rest of this a port rather than a guess. The inflate and
+ * parse cost about 280 ms on the reached container against a 19 ms cache
+ * replay, which is what that buys.
+ */
+export async function packageSpz(
+    bytes: Uint8Array,
+    url: string,
+): Promise<PackagedSpz> {
+    const recorded: RecordedAttach[] = [];
+    const attach = installPinnedImportHook((entry: RecordedAttach) => {
+        recorded.push(entry);
+    });
+    let mesh: unknown;
+    let fetching:
+        | { module: PinnedSpzModule; release: () => void }
+        | undefined;
+    try {
+        fetching = await importPinnedModuleFetching<PinnedSpzModule>(
+            SPZ_MODULE,
+            (requested) => {
+                if (requested !== url) {
+                    throw new Error(
+                        `Pinned ${SPZ_MODULE} fetched '${requested}' rather ` +
+                            `than the container it was given ('${url}').`,
+                    );
+                }
+                return bytes;
+            },
+            new Map([["./load-splat.js", attachParsedSplatRecorder(attach.hook)]]),
+        );
+        const module = fetching.module;
+        if (typeof module.loadSPZ !== "function") {
+            throw new Error(
+                `Pinned ${SPZ_MODULE} no longer exports loadSPZ.`,
+            );
+        }
+        mesh = await module.loadSPZ(undefined, url);
+    } finally {
+        // Both stand-ins go together: each retains this call's container and
+        // its parse, which are ~75 MB for the reached cloud, and neither is
+        // reachable once the loader has run.
+        attach.release();
+        fetching?.release();
+    }
+    if (recorded.length !== 1) {
+        throw new Error(
+            `Pinned loadSPZ attached ${recorded.length} cloud(s) for one ` +
+                "container; this port carries the one it returns.",
+        );
+    }
+    const entry = recorded[0]!;
+    if (mesh !== entry.mesh) {
+        throw new Error(
+            "Pinned loadSPZ returned a cloud other than the one it " +
+                "attached; the TRS this pass observes is written on the " +
+                "returned one.",
+        );
+    }
+    return {
+        rotation: recordedRotation(entry, "Pinned loadSPZ"),
+        ...packagedSplat(
+            new Uint8Array(entry.parsed.data),
+            entry.parsed.sh,
+            entry.parsed.shDegree ?? 0,
+        ),
+    };
 }
 
 /**
@@ -254,14 +424,6 @@ interface PinnedGaussianSplattingFeature {
     };
 }
 
-/** What the redirected `attachParsedSplat` records for one call. */
-interface RecordedAttach {
-    name: string;
-    parsed: ParsedSplat;
-    mesh: { rotation: { x: number; y: number; z: number } };
-    fragments: unknown;
-}
-
 const GS_FEATURE_MODULE = "loader-gltf/gltf-feature-gaussian-splatting.js";
 /** The pin's own scratch key, which `preParse` writes and `applyAsset` reads. */
 const GS_SCRATCH_KEY = "__gsSplats";
@@ -286,22 +448,7 @@ export async function extractGltfGaussianSplats(
             recorded.push(entry);
         },
     );
-    // `attachParsedSplat` uploads textures and spawns a sort worker, neither
-    // of which exists here. The redirect keeps the pin's own call — its
-    // arguments, and the TRS its caller then writes, are what generation
-    // needs — and stands in only for the GPU half the native runtime owns.
-    const recorder = javascriptModuleUrl(
-        [
-            "export function attachParsedSplat(scene, name, parsed, fragments) {",
-            "    const mesh = { rotation: { x: 0, y: 0, z: 0 } };",
-            `    globalThis[${JSON.stringify(hook)}](`,
-            "        { name, parsed, mesh, fragments });",
-            // A synchronous thenable, so the pin's own `.then` callback runs
-            // before this returns and the TRS it writes is observed.
-            "    return { then: (resolve) => resolve(mesh) };",
-            "}",
-        ].join("\n"),
-    );
+    const recorder = attachParsedSplatRecorder(hook);
     try {
         const module = await importPinnedModuleUnasynced(
             GS_FEATURE_MODULE,
@@ -373,29 +520,12 @@ function resolveRecordedSplat(
                 "is what the native pipeline samples.",
         );
     }
-    if (entry.fragments !== undefined) {
-        throw new Error(
-            `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} feature attached splat ` +
-                `'${entry.name}' with shader fragments; only a loadSplat call ` +
-                "names those, and the generated pipeline composes them from " +
-                "that call alone.",
-        );
-    }
-    const written = Object.keys(entry.mesh).sort();
-    if (written.length !== 1 || written[0] !== "rotation") {
-        throw new Error(
-            `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} scene wiring wrote ` +
-                `${written.join(", ")} on the attached cloud; this pass ` +
-                "carries its rotation alone into the packaged document.",
-        );
-    }
     return {
         name: entry.name,
         rows: new Uint8Array(entry.parsed.data),
-        rotation: [
-            entry.mesh.rotation.x,
-            entry.mesh.rotation.y,
-            entry.mesh.rotation.z,
-        ],
+        rotation: recordedRotation(
+            entry,
+            `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} scene wiring`,
+        ),
     };
 }

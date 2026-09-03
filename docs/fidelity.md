@@ -1190,6 +1190,21 @@ in [backends](backends.md#measured-contracts).
 
 ### Gaussian splats
 
+**The SPZ container is the pinned loader executed, and the rotation it writes
+is observed.** `loadSPZ` is a separate entry point upstream -- neither it nor
+`loadSplat` sniffs the other's container -- and everything it does is either a
+parse this port already takes at generation or a write no importable function
+carries. So it is executed whole, through the same `attachParsedSplat`
+recorder the glTF feature's `_sceneSetup` uses and a `fetch` shadowed in the
+pinned module's own scope so the download cache still answers; the generated
+`load_spz` is `load_splat` plus that observed lane, recorded as
+`spz-loader-at-generation`. Gated by scene 123 at 0.001 on both backends, and
+the gate OBSERVES the lane rather than merely reaching it: neutralizing it
+measures 48.276 MAD at max 226, against a published 0.0013155 (SDL_GPU) and 0.0012905 (Dawn), with 25 of 921,600
+pixels still matching. That probe ran at an earlier build stamp than the
+parity numbers beside it; its artifact is
+`artifacts/parity/scene123/probe-no-spz-rotation/`.
+
 **A cloud carrying harmonics reaches the pin's other pipeline, and its shader
 is built rather than lifted.** `attachParsedSplat` forks on the parse
 (`parsed.sh && parsed.shDegree > 0`) into `gaussian-splatting-pipeline-sh.ts`,

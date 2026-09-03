@@ -298,6 +298,63 @@ export async function importPinnedModuleWithExports<T>(
     return (await loading) as T;
 }
 
+/**
+ * Imports a pinned module whose own `fetch` generation answers.
+ *
+ * A pinned loader that fetches its container is still worth executing whole —
+ * `loadSPZ` is a container fork, a gzip inflate, a parse and a TRS write, and
+ * only the first three are things generation could reach any other way — but
+ * it must not reach the network from inside a compile: the download cache is
+ * what makes a corpus build survive an unavailable host. So `fetch` is
+ * shadowed in the pinned module's own scope, exactly as
+ * `importPinnedModuleUnasynced` shadows `Promise.all`, rather than patched
+ * onto `globalThis`, where an asset materializing concurrently would see it.
+ * The stand-in hands back a real `Response`, so `ok`, `status` and
+ * `arrayBuffer()` behave as the pin's own fetch does.
+ *
+ * A sibling rather than an option on the importer above, for the reason
+ * `importPinnedModuleObserving` is one: the module it returns is specific to
+ * one caller's bytes, so it cannot join that function's memo, and it has no
+ * module-local symbols to export. `release` drops the stand-in, which the
+ * caller holds until the pinned function it came for has run — the stand-in
+ * is called then, not at import.
+ */
+export async function importPinnedModuleFetching<T>(
+    relativePath: string,
+    fetchBytes: (url: string) => Uint8Array,
+    redirects: ReadonlyMap<string, string> = new Map(),
+): Promise<{ module: T; release: () => void }> {
+    const { hook, release } = installPinnedImportHook(
+        (url: string, resolve: (response: Response) => void) => {
+            // `Response` copies and windows the body itself, so this is a
+            // view rather than a copy: the three-argument form is what makes
+            // a `Uint8Array` over an unknown buffer type satisfy
+            // `BufferSource`, and it saves a full asset copy — 17 MB and
+            // 3 ms on the reached container.
+            const bytes = fetchBytes(url);
+            resolve(
+                new Response(
+                    new Uint8Array(
+                        bytes.buffer as ArrayBuffer,
+                        bytes.byteOffset,
+                        bytes.byteLength,
+                    ),
+                ),
+            );
+        },
+    );
+    const modulePath = join(pinnedLibraryRoot(), relativePath);
+    const shadowed = [
+        "const fetch = (url) => new Promise((resolve) => " +
+            `globalThis[${JSON.stringify(hook)}](url, resolve));`,
+        anchorPinnedSpecifiers(modulePath, redirects),
+    ].join("\n");
+    return {
+        module: (await import(javascriptModuleUrl(shadowed))) as T,
+        release,
+    };
+}
+
 /** Distinct per import, so two observed compositions never share a hook. */
 let observationCount = 0;
 

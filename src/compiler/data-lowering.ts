@@ -11,6 +11,7 @@ import {
     doubleLiteral,
     isTypedArrayType,
     passesByReference,
+    typedArrayStem,
     typedArrayStoreExpression,
     type DataIterationElement,
     type DataType,
@@ -3354,14 +3355,15 @@ export class DataLowerer {
     /**
      * Compiles `typedArray.set(source, offset)`.
      *
-     * The spec's own conversion is what bounds the reached slice: a source
-     * of a DIFFERENT typed-array kind converts each element through the
-     * target's own store, and an ordinary array converts through
-     * `ToNumber` — two more shapes, neither of which a reached scene
-     * writes. So the two arrays must be the same kind, and anything else
-     * refuses by name rather than copying bytes the spec would have
-     * converted. The offset argument is optional upstream and defaults to
-     * zero.
+     * A source of the target's OWN kind is copied; any other numeric
+     * sequence is converted first, element by element, through the
+     * target's own store — the spec's `ToNumber` is the identity over
+     * this data model's numbers, so the store is all that is left of it.
+     * That conversion is `typedArrayFromSource`, the same one the
+     * constructor applies to the same sequence, so a source this method
+     * accepts is exactly a source `new Float32Array(...)` accepts and
+     * anything else refuses by name. The offset argument is optional
+     * upstream and defaults to zero.
      */
     public compileTypedArraySet(
         call: ts.CallExpression,
@@ -3374,20 +3376,16 @@ export class DataLowerer {
                 "TypedArray.set expects a source and an optional offset.",
             );
         }
-        const source = this.compileDataPath(
-            call.arguments[0]!,
-            "read",
+        const source = this.typedArrayFromSource(
+            typedArrayStem(kind),
+            this.context.unwrap(call.arguments[0]!),
+            kind,
         );
-        if (
-            !source ||
-            source.kind !== "data" ||
-            source.dataType?.kind !== kind
-        ) {
+        if (source === undefined) {
             this.context.fail(
                 call.arguments[0]!,
-                `TypedArray.set is lowered for a source of the target's own kind (${kind}); ` +
-                    "another typed array or a plain array converts each element " +
-                    "through the target's store, which no reached scene needs.",
+                "TypedArray.set expects a numeric sequence: a typed array, " +
+                    "a number array or a numeric tuple.",
             );
         }
         this.context.reachJsData();
@@ -3400,7 +3398,7 @@ export class DataLowerer {
                 : "0.0";
         return {
             kind: "void",
-            cpp: `bbl::js::typed_array_set(${target.cpp}, ${source.cpp}, ${offset})`,
+            cpp: `bbl::js::typed_array_set(${target.cpp}, ${source}, ${offset})`,
         };
     }
 
@@ -4032,20 +4030,6 @@ export class DataLowerer {
         ) {
             return undefined;
         }
-        const prefix =
-            name === "Float64Array"
-                ? "f64"
-                : name === "Float32Array"
-                  ? "f32"
-                : name === "Uint8Array"
-                  ? "u8"
-                : name === "Uint16Array"
-                  ? "u16"
-                : name === "Int16Array"
-                  ? "i16"
-                : name === "Uint32Array"
-                  ? "u32"
-                  : "i32";
         const dataType: DataType =
             name === "Float64Array"
                 ? { kind: "f64array" }
@@ -4060,6 +4044,7 @@ export class DataLowerer {
                 : name === "Uint32Array"
                   ? { kind: "u32array" }
                   : { kind: "i32array" };
+        const prefix = typedArrayStem(dataType.kind);
         this.context.reachJsData();
         const argument = expression.arguments?.[0];
         if (!argument) {
@@ -4129,6 +4114,42 @@ export class DataLowerer {
                 `new ${name} supports at most one argument unless Uint8Array views an ArrayBuffer.`,
             );
         }
+        const converted = this.typedArrayFromSource(
+            prefix,
+            unwrapped,
+        );
+        if (converted !== undefined) {
+            return { kind: "data", cpp: converted, dataType };
+        }
+        return {
+            kind: "data",
+            cpp: `bbl::js::${prefix}_array_sized(${this.context.compileNumber(argument, "double")})`,
+            dataType,
+        };
+    }
+
+    /**
+     * One numeric sequence converted into a typed array of `prefix`'s
+     * kind, or undefined where the expression is not a sequence at all --
+     * which is how the constructor tells a source from a length.
+     *
+     * Every conversion the spec performs when a typed array is BUILT from
+     * a sequence is the conversion it performs when one is FILLED from the
+     * same sequence, so this is the one rule and `compileTypedArraySet`
+     * reads it too. `${prefix}_array_from` carries the target's own store
+     * for each element, which is what a differing source kind, an ordinary
+     * array and a plain-data tuple all pass through.
+     *
+     * `keepKind` is where the two callers part: a constructor must produce
+     * a NEW array even from a source of its own kind, so it converts
+     * unconditionally, while `set` copies such a source straight into the
+     * target and names its kind here to say so.
+     */
+    private typedArrayFromSource(
+        prefix: string,
+        unwrapped: ts.Expression,
+        keepKind?: TypedArrayKind,
+    ): string | undefined {
         if (ts.isArrayLiteralExpression(unwrapped)) {
             const elements = unwrapped.elements.map(
                 (element) =>
@@ -4148,15 +4169,11 @@ export class DataLowerer {
                         element,
                     ) !== undefined,
             );
-            return {
-                kind: "data",
-                cpp: this.typedArrayFromElements(
-                    prefix,
-                    elements,
-                    constant,
-                ),
-                dataType,
-            };
+            return this.typedArrayFromElements(
+                prefix,
+                elements,
+                constant,
+            );
         }
         const source =
             this.compileDataPath(unwrapped, "read") ??
@@ -4169,6 +4186,13 @@ export class DataLowerer {
                 ? this.context.compileValue(unwrapped)
                 : undefined);
         if (
+            keepKind !== undefined &&
+            staticSource?.kind === "data" &&
+            staticSource.dataType?.kind === keepKind
+        ) {
+            return staticSource.cpp;
+        }
+        if (
             staticSource?.kind === "tuple" &&
             staticSource.tupleElements?.every(
                 (entry) =>
@@ -4179,40 +4203,32 @@ export class DataLowerer {
             const elements = staticSource.tupleElements.map((entry) =>
                 doubleLiteral(entry.staticNumber!),
             );
-            return {
-                kind: "data",
-                // Every lane just proved a static number, so the whole
-                // tuple is generation-known by construction.
-                cpp: this.typedArrayFromElements(
-                    prefix,
-                    elements,
-                    true,
-                ),
-                dataType,
-            };
+            // Every lane just proved a static number, so the whole
+            // tuple is generation-known by construction.
+            return this.typedArrayFromElements(
+                prefix,
+                elements,
+                true,
+            );
         }
         // A single argument that is itself an array is never the length
-        // overload, so this precedes the sized fallback below. Both sources
-        // convert element by element where the kinds differ -- what
+        // overload, so this precedes the sized fallback in the caller. Every
+        // source converts element by element where the kinds differ -- what
         // `%TypedArray%(typedArray)` does, and what `${prefix}_array_from`
-        // already applies to a `number[]` -- so one arm serves both.
+        // already applies to a `number[]` -- so one arm serves them all. A
+        // runtime tuple joins them because its lanes are doubles too: the
+        // three components of a colour a scene computed.
         if (
             staticSource?.kind === "data" &&
             (isTypedArrayType(staticSource.dataType) ||
-                (staticSource.dataType?.kind === "vector" &&
+                staticSource.dataType?.kind === "tuple" ||
+                ((staticSource.dataType?.kind === "vector" ||
+                    staticSource.dataType?.kind === "span") &&
                     staticSource.dataType.element.kind === "number"))
         ) {
-            return {
-                kind: "data",
-                cpp: `bbl::js::${prefix}_array_from(${staticSource.cpp})`,
-                dataType,
-            };
+            return `bbl::js::${prefix}_array_from(${staticSource.cpp})`;
         }
-        return {
-            kind: "data",
-            cpp: `bbl::js::${prefix}_array_sized(${this.context.compileNumber(argument, "double")})`,
-            dataType,
-        };
+        return undefined;
     }
 
     /**

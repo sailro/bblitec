@@ -49,6 +49,7 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat": [],
     "loader:splat-bake": [],
     "loader:splat-sh": [],
+    "loader:splat-spz": [],
     "material:pbr": [],
     "material:clearcoat": [],
     "material:sheen": [],

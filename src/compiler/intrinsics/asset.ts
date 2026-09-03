@@ -331,6 +331,36 @@ export function compileAssetIntrinsic(
             };
         }
 
+        case "loadSPZ": {
+            // `loadSPZ(scene, url)`. The pin's second splat entry point:
+            // the same cloud model out of a gzipped SPZ container, with no
+            // shader-plugin parameter and a half turn about X written on the
+            // cloud it attaches. Generation runs that whole loader over the
+            // fetched bytes (`src/splat-packager.ts`), so what is left here
+            // is the same registration `loadSplat` performs.
+            context.expectArgumentCount(call, 2, 2);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            const source = context.compileStringLiteral(call.arguments[1]!);
+            const asset = context.registerAsset(source, "spz");
+            context.reachFeature("loader:splat", call);
+            // The second entry point's own feature, reached at the call the
+            // way `loader:splat-bake` is: it selects the emitted `load_spz`,
+            // so the call below and the definition it names have one gate
+            // rather than two that could disagree.
+            context.reachFeature("loader:splat-spz", call);
+            context.reachFeature("renderer:scene", call);
+            return {
+                kind: "splat-mesh",
+                cpp:
+                    `bbl::load_spz(${scene.cpp}, ` +
+                    `bbl::asset_path(` +
+                    `${context.cppString(asset.output)}))`,
+                engineCpp: context.requireEngine(scene, call.arguments[0]!),
+                asset,
+            };
+        }
+
         case "bakeCurrentTransformIntoVertices": {
             // src/mesh/GaussianSplatting/gaussian-splatting-bake.ts. The pin
             // reads the cloud's own world matrix, rewrites every row through

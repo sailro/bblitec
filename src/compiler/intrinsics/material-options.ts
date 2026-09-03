@@ -206,11 +206,52 @@ export function staticColor3Value(
         );
     }
     if (!channelValues || channelValues.some((value) => value === undefined)) {
-        return undefined;
+        // Syntactic resolution follows `??`, module constants and const
+        // literal initializers, and stops at a binding that has none of
+        // those -- an inlined user function's parameter. The emitted half
+        // of the same call reads that binding out of the value model
+        // (`StaticEvaluator.tupleElements`), so the folded half reads the
+        // same tuple's channels rather than refusing a colour the compiler
+        // demonstrably knows. Only a compile-time tuple qualifies: a data
+        // tuple's lanes are runtime expressions with no `staticNumber`, and
+        // a channel generation needs is genuinely absent there.
+        //
+        // FOUR sinks read this, not one, and they split two ways. The
+        // unlit tint and the two subsurface options FAIL on undefined, so
+        // for them this is refusal-to-acceptance and cannot move an
+        // existing scene. `setPbrEmissive` and the sheen colour are VALUE
+        // sinks: they omit the field instead of refusing, so a colour that
+        // used to default -- black for emissive, absent for sheen -- now
+        // folds into the composed variant. That is the same defect being
+        // fixed, one sink over, but it is a value change rather than a
+        // refusal change, which is why the neutrality proof for this edit
+        // has to be a whole-tree one. Measured: the three corpus scenes
+        // reaching either sink regenerate byte-identically, because scene
+        // 20's emissive channels are runtime randoms and still refuse.
+        return staticTupleChannels(context, node);
     }
     const [r, g, b] = channelValues.map((value) =>
         staticNumberValue(context, value!)
     );
+    return r === undefined || g === undefined || b === undefined
+        ? undefined
+        : [r, g, b];
+}
+
+/** The three static channels of a bound compile-time 3-tuple, if it is one. */
+function staticTupleChannels(
+    context: Pick<PositiveIntegerContext, "lookupOptional">,
+    node: ts.Expression,
+): readonly [number, number, number] | undefined {
+    if (!ts.isIdentifier(node)) return undefined;
+    const bound = context.lookupOptional(node);
+    if (bound?.kind !== "tuple" || bound.tupleElements?.length !== 3) {
+        return undefined;
+    }
+    const channels = bound.tupleElements.map((element) =>
+        element.kind === "number" ? element.staticNumber : undefined
+    );
+    const [r, g, b] = channels;
     return r === undefined || g === undefined || b === undefined
         ? undefined
         : [r, g, b];

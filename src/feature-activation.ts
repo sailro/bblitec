@@ -393,6 +393,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "#bakeCurrentTransformIntoVertices",
         consumers: CMAKE,
     },
+    "loader:splat-spz": {
+        provenance: "src/loader-splat/load-spz.ts#loadSPZ",
+        consumers: CMAKE,
+    },
     "loader:splat-sh": {
         provenance:
             "src/loader-splat/splat-ply-compressed.ts" +
