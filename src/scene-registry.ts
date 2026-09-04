@@ -3783,10 +3783,9 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Torus States",
         parity: {
-            // The morph state machine and the shader's time uniform both
-            // advance on `performance.now()`, so a wall-clock settle names
-            // no reproducible state: the golden is the 60 Hz fixed-clock
-            // frame the platformer's is, on both sides.
+            // A fixed-clock frame (docs/fidelity.md): the demo reads
+            // `performance.now()`. Not the convention's 180 -- its first
+            // state switch lands exactly on that frame's 3000 ms.
             referenceFrame: 185,
             maxFullMad: 0.25,
             maxForegroundMad: 0.25,

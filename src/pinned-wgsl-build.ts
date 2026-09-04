@@ -35,6 +35,9 @@ import ts from "typescript";
 
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
+// A cycle with the store, which imports this module: benign, because the
+// root walk is a hoisted declaration this module reaches only at call time.
+import { findRepositoryRoot } from "./upstream-source.js";
 
 /** Where the pinned script lives in this repository's corpus. */
 export const PINNED_WGSL_BUILD_SCRIPT = "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts";
@@ -115,11 +118,6 @@ export function pinnedTaggedWgslTransform(
     return loaded;
 }
 
-/** The checkout this module is deployed in: `dist/src/` sits two levels down. */
-function defaultRepositoryRoot(): string {
-    return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
-}
-
 const packagedWgslCache = new Map<string, string>();
 
 /**
@@ -129,18 +127,15 @@ const packagedWgslCache = new Map<string, string>();
  * text the package carries, because the marker goes through the pin's own
  * build step exactly as the template it matches did -- so a separator rule
  * the pin changes moves every marker with it instead of leaving each a
- * hand transcription to re-spell.
- *
- * An interpolation is a generation-time value spelled where the pin's text
- * carries it literally (`let ${pinnedName} = scene.vFogInfos.${component};`
- * names a read the pin writes out in full), so it is spliced in BEFORE
- * packaging. The pin's own placeholders are the other case: a marker that
- * keeps a literal `\${posVar}` for the template's `${posVar}` rides through
- * the transform as the placeholder it is, under the separator rules the
- * build applied around it.
+ * hand transcription to re-spell. Interpolations are joined in first
+ * (`${pinnedName}` is a generation-time value the pin writes out); a
+ * placeholder the pin's own template carries is written escaped,
+ * `\${posVar}`, and rides through as the `${...}` the build leaves alone.
  *
  * This names one minifier. A marker over a `?raw` `.wgsl` file's text was
- * minified by miniray and keeps its packaged spelling as a plain literal.
+ * minified by miniray and keeps its packaged spelling as a plain literal,
+ * as does a JavaScript string the pin interpolates unminified; a marker
+ * whose source the step leaves alone is the same text either way.
  */
 export function packagedWgsl(
     strings: TemplateStringsArray,
@@ -151,15 +146,15 @@ export function packagedWgsl(
         .join("");
     const cached = packagedWgslCache.get(source);
     if (cached !== undefined) return cached;
-    const transformed = pinnedTaggedWgslTransform(defaultRepositoryRoot())(
-        `import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`,
-        "marker.ts",
-    );
+    const transformed = pinnedTaggedWgslTransform(
+        findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
+    )(`import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`, "marker.ts");
     const match =
         transformed && /const marker = `([\s\S]*)`;\n$/.exec(transformed.code);
     if (!match) {
         throw new Error(
-            `The pinned build step left a marker untransformed: ${source}`,
+            `The pinned build step returned an unrecognized module for the marker \`${source}\`: ` +
+                (transformed?.code ?? "null"),
         );
     }
     packagedWgslCache.set(source, match[1]!);

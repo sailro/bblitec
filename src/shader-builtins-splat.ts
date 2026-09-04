@@ -67,9 +67,6 @@ interface SplatShaderDialect {
     anchors: readonly string[];
 }
 
-// The stock module is a `?raw` `.wgsl` file, which the package minifies
-// through miniray rather than the tagged build step: these anchors keep
-// miniray's own spelling as plain literals.
 const STOCK_DIALECT: SplatShaderDialect = {
     uniformStruct: "struct S{",
     varyingStruct: "struct A{",
