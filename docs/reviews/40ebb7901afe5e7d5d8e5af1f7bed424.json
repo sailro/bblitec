@@ -56,10 +56,8 @@
       "filedIn": "docs/reviews/ (this record); the efficiency numbers are in the pull request"
     },
     {
-      "summary": "the cubemap-skybox and HDR-prefilter anchors over `?raw` files assert miniray's mangled identifiers (`struct e{`, `var c:texture_cube`), so a miniray upgrade that renames them refuses generation with no WGSL change; the capture-group form shader-builtins-background.ts and ibl-brdf-lut.ts already use would assert shape and read the name",
-      "applied": false,
-      "blockedBy": "a miniray version change to measure against; the anchors are pre-existing contracts over text this port cannot regenerate (miniray is not installed and the corpus pins no version of it), so the rewrite wants its own differential sweep",
-      "filedIn": "TODO.md"
+      "summary": "the cubemap-skybox, stock-splat and HDR-prefilter anchors over `?raw` files asserted miniray's mangled identifiers (`struct e{`, `var c:texture_cube`, `struct S{`, `const n=1024u`), so a miniray upgrade that renames them would refuse generation with no WGSL change; each declaration is now asserted by shape with its name read back, the way the background and BRDF-LUT lifts do, and the skybox's native declarations are spelled from the names read",
+      "applied": true
     }
   ]
 }
