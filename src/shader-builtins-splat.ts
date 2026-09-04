@@ -67,24 +67,61 @@ interface SplatShaderDialect {
     anchors: readonly string[];
 }
 
-const STOCK_DIALECT: SplatShaderDialect = {
-    uniformStruct: "struct S{",
-    varyingStruct: "struct A{",
-    uniformDeclaration: "var<uniform> u:S",
-    vertexEntry: "@vertex fn vs(",
-    fragmentEntry: "@fragment fn fs(",
-    anchors: [
-        "@group(1) @binding(0) var<uniform> u:S;",
-        "@group(1) @binding(1) var e:sampler;",
-        "@group(1) @binding(2) var F:texture_2d<f32>;",
-        "@group(1) @binding(3) var G:texture_2d<f32>;",
-        "@group(1) @binding(4) var J:texture_2d<f32>;",
-        "@group(1) @binding(5) var K:texture_2d<f32>;",
-        "@vertex fn vs(",
-        "@fragment fn fs(",
-        "@builtin(position) pos:vec4<f32>",
-    ],
-};
+/**
+ * The stock module's dialect, read off the module itself: its text is
+ * miniray's, mangled names included, so each declaration is asserted by
+ * shape and its name read back rather than spelled here.
+ */
+function stockDialect(wgsl: string): SplatShaderDialect {
+    const shape = (pattern: RegExp, what: string): RegExpExecArray => {
+        const match = pattern.exec(wgsl);
+        if (!match) {
+            throw new Error(
+                `Pinned Gaussian-splat WGSL no longer declares ${what}.`,
+            );
+        }
+        return match;
+    };
+    const [, uniform, uniformStruct] = shape(
+        /@group\(1\) @binding\(0\) var<uniform> (\w+):(\w+);/,
+        "its uniform block",
+    ) as unknown as [string, string, string];
+    const sampler = shape(
+        /@group\(1\) @binding\(1\) var (\w+):sampler;/,
+        "its sampler",
+    )[1]!;
+    const textures = [2, 3, 4, 5].map(
+        (binding) =>
+            shape(
+                new RegExp(
+                    `@group\\(1\\) @binding\\(${binding}\\) var (\\w+):texture_2d<f32>;`,
+                ),
+                `its data texture at binding ${binding}`,
+            )[1]!,
+    );
+    const varying = shape(
+        /@vertex fn vs\([^)]*\)->(\w+)\{/,
+        "its vertex entry's varying struct",
+    )[1]!;
+    return {
+        uniformStruct: `struct ${uniformStruct}{`,
+        varyingStruct: `struct ${varying}{`,
+        uniformDeclaration: `var<uniform> ${uniform}:${uniformStruct}`,
+        vertexEntry: "@vertex fn vs(",
+        fragmentEntry: "@fragment fn fs(",
+        anchors: [
+            `@group(1) @binding(0) var<uniform> ${uniform}:${uniformStruct};`,
+            `@group(1) @binding(1) var ${sampler}:sampler;`,
+            ...textures.map(
+                (name, index) =>
+                    `@group(1) @binding(${index + 2}) var ${name}:texture_2d<f32>;`,
+            ),
+            "@vertex fn vs(",
+            "@fragment fn fs(",
+            "@builtin(position) pos:vec4<f32>",
+        ],
+    };
+}
 
 const SH_DIALECT: SplatShaderDialect = {
     uniformStruct: packagedWgsl`struct U {`,
@@ -166,11 +203,8 @@ const cache = new Map<string, SplatShaderSource>();
 export function pinnedSplatShader(
     composedModule?: string,
 ): SplatShaderSource {
-    return splitSplatShader(
-        STOCK_DIALECT,
-        pinnedSplatModuleWgsl(),
-        composedModule,
-    );
+    const stock = pinnedSplatModuleWgsl();
+    return splitSplatShader(stockDialect(stock), stock, composedModule);
 }
 
 /**

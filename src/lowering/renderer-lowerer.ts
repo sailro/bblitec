@@ -150,18 +150,33 @@ interface LiftedImageSkybox {
     vertexBody: string;
     /** Re-homed fragment statements, one per line at body indent. */
     fragmentBody: string;
+    /**
+     * The pin's own names as its bundler mangled them, for the native
+     * declarations the bodies compile against.
+     */
+    names: {
+        /** The vertex position input. */
+        position: string;
+        /** The cubemap texture and its sampler. */
+        texture: string;
+        sampler: string;
+        /** The fragment entry's input parameter. */
+        fragmentInput: string;
+    };
 }
 
 /**
  * Lifts the cubemap skybox's two stages out of the packaged pin.
  *
  * `skybox-cubemap.ts` ships `skyVertSrc`/`skyFragSrc` as inlined string
- * literals (raw imports carry no source-map entry, and their text is
- * miniray's -- the anchors below are its spelling and its mangled names,
- * plain literals), so the statements are taken from the packaged module
- * text and re-homed onto the native binding contract, each mapping
- * required to occur. Three documented departures from
- * the pin, all forced by the native frame rather than chosen:
+ * literals (raw imports carry no source-map entry), so the statements are
+ * taken from the packaged module text and re-homed onto the native binding
+ * contract, each mapping required to occur. The text is miniray's, mangled
+ * names included, so each declaration is asserted by SHAPE and its name
+ * read back: the native declarations the bodies read are spelled from
+ * those names, and a miniray that renames them moves the emitted text
+ * rather than refusing generation. Three documented departures from the
+ * pin, all forced by the native frame rather than chosen:
  *
  * - `mesh.world` drops out: the pinned skybox mesh carries an identity world
  *   (`build_image_skybox_plan` authors the cube around the origin exactly as
@@ -190,59 +205,89 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         module,
         "skyFragSrc",
     );
-    const vertexContracts: ReadonlyArray<readonly [string, string]> = [
-        ["struct e{world:mat4x4<f32>}", "skybox-cubemap mesh block"],
-        [
-            "@group(1) @binding(0) var<uniform> mesh:e;",
-            "skybox-cubemap mesh binding",
-        ],
-        [
-            "struct d{@builtin(position) clipPos:vec4<f32>,@location(0) vPositionW:vec3<f32>,@location(1) vPositionLocal:vec3<f32>,@location(2) vFogDistance:vec3<f32>}",
-            "skybox-cubemap varying block",
-        ],
-        [
-            "fn main(@location(0) c:vec3<f32>,@location(1) normal:vec3<f32>)->d",
-            "skybox-cubemap vertex inputs",
-        ],
-    ];
-    for (const [text, what] of vertexContracts) {
-        if (!vertexLiteral.includes(text)) {
+    const shape = (
+        text: string,
+        pattern: RegExp,
+        what: string,
+    ): RegExpExecArray => {
+        const match = pattern.exec(text);
+        if (!match) {
             throw new Error(`Pinned Babylon Lite ${what} changed.`);
         }
-    }
-    const fragmentContracts: ReadonlyArray<readonly [string, string]> = [
-        [
-            "@group(1) @binding(1) var c:texture_cube<f32>;",
-            "skybox-cubemap texture binding",
-        ],
-        [
-            "@group(1) @binding(2) var d:sampler;",
-            "skybox-cubemap sampler binding",
-        ],
-        [
-            "struct g{@location(0) vPositionW:vec3<f32>,@location(1) vPositionLocal:vec3<f32>,@location(2) vFogDistance:vec3<f32>}",
-            "skybox-cubemap fragment inputs",
-        ],
-    ];
-    for (const [text, what] of fragmentContracts) {
-        if (!fragmentLiteral.includes(text)) {
-            throw new Error(`Pinned Babylon Lite ${what} changed.`);
-        }
-    }
+        return match;
+    };
+    const meshStruct = shape(
+        vertexLiteral,
+        /struct (\w+)\{world:mat4x4<f32>\}/,
+        "skybox-cubemap mesh block",
+    )[1]!;
+    shape(
+        vertexLiteral,
+        new RegExp(`@group\\(1\\) @binding\\(0\\) var<uniform> mesh:${meshStruct};`),
+        "skybox-cubemap mesh binding",
+    );
+    const varyingStruct = shape(
+        vertexLiteral,
+        /struct (\w+)\{@builtin\(position\) clipPos:vec4<f32>,@location\(0\) vPositionW:vec3<f32>,@location\(1\) vPositionLocal:vec3<f32>,@location\(2\) vFogDistance:vec3<f32>\}/,
+        "skybox-cubemap varying block",
+    )[1]!;
+    const [, position, normal] = shape(
+        vertexLiteral,
+        new RegExp(
+            `fn main\\(@location\\(0\\) (\\w+):vec3<f32>,@location\\(1\\) (\\w+):vec3<f32>\\)->${varyingStruct}`,
+        ),
+        "skybox-cubemap vertex inputs",
+    ) as unknown as [string, string, string];
+    const texture = shape(
+        fragmentLiteral,
+        /@group\(1\) @binding\(1\) var (\w+):texture_cube<f32>;/,
+        "skybox-cubemap texture binding",
+    )[1]!;
+    const sampler = shape(
+        fragmentLiteral,
+        /@group\(1\) @binding\(2\) var (\w+):sampler;/,
+        "skybox-cubemap sampler binding",
+    )[1]!;
+    const fragmentStruct = shape(
+        fragmentLiteral,
+        /struct (\w+)\{@location\(0\) vPositionW:vec3<f32>,@location\(1\) vPositionLocal:vec3<f32>,@location\(2\) vFogDistance:vec3<f32>\}/,
+        "skybox-cubemap fragment inputs",
+    )[1]!;
+    const fragmentInput = shape(
+        fragmentLiteral,
+        new RegExp(`fn main\\((\\w+):${fragmentStruct}\\)`),
+        "skybox-cubemap fragment entry",
+    )[1]!;
 
     const vertexStatements = pinnedEntryStatements(
         vertexLiteral,
         "skybox-cubemap vertex stage",
     );
+    const normalRead = new RegExp(`\\b${normal}\\b`);
     for (const statement of vertexStatements) {
-        if (statement.includes("normal")) {
+        if (normalRead.test(statement)) {
             throw new Error(
                 "Pinned Babylon Lite skybox-cubemap vertex stage started reading its normal input; the native single-buffer pipeline can no longer drop it.",
             );
         }
     }
+    const vertexText = vertexStatements.join("\n");
+    const output = shape(
+        vertexText,
+        new RegExp(`^var (\\w+):${varyingStruct};$`, "m"),
+        "skybox-cubemap vertex output",
+    )[1]!;
+    const worldPosition = shape(
+        vertexText,
+        new RegExp(
+            `^(?:let|var) (\\w+)=mesh\\.world\\*vec4<f32>\\(${position},1\\.0\\);$`,
+            "m",
+        ),
+        "skybox-cubemap world position",
+    )[1]!;
+    const fogDistancePrefix = `${output}.vFogDistance=`;
     const fogDistanceStatement = vertexStatements.find((statement) =>
-        statement.startsWith("a.vFogDistance="),
+        statement.startsWith(fogDistancePrefix),
     );
     if (!fogDistanceStatement) {
         throw new Error(
@@ -250,15 +295,18 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         );
     }
     // The pin's own right-hand side, re-homed for per-fragment evaluation:
-    // `b` is the world-position vec4 in the pinned vertex, rebuilt here from
-    // the interpolated varying that carries its xyz.
+    // the world-position vec4 of the pinned vertex is rebuilt from the
+    // interpolated varying that carries its xyz.
     const fogDistanceExpression = rehomePinned(
         fogDistanceStatement
-            .slice("a.vFogDistance=".length)
+            .slice(fogDistancePrefix.length)
             .replace(/;$/, ""),
         [
             ["scene.view", "uniforms.view"],
-            ["*b)", "*vec4<f32>(b.vPositionW,1.0))"],
+            [
+                `*${worldPosition})`,
+                `*vec4<f32>(${fragmentInput}.vPositionW,1.0))`,
+            ],
         ],
         "skybox-cubemap fog distance",
     );
@@ -268,8 +316,11 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
             .map((statement) => `    ${statement}`)
             .join("\n"),
         [
-            ["var a:d;", "var a: VertexOutput;"],
-            ["mesh.world*vec4<f32>(c,1.0)", "vec4<f32>(c,1.0)"],
+            [`var ${output}:${varyingStruct};`, `var ${output}: VertexOutput;`],
+            [
+                `mesh.world*vec4<f32>(${position},1.0)`,
+                `vec4<f32>(${position},1.0)`,
+            ],
             ["scene.viewProjection", "uniforms.viewProjection"],
         ],
         "skybox-cubemap vertex stage",
@@ -298,7 +349,10 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         [
             ["scene.vFogInfos", "uniforms.fogInfos"],
             ["scene.vFogColor", "uniforms.fogColor"],
-            ["calcFogFactor(b.vFogDistance)", "bblCalcFogFactor(vFogDistance)"],
+            [
+                `calcFogFactor(${fragmentInput}.vFogDistance)`,
+                "bblCalcFogFactor(vFogDistance)",
+            ],
         ],
         "skybox-cubemap fragment stage",
     );
@@ -312,7 +366,11 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
             );
         }
     }
-    return { vertexBody, fragmentBody };
+    return {
+        vertexBody,
+        fragmentBody,
+        names: { position, texture, sampler, fragmentInput },
+    };
 }
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
@@ -3067,7 +3125,7 @@ struct VertexOutput {
 }
 
 @vertex
-fn mainVertex(@location(0) c: vec3<f32>) -> VertexOutput {
+fn mainVertex(@location(0) ${lifted.names.position}: vec3<f32>) -> VertexOutput {
 ${lifted.vertexBody}
 }
 `,
@@ -3076,8 +3134,8 @@ ${lifted.vertexBody}
                     output:
                         "upstream/shaders/skybox-cubemap.frag.native.wgsl",
                     data: `// ${imageSkyboxProvenance}
-@group(2) @binding(0) var c: texture_cube<f32>;
-@group(2) @binding(1) var d: sampler;
+@group(2) @binding(0) var ${lifted.names.texture}: texture_cube<f32>;
+@group(2) @binding(1) var ${lifted.names.sampler}: sampler;
 
 struct FragmentUniforms {
     view: mat4x4<f32>,
@@ -3097,7 +3155,7 @@ struct FragmentInput {
 }
 
 @fragment
-fn mainFragment(b: FragmentInput) -> @location(0) vec4<f32> {
+fn mainFragment(${lifted.names.fragmentInput}: FragmentInput) -> @location(0) vec4<f32> {
 ${lifted.fragmentBody}
 }
 `,

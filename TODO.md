@@ -153,11 +153,6 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ## P1 — Runtime and validation
 
-- [ ] The cubemap-skybox and HDR-prefilter anchors over `?raw` files assert
-  miniray's mangled identifiers (`struct e{`, `var c:texture_cube`), so a
-  miniray upgrade that renames them refuses generation with no WGSL change;
-  assert the shape and read the name, as the background and BRDF-LUT lifts do.
-
 - [ ] Extract retained DOM/CSS analysis from `Compiler` into a stateful
   `UiLowerer` with a narrow lowering context. Move the private CSS projection
   markers to typed `UiStyleRule` declarations in the same pass, then split the

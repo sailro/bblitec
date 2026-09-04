@@ -63,7 +63,8 @@ function loadPinnedHdrShaders(): {
     const equirectToCube: unknown = JSON.parse(equirectMatch[1]);
     if (
         typeof prefilterCube !== "string" ||
-        !prefilterCube.includes("const n=1024u") ||
+        // The sample count, whatever miniray named its constant.
+        !/const \w+=1024u/.test(prefilterCube) ||
         !prefilterCube.includes("pow(2.0,f32(params.mipLevel)/0.8)") ||
         typeof equirectToCube !== "string" ||
         !equirectToCube.includes("texture_storage_2d_array<rgba16float,write>")
