@@ -20,28 +20,33 @@ Unsupported syntax and APIs fail at compile time with source locations.
 *A few of the 213 curated parity scenes and 12 demos, compiled to native C++
 and rendered on both GPU backends — click any frame for the measured numbers.*
 
-## Current proof points
+## Coverage
 
-- Pinned upstream: `@babylonjs/lite@1.27.0`,
-  commit `64710b56f9dfe175d919c635812f84c8872d467c`.
-- Curated Babylon Lite parity scenes and demos, plus primitives and project-owned differential regression gates.
-- External glTF/GLB support.
-- Support for Typescript structs, nullable objects, dynamic arrays,
-  enums, switch/break/continue, destructuring, spread, runtime Math.
-- Standard/PBR/Grid rendering — Standard and PBR both through Babylon
-  Lite's own composed per-variant stages on every draw — ordered draw
-  lists, custom alpha variants, frame-graph MRT/depth passes, negative
-  transforms, runtime scene mutation, property animation, and tree-shaken
-  GPU deformation.
-- Exact HDR GGX preprocessing and transmission/IOR/volume scene-color rendering.
-- WGSL shaders compiled by pinned Tint for D3D12, Vulkan, and Metal.
-- Two complete, mutually validating GPU backends: SDL_GPU over offline-compiled
-  shaders, and Dawn (WebGPU) rendering through the browser reference's own
-  compiler and rasterization stack — every expressible scene passes on both.
+Pinned upstream: `@babylonjs/lite@1.27.0`,
+commit `64710b56f9dfe175d919c635812f84c8872d467c`.
 
-See [features](docs/features.md) for the supported feature set — split into
-what is decided at compile time and what lives at run time — and
-[current status](docs/status.md) for all measured scene results.
+- **Language** — the reachable TypeScript subset: classes, closures, async,
+  structs, arrays, enums, destructuring, spread, runtime `Math`.
+- **Assets** — glTF/GLB (Draco, Meshopt), KTX/Basis textures, HDR
+  environments, Gaussian splats, browser-drawn textures, node-particle
+  bakes; all materialized at compile time.
+- **Materials** — Standard, PBR (clearcoat, sheen, iridescence, anisotropy,
+  transmission), Grid, node materials, material plugins, shader materials.
+- **Lighting** — punctual, hemispheric and clustered lights; PCF, ESM and
+  CSM shadows.
+- **Geometry** — mesh builders, morph targets, skinning, thin instances,
+  mirrored transforms, scene mutation, GPU picking.
+- **Frame graph** — render targets, MRT and depth passes, post-processes,
+  fullscreen effects, image processing.
+- **2D and UI** — sprites and billboards with custom shaders; DOM/CSS pages
+  lowered to RmlUi.
+- **Simulation** — animation, physics, navigation, audio, cameras and input,
+  gizmos.
+- **Backends** — SDL_GPU (D3D12, Vulkan, Metal through pinned Tint) and
+  Dawn (WebGPU); a scene passes on both or is not integrated.
+
+See [features](docs/features.md) for details and [status](docs/status.md)
+for the measured results.
 
 ## Quick start
 
