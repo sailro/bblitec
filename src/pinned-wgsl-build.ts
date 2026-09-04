@@ -28,13 +28,16 @@
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 import ts from "typescript";
 
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import { transpileCommonJs } from "./typescript-transpile.js";
+// A cycle with the store, which imports this module: benign, because the
+// root walk is a hoisted declaration this module reaches only at call time.
+import { findRepositoryRoot } from "./upstream-source.js";
 
 /** Where the pinned script lives in this repository's corpus. */
 export const PINNED_WGSL_BUILD_SCRIPT = "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts";
@@ -113,6 +116,49 @@ export function pinnedTaggedWgslTransform(
     }
     loaded = module.exports.transformTaggedWgsl as TaggedWgslTransform;
     return loaded;
+}
+
+const packagedWgslCache = new Map<string, string>();
+
+/**
+ * A marker over the package's WGSL, spelled as the pin's SOURCE spells it.
+ *
+ * `packagedWgsl\`let R = input.worldPos - scene.vEyePosition.xyz\`` is the
+ * text the package carries, because the marker goes through the pin's own
+ * build step exactly as the template it matches did -- so a separator rule
+ * the pin changes moves every marker with it instead of leaving each a
+ * hand transcription to re-spell. Interpolations are joined in first
+ * (`${pinnedName}` is a generation-time value the pin writes out); a
+ * placeholder the pin's own template carries is written escaped,
+ * `\${posVar}`, and rides through as the `${...}` the build leaves alone.
+ *
+ * This names one minifier. A marker over a `?raw` `.wgsl` file's text was
+ * minified by miniray and keeps its packaged spelling as a plain literal,
+ * as does a JavaScript string the pin interpolates unminified; a marker
+ * whose source the step leaves alone is the same text either way.
+ */
+export function packagedWgsl(
+    strings: TemplateStringsArray,
+    ...values: readonly unknown[]
+): string {
+    const source = strings
+        .map((part, index) => (index === 0 ? part : `${String(values[index - 1])}${part}`))
+        .join("");
+    const cached = packagedWgslCache.get(source);
+    if (cached !== undefined) return cached;
+    const transformed = pinnedTaggedWgslTransform(
+        findRepositoryRoot(dirname(fileURLToPath(import.meta.url))),
+    )(`import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`, "marker.ts");
+    const match =
+        transformed && /const marker = `([\s\S]*)`;\n$/.exec(transformed.code);
+    if (!match) {
+        throw new Error(
+            `The pinned build step returned an unrecognized module for the marker \`${source}\`: ` +
+                (transformed?.code ?? "null"),
+        );
+    }
+    packagedWgslCache.set(source, match[1]!);
+    return match[1]!;
 }
 
 /**

@@ -12,6 +12,7 @@ import {
     blendFactoriesCpp,
     readPinnedBlendTable,
 } from "./pinned-blend-table.js";
+import { packagedWgsl } from "../pinned-wgsl-build.js";
 
 const systemModule = "src/sprite/billboard-sprite.ts";
 const sceneModule = "src/sprite/billboard-scene.ts";
@@ -577,7 +578,7 @@ export class BillboardLowerer {
             fxStructFields: composed
                 ? this.shaderText.braced(
                       composed,
-                      "struct SpriteFx{",
+                      packagedWgsl`struct SpriteFx {`,
                       "billboard fx uniform struct",
                   )
                 : undefined,
@@ -607,28 +608,28 @@ export class BillboardLowerer {
             vertexReadsSystemBlock: basis.includes("billboards."),
             systemStructFields: this.shaderText.braced(
                 full,
-                "struct S{",
+                packagedWgsl`struct S {`,
                 `${labelPrefix} system uniform struct`,
             ),
             basisFunction: basis,
             instanceStructFields: this.shaderText.braced(
                 full,
-                "struct I{",
+                packagedWgsl`struct I {`,
                 `${labelPrefix} instance struct`,
             ),
             varyingStructFields: this.shaderText.braced(
                 full,
-                "struct O{",
+                packagedWgsl`struct O {`,
                 `${labelPrefix} varying struct`,
             ),
             vertexBody: this.shaderText.braced(
                 full,
-                "fn vs(in:I)->O{",
+                packagedWgsl`fn vs(in: I) -> O {`,
                 `${labelPrefix} vertex stage`,
             ),
             fragmentBody: this.shaderText.braced(
                 full,
-                "fn fs(in:O)->@location(0)vec4f{",
+                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
                 `${labelPrefix} fragment stage`,
             ),
         };

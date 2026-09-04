@@ -1836,13 +1836,15 @@ off with them. The tradeoff is the drawn atlas's: the baked bytes depend on
 the Chrome that compiled them, recorded per scene as
 `browser-produced-textures`.
 
-**The platformer golden is a frame, not a wall-clock delay.** Its attract
-camera and CRT grain both advance continuously, so a three-second browser
-settle does not name a reproducible state. The capture harness therefore
+**A demo that advances on its own gets a frame, not a wall-clock delay.**
+The platformer's attract camera and CRT grain advance continuously, and
+torus-states drives its morph state machine and shader time off
+`performance.now()`, so a three-second browser settle does not name a
+reproducible state. The capture harness therefore
 drives `requestAnimationFrame` in registration order on a 60 Hz clock,
 marks the first `startEngine` render as frame zero, fixes `performance.now()`
-to that engine-relative clock, and freezes after every callback on frame 180
-has run. Async browser initialization can consume RAF turns, but time remains
+to that engine-relative clock, and freezes after every callback on the
+registry's `referenceFrame` has run. Async browser initialization can consume RAF turns, but time remains
 at zero until the engine starts, matching native's synchronous initialization.
 Native derives
 `BBLITE_SCREENSHOT_FRAME` from that one registry value. This keeps the source

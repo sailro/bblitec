@@ -124,7 +124,6 @@ import type {
 } from "./pinned-post-process.js";
 import {
     extractPackagedTemplateLiteral,
-    extractWgslFunction,
     readPinnedLibraryModule,
 } from "./pinned-shader-composer.js";
 
@@ -256,6 +255,7 @@ import type {
     GeometryOutputTaskManifest,
     PostProcessTaskManifest,
 } from "./compiler.js";
+import { pinnedImageProcessingSource } from "./shader-builtins-utility.js";
 
 /**
  * What a scene reached, as the emitters need to see it. Named once
@@ -3106,27 +3106,16 @@ export function dawnUtilityShaders(
 
     // Per-sample image processing: exposure, optional tonemap, gamma,
     // contrast applied per MSAA sample, then averaged.
-    const imageProcessing = readPinnedLibraryModule(
-        "frame-graph/image-processing-task.js",
-    );
+    const {
+        module: imageProcessing,
+        common,
+        uniformStruct: ipStruct,
+        binding: ipBinding,
+        ip,
+    } = pinnedImageProcessingSource();
     const ipProvenance =
         "// src/frame-graph/image-processing-task.ts shader text, split" +
         " per stage with native entry-point names.\n";
-    const common = extractPackagedTemplateLiteral(
-        imageProcessing,
-        "common",
-    );
-    const ipStruct = "struct P{e:f32,c:f32,t:f32,p:f32}";
-    const ipBinding = "@group(0)@binding(0)var<uniform>p:P;";
-    if (
-        !common.includes(ipStruct) ||
-        !common.includes(ipBinding)
-    ) {
-        throw new Error(
-            "Pinned image-processing parameter block changed.",
-        );
-    }
-    const ip = extractWgslFunction(common, "ip");
     const ipVertexStage = pinnedTextSlice(
         common,
         "image processing",

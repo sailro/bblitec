@@ -449,14 +449,14 @@ read for, because they report nothing:
   transform before anything reads it — `src/pinned-wgsl-build.ts` says
   what the step does and why it is executed rather than restated, and the
   corpus manifest's `tooling` row pins the script. What a bump like this
-  leaves is mechanical: every marker spelled from packaged text moves to
-  the minified spelling, which `npm run test:upstream` names one at a time.
-  Spell the new form by running the pinned transform
-  (`pinnedTaggedWgslTransform(root)(code, id)`) over the old marker inside
-  a one-line tagged template, rather than guessing where the separators
-  survive — and remember that a composed shader mixes that text with the
-  compiler's own spaced templates and with `${...}` placeholders, which
-  keep the spacing of the JavaScript strings behind them.
+  leaves is small: a marker over the package's tagged WGSL is spelled as
+  the pin's source spells it inside `packagedWgsl\`…\``, which puts it
+  through the same step at generation, so only a marker over a `?raw`
+  file (miniray's spelling, kept as a plain literal) or a test literal
+  can still need a hand re-spelling — and remember that a composed shader
+  mixes packaged text with the compiler's own spaced templates and with
+  `${...}` placeholders, which keep the spacing of the JavaScript strings
+  behind them.
 
 ### Read the release notes, not only the log
 

@@ -3783,16 +3783,15 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Torus States",
         parity: {
+            // A fixed-clock frame (docs/fidelity.md): the demo reads
+            // `performance.now()`. Not the convention's 180 -- its first
+            // state switch lands exactly on that frame's 3000 ms.
+            referenceFrame: 185,
             maxFullMad: 0.25,
             maxForegroundMad: 0.25,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 8,
-            nativeEnvironment: {
-                ...adHocCaptureEnvironment(),
-                // The immutable browser reference reaches its measured
-                // post-start settle pose on this fixed-rate frame.
-                BBLITE_SCREENSHOT_FRAME: "185",
-            },
+            nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
     {

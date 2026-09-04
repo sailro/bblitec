@@ -11,6 +11,7 @@ import {
     readPinnedLibraryModule,
     splitWgslStatements,
 } from "./pinned-shader-composer.js";
+import { packagedWgsl } from "./pinned-wgsl-build.js";
 
 /**
  * Indents a reconstructed stage body to sit inside the struct or function
@@ -135,7 +136,21 @@ interface PinnedImageProcessing {
  * bytes upstream writes (`[exposure, contrast, toneMappingEnabled, 0]`), so
  * the pin's scalar struct lays out identically to the vec4 it replaces.
  */
-function pinnedImageProcessing(): PinnedImageProcessing {
+/** The pin's image-processing module, read once for both backends' lifts. */
+export interface PinnedImageProcessingSource {
+    /** The packaged module text, for the per-arm fragments beside `common`. */
+    module: string;
+    /** The shared `common` template: the parameter block, its binding, `ip()`. */
+    common: string;
+    /** The pin's own parameter block, byte for byte: `struct P{e,c,t,p}`. */
+    uniformStruct: string;
+    /** The pin's group-0 declaration of that block, as packaged. */
+    binding: string;
+    /** The pin's `ip()` — exposure, optional tonemap, gamma, contrast. */
+    ip: string;
+}
+
+export function pinnedImageProcessingSource(): PinnedImageProcessingSource {
     const module = readPinnedLibraryModule(
         "frame-graph/image-processing-task.js",
     );
@@ -144,13 +159,19 @@ function pinnedImageProcessing(): PinnedImageProcessing {
     if (!common.includes(uniformStruct)) {
         utilityLiftError("image-processing parameter block");
     }
-    if (!common.includes("@group(0)@binding(0)var<uniform>p:P;")) {
+    const binding = packagedWgsl`@group(0)@binding(0)var<uniform> p:P;`;
+    if (!common.includes(binding)) {
         utilityLiftError("image-processing parameter binding");
     }
     const ip = extractWgslFunction(common, "ip");
     if (!ip.includes("1.590579")) {
         utilityLiftError("image-processing tone-mapping calibration");
     }
+    return { module, common, uniformStruct, binding, ip };
+}
+
+function pinnedImageProcessing(): PinnedImageProcessing {
+    const { module, uniformStruct, ip } = pinnedImageProcessingSource();
     const multisampled =
         /`(@fragment fn fs[^`]*textureNumSamples[^`]*)`/.exec(module);
     if (!multisampled) {

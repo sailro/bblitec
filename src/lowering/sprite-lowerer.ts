@@ -18,6 +18,7 @@ import {
     extraTextureBindingsWgsl,
     extraTextureRecords,
 } from "../shader-builtins-sprite-fx.js";
+import { packagedWgsl } from "../pinned-wgsl-build.js";
 
 const atlasModule = "src/sprite/shared/sprite-atlas.ts";
 const layerModule = "src/sprite/sprite-2d.ts";
@@ -1213,33 +1214,33 @@ export class SpriteLowerer {
         return {
             layerStructFields: this.shaderText.braced(
                 prologue,
-                "struct Lr{",
+                packagedWgsl`struct Lr {`,
                 "sprite layer uniform struct",
             ),
             instanceStructFields: this.shaderText.braced(
                 prologue,
-                "struct I{",
+                packagedWgsl`struct I {`,
                 "sprite instance struct",
             ),
             varyingStructFields: this.shaderText.braced(
                 prologue,
-                "struct O{",
+                packagedWgsl`struct O {`,
                 "sprite varying struct",
             ),
             vertexBody: this.shaderText.braced(
                 prologue,
-                "fn vs(in:I)->O{",
+                packagedWgsl`fn vs(in: I) -> O {`,
                 "sprite vertex stage",
             ),
             fragmentBody: this.shaderText.braced(
                 full,
-                "fn fs(in:O)->@location(0)vec4f{",
+                packagedWgsl`fn fs(in: O) -> @location(0) vec4f {`,
                 "sprite fragment stage",
             ),
             fxStructFields: composed
                 ? this.shaderText.braced(
                       composed,
-                      "struct SpriteFx{",
+                      packagedWgsl`struct SpriteFx {`,
                       "sprite fx uniform struct",
                   )
                 : undefined,

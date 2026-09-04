@@ -86,7 +86,7 @@ Primary source ownership:
 | `src/compiler/intrinsics/*` | focused resolved-symbol engine, scene, asset, animation, camera, light, mesh, material, and sprite intrinsic lowerers |
 | `src/compiler/types.ts` | compiler public result types and internal typed values/features |
 | `src/upstream-source.ts` | pinned source-map reconstruction, handed out as the pin's own package build leaves it |
-| `src/pinned-wgsl-build.ts` | the pin's tagged-WGSL build transform, executed from its pinned script so a shader folded from a builder's AST is the package's text |
+| `src/pinned-wgsl-build.ts` | the pin's tagged-WGSL build transform, executed from its pinned script so a shader folded from a builder's AST is the package's text, and the `packagedWgsl` tag that spells a text marker from source through the same step |
 | `src/upstream-graph.ts` | conservative reachable-module analysis — test-only until scene 144's bloom observation seam consumes it |
 | `src/upstream-lower.ts` | lowerer orchestration, provenance, generated capabilities |
 | `src/pinned-shader-composer.ts` | runs the pin's `composeShader`, lifts named declarations out of a composition verbatim, imports a pinned module with chosen imports observed |

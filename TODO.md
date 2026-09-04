@@ -153,15 +153,6 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ## P1 — Runtime and validation
 
-- [ ] The committed torus-states golden is not what the capture harness
-  renders today: at the 1.27.0 bump, fresh captures under both packages
-  differed from it by 1.3 MAD over the glow and from each other by 0.06,
-  while native measures 0.078 against it. Recapture deliberately, re-measure.
-
-- [ ] Text markers over packaged shader text are hand-spelled copies of the
-  pin's minifier output; record which minifier produced each (tagged template
-  or `?raw` miniray), then spell them from source and transform at generation.
-
 - [ ] Extract retained DOM/CSS analysis from `Compiler` into a stateful
   `UiLowerer` with a narrow lowering context. Move the private CSS projection
   markers to typed `UiStyleRule` declarations in the same pass, then split the

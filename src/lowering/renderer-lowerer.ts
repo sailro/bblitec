@@ -71,11 +71,12 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { packagedWgsl } from "../pinned-wgsl-build.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
- * each one packs from. `WGSL_FOG` names its inputs — `let fogMode=scene.vFogInfos.x;`
- * and so on — so the {mode, start, end, density} order of
+ * each one packs from. `WGSL_FOG` names its inputs -- `let fogMode =
+ * scene.vFogInfos.x;` and so on -- so the {mode, start, end, density} order of
  * every native `fogInfos` vec4 is the pin's contract, not a convention. The
  * table is the single source for both halves: the assert requires the pin to
  * still read each name from its component, and the packing emission below
@@ -99,7 +100,7 @@ function assertPinnedFogInfosOrder(): void {
     for (const [component, pinnedName] of pinnedFogInfoComponentReads) {
         if (
             !fog.includes(
-                `let ${pinnedName}=scene.vFogInfos.${component};`,
+                packagedWgsl`let ${pinnedName} = scene.vFogInfos.${component};`,
             )
         ) {
             throw new Error(
@@ -149,6 +150,19 @@ interface LiftedImageSkybox {
     vertexBody: string;
     /** Re-homed fragment statements, one per line at body indent. */
     fragmentBody: string;
+    /**
+     * The pin's own names as its bundler mangled them, for the native
+     * declarations the bodies compile against.
+     */
+    names: {
+        /** The vertex position input. */
+        position: string;
+        /** The cubemap texture and its sampler. */
+        texture: string;
+        sampler: string;
+        /** The fragment entry's input parameter. */
+        fragmentInput: string;
+    };
 }
 
 /**
@@ -157,8 +171,12 @@ interface LiftedImageSkybox {
  * `skybox-cubemap.ts` ships `skyVertSrc`/`skyFragSrc` as inlined string
  * literals (raw imports carry no source-map entry), so the statements are
  * taken from the packaged module text and re-homed onto the native binding
- * contract, each mapping required to occur. Three documented departures from
- * the pin, all forced by the native frame rather than chosen:
+ * contract, each mapping required to occur. The text is miniray's, mangled
+ * names included, so each declaration is asserted by SHAPE and its name
+ * read back: the native declarations the bodies read are spelled from
+ * those names, and a miniray that renames them moves the emitted text
+ * rather than refusing generation. Three documented departures from the
+ * pin, all forced by the native frame rather than chosen:
  *
  * - `mesh.world` drops out: the pinned skybox mesh carries an identity world
  *   (`build_image_skybox_plan` authors the cube around the origin exactly as
@@ -187,59 +205,89 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         module,
         "skyFragSrc",
     );
-    const vertexContracts: ReadonlyArray<readonly [string, string]> = [
-        ["struct e{world:mat4x4<f32>}", "skybox-cubemap mesh block"],
-        [
-            "@group(1) @binding(0) var<uniform> mesh:e;",
-            "skybox-cubemap mesh binding",
-        ],
-        [
-            "struct d{@builtin(position) clipPos:vec4<f32>,@location(0) vPositionW:vec3<f32>,@location(1) vPositionLocal:vec3<f32>,@location(2) vFogDistance:vec3<f32>}",
-            "skybox-cubemap varying block",
-        ],
-        [
-            "fn main(@location(0) c:vec3<f32>,@location(1) normal:vec3<f32>)->d",
-            "skybox-cubemap vertex inputs",
-        ],
-    ];
-    for (const [text, what] of vertexContracts) {
-        if (!vertexLiteral.includes(text)) {
+    const shape = (
+        text: string,
+        pattern: RegExp,
+        what: string,
+    ): RegExpExecArray => {
+        const match = pattern.exec(text);
+        if (!match) {
             throw new Error(`Pinned Babylon Lite ${what} changed.`);
         }
-    }
-    const fragmentContracts: ReadonlyArray<readonly [string, string]> = [
-        [
-            "@group(1) @binding(1) var c:texture_cube<f32>;",
-            "skybox-cubemap texture binding",
-        ],
-        [
-            "@group(1) @binding(2) var d:sampler;",
-            "skybox-cubemap sampler binding",
-        ],
-        [
-            "struct g{@location(0) vPositionW:vec3<f32>,@location(1) vPositionLocal:vec3<f32>,@location(2) vFogDistance:vec3<f32>}",
-            "skybox-cubemap fragment inputs",
-        ],
-    ];
-    for (const [text, what] of fragmentContracts) {
-        if (!fragmentLiteral.includes(text)) {
-            throw new Error(`Pinned Babylon Lite ${what} changed.`);
-        }
-    }
+        return match;
+    };
+    const meshStruct = shape(
+        vertexLiteral,
+        /struct (\w+)\{world:mat4x4<f32>\}/,
+        "skybox-cubemap mesh block",
+    )[1]!;
+    shape(
+        vertexLiteral,
+        new RegExp(`@group\\(1\\) @binding\\(0\\) var<uniform> mesh:${meshStruct};`),
+        "skybox-cubemap mesh binding",
+    );
+    const varyingStruct = shape(
+        vertexLiteral,
+        /struct (\w+)\{@builtin\(position\) clipPos:vec4<f32>,@location\(0\) vPositionW:vec3<f32>,@location\(1\) vPositionLocal:vec3<f32>,@location\(2\) vFogDistance:vec3<f32>\}/,
+        "skybox-cubemap varying block",
+    )[1]!;
+    const [, position, normal] = shape(
+        vertexLiteral,
+        new RegExp(
+            `fn main\\(@location\\(0\\) (\\w+):vec3<f32>,@location\\(1\\) (\\w+):vec3<f32>\\)->${varyingStruct}`,
+        ),
+        "skybox-cubemap vertex inputs",
+    ) as unknown as [string, string, string];
+    const texture = shape(
+        fragmentLiteral,
+        /@group\(1\) @binding\(1\) var (\w+):texture_cube<f32>;/,
+        "skybox-cubemap texture binding",
+    )[1]!;
+    const sampler = shape(
+        fragmentLiteral,
+        /@group\(1\) @binding\(2\) var (\w+):sampler;/,
+        "skybox-cubemap sampler binding",
+    )[1]!;
+    const fragmentStruct = shape(
+        fragmentLiteral,
+        /struct (\w+)\{@location\(0\) vPositionW:vec3<f32>,@location\(1\) vPositionLocal:vec3<f32>,@location\(2\) vFogDistance:vec3<f32>\}/,
+        "skybox-cubemap fragment inputs",
+    )[1]!;
+    const fragmentInput = shape(
+        fragmentLiteral,
+        new RegExp(`fn main\\((\\w+):${fragmentStruct}\\)`),
+        "skybox-cubemap fragment entry",
+    )[1]!;
 
     const vertexStatements = pinnedEntryStatements(
         vertexLiteral,
         "skybox-cubemap vertex stage",
     );
+    const normalRead = new RegExp(`\\b${normal}\\b`);
     for (const statement of vertexStatements) {
-        if (statement.includes("normal")) {
+        if (normalRead.test(statement)) {
             throw new Error(
                 "Pinned Babylon Lite skybox-cubemap vertex stage started reading its normal input; the native single-buffer pipeline can no longer drop it.",
             );
         }
     }
+    const vertexText = vertexStatements.join("\n");
+    const output = shape(
+        vertexText,
+        new RegExp(`^var (\\w+):${varyingStruct};$`, "m"),
+        "skybox-cubemap vertex output",
+    )[1]!;
+    const worldPosition = shape(
+        vertexText,
+        new RegExp(
+            `^(?:let|var) (\\w+)=mesh\\.world\\*vec4<f32>\\(${position},1\\.0\\);$`,
+            "m",
+        ),
+        "skybox-cubemap world position",
+    )[1]!;
+    const fogDistancePrefix = `${output}.vFogDistance=`;
     const fogDistanceStatement = vertexStatements.find((statement) =>
-        statement.startsWith("a.vFogDistance="),
+        statement.startsWith(fogDistancePrefix),
     );
     if (!fogDistanceStatement) {
         throw new Error(
@@ -247,15 +295,18 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         );
     }
     // The pin's own right-hand side, re-homed for per-fragment evaluation:
-    // `b` is the world-position vec4 in the pinned vertex, rebuilt here from
-    // the interpolated varying that carries its xyz.
+    // the world-position vec4 of the pinned vertex is rebuilt from the
+    // interpolated varying that carries its xyz.
     const fogDistanceExpression = rehomePinned(
         fogDistanceStatement
-            .slice("a.vFogDistance=".length)
+            .slice(fogDistancePrefix.length)
             .replace(/;$/, ""),
         [
             ["scene.view", "uniforms.view"],
-            ["*b)", "*vec4<f32>(b.vPositionW,1.0))"],
+            [
+                `*${worldPosition})`,
+                `*vec4<f32>(${fragmentInput}.vPositionW,1.0))`,
+            ],
         ],
         "skybox-cubemap fog distance",
     );
@@ -265,8 +316,11 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
             .map((statement) => `    ${statement}`)
             .join("\n"),
         [
-            ["var a:d;", "var a: VertexOutput;"],
-            ["mesh.world*vec4<f32>(c,1.0)", "vec4<f32>(c,1.0)"],
+            [`var ${output}:${varyingStruct};`, `var ${output}: VertexOutput;`],
+            [
+                `mesh.world*vec4<f32>(${position},1.0)`,
+                `vec4<f32>(${position},1.0)`,
+            ],
             ["scene.viewProjection", "uniforms.viewProjection"],
         ],
         "skybox-cubemap vertex stage",
@@ -295,7 +349,10 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         [
             ["scene.vFogInfos", "uniforms.fogInfos"],
             ["scene.vFogColor", "uniforms.fogColor"],
-            ["calcFogFactor(b.vFogDistance)", "bblCalcFogFactor(vFogDistance)"],
+            [
+                `calcFogFactor(${fragmentInput}.vFogDistance)`,
+                "bblCalcFogFactor(vFogDistance)",
+            ],
         ],
         "skybox-cubemap fragment stage",
     );
@@ -309,10 +366,27 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
             );
         }
     }
-    return { vertexBody, fragmentBody };
+    return {
+        vertexBody,
+        fragmentBody,
+        names: { position, texture, sampler, fragmentInput },
+    };
 }
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
+
+// Markers the formula table asserts AND a fidelity record names, spelled
+// once so the record cannot drift from the assertion.
+const IBL_SPECULAR_OCCLUSION = packagedWgsl`let seo = clamp`;
+const BRDF_LUT_COORDINATES = packagedWgsl`vec2<f32>(NdotV, roughness)`;
+const ENVIRONMENT_CUBEMAP_ROTATION = packagedWgsl`let R = rotateY(R_raw`;
+const PBR_SKYBOX_VIEW_RAY =
+    packagedWgsl`let R = input.worldPos - scene.vEyePosition.xyz`;
+const CLEARCOAT_IBL_CONSERVATION =
+    packagedWgsl`let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;`;
+// A JavaScript string the pin interpolates into its template unminified,
+// so it keeps its source spacing in the package: a plain literal.
+const SHEEN_ALBEDO_SCALING = "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;";
 const pbrTemplateModule = "src/material/pbr/pbr-template.ts";
 const pbrTemplateExtModule = "src/material/pbr/pbr-template-ext.ts";
 const pbrHelperCoreModule = "src/material/node/blocks/pbr-mr-helper-core.ts";
@@ -3051,7 +3125,7 @@ struct VertexOutput {
 }
 
 @vertex
-fn mainVertex(@location(0) c: vec3<f32>) -> VertexOutput {
+fn mainVertex(@location(0) ${lifted.names.position}: vec3<f32>) -> VertexOutput {
 ${lifted.vertexBody}
 }
 `,
@@ -3060,8 +3134,8 @@ ${lifted.vertexBody}
                     output:
                         "upstream/shaders/skybox-cubemap.frag.native.wgsl",
                     data: `// ${imageSkyboxProvenance}
-@group(2) @binding(0) var c: texture_cube<f32>;
-@group(2) @binding(1) var d: sampler;
+@group(2) @binding(0) var ${lifted.names.texture}: texture_cube<f32>;
+@group(2) @binding(1) var ${lifted.names.sampler}: sampler;
 
 struct FragmentUniforms {
     view: mat4x4<f32>,
@@ -3081,7 +3155,7 @@ struct FragmentInput {
 }
 
 @fragment
-fn mainFragment(b: FragmentInput) -> @location(0) vec4<f32> {
+fn mainFragment(${lifted.names.fragmentInput}: FragmentInput) -> @location(0) vec4<f32> {
 ${lifted.fragmentBody}
 }
 `,
@@ -3276,24 +3350,24 @@ ${lifted.fragmentBody}
         const requiredUpstreamFormulas: Array<
             readonly [string, string, string]
         > = [
-            [pbr, "roughness*roughness+0.0005", "GGX roughness"],
-            [pbr, "0.5/(gl+gv)", "Smith geometry"],
-            [pbr, "luminanceOverAlpha+=dot", "transparent alpha luminance"],
-            [pbr, "finalAlpha=saturate", "transparent alpha fold"],
-            [pbrExt, "baseColor*=input.vColor.rgb", "vertex color base color"],
-            [pbrExt, "alpha*=input.vColor.a", "vertex color alpha"],
+            [pbr, packagedWgsl`roughness*roughness+0.0005`, "GGX roughness"],
+            [pbr, packagedWgsl`0.5/(gl+gv)`, "Smith geometry"],
+            [pbr, packagedWgsl`luminanceOverAlpha+=dot`, "transparent alpha luminance"],
+            [pbr, packagedWgsl`finalAlpha=saturate`, "transparent alpha fold"],
+            [pbrExt, packagedWgsl`baseColor *= input.vColor.rgb`, "vertex color base color"],
+            [pbrExt, packagedWgsl`alpha *= input.vColor.a`, "vertex color alpha"],
             [pbrHelper, "1.590579", "image-processing calibration"],
-            [ibl, "log2(cubemapDim*alphaG)*scene.vImageInfos.z", "IBL mip selection"],
+            [ibl, packagedWgsl`log2(cubemapDim * alphaG) * scene.vImageInfos.z`, "IBL mip selection"],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
             [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
             [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
-            [ibl, "let seo=clamp", "IBL specular occlusion"],
-            [ibl, "vec2<f32>(NdotV,roughness)", "BRDF LUT coordinates"],
-            [ibl, "let R=rotateY(R_raw", "environment cubemap rotation"],
-            [iblSkybox, "let R=input.worldPos-scene.vEyePosition.xyz", "PBR skybox view ray"],
-            [iblSkybox, "let skyboxAlphaG=max(roughness*roughness,0.000001)", "PBR skybox LOD alphaG"],
-            [refraction, "let rd=refract(-V,N,material.refractionParams.y)", "scene-color refraction ray"],
-            [refraction, "let ab=exp(material.volumeParams.rgb*th)", "Beer-Lambert attenuation"],
+            [ibl, IBL_SPECULAR_OCCLUSION, "IBL specular occlusion"],
+            [ibl, BRDF_LUT_COORDINATES, "BRDF LUT coordinates"],
+            [ibl, ENVIRONMENT_CUBEMAP_ROTATION, "environment cubemap rotation"],
+            [iblSkybox, PBR_SKYBOX_VIEW_RAY, "PBR skybox view ray"],
+            [iblSkybox, packagedWgsl`let skyboxAlphaG = max(roughness * roughness, 0.000001)`, "PBR skybox LOD alphaG"],
+            [refraction, packagedWgsl`let rd=refract(-V,N,material.refractionParams.y)`, "scene-color refraction ray"],
+            [refraction, packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`, "Beer-Lambert attenuation"],
             [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
             [dielectric, "((ior - 1) / (ior + 1)) ** 2 / 0.04", "glTF IOR Fresnel"],
             [transmissionFrameGraph, "updateTransmissionTexture(state, engine)", "scene-color copy ordering"],
@@ -3307,8 +3381,8 @@ ${lifted.fragmentBody}
             [backgroundDds, "order: 0", "DDS skybox ordering"],
             [backgroundHdr, "order: 0", "HDR skybox ordering"],
             [backgroundHdr, "buildHdrSkyboxRenderable", "HDR skybox renderable"],
-            [pbrGeometry, "directDiffuse+finalIrradiance", "geometry irradiance"],
-            [pbrGeometry, "colorF0,1.0-roughness", "geometry reflectivity"],
+            [pbrGeometry, packagedWgsl`directDiffuse + finalIrradiance`, "geometry irradiance"],
+            [pbrGeometry, packagedWgsl`colorF0, 1.0 - roughness`, "geometry reflectivity"],
             [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
         ];
         if (options.morphStorage) {
@@ -3321,17 +3395,17 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     morphCore,
-                    "for(var i=0u;i<morph.count;i=i+1u)",
+                    packagedWgsl`for (var i = 0u; i < morph.count; i = i + 1u)`,
                     "storage morph accumulation loop",
                 ],
                 [
                     morphCore,
-                    "let b=(i*morph.vertexCount+vertexIndex)*6u;",
+                    packagedWgsl`let b = (i * morph.vertexCount + vertexIndex) * 6u;`,
                     "storage morph delta indexing",
                 ],
                 [
                     morphCore,
-                    "var<storage, read>",
+                    packagedWgsl`var<storage, read>`,
                     "storage morph binding rewrite",
                 ],
                 [
@@ -3347,25 +3421,17 @@ ${lifted.fragmentBody}
             // where the pin's /*VW*/ slot does and re-apply it exactly as the
             // pinned template does: position at w=1, normal and tangent at
             // w=0 after a normalize, bitangent at w=0 without one.
+            // The position and normal lines are the world-transform header's
+            // markers (pinned-world-transform.ts), asserted for every scene.
             requiredUpstreamFormulas.push(
                 [
                     pbr,
-                    "let worldPos4=finalWorld*vec4<f32>(${posVar},1.0);",
-                    "vertex world position application",
-                ],
-                [
-                    pbr,
-                    "out.worldNormal=(finalWorld*vec4<f32>(normalize(${normVar}),0.0)).xyz;",
-                    "vertex world normal application",
-                ],
-                [
-                    pbr,
-                    "out.worldTangent=(finalWorld*vec4<f32>(T_local,0.0)).xyz;",
+                    packagedWgsl`out.worldTangent=(finalWorld*vec4<f32>(T_local,0.0)).xyz;`,
                     "vertex world tangent application",
                 ],
                 [
                     pbr,
-                    "out.worldBitangent=(finalWorld*vec4<f32>(B_local,0.0)).xyz;",
+                    packagedWgsl`out.worldBitangent=(finalWorld*vec4<f32>(B_local,0.0)).xyz;`,
                     "vertex world bitangent application",
                 ],
             );
@@ -3382,17 +3448,19 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     skeletonFragment,
-                    "var influence:mat4x4<f32> =readMatrixFromRawSampler(boneSampler,f32(joints[0]))*weights[0];",
+                    packagedWgsl`var influence: mat4x4<f32> = readMatrixFromRawSampler(boneSampler, f32(joints[0])) * weights[0];`,
                     "skinning first bone influence",
                 ],
                 [
                     skeletonFragment,
-                    "influence=influence+readMatrixFromRawSampler(boneSampler,f32(joints[3]))*weights[3];",
+                    packagedWgsl`influence = influence + readMatrixFromRawSampler(boneSampler, f32(joints[3])) * weights[3];`,
                     "skinning fourth bone influence",
                 ],
                 [
                     skeletonFragment,
-                    "finalWorld= ${worldExpr} *influence;",
+                    // `\${worldExpr}` is the template's own placeholder, kept
+                    // so the marker packages as the pin's text does.
+                    packagedWgsl`finalWorld = \${worldExpr} * influence;`,
                     "skinning blended world composition",
                 ],
             );
@@ -3408,12 +3476,12 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     thinInstanceFragment,
-                    "let instanceWorld=mat4x4<f32>(world0,world1,world2,world3);",
+                    packagedWgsl`let instanceWorld = mat4x4<f32>(world0, world1, world2, world3);`,
                     "thin-instance matrix column order",
                 ],
                 [
                     thinInstanceFragment,
-                    "finalWorld=mesh.world*instanceWorld;",
+                    packagedWgsl`finalWorld = mesh.world * instanceWorld;`,
                     "thin-instance world composition order",
                 ],
             );
@@ -3425,22 +3493,22 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     clearcoatFragment,
-                    "return 0.25/(VdotH_kl*VdotH_kl+0.0000001);",
+                    packagedWgsl`return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);`,
                     "clearcoat Kelemen visibility",
                 ],
                 [
                     clearcoatFragment,
-                    "return f0+(1.0-f0)*(t2*t2*t);",
+                    packagedWgsl`return f0 + (1.0 - f0) * (t2 * t2 * t);`,
                     "clearcoat Schlick Fresnel",
                 ],
                 [
                     clearcoatFragment,
-                    "ccDirectAttenuation=1.0-ccFresnel_dl*ccInt_dl;",
+                    packagedWgsl`ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;`,
                     "clearcoat direct conservation",
                 ],
                 [
                     clearcoatFragment,
-                    "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",
+                    CLEARCOAT_IBL_CONSERVATION,
                     "clearcoat IBL conservation",
                 ],
                 [
@@ -3454,17 +3522,17 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     sheenFragment,
-                    "return(2.0+invR)*pow(sin2h,invR*0.5)/(2.0*3.141592653589793);",
+                    packagedWgsl`return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);`,
                     "sheen Charlie distribution",
                 ],
                 [
                     sheenFragment,
-                    "return 1.0/(4.0*(NdotL_sh+NdotV_sh-NdotL_sh*NdotV_sh));",
+                    packagedWgsl`return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));`,
                     "sheen Ashikhmin visibility",
                 ],
                 [
                     sheenFragment,
-                    "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                    SHEEN_ALBEDO_SCALING,
                     "sheen albedo scaling",
                 ],
                 [
@@ -3478,12 +3546,12 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     iridescenceFragment,
-                    "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                    packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
                     "iridescence optical path difference",
                 ],
                 [
                     iridescenceFragment,
-                    "colorF0=mix(colorF0,iriF0,iriIntensity);",
+                    packagedWgsl`colorF0=mix(colorF0,iriF0,iriIntensity);`,
                     "iridescence base reflectance blend",
                 ],
                 [
@@ -3497,7 +3565,7 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     dispersionWgsl,
-                    "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                    packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
                     "dispersion chromatic spread",
                 ],
                 [
@@ -3514,9 +3582,10 @@ ${lifted.fragmentBody}
             if (options.shaderPrograms.length > 0) {
                 for (const marker of [
                     "function buildShaderPrelude",
-                    "@group(1)@binding(0)var<uniform>shaderSystem",
-                    "@group(1)@binding(1)var<uniform>shaderUniforms",
-                    "@location(${i})${attr}:${attributeWgslType(attr)}",
+                    packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
+                    packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
+                    // The template's own placeholders, kept as above.
+                    packagedWgsl`@location(\${i}) \${attr}: \${attributeWgslType(attr)}`,
                 ]) {
                     if (!shaderPipeline.includes(marker)) {
                         throw new Error(
@@ -3609,17 +3678,17 @@ ${lifted.fragmentBody}
         for (const [source, marker, label] of [
             [
                 clearcoatFragment,
-                "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",
+                CLEARCOAT_IBL_CONSERVATION,
                 "clearcoat energy conservation",
             ],
             [
                 clearcoatFragment,
-                "colorF0=mix(colorF0,remappedF0,ccInt_r);",
+                packagedWgsl`colorF0 = mix(colorF0, remappedF0, ccInt_r);`,
                 "clearcoat base F0 remap",
             ],
             [
                 clearcoatFragment,
-                "return saturate((num/den)*(num/den));",
+                packagedWgsl`return saturate((num / den) * (num / den));`,
                 "clearcoat F0 remap interface term",
             ],
             [
@@ -3629,17 +3698,17 @@ ${lifted.fragmentBody}
             ],
             [
                 sheenFragment,
-                "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                SHEEN_ALBEDO_SCALING,
                 "sheen albedo scaling",
             ],
             [
                 iridescenceFragment,
-                "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
                 "iridescence optical path difference",
             ],
             [
                 dispersionWgsl,
-                "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
                 "dispersion chromatic spread",
             ],
         ] as const) {
@@ -3675,8 +3744,7 @@ ${lifted.fragmentBody}
                 {
                     id: "pbr-skybox-mode",
                     upstreamModule: iblSkyboxModule,
-                    upstreamMarker:
-                        "let R=input.worldPos-scene.vEyePosition.xyz",
+                    upstreamMarker: PBR_SKYBOX_VIEW_RAY,
                     nativeBehavior:
                         "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray with a dedicated unbiased skyboxAlphaG LOD and omit diffuse irradiance.",
                     validation: ["source marker assertion", "skybox gate parity"],
@@ -3706,7 +3774,7 @@ ${lifted.fragmentBody}
                     id: "volume-beer-lambert",
                     upstreamModule: refractionModule,
                     upstreamMarker:
-                        "let ab=exp(material.volumeParams.rgb*th)",
+                        packagedWgsl`let ab=exp(material.volumeParams.rgb*th)`,
                     nativeBehavior:
                         "KHR_materials_volume attenuation uses exp(log(attenuationColor)/attenuationDistance * thickness).",
                     validation: [
@@ -3717,8 +3785,7 @@ ${lifted.fragmentBody}
                 {
                     id: "clearcoat-layer",
                     upstreamModule: clearcoatFragmentModule,
-                    upstreamMarker:
-                        "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",
+                    upstreamMarker: CLEARCOAT_IBL_CONSERVATION,
                     nativeBehavior:
                         "KHR_materials_clearcoat adds a GGX/Kelemen direct lobe and a Jones analytical IBL lobe, attenuates the base layer by 1-F(ccF0)*intensity, and keeps the glTF loader's disabled F0 remap.",
                     validation: [
@@ -3730,7 +3797,7 @@ ${lifted.fragmentBody}
                     id: "sheen-layer",
                     upstreamModule: sheenFragmentModule,
                     upstreamMarker:
-                        "sheenAlbedoScaling = 1.0 - shMax * shBrdf.b;",
+                        SHEEN_ALBEDO_SCALING,
                     nativeBehavior:
                         "KHR_materials_sheen uses the Charlie distribution with Ashikhmin visibility, samples the BRDF LUT blue channel at sheen roughness, and scales the base layer by 1-maxSheenColor*brdf.b.",
                     validation: [
@@ -3742,7 +3809,7 @@ ${lifted.fragmentBody}
                     id: "iridescence-thin-film",
                     upstreamModule: iridescenceFragmentModule,
                     upstreamMarker:
-                        "let opd=2.0*iridescenceIor*thickness*cosTheta2;",
+                        packagedWgsl`let opd=2.0*iridescenceIor*thickness*cosTheta2;`,
                     nativeBehavior:
                         "KHR_materials_iridescence evaluates Babylon's thin-film airy summation in XYZ and blends the result into base F0 by the iridescence intensity.",
                     validation: [
@@ -3754,7 +3821,7 @@ ${lifted.fragmentBody}
                     id: "dispersion-chromatic-refraction",
                     upstreamModule: dispersionWgslModule,
                     upstreamMarker:
-                        "let spread=0.04*material.volumeParams.w*(realIOR-1.0);",
+                        packagedWgsl`let spread=0.04*material.volumeParams.w*(realIOR-1.0);`,
                     nativeBehavior:
                         "KHR_materials_dispersion splits the refracted scene-color ray into per-RGB etas using Babylon's 20/dispersion Abbe strength.",
                     validation: [
@@ -3786,7 +3853,7 @@ ${lifted.fragmentBody}
                 {
                     id: "ibl-specular-occlusion",
                     upstreamModule: iblFragmentModule,
-                    upstreamMarker: "let seo=clamp",
+                    upstreamMarker: IBL_SPECULAR_OCCLUSION,
                     nativeBehavior: "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
                     validation: ["source marker assertions", "Scene 1 diagnostics"],
                 },
@@ -3800,14 +3867,14 @@ ${lifted.fragmentBody}
                 {
                     id: "brdf-lut-coordinates",
                     upstreamModule: iblFragmentModule,
-                    upstreamMarker: "vec2<f32>(NdotV,roughness)",
+                    upstreamMarker: BRDF_LUT_COORDINATES,
                     nativeBehavior: "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
                     validation: ["source marker assertions", "CPU/GPU visual parity"],
                 },
                 {
                     id: "environment-cubemap-orientation",
                     upstreamModule: iblFragmentModule,
-                    upstreamMarker: "let R=rotateY(R_raw",
+                    upstreamMarker: ENVIRONMENT_CUBEMAP_ROTATION,
                     nativeBehavior: "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
                     validation: ["source marker assertions", "Scenes 1 and 8 parity"],
                 },

@@ -2592,7 +2592,7 @@
       "entry": "corpus/babylon-lite/lab/lite/src/demos/torus-states.ts",
       "reference": {
         "source": "reference/torus-states/babylon-lite-golden.png",
-        "sha256": "3fff15ffed08818407ac8cea92575de37dbc92b82a13c16bbe8a4697234573ae"
+        "sha256": "33f32f1ddcc47faebc4551fdcd973ad3e5d8d7e4ef1492202242ab5fea028639"
       },
       "files": [
         {
