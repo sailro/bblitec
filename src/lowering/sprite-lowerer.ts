@@ -1213,33 +1213,33 @@ export class SpriteLowerer {
         return {
             layerStructFields: this.shaderText.braced(
                 prologue,
-                "struct Lr {",
+                "struct Lr{",
                 "sprite layer uniform struct",
             ),
             instanceStructFields: this.shaderText.braced(
                 prologue,
-                "struct I {",
+                "struct I{",
                 "sprite instance struct",
             ),
             varyingStructFields: this.shaderText.braced(
                 prologue,
-                "struct O {",
+                "struct O{",
                 "sprite varying struct",
             ),
             vertexBody: this.shaderText.braced(
                 prologue,
-                "fn vs(in: I) -> O {",
+                "fn vs(in:I)->O{",
                 "sprite vertex stage",
             ),
             fragmentBody: this.shaderText.braced(
                 full,
-                "fn fs(in: O) -> @location(0) vec4f {",
+                "fn fs(in:O)->@location(0)vec4f{",
                 "sprite fragment stage",
             ),
             fxStructFields: composed
                 ? this.shaderText.braced(
                       composed,
-                      "struct SpriteFx {",
+                      "struct SpriteFx{",
                       "sprite fx uniform struct",
                   )
                 : undefined,

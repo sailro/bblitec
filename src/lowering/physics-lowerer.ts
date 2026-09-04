@@ -211,30 +211,32 @@ export class PhysicsLowerer {
 
   /**
    * The numeric value of each `PhysicsShapeType` / `PhysicsMotionType`
-   * member. A `const enum` is inlined by the TypeScript emitter, so the
-   * declaration is the only place the number exists -- and both PALs
-   * translate the emitted enumerator, so a member the pin renumbers has
-   * to renumber here too.
+   * member. The pin declares them as `as const` value objects (1.27.0
+   * replaced its `const enum`s so consumers under `verbatimModuleSyntax`
+   * can import them), so the object literal is the only place the number
+   * exists -- and both PALs translate the emitted enumerator, so a member
+   * the pin renumbers has to renumber here too.
    */
   private enumMembers(name: string): Map<string, number> {
     const file = this.context.sourceFile(havokModule);
-    const declaration = file.statements.find(
-      (statement): statement is ts.EnumDeclaration =>
-        ts.isEnumDeclaration(statement) && statement.name.text === name,
+    const literal = this.context.unwrapExpression(
+      this.context.variableInitializer(file, name),
     );
-    if (!declaration) {
+    if (!ts.isObjectLiteralExpression(literal)) {
       this.context.contractError(
-        file,
-        `Expected ${havokModule} to declare enum ${name}.`,
+        literal,
+        `Expected ${havokModule} to declare ${name} as a const object.`,
       );
     }
     const members = new Map<string, number>();
-    for (const member of declaration.members) {
-      if (!ts.isIdentifier(member.name) || !member.initializer) {
+    for (const member of literal.properties) {
+      if (
+        !ts.isPropertyAssignment(member) ||
+        !ts.isIdentifier(member.name)
+      ) {
         this.context.contractError(
           member,
-          `Expected ${name} members to carry explicit ` +
-            "numeric initializers.",
+          `Expected ${name} members to be named numeric properties.`,
         );
       }
       members.set(

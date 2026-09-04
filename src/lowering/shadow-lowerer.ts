@@ -140,6 +140,141 @@ function lowerBuildLightViewMatrix(context: LoweringContext): string {
 }
 
 /**
+ * `buildLightViewMatrixInto`, whole: the cascade fit's own copy of the
+ * light-space basis, written into caller-owned storage rather than a fresh
+ * `F32`. The CSM module keeps its own so the cascade fit allocates nothing
+ * per frame; the arithmetic is the shared builder's, and lowering the copy
+ * from its own declaration is what keeps that true rather than asserted.
+ */
+function lowerBuildLightViewMatrixInto(context: LoweringContext): string {
+    return lowerPinnedFunction(
+        context,
+        csmHooksModule,
+        "buildLightViewMatrixInto",
+        [
+            {
+                pinned: "out",
+                kind: "mat4" as const,
+                annotation: "Float32Array",
+                cpp: "out",
+            },
+            ...["dirX", "dirY", "dirZ", "px", "py", "pz"].map((pinned) => ({
+                pinned,
+                kind: "number" as const,
+                cpp: pinned,
+            })),
+        ],
+        {
+            cppName: "build_light_view_matrix_into",
+            inline: true,
+            calls: mathCalls,
+            returns: "void",
+        },
+    );
+}
+
+/**
+ * `mat4InvertToRefOrIdentity` computes what `mat4Invert` computes.
+ *
+ * The cascade fit inverts the camera's view-projection through the
+ * allocation-free variant, and this port keeps the one lowered inverse
+ * (`mat4_invert`, from `mat4Invert`) for every consumer. That is sound only
+ * while the two pinned bodies share their arithmetic, so it is checked:
+ * every cofactor and determinant term, the singular test and all sixteen
+ * output lanes are matched shape for shape, and the one thing the variant
+ * adds -- the identity it writes for a singular input -- is asserted so the
+ * emitted fallback can restate it.
+ */
+function assertMat4InvertToRefMatchesInvert(context: LoweringContext): void {
+    const invert = context.functionDeclaration(
+        "src/math/mat4-invert.ts",
+        "mat4Invert",
+    );
+    const variant = context.functionDeclaration(
+        "src/math/mat4-invert-to-ref.ts",
+        "mat4InvertToRefOrIdentity",
+    );
+    const initializers = (
+        declaration: ts.FunctionDeclaration,
+        file: ts.SourceFile,
+    ): Map<string, string> =>
+        new Map(
+            context
+                .findNodes(
+                    declaration,
+                    (node): node is ts.VariableDeclaration =>
+                        ts.isVariableDeclaration(node) &&
+                        ts.isIdentifier(node.name) &&
+                        node.initializer !== undefined,
+                )
+                .map((node) => [
+                    (node.name as ts.Identifier).text,
+                    context.unwrapExpression(node.initializer!).getText(file),
+                ]),
+        );
+    const reference = initializers(invert.declaration, invert.file);
+    const candidate = initializers(variant.declaration, variant.file);
+    for (const [name, source] of reference) {
+        // `out` is the pin's own allocation on one side and the caller's
+        // storage on the other; every other local is arithmetic.
+        if (name === "out") continue;
+        const found = candidate.get(name);
+        if (found === undefined) {
+            context.contractError(
+                variant.declaration,
+                `Pinned mat4InvertToRefOrIdentity no longer binds '${name}'.`,
+            );
+        }
+        context.assertExpressionShape(
+            context.variableInitializer(variant.declaration, name),
+            source,
+            `Pinned mat4InvertToRefOrIdentity '${name}'`,
+        );
+    }
+    for (const declaration of [invert.declaration, variant.declaration]) {
+        context.expectShapeCount(declaration, "det = 1 / det", "Pinned inverse determinant reciprocal");
+        context.expectShapeCount(declaration, "Math.abs(det) < 1e-10", "Pinned inverse singular test");
+    }
+    // The sixteen lanes: the variant's cofactor stores come after its
+    // identity arm, so the LAST store per lane is the one compared.
+    const lanes = (declaration: ts.FunctionDeclaration): Map<string, ts.Expression> => {
+        const stores = new Map<string, ts.Expression>();
+        for (const store of context.pinnedElementStores(declaration, "out")) {
+            stores.set(store.left.argumentExpression.getText().trim(), store.right);
+        }
+        return stores;
+    };
+    const referenceLanes = lanes(invert.declaration);
+    const candidateLanes = lanes(variant.declaration);
+    for (let lane = 0; lane < 16; lane++) {
+        const expected = referenceLanes.get(String(lane));
+        const found = candidateLanes.get(String(lane));
+        if (!expected || !found) {
+            context.contractError(
+                variant.declaration,
+                `Pinned inverse lane ${lane} is not stored by both bodies.`,
+            );
+        }
+        context.assertExpressionShape(
+            found,
+            expected.getText(invert.file),
+            `Pinned inverse lane ${lane}`,
+        );
+    }
+    // The singular arm writes the identity: a zeroing loop, then the four
+    // diagonal ones, in the guard's own block.
+    for (const [shape, label] of [
+        ["out[index] = 0", "Pinned inverse identity zeroing"],
+        ["out[0] = 1", "Pinned inverse identity lane 0"],
+        ["out[5] = 1", "Pinned inverse identity lane 5"],
+        ["out[10] = 1", "Pinned inverse identity lane 10"],
+        ["out[15] = 1", "Pinned inverse identity lane 15"],
+    ] as const) {
+        context.expectShapeCount(variant.declaration, shape, label);
+    }
+}
+
+/**
  * `multiply4x4`, whole.
  *
  * Its accumulator is `new F32(16)` — a constant length, so the translator
@@ -615,64 +750,170 @@ function assertCsmCascadeFit(context: LoweringContext): void {
         csmHooksModule,
         "_computeCsmCascades",
     );
-    const shapes: readonly (readonly [string, string])[] = [
-        // The split: a logarithmic and a uniform partition, blended.
-        ["p = (i + 1) / n", "cascade split fraction"],
-        ["log = minZ * ratio ** p", "logarithmic partition"],
-        ["uniform = minZ + range * p", "uniform partition"],
+    const initializerShapes = (
+        root: ts.Node,
+        shapes: readonly (readonly [string, string])[],
+        family: string,
+    ): void => {
+        for (const [source, label] of shapes) {
+            const split = source.indexOf(" = ");
+            context.assertExpressionShape(
+                context.variableInitializer(root, source.slice(0, split)),
+                source.slice(split + 3),
+                `Pinned ${family} ${label}`,
+            );
+        }
+    };
+    initializerShapes(
+        declaration,
         [
-            "d = cfg._lambda * (log - uniform) + uniform",
-            "split blend",
+            // The split: a logarithmic and a uniform partition, blended.
+            ["p = (i + 1) / n", "cascade split fraction"],
+            ["log = minZ * ratio ** p", "logarithmic partition"],
+            ["uniform = minZ + range * p", "uniform partition"],
+            [
+                "d = cfg._lambda * (log - uniform) + uniform",
+                "split blend",
+            ],
+            // The slice: each cascade's far end steps its own length down
+            // the near-to-far ray from where the previous one stopped.
+            [
+                "split = prevSplit + frustumLengths[c]! / cameraRange",
+                "cascade split",
+            ],
+            // The eye sits behind the slice along the light direction.
+            ["eyeX = cx + dx * minEz", "shadow camera eye"],
+            ["viewMaxZ = maxEz - minEz", "fitted depth range"],
+            // The texel snap on the fitted transform's own translation.
+            [
+                "offX = (Math.round(ox) - ox) * (2 / cfg._mapSize)",
+                "texel snap offset",
+            ],
         ],
-        // The slice: both ends ride the same near-to-far ray, and the
-        // near end takes the PREVIOUS break.
-        [
-            "prevSplit = c === 0 ? 0 : breakDist[c - 1]!",
-            "previous split",
-        ],
-        // The eye sits behind the slice along the light direction.
-        ["eyeX = cx + dx * minEz", "shadow camera eye"],
-        ["viewMaxZ = maxEz - minEz", "fitted depth range"],
-        // The ortho, then the texel snap on its own translation.
-        [
-            "proj0 = orthoOffCenterLH(minX, maxX, minY, maxY, viewMinZ, viewMaxZ)",
-            "cascade ortho",
-        ],
-        [
-            "offX = (Math.round(ox) - ox) * (2 / cfg._mapSize)",
-            "texel snap offset",
-        ],
-    ];
-    for (const [source, label] of shapes) {
-        const split = source.indexOf(" = ");
-        context.assertExpressionShape(
-            context.variableInitializer(
-                declaration,
-                source.slice(0, split),
-            ),
-            source.slice(split + 3),
-            `Pinned CSM ${label}`,
-        );
-    }
+        "CSM",
+    );
     // The stores, which are statements rather than declarations: the two
-    // per-cascade lanes the receiver block carries, and the caster-Z
-    // tighten -- `depthClamp = false` behaviour, narrowing the fitted range
-    // to the casters rather than widening it.
+    // per-cascade lanes the receiver block carries, the split carried
+    // forward, the caster-Z tighten -- `depthClamp = false` behaviour,
+    // narrowing the fitted range to the casters rather than widening it --
+    // the snap applied in place, and the three pinned helpers the fit
+    // reaches, each lowered or matched on its own above.
     for (const [source, label] of [
-        ["breakDist[i] = (d - near) / cameraRange", "split break"],
         [
-            "frustumLengths[i] = (breakDist[i]! - prevBreak) * cameraRange",
+            "frustumLengths[i] = d - (i === 0 ? minZ : viewFrustumZ[i - 1]!)",
             "slice length",
         ],
+        ["viewFrustumZ[i] = d", "split distance"],
+        ["prevSplit = split", "split carried forward"],
         ["viewMaxZ = Math.min(viewMaxZ, cMaxZ)", "caster-Z tighten"],
+        ["transform[12] = transform[12]! + offX", "texel snap store"],
+        [
+            "orthoViewInto(transform, view, minX, maxX, minY, maxY, viewMinZ, viewMaxZ)",
+            "cascade ortho-view",
+        ],
+        [
+            "mat4InvertToRefOrIdentity(vp as never, invViewProj as never)",
+            "frustum inverse",
+        ],
+        [
+            "buildLightViewMatrixInto(view, dx, dy, dz, eyeX, eyeY, eyeZ)",
+            "cascade light view",
+        ],
     ] as const) {
         context.expectShapeCount(declaration, source, `Pinned CSM ${label}`);
     }
-    // The caster matrix's own bias. This port renders every cascade through
-    // the PCF family's already-lowered `bias_view_projection`, which halves
-    // the bias itself -- so what has to hold is that the CSM hook still
-    // passes `_bias * 0.5` and reaches its world-space arm only under a
+    // The world-space bias widens the far plane by its own amount. This
+    // port refuses `worldSpaceBias`, so the arm is not restated -- but it
+    // has to stay behind that option, or a pin that made it unconditional
+    // would move every cascade's far plane past what the mirror fits.
+    const worldBias = context.findNodes(
+        declaration,
+        (node): node is ts.IfStatement =>
+            ts.isIfStatement(node) &&
+            context.expressionMatchesShape(node.expression, "cfg._worldSpaceBias"),
+    )[0];
+    if (
+        !worldBias ||
+        !context.hasNode(
+            worldBias.thenStatement,
+            (node) =>
+                ts.isBinaryExpression(node) &&
+                context.expressionMatchesShape(node, "viewMaxZ += cfg._worldSpaceBias"),
+        )
+    ) {
+        context.contractError(
+            declaration,
+            "Expected the pinned CSM far-plane widening to stay behind cfg._worldSpaceBias.",
+        );
+    }
+    // The body is restated whole, so its statement count is pinned: an
+    // added statement moves no shape above and would otherwise pass.
+    const cascadeLoop = context.findNodes(
+        declaration,
+        (node): node is ts.ForStatement =>
+            ts.isForStatement(node) &&
+            node.initializer !== undefined &&
+            ts.isVariableDeclarationList(node.initializer) &&
+            node.initializer.declarations[0]?.name.getText() === "c",
+    )[0];
+    const outer = declaration.body?.statements.length;
+    const inner =
+        cascadeLoop && ts.isBlock(cascadeLoop.statement)
+            ? cascadeLoop.statement.statements.length
+            : undefined;
+    if (outer !== 32 || inner !== 35) {
+        context.contractError(
+            declaration,
+            `Pinned _computeCsmCascades has ${outer} statements and ${inner} per cascade ` +
+                "(32 and 35 restated); read the added statement before renumbering.",
+        );
+    }
+    // `orthoViewInto`: the orthographic off-centre projection multiplied
+    // straight into the affine light view, one column at a time.
+    const { declaration: ortho } = context.functionDeclaration(
+        csmHooksModule,
+        "orthoViewInto",
+    );
+    initializerShapes(
+        ortho,
+        [
+            ["sx = 2 / (r - l)", "ortho x scale"],
+            ["sy = 2 / (t - b)", "ortho y scale"],
+            ["sz = 1 / (f - n)", "ortho z scale"],
+            ["tx = -(r + l) / (r - l)", "ortho x offset"],
+            ["ty = -(t + b) / (t - b)", "ortho y offset"],
+            ["tz = -n / (f - n)", "ortho z offset"],
+            ["i = column * 4", "ortho column base"],
+            ["w = view[i + 3]!", "ortho column w"],
+        ],
+        "CSM",
+    );
+    for (const [source, label] of [
+        ["out[i] = sx * view[i]! + tx * w", "ortho-view x lane"],
+        ["out[i + 1] = sy * view[i + 1]! + ty * w", "ortho-view y lane"],
+        ["out[i + 2] = sz * view[i + 2]! + tz * w", "ortho-view z lane"],
+        ["out[i + 3] = w", "ortho-view w lane"],
+    ] as const) {
+        context.expectShapeCount(ortho, source, `Pinned CSM ${label}`);
+    }
+    // The caster matrix's own bias, applied to the last column's z lane of
+    // the receiver transform after the receiver block was written. This
+    // port renders every cascade through the PCF family's already-lowered
+    // `bias_view_projection`, which halves the bias itself and adds it into
+    // each column's z row scaled by that column's w -- the same lane for an
+    // orthographic transform, whose w row is (0, 0, 0, 1) -- so what has to
+    // hold is that the CSM hook still passes `_bias * 0.5`, adds it to
+    // lane 14 alone, and reaches its world-space arm only under a
     // `worldSpaceBias` this port refuses.
+    const { declaration: bias } = context.functionDeclaration(
+        csmHooksModule,
+        "_biasViewProjection",
+    );
+    context.expectShapeCount(
+        bias,
+        "matrix[14] = matrix[14]! + clipOffset",
+        "Pinned CSM caster bias lane",
+    );
     const { declaration: render } = context.functionDeclaration(
         csmHooksModule,
         "renderCsmShadowMap",
@@ -683,6 +924,12 @@ function assertCsmCascadeFit(context: LoweringContext): void {
             "csmWorldBiasClipOffset(cfg._worldSpaceBias, cascades._near[i]!, cascades._far[i]!)",
         "Pinned CSM caster bias",
     );
+    context.expectShapeCount(
+        render,
+        "_biasViewProjection(cascades._transforms[i]!, clipBias)",
+        "Pinned CSM caster bias application",
+    );
+    assertMat4InvertToRefMatchesInvert(context);
 }
 
 /**
@@ -2039,6 +2286,8 @@ inline void ensure_morph_target_ranges(const ModelGeometry& geometry) {
 
 ${lowerBuildLightViewMatrix(context)}
 
+${lowerBuildLightViewMatrixInto(context)}
+
 ${lowerMultiply4x4(context)}
 
 ${lowerComputeSpotLightMatrix(context)}
@@ -2368,10 +2617,15 @@ inline void update_pcf_directional_shadow(
  *
  * The split blends the pin's logarithmic and uniform partitions, each
  * slice's eight world corners are folded into a light-space AABB, the
- * caster AABB tightens the Z range, and the ortho is texel-snapped. Every
- * cascade keeps the PCF family's own matrix split: the receiver samples
- * with the unbiased \`transform\`, and that cascade's caster pass renders
- * through the biased copy.
+ * caster AABB tightens the Z range, the orthographic projection is
+ * multiplied straight into the cascade's light view, and the result is
+ * texel-snapped in place. Every cascade keeps the PCF family's own matrix
+ * split: the receiver samples with the unbiased \`transform\`, and that
+ * cascade's caster pass renders through the biased copy.
+ *
+ * The pin computes into preallocated scratch storage and rounds at each
+ * Float32Array store; the doubles below are its JavaScript numbers and
+ * each \`static_cast<float>\` is one of those stores.
  */
 inline void update_csm_cascades(
     ShadowGeneratorRecord& generator,
@@ -2399,7 +2653,11 @@ inline void update_csm_cascades(
     const std::size_t count = generator.csm_num_cascades;
 
     generator.csm_cascades.assign(count, ShadowCascade{});
-    std::array<double, csm_max_cascades> break_distance{};
+    // Each slice's length is the distance from the previous split, the
+    // first from the near plane; the split fractions below are rebuilt by
+    // accumulating those lengths, exactly as the pin walks them.
+    std::array<double, csm_max_cascades> view_frustum_z{};
+    std::array<double, csm_max_cascades> frustum_lengths{};
     for (std::size_t index = 0; index < count; ++index) {
         const double p =
             static_cast<double>(index + 1) / static_cast<double>(count);
@@ -2407,44 +2665,60 @@ inline void update_csm_cascades(
         const double uniform = min_z + range * p;
         const double distance =
             generator.csm_lambda * (logarithmic - uniform) + uniform;
-        const double previous_break =
-            index == 0 ? min_distance : break_distance[index - 1];
-        break_distance[index] = (distance - near_z) / camera_range;
+        frustum_lengths[index] =
+            distance - (index == 0 ? min_z : view_frustum_z[index - 1]);
+        view_frustum_z[index] = distance;
         generator.csm_cascades[index].view_frustum_z = distance;
-        generator.csm_cascades[index].frustum_length =
-            (break_distance[index] - previous_break) * camera_range;
+        generator.csm_cascades[index].frustum_length = frustum_lengths[index];
     }
 
     double direction_x = light.direction.x;
     double direction_y = light.direction.y;
     double direction_z = light.direction.z;
     const double direction_length =
-        std::hypot(direction_x, direction_y, direction_z);
+        bbl::js::hypot_js({direction_x, direction_y, direction_z});
     const double safe_length = direction_length == 0.0 ? 1.0 : direction_length;
     direction_x /= safe_length;
     direction_y /= safe_length;
     direction_z /= safe_length;
     if (std::abs(direction_y) >= 1.0) direction_z = 1e-13;
 
+    // \`mat4InvertToRefOrIdentity\`: the lowered inverse's own arithmetic
+    // (matched shape for shape at generation), with the identity the
+    // variant writes for a singular input in place of its null.
     const std::array<float, 16> view_projection =
         build_view_projection(camera, aspect);
     const auto inverse_value = mat4_invert(view_projection);
+    constexpr std::array<float, 16> identity{
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, 0.0f,
+        0.0f, 0.0f, 1.0f, 0.0f,
+        0.0f, 0.0f, 0.0f, 1.0f};
     const std::array<float, 16>& inverse =
-        inverse_value ? *inverse_value : view_projection;
-    const auto transform_point = [&](double x, double y, double z) {
-        const double tx = static_cast<double>(inverse[0]) * x +
-            static_cast<double>(inverse[4]) * y +
-            static_cast<double>(inverse[8]) * z + inverse[12];
-        const double ty = static_cast<double>(inverse[1]) * x +
-            static_cast<double>(inverse[5]) * y +
-            static_cast<double>(inverse[9]) * z + inverse[13];
-        const double tz = static_cast<double>(inverse[2]) * x +
-            static_cast<double>(inverse[6]) * y +
-            static_cast<double>(inverse[10]) * z + inverse[14];
-        const double tw = static_cast<double>(inverse[3]) * x +
-            static_cast<double>(inverse[7]) * y +
-            static_cast<double>(inverse[11]) * z + inverse[15];
-        return std::array<double, 3>{tx / tw, ty / tw, tz / tw};
+        inverse_value ? *inverse_value : identity;
+    // \`transformCoordInto\`: a point through a 4x4 with the perspective
+    // divide, written back over its input.
+    const auto transform_point = [](
+        std::array<double, 3>& point,
+        const std::array<float, 16>& matrix) {
+        const double x = point[0];
+        const double y = point[1];
+        const double z = point[2];
+        const double tx = static_cast<double>(matrix[0]) * x +
+            static_cast<double>(matrix[4]) * y +
+            static_cast<double>(matrix[8]) * z + matrix[12];
+        const double ty = static_cast<double>(matrix[1]) * x +
+            static_cast<double>(matrix[5]) * y +
+            static_cast<double>(matrix[9]) * z + matrix[13];
+        const double tz = static_cast<double>(matrix[2]) * x +
+            static_cast<double>(matrix[6]) * y +
+            static_cast<double>(matrix[10]) * z + matrix[14];
+        const double tw = static_cast<double>(matrix[3]) * x +
+            static_cast<double>(matrix[7]) * y +
+            static_cast<double>(matrix[11]) * z + matrix[15];
+        point[0] = tx / tw;
+        point[1] = ty / tw;
+        point[2] = tz / tw;
     };
     // The pin's reverse-Z NDC corners: near at z=1, far at z=0.
     constexpr std::array<std::array<double, 3>, 8> ndc{{
@@ -2454,7 +2728,7 @@ inline void update_csm_cascades(
         {{ 1.0, -1.0, 0.0}}, {{-1.0, -1.0, 0.0}},
     }};
 
-    // \`_castersWorldAabb\`, once for every cascade: the union of each
+    // \`_castersWorldAabbInto\`, once for every cascade: the union of each
     // caster's eight world-space bound corners.
     double caster_min_x = std::numeric_limits<double>::infinity();
     double caster_min_y = std::numeric_limits<double>::infinity();
@@ -2489,15 +2763,14 @@ inline void update_csm_cascades(
     }
     const bool has_casters = std::isfinite(caster_min_x);
 
+    double previous_split = 0.0;
     for (std::size_t cascade = 0; cascade < count; ++cascade) {
-        const double previous_split =
-            cascade == 0 ? 0.0 : break_distance[cascade - 1];
-        const double split = break_distance[cascade];
+        const double split =
+            previous_split + frustum_lengths[cascade] / camera_range;
 
-        std::array<std::array<double, 3>, 8> corners{};
-        for (std::size_t index = 0; index < corners.size(); ++index) {
-            corners[index] = transform_point(
-                ndc[index][0], ndc[index][1], ndc[index][2]);
+        std::array<std::array<double, 3>, 8> corners = ndc;
+        for (auto& corner : corners) {
+            transform_point(corner, inverse);
         }
         // Both ends of the slice ride the same near-to-far ray, so the far
         // corner is written from the ORIGINAL near corner before that one
@@ -2512,6 +2785,7 @@ inline void update_csm_cascades(
                     near_corner[axis] + ray * previous_split;
             }
         }
+        previous_split = split;
 
         double center_x = 0.0;
         double center_y = 0.0;
@@ -2525,8 +2799,12 @@ inline void update_csm_cascades(
         center_y /= 8.0;
         center_z /= 8.0;
 
-        const std::array<float, 16> center_view = build_light_view_matrix(
-            direction_x, direction_y, direction_z,
+        // The non-stabilized arm: a temporary light view centred on the
+        // centroid fits a tight box, and the corners are transformed in
+        // place through it.
+        std::array<float, 16> center_view{};
+        build_light_view_matrix_into(
+            center_view, direction_x, direction_y, direction_z,
             center_x, center_y, center_z);
         double min_x = std::numeric_limits<double>::infinity();
         double min_y = std::numeric_limits<double>::infinity();
@@ -2534,29 +2812,22 @@ inline void update_csm_cascades(
         double max_x = -std::numeric_limits<double>::infinity();
         double max_y = -std::numeric_limits<double>::infinity();
         double max_eye_z = -std::numeric_limits<double>::infinity();
-        for (const auto& corner : corners) {
-            const double x = center_view[0] * corner[0] +
-                center_view[4] * corner[1] + center_view[8] * corner[2] +
-                center_view[12];
-            const double y = center_view[1] * corner[0] +
-                center_view[5] * corner[1] + center_view[9] * corner[2] +
-                center_view[13];
-            const double z = center_view[2] * corner[0] +
-                center_view[6] * corner[1] + center_view[10] * corner[2] +
-                center_view[14];
-            min_x = std::min(min_x, x);
-            max_x = std::max(max_x, x);
-            min_y = std::min(min_y, y);
-            max_y = std::max(max_y, y);
-            min_eye_z = std::min(min_eye_z, z);
-            max_eye_z = std::max(max_eye_z, z);
+        for (auto& corner : corners) {
+            transform_point(corner, center_view);
+            min_x = std::min(min_x, corner[0]);
+            max_x = std::max(max_x, corner[0]);
+            min_y = std::min(min_y, corner[1]);
+            max_y = std::max(max_y, corner[1]);
+            min_eye_z = std::min(min_eye_z, corner[2]);
+            max_eye_z = std::max(max_eye_z, corner[2]);
         }
 
         const double eye_x = center_x + direction_x * min_eye_z;
         const double eye_y = center_y + direction_y * min_eye_z;
         const double eye_z = center_z + direction_z * min_eye_z;
-        const std::array<float, 16> view = build_light_view_matrix(
-            direction_x, direction_y, direction_z, eye_x, eye_y, eye_z);
+        std::array<float, 16> view{};
+        build_light_view_matrix_into(
+            view, direction_x, direction_y, direction_z, eye_x, eye_y, eye_z);
         double view_min_z = 0.0;
         double view_max_z = max_eye_z - min_eye_z;
 
@@ -2582,35 +2853,44 @@ inline void update_csm_cascades(
                 view_max_z = std::min(view_max_z, caster_view_max_z);
             }
         }
+        // The pin widens the far plane by its world-space bias here; that
+        // option is refused at generation, so the arm is not restated.
 
-        std::array<float, 16> projection{};
-        projection[0] = static_cast<float>(2.0 / (max_x - min_x));
-        projection[5] = static_cast<float>(2.0 / (max_y - min_y));
-        projection[10] = static_cast<float>(1.0 / (view_max_z - view_min_z));
-        projection[12] = static_cast<float>(-(max_x + min_x) / (max_x - min_x));
-        projection[13] = static_cast<float>(-(max_y + min_y) / (max_y - min_y));
-        projection[14] =
-            static_cast<float>(-view_min_z / (view_max_z - view_min_z));
-        projection[15] = 1.0f;
-        std::array<float, 16> transform_matrix = multiply_4x4(projection, view);
-        // Texel snap on the world origin's own projection, which is the
-        // non-stabilized anchor.
-        const double offset_x =
-            (std::round(transform_matrix[12] * generator.map_size / 2.0) -
-             transform_matrix[12] * generator.map_size / 2.0) *
-            (2.0 / generator.map_size);
-        const double offset_y =
-            (std::round(transform_matrix[13] * generator.map_size / 2.0) -
-             transform_matrix[13] * generator.map_size / 2.0) *
-            (2.0 / generator.map_size);
-        std::array<float, 16> snap{
-            1.0f, 0.0f, 0.0f, 0.0f,
-            0.0f, 1.0f, 0.0f, 0.0f,
-            0.0f, 0.0f, 1.0f, 0.0f,
-            static_cast<float>(offset_x), static_cast<float>(offset_y),
-            0.0f, 1.0f};
-        projection = multiply_4x4(snap, projection);
-        transform_matrix = multiply_4x4(projection, view);
+        // \`orthoViewInto\`: the orthographic off-centre projection
+        // multiplied straight into the affine light view, one column at a
+        // time, each lane rounded once at the pin's own float store.
+        const double scale_x = 2.0 / (max_x - min_x);
+        const double scale_y = 2.0 / (max_y - min_y);
+        const double scale_z = 1.0 / (view_max_z - view_min_z);
+        const double offset_x = -(max_x + min_x) / (max_x - min_x);
+        const double offset_y = -(max_y + min_y) / (max_y - min_y);
+        const double offset_z = -view_min_z / (view_max_z - view_min_z);
+        std::array<float, 16> transform_matrix{};
+        for (std::size_t column = 0; column < 4; ++column) {
+            const std::size_t lane = column * 4;
+            const double w = view[lane + 3];
+            transform_matrix[lane] = static_cast<float>(
+                scale_x * static_cast<double>(view[lane]) + offset_x * w);
+            transform_matrix[lane + 1] = static_cast<float>(
+                scale_y * static_cast<double>(view[lane + 1]) + offset_y * w);
+            transform_matrix[lane + 2] = static_cast<float>(
+                scale_z * static_cast<double>(view[lane + 2]) + offset_z * w);
+            transform_matrix[lane + 3] = view[lane + 3];
+        }
+        // Texel snap on the transform's own translation, which is the
+        // world origin's projection: the non-stabilized anchor.
+        const double clip_x = transform_matrix[12];
+        const double clip_y = transform_matrix[13];
+        const double snap_x = clip_x * (generator.map_size / 2.0);
+        const double snap_y = clip_y * (generator.map_size / 2.0);
+        const double snap_offset_x =
+            (bbl::js::round_js(snap_x) - snap_x) * (2.0 / generator.map_size);
+        const double snap_offset_y =
+            (bbl::js::round_js(snap_y) - snap_y) * (2.0 / generator.map_size);
+        transform_matrix[12] = static_cast<float>(
+            static_cast<double>(transform_matrix[12]) + snap_offset_x);
+        transform_matrix[13] = static_cast<float>(
+            static_cast<double>(transform_matrix[13]) + snap_offset_y);
 
         ShadowCascade& fitted = generator.csm_cascades[cascade];
         fitted.transform = transform_matrix;

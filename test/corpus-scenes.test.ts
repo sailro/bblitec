@@ -103,11 +103,37 @@ test("keeps registered Babylon Lite support modules byte-identical to the pin", 
     }
 });
 
+test("keeps pinned build tooling byte-identical to the pin", () => {
+    const manifest = readBabylonLiteCorpus();
+    const tooling = manifest.tooling ?? [];
+    // The one script generation executes today; a second joins this list
+    // when a lowerer starts running it.
+    assert.deepEqual(
+        tooling.map(({ upstreamPath }) => upstreamPath),
+        ["scripts/wgsl-minify-plugin.ts"],
+    );
+    for (const file of tooling) {
+        assert.equal(
+            file.source,
+            `corpus/babylon-lite/${file.upstreamPath}`,
+        );
+        const digest = createHash("sha256")
+            .update(readFileSync(file.source))
+            .digest("hex");
+        assert.equal(
+            digest,
+            file.sha256,
+            `${file.upstreamPath} input differs from pinned upstream evidence.`,
+        );
+    }
+});
+
 test("keeps staged corpus files byte-identical to the pin", () => {
     const manifest = readBabylonLiteCorpus();
     const pinnedElsewhere = new Set([
         ...manifest.scenes.map(({ source }) => source),
         ...(manifest.modules ?? []).map(({ source }) => source),
+        ...(manifest.tooling ?? []).map(({ source }) => source),
         ...manifest.applications.flatMap(({ files }) =>
             files.map(({ source }) => source),
         ),
@@ -153,6 +179,7 @@ test("lists every corpus file in the pinned manifest", () => {
         ...manifest.scenes.map(({ source }) => source),
         ...(manifest.modules ?? []).map(({ source }) => source),
         ...(manifest.staged ?? []).map(({ source }) => source),
+        ...(manifest.tooling ?? []).map(({ source }) => source),
         ...manifest.applications.flatMap(({ files }) =>
             files.map(({ source }) => source),
         ),

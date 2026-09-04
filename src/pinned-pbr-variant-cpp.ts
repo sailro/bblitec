@@ -471,10 +471,13 @@ interface VariantColorOutput {
  * pipeline built with a colour target is what Dawn refuses outright.
  */
 function variantColorOutput(fragmentWgsl: string): VariantColorOutput {
+    // The pin's build step minifies the struct's own template while the
+    // return clause it interpolates keeps its spaces, so both readers
+    // accept either spacing.
     const fragmentOutputStruct = fragmentWgsl.match(
-        /struct FragmentOutput \{[^}]*\}/,
+        /struct FragmentOutput\s*\{[^}]*\}/,
     );
-    const hasColorReturn = fragmentWgsl.includes("-> @location(0)");
+    const hasColorReturn = /->\s*@location\(0\)/.test(fragmentWgsl);
     return {
         noColorOutput: !hasColorReturn && !fragmentOutputStruct,
         colorTargetCount: fragmentOutputStruct
@@ -503,7 +506,9 @@ interface VariantAttribute {
  */
 function variantAttributes(vertexWgsl: string): readonly VariantAttribute[] {
     const body = vertexWgsl.slice(vertexWgsl.indexOf("@vertex fn main("));
-    const list = body.slice(0, body.indexOf(") ->"));
+    // The parameter list ends at the return arrow, spelled `) ->` in the
+    // pin's source and `)->` by its build step.
+    const list = body.slice(0, body.search(/\)\s*->/));
     const attributes: VariantAttribute[] = [];
     const pattern =
         /@location\((\d+)\)\s*([A-Za-z0-9_]+)\s*:\s*([A-Za-z0-9_<>]+)/g;
@@ -2805,11 +2810,11 @@ export function pinnedStandardVariantsHeader(
     if (
         !context.store.getSource(
             "src/material/standard/standard-template.ts",
-        ).includes("struct upUniforms { u: vec4<f32>, }")
+        ).includes("struct upUniforms{u:vec4<f32>,}")
     ) {
         throw new Error(
             "Pinned Standard template no longer declares the " +
-                "`struct upUniforms { u: vec4<f32>, }` block " +
+                "`struct upUniforms{u:vec4<f32>,}` block " +
                 "writeStandardUvTransformData fills.",
         );
     }

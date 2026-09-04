@@ -363,8 +363,16 @@ catalog covers registered scenes, support modules, and adopted applications.
 
 ### 3. Fix the compatibility report
 
-`npm run test:upstream` reports the failures. They sort into the kinds below —
-and the last two are the ones to read for, because they report nothing:
+`npm run test:upstream` reports the failures. It is the lowerer contracts and
+the compiler's own tests; it compiles no registered scene. So follow a green
+report with `npm run scenes:compile` (two minutes) before anything longer —
+generation reaches paths the contracts do not, and at 1.27 that compile
+found three failures the report could not: a refactored loop in
+`buildShaderPrelude`, a tagged template returned by a demo's arrow builder,
+and a Canvas2D helper module carrying a new import into Chromium.
+
+The failures sort into the kinds below — and the last two are the ones to
+read for, because they report nothing:
 
 - **Moved contracts.** A lowerer asserts an expression the upstream refactor
   relocated. Check whether the *semantics* moved or only the shape: if the
@@ -428,6 +436,25 @@ and the last two are the ones to read for, because they report nothing:
   body, so guarding a further one is a row rather than a method. When a bump
   adds a statement to such a body, that count is what refuses. Other lowerers
   restate bodies with no count guard yet; `TODO.md` carries the list.
+
+- **A build step between the pin's source and its package.** New at 1.27.0,
+  and the loudest kind, because every text anchor over packaged shader text
+  fails at once. The package build now minifies every template literal
+  tagged with the pin's `wgsl` helper — whitespace and comments only,
+  `${...}` expressions untouched — and strips the tag, so the WGSL the
+  browser compiles stopped being the text the source maps carry. The pinned
+  source is therefore put through the pin's own transform before anything
+  reads it (`src/pinned-wgsl-build.ts` executes
+  `scripts/wgsl-minify-plugin.ts`, pinned under the corpus manifest's
+  `tooling` rows): a shader folded from a builder's AST is then the
+  package's own bytes, the `wgsl` tag never reaches a lowerer, and a scene's
+  own tagged source strips to its template (the reference harness runs no
+  bundler, so the browser sees the unminified text there). What a bump like
+  this leaves is mechanical: every marker spelled from the packaged text
+  (`renderer-lowerer.ts`, `shader-builtins-*.ts`, `upstream-lower.ts`)
+  moves to the minified spelling, which `npm run test:upstream` names one
+  at a time — run the pin's transform over the old marker rather than
+  guessing where the separators survive.
 
 ### Read the release notes, not only the log
 

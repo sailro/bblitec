@@ -206,4 +206,24 @@ export class CompilerSymbols {
             : imported.named?.propertyName?.text ??
                   imported.named?.name.text;
     }
+
+    /**
+     * The template a pinned `wgsl` tag wraps, or undefined for any other
+     * expression. The helper is the identity over its template (asserted
+     * once against its declaration when the source store first strips one
+     * for a pinned module), so a scene's `wgsl\`...\`` is the plain literal
+     * to every reader here -- and, since the reference harness transpiles
+     * scene sources without the pin's bundler, the text the browser runs
+     * too. Resolved by import symbol: a local tag that happens to be
+     * spelled `wgsl` is not this.
+     */
+    public pinnedWgslTemplate(
+        expression: ts.Expression,
+    ): ts.TemplateLiteral | undefined {
+        return ts.isTaggedTemplateExpression(expression) &&
+            ts.isIdentifier(expression.tag) &&
+            this.importedName(expression.tag) === "wgsl"
+            ? expression.template
+            : undefined;
+    }
 }

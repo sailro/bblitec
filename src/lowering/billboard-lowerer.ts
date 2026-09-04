@@ -577,7 +577,7 @@ export class BillboardLowerer {
             fxStructFields: composed
                 ? this.shaderText.braced(
                       composed,
-                      "struct SpriteFx {",
+                      "struct SpriteFx{",
                       "billboard fx uniform struct",
                   )
                 : undefined,
@@ -607,28 +607,28 @@ export class BillboardLowerer {
             vertexReadsSystemBlock: basis.includes("billboards."),
             systemStructFields: this.shaderText.braced(
                 full,
-                "struct S {",
+                "struct S{",
                 `${labelPrefix} system uniform struct`,
             ),
             basisFunction: basis,
             instanceStructFields: this.shaderText.braced(
                 full,
-                "struct I {",
+                "struct I{",
                 `${labelPrefix} instance struct`,
             ),
             varyingStructFields: this.shaderText.braced(
                 full,
-                "struct O {",
+                "struct O{",
                 `${labelPrefix} varying struct`,
             ),
             vertexBody: this.shaderText.braced(
                 full,
-                "fn vs(in: I) -> O {",
+                "fn vs(in:I)->O{",
                 `${labelPrefix} vertex stage`,
             ),
             fragmentBody: this.shaderText.braced(
                 full,
-                "fn fs(in: O) -> @location(0) vec4f {",
+                "fn fs(in:O)->@location(0)vec4f{",
                 `${labelPrefix} fragment stage`,
             ),
         };

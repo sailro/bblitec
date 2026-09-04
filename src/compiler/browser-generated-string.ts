@@ -42,6 +42,41 @@ export type FoldGeneratedStringArgument = (
     argument: ts.Expression,
 ) => string | number | boolean | undefined;
 
+/**
+ * The source ranges of every pinned `wgsl` tag in the file: the tag
+ * identifier of a tagged template bound by an import of the pin's shader
+ * helper. Resolved by import symbol, so a local tag that happens to be
+ * spelled `wgsl` is not one.
+ */
+function pinnedWgslTagRanges(
+    checker: ts.TypeChecker,
+    source: ts.SourceFile,
+): Array<readonly [start: number, end: number]> {
+    const ranges: Array<readonly [start: number, end: number]> = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag)) {
+            const declaration = checker.getSymbolAtLocation(node.tag)
+                ?.declarations?.[0];
+            if (declaration && ts.isImportSpecifier(declaration)) {
+                const specifier =
+                    declaration.parent.parent.parent.moduleSpecifier;
+                const imported = (declaration.propertyName ?? declaration.name)
+                    .text;
+                if (
+                    imported === "wgsl" &&
+                    ts.isStringLiteral(specifier) &&
+                    /(^|\/)shader\/wgsl(\.js)?$/.test(specifier.text)
+                ) {
+                    ranges.push([node.tag.getStart(source), node.tag.end]);
+                }
+            }
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return ranges;
+}
+
 export function browserGeneratedString(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
@@ -83,12 +118,19 @@ export function browserGeneratedString(
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
+    // The module runs in the page with its imports removed. The pin's
+    // `wgsl` tag goes with them: it is the identity over its template
+    // (asserted against its declaration when the source store first strips
+    // one), so removing the tag token leaves the module's own text.
     let sourceText = source.text;
-    const imports = source.statements.filter(ts.isImportDeclaration);
-    for (const statement of [...imports].reverse()) {
-        sourceText =
-            sourceText.slice(0, statement.getFullStart()) +
-            sourceText.slice(statement.end);
+    const removed: Array<readonly [start: number, end: number]> = [
+        ...source.statements
+            .filter(ts.isImportDeclaration)
+            .map((statement) => [statement.getFullStart(), statement.end] as const),
+        ...pinnedWgslTagRanges(checker, source),
+    ];
+    for (const [start, end] of removed.sort((a, b) => b[0] - a[0])) {
+        sourceText = sourceText.slice(0, start) + sourceText.slice(end);
     }
     sourceText +=
         `\n(globalThis as any).__bbliteGeneratedString = ` +

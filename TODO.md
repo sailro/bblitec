@@ -153,6 +153,14 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ## P1 — Runtime and validation
 
+- [ ] The committed torus-states golden is not what the capture harness
+  renders today: measured during the 1.27.0 bump, fresh captures under both
+  the 1.26.0 and 1.27.0 packages differ from it by 1.3 MAD over the glow
+  (37% of the frame) and agree with each other to 0.06, while native measures
+  0.078 against the committed bytes and the eighteen other recaptured
+  targets came back byte-identical. Find what the demo's frame graph,
+  offscreen effects or bloom depend on, recapture deliberately, re-measure.
+
 - [ ] Extract retained DOM/CSS analysis from `Compiler` into a stateful
   `UiLowerer` with a narrow lowering context. Move the private CSS projection
   markers to typed `UiStyleRule` declarations in the same pass, then split the
@@ -263,17 +271,6 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   label, predicateCpp)` plus a parameterised matcher collapses most of it,
   and leaves one copy of the shadow-name and walk-body logic instead of two
   that must stay in step.
-  A contract stated and only half-kept, on the same footing:
-  `pinned-operators.ts:126-133` says a lowering reaching `Math.hypot` at all
-  must spell it `bbl::js::hypot_js`, because `<cmath>`'s two- or
-  three-argument `hypot` rounds differently. Scene code now obeys it, but
-  two lowerers still emit `std::hypot` for calls the pin spells
-  `Math.hypot`: `src/lowering/shadow-lowerer.ts:2403` (the cascade fit's
-  light-direction normalize) and `src/lowering/gltf/cameras.ts:1008-1016`
-  (the three decomposed scale lanes). Both predate this branch; fixing
-  either moves emitted bytes for every shadow or glTF-camera scene, so it
-  wants its own differential sweep, and fixing only one leaves the contract
-  half-kept.
   `typedArrayStem` in `src/compiler/data-types.ts` is a third copy of the
   same seven-arm table in one file, and its own docstring names the second
   (`cppType`) as though it already read from it; `typeKey` returns the
@@ -731,9 +728,10 @@ an `isLocal` node-particle system.
   blend and both receiver families ship, so what is left is per-item. Each
   remaining item fails by name:
   - **the cascade fit is mirrored, not lowered, and the mirror dropped an
-    arm.** `_computeCsmCascades` is restated in C++ under thirteen
-    shape assertions where the sibling `computeDirectionalLightMatrix` is
-    lowered from its AST, and `_castersWorldAabb`'s thin-instance branch —
+    arm.** `_computeCsmCascades` is restated in C++ under shape
+    assertions and a pinned statement count where the sibling
+    `computeDirectionalLightMatrix` is lowered from its AST, and
+    `_castersWorldAabbInto`'s thin-instance branch —
     bound a caster by the union of its DRAWN instances, because "one
     prototype-sized box wrecks the cascade Z-fit" — is not implemented, so a
     thin-instanced CSM caster refuses by name. Lowering the else-arm is NOT

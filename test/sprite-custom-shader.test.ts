@@ -41,10 +41,10 @@ test("folds the pinned extra-binding loop over a bound list", () => {
                 ["extras", [{ name: "palette" }, { name: "noise" }]],
             ]),
         ),
-        "@group(2) @binding(2) var paletteTex: texture_2d<f32>;\n" +
-            "@group(2) @binding(3) var paletteSamp: sampler;\n" +
-            "@group(2) @binding(4) var noiseTex: texture_2d<f32>;\n" +
-            "@group(2) @binding(5) var noiseSamp: sampler;\n",
+        "@group(2)@binding(2)var paletteTex:texture_2d<f32>;" +
+            "@group(2)@binding(3)var paletteSamp:sampler;" +
+            "@group(2)@binding(4)var noiseTex:texture_2d<f32>;" +
+            "@group(2)@binding(5)var noiseSamp:sampler;",
     );
     // A layer that named none binds the empty list, and the loop settles
     // without running.
@@ -65,7 +65,7 @@ test("folds the pinned extra-binding loop over a bound list", () => {
 test("re-homes the extra-texture bindings after the atlas", () => {
     const shader = new SpriteLowerer(new LoweringContext()).shaderSource(
         false,
-        "return textureSample(paletteTex, paletteSamp, in.uv);",
+        "return textureSample(paletteTex,paletteSamp,in.uv);",
         ["palette"],
     );
     // The pin binds its extras after the atlas inside one group; this
@@ -73,19 +73,19 @@ test("re-homes the extra-texture bindings after the atlas", () => {
     // lands after the atlas pair there.
     assert.equal(
         shader.extraTextureBindings,
-        "@group(2) @binding(2) var paletteTex: texture_2d<f32>;\n" +
-            "@group(2) @binding(3) var paletteSamp: sampler;\n",
+        "@group(2)@binding(2)var paletteTex:texture_2d<f32>;" +
+            "@group(2)@binding(3)var paletteSamp:sampler;",
     );
     assert.match(
         spriteFragmentWgsl("test", shader),
-        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\) @binding\(2\) var paletteTex/,
+        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\)@binding\(2\)var paletteTex/,
     );
     // The billboard family re-homes them the same way, through the same
     // helper — which is the reason it is one helper.
     const billboard = billboards().shaderSource(
         "facing",
         "transparent",
-        "return textureSample(paletteTex, paletteSamp, in.uv);",
+        "return textureSample(paletteTex,paletteSamp,in.uv);",
         ["palette"],
     );
     assert.equal(
@@ -94,7 +94,7 @@ test("re-homes the extra-texture bindings after the atlas", () => {
     );
     assert.match(
         billboardFragmentWgsl("test", billboard),
-        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\) @binding\(2\) var paletteTex/,
+        /@binding\(1\) var atlasSamp: sampler;\n@group\(2\)@binding\(2\)var paletteTex/,
     );
     // A body that names none declares none.
     assert.equal(
@@ -115,8 +115,8 @@ test("composes the custom sprite program from the pin's own builder", () => {
     assert.equal(shader.fragmentBody, TINT_BODY);
     // The fx struct is the pin's, not a copy: its padding slots are the
     // ones `writeSpriteFxUbo` skips.
-    assert.match(shader.fxStructFields ?? "", /time: f32/);
-    assert.match(shader.fxStructFields ?? "", /params: vec4f/);
+    assert.match(shader.fxStructFields ?? "", /time:f32/);
+    assert.match(shader.fxStructFields ?? "", /params:vec4f/);
     // The vertex stage is untouched, which is why a custom layer draws with
     // the stock vertex shader.
     const plain = new SpriteLowerer(new LoweringContext()).shaderSource();
@@ -131,8 +131,8 @@ test("composes the pinned depth-hosted sprite vertex permutation", () => {
         [],
         true,
     );
-    assert.match(shader.instanceStructFields, /@location\(6\) z: f32/);
-    assert.match(shader.vertexBody, /out\.p = vec4f\(n, 1 - in\.z, 1\)/);
+    assert.match(shader.instanceStructFields, /@location\(6\)z:f32/);
+    assert.match(shader.vertexBody, /out\.p=vec4f\(n,1 - in\.z,1\)/);
 });
 
 test("declares both fragment uniform blocks for a custom sprite layer", () => {

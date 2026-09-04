@@ -791,6 +791,7 @@ class Compiler
                 ),
             () => this.reachJsData(),
             (value, arity) => this.bindDataTuple(value, arity),
+            (expression) => this.symbols.pinnedWgslTemplate(expression),
         );
     }
 
@@ -11559,7 +11560,12 @@ class Compiler
             callee,
             (node, message) => this.fail(node, message),
         );
-        const body = declaration?.body;
+        // An expression body is read through `unwrap`, so a builder that
+        // returns the pin's `wgsl` tag over its template is its template.
+        const body =
+            declaration?.body && !ts.isBlock(declaration.body)
+                ? this.unwrap(declaration.body)
+                : declaration?.body;
         if (
             declaration &&
             ts.isFunctionDeclaration(declaration) &&
@@ -16146,19 +16152,28 @@ class Compiler
 
     public unwrap(expression: ts.Expression): ts.Expression {
         let current = expression;
-        while (
-            ts.isAwaitExpression(current) ||
-            ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isTypeAssertionExpression(current) ||
-            ts.isNonNullExpression(current)
-        ) {
-            if (ts.isAwaitExpression(current)) {
-                this.unwrappedAwaitExpressions.add(current.pos);
+        for (;;) {
+            if (
+                ts.isAwaitExpression(current) ||
+                ts.isParenthesizedExpression(current) ||
+                ts.isAsExpression(current) ||
+                ts.isTypeAssertionExpression(current) ||
+                ts.isNonNullExpression(current)
+            ) {
+                if (ts.isAwaitExpression(current)) {
+                    this.unwrappedAwaitExpressions.add(current.pos);
+                }
+                current = current.expression;
+                continue;
             }
-            current = current.expression;
+            // The pin's `wgsl` tag is the identity over its template.
+            const template = this.symbols.pinnedWgslTemplate(current);
+            if (template) {
+                current = template;
+                continue;
+            }
+            return current;
         }
-        return current;
     }
 
     /** The value symbol a name binds, or a failure naming it. */

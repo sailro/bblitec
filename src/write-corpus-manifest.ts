@@ -22,12 +22,16 @@ import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
  * moved because the SCENE moved, or because the harness composes something
  * different, is indistinguishable from pin churn once the new value is written.
  * So every move must be EXPLAINED — reverting the pin strings has to reproduce
- * the committed digest — and the columns a bump must not touch refuse rather
- * than being rewritten:
+ * the committed digest, or the scene's own `sourceSha256` moved with the bump
+ * (upstream edited a registered scene; the corpus manifest that carries the
+ * new digest is itself re-derived from the upstream tree by `corpus:verify`)
+ * — and the columns a bump must not touch refuse rather than being
+ * rewritten:
  *
  * - `referenceSha256` is the golden's own bytes. A golden that moved is a
  *   behaviour change to investigate; recapturing one is its own deliberate
- *   operation (`parity <id> --recapture-reference`).
+ *   operation (`parity <id> --recapture-reference`), and a scene whose
+ *   source moved is named so that operation is not forgotten.
  * - `capturedAt` records when the goldens were captured, not when this file
  *   was written.
  */
@@ -71,8 +75,15 @@ export interface ManifestRewrite {
     content: string;
     /** True when it differs from what is on disk. */
     changed: boolean;
-    /** Scenes whose `moduleSha256` moved, each explained by the pin. */
+    /** Scenes whose `moduleSha256` moved, each explained by the pin or by its own source. */
     movedModules: string[];
+    /**
+     * The subset whose SOURCE moved with the bump: upstream edited the
+     * registered scene, so the module carries new text beside the new pin.
+     * Their goldens must be recaptured under the new source, which is a
+     * separate deliberate operation the report names them for.
+     */
+    movedSources: string[];
     /** How many rows were considered. */
     rows: number;
     /** The pin the rows now describe. */
@@ -110,6 +121,7 @@ export function rewriteExactCorpusManifest(
     );
 
     const movedModules: string[] = [];
+    const movedSources: string[] = [];
     document.sourceVersion = corpus.sourceVersion;
 
     for (const row of document.scenes) {
@@ -125,6 +137,11 @@ export function rewriteExactCorpusManifest(
                 `${row.id} is in ${MANIFEST_PATH} but not in the corpus manifest.`,
             );
         }
+        // The scene's own source is the module's other input. A bump that
+        // edits a registered scene upstream moves this column through the
+        // corpus manifest -- itself re-derived from the upstream tree by
+        // `corpus:verify` -- and the module digest with it.
+        const sourceMoved = row.sourceSha256 !== sourceSha256;
         row.sourceSha256 = sourceSha256;
 
         // The golden is evidence, not a row to refresh.
@@ -147,7 +164,11 @@ export function rewriteExactCorpusManifest(
         );
         const digest = sha256(composed);
         if (digest !== row.moduleSha256) {
-            assertExplainedByPin(row, composed, previous, current);
+            if (sourceMoved) {
+                movedSources.push(row.id);
+            } else {
+                assertExplainedByPin(row, composed, previous, current);
+            }
             row.moduleSha256 = digest;
             movedModules.push(row.id);
         }
@@ -161,6 +182,7 @@ export function rewriteExactCorpusManifest(
         content,
         changed: content !== original,
         movedModules,
+        movedSources,
         rows: document.scenes.length,
         sourceVersion: corpus.sourceVersion,
     };
@@ -233,7 +255,11 @@ async function main(): Promise<void> {
     const result = rewriteExactCorpusManifest({ version, sourceVersion }, root);
     console.log(
         `${result.movedModules.length} of ${result.rows} capture module digest(s) ` +
-            `moved, each explained by the pin at ${result.sourceVersion}.`,
+            `moved, each explained by the pin at ${result.sourceVersion}` +
+            (result.movedSources.length > 0
+                ? ` or by its own source (${result.movedSources.join(", ")}: ` +
+                  "recapture their goldens under the edited source)."
+                : "."),
     );
     if (!result.changed) {
         console.log(`${MANIFEST_PATH} is already current.`);

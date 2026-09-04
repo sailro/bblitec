@@ -2484,13 +2484,16 @@ test("composes the billboard pick module by running the pin's own builder", asyn
 
     // Both stages travel in one module, which is why the emitter writes
     // the same text under a `.vert` and a `.frag` stem.
+    // The package build minifies the pin's tagged WGSL, so the text the
+    // browser compiles -- and the text asserted here -- carries no
+    // whitespace between tokens that need none.
     for (const composed of [facing, locked]) {
-        assert.match(composed, /@vertex\nfn vs\(in: I\) -> O \{/);
-        assert.match(composed, /@fragment\nfn fs\(in: O\) -> FsOut \{/);
+        assert.match(composed, /@vertex fn vs\(in:I\)->O\{/);
+        assert.match(composed, /@fragment fn fs\(in:O\)->FsOut\{/);
         // The non-detailed arm: two attachments, no `rgba32uint` detail.
         assert.match(
             composed,
-            /struct FsOut \{ @location\(0\) color: vec4f, @location\(1\) depth: f32 \};/,
+            /struct FsOut\{@location\(0\)color:vec4f,@location\(1\)depth:f32\};/,
         );
         // The plain arm: no atlas, so no cutout discard either.
         assert.doesNotMatch(composed, /atlasTex/);
@@ -2499,13 +2502,13 @@ test("composes the billboard pick module by running the pin's own builder", asyn
         for (const location of [0, 1, 2, 3, 4, 5]) {
             assert.match(
                 composed,
-                new RegExp(`@location\\(${location}\\) [a-z]: `),
+                new RegExp(`@location\\(${location}\\)[a-z]:`),
             );
         }
     }
     // The basis is the only arm the reached slice forks on.
-    assert.match(facing, /let u = normalize\(bb\.camUp\);\nreturn B\(r, -u\);/);
-    assert.match(locked, /let a = normalize\(bb\.axis\);/);
+    assert.match(facing, /let u=normalize\(bb\.camUp\);return B\(r,-u\);/);
+    assert.match(locked, /let a=normalize\(bb\.axis\);/);
     assert.notEqual(facing, locked);
 });
 
@@ -3142,26 +3145,25 @@ test("splits the pin's own spherical-harmonic splat module", async () => {
         "the vertex stage is a verbatim span of the pinned module",
     );
     // The fragment stage is the same span with the plugin slot comments
-    // removed -- the one edit the split makes -- so it is checked line by
-    // line against the module rather than as one substring.
-    const moduleLines = new Set(
-        module.wgsl.split("\n").map((line) => line.trimEnd()),
-    );
-    assert.deepEqual(
-        split.fragmentStage
-            .split("\n")
-            .map((line) => line.trimEnd())
-            .filter((line) => line.length > 0 && !moduleLines.has(line)),
-        [],
+    // removed -- the one edit the split makes -- so it is checked against
+    // the module with every comment dropped and whitespace collapsed on
+    // both sides, which is what a comment removal leaves behind.
+    const withoutComments = (text: string): string =>
+        text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+    assert.ok(
+        withoutComments(module.wgsl).includes(
+            withoutComments(split.fragmentStage),
+        ),
+        "the fragment stage is the pinned module's own span minus its slot comments",
     );
     // What separates this arm from the stock one: the uint payload textures
     // the vertex stage loads, and the eye the view direction is built from.
     const vertex = splatVertexWgsl("provenance", split);
     for (const declaration of [
-        "@group(1) @binding(6) var shTexture0: texture_2d<u32>;",
-        "@group(1) @binding(7) var shTexture1: texture_2d<u32>;",
-        "@group(1) @binding(8) var shTexture2: texture_2d<u32>;",
-        "eyePosition: vec3<f32>",
+        "@group(1)@binding(6)var shTexture0:texture_2d<u32>;",
+        "@group(1)@binding(7)var shTexture1:texture_2d<u32>;",
+        "@group(1)@binding(8)var shTexture2:texture_2d<u32>;",
+        "eyePosition:vec3<f32>",
         "fn computeSH(",
     ]) {
         assert.ok(
@@ -3173,7 +3175,7 @@ test("splits the pin's own spherical-harmonic splat module", async () => {
     // both PALs keep binding nothing to it.
     const fragment = splatFragmentWgsl("provenance", split);
     assert.ok(!fragment.includes("@group("), "the SH fragment binds nothing");
-    assert.ok(fragment.includes("struct VOut {"));
+    assert.ok(fragment.includes("struct VOut{"));
 
     // A degree the pin's table does not cover refuses instead of guessing.
     await assert.rejects(

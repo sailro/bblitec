@@ -85,26 +85,26 @@ const STOCK_DIALECT: SplatShaderDialect = {
 };
 
 const SH_DIALECT: SplatShaderDialect = {
-    uniformStruct: "struct U {",
-    varyingStruct: "struct VOut {",
-    uniformDeclaration: "var<uniform> u: U",
-    vertexEntry: "@vertex\nfn vs(",
-    fragmentEntry: "@fragment\nfn fs(",
+    uniformStruct: "struct U{",
+    varyingStruct: "struct VOut{",
+    uniformDeclaration: "var<uniform>u:U",
+    vertexEntry: "@vertex fn vs(",
+    fragmentEntry: "@fragment fn fs(",
     anchors: [
-        "@group(1) @binding(0) var<uniform> u: U;",
-        "@group(1) @binding(1) var samp: sampler;",
-        "@group(1) @binding(2) var centersTex: texture_2d<f32>;",
-        "@group(1) @binding(3) var covATex: texture_2d<f32>;",
-        "@group(1) @binding(4) var covBTex: texture_2d<f32>;",
-        "@group(1) @binding(5) var colorsTex: texture_2d<f32>;",
+        "@group(1)@binding(0)var<uniform>u:U;",
+        "@group(1)@binding(1)var samp:sampler;",
+        "@group(1)@binding(2)var centersTex:texture_2d<f32>;",
+        "@group(1)@binding(3)var covATex:texture_2d<f32>;",
+        "@group(1)@binding(4)var covBTex:texture_2d<f32>;",
+        "@group(1)@binding(5)var colorsTex:texture_2d<f32>;",
         // The one binding the stock module has no counterpart for, and the
         // reason the SH arm exists: the view-dependent colour is loaded
         // from packed unsigned texels in the VERTEX stage.
-        "@group(1) @binding(6) var shTexture0: texture_2d<u32>;",
-        "eyePosition: vec3<f32>",
-        "@vertex\nfn vs(",
-        "@fragment\nfn fs(",
-        "@builtin(position) pos: vec4<f32>",
+        "@group(1)@binding(6)var shTexture0:texture_2d<u32>;",
+        "eyePosition:vec3<f32>",
+        "@vertex fn vs(",
+        "@fragment fn fs(",
+        "@builtin(position)pos:vec4<f32>",
     ],
 };
 

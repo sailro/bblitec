@@ -15262,6 +15262,63 @@ test("folds a numeric shader source factory at its reached call", () => {
     );
 });
 
+test("reads the pin's wgsl tag as the identity over a shader source", () => {
+    // Since 1.27.0 the corpus tags its inline WGSL with the pin's `wgsl`
+    // helper (the quake material's depth-bias factory, scene 162's
+    // literals). The helper is the identity over its template, so a tagged
+    // source folds exactly as the untagged one above: the factory's
+    // formatter still becomes a dynamic uniform, and a tagged literal is
+    // its text.
+    const result = compileSource(`
+        import { createEngine, createShaderMaterial } from "babylon-lite";
+        import { wgsl } from "babylon-lite/shader/wgsl.js";
+
+        const vertexSource = (depthBias: number) => wgsl\`struct VertexOutput {
+            @builtin(position) position: vec4<f32>,
+        };
+        const DEPTH_BIAS: f32 = \${depthBias.toExponential(6)};
+        @vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+            var out: VertexOutput;
+            out.position = shaderSystem.worldViewProjection * vec4<f32>(input.position, 1.0);
+            out.position.z = out.position.z + DEPTH_BIAS / out.position.w;
+            return out;
+        }\`;
+        const fragmentSource = wgsl\`@fragment fn mainFragment() -> @location(0) vec4<f32> {
+            return vec4<f32>(0.5);
+        }\`;
+
+        function makeMaterial(depthBias = 0) {
+            return createShaderMaterial({
+                name: "tagged-source-factory",
+                vertexSource: vertexSource(depthBias),
+                fragmentSource,
+                attributes: ["position"],
+                uniforms: ["worldViewProjection"],
+            });
+        }
+
+        async function main() {
+            await createEngine({});
+            makeMaterial();
+        }
+    `);
+
+    const [program] = result.manifest.customShaderPrograms;
+    assert.match(
+        program?.vertexSource ?? "",
+        /shaderUniforms\.bblDynamicDepthBias/,
+    );
+    assert.deepEqual(program?.uniforms, [
+        "worldViewProjection",
+        "bblDynamicDepthBias:f32",
+    ]);
+    assert.match(
+        program?.fragmentSource ?? "",
+        /return vec4<f32>\(0\.5\);/,
+    );
+    assert.ok(!(program?.fragmentSource ?? "").includes("wgsl"));
+});
+
 test("preserves shader-material identity through a typed class field", () => {
     const result = compileSource(`
         import {

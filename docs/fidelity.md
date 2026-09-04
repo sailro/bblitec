@@ -173,10 +173,11 @@ too, so this moves scene code toward the LESS accurate of the two for the
 sake of one spelling. It was measured rather than assumed: all nine affected
 scenes and demos were rebuilt and re-measured against their committed
 goldens, and every published number is unchanged, because the operands these
-scenes hand it are nowhere near the range where scaling matters. Two
-lowerers still emit `std::hypot` and are tracked in `TODO.md`; until they
-move, the contract is kept by everything that goes through the shared
-operator map rather than by everything in the tree. The five
+scenes hand it are nowhere near the range where scaling matters. Every
+lowering in the tree now spells it that way: the CSM cascade fit's
+light-direction normalize and the glTF camera lowerer's three decomposed
+scale lanes were the last two to move, under the 1.27.0 bump's
+differential sweep. The five
 integer-valued one-argument `Math` functions fold at generation over a constant
 argument, where the folded value and the emitted call agree exactly; the
 transcendental ones deliberately do not, because V8 and a native maths library
@@ -303,11 +304,18 @@ layer, and composes the pin's own receiver through
 inversion, clone-aware caster Z fit, texel snap, nine-tap filter,
 cross-cascade blend and unbiased-receiver/biased-caster matrix split are all
 source-derived, and `_computeCsmCascades` is **restated and anchored** — the
-arithmetic is written in C++ and guarded by thirteen expression-shape
-assertions against the pinned body, where the sibling
-`computeDirectionalLightMatrix` is lowered from its AST. The difference is not
+arithmetic is written in C++ and guarded against the pinned body by
+expression-shape assertions on every formula it restates, by its statement
+count (an added statement moves no shape, so the count is what refuses), and
+by the two helpers the fit calls being taken from the pin rather than
+restated: `buildLightViewMatrixInto`, the module's own copy of the light
+basis, is lowered from its declaration, and `mat4InvertToRefOrIdentity` is
+matched term for term against the lowered `mat4Invert` so the one inverse
+serves both, with the identity the variant writes for a singular input
+restated in its place. The sibling `computeDirectionalLightMatrix` is
+lowered from its AST outright. The difference is not
 cosmetic: a mirror can silently omit an arm where a lowering refuses one it
-cannot express, and this one did. `_castersWorldAabb` opens with a
+cannot express, and this one did. `_castersWorldAabbInto` opens with a
 thin-instance branch — bound a caster by the union of its DRAWN instances,
 because "one prototype-sized box wrecks the cascade Z-fit" — and only its
 else-arm is implemented, so a thin-instanced CSM caster is refused by name

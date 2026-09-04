@@ -196,6 +196,9 @@ export function classifyCorpusChecks(
     for (const file of manifest.staged ?? []) {
         checks.push(fileCheck("staged", file, manifest.sourceVersion));
     }
+    for (const file of manifest.tooling ?? []) {
+        checks.push(fileCheck("tooling", file, manifest.sourceVersion));
+    }
     for (const application of manifest.applications) {
         for (const file of application.files) {
             checks.push(

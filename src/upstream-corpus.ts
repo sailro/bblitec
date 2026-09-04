@@ -44,6 +44,14 @@ export interface BabylonLiteCorpusManifest {
      * a row moves to `scenes` when its scene registers.
      */
     staged?: CorpusFile[];
+    /**
+     * Pinned build scripts generation EXECUTES: the package is the source
+     * put through them, so a fold from a pinned module's own text has to
+     * run the same step (`scripts/wgsl-minify-plugin.ts`, whose tagged-WGSL
+     * transform is what makes a builder's text the browser's). They ride
+     * the git-blob pin like every other row.
+     */
+    tooling?: CorpusFile[];
     applications: CorpusApplication[];
 }
 
