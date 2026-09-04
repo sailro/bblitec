@@ -1330,6 +1330,29 @@ earlier compiler error.
     `mark_shape_bodies_dirty(shape)` leaves both at three lines). Their
     neighbour `physics_shape_set_trigger` already grew a change guard that
     neither mask setter has.
+  - **Floating origin multiplies the PAL's global body scans by region
+    count**, measured 2026-09-04 and left alone deliberately.
+    `physics_world_step` walks the whole `bodies()` deque and filters on
+    `entry.world`, four times per step (`flush_pending_readds` once,
+    `cache_velocities` once per substep, `stabilize_contacting_bodies`
+    twice) -- and Havok's 1/240 s substep makes that eight traversals per
+    1/60 s step. With one world that is 8N; with R regions it is 8RN, and
+    each region re-scans every other region's bodies only to skip them.
+    `physics_world_release` has the same shape. The fix is a
+    `std::vector<std::uint32_t> body_indices` on `WorldEntry`: all three
+    membership transitions are already explicit and centralised
+    (`physics_world_add_body`, `physics_world_remove_body`,
+    `physics_world_release`), so maintaining it is local and every scan
+    site loses its filter. Two smaller ones beside it: `region_at` is a
+    linear scan run per body per step purely to recover an origin the body's
+    own record could carry beside `region` (two writers, both already
+    holding it); and `physics_shape_create_mesh` feeds `btTriangleMesh`
+    triangle-by-triangle, which de-indexes the indexed soup
+    `append_physics_mesh_geometry` just built -- about 6x the vertex memory
+    on a closed mesh -- where `btTriangleIndexVertexArray` over the two
+    vectors already in hand would keep it. None of this is measured as
+    reached by a registered scene, which is why it is recorded rather than
+    fixed alongside a wave.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
     a module-level mutable `let`, and behind it the whole constraint family

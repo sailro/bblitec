@@ -866,6 +866,19 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
    * structurally (`expressionMatchesShape`), so formatting, parentheses
    * and `as` casts do not pin bytes that carry no meaning.
    */
+  /**
+   * `MeshAccumulator`, whose rules the emitted accumulator restates: how it
+   * addresses a vertex and how it winds a triangle.
+   */
+  private static readonly meshAccumulatorContracts: ReadonlyArray<
+    readonly [string, readonly string[]]
+  > = [
+    [
+      "MeshAccumulator",
+      ["this._vertices.length / 3", "this._indices.push(c, b, a)"],
+    ],
+  ];
+
   private static readonly shapeContracts: ReadonlyArray<
     readonly [string, readonly string[]]
   > = [
@@ -1382,7 +1395,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
    * place for the two to disagree about what a violated contract says.
    */
   private assertShapeContracts(
-    resolve: (symbolName: string) => ts.FunctionDeclaration,
+    resolve: (symbolName: string) => ts.Node,
     contracts: ReadonlyArray<readonly [string, readonly string[]]>,
   ): void {
     for (const [symbolName, shapes] of contracts) {
@@ -1500,7 +1513,15 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     );
     this.assertStaticFrictionDefault();
     this.assertFloatingOriginContracts();
-    this.assertMeshAccumulatorShapes();
+    // The accumulator's rules live in a class METHOD, which
+    // `pinnedDeclaration` does not reach -- but the walk only ever needs a
+    // root to search and an owner to blame, so the module file is a legal
+    // resolver and this is a table row rather than a fourth copy of the
+    // loop.
+    this.assertShapeContracts(
+      () => this.context.sourceFile(havokModule),
+      PhysicsLowerer.meshAccumulatorContracts,
+    );
     this.assertOrderContracts(resolve, PhysicsLowerer.orderContracts);
   }
 
@@ -1516,31 +1537,6 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
    * reversal decides which side of every triangle the back end pushes a
    * resting body out of.
    */
-  private assertMeshAccumulatorShapes(): void {
-    const file = this.context.sourceFile(havokModule);
-    for (const shape of [
-      "this._vertices.length / 3",
-      "this._indices.push(c, b, a)",
-    ]) {
-      const stated = this.context.findNodes(
-        file,
-        (node): node is ts.Expression =>
-          ts.isExpression(node) &&
-          this.context.expressionMatchesShape(node, shape),
-      );
-      if (stated.length > 0) continue;
-      this.context.contractError(
-        file,
-        "Expected MeshAccumulator to state '" +
-          shape +
-          "'. The generated physics translation unit restates the " +
-          "accumulator, so a pinned change to how it addresses or " +
-          "winds a triangle fails generation rather than shipping a " +
-          "different collider.",
-      );
-    }
-  }
-
   /**
    * `setPhysicsShapeMaterial`'s static-friction parameter defaults to the
    * dynamic one.
@@ -2011,7 +2007,6 @@ struct PhysicsRaycastResult {
 struct PhysicsRegion {
     pal::PhysicsWorldHandle world{};
     Vec3d origin{};
-    std::array<double, 3> gravity{};
 };
 
 /**
@@ -2458,8 +2453,11 @@ void sync_node_to_body(
         }
     }
     throw std::runtime_error(
-        "A physics body names a floating-origin region that no longer "
-        "exists.");
+        "A physics body names no floating-origin region. Either the region "
+        "was reclaimed while the body still named it, or the body was "
+        "created BEFORE enableHavokFloatingOrigin and so was never placed "
+        "in one -- the pin documents that ordering, and this port does not "
+        "yet refuse it at generation.");
 }
 
 /**
@@ -2498,7 +2496,7 @@ void sync_node_to_body(
     pal::physics_world_set_speed_limit(
         new_world, limits.max_linear, limits.max_angular);
     fo.regions.push_back(
-        PhysicsRegion{new_world, Vec3d{pos.x, pos.y, pos.z}, fo.gravity});
+        PhysicsRegion{new_world, Vec3d{pos.x, pos.y, pos.z}});
     return new_world;
 }
 
@@ -2551,16 +2549,11 @@ void place_body(
     const pal::PhysicsWorldHandle region =
         get_or_create_region(world, pose.position);
     pal::physics_world_add_body(region, body.handle, starts_asleep);
-    const Vec3d origin = region_at(*world.fo, region).origin;
-    pal::physics_body_set_transform(
-        body.handle,
-        pal::PhysicsTransform{
-            {pose.position.x - origin.x,
-             pose.position.y - origin.y,
-             pose.position.z - origin.z},
-            {pose.rotation.x, pose.rotation.y,
-             pose.rotation.z, pose.rotation.w},
-        });
+    // The re-base is the same write \`_syncNodeToBody\` makes, so it is made
+    // in one place: the pose this already read is pure, and reading it
+    // again there costs an arena lookup rather than a second spelling of
+    // the subtraction.
+    fo_sync_node_to_body(engine, body, region_at(*world.fo, region).origin);
     body.region = region;
 }
 
@@ -2622,16 +2615,20 @@ void gc_regions(PhysicsWorld& world) {
     if (regions.size() <= 1) {
         return;
     }
-    // The pin's Set<WorldRegion> of the regions still in use. A region list
-    // is a handful of entries, so membership is a scan rather than a table.
-    std::vector<std::uint32_t> used;
-    used.reserve(world.bodies.size());
-    for (std::size_t i = 0; i < world.bodies.size(); ++i) {
-        used.push_back(world.bodies[i].region.value);
-    }
+    // The pin builds a Set<WorldRegion> of the regions still in use. A
+    // region list is a handful of entries, so membership is a scan rather
+    // than a table -- and asking each candidate directly stops at the first
+    // body that keeps it, where materializing the set walks every body and
+    // heap-allocates once per step for the whole life of the world.
     for (std::size_t i = regions.size(); i-- > 1;) {
-        if (std::find(used.begin(), used.end(), regions[i].world.value) ==
-            used.end()) {
+        const std::uint32_t candidate = regions[i].world.value;
+        const bool used = std::any_of(
+            world.bodies.begin(),
+            world.bodies.end(),
+            [candidate](const PhysicsBody& body) {
+                return body.region.value == candidate;
+            });
+        if (!used) {
             pal::physics_world_release(regions[i].world);
             regions.erase(
                 regions.begin() + static_cast<std::ptrdiff_t>(i));
@@ -2788,7 +2785,7 @@ void enable_havok_floating_origin(
     PhysicsWorld& world = physics_world_record(handle);
     PhysicsFloatingOrigin fo{};
     fo.regions.push_back(
-        PhysicsRegion{world.handle, Vec3d{0.0, 0.0, 0.0}, world.gravity});
+        PhysicsRegion{world.handle, Vec3d{0.0, 0.0, 0.0}});
     fo.radius = floating_origin_world_radius;
     fo.gravity = world.gravity;
     world.fo = std::move(fo);

@@ -1953,10 +1953,16 @@ test("keeps reached Havok body defaults and convex mass frames in the Bullet PAL
     // Havok applies its ceiling as part of an impulse write rather than at
     // the step, so the clamp follows the impulse -- and it reads the WORLD's
     // limit, because the floating-origin module seeds each new region's from
-    // the base world's rather than from these defaults.
+    // the base world's rather than from these defaults. The by-entry
+    // overload is what resolves that world, so naming it here is what keeps
+    // the assertion about the limit's SOURCE rather than about a spelling.
     assert.match(
         bullet,
-        /applyImpulse\([\s\S]{0,200}body_speed_limit\(entry\);[\s\S]{0,60}clamp_body_velocity/,
+        /applyImpulse\([\s\S]{0,200}clamp_body_velocity\(entry\);/,
+    );
+    assert.match(
+        bullet,
+        /void clamp_body_velocity\(const BodyEntry& entry\)[\s\S]{0,400}body_speed_limit\(entry\)/,
     );
     assert.match(
         bullet,

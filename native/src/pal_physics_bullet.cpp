@@ -423,14 +423,26 @@ btScalar speculative_breaking_threshold(
     return std::max(default_breaking_threshold(a, b), approach);
 }
 
+/**
+ * The live entry for a world index, or null. A released world keeps its
+ * slot so no handle is ever recycled, and its emptied entry is what tells a
+ * stale handle apart from a live one -- stated once here because both a
+ * throwing lookup and a falling-back one ask it.
+ */
+WorldEntry* world_or_null(std::uint32_t index) {
+    if (index == 0 || index >= worlds().size() ||
+        worlds()[index].world == nullptr) {
+        return nullptr;
+    }
+    return &worlds()[index];
+}
+
 WorldEntry& world_at(PhysicsWorldHandle handle) {
-    // A released world keeps its slot so no handle is ever recycled, and
-    // its emptied entry is what tells a stale handle apart from a live one.
-    if (handle.value == 0 || handle.value >= worlds().size() ||
-        worlds()[handle.value].world == nullptr) {
+    WorldEntry* entry = world_or_null(handle.value);
+    if (entry == nullptr) {
         throw std::runtime_error("Physics world handle is not live.");
     }
-    return worlds()[handle.value];
+    return *entry;
 }
 
 BodyEntry& body_at(PhysicsBodyHandle handle) {
@@ -480,16 +492,32 @@ void clamp_body_velocity(
  * `HP_World_AddBody` places it, and an impulse can reach it there.
  */
 PhysicsSpeedLimit body_speed_limit(const BodyEntry& entry) {
-    if (entry.world != 0 && entry.world < worlds().size() &&
-        worlds()[entry.world].world != nullptr) {
-        const WorldEntry& world_entry = worlds()[entry.world];
+    const WorldEntry* world_entry = world_or_null(entry.world);
+    if (world_entry != nullptr) {
         return PhysicsSpeedLimit{
-            static_cast<double>(world_entry.max_linear_speed),
-            static_cast<double>(world_entry.max_angular_speed)};
+            static_cast<double>(world_entry->max_linear_speed),
+            static_cast<double>(world_entry->max_angular_speed)};
     }
     return PhysicsSpeedLimit{
         static_cast<double>(default_max_linear_speed),
         static_cast<double>(default_max_angular_speed)};
+}
+
+/**
+ * Clamp a body to the ceiling in force for it, resolved from its world.
+ * The three write-time entry points that can raise a speed all want this
+ * exact pair, and the limit is a wire type in doubles that Bullet takes as
+ * `btScalar` -- so the conversion lives here rather than at each call.
+ */
+void clamp_body_velocity(const BodyEntry& entry) {
+    if (entry.body == nullptr) {
+        return;
+    }
+    const PhysicsSpeedLimit limit = body_speed_limit(entry);
+    clamp_body_velocity(
+        *entry.body,
+        static_cast<btScalar>(limit.max_linear),
+        static_cast<btScalar>(limit.max_angular));
 }
 
 void clamp_world_velocities(WorldEntry& entry) {
@@ -1278,16 +1306,17 @@ void physics_world_remove_body(
 
 void physics_world_release(PhysicsWorldHandle world) {
     WorldEntry& entry = world_at(world);
-    for (BodyEntry& body : bodies()) {
-        if (body.world != world.value) {
-            continue;
+    // The header states that a released world holds no bodies, and the one
+    // caller honours it. Detaching any that remain goes through
+    // `physics_world_remove_body` rather than restating it, so the two
+    // cannot drift about what detaching means; a handle IS the body table
+    // index, which is what lets this address them.
+    for (std::size_t index = 0; index < bodies().size(); ++index) {
+        if (bodies()[index].world == world.value) {
+            physics_world_remove_body(
+                world,
+                PhysicsBodyHandle{static_cast<std::uint32_t>(index)});
         }
-        if (body.in_world && body.body != nullptr) {
-            entry.world->removeRigidBody(body.body.get());
-        }
-        body.in_world = false;
-        body.needs_readd = false;
-        body.world = 0;
     }
     // Reset in reverse declaration order: `btDiscreteDynamicsWorld` holds
     // raw pointers to the dispatcher, broadphase, solver and configuration
@@ -1996,11 +2025,7 @@ void physics_body_apply_impulse(
         to_bt(location) - entry.body->getCenterOfMassPosition();
     entry.body->applyImpulse(to_bt(impulse), relative);
     entry.contact_quiet_seconds = 0.0;
-    const PhysicsSpeedLimit limit = body_speed_limit(entry);
-    clamp_body_velocity(
-        *entry.body,
-        static_cast<btScalar>(limit.max_linear),
-        static_cast<btScalar>(limit.max_angular));
+    clamp_body_velocity(entry);
     if (!entry.body->isStaticObject()) entry.body->activate(true);
     static const bool cpu_profile = [] {
         const char* value = std::getenv("BBLITE_CPU_PROFILE");
@@ -2042,11 +2067,7 @@ void physics_body_set_linear_velocity(
     entry.body->setLinearVelocity(to_bt(velocity));
     // The same ceiling an impulse write is subject to: Havok applies its
     // world limit at the write rather than at the step.
-    const PhysicsSpeedLimit limit = body_speed_limit(entry);
-    clamp_body_velocity(
-        *entry.body,
-        static_cast<btScalar>(limit.max_linear),
-        static_cast<btScalar>(limit.max_angular));
+    clamp_body_velocity(entry);
 }
 
 void physics_body_set_angular_velocity(
@@ -2054,11 +2075,7 @@ void physics_body_set_angular_velocity(
     std::array<double, 3> velocity) {
     BodyEntry& entry = body_at(body);
     entry.body->setAngularVelocity(to_bt(velocity));
-    const PhysicsSpeedLimit limit = body_speed_limit(entry);
-    clamp_body_velocity(
-        *entry.body,
-        static_cast<btScalar>(limit.max_linear),
-        static_cast<btScalar>(limit.max_angular));
+    clamp_body_velocity(entry);
 }
 
 void physics_body_set_collision_events_enabled(

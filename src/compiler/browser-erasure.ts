@@ -10,6 +10,7 @@
 // scene keeps), and whether a call is browser instrumentation that is
 // erased outright.
 import ts from "typescript";
+import { foldableMathUnary } from "./option-helpers.js";
 import type { Value } from "./types.js";
 
 /**
@@ -1129,20 +1130,25 @@ export class BrowserErasure {
                 ts.isPropertyAccessExpression(unwrapped.expression) &&
                 ts.isIdentifier(unwrapped.expression.expression) &&
                 unwrapped.expression.expression.text === "Math" &&
-                unwrapped.expression.name.text === "round" &&
                 unwrapped.arguments.length === 1 &&
                 this.context.isDefaultLibraryIdentifier(
                     unwrapped.expression.expression,
                 )
             ) {
+                // The names read off the table `staticNumberValue` folds
+                // through rather than one spelled here, so this rule and
+                // the taint rule above -- which treats every Math call over
+                // a resolved value alike -- cannot disagree about which
+                // ones resolve. A transcendental is deliberately absent
+                // from that table, and stays unfoldable here too.
+                const fold =
+                    foldableMathUnary[unwrapped.expression.name.text];
+                if (fold === undefined) return undefined;
                 const argument = this.evaluateBrowserValue(
                     unwrapped.arguments[0]!,
                 );
                 return argument?.kind === "number"
-                    ? {
-                          kind: "number",
-                          value: Math.round(argument.value),
-                      }
+                    ? { kind: "number", value: fold(argument.value) }
                     : undefined;
             }
             const helper =

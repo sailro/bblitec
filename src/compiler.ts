@@ -802,6 +802,16 @@ class Compiler
         this.emitImportedModuleInitializers();
         for (const statement of this.entryStatements()) {
             this.emitStatement(statement);
+            // The entry body is a function body like any other, and this is
+            // where the corpus family writes its settled guard: a helper the
+            // reference query answers folds `if (captureFrame === null)
+            // { return; }` to its taken branch, and everything after it is
+            // proved unreachable. Lowering it anyway would compile dead
+            // statements and record features -- a deterministic-random
+            // reach among them -- that generation has just shown nothing
+            // runs. The other five statement-list emitters already stop
+            // here; this one was the last that did not.
+            if (this.statementTerminatesAfterLowering(statement)) break;
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
