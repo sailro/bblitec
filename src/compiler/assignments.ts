@@ -1993,6 +1993,29 @@ export function emitPropertyAssignment(
         );
         return;
       }
+      // A `createSolidTexture2D` texture is the fourth source. It is one
+      // rgba8unorm texel the pin writes into a 1x1 texture and samples
+      // through `getBilinearSampler`, so it asks none of the three
+      // questions the refusals below ask: it carries no aspect (there is
+      // no attachment and no `_sampleType`), no foreign owner (the scene
+      // made it from its own engine), and no encoding choice (the pin
+      // hard-codes `rgba8unorm` and the value carries no `srgb` field at
+      // all). It is a value rather than a handle like the pixels arm, but
+      // it needs no spent-local mark: a transform write on a solid texture
+      // already refuses by name above.
+      if (texture.kind === "texture" && texture.textureStorage === "solid") {
+        context.expectSameEngine(target, texture, expression);
+        context.reachFeature(
+          "material:standard-diffuse-solid-texture",
+          expression,
+        );
+        context.emit(
+          `bbl::set_standard_diffuse_solid_texture(` +
+            `${context.requireEngine(target, expression)}, ` +
+            `${target.cpp}, ${texture.cpp});`,
+        );
+        return;
+      }
       // What this slot accepts, said the way every frame-graph slot
       // says it. `sampling: "color"` is the aspect the setter folds
       // -- `rtt.ts` gives a colour view `invertY: true` and the

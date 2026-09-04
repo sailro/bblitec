@@ -792,6 +792,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/texture/pixels-texture.ts",
         consumers: CMAKE,
     },
+    "material:standard-diffuse-solid-texture": {
+        provenance:
+            "src/material/standard/standard-material.ts diffuseTexture + " +
+            "src/texture/solid-texture.ts",
+        consumers: CMAKE,
+    },
     "material:standard-uv-transform": {
         provenance:
             "src/material/enable-material-uv-transform.ts + " +
@@ -933,6 +939,15 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/physics/havok-trigger.ts setPhysicsShapeIsTrigger + " +
             "onPhysicsTrigger (upstream keeps the trigger path in its own " +
             "module so a scene that imports neither pays nothing for it)",
+        consumers: CMAKE,
+    },
+    "physics:floating-origin": {
+        provenance:
+            "src/physics/havok-floating-origin.ts " +
+            "createHavokFloatingOriginContext, reached through " +
+            "src/physics/havok.ts enableHavokFloatingOrigin (upstream " +
+            "dynamic-imports the module from that call, so the call IS " +
+            "the opt-in)",
         consumers: CMAKE,
     },
     "sprite:billboard-custom-shader": {
@@ -2817,15 +2832,16 @@ function refusalRows(
             "generation-refusal",
             false,
             features.includes("physics:aggregate")
-                ? "checked: every reached physics aggregate names one of " +
-                    "the primitive shapes " +
-                    "createPrimitivePhysicsShapeHandle builds"
-                : "no physics aggregates to check",
-            "src/physics/havok.ts createPrimitivePhysicsShapeHandle: the " +
-                "reached slice is the four mesh-free primitives; " +
-                "CONVEX_HULL, MESH, CONTAINER and HEIGHTFIELD refuse at " +
+                ? "checked: every reached physics shape names one of the " +
+                    "primitive shapes createPrimitivePhysicsShapeHandle " +
+                    "builds, or one of the two createPhysicsShape derives " +
+                    "from a mesh"
+                : "no physics shapes to check",
+            "src/physics/havok.ts createPhysicsShape: the reached slice is " +
+                "the four mesh-free primitives plus the mesh-derived " +
+                "CONVEX_HULL and MESH; CONTAINER and HEIGHTFIELD refuse at " +
                 "the intrinsic (src/compiler/intrinsics/physics.ts) rather " +
-                "than at the pin's own throw inside createPhysicsAggregate",
+                "than at the pin's own throw inside createPhysicsShape",
             gate,
         ),
         row(

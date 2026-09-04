@@ -131,6 +131,7 @@ mid-collapse, one of them started asleep.
 | 99 | <img src="images/scenes/scene99.png" alt="Scene 99 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bone Control |
 | 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value. |
 | 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value. |
+| 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Physics Raycast over Triangle-Soup Colliders |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
@@ -192,6 +193,7 @@ mid-collapse, one of them started asleep.
 | 205 | <img src="images/scenes/scene205.png" alt="Scene 205 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Facing Billboards |
 | 206 | <img src="images/scenes/scene206.png" alt="Scene 206 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Cutout Billboards |
 | 207 | <img src="images/scenes/scene207.png" alt="Scene 207 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Directional Shadows |
+| 209 | <img src="images/scenes/scene209.png" alt="Scene 209 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Physics Regions |
 | 210 | <img src="images/scenes/scene210.png" alt="Scene 210 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | XMP Metadata Rounded Cube |
 | 211 | <img src="images/scenes/scene211.png" alt="Scene 211 rendering" width="160"> | 0.000 / 0.002 | 0.000 / 0.002 | BrainStem Meshopt |
 | 212 | <img src="images/scenes/scene212.png" alt="Scene 212 rendering" width="160"> | 0.014 / 0.016 | 0.010 / 0.011 | Dispersion Test |
@@ -239,6 +241,7 @@ mid-collapse, one of them started asleep.
 | 269 | <img src="images/scenes/scene269.png" alt="Scene 269 rendering" width="160"> | 0.001 / 0.006 | 0.001 / 0.006 | Mirrored Transform Reparenting |
 | 270 | <img src="images/scenes/scene270.png" alt="Scene 270 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mirrored Standard Meshes |
 | 271 | <img src="images/scenes/scene271.png" alt="Scene 271 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Shadow Light Rebuild |
+| 272 | <img src="images/scenes/scene272.png" alt="Scene 272 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Mesh Swap |
 | 273 | <img src="images/scenes/scene273.png" alt="Scene 273 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Runtime Material Family |
 | 274 | <img src="images/scenes/scene274.png" alt="Scene 274 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Alpha to Coverage |
 | 276 | <img src="images/scenes/scene276.png" alt="Scene 276 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite Sheet Particles |
@@ -294,6 +297,8 @@ a project-owned gate when it reaches the same contract.
 | nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
 | physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options |
+| physics-floating-origin | <img src="images/scenes/regression-physics-floating-origin.png" alt="Physics floating origin rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Floating Origin Regions |
+| physics-mesh-shape | <img src="images/scenes/regression-physics-mesh-shape.png" alt="Physics mesh shape rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Triangle-Soup Shape |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Track Clamp |

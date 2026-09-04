@@ -2342,6 +2342,55 @@ against the prior snapshot, and delivered through the pin's after-step list;
 the scene therefore never runs application code from inside the solver's
 manifold callback.
 
+**Multi-region floating origin is a fold, not a substitution, and it costs
+nothing.** `enableHavokFloatingOrigin(world, radius?)` replaces the
+single-world frame with `havok-floating-origin.ts`'s own: bodies are
+re-regioned before anything else, every region is stepped, the pre-step sync
+has no prestep-type gate, the after-step hooks do not run, and an emptied
+region is released. All of it is lowered from that module's declarations, with
+a shape contract, a call-order contract and a statement inventory per restated
+body — the same battery `havok.ts` carries. What it needed underneath was
+seven more `HP_*` entry points the PAL had never been asked for: the world
+speed-limit pair a new region copies from the base world, `HP_World_RemoveBody`
+and `HP_World_Release`, `HP_Body_GetAngularVelocity`, and the two velocity
+writes a migrating body is re-added with. A released region's handle is
+retired rather than recycled, which is what lets a body name its region by the
+solver world that IS it and survive `_gcRegions` splicing the list.
+
+**Scene 209 does not measure the mechanism, and the pair says so.** The corpus
+scene drops a sphere onto a ground with both at exactly `x = z = 5e6` — a
+multiple of the 0.5 that float32 quantizes to at that magnitude — and a purely
+vertical fall never leaves that grid, so the port measures **0.000 on both
+backends with the call and 0.000 with it removed**. Nothing in it reaches the
+migration or the reclaim either. `examples/regression-physics-floating-origin.ts`
+is the gate that does: the sphere is dropped at `OFFSET + 0.3`, which float32
+cannot hold at 5e6, fifteen units above a ground far enough away to seed a
+region of its own, with a capture radius of 10 so the fall crosses the 20%
+hysteresis margin and migrates into the ground's region 92 frames in — the
+frame free fall puts the crossing at — leaving its launch region to be
+reclaimed. Region-local, the sphere rests at `(0.300009, 1.000000, 0.300009)`;
+at raw world coordinates it rests at `(5000000.5, 1.000000, 5000000.5)`, 0.2
+units away in both axes.
+
+| | With `enableHavokFloatingOrigin` | Without it |
+| --- | --- | --- |
+| Full / region MAD | 0.0002 / 0.0004 | 1.911 / 3.491 |
+| Pixels exactly equal | 99.98% region | 91.84% region |
+| Maximum channel difference | 54 | 223 |
+| SDL_GPU versus Dawn | 0.000, byte-identical | — |
+
+The residual with the mechanism on is 0.028 of it on silhouette edges and
+nothing anywhere else, against a browser golden running the real Havok WASM
+through the same pinned module.
+
+One behaviour of the pinned module is worth stating because it looks like a
+defect and is not: **bodies in different regions do not collide**, since a
+region is a separate solver world. A radius smaller than a body's fall lets it
+re-region into a region of its own on every crossing and pass through its own
+ground for ever. The browser reference does exactly the same, byte for byte,
+which is how it was confirmed; the radius is a parameter chosen against the
+scene's scale, not a value to minimize.
+
 ### What a substituted solver is measured by
 
 Two things, and only one needs Havok.
@@ -2482,6 +2531,45 @@ fourteen cells of one boombox: centre, inertia and orientation agree with the
 Havok tuple to the hull builders' float tolerance. Discarding the frame put
 every shard's centre at the boombox pivot and turned one downward impulse
 into the wrong torque.
+
+**A triangle-mesh shape is the soup itself, and it cannot move.**
+`createPhysicsShape` runs one `MeshAccumulator` for CONVEX_HULL and MESH and
+separates them with `collectIndices`, so the port has one accumulator too:
+the pin's `indexOffset` is read before a node's own vertices join the list —
+which is what makes a child's triangles address the child's vertices — and
+its `push(c, b, a)` reversal is carried with them. Behind the seam the soup
+becomes a `btBvhTriangleMeshShape` over a `btTriangleMesh` the shape record
+owns, declared before the shape so it outlives Bullet's raw pointer into it.
+The reversal reaches nothing today and is carried anyway because it is the
+pin's own data: Bullet's triangle ray test and its convex-versus-triangle
+contact are both double-sided unless a backface-culling flag is set, and none
+is. A geometry whose index list is not triangles refuses rather than building
+a soup of unrelated ones.
+
+The one thing this kind cannot do is move. Havok simulates a mesh shape on a
+dynamic body; Bullet's is concave, answers no inertia tensor for one and
+detects no concave-concave contact, so a mesh shape reaching a DYNAMIC body
+refuses by name at the assignment — `physics_body_set_shape` for the pin's own
+order, `physics_body_set_motion_type` for a later change. Every reached scene
+builds its mesh colliders for static ones.
+
+**Scene 102 cannot observe any of that, and the observing pair is elsewhere.**
+Its two MESH colliders are `createBox(engine, 2)` meshes, so the soup and the
+bounding box are the same surface for its ray: the scene measures 0.003 full
+and 0.125 foreground with the triangle-mesh shape, and the frame is
+**byte-identical** with a BOX of the same extents standing in — on the Havok
+reference as well as here, so the picture cannot distinguish the shape kinds
+on either side. `examples/regression-physics-mesh-shape.ts` is the gate that
+can: an uncapped `createTube` ribbon with a sphere dropped down its axis,
+where the soup has no caps and the hull of the same points does. The sphere
+lands on the ground through the MESH shape and on the hull's top face four
+units higher, and the two are 37 rows apart in the foreground box the
+measurement tool reports. The MESH arm is byte-identical to the Havok golden
+of that scene — full MAD 0.000, 100% of pixels exactly equal, both backends —
+which is the one physics property a substituted solver cannot move: a resting
+pose has no phase. The CONVEX_HULL control against its own Havok golden is
+0.020 / 0.540, the hull builders disagreeing about an open ribbon by two
+rows; no corpus scene builds one.
 
 **A trigger volume is a shape flag upstream and an object flag here.**
 `HP_Shape_SetTrigger` marks the SHAPE; Bullet's equivalent,

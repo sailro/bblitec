@@ -591,6 +591,26 @@ export function compileAdaptations(
                     "apex for the reached coefficient",
                 "both GPU backends render the byte-identical frame from " +
                     "the identical simulated pose",
+                "a `PhysicsShapeType.MESH` collider is the pin's own " +
+                    "triangle soup rather than the hull of it, and the " +
+                    "difference is measured where the two arms disagree: " +
+                    "a sphere dropped down an uncapped tube falls through " +
+                    "the mesh shape and rests on the hull four units " +
+                    "higher (examples/regression-physics-mesh-shape.ts, " +
+                    "byte-identical to the Havok golden on both backends " +
+                    "through the mesh arm)",
+                "multi-region floating origin is a fold rather than a " +
+                    "second substitution, and it is gated where the " +
+                    "mechanism is the only thing that can produce the " +
+                    "pose: `examples/regression-physics-floating-origin" +
+                    ".ts` drops a sphere at `5e6 + 0.3`, which float32 " +
+                    "cannot hold at that magnitude, through a region " +
+                    "migration and a region reclaim. Region-local it " +
+                    "rests where it was dropped and measures 0.0002 full " +
+                    "/ 0.0004 region against the pinned Havok golden, " +
+                    "byte-identical between the backends; simulated at " +
+                    "raw world coordinates the same scene rests 0.2 " +
+                    "units away in x and z and measures 1.911 / 3.491",
                 "an aggregate's `startAsleep` sleeps in Bullet the way " +
                     "`HP_World_AddBody`'s third argument sleeps in " +
                     "Havok, and wakes on the same contact: scene 44's " +

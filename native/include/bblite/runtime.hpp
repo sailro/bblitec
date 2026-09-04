@@ -4772,6 +4772,10 @@ void set_standard_diffuse_pixels_texture(
     Engine& engine,
     MaterialHandle material,
     const PixelsTexture& texture);
+void set_standard_diffuse_solid_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const SolidTexture& texture);
 void set_standard_diffuse_file_texture(
     Engine& engine,
     MaterialHandle material,

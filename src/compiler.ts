@@ -10839,6 +10839,20 @@ class Compiler
                 for (const statement of unwrapped.body
                     .statements) {
                     this.emitStatement(statement);
+                    // A guard the compiler settled leaves only the branch
+                    // it takes, so an early return the query already
+                    // decided ends this body -- lowering what follows would
+                    // compile statements generation has proved unreachable,
+                    // and a narrowed optional past such a guard has no
+                    // native value to read. Every other body emitting a
+                    // statement list stops the same way.
+                    if (
+                        this.statementTerminatesAfterLowering(
+                            statement,
+                        )
+                    ) {
+                        break;
+                    }
                 }
             } else {
                 this.emitExpressionAsStatement(
@@ -15542,6 +15556,34 @@ class Compiler
             return undefined;
         }
         return this.resolveStaticExpression(identifier);
+    }
+
+    /**
+     * The module-level function an identifier names, when it names exactly
+     * one declaration and that declaration has a body.
+     *
+     * Module level is the load-bearing half. A function declared inside
+     * another body closes over that body's locals, so a reader that
+     * evaluates the body speculatively -- browser erasure asks this of the
+     * capture-pose helpers -- would be resolving names against whichever
+     * scope happened to be open at the time. A single declaration is the
+     * other half: an overload set has signatures without bodies, and
+     * picking one of them would answer for a call the checker resolved to
+     * another.
+     */
+    public moduleFunctionDeclaration(
+        identifier: ts.Identifier,
+    ): ts.FunctionDeclaration | undefined {
+        const declarations =
+            this.symbols.valueSymbol(identifier)?.declarations ?? [];
+        const declaration =
+            declarations.length === 1 ? declarations[0]! : undefined;
+        return declaration &&
+            ts.isFunctionDeclaration(declaration) &&
+            declaration.body !== undefined &&
+            ts.isSourceFile(declaration.parent)
+            ? declaration
+            : undefined;
     }
 
     public lookupOptional(

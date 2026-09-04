@@ -1950,9 +1950,13 @@ test("keeps reached Havok body defaults and convex mass frames in the Bullet PAL
     assert.match(bullet, /default_max_linear_speed = btScalar\(200\)/);
     assert.match(bullet, /default_max_angular_speed = btScalar\(100\)/);
     assert.match(bullet, /default_angular_damping = btScalar\(0\.1\)/);
+    // Havok applies its ceiling as part of an impulse write rather than at
+    // the step, so the clamp follows the impulse -- and it reads the WORLD's
+    // limit, because the floating-origin module seeds each new region's from
+    // the base world's rather than from these defaults.
     assert.match(
         bullet,
-        /applyImpulse\([\s\S]{0,100}clamp_body_velocity/,
+        /applyImpulse\([\s\S]{0,200}body_speed_limit\(entry\);[\s\S]{0,60}clamp_body_velocity/,
     );
     assert.match(
         bullet,

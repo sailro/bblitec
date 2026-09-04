@@ -57,7 +57,16 @@ export interface PhysicsIntrinsicContext
  */
 const PRIMITIVE_SHAPE_TYPES = ["SPHERE", "CAPSULE", "CYLINDER", "BOX"] as const;
 
-const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, "CONVEX_HULL"] as const;
+/**
+ * The two arms `createPhysicsShape` builds from a `mesh` rather than a
+ * parameter bag: the hull of its points, and the triangle soup itself.
+ * `createPhysicsAggregate` accepts either name and reaches the pin's own
+ * `supports only primitive physics shapes` throw, exactly as it does
+ * upstream.
+ */
+const MESH_SHAPE_TYPES = ["CONVEX_HULL", "MESH"] as const;
+
+const SHAPE_TYPES = [...PRIMITIVE_SHAPE_TYPES, ...MESH_SHAPE_TYPES] as const;
 
 /**
  * The `PhysicsShapeParameters` members the reached slice lowers, as (the
@@ -177,6 +186,28 @@ export function compilePhysicsIntrinsic(
       };
     }
 
+    case "enableHavokFloatingOrigin": {
+      // `(world, floatingOriginWorldRadius = 100000)`. Upstream loads the
+      // floating-origin runtime with a dynamic `import()` from inside this
+      // function, so the CALL is the opt-in and nothing else has to be
+      // sniffed to know a world simulates in regions. The default radius
+      // is the pin's own parameter initializer, read by the lowerer from
+      // that declaration rather than restated here.
+      context.expectArgumentCount(call, 1, 2);
+      const world = context.compileValue(call.arguments[0]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      const radius = call.arguments[1]
+        ? context.compileNumber(call.arguments[1], "double")
+        : "bbl::upstream::pinned_floating_origin_radius";
+      context.reachFeature("physics:floating-origin", call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::enable_havok_floating_origin(` +
+          `${world.cpp}, ${radius})`,
+      };
+    }
+
     case "setPhysicsTimestepMs": {
       context.expectArgumentCount(call, 2, 2);
       const world = context.compileValue(call.arguments[0]!);
@@ -214,11 +245,14 @@ export function compilePhysicsIntrinsic(
       // members, so `createPhysicsShape(world, { type: SPHERE })` is a unit
       // sphere at the origin upstream and lowers to the same empty bag
       // here; refusing it would be narrower than the pin for nothing.
-      if (shapeType === "CONVEX_HULL" && parametersExpression !== undefined) {
+      const fromMesh = (MESH_SHAPE_TYPES as readonly string[]).includes(
+        shapeType,
+      );
+      if (fromMesh && parametersExpression !== undefined) {
         context.fail(
           call.arguments[1]!,
           "createPhysicsShape builds either a primitive from " +
-            "`parameters` or the convex hull of a `mesh`. " +
+            "`parameters` or a collider from a `mesh`. " +
             `PhysicsShapeType.${shapeType} takes its geometry from ` +
             "`mesh`, and the parameters beside it would be read by " +
             "neither side.",
@@ -259,7 +293,7 @@ export function compilePhysicsIntrinsic(
       if (!meshExpression) {
         context.fail(
           call.arguments[1]!,
-          "A convex-hull physics shape requires `mesh`.",
+          "Physics mesh shapes require a mesh or transform hierarchy.",
         );
       }
       const mesh = context.compileValue(meshExpression);
@@ -273,8 +307,9 @@ export function compilePhysicsIntrinsic(
       return {
         kind: "physics-shape",
         cpp:
-          `bbl::upstream::create_physics_convex_hull_shape(` +
-          `${world.cpp}, ${mesh.cpp}, ` +
+          `bbl::upstream::create_physics_mesh_shape(` +
+          `${world.cpp}, ` +
+          `bbl::upstream::PhysicsShapeType::${shapeType}, ${mesh.cpp}, ` +
           `${includeChildren ? context.compileBoolean(includeChildren) : "false"})`,
         ...(mesh.engineCpp ? { engineCpp: mesh.engineCpp } : {}),
       };
@@ -771,8 +806,9 @@ function compileImpulsePoint(
  * `PhysicsShapeType.SPHERE` -- a `const enum` member access. The member is
  * read by name and mapped to the generated enumerator; the reached slice is
  * the four primitives `createPrimitivePhysicsShapeHandle` builds without a
- * mesh, so CONVEX_HULL, MESH, CONTAINER and HEIGHTFIELD refuse here rather
- * than at the pin's own `throw` inside `createPhysicsAggregate`.
+ * mesh plus the two `createPhysicsShape` builds from one, so CONTAINER and
+ * HEIGHTFIELD refuse here rather than at the pin's own `throw` inside
+ * `createPhysicsShape`.
  */
 function expectShapeType(
   context: PhysicsIntrinsicContext,
@@ -783,10 +819,10 @@ function expectShapeType(
     context.fail(
       expression,
       `PhysicsShapeType.${member} is not reached by this ` +
-        "prototype. Only the primitive shapes " +
-        "`createPrimitivePhysicsShapeHandle` builds are " +
-        `lowered (${SHAPE_TYPES.join(", ")}); MESH and CONTAINER ` +
-        "need their additional pinned paths.",
+        "prototype. The primitive shapes " +
+        "`createPrimitivePhysicsShapeHandle` builds and the two " +
+        `mesh-derived ones are lowered (${SHAPE_TYPES.join(", ")}); ` +
+        "CONTAINER and HEIGHTFIELD need their additional pinned paths.",
     );
   }
   return member;

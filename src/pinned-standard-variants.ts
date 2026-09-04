@@ -1449,6 +1449,9 @@ export interface StandardSceneCompositionInput {
     /** `material:standard-diffuse-pixels-texture` reached: scene code hands
      *  a `createTexture2DFromPixels` texture to `material.diffuseTexture`. */
     diffusePixelsTexture: boolean;
+    /** `material:standard-diffuse-solid-texture` reached: scene code hands a
+     *  `createSolidTexture2D` texel to `material.diffuseTexture`. */
+    diffuseSolidTexture: boolean;
     /** `material:standard-diffuse-file-texture` reached: scene code hands a
      *  loaded image to `material.diffuseTexture`. */
     diffuseFileTexture: boolean;
@@ -1623,6 +1626,7 @@ function sceneCodeMaterialInputs(
         emissiveFileTexture: boolean;
         diffuseRenderTexture: boolean;
         diffusePixelsTexture: boolean;
+        diffuseSolidTexture: boolean;
         diffuseFileTexture: boolean;
         uvTransform: boolean;
         standardMaterialPlugins:
@@ -1642,14 +1646,16 @@ function sceneCodeMaterialInputs(
     const emissiveArms: ("none" | "depth" | "image")[] = ["none"];
     if (options.emissiveRenderTexture) emissiveArms.push("depth");
     if (options.emissiveFileTexture) emissiveArms.push("image");
-    // A colour attachment, a pixels texture and a loaded image reach the
-    // pin's diffuse condition identically -- a truthy texture at coordinate
-    // index 0 -- so they are one arm of this sweep rather than three. What
-    // differs between them is the record the runtime fills and the UV block
-    // it produces, neither of which is a composition key.
+    // A colour attachment, a pixels texture, a solid texel and a loaded
+    // image reach the pin's diffuse condition identically -- a truthy
+    // texture at coordinate index 0 -- so they are one arm of this sweep
+    // rather than four. What differs between them is the record the runtime
+    // fills and the UV block it produces, neither of which is a composition
+    // key.
     const diffuseArms =
         options.diffuseRenderTexture ||
         options.diffusePixelsTexture ||
+        options.diffuseSolidTexture ||
         options.diffuseFileTexture
             ? [false, true]
             : [false];
@@ -1743,6 +1749,7 @@ export async function composeSceneStandardVariants(
                 emissiveFileTexture: input.emissiveFileTexture,
                 diffuseRenderTexture: input.diffuseRenderTexture,
                 diffusePixelsTexture: input.diffusePixelsTexture,
+                diffuseSolidTexture: input.diffuseSolidTexture,
                 diffuseFileTexture: input.diffuseFileTexture,
                 uvTransform: input.uvTransform,
                 standardMaterialPlugins: input.standardMaterialPlugins,

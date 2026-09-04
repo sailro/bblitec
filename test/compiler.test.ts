@@ -11454,6 +11454,123 @@ test("compiles a Math transform over a query the reference pins", () => {
     assert.match(queried.cpp, /\.position\.x = bbl::js::round_js\(120\.4\)/);
 });
 
+test("folds a module helper that reads the pinned query", () => {
+    // Thirteen pinned scenes wrap the query read in a named helper --
+    // `readCaptureFrame()`, `readCaptureAfterFrames()`, `readSeekTime()` --
+    // and branch on its result. The steps inside are the same ones that
+    // fold when a scene writes them inline, so putting a name around them
+    // cannot stop them folding: otherwise the call lowers to a native
+    // function whose body IS the folded constant while every branch over
+    // its result stays live, and a scene's interactive arm has to compile
+    // at a pose the pin never serves it at.
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        const DEFAULT_FRAME = 5;
+
+        function readCaptureFrame(): number | null {
+            const params = new URLSearchParams(location.search);
+            const frameValue = params.get("captureFrame");
+            if (frameValue !== null) {
+                const frame = Number(frameValue);
+                return Number.isFinite(frame) && frame >= 0
+                    ? Math.round(frame)
+                    : DEFAULT_FRAME;
+            }
+            return null;
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const captureFrame = readCaptureFrame();
+            const autoTest = captureFrame !== null;
+            if (autoTest) {
+                box.position.x = captureFrame!;
+            } else {
+                box.position.x = 99;
+            }
+        }
+    `;
+    const queried = compileSource(source, {
+        search: "?captureFrame=7.4",
+    });
+    assert.match(queried.cpp, /\.position\.x = 7\.0/);
+    assert.doesNotMatch(queried.cpp, /readCaptureFrame|99\.0/);
+    // The other pose selects the other arm, which is what proves the fold
+    // reads the query rather than assuming the capture branch.
+    const bare = compileSource(source);
+    assert.match(bare.cpp, /\.position\.x = 99\.0/);
+    assert.doesNotMatch(bare.cpp, /readCaptureFrame|7\.0/);
+});
+
+test("keeps lowering a helper that reads no browser state", () => {
+    // The gate that separates a query read from ordinary code. Every other
+    // rule of the helper fold holds for `frameCount()` -- module level, no
+    // parameters, a body of one `return` this evaluator can walk -- so
+    // without the browser-state test it would fold, and a native call the
+    // scene means to make would erase.
+    const result = compileSource(
+        `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        function frameCount(): number {
+            return 4;
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            box.position.x = frameCount();
+        }
+    `,
+        { search: "?captureFrame=7" },
+    );
+    assert.match(result.cpp, /frameCount/);
+});
+
+test("keeps lowering a helper this evaluator cannot answer", () => {
+    // The narrowing, stated as behaviour. A body reaching a statement the
+    // evaluator does not model -- here a `let` the branch writes -- has to
+    // lower exactly as it does today rather than be given a made-up
+    // value, so the native function survives and its caller's guard with
+    // it.
+    const result = compileSource(
+        `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        function readCaptureFrame(): number | null {
+            let frame: number | null = null;
+            const params = new URLSearchParams(location.search);
+            if (params.get("captureFrame") !== null) {
+                frame = 3;
+            }
+            return frame;
+        }
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const captureFrame = readCaptureFrame();
+            if (captureFrame !== null) {
+                box.position.x = captureFrame;
+            }
+        }
+    `,
+        { search: "?captureFrame=7" },
+    );
+    assert.match(result.cpp, /readCaptureFrame/);
+});
+
 test("erases a Math transform over an unresolved browser value", () => {
     // The other half of the same rule: nothing answers `devicePixelRatio` at
     // generation, so the whole diagnostic erases with its browser source
@@ -16945,6 +17062,34 @@ test("lowers a colour render target into the Standard diffuse slot", () => {
             "material:standard-diffuse-render-texture",
         ),
     );
+});
+
+test("lowers a solid texture into the Standard diffuse slot", () => {
+    // The fourth accepted source. It asks none of the three questions the
+    // refusals below ask: no attachment aspect, no foreign owner, and no
+    // encoding option -- createSolidTexture2D hard-codes rgba8unorm and the
+    // value carries no `srgb` field at all.
+    const result = compileSource(
+        diffuseSlotScene(
+            " createSolidTexture2D,",
+            "    material.diffuseTexture = " +
+                "createSolidTexture2D(engine, 1, 1, 1, 1);",
+        ),
+        {
+            fileName: "corpus/babylon-lite/lab/lite/src/lite/diffuse-solid.ts",
+        },
+    );
+    assert.match(
+        result.cpp,
+        /bbl::set_standard_diffuse_solid_texture\([^;]*bbl::create_solid_texture\(/,
+    );
+    assert.ok(
+        result.manifest.features.includes(
+            "material:standard-diffuse-solid-texture",
+        ),
+    );
+    // The texel factory rides `texture:file`, the TU that defines it.
+    assert.ok(result.manifest.features.includes("texture:file"));
 });
 
 test("refuses a depth-only render target in the Standard diffuse slot", () => {

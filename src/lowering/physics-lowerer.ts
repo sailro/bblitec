@@ -82,6 +82,26 @@ export const havokModule = "src/physics/havok.ts";
  */
 export const havokTriggerModule = "src/physics/havok-trigger.ts";
 
+/**
+ * The multi-region floating-origin module.
+ *
+ * Upstream keeps it standalone for the same reason the trigger module is
+ * standalone, and reaches it the same lazily-registered way: the only
+ * import of it is a dynamic one inside `enableHavokFloatingOrigin`, so a
+ * world that never calls that function never loads it. The CALL is
+ * therefore the opt-in, which is what the intrinsic mirrors -- nothing
+ * sniffs engine options or scene text to decide a world simulates in
+ * regions.
+ *
+ * What the module changes is where a body's transform LIVES. A region is a
+ * second solver world with a fixed world-space origin; a body inside it is
+ * stored at `worldPosition - origin`, which is small even when the node's
+ * own position is 5e6. The node keeps true world coordinates, so the render
+ * path -- which subtracts the camera's own offset -- is untouched.
+ */
+export const havokFloatingOriginModule =
+  "src/physics/havok-floating-origin.ts";
+
 /** The pinned builder every aggregate's shape parameters come from. */
 const buildShapeParams = "_buildShapeParams";
 
@@ -889,6 +909,20 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       ["options.mass === 0", "options.mass > 0"],
     ],
     [
+      // The two mesh arms share one accumulator and split on one
+      // boolean, which is what the emitted mesh factory folds into
+      // `collect_indices`. If the pin ever collected indices for a
+      // convex hull too, or built the soup from something other than
+      // the triangle buffer, the emitted split would be wrong in a way
+      // no expression below it can show.
+      "createPhysicsShape",
+      [
+        "options.type === PhysicsShapeType.MESH",
+        "hknp.HP_Shape_CreateMesh(positions.offset, numVec3s, " +
+          "triangles.offset, numTriangles)[1]",
+      ],
+    ],
+    [
       // The material array in the pin own field order. Which combine
       // mode applies to which channel travels across the PAL surface
       // as data, so a flip upstream has to fail here. The static
@@ -967,10 +1001,392 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       .declaration;
   }
 
-  /** Every rule the emitted template folds, checked where it is stated. */
-  private assertPinnedContracts(): void {
-    for (const [symbolName, shapes] of PhysicsLowerer.shapeContracts) {
-      const declaration = this.pinnedDeclaration(symbolName);
+  private floatingOriginDeclaration(
+    symbolName: string,
+  ): ts.FunctionDeclaration {
+    return this.context.functionDeclaration(
+      havokFloatingOriginModule,
+      symbolName,
+    ).declaration;
+  }
+
+  /**
+   * `enableHavokFloatingOrigin`'s own `floatingOriginWorldRadius = 100000`.
+   *
+   * Read from the parameter rather than restated for the same reason
+   * `MAX_STEP_MS` is: the radius decides how far a body travels before it
+   * is re-based, so a bump that moves it moves every far-from-origin
+   * simulation. The intrinsic emits this constant when a scene omits the
+   * argument, which is where the pin applies its default too.
+   */
+  private floatingOriginRadius(): number {
+    const declaration = this.pinnedDeclaration("enableHavokFloatingOrigin");
+    const parameter = declaration.parameters[1];
+    const initializer = parameter?.initializer;
+    if (
+      !parameter ||
+      !initializer ||
+      !ts.isNumericLiteral(initializer) ||
+      !ts.isIdentifier(parameter.name) ||
+      parameter.name.text !== "floatingOriginWorldRadius"
+    ) {
+      this.context.contractError(
+        parameter ?? declaration,
+        "Expected enableHavokFloatingOrigin's second parameter to be " +
+          "floatingOriginWorldRadius with a numeric default. The " +
+          "generated intrinsic emits that default at every call site " +
+          "that omits the argument.",
+      );
+    }
+    return Number(initializer.text);
+  }
+
+  /**
+   * The floating-origin module's own restated rules.
+   *
+   * A second table rather than rows in `shapeContracts` because the
+   * declarations live in a different pinned module, and the module split is
+   * upstream's own -- a bundler drops this file entirely from a scene that
+   * never opts in.
+   */
+  private static readonly floatingOriginShapeContracts: ReadonlyArray<
+    readonly [string, readonly string[]]
+  > = [
+    [
+      // The capture test: a squared distance against a squared radius.
+      "_findRegion",
+      ["fo.radius * fo.radius", "dx * dx + dy * dy + dz * dz <= r2"],
+    ],
+    [
+      // A new region is seeded with the context's gravity, and inherits the
+      // BASE world's speed limits rather than the backend's defaults.
+      "_getOrCreateRegion",
+      [
+        "hknp.HP_World_SetGravity(newWorld, fo.gravity)",
+        "hknp.HP_World_SetSpeedLimit(newWorld, limits[1], limits[2])",
+        "{ x: pos.x, y: pos.y, z: pos.z }",
+      ],
+    ],
+    [
+      // A body enters its region already re-based: the transform written
+      // after the add is node-world MINUS the region origin.
+      "_placeBody",
+      ["[[p.x - o.x, p.y - o.y, p.z - o.z], [q.x, q.y, q.z, q.w]]"],
+    ],
+    [
+      // The 20% hysteresis margin, the squared test it is used in, and the
+      // one-second velocity look-ahead that prefers an existing region.
+      "_reRegionBody",
+      [
+        "fo.radius * 1.2",
+        "localPos[0] * localPos[0] + localPos[1] * localPos[1] + " +
+          "localPos[2] * localPos[2] <= margin * margin",
+        "{ x: wx + linVel[0], y: wy + linVel[1], z: wz + linVel[2] }",
+        "[[wx - o.x, wy - o.y, wz - o.z], orientation]",
+      ],
+    ],
+    [
+      // Region-local out, true world coordinates onto the node.
+      "_syncBodyToNode",
+      [
+        "node.position.set(pos[0] + o.x, pos[1] + o.y, pos[2] + o.z)",
+        "node.rotationQuaternion.set(rot[0], rot[1], rot[2], rot[3])",
+      ],
+    ],
+    [
+      // ... and true world coordinates in, region-local onto the body.
+      "_syncNodeToBody",
+      ["[[p.x - o.x, p.y - o.y, p.z - o.z], [q.x, q.y, q.z, q.w]]"],
+    ],
+    [
+      // Which bodies each phase touches. Note what is NOT here: the
+      // floating-origin step has no prestep-type gate at all, so an
+      // ANIMATED body syncs and a merely `_preStep` one does not.
+      "_step",
+      [
+        "b.motionType === (PhysicsMotionType.ANIMATED as number)",
+        "b.motionType === (PhysicsMotionType.DYNAMIC as number)",
+      ],
+    ],
+    [
+      // Region 0 is never reclaimed, and a one-region world skips the walk.
+      "_gcRegions",
+      ["regions.length <= 1"],
+    ],
+  ];
+
+  /** The calls each floating-origin declaration makes, in this order. */
+  private static readonly floatingOriginOrderContracts: ReadonlyArray<
+    readonly [string, readonly string[]]
+  > = [
+    [
+      // Create, seed gravity, then copy the base world's speed limits: the
+      // limits are read from `world._hkWorld` and written to the new one,
+      // so a region is not simply a default-configured world.
+      "_getOrCreateRegion",
+      [
+        "_findRegion",
+        "HP_World_Create",
+        "HP_World_SetGravity",
+        "HP_World_GetSpeedLimit",
+        "HP_World_SetSpeedLimit",
+      ],
+    ],
+    [
+      // Region first, then add, then the re-based transform -- the same
+      // add-before-transform rule `createPhysicsBody` follows, because the
+      // solver resets a body's transform on add.
+      "_placeBody",
+      ["_getOrCreateRegion", "HP_World_AddBody", "HP_Body_SetQTransform"],
+    ],
+    [
+      // Re-region BEFORE the pre-step sync, and reclaim AFTER the
+      // post-step one. Both edges are observable: a body re-based after
+      // its node sync would be stepped from the previous region's frame.
+      "_step",
+      [
+        "_reRegionBody",
+        "_syncNodeToBody",
+        "HP_World_Step",
+        "_syncBodyToNode",
+        "_gcRegions",
+      ],
+    ],
+    [
+      // Velocity is read BEFORE the move and written back after it:
+      // `HP_World_AddBody` does not carry it across.
+      "_reRegionBody",
+      [
+        "HP_Body_GetQTransform",
+        "HP_Body_GetLinearVelocity",
+        "HP_Body_GetAngularVelocity",
+        "HP_World_RemoveBody",
+        "HP_Body_SetQTransform",
+        "HP_World_AddBody",
+        "HP_Body_SetLinearVelocity",
+        "HP_Body_SetAngularVelocity",
+      ],
+    ],
+  ];
+
+  /**
+   * The floating-origin module's statement inventories, in the pin's order.
+   *
+   * Same rule and same reason as `inventoryContracts` below: every one of
+   * these bodies is restated statement by statement into C++, and neither a
+   * shape contract nor an order contract can see a statement the pin ADDS.
+   * A `for (const x of xs)` is named here rather than in the shared
+   * `statementKind` projection because only this module states one, and
+   * widening the shared table would silently rewrite every other
+   * lowerer's inventory.
+   */
+  private static readonly floatingOriginInventoryContracts: ReadonlyArray<
+    readonly [string, string, readonly string[]]
+  > = [
+    [
+      "createHavokFloatingOriginContext",
+      "enable_havok_floating_origin builds the same record",
+      ["return statement"],
+    ],
+    [
+      "_findRegion",
+      "find_region restates the whole body",
+      ["variable statement", "for-of statement", "return statement"],
+    ],
+    [
+      "_getOrCreateRegion",
+      "get_or_create_region restates the whole body",
+      [
+        // const fo = world._fo!;
+        "variable statement",
+        // const found = _findRegion(fo, pos);
+        "variable statement",
+        // the hit, returned before anything is created
+        "if statement",
+        // const hknp = world._hknp;
+        "variable statement",
+        // const newWorld = hknp.HP_World_Create()[1];
+        "variable statement",
+        // hknp.HP_World_SetGravity(newWorld, fo.gravity);
+        "expression statement",
+        // const limits = hknp.HP_World_GetSpeedLimit(world._hkWorld);
+        "variable statement",
+        // hknp.HP_World_SetSpeedLimit(newWorld, limits[1], limits[2]);
+        "expression statement",
+        // the region record
+        "variable statement",
+        // fo.regions.push(region);
+        "expression statement",
+        "return statement",
+      ],
+    ],
+    [
+      "_placeBody",
+      "place_body restates the whole body",
+      [
+        // const hknp = world._hknp;
+        "variable statement",
+        // const node = body.node;
+        "variable statement",
+        // const region = _getOrCreateRegion(world, node.position);
+        "variable statement",
+        // hknp.HP_World_AddBody(region._world, body._hkBody, startsAsleep);
+        "expression statement",
+        // const p / const q / const o
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // the re-based transform write
+        "expression statement",
+        // body._region = region;
+        "expression statement",
+      ],
+    ],
+    [
+      "_step",
+      "fo_step_world restates the whole body",
+      [
+        // const hknp / const bodies / const regions
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // re-region, pre-step sync, per-region step, post-step sync
+        "for statement",
+        "for statement",
+        "for statement",
+        "for statement",
+        // _gcRegions(world);
+        "expression statement",
+      ],
+    ],
+    [
+      "_reRegionBody",
+      "re_region_body restates the whole body",
+      [
+        // const hknp / const fo / const current
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // const t / const localPos / const orientation
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // const margin = fo.radius * 1.2;
+        "variable statement",
+        // the hysteresis early return
+        "if statement",
+        // const wx / const wy / const wz
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // const linVel / const angVel
+        "variable statement",
+        "variable statement",
+        // const worldPos / const lookAhead
+        "variable statement",
+        "variable statement",
+        // let next = _findRegion(fo, lookAhead);
+        "variable statement",
+        // the two fallbacks and the no-move early return
+        "if statement",
+        "if statement",
+        "if statement",
+        // hknp.HP_World_RemoveBody(current._world, body._hkBody);
+        "expression statement",
+        // const o = next.origin;
+        "variable statement",
+        // the re-based transform, the add, and the two velocity writes
+        "expression statement",
+        "expression statement",
+        "expression statement",
+        "expression statement",
+        // body._region = next;
+        "expression statement",
+      ],
+    ],
+    [
+      "_gcRegions",
+      "gc_regions restates the whole body",
+      [
+        // const regions = world._fo!.regions;
+        "variable statement",
+        // the one-region early return
+        "if statement",
+        // const hknp = world._hknp;
+        "variable statement",
+        // const used = new Set<WorldRegion>();
+        "variable statement",
+        // the used-set fill, then the reverse release walk
+        "for statement",
+        "for statement",
+      ],
+    ],
+    [
+      "_syncBodyToNode",
+      "fo_sync_body_to_node restates the whole body",
+      [
+        // const t / const pos / const rot / const o / const node
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // the two node writes
+        "expression statement",
+        "expression statement",
+      ],
+    ],
+    [
+      "_syncNodeToBody",
+      "fo_sync_node_to_body restates the whole body",
+      [
+        // const node / const p / const q / const o
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        "variable statement",
+        // the re-based transform write
+        "expression statement",
+      ],
+    ],
+  ];
+
+  /**
+   * `enableHavokFloatingOrigin`'s own inventory, which lives in `havok.ts`
+   * rather than in the module above.
+   *
+   * Two statements: the dynamic import, and the context assignment. The
+   * import is what the generated port does NOT restate -- a native build
+   * links one translation unit -- so a pin that started doing anything
+   * else in this function has to be read again.
+   */
+  private assertFloatingOriginEntryPoint(): void {
+    const declaration = this.pinnedDeclaration("enableHavokFloatingOrigin");
+    this.context.assertStatementInventory(
+      declaration,
+      declaration.body!.statements,
+      "enableHavokFloatingOrigin",
+      "enable_havok_floating_origin restates the assignment alone",
+      ["variable statement", "expression statement"],
+    );
+  }
+
+  /**
+   * The three walks each contract table drives, over whichever pinned
+   * module declares its symbols.
+   *
+   * Two modules are restated here -- `havok.ts` and the floating-origin
+   * module it dynamic-imports -- and both carry the same three kinds of
+   * rule over their own declarations, so each walk takes the resolver
+   * rather than being written once per module. A second copy would be a
+   * place for the two to disagree about what a violated contract says.
+   */
+  private assertShapeContracts(
+    resolve: (symbolName: string) => ts.FunctionDeclaration,
+    contracts: ReadonlyArray<readonly [string, readonly string[]]>,
+  ): void {
+    for (const [symbolName, shapes] of contracts) {
+      const declaration = resolve(symbolName);
       for (const shape of shapes) {
         const stated = this.context.findNodes(
           declaration,
@@ -992,23 +1408,32 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         );
       }
     }
-    for (const [
-      symbolName,
-      restated,
-      kinds,
-    ] of PhysicsLowerer.inventoryContracts) {
-      const declaration = this.pinnedDeclaration(symbolName);
+  }
+
+  private assertInventoryContracts(
+    resolve: (symbolName: string) => ts.FunctionDeclaration,
+    contracts: ReadonlyArray<readonly [string, string, readonly string[]]>,
+    project?: (statement: ts.Statement) => string | undefined,
+  ): void {
+    for (const [symbolName, restated, kinds] of contracts) {
+      const declaration = resolve(symbolName);
       this.context.assertStatementInventory(
         declaration,
         declaration.body!.statements,
         symbolName,
         restated,
         kinds,
+        project,
       );
     }
-    this.assertStaticFrictionDefault();
-    for (const [symbolName, callees] of PhysicsLowerer.orderContracts) {
-      const declaration = this.pinnedDeclaration(symbolName);
+  }
+
+  private assertOrderContracts(
+    resolve: (symbolName: string) => ts.FunctionDeclaration,
+    contracts: ReadonlyArray<readonly [string, readonly string[]]>,
+  ): void {
+    for (const [symbolName, callees] of contracts) {
+      const declaration = resolve(symbolName);
       const called = this.context
         .findNodes(declaration, ts.isCallExpression)
         .map((call) => {
@@ -1035,6 +1460,84 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         }
         cursor = at;
       }
+    }
+  }
+
+  /** Every floating-origin rule, checked where the pin states it. */
+  private assertFloatingOriginContracts(): void {
+    this.assertFloatingOriginEntryPoint();
+    const resolve = (symbolName: string): ts.FunctionDeclaration =>
+      this.floatingOriginDeclaration(symbolName);
+    this.assertShapeContracts(
+      resolve,
+      PhysicsLowerer.floatingOriginShapeContracts,
+    );
+    this.assertInventoryContracts(
+      resolve,
+      PhysicsLowerer.floatingOriginInventoryContracts,
+      // Only this module states a `for (const x of xs)`, and widening the
+      // shared projection would silently rewrite every other lowerer's
+      // inventory.
+      (statement: ts.Statement): string =>
+        ts.isForOfStatement(statement)
+          ? "for-of statement"
+          : statementKind(statement),
+    );
+    this.assertOrderContracts(
+      resolve,
+      PhysicsLowerer.floatingOriginOrderContracts,
+    );
+  }
+
+  /** Every rule the emitted template folds, checked where it is stated. */
+  private assertPinnedContracts(): void {
+    const resolve = (symbolName: string): ts.FunctionDeclaration =>
+      this.pinnedDeclaration(symbolName);
+    this.assertShapeContracts(resolve, PhysicsLowerer.shapeContracts);
+    this.assertInventoryContracts(
+      resolve,
+      PhysicsLowerer.inventoryContracts,
+    );
+    this.assertStaticFrictionDefault();
+    this.assertFloatingOriginContracts();
+    this.assertMeshAccumulatorShapes();
+    this.assertOrderContracts(resolve, PhysicsLowerer.orderContracts);
+  }
+
+  /**
+   * The two rules `MeshAccumulator` states that the emitted accumulator
+   * restates, asserted where they are stated.
+   *
+   * They cannot go in `shapeContracts`: `MeshAccumulator` is a class and
+   * its rules live in a METHOD, which `functionDeclaration` does not
+   * reach. Both are silent if they drift. The offset is read before the
+   * node's own vertices join the list, so a pin that moved the read would
+   * address a child's triangles into the wrong vertices; and the winding
+   * reversal decides which side of every triangle the back end pushes a
+   * resting body out of.
+   */
+  private assertMeshAccumulatorShapes(): void {
+    const file = this.context.sourceFile(havokModule);
+    for (const shape of [
+      "this._vertices.length / 3",
+      "this._indices.push(c, b, a)",
+    ]) {
+      const stated = this.context.findNodes(
+        file,
+        (node): node is ts.Expression =>
+          ts.isExpression(node) &&
+          this.context.expressionMatchesShape(node, shape),
+      );
+      if (stated.length > 0) continue;
+      this.context.contractError(
+        file,
+        "Expected MeshAccumulator to state '" +
+          shape +
+          "'. The generated physics translation unit restates the " +
+          "accumulator, so a pinned change to how it addresses or " +
+          "winds a triangle fails generation rather than shipping a " +
+          "different collider.",
+      );
     }
   }
 
@@ -1110,7 +1613,8 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         "if statement",
         // const dt = <MAX_STEP_MS clamp>;
         "variable statement",
-        // the floating-origin arm (nothing reached sets `_fo`)
+        // the floating-origin arm, which RETURNS: a region-stepped world
+        // runs neither the prestep gate below nor the after-step hooks
         "if statement",
         // the pre-step sync loop
         "for statement",
@@ -1162,7 +1666,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         "expression statement",
         // the body record itself
         "variable statement",
-        // the floating-origin arm against add-then-transform
+        // the floating-origin arm against the plain add-then-transform
         "if statement",
         // world._bodies.push(body);
         "expression statement",
@@ -1250,6 +1754,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     this.assertPinnedContracts();
 
     const maxStepMs = this.maxStepMs();
+    const floatingOriginRadius = this.floatingOriginRadius();
     const gravity = this.defaultGravity();
     const defaults = this.aggregateMaterialDefaults();
     const shapeTypes = this.enumMembers("PhysicsShapeType");
@@ -1268,6 +1773,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     )}
 #pragma once
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <functional>
@@ -1337,6 +1843,16 @@ inline constexpr double physics_default_friction = ${this.context.doubleLiteral(
 /** \`createPhysicsAggregate\`'s \`options.restitution ?? ...\`. */
 inline constexpr double physics_default_restitution = ${this.context.doubleLiteral(
       defaults.restitution,
+    )};
+
+/**
+ * \`enableHavokFloatingOrigin\`'s own \`floatingOriginWorldRadius = ...\`,
+ * read from that parameter rather than restated. The radius decides how far
+ * a body travels before it is re-based, so a bump that moves it moves every
+ * far-from-origin simulation.
+ */
+inline constexpr double pinned_floating_origin_radius = ${this.context.doubleLiteral(
+      floatingOriginRadius,
     )};
 
 /**
@@ -1423,6 +1939,19 @@ struct PhysicsBody {
     PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
     PhysicsPrestepType prestep_type = PhysicsPrestepType::TELEPORT;
     bool pre_step = false;
+    /**
+     * ${havokFloatingOriginModule} \`_region\`: the region this body is
+     * simulated in, and therefore the frame its stored transform is in.
+     * Absent (a zero handle) until a floating-origin world places it, which
+     * is what the pin's own optional \`WorldRegion\` reference means.
+     *
+     * The pin holds the region OBJECT and compares regions by identity;
+     * this holds the region's own solver world, which is the same identity
+     * -- a released region's handle is retired rather than recycled -- and
+     * survives \`_gcRegions\` splicing the region list, which an index into
+     * that list would not.
+     */
+    pal::PhysicsWorldHandle region{};
 };
 
 /** ${havokModule} \`PhysicsAggregate\`. */
@@ -1476,6 +2005,37 @@ struct PhysicsRaycastResult {
 };
 
 /**
+ * ${havokFloatingOriginModule} \`WorldRegion\`: one solver world whose
+ * bodies are stored relative to a fixed world-space \`origin\`.
+ */
+struct PhysicsRegion {
+    pal::PhysicsWorldHandle world{};
+    Vec3d origin{};
+    std::array<double, 3> gravity{};
+};
+
+/**
+ * ${havokFloatingOriginModule} \`HavokFloatingOriginContext\`, reached
+ * slice.
+ *
+ * The pin's context also carries its six hooks as function members, because
+ * the module is dynamic-imported and \`havok.ts\` reaches it only through
+ * the object. A native build links one translation unit, so the hooks are
+ * ordinary functions here and what the record carries is state alone. Four
+ * of the six -- \`setGravity\`, \`getRegionGravity\`, \`setVelocityLimits\`
+ * and \`dispose\` -- have no caller in this port at all: their only pinned
+ * callers are \`setPhysicsGravity\`, \`getPhysicsGravity\`,
+ * \`setPhysicsVelocityLimits\` and \`disposePhysics\`, none of which is a
+ * supported intrinsic. \`gravity\` is still carried because
+ * \`_getOrCreateRegion\` seeds every new region from it.
+ */
+struct PhysicsFloatingOrigin {
+    std::vector<PhysicsRegion> regions;
+    double radius = 0.0;
+    std::array<double, 3> gravity{};
+};
+
+/**
  * ${havokModule} \`PhysicsWorld\`. The pin keeps \`_hknp\` beside
  * \`_hkWorld\`; here the module is the PAL and only the world handle
  * travels.
@@ -1510,6 +2070,17 @@ struct PhysicsWorld {
      */
     double engine_delta_ms = 0.0;
     std::vector<std::function<void(float)>> after_step;
+    /**
+     * \`_gravity\`, the world-wide vector set at creation. The pin keeps it
+     * for one reader: it is what seeds a floating-origin region.
+     */
+    std::array<double, 3> gravity{};
+    /**
+     * \`_fo\`, present only after \`enableHavokFloatingOrigin\`. The pin's
+     * own optional field, and the same opt-in: everything that branches on
+     * it below takes its absent arm for every ordinary near-origin scene.
+     */
+    std::optional<PhysicsFloatingOrigin> fo{};
 };
 
 /**
@@ -1527,14 +2098,18 @@ struct PhysicsWorldHandle {
 [[nodiscard]] PhysicsWorldHandle create_havok_world(
     Scene& scene,
     Vec3d gravity);
+void enable_havok_floating_origin(
+    PhysicsWorldHandle world,
+    double floating_origin_world_radius);
 void on_physics_after_step(
     PhysicsWorldHandle world,
     std::function<void(float)> callback);
 void set_physics_timestep_ms(
     PhysicsWorldHandle world,
     double fixed_delta_ms);
-PhysicsShape create_physics_convex_hull_shape(
+PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle world,
+    PhysicsShapeType type,
     MeshHandle mesh,
     bool include_child_meshes);
 [[nodiscard]] PhysicsShape create_physics_primitive_shape(
@@ -1619,8 +2194,10 @@ void on_physics_collision(
 #include "bblite/upstream/renderer_plan.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <deque>
 #include <stdexcept>
+#include <utility>
 
 namespace bbl::upstream {
 namespace {
@@ -1677,17 +2254,27 @@ MeshBounds mesh_bounds(const Engine& engine, const MeshRecord& mesh) {
  * leaves rootScale followed by the child's local chain, which is what this
  * recursive form composes. Imported glTF hierarchy mutation remains outside
  * this slice; those vertices keep the loader's bake-to-world model.
+ *
+ * One accumulator serves both mesh arms, as the pin's one class does:
+ * \`collect_indices\` is \`options.type === PhysicsShapeType.MESH\`, and a
+ * convex hull needs the points alone.
  */
-void append_convex_hull_vertices(
+void append_physics_mesh_geometry(
     const Engine& engine,
     MeshHandle mesh,
     const std::array<float, 16>& mesh_to_body,
     bool include_children,
-    std::vector<std::array<double, 3>>& positions) {
+    bool collect_indices,
+    std::vector<std::array<double, 3>>& positions,
+    std::vector<std::uint32_t>& indices) {
     if (mesh.value >= engine.meshes.size()) return;
     const MeshRecord& record = engine.meshes[mesh.value];
     if (record.geometry < engine.geometries.size()) {
         const ModelGeometry& geometry = engine.geometries[record.geometry];
+        // \`const indexOffset = this._vertices.length / 3\`, read BEFORE
+        // this node's own vertices join them.
+        const std::uint32_t index_offset =
+            static_cast<std::uint32_t>(positions.size());
         positions.reserve(positions.size() + geometry.vertices.size());
         for (const ModelVertex& vertex : geometry.vertices) {
             const double x = vertex.position.x;
@@ -1702,6 +2289,32 @@ void append_convex_hull_vertices(
                     mesh_to_body[10] * z + mesh_to_body[14],
             });
         }
+        if (collect_indices && !geometry.indices.empty()) {
+            // The pin reads \`node._cpuIndices\` as triangles. A geometry
+            // whose index list means anything else -- a line list, a strip
+            // -- would build a soup of unrelated triangles, so it refuses.
+            if (geometry.topology != MeshTopology::triangles) {
+                throw std::runtime_error(
+                    "A physics mesh shape over a non-triangle mesh "
+                    "topology is not lowered by this prototype.");
+            }
+            indices.reserve(indices.size() + geometry.indices.size());
+            for (std::size_t i = 0; i + 2 < geometry.indices.size();
+                 i += 3) {
+                // \`this._indices.push(c, b, a)\`: the pin reverses each
+                // triangle because Lite scenes carry Babylon's
+                // left-handed winding and Havok's mesh shape optimizes
+                // its interior from the other one. It is carried rather
+                // than dropped -- it is the pin's own data -- but nothing
+                // downstream reads it today: Bullet's triangle ray test
+                // and its convex-versus-triangle contact are both
+                // double-sided unless a backface-culling flag is set,
+                // and none is.
+                indices.push_back(geometry.indices[i + 2] + index_offset);
+                indices.push_back(geometry.indices[i + 1] + index_offset);
+                indices.push_back(geometry.indices[i] + index_offset);
+            }
+        }
     }
     if (!include_children) return;
     for (const MeshHandle child : record.children) {
@@ -1711,8 +2324,9 @@ void append_convex_hull_vertices(
         std::array<float, 16> child_to_body{};
         mat4_multiply_into(
             child_to_body, 0, mesh_to_body, 0, local, 0);
-        append_convex_hull_vertices(
-            engine, child, child_to_body, true, positions);
+        append_physics_mesh_geometry(
+            engine, child, child_to_body, true, collect_indices,
+            positions, indices);
     }
 }
 
@@ -1747,37 +2361,61 @@ struct PhysicsNodePose {
     return PhysicsNodePose{mesh.position, mesh.rotation_quaternion};
 }
 
-/** \`_syncBodyToNode\`: the integrated pose written back onto the node. */
-void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
-    const pal::PhysicsTransform transform =
-        pal::physics_body_get_transform(body.handle);
-    const Vec3d position{
-        transform.position[0],
-        transform.position[1],
-        transform.position[2],
-    };
-    const Vec4 rotation{
-        static_cast<float>(transform.rotation[0]),
-        static_cast<float>(transform.rotation[1]),
-        static_cast<float>(transform.rotation[2]),
-        static_cast<float>(transform.rotation[3]),
-    };
-    if (body.node.kind == PhysicsNodeKind::transform_node) {
-        TransformNodeRecord& record =
-            engine.transform_nodes[body.node.value];
+/**
+ * The pin's \`node.position.set(...)\` / \`node.rotationQuaternion.set(...)\`
+ * pair, on whichever arena the body's node lives in.
+ *
+ * Upstream states that pair twice -- once in \`havok.ts\`'s
+ * \`_syncBodyToNode\` and once in the floating-origin module's, which
+ * differ only in the origin they add back -- so the two writers below state
+ * the pin's own difference and share the arena dispatch, which is this
+ * port's and not the pin's.
+ */
+void write_node_pose(
+    Engine& engine,
+    PhysicsNodeRef node,
+    Vec3d position,
+    Vec4 rotation) {
+    if (node.kind == PhysicsNodeKind::transform_node) {
+        TransformNodeRecord& record = engine.transform_nodes[node.value];
         record.position = position;
         record.rotation_quaternion = rotation;
         record.has_rotation_quaternion = true;
         mark_transform_node_runtime_transform(
             engine,
-            TransformNodeHandle{body.node.value});
+            TransformNodeHandle{node.value});
         return;
     }
-    MeshRecord& mesh = engine.meshes[body.node.value];
+    MeshRecord& mesh = engine.meshes[node.value];
     mesh.position = position;
     mesh.rotation_quaternion = rotation;
     mesh.has_rotation_quaternion = true;
-    mark_mesh_runtime_transform(engine, MeshHandle{body.node.value});
+    mark_mesh_runtime_transform(engine, MeshHandle{node.value});
+}
+
+/** The quaternion half both sync directions read out of a transform. */
+[[nodiscard]] Vec4 transform_rotation(const pal::PhysicsTransform& t) {
+    return Vec4{
+        static_cast<float>(t.rotation[0]),
+        static_cast<float>(t.rotation[1]),
+        static_cast<float>(t.rotation[2]),
+        static_cast<float>(t.rotation[3]),
+    };
+}
+
+/** \`_syncBodyToNode\`: the integrated pose written back onto the node. */
+void sync_body_to_node(Engine& engine, const PhysicsBody& body) {
+    const pal::PhysicsTransform transform =
+        pal::physics_body_get_transform(body.handle);
+    write_node_pose(
+        engine,
+        body.node,
+        Vec3d{
+            transform.position[0],
+            transform.position[1],
+            transform.position[2],
+        },
+        transform_rotation(transform));
 }
 
 /** \`_syncNodeToBody\` / \`_syncNodeToBodyTarget\`. */
@@ -1796,6 +2434,242 @@ void sync_node_to_body(
     } else {
         pal::physics_body_set_transform(body.handle, transform);
     }
+}
+
+// ${this.context.provenance(
+      havokFloatingOriginModule,
+      "createHavokFloatingOriginContext",
+      "the region list held by handle rather than by object identity",
+    )}
+
+/**
+ * One region of a floating-origin world, by the solver world that IS it.
+ *
+ * The pin compares regions with \`===\` on the object; a released region's
+ * handle is retired rather than recycled, so handle equality is the same
+ * relation and it survives \`_gcRegions\` splicing the list.
+ */
+[[nodiscard]] const PhysicsRegion& region_at(
+    const PhysicsFloatingOrigin& fo,
+    pal::PhysicsWorldHandle world) {
+    for (const PhysicsRegion& region : fo.regions) {
+        if (region.world.value == world.value) {
+            return region;
+        }
+    }
+    throw std::runtime_error(
+        "A physics body names a floating-origin region that no longer "
+        "exists.");
+}
+
+/**
+ * \`_findRegion\`: the region whose origin is within the capture radius of
+ * a world position, or the pin's \`null\` -- a zero handle, which no live
+ * solver world ever carries.
+ */
+[[nodiscard]] pal::PhysicsWorldHandle find_region(
+    const PhysicsFloatingOrigin& fo,
+    Vec3d pos) {
+    const double r2 = fo.radius * fo.radius;
+    for (const PhysicsRegion& region : fo.regions) {
+        const double dx = pos.x - region.origin.x;
+        const double dy = pos.y - region.origin.y;
+        const double dz = pos.z - region.origin.z;
+        if (dx * dx + dy * dy + dz * dz <= r2) {
+            return region.world;
+        }
+    }
+    return pal::PhysicsWorldHandle{};
+}
+
+/** \`_getOrCreateRegion\`. */
+[[nodiscard]] pal::PhysicsWorldHandle get_or_create_region(
+    PhysicsWorld& world,
+    Vec3d pos) {
+    PhysicsFloatingOrigin& fo = *world.fo;
+    const pal::PhysicsWorldHandle found = find_region(fo, pos);
+    if (found.value != 0) {
+        return found;
+    }
+    const pal::PhysicsWorldHandle new_world = pal::physics_world_create();
+    pal::physics_world_set_gravity(new_world, fo.gravity);
+    const pal::PhysicsSpeedLimit limits =
+        pal::physics_world_get_speed_limit(world.handle);
+    pal::physics_world_set_speed_limit(
+        new_world, limits.max_linear, limits.max_angular);
+    fo.regions.push_back(
+        PhysicsRegion{new_world, Vec3d{pos.x, pos.y, pos.z}, fo.gravity});
+    return new_world;
+}
+
+/**
+ * The floating-origin module's own \`_syncBodyToNode\`: the same two node
+ * writes, with the region origin added back so the node keeps TRUE world
+ * coordinates while the solver holds a small local one.
+ */
+void fo_sync_body_to_node(
+    Engine& engine,
+    const PhysicsBody& body,
+    Vec3d origin) {
+    const pal::PhysicsTransform transform =
+        pal::physics_body_get_transform(body.handle);
+    write_node_pose(
+        engine,
+        body.node,
+        Vec3d{
+            transform.position[0] + origin.x,
+            transform.position[1] + origin.y,
+            transform.position[2] + origin.z,
+        },
+        transform_rotation(transform));
+}
+
+/** The floating-origin module's own \`_syncNodeToBody\`. */
+void fo_sync_node_to_body(
+    const Engine& engine,
+    const PhysicsBody& body,
+    Vec3d origin) {
+    const PhysicsNodePose pose = physics_node_pose(engine, body.node);
+    pal::physics_body_set_transform(
+        body.handle,
+        pal::PhysicsTransform{
+            {pose.position.x - origin.x,
+             pose.position.y - origin.y,
+             pose.position.z - origin.z},
+            {pose.rotation.x, pose.rotation.y,
+             pose.rotation.z, pose.rotation.w},
+        });
+}
+
+/** \`_placeBody\`: a body joins its region already re-based. */
+void place_body(
+    PhysicsWorld& world,
+    PhysicsBody& body,
+    bool starts_asleep) {
+    const Engine& engine = *world.engine;
+    const PhysicsNodePose pose = physics_node_pose(engine, body.node);
+    const pal::PhysicsWorldHandle region =
+        get_or_create_region(world, pose.position);
+    pal::physics_world_add_body(region, body.handle, starts_asleep);
+    const Vec3d origin = region_at(*world.fo, region).origin;
+    pal::physics_body_set_transform(
+        body.handle,
+        pal::PhysicsTransform{
+            {pose.position.x - origin.x,
+             pose.position.y - origin.y,
+             pose.position.z - origin.z},
+            {pose.rotation.x, pose.rotation.y,
+             pose.rotation.z, pose.rotation.w},
+        });
+    body.region = region;
+}
+
+/**
+ * \`_reRegionBody\`: a body past the 20% hysteresis margin moves to the
+ * region that holds it, keeping the velocity the add would otherwise drop.
+ */
+void re_region_body(PhysicsWorld& world, PhysicsBody& body) {
+    PhysicsFloatingOrigin& fo = *world.fo;
+    const pal::PhysicsWorldHandle current = body.region;
+    const pal::PhysicsTransform t =
+        pal::physics_body_get_transform(body.handle);
+    const std::array<double, 3> local_pos = t.position;
+    const std::array<double, 4> orientation = t.rotation;
+    const double margin = fo.radius * 1.2;
+    if (local_pos[0] * local_pos[0] + local_pos[1] * local_pos[1] +
+            local_pos[2] * local_pos[2] <=
+        margin * margin) {
+        return;
+    }
+    // Read before anything can push onto the region list: a reference into
+    // it would dangle the moment get_or_create_region grows the vector.
+    const Vec3d current_origin = region_at(fo, current).origin;
+    const double wx = local_pos[0] + current_origin.x;
+    const double wy = local_pos[1] + current_origin.y;
+    const double wz = local_pos[2] + current_origin.z;
+    const std::array<double, 3> lin_vel =
+        pal::physics_body_get_linear_velocity(body.handle);
+    const std::array<double, 3> ang_vel =
+        pal::physics_body_get_angular_velocity(body.handle);
+    const Vec3d world_pos{wx, wy, wz};
+    const Vec3d look_ahead{
+        wx + lin_vel[0], wy + lin_vel[1], wz + lin_vel[2]};
+    pal::PhysicsWorldHandle next = find_region(fo, look_ahead);
+    if (next.value == 0 || next.value == current.value) {
+        next = find_region(fo, world_pos);
+    }
+    if (next.value == 0 || next.value == current.value) {
+        next = get_or_create_region(world, world_pos);
+    }
+    if (next.value == current.value) {
+        return;
+    }
+    pal::physics_world_remove_body(current, body.handle);
+    const Vec3d origin = region_at(fo, next).origin;
+    pal::physics_body_set_transform(
+        body.handle,
+        pal::PhysicsTransform{
+            {wx - origin.x, wy - origin.y, wz - origin.z}, orientation});
+    pal::physics_world_add_body(next, body.handle, false);
+    pal::physics_body_set_linear_velocity(body.handle, lin_vel);
+    pal::physics_body_set_angular_velocity(body.handle, ang_vel);
+    body.region = next;
+}
+
+/** \`_gcRegions\`: release any non-default region no body is left in. */
+void gc_regions(PhysicsWorld& world) {
+    std::vector<PhysicsRegion>& regions = world.fo->regions;
+    if (regions.size() <= 1) {
+        return;
+    }
+    // The pin's Set<WorldRegion> of the regions still in use. A region list
+    // is a handful of entries, so membership is a scan rather than a table.
+    std::vector<std::uint32_t> used;
+    used.reserve(world.bodies.size());
+    for (std::size_t i = 0; i < world.bodies.size(); ++i) {
+        used.push_back(world.bodies[i].region.value);
+    }
+    for (std::size_t i = regions.size(); i-- > 1;) {
+        if (std::find(used.begin(), used.end(), regions[i].world.value) ==
+            used.end()) {
+            pal::physics_world_release(regions[i].world);
+            regions.erase(
+                regions.begin() + static_cast<std::ptrdiff_t>(i));
+        }
+    }
+}
+
+/**
+ * \`_step\`, the floating-origin replacement for the single-world frame.
+ *
+ * Three differences from \`step_world\`'s own body, all the pin's: bodies
+ * are re-regioned BEFORE anything else, every region is stepped rather than
+ * one world, and the pre-step sync has no prestep-type gate -- an ANIMATED
+ * body syncs and a merely pre-stepped one does not.
+ */
+void fo_step_world(PhysicsWorld& world, double dt) {
+    Engine& engine = *world.engine;
+    for (std::size_t i = 0; i < world.bodies.size(); ++i) {
+        re_region_body(world, world.bodies[i]);
+    }
+    for (std::size_t i = 0; i < world.bodies.size(); ++i) {
+        const PhysicsBody& body = world.bodies[i];
+        if (body.motion_type == PhysicsMotionType::ANIMATED) {
+            fo_sync_node_to_body(
+                engine, body, region_at(*world.fo, body.region).origin);
+        }
+    }
+    for (std::size_t i = 0; i < world.fo->regions.size(); ++i) {
+        pal::physics_world_step(world.fo->regions[i].world, dt);
+    }
+    for (std::size_t i = 0; i < world.bodies.size(); ++i) {
+        const PhysicsBody& body = world.bodies[i];
+        if (body.motion_type == PhysicsMotionType::DYNAMIC) {
+            fo_sync_body_to_node(
+                engine, body, region_at(*world.fo, body.region).origin);
+        }
+    }
+    gc_regions(world);
 }
 
 /**
@@ -1823,8 +2697,11 @@ void sync_node_to_body(
 
 /**
  * \`_stepWorld\`. The gate, the clamp and the four phases are the pinned
- * module's; \`assertStepGate\` in the lowerer fails generation if any of
- * them moves.
+ * module's, and generation fails if any of them moves: the lowerer's
+ * \`shapeContracts\` row for _stepWorld holds the three expressions, its
+ * \`orderContracts\` row holds the phase order, and its
+ * \`inventoryContracts\` row holds the statement count that would
+ * otherwise hide an added arm.
  */
 void step_world(PhysicsWorld& world, double delta_ms) {
     const double step_ms =
@@ -1837,7 +2714,14 @@ void step_world(PhysicsWorld& world, double delta_ms) {
     // is where the renderer's delta reaches the physics layer. Recorded
     // raw, so world_step_seconds applies the pin's own gate and clamp to
     // it rather than reading a number that already went through them.
+    // Written ahead of the floating-origin arm because that arm RETURNS
+    // and world_step_seconds reads this either way.
     world.engine_delta_ms = delta_ms;
+
+    if (world.fo) {
+        fo_step_world(world, dt);
+        return;
+    }
 
     Engine& engine = *world.engine;
     for (const PhysicsBody& body : world.bodies) {
@@ -1873,8 +2757,10 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
     world.handle = pal::physics_world_create();
     world.engine = scene.engine;
     world.scene = &scene;
-    pal::physics_world_set_gravity(
-        world.handle, {gravity.x, gravity.y, gravity.z});
+    // \`_gravity: [g.x, g.y, g.z]\`, kept for the one reader the pin keeps
+    // it for: a floating-origin region is seeded from it.
+    world.gravity = {gravity.x, gravity.y, gravity.z};
+    pal::physics_world_set_gravity(world.handle, world.gravity);
 
     // \`scene._beforeRender.unshift(stepCb)\`: physics integrates before
     // every other before-render callback, so a scene reading a pose in one
@@ -1887,6 +2773,25 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
                 static_cast<double>(delta_ms));
         });
     return handle;
+}
+
+void enable_havok_floating_origin(
+    PhysicsWorldHandle handle,
+    double floating_origin_world_radius) {
+    // \`enableHavokFloatingOrigin\`: the pin's own two statements are a
+    // dynamic import and this assignment. A native build links one
+    // translation unit, so what is left is
+    // \`createHavokFloatingOriginContext(world._hkWorld, world._gravity,
+    // floatingOriginWorldRadius)\` -- region 0 IS the world's own solver
+    // world, centred at the origin, and the context's gravity is the
+    // world's.
+    PhysicsWorld& world = physics_world_record(handle);
+    PhysicsFloatingOrigin fo{};
+    fo.regions.push_back(
+        PhysicsRegion{world.handle, Vec3d{0.0, 0.0, 0.0}, world.gravity});
+    fo.radius = floating_origin_world_radius;
+    fo.gravity = world.gravity;
+    world.fo = std::move(fo);
 }
 
 void on_physics_after_step(
@@ -1904,10 +2809,16 @@ void set_physics_timestep_ms(
     physics_world_record(handle).fixed_delta_ms = fixed_delta_ms;
 }
 
-PhysicsShape create_physics_convex_hull_shape(
+PhysicsShape create_physics_mesh_shape(
     PhysicsWorldHandle handle,
+    PhysicsShapeType type,
     MeshHandle mesh,
     bool include_child_meshes) {
+    // \`createPhysicsShape\`'s CONVEX_HULL and MESH arms share one
+    // accumulator and one throw list; what separates them is whether it
+    // collects the triangles as well as the points, and which back-end
+    // factory the result goes to.
+    const bool collect_indices = type == PhysicsShapeType::MESH;
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
     if (mesh.value >= engine.meshes.size()) {
@@ -1922,11 +2833,21 @@ PhysicsShape create_physics_convex_hull_shape(
         0.0f, 0.0f, 0.0f, 1.0f,
     };
     std::vector<std::array<double, 3>> positions;
-    append_convex_hull_vertices(
-        engine, mesh, root_scale, include_child_meshes, positions);
+    std::vector<std::uint32_t> indices;
+    append_physics_mesh_geometry(
+        engine, mesh, root_scale, include_child_meshes, collect_indices,
+        positions, indices);
     if (positions.empty()) {
         throw std::runtime_error(
             "Cannot create physics mesh shape without vertex positions.");
+    }
+    if (collect_indices) {
+        if (indices.empty()) {
+            throw std::runtime_error(
+                "Cannot create physics mesh shape without triangle indices.");
+        }
+        return PhysicsShape{
+            pal::physics_shape_create_mesh(positions, indices)};
     }
     return PhysicsShape{
         pal::physics_shape_create_convex_hull(positions)};
@@ -2194,8 +3115,17 @@ PhysicsBody create_physics_body(
     body.handle = pal::physics_body_create();
     pal::physics_body_set_motion_type(
         body.handle, pinned_motion_type(motion_type));
-    pal::physics_world_add_body(world.handle, body.handle, starts_asleep);
-    sync_node_to_body(engine, body, false);
+    if (world.fo) {
+        // \`world._fo.placeBody(world, body, startsAsleep)\`: the region
+        // decides which solver world the body joins AND the frame its
+        // transform is written in, so the plain pair below is replaced
+        // rather than followed.
+        place_body(world, body, starts_asleep);
+    } else {
+        pal::physics_world_add_body(
+            world.handle, body.handle, starts_asleep);
+        sync_node_to_body(engine, body, false);
+    }
     world.bodies.push_back(body);
     return body;
 }

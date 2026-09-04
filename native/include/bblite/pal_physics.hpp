@@ -63,6 +63,22 @@ struct PhysicsTransform {
 };
 
 /**
+ * The pair `HP_World_GetSpeedLimit` returns and `HP_World_SetSpeedLimit`
+ * takes.
+ *
+ * A body speed ceiling is a property of the WORLD upstream, and the pinned
+ * floating-origin module is what makes that observable here: every region
+ * it creates is a second world, and `_getOrCreateRegion` seeds the new
+ * one's limits by reading the base world's. Havok applies the ceiling as
+ * part of an impulse write; Bullet has no rigid-body speed limit of its
+ * own, so the backend applies it at the same two places.
+ */
+struct PhysicsSpeedLimit {
+    double max_linear = 0.0;
+    double max_angular = 0.0;
+};
+
+/**
  * `hknp.MotionType`, the back end's own enumeration.
  *
  * Deliberately NOT the pin's `PhysicsMotionType`. Upstream does not pass its
@@ -171,11 +187,38 @@ struct PhysicsRaycastResult {
 void physics_world_set_gravity(
     PhysicsWorldHandle world,
     std::array<double, 3> gravity);
+/** `HP_World_GetSpeedLimit`, as the pair the pin reads `[1]` and `[2]` of. */
+[[nodiscard]] PhysicsSpeedLimit physics_world_get_speed_limit(
+    PhysicsWorldHandle world);
+/** `HP_World_SetSpeedLimit`. */
+void physics_world_set_speed_limit(
+    PhysicsWorldHandle world,
+    double max_linear,
+    double max_angular);
 /** `HP_World_AddBody`. */
 void physics_world_add_body(
     PhysicsWorldHandle world,
     PhysicsBodyHandle body,
     bool start_asleep);
+/**
+ * `HP_World_RemoveBody`. Reached by the floating-origin module alone:
+ * a body crossing a region boundary leaves one world and joins another
+ * within one step.
+ */
+void physics_world_remove_body(
+    PhysicsWorldHandle world,
+    PhysicsBodyHandle body);
+/**
+ * `HP_World_Release`. The floating-origin module reclaims a region the
+ * step after its last body migrated out.
+ *
+ * The handle is retired rather than recycled: a released world's slot
+ * stays, so no later `physics_world_create` can hand back a value another
+ * record still holds. Any body still in the world is taken out of it
+ * first, which is what `_gcRegions` has already guaranteed by only
+ * releasing an unused region.
+ */
+void physics_world_release(PhysicsWorldHandle world);
 /** `HP_World_Step`, taking seconds exactly as the pin converts them. */
 void physics_world_step(PhysicsWorldHandle world, double seconds);
 [[nodiscard]] const std::vector<PhysicsCollisionEvent>&
@@ -195,7 +238,9 @@ physics_world_trigger_events(PhysicsWorldHandle world);
 // One entry point per arm of `createPrimitivePhysicsShapeHandle`, with the
 // pin's own parameter list: a sphere is a centre and a radius, a box is a
 // centre, a rotation and full *extents* (not half-extents — the conversion
-// belongs to the backend, because it is the backend's convention).
+// belongs to the backend, because it is the backend's convention). Then one
+// per arm `createPhysicsShape` derives from a mesh instead: the hull of its
+// points, and the triangle soup itself.
 
 /** `HP_Shape_CreateSphere`. */
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_sphere(
@@ -219,6 +264,22 @@ physics_world_trigger_events(PhysicsWorldHandle world);
 /** `HP_Shape_CreateConvexHull`, with the pin's packed vec3 input expanded. */
 [[nodiscard]] PhysicsShapeHandle physics_shape_create_convex_hull(
     const std::vector<std::array<double, 3>>& positions);
+/**
+ * `HP_Shape_CreateMesh`: the triangle soup itself rather than its hull,
+ * with the pin's two packed heap buffers expanded into the vertex list and
+ * the index triples that address it.
+ *
+ * The one thing this shape kind cannot do is move. Havok simulates a mesh
+ * shape on a dynamic body; Bullet's triangle-mesh shape is concave, and a
+ * moving concave body is the case Bullet documents as unsupported -- it
+ * answers no inertia tensor and no concave-concave contact. So a mesh shape
+ * that reaches a DYNAMIC body refuses at the assignment, in
+ * `physics_body_set_shape` and `physics_body_set_motion_type`, rather than
+ * simulating something the pin did not describe.
+ */
+[[nodiscard]] PhysicsShapeHandle physics_shape_create_mesh(
+    const std::vector<std::array<double, 3>>& positions,
+    const std::vector<std::uint32_t>& indices);
 /** `HP_Shape_SetMaterial`, taking the pin's own array as a record. */
 void physics_shape_set_material(
     PhysicsShapeHandle shape,
@@ -282,6 +343,20 @@ void physics_body_apply_impulse(
     std::array<double, 3> impulse);
 [[nodiscard]] std::array<double, 3> physics_body_get_linear_velocity(
     PhysicsBodyHandle body);
+/** `HP_Body_GetAngularVelocity`. */
+[[nodiscard]] std::array<double, 3> physics_body_get_angular_velocity(
+    PhysicsBodyHandle body);
+/**
+ * `HP_Body_SetLinearVelocity` / `HP_Body_SetAngularVelocity`. A migrating
+ * body is re-added to its new region with the velocity it left the old one
+ * with, and `HP_World_AddBody` does not carry it.
+ */
+void physics_body_set_linear_velocity(
+    PhysicsBodyHandle body,
+    std::array<double, 3> velocity);
+void physics_body_set_angular_velocity(
+    PhysicsBodyHandle body,
+    std::array<double, 3> velocity);
 void physics_body_set_collision_events_enabled(
     PhysicsBodyHandle body,
     bool enabled);

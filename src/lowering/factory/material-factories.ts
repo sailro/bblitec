@@ -11,8 +11,8 @@ import { MeshBuilderLowerer } from "./mesh-builders.js";
  *
  * Most are texture slots, and one slot takes several sources —
  * `diffuseTexture` alone is written from a colour render target, a pixels
- * texture and a loaded image — so those are emitted per reached source
- * rather than per slot. The last two are marks rather than slots
+ * texture, a solid colour and a loaded image — so those are emitted per
+ * reached source rather than per slot. The last two are marks rather than slots
  * (`enableMaterialUvTransform`, and the plugin signature index), which is
  * why the unit is named for the material rather than for its textures. The
  * flags travel named because seven positional booleans read as an accident.
@@ -21,6 +21,7 @@ export interface StandardMaterialSetters {
     diffuse: boolean;
     emissive: boolean;
     pixels: boolean;
+    solid: boolean;
     diffuseFile: boolean;
     emissiveFile: boolean;
     uvTransform: boolean;
@@ -709,6 +710,28 @@ void update_pixels_texture(
                 "Expected rgba8unorm solid textures.",
             );
         }
+        // The sampler a solid texel is read through. `SolidTexture` carries
+        // no sampler of its own -- the texel is the whole value -- so every
+        // slot that binds one restates this choice in C++ (the Standard
+        // diffuse setter and `node_material_texture`). Pinning the call
+        // here is what makes those restatements checked rather than
+        // remembered: a pin that switched to `getNearestSampler` would
+        // otherwise keep shading through our linear filter.
+        if (
+            !this.context.hasNode(
+                createSolidTexture,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "getBilinearSampler",
+            )
+        ) {
+            this.context.contractError(
+                createSolidTexture,
+                "Expected solid textures to sample through " +
+                    "getBilinearSampler.",
+            );
+        }
         this.context.functionDeclaration(textureModule, "loadTexture2D");
         // `loadTexture2D` is the memoizing wrapper; the upload and the
         // sampler it builds live in the impl it defers to.
@@ -1391,6 +1414,7 @@ MaterialHandle create_grid_material(
             diffuse,
             emissive,
             pixels,
+            solid,
             diffuseFile,
             emissiveFile,
             uvTransform,
@@ -1433,6 +1457,7 @@ MaterialHandle create_grid_material(
                 ...(diffuse ? ["material.diffuseTexture"] : []),
                 ...(emissive ? ["setStandardEmissiveTexture"] : []),
                 ...(pixels ? ["material.diffuseTexture#pixels"] : []),
+                ...(solid ? ["material.diffuseTexture#solid"] : []),
                 ...(diffuseFile ? ["material.diffuseTexture#file"] : []),
                 ...(emissiveFile
                     ? ["setStandardEmissiveTexture#file"]
@@ -1459,6 +1484,9 @@ MaterialHandle create_grid_material(
                         : []),
                     ...(pixels
                         ? ["src/texture/pixels-texture.ts"]
+                        : []),
+                    ...(solid
+                        ? ["src/texture/solid-texture.ts"]
                         : []),
                     ...(diffuseFile || emissiveFile
                         ? ["src/texture/texture-2d.ts"]
@@ -1551,6 +1579,35 @@ void set_standard_diffuse_pixels_texture(
     slot.sampler = texture.sampler;
     slot.uv_transform = texture.uv_transform;
     slot.uv_invert_y = texture.uv_invert_y;
+}
+` : ""}${solid ? `
+// The same slot, filled by a createSolidTexture2D texture -- the fourth
+// source it takes. That factory is the pin's own one-texel Texture2D: it
+// rounds the four channels into a 1x1 rgba8unorm texture and samples it
+// through getBilinearSampler. So the slot carries the texel as
+// already-decoded bytes (rgba_width/height are what tell the shared upload
+// so) and restates that sampler -- linear min/mag, no mipmap filter, and
+// WebGPU's clamp-to-edge address defaults, the same normalization
+// node_material_texture performs for a solid binding. The whole TextureData
+// is replaced because the pin replaces the Texture2D object, and
+// uv_invert_y stays false because the returned object carries no invertY
+// property, which is exactly what isStandardUvInverted reads back off the
+// diffuse slot.
+void set_standard_diffuse_solid_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const SolidTexture& texture) {
+    TextureData slot;
+    slot.bytes.assign(texture.texel.begin(), texture.texel.end());
+    slot.rgba_width = 1;
+    slot.rgba_height = 1;
+    slot.sampler.min_filter = TextureFilter::linear;
+    slot.sampler.mag_filter = TextureFilter::linear;
+    slot.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    slot.sampler.address_u = TextureAddressMode::clamp;
+    slot.sampler.address_v = TextureAddressMode::clamp;
+    slot.sampler.max_lod = 0.0f;
+    standard_slot_material(engine, material).base_color_texture = slot;
 }
 ` : ""}${diffuseFile ? `
 // The same slot, filled by a loaded image -- the third source it takes, and
