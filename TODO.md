@@ -619,6 +619,17 @@ frame callback lowers to a `bbl::js::Ref<Vec3Data>` brace-initialised with
 three scalars, which has no matching constructor, while the same declaration
 at entry scope is fine.
 
+`browser-erasure.ts`'s `helperBinding` keys a helper's `const` bindings by
+identifier TEXT and disambiguates them with a `pos`/`end` containment test
+against the open body, which is a second and weaker scope mechanism beside
+the compiler's own. Keying by `ts.Symbol` would delete the containment test
+outright, but `BrowserErasureContext` exposes no symbol resolver and
+widening it buys nothing measured: no scene shadows a helper binding with a
+module constant of the same name, and the containment guard IS load-bearing
+today because `constantInitializer` re-enters the evaluator with
+module-scope nodes while a frame is open. Worth doing when a third reader
+of that frame appears.
+
 - [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
   `f0Factor` and `specularWeight` options still refuse explicitly.
 - [ ] Extend imported hierarchy/root clones beyond Scene 12's exact slice.
