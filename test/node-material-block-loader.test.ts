@@ -335,35 +335,54 @@ test("composes Scene 83 with only its supplied pinned emitters", async () => {
 });
 
 test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
-    const source = new FactoryLowerer(
-        new LoweringContext(),
-    ).lowerNodeMaterialFactory().source;
+    // The 1x1 contract itself is stated ONCE, beside `create_solid_texture`
+    // in the file-texture translation unit -- which is in the build wherever
+    // a `SolidTexture` exists at all, because `createSolidTexture2D` reaches
+    // `texture:file` unconditionally. Three slots restated it before that
+    // was measured, and they had already diverged: the PBR occlusion copy
+    // set no sampler. So this asserts the shared definition here...
+    const factories = new FactoryLowerer(new LoweringContext());
+    const shared = factories.lowerFileTextureFactory().source;
 
     assert.match(
-        source,
-        /normalized\.data\.bytes\.assign\(\s*texture\.texel\.begin\(\),\s*texture\.texel\.end\(\)\);/,
+        shared,
+        /TextureData solid_texture_data\(const SolidTexture& texture\) \{/,
     );
     assert.match(
-        source,
-        /normalized\.data\.rgba_width = 1;\s*normalized\.data\.rgba_height = 1;/,
+        shared,
+        /data\.bytes\.assign\(\s*texture\.texel\.begin\(\),\s*texture\.texel\.end\(\)\);/,
     );
     assert.match(
-        source,
-        /normalized\.data\.sampler\.min_filter = TextureFilter::linear;\s*normalized\.data\.sampler\.mag_filter = TextureFilter::linear;/,
+        shared,
+        /data\.rgba_width = 1;\s*data\.rgba_height = 1;/,
     );
     assert.match(
-        source,
-        /normalized\.data\.sampler\.mipmap_mode = TextureMipmapMode::nearest;/,
+        shared,
+        /data\.sampler\.min_filter = TextureFilter::linear;\s*data\.sampler\.mag_filter = TextureFilter::linear;/,
     );
     assert.match(
-        source,
-        /normalized\.data\.sampler\.address_u = TextureAddressMode::clamp;\s*normalized\.data\.sampler\.address_v = TextureAddressMode::clamp;/,
+        shared,
+        /data\.sampler\.mipmap_mode = TextureMipmapMode::nearest;/,
     );
-    assert.match(source, /normalized\.data\.sampler\.max_lod = 0\.0f;/);
+    assert.match(
+        shared,
+        /data\.sampler\.address_u = TextureAddressMode::clamp;\s*data\.sampler\.address_v = TextureAddressMode::clamp;/,
+    );
+    assert.match(shared, /data\.sampler\.max_lod = 0\.0f;/);
+
+    // ...and that the node slot reaches it rather than carrying its own
+    // copy. The FileTexture wrapper's own 1x1 extent stays here, because
+    // that is the node factory's shape and not the texture data's.
+    const source = factories.lowerNodeMaterialFactory().source;
+    assert.match(
+        source,
+        /const SolidTexture& texture\) \{\s*FileTexture normalized;\s*normalized\.data = solid_texture_data\(texture\);/,
+    );
     assert.match(
         source,
         /normalized\.width = 1;\s*normalized\.height = 1;/,
     );
+    assert.doesNotMatch(source, /normalized\.data\.sampler\.min_filter/);
 });
 
 test("dispatches stored node textures without losing pixels metadata", () => {

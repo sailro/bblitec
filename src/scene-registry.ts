@@ -855,6 +855,82 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene distinguishes a triangle-soup
+        // collider from the convex hull of the same points. None does
+        // today: scene 102's mesh colliders are boxes, so `MESH` and a
+        // `BOX` stand-in render byte-identically -- in Havok's own two
+        // goldens as well as natively. Scenes 104 and 105 would, and
+        // should retire this.
+        //
+        // An uncapped `createTube` ribbon as a static collider, with a
+        // sphere dropped down its axis: the soup has no caps and the ball
+        // falls through (top edge y = 257), the hull of the same points
+        // closes them and holds it up (y = 220). Havok's own hull golden
+        // sits at y = 222, so both solvers agree on the distinction.
+        //
+        // MEASURED 0.000/0.000 on both backends against the Havok golden,
+        // 100% exact, byte-identical between them.
+        id: "regression-physics-mesh-shape",
+        name: "Regression - Physics Mesh Shape",
+        source: "examples/regression-physics-mesh-shape.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Physics Mesh Shape",
+        buildDirectory: "native/build-regression-physics-mesh-shape-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-physics-mesh-shape/babylon-lite-golden.png",
+            },
+            outputDirectory: "artifacts/parity/regression-physics-mesh-shape",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
+        // Retires when a corpus scene observes floating origin rather than
+        // merely reaching it. Scene 209 does not: its bodies sit at exactly
+        // 5e6, a multiple of the interval float32 quantizes to there, and a
+        // vertical fall never leaves that grid, so the scene measures the
+        // same with the feature removed.
+        //
+        // A sphere dropped at 5e6 + 0.3 -- an offset float32 cannot hold at
+        // that magnitude -- fifteen units above a ground far enough away to
+        // seed its own region, with a capture radius of 10 so the fall
+        // crosses the 20% margin and migrates into the ground's region,
+        // leaving its launch region reclaimed.
+        //
+        // MEASURED 0.000/0.000 on both backends (0.0002/0.0004 raw), 99.98%
+        // of region pixels exact, byte-identical between them. Removing the
+        // mechanism costs 1.911/3.491 at max 223: the body rests at raw
+        // world 5000000.5 rather than 5000000.3, snapped 0.2 units in x and
+        // z by the float32 grid.
+        id: "regression-physics-floating-origin",
+        name: "Regression - Physics Floating Origin",
+        source: "examples/regression-physics-floating-origin.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Physics Floating Origin",
+        buildDirectory:
+            "native/build-regression-physics-floating-origin-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-physics-floating-origin/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-physics-floating-origin",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
         // Retires when a corpus scene writing a material property over
         // `scene.meshes` compiles: 166 and 179 both do, each behind the
         // clustered light container.
@@ -1917,6 +1993,73 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.19,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene102",
+        name: "Scene 102 - Havok Filtered Raycast",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene102.ts",
+        title: "Babylon Lite Native - Physics Raycast",
+        parity: {
+            // The pin's own spec serves this scene at `?captureFrame=5`,
+            // which is also what `readCaptureFrame()` falls back to, so
+            // the query pins a pose the scene would reach anyway rather
+            // than selecting a different one.
+            referenceSearch: "?captureFrame=5",
+            // MEASURED 0.003 full / 0.125 region on both backends,
+            // byte-identical between them, with all fifty differing pixels
+            // on the silhouette (background 0.000, interior 0.000, edges
+            // 1.060). Upstream's own gate is 0.5.
+            //
+            // This row does NOT observe `PhysicsShapeType.MESH`, and the
+            // comment says so rather than letting a green cell imply it:
+            // the scene's mesh colliders are boxes, so a BOX stand-in
+            // renders byte-identically -- in Havok's two goldens as well
+            // as natively. `examples/regression-physics-mesh-shape.ts`
+            // carries the mechanism instead, where the shape kind moves
+            // the ball 37 rows.
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.15,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                // The scene stops its own engine at step 5, so this only
+                // has to name a frame after the freeze. The parity runner
+                // derives the frame limit from it.
+                BBLITE_SCREENSHOT_FRAME: "15",
+            },
+        },
+    },
+    {
+        id: "scene272",
+        name: "Scene 272 - Runtime Mesh Swap",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene272.ts",
+        title: "Babylon Lite Native - Runtime Mesh Swap",
+        parity: {
+            // MEASURED 0.000/0.000 on both backends, max 0, 100% of
+            // pixels exact, and byte-identical between them.
+            //
+            // What this row observes is the runtime swap: the same scene
+            // without it is 3.101 full / 3.906 region at max 204. It does
+            // NOT observe the solid-texture source this scene unblocked --
+            // the texel is white, and a white texel multiplies neutrally,
+            // so removing the diffuse texture entirely still measures
+            // 0.000 at max 0. A coloured texel moves the picture 1.578 /
+            // 3.210, and we track the browser to 0.000 there; that probe
+            // and the compiler's own accepted-source test are what hold
+            // the fourth arm.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+            // The scene swaps its mesh on frame 20 and raises `ready` on
+            // frame 50; the browser golden is the post-swap state. Without
+            // this the registered native run free-runs to its own default
+            // frame and is measured BEFORE the swap -- 3.101 full and 5.696
+            // region, which is precisely the number the same scene gives
+            // with the swap deleted. Registration does not supply this the
+            // way the ad-hoc path does.
+            nativeEnvironment: adHocCaptureEnvironment(),
         },
     },
     {
@@ -3494,6 +3637,45 @@ const sceneInputs: readonly SceneInput[] = [
             maxForegroundMad: 0.001,
             backgroundColor: [13, 13, 20],
             backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene209",
+        name: "Scene 209 - Floating Origin Havok Physics",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene209.ts",
+        title: "Babylon Lite Native - Floating Origin Physics",
+        parity: {
+            // MEASURED 0.000/0.000 full and region on both backends at the
+            // frame below, max channel difference 1 over the whole image,
+            // 100% of region pixels exact, byte-identical between backends.
+            //
+            // The pose is the whole measurement here. At the ad-hoc default
+            // (frame 181) this reads 1.862/2.544, and that is PHASE, not
+            // error: the browser screenshots three seconds after its own
+            // settle, and the native sphere is still on its fourth bounce
+            // there -- `scene -- diff` shows every native uniform agreeing
+            // exactly with the browser's.
+            //
+            // This row does not observe floating origin either. The scene's
+            // drop is precision-degenerate: both bodies sit at exactly
+            // 5e6, a multiple of the interval float32 quantizes to at that
+            // magnitude, and a purely vertical fall never leaves that grid,
+            // so removing the feature also measures 0.000.
+            // `examples/regression-physics-floating-origin.ts` carries the
+            // mechanism, where removing it costs 1.911/3.491.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: {
+                ...fixedCaptureEnvironment(),
+                // The scene raises `ready` after 30 settled frames, which
+                // the native run reaches at about 290; the browser harness
+                // then waits its three seconds. Both sides are AT REST by
+                // their capture, so any frame past ~320 gives the same
+                // picture and this one is not a knife edge.
+                BBLITE_SCREENSHOT_FRAME: "470",
+            },
         },
     },
     {

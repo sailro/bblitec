@@ -7,12 +7,50 @@ import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
 
 /**
+ * The `SolidTexture` to `TextureData` normalization, emitted once per
+ * translation unit that binds one.
+ *
+ * Three slots take a solid texture -- the Standard diffuse slot, a node
+ * material's texture binding and the PBR occlusion slot -- and each sits
+ * behind its own feature, in a translation unit the others need not be
+ * built with. A node material reaches a solid texture through the block
+ * loader rather than through `createSolidTexture2D`, so `texture:file` is
+ * NOT in the build for every consumer and a shared definition there fails
+ * to link; six node scenes measured that.
+ *
+ * So the sharing is at generation instead: one string, `static` in each
+ * emitting unit. That is what the three hand-written copies could not give
+ * -- they had already diverged, the occlusion slot setting no sampler at
+ * all -- while leaving each unit self-contained.
+ */
+const solidTextureDataFunction = `
+// createSolidTexture2D is the pin's one-texel Texture2D: four rounded
+// channels as already-decoded bytes over a 1x1 image, sampled through
+// getBilinearSampler -- linear min/mag, no mipmap filter, and WebGPU's
+// clamp-to-edge address defaults. That the pinned factory calls
+// getBilinearSampler is asserted at generation rather than remembered here.
+static TextureData solid_texture_data(const SolidTexture& texture) {
+    TextureData data;
+    data.bytes.assign(texture.texel.begin(), texture.texel.end());
+    data.rgba_width = 1;
+    data.rgba_height = 1;
+    data.sampler.min_filter = TextureFilter::linear;
+    data.sampler.mag_filter = TextureFilter::linear;
+    data.sampler.mipmap_mode = TextureMipmapMode::nearest;
+    data.sampler.address_u = TextureAddressMode::clamp;
+    data.sampler.address_v = TextureAddressMode::clamp;
+    data.sampler.max_lod = 0.0f;
+    return data;
+}
+`;
+
+/**
  * Which per-material writes a scene reached on a Standard material.
  *
  * Most are texture slots, and one slot takes several sources —
  * `diffuseTexture` alone is written from a colour render target, a pixels
- * texture and a loaded image — so those are emitted per reached source
- * rather than per slot. The last two are marks rather than slots
+ * texture, a solid colour and a loaded image — so those are emitted per
+ * reached source rather than per slot. The last two are marks rather than slots
  * (`enableMaterialUvTransform`, and the plugin signature index), which is
  * why the unit is named for the material rather than for its textures. The
  * flags travel named because seven positional booleans read as an accident.
@@ -21,6 +59,7 @@ export interface StandardMaterialSetters {
     diffuse: boolean;
     emissive: boolean;
     pixels: boolean;
+    solid: boolean;
     diffuseFile: boolean;
     emissiveFile: boolean;
     uvTransform: boolean;
@@ -80,7 +119,7 @@ export class FactoryLowerer extends MeshBuilderLowerer {
 #include <utility>
 
 namespace bbl {
-
+${solidTextureDataFunction}
 NodeMaterialTexture node_material_texture(
     std::string name,
     FileTexture texture) {
@@ -111,19 +150,7 @@ NodeMaterialTexture node_material_texture(
     std::string name,
     const SolidTexture& texture) {
     FileTexture normalized;
-    normalized.data.bytes.assign(
-        texture.texel.begin(),
-        texture.texel.end());
-    normalized.data.rgba_width = 1;
-    normalized.data.rgba_height = 1;
-    // createSolidTexture2D uses getBilinearSampler: linear min/mag, no
-    // mipmap filter, and WebGPU's clamp-to-edge address defaults.
-    normalized.data.sampler.min_filter = TextureFilter::linear;
-    normalized.data.sampler.mag_filter = TextureFilter::linear;
-    normalized.data.sampler.mipmap_mode = TextureMipmapMode::nearest;
-    normalized.data.sampler.address_u = TextureAddressMode::clamp;
-    normalized.data.sampler.address_v = TextureAddressMode::clamp;
-    normalized.data.sampler.max_lod = 0.0f;
+    normalized.data = solid_texture_data(texture);
     normalized.width = 1;
     normalized.height = 1;
     return node_material_texture(
@@ -709,6 +736,28 @@ void update_pixels_texture(
                 "Expected rgba8unorm solid textures.",
             );
         }
+        // The sampler a solid texel is read through. `SolidTexture` carries
+        // no sampler of its own -- the texel is the whole value -- so every
+        // slot that binds one restates this choice in C++ (the Standard
+        // diffuse setter and `node_material_texture`). Pinning the call
+        // here is what makes those restatements checked rather than
+        // remembered: a pin that switched to `getNearestSampler` would
+        // otherwise keep shading through our linear filter.
+        if (
+            !this.context.hasNode(
+                createSolidTexture,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "getBilinearSampler",
+            )
+        ) {
+            this.context.contractError(
+                createSolidTexture,
+                "Expected solid textures to sample through " +
+                    "getBilinearSampler.",
+            );
+        }
         this.context.functionDeclaration(textureModule, "loadTexture2D");
         // `loadTexture2D` is the memoizing wrapper; the upload and the
         // sampler it builds live in the impl it defers to.
@@ -1028,6 +1077,7 @@ void set_pbr_skybox(Engine& engine, MaterialHandle material) {
     engine.materials[material.value].skybox_mode = true;
 }
 
+${solidTextureDataFunction}
 void set_pbr_occlusion_solid_texture(
     Engine& engine,
     MaterialHandle material,
@@ -1036,11 +1086,7 @@ void set_pbr_occlusion_solid_texture(
         throw std::runtime_error("Invalid PBR material handle.");
     }
     MaterialRecord& record = engine.materials[material.value];
-    TextureData replacement;
-    replacement.bytes.assign(texture.texel.begin(), texture.texel.end());
-    replacement.rgba_width = 1;
-    replacement.rgba_height = 1;
-    record.occlusion_texture = std::move(replacement);
+    record.occlusion_texture = solid_texture_data(texture);
     record.has_occlusion_texture = true;
 }
 
@@ -1391,6 +1437,7 @@ MaterialHandle create_grid_material(
             diffuse,
             emissive,
             pixels,
+            solid,
             diffuseFile,
             emissiveFile,
             uvTransform,
@@ -1433,6 +1480,7 @@ MaterialHandle create_grid_material(
                 ...(diffuse ? ["material.diffuseTexture"] : []),
                 ...(emissive ? ["setStandardEmissiveTexture"] : []),
                 ...(pixels ? ["material.diffuseTexture#pixels"] : []),
+                ...(solid ? ["material.diffuseTexture#solid"] : []),
                 ...(diffuseFile ? ["material.diffuseTexture#file"] : []),
                 ...(emissiveFile
                     ? ["setStandardEmissiveTexture#file"]
@@ -1459,6 +1507,9 @@ MaterialHandle create_grid_material(
                         : []),
                     ...(pixels
                         ? ["src/texture/pixels-texture.ts"]
+                        : []),
+                    ...(solid
+                        ? ["src/texture/solid-texture.ts"]
                         : []),
                     ...(diffuseFile || emissiveFile
                         ? ["src/texture/texture-2d.ts"]
@@ -1501,7 +1552,25 @@ MaterialRecord& standard_slot_material(
 }
 
 } // namespace
-${diffuse ? `
+${diffuse || pixels || solid || diffuseFile ? `
+// Upstream diffuseTexture is ONE field, and every write to it replaces
+// whatever was there. The record splits it into two representations -- a
+// render-target reference behind has_diffuse_render_texture, and the
+// base_color_texture bytes -- and the render-target half WINS at binding
+// resolution in both PALs, so a slot left holding a stale mark shades
+// through the wrong texture or aborts the pass outright. Every arm below
+// therefore takes the slot through this, which empties both halves first.
+// One writer per slot is the type-level rule; clearing per arm was the
+// whack-a-mole that made this necessary.
+TextureData& take_standard_diffuse_slot(
+    Engine& engine,
+    MaterialHandle material) {
+    MaterialRecord& record = standard_slot_material(engine, material);
+    record.has_diffuse_render_texture = false;
+    record.base_color_texture = TextureData{};
+    return record.base_color_texture;
+}
+` : ""}${solid ? solidTextureDataFunction : ""}${diffuse ? `
 // The plain material.diffuseTexture write, for the one source the reached
 // slice gives it: a colour render target.
 //
@@ -1514,10 +1583,12 @@ void set_standard_diffuse_render_texture(
     Engine& engine,
     MaterialHandle material,
     RenderTextureRef texture) {
+    take_standard_diffuse_slot(engine, material).uv_invert_y = true;
     MaterialRecord& record = standard_slot_material(engine, material);
     record.diffuse_render_texture = texture;
+    // Set after the take, which clears it: this is the arm the mark
+    // belongs to.
     record.has_diffuse_render_texture = true;
-    record.base_color_texture.uv_invert_y = true;
 }
 ` : ""}${emissive ? `
 // The pinned setter stores the texture and registers the emissive
@@ -1543,14 +1614,30 @@ void set_standard_diffuse_pixels_texture(
     Engine& engine,
     MaterialHandle material,
     const PixelsTexture& texture) {
-    MaterialRecord& record = standard_slot_material(engine, material);
-    TextureData& slot = record.base_color_texture;
+    TextureData& slot = take_standard_diffuse_slot(engine, material);
     slot.bytes = texture.rgba;
     slot.rgba_width = texture.width;
     slot.rgba_height = texture.height;
     slot.sampler = texture.sampler;
     slot.uv_transform = texture.uv_transform;
     slot.uv_invert_y = texture.uv_invert_y;
+}
+` : ""}${solid ? `
+// The same slot, filled by a createSolidTexture2D texture -- the fourth
+// source it takes. That factory is the pin's own one-texel Texture2D: it
+// rounds the four channels into a 1x1 rgba8unorm texture and samples it
+// through getBilinearSampler. So the slot carries the texel as
+// already-decoded bytes, through the one solid_texture_data every slot that
+// takes a solid texture shares. The whole TextureData is replaced because
+// the pin replaces the Texture2D object, and uv_invert_y stays false
+// because the returned object carries no invertY property, which is exactly
+// what isStandardUvInverted reads back off the diffuse slot.
+void set_standard_diffuse_solid_texture(
+    Engine& engine,
+    MaterialHandle material,
+    const SolidTexture& texture) {
+    take_standard_diffuse_slot(engine, material) =
+        solid_texture_data(texture);
 }
 ` : ""}${diffuseFile ? `
 // The same slot, filled by a loaded image -- the third source it takes, and
@@ -1563,8 +1650,7 @@ void set_standard_diffuse_file_texture(
     Engine& engine,
     MaterialHandle material,
     const FileTexture& texture) {
-    standard_slot_material(engine, material).base_color_texture =
-        texture.data;
+    take_standard_diffuse_slot(engine, material) = texture.data;
 }
 ` : ""}${emissiveFile ? `
 // setStandardEmissiveTexture over a loaded image. The render-texture arm

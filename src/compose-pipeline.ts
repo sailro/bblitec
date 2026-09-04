@@ -1027,6 +1027,9 @@ export async function composeScenePipeline({
                 diffusePixelsTexture: result.manifest.features.includes(
                     "material:standard-diffuse-pixels-texture",
                 ),
+                diffuseSolidTexture: result.manifest.features.includes(
+                    "material:standard-diffuse-solid-texture",
+                ),
                 diffuseFileTexture: result.manifest.features.includes(
                     "material:standard-diffuse-file-texture",
                 ),

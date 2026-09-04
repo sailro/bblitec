@@ -346,18 +346,26 @@ test("a body's integrated pose writes the two fields the pin writes", () => {
     // position as three JavaScript numbers, so an integrated pose writes
     // them without narrowing first.
     assert.match(
-        lowered.source,
         // The solver's own doubles, unnarrowed: the record's translation is
         // that width, so a cast here would throw the pose's precision away
         // and widen the rounded value straight back.
-        /const Vec3d position\{\s*transform\.position\[0\],/,
+        emittedBody("void sync_body_to_node("),
+        /Vec3d\{\s*transform\.position\[0\],\s*transform\.position\[1\],\s*transform\.position\[2\],\s*\},/,
     );
-    assert.match(lowered.source, /const Vec4 rotation\{/);
-    assert.match(lowered.source, /mesh\.position = position;/);
-    assert.match(lowered.source, /mesh\.rotation_quaternion = rotation;/);
+    // The quaternion is the one place the pose DOES narrow, because the
+    // record holds it at float width.
     assert.match(
-        lowered.source,
-        /mark_mesh_runtime_transform\(engine, MeshHandle\{body\.node\.value\}\);/,
+        emittedBody("[[nodiscard]] Vec4 transform_rotation("),
+        /static_cast<float>\(t\.rotation\[0\]\),/,
+    );
+    // Both fields land on the record, and the transform version the
+    // renderer re-reads is bumped with them.
+    const writer = emittedBody("void write_node_pose(");
+    assert.match(writer, /mesh\.position = position;/);
+    assert.match(writer, /mesh\.rotation_quaternion = rotation;/);
+    assert.match(
+        writer,
+        /mark_mesh_runtime_transform\(engine, MeshHandle\{node\.value\}\);/,
     );
     assert.doesNotMatch(lowered.source, /mark_physics_mesh_dirty/);
 });
@@ -392,6 +400,49 @@ test("both shape paths route through the pin's own primitive factory", () => {
     );
     assert.equal(calls?.length, 2);
     assert.match(lowered.source, /default:\n            return std::nullopt;/);
+});
+
+test("the two mesh arms share one accumulator and split on the pin's own boolean", () => {
+    // `createPhysicsShape` runs ONE `MeshAccumulator` for CONVEX_HULL and
+    // MESH and separates them with `options.type === PhysicsShapeType.MESH`.
+    // The emitted factory folds that comparison into `collect_indices` and
+    // reaches a different back-end factory on each side, so a port that
+    // quietly sent MESH down the hull arm -- which every reached scene's
+    // box-shaped collider would hide, since a box's soup and its hull are
+    // the same surface -- shows up here.
+    const body = emittedBody("PhysicsShape create_physics_mesh_shape(");
+    assert.match(
+        body,
+        /const bool collect_indices = type == PhysicsShapeType::MESH;/,
+    );
+    assert.match(body, /pal::physics_shape_create_mesh\(positions, indices\)/);
+    assert.match(body, /pal::physics_shape_create_convex_hull\(positions\)/);
+    // Both of the pin's own accumulator throws, and only on the arm that
+    // states each: a hull needs points, a soup needs points AND triangles.
+    assert.match(
+        body,
+        /Cannot create physics mesh shape without vertex positions\./,
+    );
+    assert.match(
+        body,
+        /Cannot create physics mesh shape without triangle indices\./,
+    );
+});
+
+test("the accumulator addresses and winds each triangle the pin's way", () => {
+    // `const indexOffset = this._vertices.length / 3` is read BEFORE the
+    // node's own vertices join the list, which is what makes a child's
+    // triangles address the child's vertices; and `push(c, b, a)` is the
+    // pin's own reversal of each triangle. Both are restated here, so both
+    // are asserted against the emitted text as well as against the pin.
+    const body = emittedBody("void append_physics_mesh_geometry(");
+    const offsetAt = body.indexOf("const std::uint32_t index_offset");
+    const verticesAt = body.indexOf("positions.push_back({");
+    assert.ok(offsetAt >= 0 && verticesAt > offsetAt);
+    assert.match(
+        body,
+        /indices\.push_back\(geometry\.indices\[i \+ 2\] \+ index_offset\);\n\s*indices\.push_back\(geometry\.indices\[i \+ 1\] \+ index_offset\);\n\s*indices\.push_back\(geometry\.indices\[i\] \+ index_offset\);/,
+    );
 });
 
 test("each primitive arm keeps the pin's own parameter defaults", () => {
@@ -433,6 +484,85 @@ test("the trigger stream carries the pin's own two event names", () => {
     assert.match(
         lowered.source,
         /void on_physics_trigger\([\s\S]*?on_physics_after_step\(/,
+    );
+});
+
+test("the floating-origin radius flows from the pin's own parameter", () => {
+    // `enableHavokFloatingOrigin(world, floatingOriginWorldRadius = 100000)`.
+    // The intrinsic emits this constant at every call site that omits the
+    // argument, which is where the pin applies the default too, so a bump
+    // that moved the radius would move every far-from-origin simulation.
+    assert.match(
+        lowered.header,
+        /inline constexpr double pinned_floating_origin_radius = 100000\.0;/,
+    );
+});
+
+test("a floating-origin world replaces the single-world frame", () => {
+    // `_stepWorld`'s `_fo` arm RETURNS, so a region-stepped world runs
+    // neither the prestep gate nor the after-step hooks. Both are the pin's
+    // and both are observable, so the emitted arm has to return too.
+    assert.match(
+        emittedBody("void step_world(PhysicsWorld& world, double delta_ms)"),
+        /if \(world\.fo\) \{\n        fo_step_world\(world, dt\);\n        return;\n    \}/,
+    );
+    // `createPhysicsBody`'s own `_fo` arm: `placeBody` REPLACES the plain
+    // add-then-transform pair rather than running before it.
+    const factory = emittedBody(
+        "PhysicsBody create_physics_body(",
+    );
+    assert.match(
+        factory,
+        /if \(world\.fo\) \{[\s\S]*?place_body\(world, body, starts_asleep\);\n    \} else \{[\s\S]*?physics_world_add_body\(/,
+    );
+});
+
+test("the region phases keep the pin's own order", () => {
+    // `_step`: re-region, then the ANIMATED pre-step sync, then one step
+    // per region, then the DYNAMIC post-step sync, then the reclaim. A body
+    // re-based after its node sync would be stepped from the previous
+    // region's frame, so the first edge is as observable as the last.
+    assert.match(
+        emittedBody("void fo_step_world(PhysicsWorld& world, double dt)"),
+        /re_region_body\([\s\S]*?fo_sync_node_to_body\([\s\S]*?physics_world_step\([\s\S]*?fo_sync_body_to_node\([\s\S]*?gc_regions\(world\);/,
+    );
+    // `_getOrCreateRegion` seeds a new region from the CONTEXT's gravity
+    // and from the BASE world's speed limits -- not from the backend's
+    // defaults, which is what makes both PAL entry points reached.
+    assert.match(
+        emittedBody(
+            "[[nodiscard]] pal::PhysicsWorldHandle get_or_create_region(",
+        ),
+        /physics_world_create\(\);\n    pal::physics_world_set_gravity\(new_world, fo\.gravity\);\n[\s\S]*?physics_world_get_speed_limit\(world\.handle\);\n    pal::physics_world_set_speed_limit\(/,
+    );
+});
+
+test("a migrating body carries its velocity and the 20% margin", () => {
+    const body = emittedBody(
+        "void re_region_body(PhysicsWorld& world, PhysicsBody& body)",
+    );
+    // `const margin = fo.radius * 1.2` and the squared test it feeds: the
+    // hysteresis is what stops a body on a boundary re-regioning every step.
+    assert.match(body, /const double margin = fo\.radius \* 1\.2;/);
+    // `HP_World_AddBody` does not carry velocity, so the pin reads both
+    // vectors before the move and writes them back after it.
+    assert.match(
+        body,
+        /physics_body_get_linear_velocity\([\s\S]*?physics_body_get_angular_velocity\([\s\S]*?physics_world_remove_body\([\s\S]*?physics_world_add_body\([\s\S]*?physics_body_set_linear_velocity\([\s\S]*?physics_body_set_angular_velocity\(/,
+    );
+});
+
+test("the node keeps true world coordinates under floating origin", () => {
+    // The whole point of the feature: the SOLVER holds a small local pose
+    // and the node holds the real one, so the render path -- which
+    // subtracts the camera's own offset -- is untouched.
+    assert.match(
+        emittedBody("void fo_sync_body_to_node("),
+        /transform\.position\[0\] \+ origin\.x,\n            transform\.position\[1\] \+ origin\.y,\n            transform\.position\[2\] \+ origin\.z,/,
+    );
+    assert.match(
+        emittedBody("void fo_sync_node_to_body("),
+        /pose\.position\.x - origin\.x,\n             pose\.position\.y - origin\.y,\n             pose\.position\.z - origin\.z/,
     );
 });
 

@@ -70,6 +70,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:standard": [],
     "material:standard-diffuse-render-texture": [],
     "material:standard-diffuse-pixels-texture": [],
+    "material:standard-diffuse-solid-texture": [],
     "material:standard-diffuse-file-texture": [],
     "material:standard-uv-transform": [],
     "material:plugins": [],
@@ -153,6 +154,11 @@ export const featureSources: Record<Feature, string[]> = {
     // world already brings, and in the same PAL translation unit; what
     // the feature records is which pinned module a scene reached.
     "physics:trigger": [],
+    // Multi-region floating origin. Like the trigger drain it rides in the
+    // physics module the world already brings and in the same PAL
+    // translation unit; what the feature records is that a scene opted the
+    // world into region-local simulation.
+    "physics:floating-origin": [],
     // The Detour/Recast surface the pin calls on the module
     // createNavigationPluginAsync loads -- the same third-party-
     // library-behind-a-fixed-entry-point boundary the physics PAL

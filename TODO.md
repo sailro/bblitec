@@ -545,29 +545,46 @@ measured rather than assumed:
   `native/src/pal_physics_bullet.cpp` is one renderer-neutral translation
   unit against `native/include/bblite/pal_physics.hpp`. The lane is roughly
   half as expensive as the partition assumed.
-- **Half of these scenes' "user input" is a branch that should fold.**
-  `if (true) {...} else {...}` folds and lets a scene compile; `const
-  autoTest = true; if (autoTest)` does not, because `compileCondition` folds
-  literals and browser-only expressions but does not propagate a
-  statically-known boolean through a `const` local. That one compiler
-  contract erases scene 103's whole interactive arm at `?captureFrame=5`
-  exactly as the pin intends, and the same idiom guards scenes 104 and 105 —
-  so it removes the ONLY user-input contract those two carry.
+- **Half of these scenes' "user input" is a branch that should fold** — but
+  this bullet named the wrong fold, and the correction is worth keeping.
+  `const t = true; if (t)` really does not propagate, because
+  `compileCondition` folds literals and browser-only expressions and stops
+  there. **No scene in the lane uses that idiom.** Scene 103 writes
+  `const captureFrame = readCaptureFrame(); const autoTest = captureFrame
+  !== null`, and its blocker was that a call to the module helper did not
+  fold even though the compiler had already lowered its body to
+  `return round_js(5.0)`. Scenes 104 and 105 write
+  `const autoTest = new URLSearchParams(window.location.search).has(...)`,
+  a shape that already folded before this wave. So the module-helper fold
+  landed and erases 103's interactive arm at `?captureFrame=5` exactly as
+  the pin intends; the boolean-literal gap remains open and **no current
+  candidate needs it**; and 104/105 never carried an `autoTest` contract at
+  all. One contract serving three scenes was never true.
 
 Ranked by scenes-per-contract, the shortlist the audit measured:
 
 | Scene | Contracts | What it needs |
 | --- | ---: | --- |
-| 102 | 1 | `PhysicsShapeType.MESH`. Wanted by **five** deferred scenes (41, 47, 102, 104, 105), and the mechanism is already in the file: `physics_shape_create_convex_hull` already streams mesh positions and already builds a `btTriangleMesh`; the delta is the index array and a static-only shape kind |
-| 209 | 1 | `enableHavokFloatingOrigin`. The pinned module is 198 lines of foldable logic over `HP_*` calls this port already implements, the PAL already supports multiple worlds, and `physics-lowerer.ts` already carries the pinned floating-origin arm with a comment that nothing sets `_fo`. Scenes 200-203 already register the renderer path |
-| 272 | 1 | a fourth arm in the Standard `diffuseTexture` assignment beside the pixels, file and render-target ones, accepting `textureStorage === "solid"` |
-| 103 | 1 | the const-propagation contract above — and it is a compiler contract, so it is the one to take first |
+| 103 | 3, one closed | the module-helper fold above landed this wave; what is left is `Map` identity by PAL handle and the raycast segment-end miss, both diagnosed in the physics lane below |
 | 48 | 2 + a PAL change | `setPhysicsShapeMaterial` is ALREADY lowered inside `createPhysicsAggregate`; only the scene-facing intrinsic is missing. `PhysicsMassProperties::center_of_mass` exists but `physics_body_set_mass_properties` writes mass and inertia only, and Bullet models the centre of mass through the motion-state transform |
 | 106 | 4 | enum-value-into-array, aggregate `pointA`/`pointB`, the `const p = mesh.position; p.set(...)` alias, and `setPhysicsBodyPrestepType` (a setter only — the enum, the body field and the ACTION arm all exist) |
 
-Cross-scene demand, for ranking the rest: `PhysicsShapeType.MESH` 5,
+Cross-scene demand, for ranking the rest:
 the structural type guard 4, `createCapsule` 4, aggregate `pointA`/`pointB` 4,
 `setPhysicsShapeMaterial` 3, enum-into-array 3, `createPhysicsConstraint` 3.
+(`PhysicsShapeType.MESH` led this list at 5 and has shipped; 41, 47, 104 and
+105 lose it and stay blocked on their own first contracts.)
+
+**The audit's own contract counts were the least reliable column in it.**
+Scenes 102, 209 and 272 shipped from this table; 272 cost the one contract
+claimed, but 102 and 209 cost **three each**, and the misses were specific.
+For 102 the intrinsic arm and the PAL factory were seen but the pinned
+`MeshAccumulator` fold was not. For 209 the claim that the module runs over
+"`HP_*` calls this port already implements" was simply wrong — seven entry
+points were missing (`HP_World_GetSpeedLimit`, `HP_World_SetSpeedLimit`,
+`HP_World_RemoveBody`, `HP_World_Release`, `HP_Body_GetAngularVelocity`,
+`HP_Body_SetLinearVelocity`, `HP_Body_SetAngularVelocity`). Read a
+scenes-per-contract ranking as an ordering hint, never as a size.
 
 Four claims in this register did not survive the re-probe and are corrected
 where they sit: every body control past creation is NOT refused (impulse,
@@ -592,6 +609,26 @@ reason changed rather than closed: Canvas2D ships, and what is missing is
   measurement: the same asset at unit scale.
 
 ### Integration-first compiler contract gaps
+
+Two defects measured while probing scene 103, both small and both a
+compile failure rather than a wrong picture, recorded here so the next
+scene that hits one does not re-derive it: `if (physicsRaycast(...).hasHit)`
+emits an unused temporary and fails `-Werror,-Wunused-variable` (binding the
+result to a `const` first works); and `const v: Vec3 = { x, y, z }` INSIDE a
+frame callback lowers to a `bbl::js::Ref<Vec3Data>` brace-initialised with
+three scalars, which has no matching constructor, while the same declaration
+at entry scope is fine.
+
+`browser-erasure.ts`'s `helperBinding` keys a helper's `const` bindings by
+identifier TEXT and disambiguates them with a `pos`/`end` containment test
+against the open body, which is a second and weaker scope mechanism beside
+the compiler's own. Keying by `ts.Symbol` would delete the containment test
+outright, but `BrowserErasureContext` exposes no symbol resolver and
+widening it buys nothing measured: no scene shadows a helper binding with a
+module constant of the same name, and the containment guard IS load-bearing
+today because `constantInitializer` re-enters the evaluator with
+module-scope nodes while a frame is open. Worth doing when a third reader
+of that frame appears.
 
 - [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
   `f0Factor` and `specularWeight` options still refuse explicitly.
@@ -792,8 +829,7 @@ reason changed rather than closed: Canvas2D ships, and what is missing is
   nearest one, and the setter folds the colour arm; a geometry attachment is
   refused on ownership rather than aspect. An image texture whose own `srgb`
   option is set refuses too: the slot's encoding is the family's, and no
-  reached scene asks for the other. Scene 272 blocks here and wants more
-  besides: `cloneTransformNode` and `createSolidTexture2D`.
+  reached scene asks for the other.
 - [ ] Extend the sprite path past the slice scenes 50-53, 58 and 117 measure.
   Each item is a separate arm upstream keeps behind its own module or hook,
   and each fails explicitly today:
@@ -1112,13 +1148,12 @@ reason changed rather than closed: Canvas2D ships, and what is missing is
     times; each copy keys differently, so the shared form needs a
     key-function parameter — an extraction across five unrelated modules
     rather than a call.
-- [ ] Scene 209: the last large-world bake — `enableHavokFloatingOrigin`, a
-  multi-region simulation rather than a render bake, behind the physics lane
-  below. Read `docs/lite/architecture/35-large-world-rendering.md` in the
-  pinned clone first: it is the specification for the bake, and where it
-  drifts from the pinned source (the deleted `_floatingOriginOffset` mirror,
-  the thin-instance stream that is precision-only, not offset-subtracting)
-  the source decides.
+- [ ] Per-region gravity is the one part of the floating-origin context still
+  unreached: `setPhysicsGravity` with a `worldPosition` is not a supported
+  intrinsic, so the pinned `setGravity`/`getRegionGravity` hooks are not
+  lowered — the same reason the port already omits `setPhysicsTimestep`.
+  Three sibling hooks (`setVelocityLimits`, `dispose`) are unreached for the
+  same reason.
 - [ ] Scene 231: support `enableStandardSkeleton`. **Sized 2026-09-04 at
   seven contracts**, and the base under them is clean:
   `enableStandardVertexColors`, `createMeshFromData` with an RGBA colour
@@ -1289,11 +1324,13 @@ reason changed rather than closed: Canvas2D ships, and what is missing is
 These stay out of the first integration wave even when the audit reports an
 earlier compiler error.
 
-- [ ] Scenes 41, 46-49, 102-106, 209: finish the physics lane. **Scenes
-  40, 42, 44, 45, 100 and 101 are integrated and published** -- 40 the sphere
-  drop, 100 the same drop with a registered collision event, 44 the sleeping
-  towers, 101 the trigger volume, 42 the cloned pre-stepped pair and 45 the
-  collision filter masks, each frozen at the pin's own capture query and
+- [ ] Scenes 41, 46-49, 103-106: finish the physics lane. **Scenes
+  40, 42, 44, 45, 100, 101, 102 and 209 are integrated and published** -- 40
+  the sphere drop, 100 the same drop with a registered collision event, 44
+  the sleeping towers, 101 the trigger volume, 42 the cloned pre-stepped
+  pair, 45 the collision filter masks, 102 the filtered raycast over
+  triangle-soup colliders and 209 the floating-origin regions, each frozen
+  at the pin's own capture query and
   measured on both backends. What remains is one capability per scene, and none of it is
   shared plumbing any more.
   - **Three duplications the lane accumulated**, all on the lines the mask
@@ -1303,10 +1340,30 @@ earlier compiler error.
     `:1123-1133` including the dirty-marking loop (one
     `mark_shape_bodies_dirty(shape)` leaves both at three lines). Their
     neighbour `physics_shape_set_trigger` already grew a change guard that
-    neither mask setter has. In the same lines, the emitted comment at
-    `physics-lowerer.ts:1858` names an `assertStepGate` that does not
-    exist anywhere in `src/` -- either write it or stop claiming it, now
-    that `world_step_seconds` doubles the unasserted surface it covers.
+    neither mask setter has.
+  - **Floating origin multiplies the PAL's global body scans by region
+    count**, measured 2026-09-04 and left alone deliberately.
+    `physics_world_step` walks the whole `bodies()` deque and filters on
+    `entry.world`, four times per step (`flush_pending_readds` once,
+    `cache_velocities` once per substep, `stabilize_contacting_bodies`
+    twice) -- and Havok's 1/240 s substep makes that eight traversals per
+    1/60 s step. With one world that is 8N; with R regions it is 8RN, and
+    each region re-scans every other region's bodies only to skip them.
+    `physics_world_release` has the same shape. The fix is a
+    `std::vector<std::uint32_t> body_indices` on `WorldEntry`: all three
+    membership transitions are already explicit and centralised
+    (`physics_world_add_body`, `physics_world_remove_body`,
+    `physics_world_release`), so maintaining it is local and every scan
+    site loses its filter. Two smaller ones beside it: `region_at` is a
+    linear scan run per body per step purely to recover an origin the body's
+    own record could carry beside `region` (two writers, both already
+    holding it); and `physics_shape_create_mesh` feeds `btTriangleMesh`
+    triangle-by-triangle, which de-indexes the indexed soup
+    `append_physics_mesh_geometry` just built -- about 6x the vertex memory
+    on a closed mesh -- where `btTriangleIndexVertexArray` over the two
+    vectors already in hand would keep it. None of this is measured as
+    reached by a registered scene, which is why it is recorded rather than
+    fixed alongside a wave.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
     a module-level mutable `let`, and behind it the whole constraint family
@@ -1322,18 +1379,28 @@ earlier compiler error.
     ignores `center_of_mass` entirely, so honouring it means re-framing the
     body in Bullet, whose origin IS the centre of mass (48);
     `createCapsule` (49, which is also a gizmo scene);
-    `createPhysicsShape` was 101's and 102's; it ships now, so **102 is
-    unmeasured and wants a re-probe**. 103's stated blocker was wrong twice
-    over: its first is `getViewProjectionMatrix` (scene103.ts:274, in a
-    branch that does NOT fold under its query), and its `new Map` failure is
-    not "no concrete type arguments" -- the scene passes them -- but that the
-    pinned `PhysicsBody` interface (`_hkBody: any`, a cyclic `_world`) has
-    no plain-data mapping, so the key type resolves to nothing. Behind those
-    sit live pointer input and a raycast surface across the PAL and the
-    generated layers. The owner-name grouping in `buildOwnerMap` (104, 105 --
-    a native mesh record carries its own `scene_node_name`, not its nearest
-    non-mesh ancestor's, so the guards have no folded arrangement; both die
-    on `createPhysicsCharacterController` regardless);
+    102 ships. 103 is the lane's next scene and its ladder is MEASURED at
+    three contracts, one of them closed this wave: folding a module helper
+    whose body the pinned query answers, which erases its whole interactive
+    arm at `?captureFrame=5`. The other two are diagnosed rather than
+    guessed. `new Map<PhysicsBody, number>()` GENERATES but does not build --
+    the register said "compiles today", true at generation and false under
+    `-Werror`; `ValueHash<T>` in `native/include/bblite/js_data.hpp` has a
+    `.value` arm but none for a struct carrying a `.handle`, and the lowered
+    `bbl::upstream::PhysicsBody` has no `operator==`, so identity by PAL
+    handle is the fix. And `physics_world_raycast` MISSES when the ray
+    segment ends inside the target shape, where Havok reports the entry hit:
+    one build casting at two boxes shows both engines agreeing to 0.000 at
+    100% exact when the ray passes THROUGH, and native missing all six when
+    it aims at the centres, which is 103's own aim. That one defect is the
+    whole of 103's residual -- full MAD 0.162 but foreground 1.201, every
+    differing pixel inside the one 51x51 green indicator disc.
+    The structural type guard (104, 105 -- `"children" in node` at
+    `scene104.ts:158:68` and `scene105.ts:181:68`, the same guard this
+    register already ranks at cross-scene demand 4; behind it the owner-name
+    grouping in `buildOwnerMap`, where a native mesh record carries its own
+    `scene_node_name` rather than its nearest non-mesh ancestor's, and both
+    scenes die on `createPhysicsCharacterController` regardless);
     a pinned enum member read as a VALUE into an array (106) -- and the array
     is not foldable, because `inferredArrayIsMutated` gives any local const
     array a runtime `js::Array`, so this wants a DataType for the emitted enum
@@ -1342,8 +1409,7 @@ earlier compiler error.
     property-access receiver. Those two are all that is left of 106 now that
     the aggregate options and `setPhysicsBodyPrestepType` ship, and the pin
     serves it at `?captureFrame=20` with `maxMad` 0.32, a favourable
-    mostly-free-fall pose. And engine options (209, behind large-world
-    rendering).
+    mostly-free-fall pose.
   - The aggregate's geometry options are **done** (2026-09-04), gated by
     `regression-physics-aggregate-options`. Two things this entry used to
     claim were wrong: three were missing rather than two, and `radius` on a
@@ -1463,10 +1529,6 @@ earlier compiler error.
   access.
 - [ ] Scenes 227, 228: add multiple native surfaces/swapchains for
   `createSurface`.
-- [ ] Scene 272: add the direct GPU validation-error event contract reached
-  through `engine._device` and `GPUUncapturedErrorEvent`. First blocker:
-  Standard material diffuse textures.
-
 ## P1 — Backend portability
 
 ### Vulkan

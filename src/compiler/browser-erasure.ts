@@ -10,6 +10,7 @@
 // scene keeps), and whether a call is browser instrumentation that is
 // erased outright.
 import ts from "typescript";
+import { foldableMathUnary } from "./option-helpers.js";
 import type { Value } from "./types.js";
 
 /**
@@ -89,7 +90,23 @@ export interface BrowserErasureContext {
     constantInitializer(
         identifier: ts.Identifier,
     ): ts.Expression | undefined;
+    moduleFunctionDeclaration(
+        identifier: ts.Identifier,
+    ): ts.FunctionDeclaration | undefined;
 }
+
+/**
+ * What walking a helper body produced: a value it returned, or the fact
+ * that control ran off the end without returning one.
+ *
+ * The two are different answers and the caller acts on them differently --
+ * a taken `if` that falls through continues to the statements after it --
+ * so they are separated here rather than both spelled `undefined`, which
+ * this evaluator reserves for "cannot fold".
+ */
+type HelperOutcome =
+    | { returned: true; value: NonNullable<Value["browserValue"]> }
+    | { returned: false };
 
 type BrowserGlobalContext = Pick<
     BrowserErasureContext,
@@ -128,6 +145,30 @@ export class BrowserErasure {
     public constructor(
         private readonly context: BrowserErasureContext,
     ) {}
+
+    /**
+     * Helper bodies currently being evaluated, innermost last, each with
+     * the `const` bindings its own statements have made so far.
+     *
+     * A body on this stack is also the recursion guard: a helper that
+     * calls itself, directly or through another, finds its own body here
+     * and answers nothing rather than running forever.
+     */
+    private readonly helperBodies: {
+        body: ts.Block;
+        bindings: Map<string, NonNullable<Value["browserValue"]>>;
+    }[] = [];
+
+    /**
+     * What each helper body answered, once. A zero-argument module helper
+     * over the fixed reference query has one answer per generation, and
+     * `isBrowserOnlyExpression` asks about the same call many times while
+     * an expression is lowered.
+     */
+    private readonly helperResults = new Map<
+        ts.FunctionDeclaration,
+        Value["browserValue"] | undefined
+    >();
 
     private isDefaultBrowserGlobal(identifier: ts.Identifier): boolean {
         return isDefaultBrowserGlobal(this.context, identifier);
@@ -497,7 +538,12 @@ export class BrowserErasure {
                     )
                 );
             }
-            return false;
+            // Last, because it is the only arm that reads a body rather
+            // than a shape: a module helper whose whole body the query
+            // answers is that answer, wherever the scene calls it.
+            return (
+                this.evaluateBrowserHelperCall(unwrapped) !== undefined
+            );
         }
         return false;
     }
@@ -651,6 +697,10 @@ export class BrowserErasure {
             };
         }
         if (ts.isIdentifier(unwrapped)) {
+            // A helper body's own `const` first: it is the innermost
+            // scope, and nothing below can see it.
+            const local = this.helperBinding(unwrapped);
+            if (local !== undefined) return local;
             if (
                 unwrapped.text === "devicePixelRatio" &&
                 this.isDefaultBrowserGlobal(unwrapped)
@@ -1071,6 +1121,54 @@ export class BrowserErasure {
                       }
                     : undefined;
             }
+            // `Math.round(frame)` -- how the capture-pose family turns the
+            // query's text into the frame index it names. The neighbouring
+            // taint rule in `isBrowserOnlyExpression` already documents
+            // this call as one whose argument the query answers; folding
+            // it here is what lets the helper around it answer too.
+            if (
+                ts.isPropertyAccessExpression(unwrapped.expression) &&
+                ts.isIdentifier(unwrapped.expression.expression) &&
+                unwrapped.expression.expression.text === "Math" &&
+                unwrapped.arguments.length === 1 &&
+                this.context.isDefaultLibraryIdentifier(
+                    unwrapped.expression.expression,
+                )
+            ) {
+                // The names read off the table `staticNumberValue` folds
+                // through rather than one spelled here, so this rule and
+                // the taint rule above -- which treats every Math call over
+                // a resolved value alike -- cannot disagree about which
+                // ones resolve. A transcendental is deliberately absent
+                // from that table, and stays unfoldable here too.
+                const fold =
+                    foldableMathUnary[unwrapped.expression.name.text];
+                if (fold === undefined) return undefined;
+                const argument = this.evaluateBrowserValue(
+                    unwrapped.arguments[0]!,
+                );
+                return argument?.kind === "number"
+                    ? { kind: "number", value: fold(argument.value) }
+                    : undefined;
+            }
+            const helper =
+                this.evaluateBrowserHelperCall(unwrapped);
+            if (helper !== undefined) return helper;
+        }
+        // A conditional selects between two values the same way `&&` and
+        // `||` above do, and the family that reads a capture pose ends on
+        // one (`Number.isFinite(frame) && frame >= 0 ? frame : null`).
+        // Only the SELECTED arm is evaluated, so an unfoldable arm the
+        // query does not reach costs nothing.
+        if (ts.isConditionalExpression(unwrapped)) {
+            const taken = this.browserTruthy(
+                this.evaluateBrowserValue(unwrapped.condition),
+            );
+            return taken === undefined
+                ? undefined
+                : this.evaluateBrowserValue(
+                      taken ? unwrapped.whenTrue : unwrapped.whenFalse,
+                  );
         }
         return undefined;
     }
@@ -1098,6 +1196,210 @@ export class BrowserErasure {
             case "string":
                 return value.value.length > 0;
         }
+    }
+
+    /**
+     * A module-level helper taking no arguments whose body is a read of
+     * the query the reference pose fixes -- the corpus's
+     * `readCaptureFrame()` / `readCaptureAfterFrames()` / `readSeekTime()`
+     * family, which thirteen pinned scenes define and call exactly once.
+     *
+     * The body is EVALUATED rather than lowered because the query already
+     * answers it: the same three steps that fold when a scene writes them
+     * inline (`new URLSearchParams(location.search)`, `params.get(...)`,
+     * and a guard over the result) do not stop folding because the scene
+     * put a name around them. Without this the call lowers to a native
+     * function whose body IS the folded constant while the call site
+     * stays dynamic, so every branch over the result remains live and a
+     * scene's interactive arm has to compile at a pose the pin never
+     * serves it at.
+     *
+     * Narrow on five counts, each of them a way the answer could be WRONG
+     * rather than merely unavailable:
+     *   - the body must READ browser state. A helper returning the
+     *     program's own constants is ordinary code that this compiler
+     *     lowers as a function, and calling it browser-only would erase a
+     *     call the scene means to make;
+     *   - module level and synchronous, so the body closes over nothing
+     *     whose value depends on when the call is asked about and its
+     *     result is a value rather than a promise;
+     *   - no parameters and no arguments, so there is nothing to bind;
+     *   - not already on the stack, so recursion refuses;
+     *   - and every statement and expression must fold, so a helper
+     *     reaching anything this evaluator does not model answers nothing
+     *     and lowers exactly as it does today.
+     */
+    private evaluateBrowserHelperCall(
+        call: ts.CallExpression,
+    ): Value["browserValue"] | undefined {
+        if (call.arguments.length !== 0) return undefined;
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isIdentifier(callee)) return undefined;
+        const declaration =
+            this.context.moduleFunctionDeclaration(callee);
+        const body = declaration?.body;
+        if (
+            !body ||
+            declaration.parameters.length !== 0 ||
+            declaration.asteriskToken !== undefined ||
+            declaration.modifiers?.some(
+                (modifier) =>
+                    modifier.kind === ts.SyntaxKind.AsyncKeyword,
+            ) ||
+            this.helperBodies.some((frame) => frame.body === body)
+        ) {
+            return undefined;
+        }
+        if (this.helperResults.has(declaration)) {
+            return this.helperResults.get(declaration);
+        }
+        this.helperBodies.push({ body, bindings: new Map() });
+        let result: Value["browserValue"] | undefined;
+        try {
+            if (this.readsBrowserState(body)) {
+                const outcome = this.evaluateBrowserStatements(
+                    body.statements,
+                );
+                result = outcome?.returned ? outcome.value : undefined;
+            }
+        } finally {
+            this.helperBodies.pop();
+        }
+        this.helperResults.set(declaration, result);
+        return result;
+    }
+
+    /**
+     * Whether a helper body reads browser state at all.
+     *
+     * This is the gate that separates a query read from ordinary code:
+     * `function count() { return 4; }` folds under every other rule here,
+     * and answering for it would erase a native call the scene means to
+     * make. Browser state always enters through a name -- `location`,
+     * `window`, `document`, `devicePixelRatio` -- or a member of one, so
+     * those are the nodes asked, and the existing predicate decides.
+     */
+    private readsBrowserState(body: ts.Node): boolean {
+        let reads = false;
+        const visit = (node: ts.Node): void => {
+            if (reads) return;
+            if (
+                (ts.isIdentifier(node) ||
+                    ts.isPropertyAccessExpression(node)) &&
+                this.isBrowserOnlyExpression(node)
+            ) {
+                reads = true;
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(body);
+        return reads;
+    }
+
+    /**
+     * One straight-line slice of a helper body: `const` bindings, an `if`
+     * over a folded condition, and `return`.
+     *
+     * A folded `if` walks only the branch the query selects, which is what
+     * lets the family's second guard read a parameter its first guard has
+     * already proved absent. Running off the end without returning is a
+     * distinct answer from refusing -- a taken `if` whose branch falls
+     * through continues with the statements after it -- so the two are
+     * separate outcomes. Anything else (a loop, a `let`, an assignment, a
+     * call this evaluator cannot answer) refuses, and the helper then
+     * lowers as it does today.
+     */
+    private evaluateBrowserStatements(
+        statements: readonly ts.Statement[],
+    ): HelperOutcome | undefined {
+        for (const statement of statements) {
+            if (ts.isVariableStatement(statement)) {
+                if (
+                    (statement.declarationList.flags &
+                        ts.NodeFlags.Const) === 0
+                ) {
+                    return undefined;
+                }
+                for (const declaration of statement.declarationList
+                    .declarations) {
+                    if (
+                        !ts.isIdentifier(declaration.name) ||
+                        !declaration.initializer
+                    ) {
+                        return undefined;
+                    }
+                    const value = this.evaluateBrowserValue(
+                        declaration.initializer,
+                    );
+                    if (value === undefined) return undefined;
+                    this.helperBodies
+                        .at(-1)
+                        ?.bindings.set(declaration.name.text, value);
+                }
+                continue;
+            }
+            if (ts.isIfStatement(statement)) {
+                const taken = this.browserTruthy(
+                    this.evaluateBrowserValue(statement.expression),
+                );
+                if (taken === undefined) return undefined;
+                const branch = taken
+                    ? statement.thenStatement
+                    : statement.elseStatement;
+                if (!branch) continue;
+                const outcome = this.evaluateBrowserStatements(
+                    ts.isBlock(branch) ? branch.statements : [branch],
+                );
+                if (outcome === undefined || outcome.returned) {
+                    return outcome;
+                }
+                continue;
+            }
+            if (ts.isReturnStatement(statement)) {
+                const value = statement.expression
+                    ? this.evaluateBrowserValue(statement.expression)
+                    : undefined;
+                return value === undefined
+                    ? undefined
+                    : { returned: true, value };
+            }
+            return undefined;
+        }
+        return { returned: false };
+    }
+
+    /**
+     * A `const` bound by the helper body under evaluation.
+     *
+     * Keyed by NAME within one body rather than by symbol, because this
+     * compiler's neighbouring const fold records that the checker hands
+     * back distinct symbol instances for a declaration name and a use of
+     * it, so an identity map misses. A name is unambiguous here: a frame
+     * holds only what its own body declared. What keeps it from answering
+     * for a same-named identifier somewhere else is the containment test
+     * -- resolving a module constant's initializer re-enters this
+     * evaluator with nodes from outside every open body.
+     */
+    private helperBinding(
+        identifier: ts.Identifier,
+    ): Value["browserValue"] | undefined {
+        for (
+            let index = this.helperBodies.length - 1;
+            index >= 0;
+            index--
+        ) {
+            const frame = this.helperBodies[index]!;
+            if (
+                identifier.getSourceFile() ===
+                    frame.body.getSourceFile() &&
+                identifier.pos >= frame.body.pos &&
+                identifier.end <= frame.body.end
+            ) {
+                return frame.bindings.get(identifier.text);
+            }
+        }
+        return undefined;
     }
 
     /**

@@ -2188,6 +2188,7 @@ export type Feature =
   | "physics:world"
   | "physics:aggregate"
   | "physics:trigger"
+  | "physics:floating-origin"
   | "scene:remove"
   // `src/math/normalize-vec3.ts`, which a scene calls directly and the
   // pin's detailed picking imports. Its own row because the header
@@ -2254,6 +2255,7 @@ export type Feature =
   | "sprite:custom-shader"
   | "material:standard-diffuse-render-texture"
   | "material:standard-diffuse-pixels-texture"
+  | "material:standard-diffuse-solid-texture"
   | "material:standard-uv-transform"
   | "material:plugins"
   | "material:plugin-index"

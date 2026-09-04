@@ -31,6 +31,7 @@
 
 #include <btBulletDynamicsCommon.h>
 #include <BulletCollision/CollisionShapes/btConvexPolyhedron.h>
+#include <BulletCollision/CollisionShapes/btBvhTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btConvexTriangleMeshShape.h>
 #include <BulletCollision/CollisionShapes/btTriangleMesh.h>
 
@@ -120,6 +121,13 @@ struct ShapeMaterial {
 };
 
 struct ShapeEntry {
+    /**
+     * The triangle soup a `btBvhTriangleMeshShape` indexes. Bullet's shape
+     * keeps a raw pointer into it, so the soup is owned here and declared
+     * BEFORE the shape: members destroy in reverse declaration order, which
+     * puts the shape's death first. Null for every other shape kind.
+     */
+    std::unique_ptr<btTriangleMesh> triangle_mesh;
     std::unique_ptr<btCollisionShape> shape;
     /**
      * Transform from Bullet's centre-of-mass/principal-axis body frame into
@@ -269,6 +277,14 @@ struct WorldEntry {
      */
     std::vector<HavokBounce> scheduled_bounces;
     std::vector<HavokBounce> active_bounces;
+    /**
+     * `HP_World_GetSpeedLimit` / `HP_World_SetSpeedLimit`. Havok keeps the
+     * ceiling on the world, and the floating-origin module reads one
+     * world's onto another, so it lives here rather than as a file-scope
+     * constant. Seeded with the reached Havok world's own defaults above.
+     */
+    btScalar max_linear_speed = default_max_linear_speed;
+    btScalar max_angular_speed = default_max_angular_speed;
 };
 
 /**
@@ -407,11 +423,26 @@ btScalar speculative_breaking_threshold(
     return std::max(default_breaking_threshold(a, b), approach);
 }
 
+/**
+ * The live entry for a world index, or null. A released world keeps its
+ * slot so no handle is ever recycled, and its emptied entry is what tells a
+ * stale handle apart from a live one -- stated once here because both a
+ * throwing lookup and a falling-back one ask it.
+ */
+WorldEntry* world_or_null(std::uint32_t index) {
+    if (index == 0 || index >= worlds().size() ||
+        worlds()[index].world == nullptr) {
+        return nullptr;
+    }
+    return &worlds()[index];
+}
+
 WorldEntry& world_at(PhysicsWorldHandle handle) {
-    if (handle.value == 0 || handle.value >= worlds().size()) {
+    WorldEntry* entry = world_or_null(handle.value);
+    if (entry == nullptr) {
         throw std::runtime_error("Physics world handle is not live.");
     }
-    return worlds()[handle.value];
+    return *entry;
 }
 
 BodyEntry& body_at(PhysicsBodyHandle handle) {
@@ -443,21 +474,60 @@ void clamp_vector_length(btVector3& value, btScalar maximum) {
     }
 }
 
-void clamp_body_velocity(btRigidBody& body) {
+void clamp_body_velocity(
+    btRigidBody& body,
+    btScalar max_linear,
+    btScalar max_angular) {
     btVector3 linear = body.getLinearVelocity();
     btVector3 angular = body.getAngularVelocity();
-    clamp_vector_length(linear, default_max_linear_speed);
-    clamp_vector_length(angular, default_max_angular_speed);
+    clamp_vector_length(linear, max_linear);
+    clamp_vector_length(angular, max_angular);
     body.setLinearVelocity(linear);
     body.setAngularVelocity(angular);
 }
 
-void clamp_world_velocities(btDiscreteDynamicsWorld& world) {
+/**
+ * The ceiling in force for one body: its world's, or the reached Havok
+ * defaults while it belongs to none. A body is created before
+ * `HP_World_AddBody` places it, and an impulse can reach it there.
+ */
+PhysicsSpeedLimit body_speed_limit(const BodyEntry& entry) {
+    const WorldEntry* world_entry = world_or_null(entry.world);
+    if (world_entry != nullptr) {
+        return PhysicsSpeedLimit{
+            static_cast<double>(world_entry->max_linear_speed),
+            static_cast<double>(world_entry->max_angular_speed)};
+    }
+    return PhysicsSpeedLimit{
+        static_cast<double>(default_max_linear_speed),
+        static_cast<double>(default_max_angular_speed)};
+}
+
+/**
+ * Clamp a body to the ceiling in force for it, resolved from its world.
+ * The three write-time entry points that can raise a speed all want this
+ * exact pair, and the limit is a wire type in doubles that Bullet takes as
+ * `btScalar` -- so the conversion lives here rather than at each call.
+ */
+void clamp_body_velocity(const BodyEntry& entry) {
+    if (entry.body == nullptr) {
+        return;
+    }
+    const PhysicsSpeedLimit limit = body_speed_limit(entry);
+    clamp_body_velocity(
+        *entry.body,
+        static_cast<btScalar>(limit.max_linear),
+        static_cast<btScalar>(limit.max_angular));
+}
+
+void clamp_world_velocities(WorldEntry& entry) {
+    btDiscreteDynamicsWorld& world = *entry.world;
     for (int i = 0; i < world.getNumCollisionObjects(); ++i) {
         btRigidBody* body = btRigidBody::upcast(
             world.getCollisionObjectArray()[i]);
         if (body != nullptr && !body->isStaticOrKinematicObject()) {
-            clamp_body_velocity(*body);
+            clamp_body_velocity(
+                *body, entry.max_linear_speed, entry.max_angular_speed);
         }
     }
 }
@@ -1078,13 +1148,14 @@ PhysicsShapeHandle push_shape(
     std::unique_ptr<btCollisionShape> shape,
     btTransform node_from_body,
     PhysicsMassProperties mass_properties = {},
-    bool has_exact_mass_properties = false) {
-    ShapeEntry entry{
-        std::move(shape),
-        node_from_body,
-        mass_properties,
-        has_exact_mass_properties,
-        {}};
+    bool has_exact_mass_properties = false,
+    std::unique_ptr<btTriangleMesh> triangle_mesh = nullptr) {
+    ShapeEntry entry{};
+    entry.triangle_mesh = std::move(triangle_mesh);
+    entry.shape = std::move(shape);
+    entry.node_from_body = node_from_body;
+    entry.mass_properties = mass_properties;
+    entry.has_exact_mass_properties = has_exact_mass_properties;
     entry.contact_breaking_threshold =
         entry.shape->getContactBreakingThreshold(gContactBreakingThreshold);
     entry.motion_disc = entry.shape->getAngularMotionDisc();
@@ -1189,6 +1260,22 @@ void physics_world_set_gravity(
     world_at(world).world->setGravity(to_bt(gravity));
 }
 
+PhysicsSpeedLimit physics_world_get_speed_limit(PhysicsWorldHandle world) {
+    const WorldEntry& entry = world_at(world);
+    return PhysicsSpeedLimit{
+        static_cast<double>(entry.max_linear_speed),
+        static_cast<double>(entry.max_angular_speed)};
+}
+
+void physics_world_set_speed_limit(
+    PhysicsWorldHandle world,
+    double max_linear,
+    double max_angular) {
+    WorldEntry& entry = world_at(world);
+    entry.max_linear_speed = static_cast<btScalar>(max_linear);
+    entry.max_angular_speed = static_cast<btScalar>(max_angular);
+}
+
 void physics_world_add_body(
     PhysicsWorldHandle world,
     PhysicsBodyHandle body,
@@ -1197,6 +1284,57 @@ void physics_world_add_body(
     entry.world = world.value;
     entry.start_asleep = start_asleep;
     mark_body_dirty(entry);
+}
+
+void physics_world_remove_body(
+    PhysicsWorldHandle world,
+    PhysicsBodyHandle body) {
+    BodyEntry& entry = body_at(body);
+    if (entry.world != world.value) {
+        return;
+    }
+    // Eagerly, not through `needs_readd`: the caller adds the body to a
+    // DIFFERENT world in the same breath, and a deferred removal would run
+    // against that new world's `btDiscreteDynamicsWorld` instead.
+    if (entry.in_world && entry.body != nullptr) {
+        world_at(world).world->removeRigidBody(entry.body.get());
+    }
+    entry.in_world = false;
+    entry.needs_readd = false;
+    entry.world = 0;
+}
+
+void physics_world_release(PhysicsWorldHandle world) {
+    WorldEntry& entry = world_at(world);
+    // The header states that a released world holds no bodies, and the one
+    // caller honours it. Detaching any that remain goes through
+    // `physics_world_remove_body` rather than restating it, so the two
+    // cannot drift about what detaching means; a handle IS the body table
+    // index, which is what lets this address them.
+    for (std::size_t index = 0; index < bodies().size(); ++index) {
+        if (bodies()[index].world == world.value) {
+            physics_world_remove_body(
+                world,
+                PhysicsBodyHandle{static_cast<std::uint32_t>(index)});
+        }
+    }
+    // Reset in reverse declaration order: `btDiscreteDynamicsWorld` holds
+    // raw pointers to the dispatcher, broadphase, solver and configuration
+    // it was built from, so it has to die before any of them. A whole-entry
+    // assignment would move-assign the members in DECLARATION order and
+    // destroy the configuration first.
+    entry.world.reset();
+    entry.solver.reset();
+    entry.broadphase.reset();
+    entry.dispatcher.reset();
+    entry.configuration.reset();
+    entry.previous_contacts.clear();
+    entry.collision_events.clear();
+    entry.previous_triggers.clear();
+    entry.current_triggers.clear();
+    entry.trigger_events.clear();
+    entry.scheduled_bounces.clear();
+    entry.active_bounces.clear();
 }
 
 void physics_world_step(PhysicsWorldHandle world, double seconds) {
@@ -1219,7 +1357,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
     flush_pending_readds(entry, world.value);
     // An impulse is clamped at its write below. This pass also covers any
     // velocity written by another reached body operation before this step.
-    clamp_world_velocities(*entry.world);
+    clamp_world_velocities(entry);
     const auto flush_end =
         cpu_profile ? ProfileClock::now() : ProfileClock::time_point{};
 
@@ -1250,7 +1388,7 @@ void physics_world_step(PhysicsWorldHandle world, double seconds) {
     // Contacts can add velocity inside Bullet's solver. Havok's body limits
     // remain invariant after a step, so make that invariant observable here
     // too before transforms and counters are read.
-    clamp_world_velocities(*entry.world);
+    clamp_world_velocities(entry);
     collect_collision_events(entry);
     collect_trigger_events(entry);
     const int stabilized_bodies =
@@ -1556,6 +1694,43 @@ PhysicsShapeHandle physics_shape_create_convex_hull(
         true);
 }
 
+PhysicsShapeHandle physics_shape_create_mesh(
+    const std::vector<std::array<double, 3>>& positions,
+    const std::vector<std::uint32_t>& indices) {
+    // The pin hands Havok two heap buffers and lets it index one with the
+    // other. Bullet's equivalent that owns its own storage is
+    // `btTriangleMesh`, which takes a triangle at a time, so the indexing
+    // happens here instead of inside the back end.
+    auto triangles = std::make_unique<btTriangleMesh>();
+    for (std::size_t i = 0; i + 2 < indices.size(); i += 3) {
+        const std::uint32_t a = indices[i];
+        const std::uint32_t b = indices[i + 1];
+        const std::uint32_t c = indices[i + 2];
+        if (a >= positions.size() || b >= positions.size() ||
+            c >= positions.size()) {
+            throw std::runtime_error(
+                "A physics mesh shape has a triangle index outside its "
+                "vertex list.");
+        }
+        triangles->addTriangle(
+            to_bt(positions[a]), to_bt(positions[b]), to_bt(positions[c]));
+    }
+    if (triangles->getNumTriangles() == 0) {
+        throw std::runtime_error(
+            "Cannot create physics mesh shape without triangle indices.");
+    }
+    // `buildBvh` is what makes the soup queryable: every ray test and every
+    // contact against it walks that tree, and the shape owns it.
+    auto shape = std::make_unique<btBvhTriangleMeshShape>(
+        triangles.get(), true);
+    return push_shape(
+        std::move(shape),
+        btTransform::getIdentity(),
+        PhysicsMassProperties{},
+        false,
+        std::move(triangles));
+}
+
 void physics_shape_set_material(
     PhysicsShapeHandle shape,
     const PhysicsShapeMaterial& material) {
@@ -1652,6 +1827,37 @@ PhysicsBodyHandle physics_body_create() {
         static_cast<std::uint32_t>(body_index)};
 }
 
+/**
+ * The one concave shape kind this file builds. `isConcave()` is the rule
+ * Bullet states but the wrong question to ask here: Bullet's own empty
+ * placeholder shape sits inside the concave range too, and every body wears
+ * that between `HP_Body_Create` and `HP_Body_SetShape`.
+ */
+bool is_triangle_mesh_shape(const btCollisionShape& shape) {
+    return shape.getShapeType() == TRIANGLE_MESH_SHAPE_PROXYTYPE;
+}
+
+/**
+ * A triangle-mesh shape cannot be worn by a body the solver moves: Bullet
+ * answers no inertia tensor for a concave shape and detects no
+ * concave-concave contact, which is the case it documents as unsupported.
+ * Havok has no such rule -- it simulates a mesh shape on a dynamic body --
+ * so this is a substituted-solver refusal and says so, rather than
+ * simulating something the pin did not describe. Every reached scene builds
+ * its mesh shapes for static colliders. `docs/fidelity.md#physics-contract`.
+ */
+void reject_moving_triangle_mesh_shape(
+    const btCollisionShape& shape,
+    const btRigidBody& body) {
+    if (!is_triangle_mesh_shape(shape) || body.isStaticOrKinematicObject()) {
+        return;
+    }
+    throw std::runtime_error(
+        "A triangle-mesh physics shape on a dynamic body is not lowered "
+        "by this prototype; Bullet does not simulate a moving concave "
+        "shape.");
+}
+
 void physics_body_set_motion_type(
     PhysicsBodyHandle body,
     PhysicsMotionType motion_type) {
@@ -1672,6 +1878,11 @@ void physics_body_set_motion_type(
             break;
     }
     entry.body->setCollisionFlags(flags);
+    // The pin sets the motion type before the shape, so this arm catches a
+    // LATER `setPhysicsBodyMotionType` that would set a mesh collider
+    // moving; `physics_body_set_shape` catches the pin's own order.
+    reject_moving_triangle_mesh_shape(
+        *entry.body->getCollisionShape(), *entry.body);
     mark_body_dirty(entry);
 }
 
@@ -1680,6 +1891,7 @@ void physics_body_set_shape(
     PhysicsShapeHandle shape) {
     BodyEntry& entry = body_at(body);
     ShapeEntry& shape_entry = shape_at(shape);
+    reject_moving_triangle_mesh_shape(*shape_entry.shape, *entry.body);
     entry.shape = shape.value;
     entry.node_from_body = shape_entry.node_from_body;
     entry.body->setCollisionShape(shape_entry.shape.get());
@@ -1741,8 +1953,16 @@ PhysicsMassProperties physics_shape_build_mass_properties(
             static_cast<btScalar>(properties.inertia[1]),
             static_cast<btScalar>(properties.inertia[2]));
     } else {
-        shape_entry.shape->calculateLocalInertia(
-            static_cast<btScalar>(mass), inertia);
+        // A triangle-mesh shape answers `calculateLocalInertia` with an
+        // assertion and a zeroed tensor, because a moving concave body is
+        // what Bullet does not support. One only ever reaches here on a
+        // static or kinematic body -- `reject_moving_triangle_mesh_shape`
+        // is why -- and the solver reads no inertia for either, so the
+        // zero it would return is taken without asking.
+        if (!is_triangle_mesh_shape(*shape_entry.shape)) {
+            shape_entry.shape->calculateLocalInertia(
+                static_cast<btScalar>(mass), inertia);
+        }
         properties.mass = mass;
         properties.inertia = {
             inertia.x(), inertia.y(), inertia.z()};
@@ -1805,7 +2025,7 @@ void physics_body_apply_impulse(
         to_bt(location) - entry.body->getCenterOfMassPosition();
     entry.body->applyImpulse(to_bt(impulse), relative);
     entry.contact_quiet_seconds = 0.0;
-    clamp_body_velocity(*entry.body);
+    clamp_body_velocity(entry);
     if (!entry.body->isStaticObject()) entry.body->activate(true);
     static const bool cpu_profile = [] {
         const char* value = std::getenv("BBLITE_CPU_PROFILE");
@@ -1832,6 +2052,30 @@ std::array<double, 3> physics_body_get_linear_velocity(
     PhysicsBodyHandle body) {
     const btVector3 velocity = body_at(body).body->getLinearVelocity();
     return {velocity.x(), velocity.y(), velocity.z()};
+}
+
+std::array<double, 3> physics_body_get_angular_velocity(
+    PhysicsBodyHandle body) {
+    const btVector3 velocity = body_at(body).body->getAngularVelocity();
+    return {velocity.x(), velocity.y(), velocity.z()};
+}
+
+void physics_body_set_linear_velocity(
+    PhysicsBodyHandle body,
+    std::array<double, 3> velocity) {
+    BodyEntry& entry = body_at(body);
+    entry.body->setLinearVelocity(to_bt(velocity));
+    // The same ceiling an impulse write is subject to: Havok applies its
+    // world limit at the write rather than at the step.
+    clamp_body_velocity(entry);
+}
+
+void physics_body_set_angular_velocity(
+    PhysicsBodyHandle body,
+    std::array<double, 3> velocity) {
+    BodyEntry& entry = body_at(body);
+    entry.body->setAngularVelocity(to_bt(velocity));
+    clamp_body_velocity(entry);
 }
 
 void physics_body_set_collision_events_enabled(

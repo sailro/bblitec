@@ -912,7 +912,7 @@ test("the new families' generation refusals are inventoried", () => {
     assert.equal(physics.mechanism, "generation-refusal");
     assert.match(
         physics.activatedBy,
-        /^checked: every reached physics aggregate/,
+        /^checked: every reached physics shape/,
     );
     assert.match(physics.upstreamProvenance, /havok\.ts/);
 
@@ -935,7 +935,7 @@ test("the new families' generation refusals are inventoried", () => {
     const off = featureActivationRows(scene33Inputs());
     assert.equal(
         named(off, "refusal:physics-shapes").activatedBy,
-        "no physics aggregates to check",
+        "no physics shapes to check",
     );
     assert.equal(
         named(off, "refusal:ktx-format").activatedBy,

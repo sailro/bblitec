@@ -2131,6 +2131,9 @@ ${composed.wgsl}`,
                 pixels: features.includes(
                     "material:standard-diffuse-pixels-texture",
                 ),
+                solid: features.includes(
+                    "material:standard-diffuse-solid-texture",
+                ),
                 diffuseFile: features.includes(
                     "material:standard-diffuse-file-texture",
                 ),

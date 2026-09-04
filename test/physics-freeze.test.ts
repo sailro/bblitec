@@ -35,6 +35,14 @@ function sceneWith(body: string, search?: string): string {
             const value = params.get("captureFrame");
             return value === null ? null : Number(value);
         }
+        function readFramesUnsettled(): number | null {
+            let frames: number | null = null;
+            const params = new URLSearchParams(window.location.search);
+            if (params.get("captureFrame") !== null) {
+                frames = 120;
+            }
+            return frames;
+        }
         async function main(): Promise<void> {
             const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
             const engine = await createEngine(canvas);
@@ -44,6 +52,12 @@ function sceneWith(body: string, search?: string): string {
             sphere.material = createStandardMaterial();
             addToScene(scene, sphere);
             const captureAfterFrames = readFrames();
+            // The two readers differ only in whether browser erasure can
+            // settle them. readFrames is the corpus's own shape and folds
+            // to the query's answer; readFramesUnsettled reaches a let the
+            // fold does not model, so its result stays a run-time nullable
+            // and the guard contracts below still have one to narrow.
+            const unsettledFrames = readFramesUnsettled();
             let simulatedFrames = 0;
             ${body}
             await registerScene(scene);
@@ -88,9 +102,11 @@ test("a scene freezes itself: setTimeout defers, stopEngine stops", () => {
     assert.match(main, /bbl::defer_callback\(v_engine, \[&\]\(\) \{/);
     assert.match(main, /bbl::stop_engine\(v_engine\)/);
     assert.doesNotMatch(main, /captureReady/);
-    // The guarded nullable reads as the number the checker narrowed it to.
-    assert.match(main, /v_captureAfterFrames\.has_value\(\)/);
-    assert.match(main, /v_simulatedFrames >= \(\*v_captureAfterFrames\)/);
+    // The step the capture is pinned at is the query's own answer: the
+    // reader folds, so the guard over its result and the dereference both
+    // go with it and the frame counter compares against the number.
+    assert.doesNotMatch(main, /v_captureAfterFrames/);
+    assert.match(main, /v_simulatedFrames >= 120\.0/);
 });
 
 test("a non-zero setTimeout delay uses the elapsed-time queue", () => {
@@ -123,21 +139,36 @@ test("a deferred callback cannot capture the frame that queued it", () => {
 test("an early return preserves its guard before a narrowed optional use", () => {
     const main = sceneWith(
         `onBeforeRender(scene, () => {
-            if (captureAfterFrames === null) { return; }
-            sphere.position.set(0, captureAfterFrames, 0);
+            if (unsettledFrames === null) { return; }
+            sphere.position.set(0, unsettledFrames, 0);
         });`,
     );
     assert.match(
         main,
-        /if \(!v_captureAfterFrames\.has_value\(\)\) \{\s*return;\s*\}/,
+        /if \(!v_unsettledFrames\.has_value\(\)\) \{\s*return;\s*\}/,
     );
-    assert.match(main, /\*v_captureAfterFrames/);
+    assert.match(main, /\*v_unsettledFrames/);
+});
+
+test("a settled guard ends the callback body it returns from", () => {
+    // The other side of the same guard. Once the reader folds, the early
+    // return is taken at generation and what follows is unreachable, so it
+    // must not be lowered: a narrowed optional past a guard the query
+    // already answered has no native value to read.
+    const main = sceneWith(
+        `onBeforeRender(scene, () => {
+            if (captureAfterFrames === null) { return; }
+            sphere.position.set(0, captureAfterFrames, 0);
+        });`,
+    );
+    assert.doesNotMatch(main, /v_captureAfterFrames/);
+    assert.doesNotMatch(main, /position\.set|\.position =/);
 });
 
 test("an unguarded nullable still refuses rather than dereferencing", () => {
     refuses(
         `onBeforeRender(scene, () => {
-            sphere.position.set(0, captureAfterFrames, 0);
+            sphere.position.set(0, unsettledFrames, 0);
         });`,
         "Expected number, received data",
     );

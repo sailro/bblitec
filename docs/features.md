@@ -82,7 +82,7 @@ and samplers are built at upload. Each of those is foldable and stays live.
 | [Deformation and instancing](#deformation-and-instancing) | Run | GPU skinning, baked vertex animation, morph targets, storage morphing, GPU instancing |
 | [Sprites](#sprites) | Run | frame derivation, per-sprite instances, the pure-2D pass, world-space facing billboards, per-layer custom fragment shaders |
 | [Node particles](#node-particles) | Compile | a graph's CPU simulation run by the pin at generation and its particle state baked; the billboard or pure-2D bridge that draws it is folded |
-| [Physics](#physics) | Run | rigid bodies, primitive and convex-hull shapes, trigger volumes, one fixed step per frame — over a substituted solver |
+| [Physics](#physics) | Run | rigid bodies, primitive, convex-hull and static triangle-mesh shapes, trigger volumes, one fixed step per frame — over a substituted solver |
 | [Audio](#audio) | Compile → Run | packaged encoded clips decoded into Web Audio buffers; the reached graph and parameters run over a substituted engine |
 | [Shadows](#shadows) | Compile → Run | the receiver fragment composed per shadow-casting light at generation; the caster pass, the map and the comparison sampling at run time |
 | [Frame graph](#frame-graph) | Run | render targets, tasks, geometry MRTs, blits, MSAA resolve |
@@ -271,7 +271,15 @@ analyzable entry file against one engine.
   timing, and dataset instrumentation are erased, and every `await` on a
   materialized asset resolves immediately. `window.location.search` reads as
   the query the scene's reference pose is captured at, so a scene that
-  branches on one takes the branch its golden was captured under.
+  branches on one takes the branch its golden was captured under. A
+  module-level helper taking no arguments whose whole body that query
+  answers — the pinned `readCaptureFrame()` / `readCaptureAfterFrames()` /
+  `readSeekTime()` family — folds to its result at the call site, so
+  wrapping the read in a name does not keep the branches over it live. The
+  body must READ browser state and must stay inside the folded slice
+  (`const` bindings, an `if` over a folded condition, and `return`); a
+  helper returning the program's own constants, or reaching anything else,
+  lowers as an ordinary function.
   Locals bound from optional DOM lookups retain their browser-only identity,
   so property writes and calls on them erase without discarding adjacent
   native state changes in the same helper.
@@ -1291,23 +1299,30 @@ second rebuild because `startEngine` has not created the GPU material views
 yet. The same call after startup refuses rather than pretending to replace
 live resources.
 
-A Standard `diffuseTexture` takes three sources, because upstream has one
+A Standard `diffuseTexture` takes four sources, because upstream has one
 `Texture2D` whatever built it. A colour render target is how one pass
 displays another's output: the pin hands the attachment back carrying
 `invertY: true`, so the slot samples V-flipped through the material's UV
 block (the flip contract is in [fidelity](fidelity.md#shader-contract)). A
 `createTexture2DFromPixels` texture copies its texels, sampler and
 texture-object properties across, and the already-decoded arm of the shared
-upload reads them through. A loaded image — ordinary, KTX or transcoded Basis
-— travels whole, because the sampler, the upload flip and the texture-object
-`invertY` the UV block reads belong to the texture, not the slot.
+upload reads them through. A `createSolidTexture2D` texel takes that same
+already-decoded arm at 1×1, restating the pinned factory's own
+`getBilinearSampler` and its clamp-to-edge defaults; it carries no `invertY`
+property, so the UV block does not flip. A loaded image — ordinary, KTX or
+transcoded Basis — travels whole, because the sampler, the upload flip and
+the texture-object `invertY` the UV block reads belong to the texture, not
+the slot.
 `setStandardEmissiveTexture` takes an image too, and the composed variant
 follows: only a render target carries the pin's `_sampleType === "depth"`,
 which selects the extension's unfilterable-float binding. Three sources
 refuse by name with a source location: a depth-only render target (wrong
 *aspect* — that arm takes the opposite flip and a different sampler), a
 geometry task's attachment (wrong *source*, owned by a pass), and an image
-setting its own `srgb` option (wrong *encoding*, which is the family's).
+setting its own `srgb` option (wrong *encoding*, which is the family's). A
+solid texel answers none of those three: it has no attachment aspect, the
+scene made it from its own engine, and the pinned factory hard-codes
+`rgba8unorm` with no encoding option to disagree about.
 
 **A PBR lightmap is an opt-in extension, and the opt-in is the reach.**
 `enablePbrLightmap()` registers the pinned extension and `setPbrLightmap`
@@ -2210,8 +2225,11 @@ The reached slice: `createHavokWorld` with an explicit or defaulted gravity;
 `createPhysicsAggregate` over the four primitive shapes that
 `createPrimitivePhysicsShapeHandle` builds without a mesh (sphere, box,
 capsule, cylinder), plus mesh-derived convex hulls with child geometry;
-`createPhysicsShape` for either one — a primitive from an explicit
-`parameters` bag, or the convex hull of a `mesh` — wired onto a body with
+`createPhysicsShape` for any of them — a primitive from an explicit
+`parameters` bag, or, from a `mesh`, either the convex hull of its points or
+the triangle soup itself, which is the pin's own `collectIndices` fork and is
+static-only here because Bullet does not move a concave shape — wired onto a
+body with
 `createPhysicsBody` and `setPhysicsBodyShape`, where the body follows a mesh
 or a bare transform node exactly as the pin's `SceneNode` does;
 `mass`, `friction`, `restitution`, `startAsleep` — the pin hands that last one
@@ -2246,10 +2264,27 @@ the frame conductor reads and the next-turn callback it drains after the
 frame's own callbacks. Racer additionally exercises real-delay recursive
 timers while its physics remains live.
 
+**`enableHavokFloatingOrigin` opts a world into multi-region simulation.**
+Upstream loads that module with a dynamic `import()` from inside the call, so
+the call itself is the opt-in and nothing sniffs engine options to find it. A
+region is a second solver world with a fixed world-space origin, and a body
+inside one is stored at `position - origin` — small even when the node sits at
+5e6, which is where a float32 solver otherwise loses the low bits. The node
+keeps true world coordinates throughout, so the eye-relative render path
+`useFloatingOrigin` selects is untouched. A floating-origin world REPLACES the
+single-world frame rather than extending it: bodies are re-based before
+anything else, every region is stepped, the pre-step sync has no prestep-type
+gate, and the after-step hooks do not run — all four are the pin's own
+`_step`. A body that drifts past `radius * 1.2` migrates to the region that
+holds it, or to a new one centred on it, carrying its linear and angular
+velocity; a region no body is left in is released the same step. The call must
+precede body creation, exactly as upstream documents.
+
 Everything else in the pinned physics layer refuses at generation naming
-what it reached: triangle-mesh shapes, containers, heightfields, constraints,
+what it reached: containers, heightfields, constraints,
 a shape or aggregate `rotation` parameter, `onPhysicsTriggerBodies`, the
-character controller, the debug viewer, floating origin, an explicit centre
+character controller, the debug viewer, per-region gravity
+(`setPhysicsGravity` with a `worldPosition`), an explicit centre
 of mass, and
 the body controls and query options not listed above.
 
