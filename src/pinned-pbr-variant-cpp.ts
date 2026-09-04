@@ -28,6 +28,7 @@ import {
     pinnedNumericConstant,
     type PinnedStandardVariantManifestEntry,
 } from "./pinned-standard-variants.js";
+import { packagedWgsl } from "./pinned-wgsl-build.js";
 
 /**
  * The float lanes a scalar or vector UBO field spans, shared by the PBR and
@@ -2823,11 +2824,11 @@ export function pinnedStandardVariantsHeader(
     if (
         !context.store.getSource(
             "src/material/standard/standard-template.ts",
-        ).includes("struct upUniforms{u:vec4<f32>,}")
+        ).includes(packagedWgsl`struct upUniforms { u: vec4<f32>, }`)
     ) {
         throw new Error(
             "Pinned Standard template no longer declares the " +
-                "`struct upUniforms{u:vec4<f32>,}` block " +
+                "`struct upUniforms { u: vec4<f32>, }` block " +
                 "writeStandardUvTransformData fills.",
         );
     }

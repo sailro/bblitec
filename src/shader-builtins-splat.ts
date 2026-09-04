@@ -38,17 +38,19 @@ import {
     pinnedSplatModuleWgsl,
     type PinnedSplatShModule,
 } from "./pinned-splat-fragments.js";
+import { packagedWgsl } from "./pinned-wgsl-build.js";
 
 /**
  * What one pinned splat module spells its shared declarations as.
  *
  * The two the pin ships are not one text with a flag: the stock module is a
- * packaged string the bundler minified (`struct S`, `var<uniform> u:S`,
+ * `?raw` file miniray minified (`struct S`, `var<uniform> u:S`,
  * `@vertex fn vs(`), while the SH module is BUILT by
- * `buildShShaderSource` and keeps its source formatting (`struct U`,
- * `var<uniform> u: U;`, `@vertex` on its own line). The split is the same
- * operation over both, so the anchors travel as data and the splitter is
- * written once -- a second copy of it would agree until one module moved.
+ * `buildShShaderSource` from tagged templates, so its declarations carry
+ * the build step's spelling and the anchors below are spelled from source
+ * and packaged the same way. The split is the same operation over both, so
+ * the anchors travel as data and the splitter is written once -- a second
+ * copy of it would agree until one module moved.
  */
 interface SplatShaderDialect {
     /** The uniform block's own `struct` head. */
@@ -65,6 +67,9 @@ interface SplatShaderDialect {
     anchors: readonly string[];
 }
 
+// The stock module is a `?raw` `.wgsl` file, which the package minifies
+// through miniray rather than the tagged build step: these anchors keep
+// miniray's own spelling as plain literals.
 const STOCK_DIALECT: SplatShaderDialect = {
     uniformStruct: "struct S{",
     varyingStruct: "struct A{",
@@ -85,26 +90,26 @@ const STOCK_DIALECT: SplatShaderDialect = {
 };
 
 const SH_DIALECT: SplatShaderDialect = {
-    uniformStruct: "struct U{",
-    varyingStruct: "struct VOut{",
-    uniformDeclaration: "var<uniform>u:U",
-    vertexEntry: "@vertex fn vs(",
-    fragmentEntry: "@fragment fn fs(",
+    uniformStruct: packagedWgsl`struct U {`,
+    varyingStruct: packagedWgsl`struct VOut {`,
+    uniformDeclaration: packagedWgsl`var<uniform> u: U`,
+    vertexEntry: packagedWgsl`@vertex\nfn vs(`,
+    fragmentEntry: packagedWgsl`@fragment\nfn fs(`,
     anchors: [
-        "@group(1)@binding(0)var<uniform>u:U;",
-        "@group(1)@binding(1)var samp:sampler;",
-        "@group(1)@binding(2)var centersTex:texture_2d<f32>;",
-        "@group(1)@binding(3)var covATex:texture_2d<f32>;",
-        "@group(1)@binding(4)var covBTex:texture_2d<f32>;",
-        "@group(1)@binding(5)var colorsTex:texture_2d<f32>;",
+        packagedWgsl`@group(1) @binding(0) var<uniform> u: U;`,
+        packagedWgsl`@group(1) @binding(1) var samp: sampler;`,
+        packagedWgsl`@group(1) @binding(2) var centersTex: texture_2d<f32>;`,
+        packagedWgsl`@group(1) @binding(3) var covATex: texture_2d<f32>;`,
+        packagedWgsl`@group(1) @binding(4) var covBTex: texture_2d<f32>;`,
+        packagedWgsl`@group(1) @binding(5) var colorsTex: texture_2d<f32>;`,
         // The one binding the stock module has no counterpart for, and the
         // reason the SH arm exists: the view-dependent colour is loaded
         // from packed unsigned texels in the VERTEX stage.
-        "@group(1)@binding(6)var shTexture0:texture_2d<u32>;",
-        "eyePosition:vec3<f32>",
-        "@vertex fn vs(",
-        "@fragment fn fs(",
-        "@builtin(position)pos:vec4<f32>",
+        packagedWgsl`@group(1) @binding(6) var shTexture0: texture_2d<u32>;`,
+        packagedWgsl`eyePosition: vec3<f32>`,
+        packagedWgsl`@vertex\nfn vs(`,
+        packagedWgsl`@fragment\nfn fs(`,
+        packagedWgsl`@builtin(position) pos: vec4<f32>`,
     ],
 };
 

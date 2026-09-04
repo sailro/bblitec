@@ -25,6 +25,7 @@
  */
 import type { LoweringContext } from "./context.js";
 import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
+import { packagedWgsl } from "../pinned-wgsl-build.js";
 
 const PBR_TEMPLATE_MODULE = "src/material/pbr/pbr-template.ts";
 const STANDARD_TEMPLATE_MODULE = "src/material/standard/standard-template.ts";
@@ -33,7 +34,9 @@ const STANDARD_TEMPLATE_MODULE = "src/material/standard/standard-template.ts";
  * The pinned vertex-stage lines the emitted pair restates in C++. The
  * templates build WGSL out of string literals, so the contract is textual:
  * the position multiply, the direction multiply, and the Standard basis
- * that spells the same three columns as a `mat3x3`.
+ * that spells the same three columns as a `mat3x3`. Spelled as the pin's
+ * source spells them, packaged by its own build step; the `${...}` are the
+ * templates' own placeholders, kept for the pin's text to carry.
  */
 const PINNED_STAGE_MARKERS: readonly (readonly [
     string,
@@ -42,19 +45,17 @@ const PINNED_STAGE_MARKERS: readonly (readonly [
 ])[] = [
     [
         PBR_TEMPLATE_MODULE,
-        "let worldPos4=finalWorld*vec4<f32>(" + "${posVar},1.0);",
+        packagedWgsl`let worldPos4 = finalWorld * vec4<f32>(\${posVar}, 1.0);`,
         "vertex-stage position multiply",
     ],
     [
         PBR_TEMPLATE_MODULE,
-        "out.worldNormal=(finalWorld*vec4<f32>(normalize(" +
-            "${normVar}),0.0)).xyz;",
+        packagedWgsl`out.worldNormal = (finalWorld * vec4<f32>(normalize(\${normVar}), 0.0)).xyz;`,
         "vertex-stage direction multiply",
     ],
     [
         STANDARD_TEMPLATE_MODULE,
-        "let normalWorld=mat3x3<f32>(finalWorld[0].xyz," +
-            "finalWorld[1].xyz,finalWorld[2].xyz);",
+        packagedWgsl`let normalWorld = mat3x3<f32>(finalWorld[0].xyz, finalWorld[1].xyz, finalWorld[2].xyz);`,
         "Standard world basis",
     ],
 ];

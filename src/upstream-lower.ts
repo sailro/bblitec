@@ -256,6 +256,7 @@ import type {
     GeometryOutputTaskManifest,
     PostProcessTaskManifest,
 } from "./compiler.js";
+import { packagedWgsl } from "./pinned-wgsl-build.js";
 
 /**
  * What a scene reached, as the emitters need to see it. Named once
@@ -3117,7 +3118,7 @@ export function dawnUtilityShaders(
         "common",
     );
     const ipStruct = "struct P{e:f32,c:f32,t:f32,p:f32}";
-    const ipBinding = "@group(0)@binding(0)var<uniform>p:P;";
+    const ipBinding = packagedWgsl`@group(0)@binding(0)var<uniform> p:P;`;
     if (
         !common.includes(ipStruct) ||
         !common.includes(ipBinding)

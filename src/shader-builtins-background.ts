@@ -16,6 +16,7 @@ import {
     extractPackagedTemplateLiteral,
 } from "./pinned-shader-composer.js";
 import { formatStatements, rehomeText } from "./shader-builtins-utility.js";
+import { packagedWgsl } from "./pinned-wgsl-build.js";
 
 /**
  * The shared model vertex output every background fragment consumes. The
@@ -93,7 +94,7 @@ export function readPinnedDitherWgsl(
         "utf8",
     );
     const dither = extractPackagedTemplateLiteral(helpers, "WGSL_DITHER");
-    for (const marker of ["fn dither(", "12.9898,78.233", "43758.5453"]) {
+    for (const marker of ["fn dither(", packagedWgsl`12.9898, 78.233`, "43758.5453"]) {
         if (!dither.includes(marker)) {
             backgroundLiftError(`dither helper (WGSL_DITHER '${marker}')`);
         }
@@ -278,7 +279,7 @@ export function backgroundGroundFragmentWgsl(
     );
     if (
         !pinned.imageProcessing.includes(
-            "fn applyImageProcessing(result:vec4<f32>)->vec4<f32>",
+            packagedWgsl`fn applyImageProcessing(result: vec4<f32>) -> vec4<f32>`,
         )
     ) {
         backgroundLiftError("ground applyImageProcessing declaration");

@@ -71,6 +71,7 @@ import {
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { packagedWgsl } from "../pinned-wgsl-build.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -99,7 +100,7 @@ function assertPinnedFogInfosOrder(): void {
     for (const [component, pinnedName] of pinnedFogInfoComponentReads) {
         if (
             !fog.includes(
-                `let ${pinnedName}=scene.vFogInfos.${component};`,
+                packagedWgsl`let ${pinnedName} = scene.vFogInfos.${component};`,
             )
         ) {
             throw new Error(
@@ -187,6 +188,9 @@ function liftedImageSkyboxWgsl(): LiftedImageSkybox {
         module,
         "skyFragSrc",
     );
+    // These anchors are over `?raw` `.wgsl` files, which the package
+    // minifies through miniray rather than the tagged build step, so
+    // they keep miniray's own spelling as plain literals.
     const vertexContracts: ReadonlyArray<readonly [string, string]> = [
         ["struct e{world:mat4x4<f32>}", "skybox-cubemap mesh block"],
         [
@@ -3280,18 +3284,18 @@ ${lifted.fragmentBody}
             [pbr, "0.5/(gl+gv)", "Smith geometry"],
             [pbr, "luminanceOverAlpha+=dot", "transparent alpha luminance"],
             [pbr, "finalAlpha=saturate", "transparent alpha fold"],
-            [pbrExt, "baseColor*=input.vColor.rgb", "vertex color base color"],
-            [pbrExt, "alpha*=input.vColor.a", "vertex color alpha"],
+            [pbrExt, packagedWgsl`baseColor *= input.vColor.rgb`, "vertex color base color"],
+            [pbrExt, packagedWgsl`alpha *= input.vColor.a`, "vertex color alpha"],
             [pbrHelper, "1.590579", "image-processing calibration"],
-            [ibl, "log2(cubemapDim*alphaG)*scene.vImageInfos.z", "IBL mip selection"],
+            [ibl, packagedWgsl`log2(cubemapDim * alphaG) * scene.vImageInfos.z`, "IBL mip selection"],
             [ibl, "getEnergyConservationFactor", "IBL energy conservation"],
             [ibl, "finalRadianceScaled", "transparent IBL alpha contribution"],
             [ibl, "environmentHorizonOcclusion", "IBL horizon occlusion"],
-            [ibl, "let seo=clamp", "IBL specular occlusion"],
-            [ibl, "vec2<f32>(NdotV,roughness)", "BRDF LUT coordinates"],
-            [ibl, "let R=rotateY(R_raw", "environment cubemap rotation"],
-            [iblSkybox, "let R=input.worldPos-scene.vEyePosition.xyz", "PBR skybox view ray"],
-            [iblSkybox, "let skyboxAlphaG=max(roughness*roughness,0.000001)", "PBR skybox LOD alphaG"],
+            [ibl, packagedWgsl`let seo = clamp`, "IBL specular occlusion"],
+            [ibl, packagedWgsl`vec2<f32>(NdotV, roughness)`, "BRDF LUT coordinates"],
+            [ibl, packagedWgsl`let R = rotateY(R_raw`, "environment cubemap rotation"],
+            [iblSkybox, packagedWgsl`let R = input.worldPos - scene.vEyePosition.xyz`, "PBR skybox view ray"],
+            [iblSkybox, packagedWgsl`let skyboxAlphaG = max(roughness * roughness, 0.000001)`, "PBR skybox LOD alphaG"],
             [refraction, "let rd=refract(-V,N,material.refractionParams.y)", "scene-color refraction ray"],
             [refraction, "let ab=exp(material.volumeParams.rgb*th)", "Beer-Lambert attenuation"],
             [refraction, "colorSpecularEnvReflectance.rgb", "transmission Fresnel complement"],
@@ -3307,8 +3311,8 @@ ${lifted.fragmentBody}
             [backgroundDds, "order: 0", "DDS skybox ordering"],
             [backgroundHdr, "order: 0", "HDR skybox ordering"],
             [backgroundHdr, "buildHdrSkyboxRenderable", "HDR skybox renderable"],
-            [pbrGeometry, "directDiffuse+finalIrradiance", "geometry irradiance"],
-            [pbrGeometry, "colorF0,1.0-roughness", "geometry reflectivity"],
+            [pbrGeometry, packagedWgsl`directDiffuse + finalIrradiance`, "geometry irradiance"],
+            [pbrGeometry, packagedWgsl`colorF0, 1.0 - roughness`, "geometry reflectivity"],
             [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
         ];
         if (options.morphStorage) {
@@ -3321,12 +3325,12 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     morphCore,
-                    "for(var i=0u;i<morph.count;i=i+1u)",
+                    packagedWgsl`for (var i = 0u; i < morph.count; i = i + 1u)`,
                     "storage morph accumulation loop",
                 ],
                 [
                     morphCore,
-                    "let b=(i*morph.vertexCount+vertexIndex)*6u;",
+                    packagedWgsl`let b = (i * morph.vertexCount + vertexIndex) * 6u;`,
                     "storage morph delta indexing",
                 ],
                 [
@@ -3350,12 +3354,12 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     pbr,
-                    "let worldPos4=finalWorld*vec4<f32>(${posVar},1.0);",
+                    packagedWgsl`let worldPos4 = finalWorld * vec4<f32>(\${posVar}, 1.0);`,
                     "vertex world position application",
                 ],
                 [
                     pbr,
-                    "out.worldNormal=(finalWorld*vec4<f32>(normalize(${normVar}),0.0)).xyz;",
+                    packagedWgsl`out.worldNormal = (finalWorld * vec4<f32>(normalize(\${normVar}), 0.0)).xyz;`,
                     "vertex world normal application",
                 ],
                 [
@@ -3382,17 +3386,17 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     skeletonFragment,
-                    "var influence:mat4x4<f32> =readMatrixFromRawSampler(boneSampler,f32(joints[0]))*weights[0];",
+                    packagedWgsl`var influence: mat4x4<f32> = readMatrixFromRawSampler(boneSampler, f32(joints[0])) * weights[0];`,
                     "skinning first bone influence",
                 ],
                 [
                     skeletonFragment,
-                    "influence=influence+readMatrixFromRawSampler(boneSampler,f32(joints[3]))*weights[3];",
+                    packagedWgsl`influence = influence + readMatrixFromRawSampler(boneSampler, f32(joints[3])) * weights[3];`,
                     "skinning fourth bone influence",
                 ],
                 [
                     skeletonFragment,
-                    "finalWorld= ${worldExpr} *influence;",
+                    packagedWgsl`finalWorld = \${worldExpr} * influence;`,
                     "skinning blended world composition",
                 ],
             );
@@ -3408,12 +3412,12 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     thinInstanceFragment,
-                    "let instanceWorld=mat4x4<f32>(world0,world1,world2,world3);",
+                    packagedWgsl`let instanceWorld = mat4x4<f32>(world0, world1, world2, world3);`,
                     "thin-instance matrix column order",
                 ],
                 [
                     thinInstanceFragment,
-                    "finalWorld=mesh.world*instanceWorld;",
+                    packagedWgsl`finalWorld = mesh.world * instanceWorld;`,
                     "thin-instance world composition order",
                 ],
             );
@@ -3425,22 +3429,22 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     clearcoatFragment,
-                    "return 0.25/(VdotH_kl*VdotH_kl+0.0000001);",
+                    packagedWgsl`return 0.25 / (VdotH_kl * VdotH_kl + 0.0000001);`,
                     "clearcoat Kelemen visibility",
                 ],
                 [
                     clearcoatFragment,
-                    "return f0+(1.0-f0)*(t2*t2*t);",
+                    packagedWgsl`return f0 + (1.0 - f0) * (t2 * t2 * t);`,
                     "clearcoat Schlick Fresnel",
                 ],
                 [
                     clearcoatFragment,
-                    "ccDirectAttenuation=1.0-ccFresnel_dl*ccInt_dl;",
+                    packagedWgsl`ccDirectAttenuation = 1.0 - ccFresnel_dl * ccInt_dl;`,
                     "clearcoat direct conservation",
                 ],
                 [
                     clearcoatFragment,
-                    "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",
+                    packagedWgsl`let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;`,
                     "clearcoat IBL conservation",
                 ],
                 [
@@ -3454,12 +3458,12 @@ ${lifted.fragmentBody}
             requiredUpstreamFormulas.push(
                 [
                     sheenFragment,
-                    "return(2.0+invR)*pow(sin2h,invR*0.5)/(2.0*3.141592653589793);",
+                    packagedWgsl`return (2.0 + invR) * pow(sin2h, invR * 0.5) / (2.0 * 3.141592653589793);`,
                     "sheen Charlie distribution",
                 ],
                 [
                     sheenFragment,
-                    "return 1.0/(4.0*(NdotL_sh+NdotV_sh-NdotL_sh*NdotV_sh));",
+                    packagedWgsl`return 1.0 / (4.0 * (NdotL_sh + NdotV_sh - NdotL_sh * NdotV_sh));`,
                     "sheen Ashikhmin visibility",
                 ],
                 [
@@ -3514,9 +3518,9 @@ ${lifted.fragmentBody}
             if (options.shaderPrograms.length > 0) {
                 for (const marker of [
                     "function buildShaderPrelude",
-                    "@group(1)@binding(0)var<uniform>shaderSystem",
-                    "@group(1)@binding(1)var<uniform>shaderUniforms",
-                    "@location(${i})${attr}:${attributeWgslType(attr)}",
+                    packagedWgsl`@group(1) @binding(0) var<uniform> shaderSystem`,
+                    packagedWgsl`@group(1) @binding(1) var<uniform> shaderUniforms`,
+                    packagedWgsl`@location(\${i}) \${attr}: \${attributeWgslType(attr)}`,
                 ]) {
                     if (!shaderPipeline.includes(marker)) {
                         throw new Error(
@@ -3609,17 +3613,17 @@ ${lifted.fragmentBody}
         for (const [source, marker, label] of [
             [
                 clearcoatFragment,
-                "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",
+                packagedWgsl`let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;`,
                 "clearcoat energy conservation",
             ],
             [
                 clearcoatFragment,
-                "colorF0=mix(colorF0,remappedF0,ccInt_r);",
+                packagedWgsl`colorF0 = mix(colorF0, remappedF0, ccInt_r);`,
                 "clearcoat base F0 remap",
             ],
             [
                 clearcoatFragment,
-                "return saturate((num/den)*(num/den));",
+                packagedWgsl`return saturate((num / den) * (num / den));`,
                 "clearcoat F0 remap interface term",
             ],
             [
@@ -3676,7 +3680,7 @@ ${lifted.fragmentBody}
                     id: "pbr-skybox-mode",
                     upstreamModule: iblSkyboxModule,
                     upstreamMarker:
-                        "let R=input.worldPos-scene.vEyePosition.xyz",
+                        packagedWgsl`let R = input.worldPos - scene.vEyePosition.xyz`,
                     nativeBehavior:
                         "Skybox-mode PBR materials sample the environment along the camera-to-fragment ray with a dedicated unbiased skyboxAlphaG LOD and omit diffuse irradiance.",
                     validation: ["source marker assertion", "skybox gate parity"],
@@ -3718,7 +3722,7 @@ ${lifted.fragmentBody}
                     id: "clearcoat-layer",
                     upstreamModule: clearcoatFragmentModule,
                     upstreamMarker:
-                        "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",
+                        packagedWgsl`let ccConservation_ibl = 1.0 - ccFresnelIBL * ccInt_ibl;`,
                     nativeBehavior:
                         "KHR_materials_clearcoat adds a GGX/Kelemen direct lobe and a Jones analytical IBL lobe, attenuates the base layer by 1-F(ccF0)*intensity, and keeps the glTF loader's disabled F0 remap.",
                     validation: [
@@ -3786,7 +3790,7 @@ ${lifted.fragmentBody}
                 {
                     id: "ibl-specular-occlusion",
                     upstreamModule: iblFragmentModule,
-                    upstreamMarker: "let seo=clamp",
+                    upstreamMarker: packagedWgsl`let seo = clamp`,
                     nativeBehavior: "Specular environment reflectance uses Babylon's NdotV and ambient-occlusion polynomial.",
                     validation: ["source marker assertions", "Scene 1 diagnostics"],
                 },
@@ -3800,14 +3804,14 @@ ${lifted.fragmentBody}
                 {
                     id: "brdf-lut-coordinates",
                     upstreamModule: iblFragmentModule,
-                    upstreamMarker: "vec2<f32>(NdotV,roughness)",
+                    upstreamMarker: packagedWgsl`vec2<f32>(NdotV, roughness)`,
                     nativeBehavior: "The BRDF LUT is sampled with NdotV on X and perceptual roughness on Y.",
                     validation: ["source marker assertions", "CPU/GPU visual parity"],
                 },
                 {
                     id: "environment-cubemap-orientation",
                     upstreamModule: iblFragmentModule,
-                    upstreamMarker: "let R=rotateY(R_raw",
+                    upstreamMarker: packagedWgsl`let R = rotateY(R_raw`,
                     nativeBehavior: "Reflection and irradiance directions use Babylon's Y-axis environment rotation before cubemap sampling.",
                     validation: ["source marker assertions", "Scenes 1 and 8 parity"],
                 },

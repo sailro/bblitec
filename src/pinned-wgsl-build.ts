@@ -28,8 +28,8 @@
  */
 import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import vm from "node:vm";
 import ts from "typescript";
 
@@ -113,6 +113,57 @@ export function pinnedTaggedWgslTransform(
     }
     loaded = module.exports.transformTaggedWgsl as TaggedWgslTransform;
     return loaded;
+}
+
+/** The checkout this module is deployed in: `dist/src/` sits two levels down. */
+function defaultRepositoryRoot(): string {
+    return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+}
+
+const packagedWgslCache = new Map<string, string>();
+
+/**
+ * A marker over the package's WGSL, spelled as the pin's SOURCE spells it.
+ *
+ * `packagedWgsl\`let R = input.worldPos - scene.vEyePosition.xyz\`` is the
+ * text the package carries, because the marker goes through the pin's own
+ * build step exactly as the template it matches did -- so a separator rule
+ * the pin changes moves every marker with it instead of leaving each a
+ * hand transcription to re-spell.
+ *
+ * An interpolation is a generation-time value spelled where the pin's text
+ * carries it literally (`let ${pinnedName} = scene.vFogInfos.${component};`
+ * names a read the pin writes out in full), so it is spliced in BEFORE
+ * packaging. The pin's own placeholders are the other case: a marker that
+ * keeps a literal `\${posVar}` for the template's `${posVar}` rides through
+ * the transform as the placeholder it is, under the separator rules the
+ * build applied around it.
+ *
+ * This names one minifier. A marker over a `?raw` `.wgsl` file's text was
+ * minified by miniray and keeps its packaged spelling as a plain literal.
+ */
+export function packagedWgsl(
+    strings: TemplateStringsArray,
+    ...values: readonly unknown[]
+): string {
+    const source = strings
+        .map((part, index) => (index === 0 ? part : `${String(values[index - 1])}${part}`))
+        .join("");
+    const cached = packagedWgslCache.get(source);
+    if (cached !== undefined) return cached;
+    const transformed = pinnedTaggedWgslTransform(defaultRepositoryRoot())(
+        `import { wgsl } from "./wgsl.js";\nconst marker = wgsl\`${source}\`;\n`,
+        "marker.ts",
+    );
+    const match =
+        transformed && /const marker = `([\s\S]*)`;\n$/.exec(transformed.code);
+    if (!match) {
+        throw new Error(
+            `The pinned build step left a marker untransformed: ${source}`,
+        );
+    }
+    packagedWgslCache.set(source, match[1]!);
+    return match[1]!;
 }
 
 /**

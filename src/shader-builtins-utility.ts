@@ -11,6 +11,7 @@ import {
     readPinnedLibraryModule,
     splitWgslStatements,
 } from "./pinned-shader-composer.js";
+import { packagedWgsl } from "./pinned-wgsl-build.js";
 
 /**
  * Indents a reconstructed stage body to sit inside the struct or function
@@ -144,7 +145,7 @@ function pinnedImageProcessing(): PinnedImageProcessing {
     if (!common.includes(uniformStruct)) {
         utilityLiftError("image-processing parameter block");
     }
-    if (!common.includes("@group(0)@binding(0)var<uniform>p:P;")) {
+    if (!common.includes(packagedWgsl`@group(0)@binding(0)var<uniform> p:P;`)) {
         utilityLiftError("image-processing parameter binding");
     }
     const ip = extractWgslFunction(common, "ip");
