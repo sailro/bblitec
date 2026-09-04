@@ -99,8 +99,14 @@ function stockDialect(wgsl: string): SplatShaderDialect {
                 `its data texture at binding ${binding}`,
             )[1]!,
     );
+    // The parameter list contains parentheses of its own — the pin's stage
+    // takes `@location(0) k:vec2<f32>,@location(1) R:f32` — so the scan for
+    // the closing one crosses them rather than stopping at the first. A
+    // character class excluding `)` read the entry as undeclared and refused
+    // generation for every splat scene; `)->` cannot occur inside an
+    // attribute, so the first one is the end of the list.
     const varying = shape(
-        /@vertex fn vs\([^)]*\)->(\w+)\{/,
+        /@vertex fn vs\([\s\S]*?\)->(\w+)\{/,
         "its vertex entry's varying struct",
     )[1]!;
     return {

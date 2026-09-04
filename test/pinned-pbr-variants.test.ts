@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { captureIsCurrent } from "../src/capture-instrumented.js";
 import {
     composePinnedPbrVariant,
     registeredPbrExtensionIds,
@@ -117,6 +118,12 @@ test("composes Scene 17's coloured PBR thin-instance arm exactly", async () => {
         "shaders",
         "07-module-7.wgsl",
     );
+    // Only a capture of THIS pin is evidence; `CaptureMeta.pin` says why.
+    if (
+        !captureIsCurrent("scene17", resolve("artifacts", "capture", "scene17"))
+    ) {
+        return;
+    }
     let capturedVertex: string;
     let capturedFragment: string;
     try {

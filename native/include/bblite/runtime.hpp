@@ -916,6 +916,17 @@ struct GeometryTextureDescription {
     GeometryTextureFormat format = GeometryTextureFormat::automatic;
 };
 
+/**
+ * `NormalizedViewport` (src/camera/camera.ts): the fraction of a render
+ * target something draws into, with `y` measured from the BOTTOM the way
+ * Babylon measures it. One type for every reader, because upstream has one:
+ * `resolveCameraViewport` takes `camera?.viewport ?? FULL_VIEWPORT`, and
+ * `FULL_VIEWPORT` is this.
+ *
+ * Doubles for the reason every camera scalar is one -- the pin holds them as
+ * JavaScript numbers, and every reader divides or multiplies them before any
+ * float32 store or pixel rounding.
+ */
 struct NormalizedViewport {
     double x = 0.0;
     double y = 0.0;
@@ -2234,6 +2245,50 @@ struct Sprite2DLayerRecord {
     // UV-scroll widening and alpha-to-coverage changes bump this stamp so an
     // already-created PAL pass can rebuild/reselect the compatible pipeline.
     std::uint64_t pipeline_version = 0;
+    // sprite-2d-y-sort.ts `layer._ySortState`: the optional GPU-order
+    // permutation and its packed staging buffer. Null until a scene calls
+    // `enableSprite2DYSort`, and deliberately OPAQUE here -- upstream keeps
+    // the state's fields private to its own optional module and lets the
+    // always-loaded mutation, upload and picker paths know only the hook
+    // contract below, so the layout lives in the generated Y-sort module
+    // and nothing that never enables it links a line of it.
+    std::shared_ptr<void> y_sort;
+};
+
+/**
+ * The rows one instance upload copies, already in the order the GPU reads.
+ *
+ * `data` is the base of the buffer the copy reads from -- the layer's own
+ * canonical instance floats, or the Y-sort module's packed staging buffer --
+ * and the half-open `[begin, end)` are slots in THAT buffer, so the two
+ * backends' write calls differ in nothing but the API they call.
+ */
+struct SpriteInstanceUpload {
+    const float* data = nullptr;
+    std::uint32_t begin = 0;
+    std::uint32_t end = 0;
+};
+
+/**
+ * sprite-2d-y-sort-hook.ts: the one lazily-registered null hook the optional
+ * Y-sort module installs the first time a layer enables it.
+ *
+ * Upstream's mutation, upload and picking modules reach the extension only
+ * through this record, which is why enabling is the opt-in trigger rather
+ * than any second detector: an engine whose scene never called
+ * `enableSprite2DYSort` finds every field empty and takes the canonical
+ * logical-order path, exactly as the pin's `_getSprite2DYSortHook()?.` does.
+ */
+struct Sprite2DYSortHook {
+    /** `uploadSorted`'s staging half: pack the rows this copy uploads. */
+    std::function<SpriteInstanceUpload(
+        Sprite2DLayerRecord&,
+        std::uint32_t,
+        std::uint32_t)>
+        stage;
+    /** `getDrawOrder`: draw slot -> logical slot, or null when disabled. */
+    std::function<const std::uint32_t*(const Sprite2DLayerRecord&)>
+        draw_order;
 };
 
 /**
@@ -2302,6 +2357,17 @@ struct SpriteRendererRecord {
     std::uint64_t layers_version = 0;
     bool has_target = false;
     SpriteRenderTextureHandle target{};
+    // sprite-renderer.ts `_beforeUpdate`: the hooks `spriteRendererUpdate`
+    // runs, with the frame's delta, before it asserts its layers and
+    // uploads them. Both the pure-2D node-particle bridges and application
+    // code push onto this list, so it is the renderer's own per-frame step
+    // rather than the scene's.
+    std::vector<std::function<void(float)>> before_update;
+    // The list the frame is iterating. A hook may push another, and
+    // upstream iterates the array it entered with, so the run reads a copy
+    // -- kept here rather than made fresh each frame, which reuses the
+    // capacity after the first one.
+    std::vector<std::function<void(float)>> before_update_running;
 };
 
 /**
@@ -2959,6 +3025,15 @@ struct CameraRecord {
      */
     bool has_parent_world = false;
     std::array<float, 16> parent_world{};
+    /**
+     * `camera.viewport` — absent on a camera that draws the whole target,
+     * which is every camera the pin does not give one. Both readers ask
+     * for it exactly where upstream asks `const v = camera?.viewport`:
+     * `upstream::effective_aspect_ratio` scales the target ratio by it,
+     * and each backend's scene pass sets the viewport and scissor
+     * `upstream::resolve_camera_viewport` resolves it to.
+     */
+    std::optional<NormalizedViewport> viewport;
 };
 
 struct Scene;
@@ -3821,6 +3896,13 @@ struct Engine {
     // rendering context on the engine exactly as a sprite renderer is.
     std::vector<EffectRendererHandle> registered_effect_renderers;
     std::uint64_t next_pixels_texture_identity = 1;
+    /**
+     * The optional Sprite2D Y-sort extension's hook, empty until a scene
+     * reaches `enableSprite2DYSort`. Upstream registers the same record
+     * lazily from inside the enabler, so importing (or here, generating)
+     * the extension without using it installs nothing.
+     */
+    Sprite2DYSortHook sprite_y_sort_hook;
 };
 
 /**
@@ -3828,6 +3910,12 @@ struct Engine {
  * Layers and sprites both draw in array order, so picking walks each in the
  * opposite direction. The inverse rotation is pivot-aware through the same
  * normalized coordinates the sprite vertex path uses.
+ *
+ * `pickSprite2D` asks the optional Y-sort hook for the layer's current draw
+ * order first (`pick-sprite-2d.ts`), so a Y-sorted layer is walked in reverse
+ * DRAW order and answers with the logical slot that order named. The hook is
+ * empty on every layer that never enabled the extension, which is the pin's
+ * own `?.drawOrder(layer)` and needs no second detector.
  */
 [[nodiscard]] inline std::optional<Sprite2DPickResult> pick_sprite_2d(
     const Engine& engine,
@@ -3842,10 +3930,17 @@ struct Engine {
         if (!layer.visible) {
             continue;
         }
+        // The hook sorts the CPU permutation if a same-frame mutation left
+        // it stale; nothing here packs or touches the GPU.
+        const std::uint32_t* draw_order =
+            engine.sprite_y_sort_hook.draw_order
+                ? engine.sprite_y_sort_hook.draw_order(layer)
+                : nullptr;
         const auto stride = static_cast<std::size_t>(
             layer.instance_floats_per_sprite);
         for (std::uint32_t sprite = layer.count; sprite > 0; --sprite) {
-            const auto index = sprite - 1u;
+            const auto index =
+                draw_order ? draw_order[sprite - 1u] : sprite - 1u;
             const auto base = static_cast<std::size_t>(index) * stride;
             if (base + 8u >= layer.instance_data.size()) {
                 continue;
@@ -5626,6 +5721,33 @@ double add_sprite_2d(
     Engine& engine,
     Sprite2DLayerHandle layer,
     Sprite2DProps props);
+double sprite_2d_handle_index(
+    const Engine& engine,
+    Sprite2DLayerHandle layer,
+    std::uint32_t sprite_id);
+void update_sprite_2d_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    std::uint32_t sprite_id,
+    Sprite2DProps props);
+/**
+ * sprite-2d-y-sort.ts: enable the layer's optional GPU-order permutation and
+ * register the one lazy hook the rest of the sprite path reaches it through.
+ * The layer handle is what `enableSprite2DYSort` returns state for, so it is
+ * also what the state's own live reads are keyed by here.
+ */
+Sprite2DLayerHandle enable_sprite_2d_y_sort(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    double default_bias);
+bool sprite_2d_y_sort_enabled(
+    const Engine& engine,
+    Sprite2DLayerHandle layer);
+void set_sprite_2d_y_sort_bias_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer,
+    std::uint32_t sprite_id,
+    double bias);
 void set_sprite_2d_frame_id(
     Engine& engine,
     Sprite2DLayerHandle layer,
@@ -5681,6 +5803,11 @@ void unregister_sprite_renderer(
 void register_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer);
+/** `renderer._beforeUpdate.push`: one per-frame hook of the renderer's own. */
+void sprite_renderer_before_update(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    std::function<void(float)> callback);
 
 void register_scene(Scene& scene);
 void unregister_scene(Scene& scene);

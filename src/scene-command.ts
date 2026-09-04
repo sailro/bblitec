@@ -359,14 +359,10 @@ async function parity(
                     `(${audioScenes.length} audio scenes serialized).`,
             );
         }
-        // The children are scene-command.js processes themselves; the
-        // marker tells their holdDistLock that this parent already holds
-        // the dist lock, so the first finished child cannot unlink it
-        // from under the rest of the matrix run.
-        const childEnvironment: NodeJS.ProcessEnv = {
-            ...process.env,
-            BBLITE_DIST_LOCK_HELD: "1",
-        };
+        // The children are scene-command.js processes themselves, and they
+        // inherit this process's environment — which `holdDistLock` marked
+        // when it claimed the lock, so the first finished child cannot
+        // unlink it from under the rest of the run.
         const measureBatch = async (
             batch: readonly SceneDefinition[],
             limit: number,
@@ -400,7 +396,6 @@ async function parity(
                                         ? ["--gpu-debug"]
                                         : []),
                                 ],
-                                childEnvironment,
                             ),
                     ),
                 {

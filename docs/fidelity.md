@@ -141,6 +141,11 @@ early is not a rounding-sized error.
   `camera_world_matrix`, `build_view_matrix`, `mat4PerspectiveLHToRef`,
   `mat4MultiplyInto`. `Math.PI / 2` has `cos = 6.1e-17` as a double and
   `-4.4e-8` as its float32 neighbour, which moves the view matrix's second row.
+  A `viewport` is four more of them: `getEffectiveAspectRatio` divides two of
+  its lanes and multiplies the target ratio by the quotient, all ahead of that
+  same chain, so `CameraViewport` keeps doubles and only
+  `resolveCameraViewport`'s floor and ceil quantize — to render-target pixels,
+  which is where the pin quantizes them too.
 - **A spot cone.** The pinned factory computes `Math.cos(angle * 0.5)` in
   JavaScript numbers and only its light-UBO store rounds, so the native factory
   keeps the half-angle product double; rounding at the call boundary moves the
@@ -1697,6 +1702,21 @@ set of particles within a few hundred calls. Generation runs the pin's parser,
 builder and simulation in headless Chromium and bakes the buffer; recorded as
 `executed-node-particle-simulation`, with the drawn atlas's tradeoff.
 
+**Graph plumbing is normalized by the pin, not by generation.**
+`normalizeNodeParticleGraph` is the boundary every builder demands before it
+will walk a Teleport, Elbow, Debug or LocalVariable block: on a directly
+parsed graph those five class names raise the unsupported-value-block error
+instead. The rewrite is not folded, because the graph it produces is read
+only by the executed build — so what the compiler records is one marker
+saying the scene normalized, and the driver awaits the pin's own normalizer
+between the parse and the build, which is the pin's own documented
+composition. Two properties of that function are why one marker is enough
+and are anchored in `test/upstream.test.ts`: normalizing twice is its own
+no-op, and a graph carrying none of the four candidate classes is returned
+unchanged. Gated by scene 305, whose Teleport fan-out makes several of Scene
+262's random ranges degenerate — a visible change, so a driver that skipped
+the normalizer would not merely fail, it would fail loudly at the build.
+
 **The bridge is not executed.** `createParticleBillboard` and
 `syncParticleBillboard` are lowered from their own declarations, each rule
 asserted: the grid atlas takes the sprite sheet's cell size when it has one and
@@ -2268,6 +2288,32 @@ assignment, material, then mass — upstream comments that ordering because
 mass derives from the shape), the `mass === 0` static rule, and the
 shape sizing `_buildShapeParams` derives.
 
+**The aggregate's own geometry overrides are gated at rest, where the
+substitution has no phase.** `_buildShapeParams` resolves `center`, `radius`,
+`pointA`, `pointB` and `extents` as explicit overrides of the bounds-derived
+value, each through the same `??`, and `center` is written *before* the
+switch — so a capsule or a cylinder carries an explicit centre too even
+though neither case states one, and the two cases that do state one take it
+through `params.center ??`. The derived half is emitted as each `??`'s right
+arm inside `bounding_center` / `sphere_radius` / `box_extents` /
+`capsule_shape` / `cylinder_shape`; the left arm lives at the one caller with
+an options bag to read it from. `examples/regression-physics-aggregate-options.ts`
+is the gate: five bodies, each given an override that differs from what its
+own mesh derives, so a port that accepted an option and dropped it rests the
+body at a different geometric height. Measured against the pinned layer on
+real Havok: **full MAD 0.047, region 0.074, 99.85% of foreground pixels
+exactly equal, SDL_GPU versus Dawn 0.000 byte-identical**. The residual is
+entirely silhouette: the foreground interior is 0.000002 with a maximum
+channel difference of ONE over 581,629 pixels, the background 0.0001, and
+all of it sits on the 9,251 edge pixels at 4.718. `BBLITE_PHYSICS_TRACE`
+names each collider by the pose it settles at — sphere node `y = 0.5` where
+the derived centre would give `1.0`, cylinder `0.5`, capsule `0.75`, box
+`-0.25` — so the heights agree and what is left is the ≤0.017-unit lateral
+drift Bullet takes out of each landing, which is under a pixel at this
+framing. The scene's sixth body carries `setPhysicsBodyPrestepType`, whose
+own second statement (`_preStep = true` for any type but `DISABLED`) is what
+lets the node writes reach it; without it the body rests four units away.
+
 That derivation is translated expression by expression from its own AST. Two
 things specialize, and both are the ones the three helpers it replaced in
 1.25.0 already specialized: the optional bound pair becomes the native
@@ -2697,6 +2743,39 @@ reads its parameters off the composite. The effect row names the pinned
 function declaring its `_shader`, keeping its own name out of the composite
 table's key space.
 
+**Which inline pass it is comes from the pin's own name for it, not from the
+symbol.** SMAA builds all three of its passes that way, so the observed symbol
+is the same for each and cannot separate them, and its body carries three
+`writeUniforms` where taking the first would silently answer for all three.
+What does separate them is the suffix the pin appends to the composite's name
+(`-edges`, `-weights`, `-blend`), which is already the identity a pass's
+generated name derives from. So the effect row names that suffix, composition
+resolves each observed pass through it, and the lowerer narrows the writer
+search to the `createPostProcessTask` call the suffix names. A suffix the
+descriptor does not carry is refused rather than guessed.
+
+**A setting the pin keeps as a flag travels the same numeric vector.** SMAA's
+`diagonalDetection`, `cornerDetection`, `sourceIsSrgb` and `dominantAxisBlend`
+are booleans, and its writers spend them through conditionals
+(`params.sourceIsSrgb ? 1 : 0`, and the diagonal one gates the run length it
+writes). The parameter vector is numeric, so a flag is stored as 0 or 1 and
+the lowered conditional reads it back off the same slot. What the effect row's
+default fixes is the pinned *type*: a setting that stopped being a flag fails
+generation rather than baking a number. Three of SMAA's defaults are not `??`
+at all but the second argument of a coercer — `clampThreshold(config.threshold,
+0.05)` — because the same expression enforces the range, and the contract check
+reads them there.
+
+**A composite's viewport is four fields.** A composite consumes the pass
+settings itself and forwards them to the pass it ends on, so `viewport` reaches
+its factory as config rather than through the framework. Every other record
+option the pin takes is the `{x, y}` pair its vectors are written as, and
+reading only those two out of a viewport moved scene 187's half-screen
+presentation to a full-screen one — and printed the two missing extents into
+the generated C++ as the identifier `undefined`. The two record shapes are told
+apart by what the literal declares, anything else is refused, and a generated
+double literal with no finite value now refuses at the point that lost it.
+
 **A name a pinned module declares is read off that declaration.** A pinned body
 may reach a module-scope `const` of its own file — `extract-highlights.ts`
 raises its threshold through `TO_GAMMA_SPACE` — and the translator resolves
@@ -2716,9 +2795,27 @@ depth buffer between the geometry pass and the colour pass.
 
 `attachControl` and `attachFreeControl` register input on the camera they are
 handed and make no camera the scene's, which lets scene 142 render its right
-eye through the scene camera and its left through a task's own. A task with its
-own camera carries its own copy of the per-pass scene block; a second camera
-moves the view-projection and the eye position, nothing else.
+eye through the scene camera and its left through a task's own.
+
+**Every colour render task carries its own copy of the per-pass scene block**,
+because its view-projection is built from the task's own aspect and that comes
+from the task's TARGET, not only from its camera. Writing it only for a task
+the scene gave its own camera — which one backend did — left a task rendering
+the scene camera into a target of a different shape drawing through the
+frame's matrix, and scene 187, whose source target is half the canvas width,
+came out squeezed by exactly the ratio of the two extents. Where the extents
+and the camera both match, the block is the frame's own value, so the copy
+costs a uniform block and changes nothing.
+
+**A copy task writing a VIEWPORT of the swapchain composes with whatever wrote
+the rest of it.** A copy covering the whole swapchain *is* its source, so the
+capture reads that source and skips a surface readback; a partial one is only
+part of the frame. On Dawn the capture then reads the surface, which is
+configured `CopySrc`. SDL_GPU cannot read a swapchain texture back at all, so
+the partial copy joins the readable present copy a presenting post-process pass
+renders into, and that copy is what is blitted and captured. Scene 187 is the
+first scene to reach either: it presents SMAA into one half of the canvas and
+the raw image into the other.
 
 The render task the compiler creates to materialize the implicit scene pass is
 not an application list-only task. It replays the scene's skybox sub-order

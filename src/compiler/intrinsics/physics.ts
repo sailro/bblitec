@@ -88,14 +88,55 @@ export const shapeParameterStorage = (
   shape: (typeof SHAPE_PARAMETERS)[number][2],
 ): string => (shape === "vec3" ? "Vec3d" : "double");
 
-/** The `PhysicsAggregateOptions` fields the reached slice lowers. */
+/**
+ * The same storage, as an emitted call site here has to spell it.
+ *
+ * The lowerer declares both structs inside `bbl::upstream`, where the
+ * record type needs no qualifier; the calls this file emits name it from
+ * the global scope. `double` is the language's own either way.
+ */
+const qualifiedShapeParameterStorage = (
+  shape: (typeof SHAPE_PARAMETERS)[number][2],
+): string => {
+  const storage = shapeParameterStorage(shape);
+  return storage === "double" ? storage : `bbl::${storage}`;
+};
+
+/**
+ * One geometry member's compiled value.
+ *
+ * Both bags that declare the five members compile them the same way; only
+ * the lane each is written into differs, so the compile itself is the part
+ * that must not diverge between them.
+ */
+function compileShapeParameter(
+  context: PhysicsIntrinsicContext,
+  value: ts.Expression,
+  shape: (typeof SHAPE_PARAMETERS)[number][2],
+): string {
+  return shape === "vec3"
+    ? context.compileVec3(value, "double")
+    : context.compileNumber(value, "double");
+}
+
+/**
+ * The `PhysicsAggregateOptions` fields the reached slice lowers.
+ *
+ * The geometry half IS `SHAPE_PARAMETERS`: upstream declares the same five
+ * members on both bags and `_buildShapeParams` resolves each one as an
+ * explicit override of the bounds-derived value, through the same `??`. So
+ * the aggregate reads them from that one table rather than from a second
+ * list that could drift from it -- and the emitted struct is laid out from
+ * the same table, in the same order, for the same reason the shape
+ * parameters are. `rotation` stays absent from both, so a rotated primitive
+ * still refuses rather than shipping the pin's identity quaternion.
+ */
 const AGGREGATE_OPTIONS = [
   "mass",
   "friction",
   "restitution",
   "shape",
-  "radius",
-  "extents",
+  ...SHAPE_PARAMETERS.map(([pinned]) => pinned),
   "startAsleep",
 ] as const;
 
@@ -421,6 +462,24 @@ export function compilePhysicsIntrinsic(
       };
     }
 
+    case "setPhysicsBodyPrestepType": {
+      // `(body, type)`, and no world travels with it for the same reason
+      // `setPhysicsBodyPreStep` above takes none. The pin's own body also
+      // turns pre-step syncing ON for any type but DISABLED, which is why
+      // this is not a plain field write and why the generated setter
+      // restates that arm rather than the caller doing it here.
+      context.expectArgumentCount(call, 2, 2);
+      const body = context.compileValue(call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[0]!);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_prestep_type(` +
+          `${body.cpp}, bbl::upstream::PhysicsPrestepType::` +
+          `${expectPrestepType(context, call.arguments[1]!)})`,
+      };
+    }
+
     case "setPhysicsShapeFilterCollideMask": {
       context.expectArgumentCount(call, 3, 3);
       const world = context.compileValue(call.arguments[0]!);
@@ -595,12 +654,7 @@ function compileShapeParameters(
   const written = SHAPE_PARAMETERS.flatMap(([pinned, field, shape]) => {
     const value = context.objectProperty(object, pinned);
     if (!value) return [];
-    return [
-      `.${field} = ` +
-        (shape === "vec3"
-          ? context.compileVec3(value, "double")
-          : context.compileNumber(value, "double")),
-    ];
+    return [`.${field} = ${compileShapeParameter(context, value, shape)}`];
   });
   return `bbl::upstream::PhysicsShapeParameters{${written.join(", ")}}`;
 }
@@ -738,15 +792,54 @@ function expectShapeType(
   return member;
 }
 
+/**
+ * A pinned enum member the caller lists as reached.
+ *
+ * `expectShapeType` above keeps a refusal of its own, because the shape
+ * family has unreached members and its message names what each would need.
+ * The body families refuse identically -- the member is not one this port
+ * knows -- and refusing the same way twice is what this holds in one place.
+ */
+function expectReachedEnumMember<Member extends string>(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
+  enumName: string,
+  members: readonly Member[],
+): Member {
+  const member = pinnedEnumMemberName(context, expression, enumName);
+  if (!(members as readonly string[]).includes(member)) {
+    context.fail(expression, `Unknown ${enumName}.${member}.`);
+  }
+  return member as Member;
+}
+
 function expectMotionType(
   context: PhysicsIntrinsicContext,
   expression: ts.Expression,
 ): "STATIC" | "ANIMATED" | "DYNAMIC" {
-  const member = pinnedEnumMemberName(context, expression, "PhysicsMotionType");
-  if (member !== "STATIC" && member !== "ANIMATED" && member !== "DYNAMIC") {
-    context.fail(expression, `Unknown PhysicsMotionType.${member}.`);
-  }
-  return member;
+  return expectReachedEnumMember(context, expression, "PhysicsMotionType", [
+    "STATIC",
+    "ANIMATED",
+    "DYNAMIC",
+  ] as const);
+}
+
+/**
+ * The prestep type a scene names.
+ *
+ * All three members are reached: the emitted step already forks on
+ * DISABLED and on ACTION, so refusing one here would refuse a body the
+ * generated pre-step arm can already carry.
+ */
+function expectPrestepType(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
+): "DISABLED" | "TELEPORT" | "ACTION" {
+  return expectReachedEnumMember(context, expression, "PhysicsPrestepType", [
+    "DISABLED",
+    "TELEPORT",
+    "ACTION",
+  ] as const);
 }
 
 /**
@@ -784,11 +877,17 @@ function compileAggregateOptions(
   if (shape) {
     context.expectKind(shape, "physics-shape", shapeExpression!);
   }
-  const radius = optional("radius");
-  const extentsExpression = context.objectProperty(object, "extents");
-  const extents = extentsExpression
-    ? `bbl::js::Nullable<bbl::Vec3d>{${context.compileVec3(extentsExpression, "double")}}`
-    : "bbl::js::Nullable<bbl::Vec3d>{}";
+  // The geometry lanes, in the table's order, because the emitted struct
+  // is laid out from that same table and these fill it positionally. Each
+  // one is absent unless the scene wrote it: the generated factory then
+  // takes the pin's own `??` and derives from the mesh's bounds instead.
+  const geometry = SHAPE_PARAMETERS.map(([pinned, , shapeKind]) => {
+    const lane = `bbl::js::Nullable<${qualifiedShapeParameterStorage(shapeKind)}>`;
+    const value = context.objectProperty(object, pinned);
+    return value
+      ? `${lane}{${compileShapeParameter(context, value, shapeKind)}}`
+      : `${lane}{}`;
+  });
   // `createPhysicsAggregate` forwards `options.startAsleep` straight into
   // `createPhysicsBody`'s `startsAsleep = false` default, which is the
   // third argument of the pin's own `HP_World_AddBody`. An omitted option
@@ -805,6 +904,6 @@ function compileAggregateOptions(
     `${optional("friction")}, ` +
     `${optional("restitution")}, ` +
     `${shape ? `${shape.cpp}.handle` : "bbl::pal::PhysicsShapeHandle{}"}, ` +
-    `${radius}, ${extents}, ${startAsleep}}`
+    `${geometry.join(", ")}, ${startAsleep}}`
   );
 }

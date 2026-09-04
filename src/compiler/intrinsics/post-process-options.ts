@@ -273,7 +273,14 @@ function compileEffectOptions(
     return options;
 }
 
-/** One parameter slot, from the forwarded options or the pin's fallback. */
+/**
+ * One parameter slot, from the forwarded options or the pin's fallback.
+ *
+ * The vector is numeric whatever the pinned type is: a flag travels as 0 or
+ * 1 and the effect's own lowered writer spends it through the conditional
+ * the pin wrote. What the row's default settles is which type the scene may
+ * write, so a number handed to a flag is refused rather than stored.
+ */
 function paramValue(
     context: EngineOptionContext,
     object: ts.ObjectLiteralExpression,
@@ -281,21 +288,21 @@ function paramValue(
     slot: PostProcessEffect["params"][number],
 ): number {
     if (slot.runtime) {
-        return slot.fallback;
+        return Number(slot.fallback);
     }
     const { option, component } = slotOption(slot);
     const value = options[option];
     if (value === undefined) {
-        return slot.fallback;
+        return Number(slot.fallback);
     }
     if (!component) {
-        if (typeof value !== "number") {
+        if (typeof value !== typeof slot.fallback) {
             context.fail(
                 object,
-                `Post-process '${option}' must be a number.`,
+                `Post-process '${option}' must be a ${typeof slot.fallback}.`,
             );
         }
-        return value;
+        return Number(value);
     }
     if (typeof value !== "object" || !(component in value)) {
         context.fail(object, `Post-process '${option}' must be a vector.`);
@@ -305,7 +312,14 @@ function paramValue(
 
 /**
  * One effect option, as the pin's own factory would receive it: a number, a
- * boolean, or the `{x, y}` pair its vector options are written as.
+ * boolean, the `{x, y}` pair its vector options are written as, or the
+ * four-field normalized viewport a composite forwards to its last pass.
+ *
+ * The two record shapes are told apart by what the literal declares, and a
+ * literal that is neither is refused. Reading only `x` and `y` out of every
+ * record is what used to happen, and a viewport went through it losing its
+ * extent: the pass then covered the whole target instead of the half the
+ * scene asked for, with nothing said.
  */
 function compileOptionValue(
     context: EngineOptionContext,
@@ -321,6 +335,35 @@ function compileOptionValue(
             }
             return compileStaticNumber(context, value, label);
         };
+        const fields = new Set(
+            unwrapped.properties.map((property) =>
+                property.name
+                    ? context.propertyName(property.name)
+                    : undefined,
+            ),
+        );
+        if (fields.has("width") || fields.has("height")) {
+            if (fields.size !== 4) {
+                context.fail(
+                    unwrapped,
+                    `${label} names a viewport, which is exactly ` +
+                        "'x', 'y', 'width' and 'height'.",
+                );
+            }
+            return {
+                x: component("x"),
+                y: component("y"),
+                width: component("width"),
+                height: component("height"),
+            };
+        }
+        if (fields.size !== 2) {
+            context.fail(
+                unwrapped,
+                `${label} is neither a vector ('x', 'y') nor a viewport ` +
+                    "('x', 'y', 'width', 'height').",
+            );
+        }
         return { x: component("x"), y: component("y") };
     }
     if (unwrapped.kind === ts.SyntaxKind.TrueKeyword) return true;

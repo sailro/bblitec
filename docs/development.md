@@ -458,6 +458,22 @@ read for, because they report nothing:
   `${...}` placeholders, which keep the spacing of the JavaScript strings
   behind them.
 
+  **The half that escapes: a minified anchor is a REGEX problem as often
+  as a spelling one.** `packagedWgsl` fixes the literals, and a pattern
+  keeps matching right up until minification packs a declaration onto one
+  line and the pattern starts crossing structure it never met before.
+  1.27.0 left `/@vertex fn vs\([^)]*\)->(\w+)\{/` over the splat module:
+  the excluded `)` used to be the parameter list's own, and the packed
+  stage reads `@vertex fn vs(@location(0) k:vec2<f32>,@location(1)
+  R:f32)->A{`, whose first `)` closes an attribute. Every splat scene then
+  refused generation with a message blaming the pin. It survived both
+  `npm run test:upstream` and a `scenes:compile` run, because neither had
+  reached that module since the bump. So after a bump that moves packaged
+  text, re-read every regex over it for a character class that assumed
+  what one line could not contain, and finish with `scenes:compile` over
+  the whole registry rather than trusting a green contract report — the
+  report compiles no registered scene, which is exactly why it is green.
+
 ### Read the release notes, not only the log
 
 `git log --oneline` gives subjects; the release page for each tag links the

@@ -8,7 +8,7 @@ import {
 } from "../post-process-effects.js";
 import type { PostProcessTaskManifest } from "../compiler/types.js";
 import {
-    COMPOSITION_NAME,
+    passSuffix,
     type ComposedComposite,
     type CompositeTextureRef,
 } from "../pinned-post-process.js";
@@ -376,6 +376,44 @@ export class PostProcessLowerer {
                 );
             }
         }
+        // A default the pin states through a COERCER rather than `??`.
+        // SMAA runs three of its settings through `clampThreshold` and its
+        // siblings, whose second argument is the value used when the caller
+        // supplied nothing usable -- the same default `??` states, written
+        // where the range also has to be enforced. Reading it keeps the
+        // check on the pin's own text instead of exempting the effect.
+        //
+        // The callee has to be one of the module's OWN helpers, not any
+        // two-argument call: on arity alone this would equally read
+        // `Math.max(config.threshold, 0)` as a default, and first match
+        // would decide which. Resolving it against the file the writer is
+        // declared in keeps the contract on the pin's text.
+        const moduleHelpers = new Set(
+            file.statements
+                .filter(ts.isFunctionDeclaration)
+                .map((fn) => fn.name?.text)
+                .filter((name): name is string => name !== undefined),
+        );
+        for (const node of this.context.findNodes(
+            declaration,
+            (candidate): candidate is ts.CallExpression =>
+                ts.isCallExpression(candidate) &&
+                candidate.arguments.length === 2 &&
+                ts.isIdentifier(candidate.expression) &&
+                moduleHelpers.has(candidate.expression.text),
+        )) {
+            const path = this.context.propertyPath(node.arguments[0]!);
+            if (
+                path?.[0] === "config" &&
+                path.length === 2 &&
+                !fallbacks.has(path[1]!)
+            ) {
+                fallbacks.set(
+                    path[1]!,
+                    this.context.unwrapExpression(node.arguments[1]!),
+                );
+            }
+        }
         // An extra texture has no fallback -- the pin reads it straight off
         // the descriptor -- so what is checked is that the descriptor still
         // names it, which is what the emitted binding order depends on.
@@ -409,7 +447,7 @@ export class PostProcessLowerer {
                 );
             }
             if (!component) {
-                this.expectNumber(found, slot.fallback, file, {
+                this.expectDefault(found, slot.fallback, file, {
                     intrinsic: effect.intrinsic,
                     option: slot.path,
                 });
@@ -423,7 +461,7 @@ export class PostProcessLowerer {
                     `Expected ${effect.intrinsic} to default '${option}' with an object literal.`,
                 );
             }
-            this.expectNumber(
+            this.expectDefault(
                 this.context.propertyInitializer(found, component),
                 slot.fallback,
                 file,
@@ -432,21 +470,35 @@ export class PostProcessLowerer {
         }
     }
 
-    /** One pinned numeric default, against the value this table carries. */
-    private expectNumber(
+    /**
+     * One pinned default, against the value this table carries.
+     *
+     * A flag is compared as the keyword the pin writes rather than as a
+     * number, so a setting that stopped being a flag reads as a changed
+     * default instead of quietly comparing 1 against `true`.
+     */
+    private expectDefault(
         expression: ts.Expression,
-        expected: number,
+        expected: number | boolean,
         file: ts.SourceFile,
         label: { intrinsic: string; option: string },
     ): void {
-        const value = this.context.numericValue(
-            this.context.unwrapExpression(expression),
-            file,
-        );
-        if (value !== expected) {
+        const unwrapped = this.context.unwrapExpression(expression);
+        const found =
+            unwrapped.kind === ts.SyntaxKind.TrueKeyword
+                ? true
+                : unwrapped.kind === ts.SyntaxKind.FalseKeyword
+                  ? false
+                  : typeof expected === "boolean"
+                    ? undefined
+                    : this.context.numericValue(unwrapped, file);
+        if (found !== expected) {
             this.context.contractError(
                 expression,
-                `${label.intrinsic} default for '${label.option}' changed; expected ${expected}, found ${value}.`,
+                `${label.intrinsic} default for '${label.option}' changed; ` +
+                    `expected ${expected}, found ${
+                        found === undefined ? unwrapped.getText(file) : found
+                    }.`,
             );
         }
     }
@@ -850,6 +902,88 @@ ${this.uniformWriterBody(effect)}
     }
 
     /**
+     * The pinned `writeUniforms` this effect's row names.
+     *
+     * A leaf effect declares exactly one, so the module and the factory name
+     * it. A composite's inline pass does not: SMAA writes three `_shader`
+     * records in one body and the first would otherwise answer for all
+     * three. So the row's `declaredAs` narrows the search to the
+     * `createPostProcessTask` call naming that pass -- the suffix identity
+     * the composite descriptor and `passName` already share -- and a body
+     * that no longer carries it is refused rather than lowered from a
+     * neighbour's writer.
+     */
+    private writeUniforms(effect: PostProcessEffect): {
+        file: ts.SourceFile;
+        declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block };
+    } {
+        const declaredIn = effect.declaredIn ?? effect.intrinsic;
+        if (effect.declaredAs === undefined) {
+            return this.context.propertyFunction(
+                effect.module,
+                declaredIn,
+                "writeUniforms",
+            );
+        }
+        const { file, declaration } = this.context.functionDeclaration(
+            effect.module,
+            declaredIn,
+        );
+        const suffix = effect.declaredAs;
+        const calls = this.context.findNodes(
+            declaration,
+            (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) &&
+                node.arguments.length > 0 &&
+                ts.isObjectLiteralExpression(node.arguments[0]!) &&
+                passNameEndsWith(
+                    node.arguments[0] as ts.ObjectLiteralExpression,
+                    suffix,
+                ),
+        );
+        if (calls.length !== 1) {
+            this.context.contractError(
+                declaration,
+                `Expected '${declaredIn}' to build exactly one pass named ` +
+                    `'${suffix}', found ${calls.length}.`,
+            );
+        }
+        const writers = this.context
+            .findNodes(
+                calls[0]!,
+                (node): node is ts.PropertyAssignment | ts.MethodDeclaration =>
+                    (ts.isPropertyAssignment(node) ||
+                        ts.isMethodDeclaration(node)) &&
+                    node.name !== undefined &&
+                    ts.isIdentifier(node.name) &&
+                    node.name.text === "writeUniforms",
+            )
+            .map((node): ts.Node =>
+                ts.isMethodDeclaration(node) ? node : node.initializer,
+            )
+            .filter(
+                (
+                    node,
+                ): node is ts.FunctionLikeDeclarationBase & {
+                    body: ts.Block;
+                } =>
+                    (ts.isMethodDeclaration(node) ||
+                        ts.isFunctionExpression(node) ||
+                        ts.isArrowFunction(node)) &&
+                    node.body !== undefined &&
+                    ts.isBlock(node.body),
+            );
+        if (writers.length !== 1) {
+            this.context.contractError(
+                calls[0]!,
+                `Expected the '${suffix}' pass to carry one 'writeUniforms' ` +
+                    `with a body, found ${writers.length}.`,
+            );
+        }
+        return { file, declaration: writers[0]! };
+    }
+
+    /**
      * The effect's `writeUniforms`, statement by statement through the
      * shared `PinnedNumericLowerer`.
      *
@@ -878,11 +1012,7 @@ ${this.uniformWriterBody(effect)}
                 });`,
             );
         }
-        const { file, declaration } = this.context.propertyFunction(
-            effect.module,
-            effect.declaredIn ?? effect.intrinsic,
-            "writeUniforms",
-        );
+        const { file, declaration } = this.writeUniforms(effect);
         // The effect's own state, spelled onto the records the emitted
         // writer reads: `params.<path>` by descriptor slot (first slot wins,
         // the way the descriptor's own lookup did), the camera planes where
@@ -974,20 +1104,49 @@ function nativeSampling(
  * suffix is what generation carries.
  */
 function passName(name: string, refusalSite = ""): string {
-    if (!name.startsWith(COMPOSITION_NAME)) {
+    try {
+        return `inputs.name + ${stringLiteral(passSuffix(name))}`;
+    } catch (error) {
+        // The identity is `passSuffix`'s; this adds only the site, which
+        // the composer has no way to know.
         throw new Error(
-            `A composite named a pass '${name}', which does not derive from ` +
-                `the name it was given.${refusalSite}`,
+            `${error instanceof Error ? error.message : String(error)}` +
+                refusalSite,
         );
     }
-    return `inputs.name + ${stringLiteral(
-        name.slice(COMPOSITION_NAME.length),
-    )}`;
 }
 
 /** A composite's own intermediate target, by the order it created them. */
 function intermediate(index: number): string {
     return `intermediate_${index}`;
+}
+
+/**
+ * Whether a pinned descriptor names a pass ending in the suffix a row claims.
+ *
+ * The pin builds every sub-pass name as the composite's own plus a literal
+ * suffix, so the last chunk of the template is the whole identity -- there is
+ * nothing after it to interpolate. A literal carrying no `name` at all is
+ * simply not the descriptor being looked for: the search runs over every
+ * object literal in the body, WGSL fragments among them.
+ */
+function passNameEndsWith(
+    descriptor: ts.ObjectLiteralExpression,
+    suffix: string,
+): boolean {
+    const property = descriptor.properties.find(
+        (candidate): candidate is ts.PropertyAssignment =>
+            ts.isPropertyAssignment(candidate) &&
+            ts.isIdentifier(candidate.name) &&
+            candidate.name.text === "name",
+    );
+    const name = property?.initializer;
+    if (!name) return false;
+    if (ts.isTemplateExpression(name)) {
+        const last = name.templateSpans[name.templateSpans.length - 1];
+        return last?.literal.text === suffix;
+    }
+    return ts.isStringLiteral(name) && name.text.endsWith(suffix);
 }
 
 /**

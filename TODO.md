@@ -277,6 +277,55 @@ findings live in [AUDIT.md](AUDIT.md), not here.
   in: `assertShapeParamsPrelude` projects only variable statements, so its two
   top-level `if` arms are invisible to the inventory and to
   `assertShapeParamsCases` alike.
+  The Sprite2D Y-sort module joined the guarded side 2026-09-04 — sixteen
+  rows read off the pin rather than guessed — which is the pattern the rest
+  of this entry wants, and it used `LoweringContext.assertStatementInventory`
+  rather than a private copy, so the "helper has to move" friction above is
+  already discharged.
+
+  **Deferred `/simplify` findings from wave 10**, each blocked on something
+  this branch could not settle:
+  - **One null WebGPU device stub, not six.** `pinned-post-process.ts`'s
+    `compositionEngine` is the sixth implementation of the same recording
+    surface, beside `pinned-esm-shadow.ts`'s `recordingEngine`,
+    `pinned-node-material.ts` (a second function of the same name),
+    `pinned-shadow-slots.ts`, `pinned-csg.ts` and
+    `pinned-picking-shaders.ts`. When the pin adds a device call on any
+    composition path, six stubs need the method and only the one whose path
+    reaches it fails loudly. Blocked on auditing each path's actual call
+    surface: they are not the same subset, and a shared stub that answers a
+    call one path expects to THROW on would hide a shape change.
+  - **The SDL readable-present-copy, written twice two ways.** The ensure
+    block duplicates the one at `pal_sdl_gpu.cpp:5853` verbatim, but the
+    present half uses `SDL_BlitGPUTexture` where the existing path at `:6019`
+    presents through `state.blit_pipeline` — and the new one's comment claims
+    they are the same. Blocked on measuring the blit form on the presenting
+    post-process path before unifying them on it.
+  - **`expectReachedEnumMember` belongs on `option-helpers.ts`.** The
+    physics stream generalized it correctly and then kept it private;
+    `expectShapeType`, `compileGeometryTextureType` and `maskModeInclude`
+    each still restate "resolve the member, then check my reached list", and
+    `pinnedEnumMemberName`'s own doc is where the split was drawn. Blocked on
+    nothing but touching three families in files this branch does not
+    otherwise change, which wants its own neutrality proof.
+  - **Three flatten recognizers for one proof.** `isImportedMeshFlattenWalk`,
+    `isClosureMeshFlattenCollector` and `isRecursiveMeshFlattenVisitor` are
+    positional exact-statement-count matchers separated by SPELLING, not by
+    obligation, and each is brittle (`statements.length !== 4`). The
+    renderable collect arm is shared now; the recognizers are not. Blocked on
+    a normalizing pass — resolve a recursive callee through a const-bound
+    arrow, treat a closed-over accumulator as an implicit parameter — which
+    is a redesign with four corpus scenes riding on it.
+  - **A post-process option's kind comes from the fields the SCENE spelled**
+    (`fields.has("width")`, then `size !== 4`), where the pin's config
+    interface declares it. A future three-lane vector option is refused with
+    a viewport message. Blocked on the effect table carrying a link to its
+    own pinned config interface, which it does not today.
+  - **`renderer._beforeUpdate.push` is claimed by member name** before the
+    receiver is resolved, so the handler fires on any `_beforeUpdate.push`
+    and then fails. Blocked on resolving a receiver's kind WITHOUT compiling
+    it — `compileValue` has emission side effects, so a fall-through would
+    emit twice.
 - [ ] Normalize the source path Tint's reflection sidecar embeds. A
   `*.tint-reflection.txt` replayed from the shader cache carries the
   absolute path of whichever scene FIRST compiled that identical variant
@@ -354,7 +403,7 @@ findings live in [AUDIT.md](AUDIT.md), not here.
 
 ## P1 — Full Babylon Lite corpus audit
 
-58 corpus scenes remain unregistered; measured scenes
+36 corpus scenes remain unregistered; measured scenes
 are in [status](docs/status.md). Each entry below records the **first blocker
 only** — clearing it can expose another, so size a scene with the strip probe
 in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
@@ -372,15 +421,45 @@ node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sce
 Read the verdict from the exit code. Grepping the output for "error" mis-scores
 scenes whose refusal is worded differently.
 
-**The corpus carries only the shared modules registered scenes import**, each
-pinned in `upstream/babylon-lite-corpus.json`. Integrating a scene that imports
-a new one starts by copying it out of the pinned tree and pinning its SHA-256.
-A missing module is invisible in a compile probe: the compiler reports the
-unresolved identifier the import would have bound, not the import.
+**Every shared module the corpus scenes import is now pinned in
+`upstream/babylon-lite-corpus.json`**, unregistered scenes included, so the
+probe table above measures real blockers rather than missing files. Keep it
+that way: integrating a scene that imports a new one starts by copying it out
+of the pinned tree and pinning its SHA-256. A missing module is invisible in a
+compile probe — the compiler reports the unresolved identifier the import
+would have bound, not the import — which is what made three of them read as
+compiler gaps for several waves.
 
-**Rank by contracts-to-clean, not by first blocker.** A strip probe of the
-leading candidates at this pin:
+**Rank by contracts-to-clean, not by first blocker.** Every unregistered
+scene compile-probed at this pin (2026-09-04, all 35; the six deferred
+physics/platform clusters are folded into the deferred lane below):
 
+| Scene | First blocker | Kind |
+| --- | --- | --- |
+| 91 | intrinsic `initializeCsg2Async` | third-party `manifold-3d` WASM |
+| 114 | `Unsupported property assignment 'mesh.skeleton'` | picking + in-code skeleton |
+| 121 | `Unsupported property value 'gs.splatsData'` | splat row-buffer re-upload |
+| 122 | intrinsic `loadSOG` | ZIP + WebP decode |
+| 149 | `break`/`continue` in a container's mesh walk | language, then node MRT |
+| 186 | `Unsupported call target 'corners.flat' on tuple` | language, then local cubemaps |
+| 231 | intrinsic `enableStandardSkeleton` | Standard skeleton + vertex alpha |
+| 241 | glTF `KHR_materials_anisotropy` not lowered | loader, then PBR2 translucency |
+| 261 | `Unsupported property assignment 'box.material'` | language, then TAA |
+| 275 | intrinsic `loadFont` | text |
+| 300 | `Unsupported constructor expression` in the shared fixture | executed atlas into a graph |
+| 302 | `Variable 'set' needs a native data type` | language, then moving emitter |
+| 304 | `Unsupported property value 'asset.flowGraphRuntimes'` | FlowGraph |
+
+The first blocker is the first line of a chain, not its length, so the table
+ranks nothing on its own — pair it with the strip probe. Every scene FILE is
+staged; the shared modules they import were the trap, and the three that were
+missing (`scene149-nme.ts`, `scene231-skin.ts`, `scene305-teleport-npe.ts`)
+are now pinned.
+
+Measured against the table, wave 10 found the ratio is about one in three:
+305 shipped on one contract, while 114 sized at six, 302 at six and 261 at
+four — each of them bounded, not merely "at least", and each written into its
+own entry below so the next pass does not re-derive it.
 
 Families by distinct scenes their calls touch anywhere in a chain:
 the physics body/shape surface 6 (deferred), `createTransformNode` 7,
@@ -400,19 +479,16 @@ list.
 | Scene | First blocker | Family |
 | --- | --- | --- |
 | 186 | `corners.flat` | opt-in PBR local cubemap blending |
-| 187 | `createSmaaPostProcessTask` | SMAA |
 | 302 | a definite-assignment `let set` declared then assigned in a `try` | node particles with a moving emitter |
-| 303 | `enableSprite2DYSort` | renderer-native Sprite2D Y-sort |
 | 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
-| 305 | `normalizeNodeParticleGraph` | NPE Teleport/LocalVariable graph plumbing |
 
-Scene 305 is otherwise shaped exactly like the frozen NPE billboard scenes
-already integrated (262, 283, 284): same oracle, same seed, same 200 steps,
-same `createParticleBillboard` sync. What it adds is the normalizer, which
-rewrites Teleport routing and compiles Elbow and Debug blocks away as
-pass-through before the builder walks the graph — generation work like the
-rest of the node-particle pipeline, so its cost is the normalizer's reach plus
-its shared module.
+**Scene 305 shipped from this list** (0.000/0.000 on both backends), and it is
+the shape to expect from the rest: one contract, because everything under it
+was already built. It is scene 262's field again, so the oracle, the seed, the
+200 steps and the `createParticleBillboard` sync all existed; what it added was
+`normalizeNodeParticleGraph`, executed where the pin executes it. Scene 302 is
+the counter-example from the same family and the same wave — six contracts,
+below.
 
 `186-debug` and `187-debug` are helper modules rather than scenes: they have no
 `main()`, so a sweep reports them clean and neither is integrable.
@@ -432,25 +508,80 @@ platform, user-input or external-service contract. No audited scene requires
 audio, touch, gamepad, AR or VR; add any future one that does to the deferred
 lane by default.
 
-**Integrate first (10 scenes):**
-91, 114, 121, 122,
-149,
-231, 241, 261, 275, 300.
-Includes CSG2, compressed assets
-and splats, and deterministic picking (113 and 115 ship; 114 remains). Every navigation scene
-the corpus carries is now integrated, as are the cascaded-shadow pair,
-the billboard pick and the display gizmos.
+**Integrate first (20 scenes):**
+91, 102, 103, 114, 121, 122, 149, 186, 209, 225,
+231, 241, 261, 272, 275, 300, 302, 304, 48, 106 — the probe table above
+carries each one's first blocker for the fourteen that were already in this
+lane. Includes CSG2, compressed assets and splats, deterministic picking (113
+and 115 ship; 114 remains), and the families the recent pin bumps added.
+Every navigation scene the corpus carries is now integrated, as are the
+cascaded-shadow pair, the billboard pick and the display gizmos.
 
-**73** and **302** each imported a `lab/lite/src/shared/` module that
-existed upstream at the pin and had never been staged here, so neither
-compiled nor captured for a reason no sweep would report. Both are staged
-now and both reach ordinary compiler blockers: `viewport` for 73, in its
-own entry below, and for 302 a definite-assignment `let set` in the
-capability table above -- behind which sit the moving-emitter provider and
-an `isLocal` node-particle system.
+Five scenes imported a `lab/lite/src/shared/` module that existed upstream at
+the pin and had never been staged here, so none of them compiled or captured
+for a reason no sweep would report: 73, 302, then 149, 231 and 305. All five
+modules are staged now, and every one of those scenes reaches an ordinary
+compiler or intrinsic blocker instead.
 
-**Defer (19 scenes):** 41, 46-49, 102-106, 153, 164, 180, 181,
-209, 225, 227, 228, 272.
+**Defer (13 scenes):** 41, 46, 47, 49, 104, 105, 153, 164, 180, 181,
+227, 228, and 225 conditionally.
+
+### The deferred lane was re-audited 2026-09-04, and it was wrong about seven
+
+The partition was drawn before the physics subsystem and the retained UI
+runtime landed, and it had not been re-derived since. All nineteen were
+re-probed **at the pose the pinned spec serves each golden at**, and the
+deferral rule — needs a new platform, user-input or external-service contract
+— holds for only five of them: 164 (GPU device-loss lifecycle), 180 and 181
+(live text input past the 3D text subsystem), and 227/228 (a second surface
+and swapchain in both PALs). Six more are deferred by ladder DEPTH alone,
+which is a different claim and should be recorded as one; seven moved to the
+first lane.
+
+Two structural facts reframe the cost of the whole lane, and both were
+measured rather than assumed:
+
+- **A physics contract does not cost "both backends".**
+  `native/src/pal_physics_bullet.cpp` is one renderer-neutral translation
+  unit against `native/include/bblite/pal_physics.hpp`. The lane is roughly
+  half as expensive as the partition assumed.
+- **Half of these scenes' "user input" is a branch that should fold.**
+  `if (true) {...} else {...}` folds and lets a scene compile; `const
+  autoTest = true; if (autoTest)` does not, because `compileCondition` folds
+  literals and browser-only expressions but does not propagate a
+  statically-known boolean through a `const` local. That one compiler
+  contract erases scene 103's whole interactive arm at `?captureFrame=5`
+  exactly as the pin intends, and the same idiom guards scenes 104 and 105 —
+  so it removes the ONLY user-input contract those two carry.
+
+Ranked by scenes-per-contract, the shortlist the audit measured:
+
+| Scene | Contracts | What it needs |
+| --- | ---: | --- |
+| 102 | 1 | `PhysicsShapeType.MESH`. Wanted by **five** deferred scenes (41, 47, 102, 104, 105), and the mechanism is already in the file: `physics_shape_create_convex_hull` already streams mesh positions and already builds a `btTriangleMesh`; the delta is the index array and a static-only shape kind |
+| 209 | 1 | `enableHavokFloatingOrigin`. The pinned module is 198 lines of foldable logic over `HP_*` calls this port already implements, the PAL already supports multiple worlds, and `physics-lowerer.ts` already carries the pinned floating-origin arm with a comment that nothing sets `_fo`. Scenes 200-203 already register the renderer path |
+| 272 | 1 | a fourth arm in the Standard `diffuseTexture` assignment beside the pixels, file and render-target ones, accepting `textureStorage === "solid"` |
+| 103 | 1 | the const-propagation contract above — and it is a compiler contract, so it is the one to take first |
+| 48 | 2 + a PAL change | `setPhysicsShapeMaterial` is ALREADY lowered inside `createPhysicsAggregate`; only the scene-facing intrinsic is missing. `PhysicsMassProperties::center_of_mass` exists but `physics_body_set_mass_properties` writes mass and inertia only, and Bullet models the centre of mass through the motion-state transform |
+| 106 | 4 | enum-value-into-array, aggregate `pointA`/`pointB`, the `const p = mesh.position; p.set(...)` alias, and `setPhysicsBodyPrestepType` (a setter only — the enum, the body field and the ACTION arm all exist) |
+
+Cross-scene demand, for ranking the rest: `PhysicsShapeType.MESH` 5,
+the structural type guard 4, `createCapsule` 4, aggregate `pointA`/`pointB` 4,
+`setPhysicsShapeMaterial` 3, enum-into-array 3, `createPhysicsConstraint` 3.
+
+Four claims in this register did not survive the re-probe and are corrected
+where they sit: every body control past creation is NOT refused (impulse,
+force, linear velocity, motion type, pre-step and raycast all ship); scene
+103's `getViewProjectionMatrix` ships and its `new Map<PhysicsBody, number>()`
+compiles today; scene 49's first blocker is `createCapsule`, not
+`attachControl`'s options bag; scenes 180 and 181 do not stop at "reached
+`void` expression statements"; scene 272's GPU validation-error contract is
+already closed by browser erasure; and `createGroundFromHeightMap` ships, so
+scene 47's heightfield gap is `createHeightFieldShape` alone. Scene 153's
+reason changed rather than closed: Canvas2D ships, and what is missing is
+`ctx.fillRect`, an animation group over a plain-data target, the autonomous
+`onUpdate` loop, and a **fifth driver** — the scene never calls
+`createEngine`, and all four drivers are engine-based.
 
 - [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
   full and 0.28 foreground, identical on both backends. The composed fragment
@@ -498,9 +629,31 @@ an `isLocal` node-particle system.
   123, 124 and 129 measure ([fidelity](docs/fidelity.md#gaussian-splats)
   carries the shipped contracts, spherical harmonics and the executed SPZ
   loader included). What remains, each refusing by name:
-  - 121: `splatsData` + `updateData` — the row buffer handed back as a
-    mutable `ArrayBuffer` and re-uploaded, which also needs `new
-    Float32Array(buf)` over it and an indexed element assignment.
+  - 121: `splatsData` + `updateData`, **three contracts, re-probed
+    2026-09-04**. Its old first blocker (`gs.firstSortReady`) is gone — a
+    handle annotation now keeps the value path — and the ladder under it is
+    inside the usual bar but two of the three are changes to SHARED
+    facilities, which is why it wants its own branch rather than a wave slot:
+    the proof is a corpus-wide re-validation of the ten shipped splat scenes,
+    not one scene's picture.
+    1. `SplatMeshRecord::rows` must become shared `ArrayBuffer` storage. The
+       pin's `splatsData` is the retained buffer BY IDENTITY and `updateData`
+       reseats exactly it; today `rows` is an owned `std::vector<uint8_t>`
+       kept only for the transform bake.
+    2. `new Float32Array(<ArrayBuffer>)` needs a **new aliasing view type**,
+       not merely support: `data-lowering.ts` gives the aliasing arm to
+       `Uint8Array` alone, and `f32array` is an OWNING `std::vector<float>`,
+       so the scene's element writes would not reach the buffer it then hands
+       to `updateData`. It is a ~40-line mirror of the existing `U8Array`
+       plus a DataType kind.
+    3. `updateData` itself, in BOTH PALs: rebuild the geometry, guard the
+       vertex count, reseat the rows and re-upload the four RGBA32F payload
+       textures on a live `SplatPass` while forcing a re-sort.
+    Fail-fastest order: (1) and re-run scene 125's parity, then a
+    `splat-mesh`/`splatsData` rule in `properties.ts`, then (2), then the
+    intrinsic asserting the pinned closure's boundary statements the way the
+    bake already asserts them, then a `data_version` on the record driving a
+    version-gated payload re-upload with `depth_transform` zeroed.
   - `loadSOG` (122) needs a ZIP and a WebP decoder. Its loader would
     execute through the two seams scene 123 added --
     `importPinnedModuleFetching` and the shared `attachParsedSplat`
@@ -577,6 +730,22 @@ an `isLocal` node-particle system.
     arm cannot stand in -- a morph-only vertex has a zero weight quad, which
     collapses the mesh to the origin. A capture is at
     `artifacts/capture/scene114/shaders/`.
+    **Re-probed 2026-09-04 on the 1.27.0 pin: the ladder is unchanged at six
+    contracts** — four that refuse and two that do not — so the scene stays
+    out of a wave rather than shipping the wrong picture. Two of the four are
+    small enough to take on their own whenever something else needs them:
+    `createBoxData`'s pinned declaration is already lowered by
+    `src/lowering/factory/mesh-builders.ts` and wants only the scene-facing
+    intrinsic, its `babylon-lite/mesh/create-box.js` subpath and a plain-data
+    return shape; and `bu`/`bv` want two `src/compiler/properties.ts` rows
+    beside the existing `hit`/`pickedMesh`/`pickedPoint` ones, since
+    `src/lowering/picking-lowerer.ts` already maps both. The other two are the
+    scene-authored skeleton (a bone texture and separate joint/weight buffers
+    against this port's one interleaved vertex, shared with scene 231) and
+    `pickInRegion` returning `PickingInfo | null`, where `picking-info` is a
+    value-owner tag rather than a `DataType` — and the accumulator rewrite is
+    not a way around it, failing one line later on `Assignment operator '='
+    is not supported for json-null`.
   - a thin-instanced or VAT candidate: both need the advanced pipeline's
     instance-composed id. The morph/skeleton arm SHIPPED with scene 115 --
     `deform-picking-projection.ts` is executed and fed to the detailed
@@ -790,15 +959,6 @@ an `isLocal` node-particle system.
     near-duplicate branch for a task with its own camera. A cascaded
     generator now renders several light-space passes per light, which is
     where that branch stopped being proportionate.
-- [ ] Scene 73: support camera viewports. Two arrangements of the container
-  flatten are now proven -- the worklist and the recursive visitor, gated by
-  `regression-imported-mesh-walk` -- but scene 73 writes a third, a recursive
-  arrow closure reading `children` into a local, so it needs either that
-  third arrangement or the walk evaluated over the document's node tree at
-  generation, which would accept any pure spelling. Behind those: two
-  `SceneContext`s on one engine rendered into split camera viewports, and
-  `parseNodeMaterialFromSnippet` with a per-class `blockLoader` of dynamic
-  imports.
 - [ ] Scene 91: support `initializeCsg2Async`. Sized 2026-09-03: it is scene
   90 with CSG v1 swapped for CSG2, and 90 already ships at 0.000, so the
   label textures, `Promise.all` and every builder are proven. The cost is
@@ -808,19 +968,39 @@ an `isLocal` node-particle system.
   toolchain for the first time. `src/pinned-csg.ts` already replays v1 plans
   under Node and caches them, so the bake shape exists; `createMeshesFromCsg2`
   (one mesh per material slot) is the one genuinely new contract.
-- [ ] Scene 149: `break`/`continue` in the consuming loop over a container's
-  mesh walk (the walk itself lowers), then the node family's
-  `GeometryTextureOutputBlock`. Needs `shared/scene149-nme.ts` copied out of
-  the pinned tree and pinned. Sized 2026-09-03 and it is a SUBSYSTEM, not
-  the single contract this line reads as: the refusal at
-  `statements.ts:2242-2263` is over-broad relative to its own stated reason
-  (it calls `bindsEnclosingLoop`, which does not separate `break` from
-  `continue`, while only `break` depends on an order the walk does not fix
-  -- the tuple for-of arm 110 lines below already draws that line with
-  `breaksEnclosingLoop`), but behind it sit a `Map<Material, Mesh[]>` over
-  handle kinds, a `blockLoader` the pin writes as an `if` plus a delegate,
-  and the node MRT/geometry compose arm, which is a third arm beside the
-  receiver and the two caster arms in `pinned-node-material.ts`.
+- [ ] Scene 149: the node family's `GeometryTextureOutputBlock`. **A
+  SUBSYSTEM, six contracts, sized 2026-09-04 by strip probe.** Its shared
+  module is pinned now, and its first two rungs are closed: the consuming
+  loop's `continue` lowers (the refusal was over-broad against its own
+  stated reason and now sits on `break` alone, where the walk's unclaimed
+  order actually matters), and the `Map<Material, Mesh[]>` **already lowers**
+  — the earlier entry was wrong about that; a peeled probe emits
+  `bbl::js::Map<bbl::MaterialHandle, bbl::js::Array<bbl::MeshHandle>>` with
+  `create_node_material` once per key. What is left:
+  - the pin's own `loadNodeBlockEmitterWithGeometry` as the `blockLoader` —
+    an `if` plus a delegate to `loadBlockEmitter`, where `compileBlockLoader`
+    accepts only a local closed switch and `composeNodeMaterial`'s replay
+    loader throws outside its map. Both halves need the delegating form, and
+    it must stay non-default because `useFullPbrMrEmitter` keys on
+    `blockLoader === defaultBlockLoader`;
+  - `nodeMat.inputs.<name>!.texture = <tex>`. Narrower than it reads: the
+    pinned texture input is a plain getter/setter over the same
+    `textureSlots` entry `options.textures` seeds, so a pre-build write is
+    identical to naming the texture up front — the per-frame node-UBO cost
+    belongs to the scalar inputs, not this one;
+  - `baseColorTexture` / `diffuseTexture` / `baseColorFactor` /
+    `diffuseColor` read off a LOADED glTF material. `properties.ts` carries
+    only `occlusionTexture` for owner `material`, and only for presence;
+    `MaterialRecord::base_color_texture` exists but nothing turns one into a
+    bindable handle for a node group-1 binding;
+  - the geometry-MRT composition itself: the pin's `node-geometry-view.ts` +
+    `node-geometry-renderable.ts` re-walk the graph from the geometry
+    terminal with a second `emitGraph` pass into `state._geometryInputs`,
+    turn those into per-attachment `FragmentOutput` writes and feed
+    `compileNodePipeline`'s `_mrtOutput`, plus a per-task `gp` UBO;
+  - the node family in the geometry task's draw path, in BOTH PALs:
+    `write_pinned_geometry_task` / `write_standard_geometry_task` are the
+    only geometry-task write paths and neither has a node arm.
 - [ ] Extend the line slice past what scenes 278 and 279 measure. The
   polylines themselves are the scene's own static literals, materialized as
   the nested data the generated flatten reads, so a system whose points are
@@ -939,21 +1119,53 @@ an `isLocal` node-particle system.
   drifts from the pinned source (the deleted `_floatingOriginOffset` mirror,
   the thin-instance stream that is precision-only, not offset-subtracting)
   the source decides.
-- [ ] Scene 231: support `enableStandardSkeleton`; behind it sit
-  `enableStandardUvOffset`, `createTexture2DFromPixels`, the skeleton subpath
-  imports (`createSkeleton`, `updateSkeletonBoneMatrices`), its shared
-  `scene231-skin` module, and `mesh.hasVertexAlpha` — the one corpus scene
-  that reaches vertex ALPHA at all. The pinned
-  `std-vertex-color-fragment.ts` consumes `vColor.a` under that opt-in
-  (output alpha, the vertex-alpha alpha test), and `rebuildSingle` derives
-  `!shadowOutput && mesh.hasVertexAlpha && (hasVertexColor ||
-  tiFragment._alphaBlend)` into `MATERIAL_ALPHA_BLEND | VERTEX_ALPHA` on the
-  MATERIAL feature word. Composition already takes the `vertexAlpha` flag and
-  `standard_variant_key` already ORs mesh-driven bits at the draw, so those
-  two halves are a bit each; what is not yet there is the third — the blend
-  bit moves the mesh into the transparent phase with depth writes off, and
-  the port's render plan buckets a Standard draw by its material's alpha
-  mode rather than by a per-mesh word.
+- [ ] Scene 231: support `enableStandardSkeleton`. **Sized 2026-09-04 at
+  seven contracts**, and the base under them is clean:
+  `enableStandardVertexColors`, `createMeshFromData` with an RGBA colour
+  stream, `createTexture2DFromPixels`, the shared `scene231-skin` module and
+  the whole camera/light/material rig all ship — a probe with skeleton,
+  uvOffset and vertex alpha peeled compiles. What remains:
+  - `mesh.hasVertexAlpha`. The pinned `std-vertex-color-fragment.ts` consumes
+    `vColor.a` under that opt-in (output alpha, the vertex-alpha alpha test),
+    and `rebuildSingle` derives `!shadowOutput && mesh.hasVertexAlpha &&
+    (hasVertexColor || tiFragment._alphaBlend)` into `MATERIAL_ALPHA_BLEND |
+    VERTEX_ALPHA`. Composition already takes the `vertexAlpha` flag and
+    `standard_variant_key` already ORs mesh-driven bits at the draw; the
+    missing third is that `bind_render_item` buckets a Standard draw on
+    `material.alpha_mode` alone and never sees a per-mesh word.
+  - `enableStandardUvOffset` plus `material.uvOffset` — **the cheapest thing
+    here and the only one with no PAL half**: `write_std_uv_transform_data`
+    already emits `material_offset_x`/`_y` as literal zeroes and the
+    unrolled channel body already consumes them, so it wants the intrinsic, a
+    `MaterialRecord` lane, and the `absentHooks` entry lifted.
+  - an optional trailing typed-array out-parameter: the shared module's
+    `boneMatrixData(0)` defaults `out ?? new Float32Array(n)`, and the call
+    refuses with `requires argument 'out'`.
+  - the scene-authored skeleton itself, which is four contracts, not one, and
+    is the reason this scene is not a wave candidate. `createSkeleton` builds
+    the pin's `rgba32float` per-bone texture (`[boneCount*4, 1]`) plus two
+    SEPARATE joint/weight vertex buffers — confirmed against upstream
+    `docs/lite/architecture/13-skeleton.md`. That texture already exists here
+    (`write_pinned_bone_texture` in both PALs, reading `record.bone_matrices`
+    unchanged), so the transport is not the cost. The costs are: a second
+    `SkeletonRecord` shape carrying raw matrices and no bones at all, against
+    today's one-per-glTF-skin bone-node record; scattering the separate
+    joint/weight arrays into this port's one interleaved `GpuVertex` at
+    upload, and reaching the 200/216-byte deformation layout from a signal
+    that today only glTF-with-animation or `createMorphTargets`
+    reachability produces; and the palette on the STANDARD draw path, which
+    is an extension of the binding model rather than a table row —
+    `pal_sdl_gpu.cpp` states in its own signature comment that the fragment
+    stage is the only stage a Standard draw binds textures for, Dawn's loop
+    is the same shape, the whole `pinned_bone_texture` block sits inside
+    `#if BBLITE_PBR_VARIANTS > 0`, and the pin's `stdSkeletonExt`
+    deliberately relocates its binding into the Standard BASE phase as a
+    vertex-visibility `texture_2d<f32>`. The `pinned-standard-variants.ts`
+    refusal on `MSH_HAS_SKELETON` is the symptom, not the blocker.
+
+  Scene 114 shares only the second `SkeletonRecord` shape and the PBR
+  flavour of the vertex work; it needs neither the Standard palette nor the
+  vertex-alpha bucket, and stays a six-contract scene either way.
 - [ ] Scene 300's whole remaining chain is one mechanism plus two fixture
   shapes:
   - an **executed atlas URL flowing into a graph**.
@@ -971,8 +1183,21 @@ an `isLocal` node-particle system.
     installed after the freeze, which the bake reads for the atlas cell size
     and the per-particle frame. It is another generation-time write, beside
     the column writes `src/compiler/particle-buffer.ts` already carries.
-  - `renderer._beforeUpdate.push(<closure>)`, which the scene uses only to
-    publish live state through the canvas dataset.
+  **Re-sized 2026-09-04 by strip probe: six contracts, not three**, and
+  `renderer._beforeUpdate.push(<closure>)` — the seventh it used to carry —
+  now ships, built for scene 303. The three above are real, and the probe
+  added three more, all compiler-side: a definite-assignment `let set`
+  assigned inside a `try`/`finally` (the same contract scene 302 carries);
+  `system.buffer` and `system.buffer.capacity` read as values off a
+  node-particle system with no data type; and a particle column written at an
+  index the static evaluator will not fold — neither a `readonly [number,
+  number]` const index nor a `[number, number]` local one — beside an
+  `originPx` passed as a shorthand identifier where the intrinsic wants a
+  two-element array literal. The first of the three above is also narrower
+  than it reads: neither existing browser-bake mechanism fits, because
+  `browser-generated-string.ts` gates on a `.toDataURL(` call the helper never
+  makes and `browser-texture-function.ts` wants a one-parameter function
+  reaching a pinned texture factory, and this one takes none and reaches none.
   Its fixture is `skipParity` upstream (Babylon.js has no pure-2D renderer),
   so its golden is the Lite page like every other scene here.
 - [ ] Extend the node-particle slice past what scenes 262, 263, 264, 276,
@@ -991,11 +1216,51 @@ an `isLocal` node-particle system.
     `createParticleSprite2DBridge` / `syncParticleSprite2DBridge` /
     `disposeNodeParticleSet2DBinding` entry points, none of which a corpus
     scene reaches: the two that do go through the managed registrars.
-- [ ] Scene 261: `createTaaPostProcessTask`. Its 160-frame accumulation loop
-  now unrolls, and the `: Mesh` annotation on a handle-valued declaration is
-  the other half — generalizing the `handle:"texture"` exemption broke
-  freeciv and platformer, so it wants the annotation carried rather than the
-  exemption widened.
+  - **Scene 302 is this entry's own worked example, sized 2026-09-04 at six
+    contracts** — bounded rather than "at least", since with all six peeled
+    it compiles and bakes clean. Its `referenceSearch` is `?seekTime=2`
+    (`SCENE302_CAPTURE_SEEK_TIME` in its own shared module, which the pin's
+    spec navigates with), and registering it WITHOUT that query is precisely
+    the live set refused above: `frozen` is false and the provider moves the
+    emitter every frame. The six: the definite-assignment `let set` assigned
+    inside a `try`; `withNodeParticleEmitterProvider(provider, {...})` as the
+    builder's fourth argument, which is the real cost — upstream installs
+    `_setupEmitter`/`_prepareFrame` on the system and the scene then rewrites
+    the emitter matrix BETWEEN `animateParticleSystem` calls, while
+    `NodeParticleStep` carries only scalars, so it wants a step op replaying
+    the scene's own module calls inside the bake loop plus the provider
+    closure, which also writes `canvas.dataset`; `Math.random` seeded from a
+    shared-module factory rather than an inline arrow; `startEngine` reached
+    from inside `try/finally` rather than at the entry body's top level; a
+    `number | null` local that does not narrow, so both capture arms are
+    walked and the set registers twice (measured: `const seekTime = 2` folds
+    the branch and `const seekTime: number | null = 2` does not, and it
+    reproduces WITH `--search "?seekTime=2"`, so the `URLSearchParams`
+    erasure is fine and the nullable narrowing is not); and the self-recursive
+    `requestAnimationFrame` telemetry loop.
+- [ ] Scene 261: `createTaaPostProcessTask`. Both halves of the non-intrinsic
+  side are now closed — the 160-frame accumulation loop unrolls, and a handle
+  annotation on a declaration keeps the value path unless the initializer is
+  an object literal, which is the `SpriteAtlas` shape in freeciv's and
+  platformer's `atlas.ts` that the earlier bare-handle exemption broke. What
+  remains is the intrinsic, four contracts deep and three of them in both
+  PALs. Measured against the pinned factory run device-free rather than read:
+  it builds three passes over two `rgba16float` intermediates, and
+  `task.outputTexture === task._present.outputTexture` while
+  `=== task._historyUpdate.outputTexture` is false. So (1) a **composite whose
+  output is not its last pass**, which `runComposite` asserts the opposite of;
+  (2) a composite input naming a **render task** rather than a texture, which
+  `PostProcessCompositeInputs` has no slot for; (3) a blend pass whose
+  `writeUniforms` reads the task's own per-frame `_factor`, recomputed from a
+  camera-change key neither PAL has; and (4) the Halton **projection jitter
+  fed back into the source task's `viewProjection`** — the pin gets that free
+  from a UBO write cached on `worldMatrixVersion`, which this port has no
+  analogue for, so it must be threaded per task without leaking into the
+  skybox matrix, the frame view, the billboard sort or the splat UBO, all
+  derived from the same per-frame matrix. Behind all four sits a
+  160-iteration `rgba16float` accumulation that has to match Chromium's
+  half-float rounding to under 0.5 MAD. The pin ships no architecture page
+  for TAA; its own header comment is the documentation.
 - [ ] Scene 275: support `loadFont`.
 
 ### Integration-first native runtime and loader gaps
@@ -1044,13 +1309,19 @@ earlier compiler error.
     that `world_step_seconds` doubles the unasserted surface it covers.
   - **First blockers**, each a per-scene API rather than shared plumbing:
     a non-glTF container's entities (41);
-    an aggregate `radius`/`extents` (46-49 and 102-106 reach it too);
-    an unresolved variable (46);
+    a module-level mutable `let`, and behind it the whole constraint family
+    -- `createPhysicsConstraint` over seven types plus `PhysicsConstraintAxis`
+    limits, none of which the pinned layer's port or the PAL carries (46);
     `createPhysicsViewer`/`showPhysicsBody` (47 -- its container flatten
     folds now, so the debug-wireframe family is what is left, and behind it
     a height-field shape and a switch-assigned `let mesh`);
-    `createPhysicsBody` (48); `attachControl`'s options bag (49, which is
-    also a gizmo scene);
+    `setPhysicsShapeMaterial` and `setPhysicsBodyMassProperties` -- both
+    intrinsics only, the emitted material write and the PAL entry point
+    already exist -- and behind them one real PAL contract the old entry did
+    not name: `physics_body_set_mass_properties` writes mass and inertia and
+    ignores `center_of_mass` entirely, so honouring it means re-framing the
+    body in Bullet, whose origin IS the centre of mass (48);
+    `createCapsule` (49, which is also a gizmo scene);
     `createPhysicsShape` was 101's and 102's; it ships now, so **102 is
     unmeasured and wants a re-probe**. 103's stated blocker was wrong twice
     over: its first is `getViewProjectionMatrix` (scene103.ts:274, in a
@@ -1063,20 +1334,26 @@ earlier compiler error.
     a native mesh record carries its own `scene_node_name`, not its nearest
     non-mesh ancestor's, so the guards have no folded arrangement; both die
     on `createPhysicsCharacterController` regardless);
-    `PhysicsMotionType` read as a value
-    into an array (106); and engine options (209, behind large-world
+    a pinned enum member read as a VALUE into an array (106) -- and the array
+    is not foldable, because `inferredArrayIsMutated` gives any local const
+    array a runtime `js::Array`, so this wants a DataType for the emitted enum
+    or a generation-only table binding; beside it, `.set()` through a
+    `const p = mesh.position` alias, where `emitMemberSetCall` requires a
+    property-access receiver. Those two are all that is left of 106 now that
+    the aggregate options and `setPhysicsBodyPrestepType` ship, and the pin
+    serves it at `?captureFrame=20` with `maxMad` 0.32, a favourable
+    mostly-free-fall pose. And engine options (209, behind large-world
     rendering).
-  - **Extend the aggregate options past the three that are lowered.** The
-    pin's own `_buildShapeParams` resolves `radius`, `extents`, `center`,
-    `pointA` and `pointB` as explicit overrides of the bounds-derived
-    value, each through the same `??` the lowered ones use; `startAsleep`
-    landed with scene 44, and `pointA`/`pointB` is one of the two things
-    scene 106 wants beside its first blocker. Swept across
-    the corpus: `mass` 18, `extents` 7, `restitution` 6, `radius` 4,
-    `friction` 4, `pointA`/`pointB`/`center` 1 each. Adding them is small
-    and faithful, and lands no scene on its own, which is why it is filed
-    rather than done -- every scene that passes one also wants something
-    else.
+  - The aggregate's geometry options are **done** (2026-09-04), gated by
+    `regression-physics-aggregate-options`. Two things this entry used to
+    claim were wrong: three were missing rather than two, and `radius` on a
+    capsule or cylinder was **accepted and silently dropped** by both segment
+    arms rather than merely absent — a shipping defect, not a gap. All five
+    now travel through the pin's own `??`, including the pre-switch
+    `if (options.center)`, and `_buildShapeParams`' statement inventory pins
+    the two writes ahead of the switch. The lane's warning that "none of it is
+    shared plumbing any more" was half wrong: these were shared across the
+    whole primitive family.
   - **Gate the emitted physics surface on the features it already
     declares.** `physics:trigger` reaches CMake and the feature table but
     gates nothing in the emitted C++: the trigger entry points and
@@ -1084,6 +1361,17 @@ earlier compiler error.
     `physics:world`, measured at 3,265 bytes across the five physics scenes
     that call none of them. `physics:aggregate` has the same shape today, so
     one pass should decide both rather than leaving the emitter half-gated.
+    The camera viewport joins them: `effective_aspect_ratio` genuinely is
+    unconditional -- every projection this renderer builds goes through it --
+    but `resolve_camera_viewport` and its `clamp01` are reachable only from
+    `set_pass_camera_viewport`, which early-returns on an absent viewport, so
+    ~30 lines ride into every scene for the one that sets one. There is no
+    `camera:viewport` feature; `emitCameraViewportAssignment` is where the
+    `reachFeature` call goes, exactly as the Y-sort work did for
+    `sprite:2d-y-sort`. What it needs beyond the feature is the
+    reaches-nothing check: after gating, build a scene reaching none of it,
+    because an emitted static nothing calls is
+    `-Werror,-Wunneeded-internal-declaration` and only a sweep sees it.
   - A physics threshold gates this port's own solver, not agreement with
     the pinned one, and cannot be driven to zero
     ([fidelity](docs/fidelity.md#physics-contract) lists the three

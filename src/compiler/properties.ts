@@ -812,6 +812,20 @@ export const propertyRules: readonly PropertyRule[] = [
     feature: "mesh:thin-instances-dynamic",
   },
   {
+    // `ySort.enabled` — sprite-2d-y-sort.ts keeps the flag on the state it
+    // returns, and `disableSprite2DYSort` is the only thing that clears it,
+    // in the same call that detaches the state from its layer. So the live
+    // question the port asks the layer is the same one, and reading it
+    // rather than folding true is what keeps a scene that later disables
+    // its layer honest.
+    owner: "sprite-2d-y-sort",
+    property: "enabled",
+    value: "boolean",
+    helper: "bbl::sprite_2d_y_sort_enabled",
+    helperTakesEngine: true,
+    feature: "sprite:2d-y-sort",
+  },
+  {
     owner: "scene",
     property: "clearColor",
     value: "color4",

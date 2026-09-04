@@ -38,7 +38,11 @@
  * `docs/fidelity.md#physics-contract`.
  */
 import ts from "typescript";
-import type { LoweredSource, LoweringContext } from "./context.js";
+import {
+  statementKind,
+  type LoweredSource,
+  type LoweringContext,
+} from "./context.js";
 import {
   lowerMat4MultiplyWriterCpp,
   lowerObjectComponents,
@@ -52,6 +56,20 @@ import {
   SHAPE_PARAMETERS,
   shapeParameterStorage,
 } from "../compiler/intrinsics/physics.js";
+
+/**
+ * The five geometry lanes both pinned bags declare, as a struct body.
+ *
+ * `PhysicsAggregateOptions` and `PhysicsShapeParameters` carry the same
+ * members under different owners, so the table is read once and rendered
+ * once: a change to the lane shape lands in both structs or in neither.
+ */
+const shapeParameterLanes = (owner: string): string =>
+  SHAPE_PARAMETERS.map(
+    ([pinned, field, shape]) =>
+      `    /** \`${owner}.${pinned}\`. */\n` +
+      `    js::Nullable<${shapeParameterStorage(shape)}> ${field}{};`,
+  ).join("\n");
 
 export const havokModule = "src/physics/havok.ts";
 
@@ -229,10 +247,12 @@ export class PhysicsLowerer {
    * with each `??` taking the pin's own literal, and every component
    * widens to the JavaScript-number double the pin computes in.
    *
-   * The reached aggregate slice names no explicit geometry option --
-   * `radius`, `extents`, `center`, `pointA` and `pointB` all refuse at
-   * generation -- so each per-case `??` is emitted as its right arm, the
-   * derived one, read from the pin rather than restated.
+   * Every per-case `??` is emitted as its RIGHT arm alone -- the derived
+   * value, read from the pin rather than restated. The left arm is the
+   * aggregate's own explicit override, and it lives at the one call site
+   * that has an options bag to read it from (`create_physics_aggregate`),
+   * because the other caller of these helpers -- a standalone
+   * `createPhysicsShape` -- has none.
    */
   private lowerShapeParams(): string {
     const { file, declaration } = this.context.functionDeclaration(
@@ -1201,6 +1221,15 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         "min",
         "max",
         "extents",
+        // The two pre-switch overrides. `center` is emitted -- a capsule
+        // or a cylinder carries an explicit centre from here even though
+        // neither case states one -- and `rotation` is what the reached
+        // slice refuses, so a pin that turned either into something other
+        // than a guarded write has to be read again.
+        "if (options.center)",
+        "if (options.rotation)",
+        "switch statement",
+        "return statement",
       ],
       (statement: ts.Statement) =>
         ts.isVariableStatement(statement)
@@ -1209,7 +1238,11 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
                 ts.isIdentifier(entry.name) ? entry.name.text : "",
               )
               .join(", ")
-          : undefined,
+          : ts.isIfStatement(statement)
+            ? `if (${statement.expression.getText()})`
+            : ts.isSwitchStatement(statement)
+              ? "switch statement"
+              : statementKind(statement),
     );
   }
 
@@ -1306,14 +1339,21 @@ inline constexpr double physics_default_restitution = ${this.context.doubleLiter
       defaults.restitution,
     )};
 
-/** ${havokModule} \`PhysicsAggregateOptions\`, reached slice. */
+/**
+ * ${havokModule} \`PhysicsAggregateOptions\`, reached slice.
+ *
+ * The geometry half is laid out from the same table \`PhysicsShapeParameters\`
+ * below is, and in the same order, because upstream declares the same five
+ * members on both bags and \`_buildShapeParams\` resolves each aggregate one
+ * as an explicit override of the bounds-derived value. The intrinsic fills
+ * this positionally, so one table keeps the two in step.
+ */
 struct PhysicsAggregateOptions {
     double mass = 0.0;
     js::Nullable<double> friction{};
     js::Nullable<double> restitution{};
     pal::PhysicsShapeHandle shape{};
-    js::Nullable<double> radius{};
-    js::Nullable<Vec3d> extents{};
+${shapeParameterLanes("options")}
     /**
      * \`createPhysicsBody(world, node, motionType, options.startAsleep)\`,
      * whose parameter defaults to \`false\` -- so an omitted option is that
@@ -1330,11 +1370,7 @@ struct PhysicsAggregateOptions {
  * is the pin's \`undefined\` rather than a value this port settled.
  */
 struct PhysicsShapeParameters {
-${SHAPE_PARAMETERS.map(
-  ([pinned, field, shape]) =>
-    `    /** \`params.${pinned}\`. */\n` +
-    `    js::Nullable<${shapeParameterStorage(shape)}> ${field}{};`,
-).join("\n")}
+${shapeParameterLanes("params")}
 };
 
 /**
@@ -1537,6 +1573,9 @@ void set_physics_body_mass(
 void set_physics_body_pre_step(
     PhysicsBody body,
     bool enabled);
+void set_physics_body_prestep_type(
+    PhysicsBody body,
+    PhysicsPrestepType type);
 void apply_physics_impulse(
     PhysicsWorldHandle world,
     PhysicsBody body,
@@ -1967,23 +2006,46 @@ void set_physics_body_mass(
 }
 
 /**
- * \`setPhysicsBodyPreStep\`: one write of \`body._preStep\`, which
- * \`_stepWorld\`'s pre-step gate reads. The pin reaches the live body
- * through \`body._world\`; the value a scene holds here is a copy, so the
- * owning world is the one holding a record with the same PAL handle --
- * the same identity \`physics_body_record\` matches on.
+ * The live record for a body whose world the caller was not handed.
+ *
+ * The two pre-step setters take \`(body, ...)\` and no world, because the
+ * pin reaches it through \`body._world\`. The value a scene holds here is a
+ * copy, so the owning world is the one holding a record with the same PAL
+ * handle -- the same identity \`physics_body_record\` matches on.
  */
-void set_physics_body_pre_step(PhysicsBody body, bool enabled) {
+PhysicsBody& owning_body_record(PhysicsBody body) {
     for (PhysicsWorld& world : physics_worlds()) {
         for (PhysicsBody& live : world.bodies) {
             if (live.handle.value == body.handle.value) {
-                live.pre_step = enabled;
-                return;
+                return live;
             }
         }
     }
     throw std::runtime_error(
         "Physics body is not part of any world.");
+}
+
+/**
+ * \`setPhysicsBodyPreStep\`: one write of \`body._preStep\`, which
+ * \`_stepWorld\`'s pre-step gate reads.
+ */
+void set_physics_body_pre_step(PhysicsBody body, bool enabled) {
+    owning_body_record(body).pre_step = enabled;
+}
+
+/**
+ * \`setPhysicsBodyPrestepType\`: the type write and the pin's own
+ * \`if (type !== DISABLED) body._preStep = true\`, which is why a scene that
+ * names a type never has to call \`setPhysicsBodyPreStep\` beside it.
+ */
+void set_physics_body_prestep_type(
+    PhysicsBody body,
+    PhysicsPrestepType type) {
+    PhysicsBody& live = owning_body_record(body);
+    live.prestep_type = type;
+    if (type != PhysicsPrestepType::DISABLED) {
+        live.pre_step = true;
+    }
 }
 
 void apply_physics_impulse(
@@ -2181,6 +2243,23 @@ void on_physics_trigger(
         });
 }
 
+/**
+ * The three terms a capsule and a cylinder share, each taking the
+ * aggregate's own override through the pin's \`??\`.
+ *
+ * Both pinned cases state the same three assignments over a segment their
+ * own arm derived, so the derivation stays two functions -- the pin's two
+ * cases -- and what they do with the result is one.
+ */
+void apply_segment_params(
+    PhysicsShapeParameters& params,
+    const PhysicsAggregateOptions& options,
+    const PinnedSegmentShape& segment) {
+    params.radius = options.radius ? *options.radius : segment.radius;
+    params.point_a = options.point_a ? *options.point_a : segment.point_a;
+    params.point_b = options.point_b ? *options.point_b : segment.point_b;
+}
+
 PhysicsAggregate create_physics_aggregate(
     PhysicsWorldHandle handle,
     MeshHandle mesh,
@@ -2200,32 +2279,35 @@ PhysicsAggregate create_physics_aggregate(
       const PinnedShapeBounds sized =
           pinned_shape_bounds(bounds, record.scaling);
       PhysicsShapeParameters params{};
+      // \`if (options.center) params.center = options.center;\` sits BEFORE
+      // the switch upstream, so a capsule or a cylinder carries an explicit
+      // centre too even though neither case states one; the two cases that
+      // do state one then take it through their own \`??\`.
+      if (options.center) {
+          params.center = *options.center;
+      }
       switch (type) {
         case PhysicsShapeType::SPHERE:
             params.radius =
                 options.radius ? *options.radius : sphere_radius(sized);
-            params.center = bounding_center(sized);
+            if (!params.center) {
+                params.center = bounding_center(sized);
+            }
             break;
         case PhysicsShapeType::BOX:
             params.extents = options.extents
                 ? *options.extents
                 : box_extents(sized);
-            params.center = bounding_center(sized);
+            if (!params.center) {
+                params.center = bounding_center(sized);
+            }
             break;
-        case PhysicsShapeType::CAPSULE: {
-            const PinnedSegmentShape segment = capsule_shape(sized);
-            params.radius = segment.radius;
-            params.point_a = segment.point_a;
-            params.point_b = segment.point_b;
+        case PhysicsShapeType::CAPSULE:
+            apply_segment_params(params, options, capsule_shape(sized));
             break;
-        }
-        case PhysicsShapeType::CYLINDER: {
-            const PinnedSegmentShape segment = cylinder_shape(sized);
-            params.radius = segment.radius;
-            params.point_a = segment.point_a;
-            params.point_b = segment.point_b;
+        case PhysicsShapeType::CYLINDER:
+            apply_segment_params(params, options, cylinder_shape(sized));
             break;
-        }
           default:
               break;
       }
@@ -2287,11 +2369,41 @@ PhysicsAggregate create_physics_aggregate(
 }  // namespace bbl::upstream
 `;
 
+    this.assertShapeParameterLanesRead(source);
     return {
       header,
       source,
       modulePath: havokModule,
       symbolName: "createHavokWorld",
     };
+  }
+
+  /**
+   * Every geometry lane the options bag carries is read by the body that
+   * consumes it.
+   *
+   * `SHAPE_PARAMETERS` keeps the struct and the intrinsic in step, which is
+   * a claim about LAYOUT. Nothing kept the readers in step, and that is
+   * exactly the defect this table was introduced to fix: `radius` reached
+   * `PhysicsAggregateOptions`, travelled into the struct, and both segment
+   * arms ignored it -- accepted and dropped rather than refused. The
+   * sibling check `assertShapeParameterMembers` already asks the pin's
+   * interface the same question from the other side; this one asks the
+   * emitted text.
+   */
+  private assertShapeParameterLanesRead(source: string): void {
+    const unread = SHAPE_PARAMETERS.filter(
+      ([, field]) => !source.includes(`options.${field}`),
+    ).map(([pinned]) => pinned);
+    if (unread.length > 0) {
+      this.context.contractError(
+        this.context.functionDeclaration(havokModule, "createPhysicsAggregate")
+          .declaration,
+        `The emitted aggregate factory never reads [${unread.join(", ")}], ` +
+          "so a scene passing one would have it accepted and dropped. " +
+          "Every lane SHAPE_PARAMETERS lays into PhysicsAggregateOptions " +
+          "has to be taken through the pin's own `??` by an arm here.",
+      );
+    }
   }
 }

@@ -107,6 +107,7 @@ Primary source ownership:
 | `src/basis-transcode.ts` | the pinned Basis and KTX2 loaders run in headless Chromium, each packaged as a KTX1 container |
 | `src/lowering/vat-lowerer.ts` | the baked vertex-animation subsystem from `vat/vat-baker.ts`: the bake loop over each clip's frames, the 32-byte settings block `play`/`update` write, the per-instance params expansion, and the deterministic frozen pose a measured seek asks for |
 | `src/compiler/intrinsics/vat.ts` | which VAT calls a scene reached — `bakeVat`/`attachVat` are the pin's own opt-in — and the three writers a `VatHandle` carries |
+| `src/lowering/sprite-lowerer.ts` | the sprite families' emitted runtime: the pure-2D and depth-hosted layers, the renderer's own per-frame hook list, and the optional renderer-native Y-sort module gated on `sprite:2d-y-sort` — whose draw key and serial tie-break are read off the pin's `keyAt`/`comesBefore` rather than spelled here |
 | `src/lowering/sprite-animation-lowerer.ts` | the sprite frame stepper and its delay normalisation, lowered from their own pinned declarations, plus the tagged target the two families share |
 | `src/lowering/pinned-grid-atlas.ts` | `createGridSpriteAtlas`, emitted once for the two loaders that partition a texture into frames |
 | `src/pinned-picking-shaders.ts` | the three modules a GPU pick draws through -- mesh, cloud and the detailed pipeline -- composed by running the pin's own builders |
@@ -144,6 +145,7 @@ Primary source ownership:
 | `src/pinned-pbr-variant-cpp.ts` | C++ mirrors of each variant's UBO layout with offsets cross-checked against the composer, plus the variant-selector and texture-slot tables |
 | `src/pinned-pbr-variant-output.ts` | writes the composed variant stages into the generated tree verbatim |
 | `src/lowering/pinned-trs.ts` | a record's local world matrix from `eulerToQuat` and `mat4ComposeInto` — one home for every emission that needs it |
+| `src/lowering/renderer-lowerer.ts` (camera viewport) | the two readers of `camera.viewport`, lowered whole on every plan: `getEffectiveAspectRatio` (every projection is built through it) and `resolveCameraViewport` with its own `clamp01` (the rectangle each backend's scene pass sets) |
 | `src/lowering/pinned-normalize-vec3.ts` | the pin's `normalizeVec3` lowered whole, its `1e-10` epsilon included, for the detailed pick's normal and ray |
 | `src/lowering/pinned-ubo-writer-lowerer.ts` | lowers the pin's material/extension UBO writers from their own ASTs |
 | `src/lowering/post-process-lowerer.ts` | the pass's contracts (internal target, viewport, bind-group order, blend table) and each effect's `writeUniforms`, from the pin's AST |

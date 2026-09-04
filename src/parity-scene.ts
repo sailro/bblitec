@@ -353,6 +353,19 @@ export interface CaptureMeta {
     /** sha256 of the served browser module; absent on pre-digest
      *  captures, which reads as unknown and forces a recapture. */
     moduleSha256?: string;
+    /**
+     * The pinned package the browser rendered through, as
+     * `<version>@<sourceVersion>`.
+     *
+     * `moduleSha256` covers the module the HARNESS serves, not the
+     * package behind it, so it does not move when only the pin does —
+     * except for the scenes whose asset URLs embed the commit. A capture
+     * taken before the 1.27.0 bump therefore read as current while
+     * holding the unminified WGSL the package used to ship, and two
+     * shader gates compared today's composition against it. Absent on a
+     * pre-pin capture, which reads as unknown and forces a recapture.
+     */
+    pin?: string;
     /** The byte-identity verdict against the committed golden.
      *  `"not-checked"` = no golden on disk, or a filtered capture. */
     goldenIdentity?: "identical" | "differs" | "not-checked";

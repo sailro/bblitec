@@ -103,6 +103,7 @@ mid-collapse, one of them started asleep.
 | 70 | <img src="images/scenes/scene70.png" alt="Scene 70 rendering" width="160"> | 0.001 / 0.021 | 0.001 / 0.021 | NME PBR Anisotropy |
 | 71 | <img src="images/scenes/scene71.png" alt="Scene 71 rendering" width="160"> | 0.000 / 0.008 | 0.000 / 0.008 | NME PBR Subsurface |
 | 72 | <img src="images/scenes/scene72.png" alt="Scene 72 rendering" width="160"> | 0.001 / 0.011 | 0.001 / 0.011 | NME PBR Full |
+| 73 | <img src="images/scenes/scene73.png" alt="Scene 73 rendering" width="160"> | 0.003 / 0.012 | 0.003 / 0.012 | Split-Viewport NME Comparison |
 | 74 | <img src="images/scenes/scene74.png" alt="Scene 74 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Effect Renderer |
 | 75 | <img src="images/scenes/scene75.png" alt="Scene 75 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Effect Render Target |
 | 76 | <img src="images/scenes/scene76.png" alt="Scene 76 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Effect Texture |
@@ -182,6 +183,7 @@ mid-collapse, one of them started asleep.
 | 177 | <img src="images/scenes/scene177.png" alt="Scene 177 rendering" width="160"> | 0.021 / 0.021 | 0.021 / 0.021 | Iridescence Sphere |
 | 178 | <img src="images/scenes/scene178.png" alt="Scene 178 rendering" width="160"> | 0.018 / 0.016 | 0.018 / 0.016 | Iridescence Abalone |
 | 179 | <img src="images/scenes/scene179.png" alt="Scene 179 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Clustered Sponza Lights |
+| 187 | <img src="images/scenes/scene187.png" alt="Scene 187 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | SMAA |
 | 200 | <img src="images/scenes/scene200.png" alt="Scene 200 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix Off |
 | 201 | <img src="images/scenes/scene201.png" alt="Scene 201 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | High-Precision Matrix On |
 | 202 | <img src="images/scenes/scene202.png" alt="Scene 202 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Floating Origin Point Light |
@@ -249,6 +251,8 @@ mid-collapse, one of them started asleep.
 | 283 | <img src="images/scenes/scene283.png" alt="Scene 283 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Multiply Blend |
 | 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE MultiplyAdd Blend |
 | 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Blend Modes |
+| 303 | <img src="images/scenes/scene303.png" alt="Scene 303 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite2D Renderer-Native Y-Sort |
+| 305 | <img src="images/scenes/scene305.png" alt="Scene 305 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Teleport Graph Plumbing |
 
 ## Upstream application gates
 
@@ -289,6 +293,7 @@ a project-owned gate when it reaches the same contract.
 | nav-crowd | <img src="images/scenes/regression-nav-crowd.png" alt="Navigation crowd step rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Crowd Step |
 | nav-obstacles | <img src="images/scenes/regression-nav-obstacles.png" alt="Navigation obstacle removal rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Navigation Obstacle Removal |
 | mesh-flags | <img src="images/scenes/regression-mesh-flags.png" alt="Mesh visible and pickable rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Mesh Visible and Pickable |
+| physics-aggregate-options | <img src="images/scenes/regression-physics-aggregate-options.png" alt="Physics aggregate options rendering" width="160"> | 0.047 / 0.074 | 0.047 / 0.074 | Physics Aggregate Options |
 | material-falloff | <img src="images/scenes/regression-material-falloff.png" alt="Material falloff write rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Falloff Write |
 | compiler-state | <img src="images/scenes/regression-compiler-state.png" alt="Compiler state rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Compiler State |
 | glTF-track-clamp | <img src="images/scenes/regression-track-clamp.png" alt="glTF track clamp rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF Track Clamp |

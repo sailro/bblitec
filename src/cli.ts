@@ -95,6 +95,7 @@ import {
 import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
+import { holdDistLock } from "./dist-lock.js";
 import {
     composeSplatModule,
     composeSplatShModule,
@@ -723,6 +724,11 @@ async function bakeNodeParticleSystems(
  */
 async function main(): Promise<void> {
     const options = parseArguments(process.argv.slice(2));
+    // This process runs out of `dist/` too, and an ad-hoc generation probe is
+    // exactly what runs beside somebody else's `npm run build`. A `compile`
+    // fan-out's children already run under their parent's lock and take
+    // nothing here.
+    holdDistLock(`generate ${options.input}`);
     const inputPath = resolve(options.input);
     const outputPath = resolve(options.output);
     const source = readFileSync(inputPath, "utf8");

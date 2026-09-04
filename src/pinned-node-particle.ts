@@ -44,15 +44,31 @@ import {
     moduleIdentity,
 } from "./bake-cache.js";
 
-/** The graph a `parseNodeParticleSource` call reached. */
+/**
+ * The graph a `parseNodeParticleSource` call reached.
+ *
+ * `normalized` records that the scene awaited `normalizeNodeParticleGraph`
+ * between the parse and the build. The normalizer is graph plumbing: it
+ * rewrites a reachable TeleportOut edge to its TeleportIn source and
+ * compiles Elbow and Debug away as pass-throughs, so the five
+ * Teleport-family class names the builders otherwise refuse become the
+ * terminal sources they route to. It is the pin's own function, run in the
+ * driver exactly where the scene ran it -- not restated here -- because the
+ * graph it produces is read only by the executed build.
+ */
 export type NodeParticleGraphSource =
-    | { kind: "literal"; graph: Record<string, unknown> }
+    | {
+          kind: "literal";
+          graph: Record<string, unknown>;
+          normalized?: true;
+      }
     | {
           kind: "module";
           module: string;
           exportName: string;
           /** The factory's own arguments, as the static JSON they are. */
           args: readonly unknown[];
+          normalized?: true;
       };
 
 /** The pinned builders a scene reaches, by their own export names. */
@@ -488,13 +504,27 @@ function cameraLines(set: NodeParticleSetRequest): string[] {
     ];
 }
 
+/**
+ * The graph argument a build reads: the parse, wrapped in the pin's own
+ * normalizer when the scene wrapped it. The composition is the pin's
+ * documented one -- `normalizeNodeParticleGraph(parseNodeParticleSource(x))`
+ * -- and it stays async because the normalizer fetches its heavy runtime
+ * lazily, only for a graph that actually carries a Teleport-family block.
+ */
+function graphArgument(graph: NodeParticleGraphSource): string {
+    const parsed = `parseNodeParticleSource(${graphExpression(graph)})`;
+    return graph.normalized
+        ? `await normalizeNodeParticleGraph(${parsed})`
+        : parsed;
+}
+
 function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
     return sets
         .map((set, index) =>
             [
                 ...cameraLines(set),
                 `    sets[${index}] = await ${set.builder}(engine, scene,`,
-                `        parseNodeParticleSource(${graphExpression(set.graph)}), {`,
+                `        ${graphArgument(set.graph)}, {`,
                 `        emitter: { x: ${set.emitter[0]}, ` +
                     `y: ${set.emitter[1]}, z: ${set.emitter[2]} },`,
                 ...(set.textureBaseUrl === undefined
@@ -523,6 +553,9 @@ function driverImports(sets: readonly NodeParticleSetRequest[]): string[] {
     const names = new Set<string>(sets.map((set) => set.builder));
     if (sets.some((set) => set.enableBlendModes)) {
         names.add("enableNodeParticleBlendModes");
+    }
+    if (sets.some((set) => set.graph.normalized)) {
+        names.add("normalizeNodeParticleGraph");
     }
     return [...names];
 }

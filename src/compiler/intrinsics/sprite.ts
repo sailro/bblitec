@@ -533,6 +533,30 @@ function billboardPropsCpp(
     );
 }
 
+/**
+ * The layer a Sprite2D handle lives in.
+ *
+ * Upstream's handle carries its layer (`{ layer, id }`), which is what lets
+ * every handle entry point take one argument; the same pairing travels on
+ * the value here, and a handle that reached a call without it is a compile
+ * error rather than a guess at which layer to write.
+ */
+function spriteHandleLayerCpp(
+    context: SpriteIntrinsicContext,
+    handle: Value,
+    call: ts.CallExpression,
+    importedName: string,
+): string {
+    if (handle.spriteLayerCpp === undefined) {
+        context.fail(
+            call.arguments[0]!,
+            `${importedName} takes the layer its handle lives in; this ` +
+                "handle reached here without one.",
+        );
+    }
+    return handle.spriteLayerCpp;
+}
+
 /** Preserve a renderer's native layer vector; materialize only JS arrays. */
 function spriteLayerVectorCpp(layers: Value): string {
     return layers.nativeVectorData === true
@@ -1109,6 +1133,148 @@ export function compileSpriteIntrinsic(
                     ")",
                 engineCpp,
                 spriteLayerCpp: layer.cpp,
+            };
+        }
+
+        case "getSprite2DHandleIndex": {
+            // sprite-2d-handle.ts: the slot a stable id names right now.
+            // A scene reads it to report the order the layer settled on,
+            // which is exactly why it cannot be folded to the slot the add
+            // returned -- a removal or a Y-sort moves it.
+            context.expectArgumentCount(call, 1, 1);
+            const handle = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                handle,
+                "sprite-2d-handle",
+                call.arguments[0]!,
+            );
+            const layerCpp = spriteHandleLayerCpp(
+                context,
+                handle,
+                call,
+                "getSprite2DHandleIndex",
+            );
+            const engineCpp = context.engineFor(handle, call);
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "number",
+                cpp:
+                    `bbl::sprite_2d_handle_index(${engineCpp}, ` +
+                    `${layerCpp}, static_cast<std::uint32_t>(${handle.cpp}))`,
+                engineCpp,
+            };
+        }
+
+        case "updateSprite2D": {
+            // The handle form of the index update: same patch rules, over
+            // whichever slot the id names when the call runs.
+            context.expectArgumentCount(call, 2, 2);
+            const handle = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                handle,
+                "sprite-2d-handle",
+                call.arguments[0]!,
+            );
+            const layerCpp = spriteHandleLayerCpp(
+                context,
+                handle,
+                call,
+                "updateSprite2D",
+            );
+            const props = optionsRecord(
+                context,
+                call.arguments[1],
+                "updateSprite2D",
+            );
+            const engineCpp = context.engineFor(handle, call);
+            context.reachFeature("sprite:2d", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::update_sprite_2d_id(${engineCpp}, ${layerCpp}, ` +
+                    `static_cast<std::uint32_t>(${handle.cpp}), ` +
+                    `${sprite2DPropsCpp(
+                        context,
+                        props,
+                        call,
+                        "updateSprite2D",
+                    )})`,
+                engineCpp,
+            };
+        }
+
+        case "enableSprite2DYSort": {
+            // sprite-2d-y-sort.ts: the enabler IS the opt-in. Upstream
+            // registers the extension's one null hook from inside it, so
+            // reaching this call is what makes every other sprite path see
+            // the layer's GPU order at all.
+            context.expectArgumentCount(call, 1, 2);
+            const layer = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                layer,
+                "sprite-layer",
+                call.arguments[0]!,
+            );
+            let defaultBias = "0.0";
+            if (call.arguments[1]) {
+                validateObjectProperties(
+                    context,
+                    optionsLiteral(context, call.arguments[1]),
+                    ["defaultBias"],
+                    "enableSprite2DYSort takes defaultBias.",
+                );
+                const bias = property(
+                    optionsRecord(
+                        context,
+                        call.arguments[1],
+                        "enableSprite2DYSort",
+                    ),
+                    "defaultBias",
+                );
+                if (bias) {
+                    defaultBias = `static_cast<double>(${bias.cpp})`;
+                }
+            }
+            const engineCpp = context.engineFor(layer, call);
+            context.reachFeature("sprite:2d", call);
+            context.reachFeature("sprite:2d-y-sort", call);
+            return {
+                kind: "sprite-2d-y-sort",
+                cpp:
+                    `bbl::enable_sprite_2d_y_sort(${engineCpp}, ` +
+                    `${layer.cpp}, ${defaultBias})`,
+                engineCpp,
+            };
+        }
+
+        case "setSprite2DYSortHandleBias": {
+            context.expectArgumentCount(call, 2, 2);
+            const handle = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                handle,
+                "sprite-2d-handle",
+                call.arguments[0]!,
+            );
+            const layerCpp = spriteHandleLayerCpp(
+                context,
+                handle,
+                call,
+                "setSprite2DYSortHandleBias",
+            );
+            const bias = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const engineCpp = context.engineFor(handle, call);
+            context.reachFeature("sprite:2d", call);
+            context.reachFeature("sprite:2d-y-sort", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_sprite_2d_y_sort_bias_id(${engineCpp}, ` +
+                    `${layerCpp}, static_cast<std::uint32_t>(${handle.cpp}), ` +
+                    `${bias})`,
+                engineCpp,
             };
         }
 

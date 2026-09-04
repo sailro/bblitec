@@ -26,8 +26,16 @@
 export interface PostProcessParamSlot {
     /** The path the pinned `writeUniforms` reads it through. */
     path: string;
-    /** The pin's own `??` fallback for it. */
-    fallback: number;
+    /**
+     * The pin's own default for it, in the pin's own type.
+     *
+     * A boolean slot is one the pin keeps as a flag and its writer spends
+     * through a conditional (`params.sourceIsSrgb ? 1 : 0`); the parameter
+     * vector is numeric either way, so the flag travels as 0 or 1 and the
+     * lowered conditional reads it back. Naming the pinned type here is what
+     * lets the default be checked against the pin as the pin spells it.
+     */
+    fallback: number | boolean;
     /**
      * A slot the pin fills from the pass rather than from the config. The
      * chromatic aberration's screen size is the only one: its factory
@@ -57,6 +65,17 @@ export interface PostProcessEffect {
      * effect and composite tables from sharing a key.
      */
     declaredIn?: string;
+    /**
+     * Which of `declaredIn`'s inline passes this row is, by the suffix the
+     * pin names it with.
+     *
+     * A composite may write several `_shader` records in one body — SMAA
+     * writes three — and they are told apart only by the name each pass is
+     * built with, which is the same identity `inlinePasses` and `passName`
+     * use. Without it the first `writeUniforms` in the body would answer for
+     * every row, which is a wrong writer rather than a refused one.
+     */
+    declaredAs?: string;
     /** The scalars the effect's `writeUniforms` reads, in storage order. */
     params: readonly PostProcessParamSlot[];
     /**
@@ -109,17 +128,26 @@ export interface PostProcessComposite {
      */
     passes: Readonly<Record<string, readonly string[]>>;
     /**
-     * A pass the composite builds by calling `createPostProcessTask` itself
-     * rather than through a leaf effect module, by that observed symbol.
+     * The passes a composite builds by calling `createPostProcessTask`
+     * itself rather than through a leaf effect module.
      *
-     * Bloom's merge is the reached case: its `_shader` is written inline in
-     * the composite's own body, so there is no leaf factory to read a
-     * default off and no pass object publishing the scalar its
-     * `writeUniforms` reads. Both live on the composite instead, which is
-     * why the value names an effect row keyed by the composite's own
-     * intrinsic -- the merge's parameters and its writer are the composite's.
+     * Such a pass writes its `_shader` inline in the composite's own body,
+     * so there is no leaf factory to read a default off and no pass object
+     * publishing the scalar its `writeUniforms` reads: both live on the
+     * composite instead, and the effect row named here carries them.
+     *
+     * Every one of them is built through the same symbol, so the symbol
+     * cannot tell two apart -- SMAA builds all three of its passes that way.
+     * What does is the suffix the pin appends to the composite's own name,
+     * which is already the identity `passName` derives a pass from, so
+     * `effects` is keyed by it.
      */
-    inlinePass?: { symbol: string; effect: string };
+    inlinePasses?: {
+        /** The observed entry point, which is `createPostProcessTask`. */
+        symbol: string;
+        /** Each such pass's effect row, by the suffix the pin names it with. */
+        effects: Readonly<Record<string, string>>;
+    };
 
     /** The config options naming textures the composite reads. */
     extraTextures: readonly string[];
@@ -154,16 +182,46 @@ export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
             ],
             "./blur.js": ["createBlurPostProcessTask"],
             // The merge, which the composite builds itself rather than
-            // through a leaf module -- see `inlinePass` below.
+            // through a leaf module -- see `inlinePasses` below.
             "../frame-graph/post-process-task.js": ["createPostProcessTask"],
         },
-        inlinePass: {
+        inlinePasses: {
             symbol: "createPostProcessTask",
-            effect: "createBloomMergePostProcessTask",
+            effects: { "-merge": "createBloomMergePostProcessTask" },
         },
         // Bloom reads only its source: the blurred highlights its merge binds
         // are its own intermediate, which the observation reports off the
         // pass's `_shader.extraTextures` rather than from a config option.
+        extraTextures: [],
+        usesCamera: false,
+    },
+    {
+        // SMAA: edge detection, then blending weights, then a neighbourhood
+        // blend. All three are written inline -- the pin declares no leaf
+        // module for any of them -- so all three are `inlinePasses`, which is
+        // what the suffix keying above exists for.
+        //
+        // Reference SMAA's two precomputed lookup textures (AreaTex,
+        // SearchTex) are NOT part of this implementation: the pin's own
+        // header and the frame-graph architecture page both say it
+        // reconstructs coverage analytically and searches in the weight pass
+        // instead. So there is no asset to package and nothing here beyond
+        // the chain the factory builds.
+        intrinsic: "createSmaaPostProcessTask",
+        module: "src/post-process/smaa.ts",
+        passes: {
+            "../frame-graph/post-process-task.js": ["createPostProcessTask"],
+        },
+        inlinePasses: {
+            symbol: "createPostProcessTask",
+            effects: {
+                "-edges": "createSmaaEdgeDetectionPostProcessTask",
+                "-weights": "createSmaaBlendWeightsPostProcessTask",
+                "-blend": "createSmaaNeighbourhoodBlendPostProcessTask",
+            },
+        },
+        // The weights the blend pass binds are the composite's own
+        // intermediate, reported off that pass's `_shader.extraTextures`.
         extraTextures: [],
         usesCamera: false,
     },
@@ -189,10 +247,57 @@ export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
         intrinsic: "createBloomMergePostProcessTask",
         module: "src/post-process/bloom.ts",
         declaredIn: "createBloomPostProcessTask",
+        declaredAs: "-merge",
         params: [{ path: "weight", fallback: 0.25 }],
         // The blurred highlights bind after the source, but as the
         // composite's own intermediate rather than a config option, so the
         // observation reads them off the pass's `_shader.extraTextures`.
+        extraTextures: [],
+        usesCamera: false,
+    },
+    {
+        // SMAA pass 1: luma edge detection with local contrast adaptation.
+        // Like bloom's merge, the three SMAA rows name entry points the pin
+        // does not export -- their `_shader` records are written inline in
+        // `createSmaaPostProcessTask`, which `declaredIn` says -- so no call
+        // site reaches them.
+        intrinsic: "createSmaaEdgeDetectionPostProcessTask",
+        module: "src/post-process/smaa.ts",
+        declaredIn: "createSmaaPostProcessTask",
+        declaredAs: "-edges",
+        params: [
+            { path: "threshold", fallback: 0.05 },
+            { path: "sourceIsSrgb", fallback: false },
+        ],
+        extraTextures: [],
+        usesCamera: false,
+    },
+    {
+        // SMAA pass 2: the pattern search and coverage reconstruction. Its
+        // writer spends four of the composite's settings, two of them flags,
+        // and the diagonal one gates the run length it writes.
+        intrinsic: "createSmaaBlendWeightsPostProcessTask",
+        module: "src/post-process/smaa.ts",
+        declaredIn: "createSmaaPostProcessTask",
+        declaredAs: "-weights",
+        params: [
+            { path: "maxSearchSteps", fallback: 16 },
+            { path: "diagonalDetection", fallback: false },
+            { path: "minDiagonalRun", fallback: 4 },
+            { path: "cornerDetection", fallback: false },
+        ],
+        extraTextures: [],
+        usesCamera: false,
+    },
+    {
+        // SMAA pass 3: the neighbourhood blend. It binds the weight target,
+        // but as the composite's own intermediate rather than a config
+        // option, so it is observed off the pass rather than listed here.
+        intrinsic: "createSmaaNeighbourhoodBlendPostProcessTask",
+        module: "src/post-process/smaa.ts",
+        declaredIn: "createSmaaPostProcessTask",
+        declaredAs: "-blend",
+        params: [{ path: "dominantAxisBlend", fallback: true }],
         extraTextures: [],
         usesCamera: false,
     },

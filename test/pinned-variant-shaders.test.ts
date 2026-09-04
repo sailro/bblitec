@@ -24,6 +24,7 @@ import {
 import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import test from "node:test";
+import { captureIsCurrent } from "../src/capture-instrumented.js";
 
 // Compiled to `dist/test/`, so the repository root is two levels up.
 const root = resolve(import.meta.dirname, "..", "..");
@@ -107,6 +108,8 @@ test("emitted variants reproduce the browser's own fragments byte-for-byte", () 
     for (const scene of readdirSync(captures)) {
         const shaders = resolve(captures, scene, "shaders");
         if (!existsSync(shaders) || !emitted.has(scene)) continue;
+        // Only a capture of THIS pin is evidence; `CaptureMeta.pin` says why.
+        if (!captureIsCurrent(scene, resolve(captures, scene))) continue;
         for (const file of readdirSync(shaders)) {
             if (!file.endsWith(".wgsl")) continue;
             const text = readFileSync(resolve(shaders, file), "utf8");

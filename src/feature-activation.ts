@@ -757,6 +757,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-2d-uvscroll.ts",
         consumers: CMAKE,
     },
+    "sprite:2d-y-sort": {
+        provenance:
+            "src/sprite/sprite-2d-y-sort.ts + " +
+            "src/sprite/sprite-2d-handle-y-sort.ts",
+        consumers: CMAKE,
+    },
     "material:standard-diffuse-render-texture": {
         provenance:
             "src/material/standard/standard-material.ts diffuseTexture + " +

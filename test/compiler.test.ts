@@ -577,6 +577,89 @@ test("preserves reached box, ground, and sphere options", () => {
     );
 });
 
+test("carries a handle annotation on a declaration the intrinsic produced", () => {
+    // `const box: Mesh = createBox(...)` names the same engine value the
+    // unannotated spelling does. Routing it to data storage instead loses
+    // every mesh write the value path owns, starting with `box.material`.
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            createStandardMaterial,
+        } from "@babylonjs/lite";
+        import type { Mesh } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const box: Mesh = createBox(engine, 2);
+            const mat = createStandardMaterial();
+            mat.diffuseColor = [0.85, 0.32, 0.22];
+            box.material = mat;
+            box.position.x = -2.6;
+            addToScene(scene, box);
+        }
+    `);
+
+    assert.match(result.cpp, /bbl::create_box/);
+    assert.match(result.cpp, /\.diffuse_color = bbl::Color3\{/);
+    assert.match(result.cpp, /-2\.6/);
+});
+
+test("keeps a handle annotation on an object literal as a data record", () => {
+    // The other half of the same rule, and the one a bare `handle` exemption
+    // broke: freeciv and the platformer spell their atlas as an annotated
+    // object LITERAL, which is a record the data lowerer materializes rather
+    // than a value an intrinsic produced.
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            createTexture2DFromPixels,
+            registerSpriteRenderer,
+            startEngine,
+        } from "@babylonjs/lite";
+        import type { SpriteAtlas } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const pixels = new Uint8Array(64 * 64 * 4).fill(255);
+            const texture = createTexture2DFromPixels(engine, pixels, 64, 64, {
+                minFilter: "linear",
+                magFilter: "linear",
+            });
+            const atlas: SpriteAtlas = {
+                texture,
+                textureSizePx: [64, 64],
+                frames: [
+                    {
+                        uvMin: [0, 0],
+                        uvMax: [0.5, 0.5],
+                        sourceSizePx: [32, 32],
+                        pivot: [0.5, 0.5],
+                    },
+                ],
+                premultipliedAlpha: false,
+            };
+            const layer = createSprite2DLayer(atlas, {
+                capacity: 16,
+                depth: "none",
+            });
+            const sr = createSpriteRenderer(engine, { layers: [layer] });
+            registerSpriteRenderer(sr);
+            await startEngine(engine);
+        }
+    `);
+
+    assert.ok(result.manifest.features.includes("sprite:2d"));
+    assert.ok(result.manifest.features.includes("texture:pixels"));
+});
+
 test("compiles pinned Standard material morph targets", () => {
     const sourcePath =
         "corpus/babylon-lite/lab/lite/src/lite/scene252.ts";
@@ -11550,6 +11633,66 @@ ${containerFlattenWalk}
     assert.match(result.cpp, /set_pbr_unlit\(.*bbl::Color3\{0\.5f, 0\.5f, 0\.5f\}\)/);
 });
 
+test("lowers a continue in the consuming loop over a proven container flatten", () => {
+    // A `continue` observes nothing of the walk's unclaimed order: the loop
+    // still reaches every renderable and each one skips only the rest of its
+    // own iteration, so it emits the native `continue` the range-for already
+    // spells -- the same lowering as the condition inverted under an `if`.
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+            setPbrUnlit,
+        } from "@babylonjs/lite";
+        import type { AssetContainer, Mesh, PbrMaterialProps } from "@babylonjs/lite";
+${containerFlattenWalk}
+        async function main() {
+            const engine = await createEngine({});
+            const asset = await loadGltf(engine, "model.glb");
+            for (const mesh of collectMeshes(asset)) {
+                const material = mesh.material;
+                if (!material) {
+                    continue;
+                }
+                setPbrUnlit(material as PbrMaterialProps, [0.5, 0.5, 0.5]);
+            }
+        }
+    `);
+
+    assert.match(result.cpp, /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/);
+    assert.match(result.cpp, /\bcontinue;/);
+    assert.match(result.cpp, /set_pbr_unlit\(.*bbl::Color3\{0\.5f, 0\.5f, 0\.5f\}\)/);
+});
+
+test("refuses a break in the consuming loop over a proven container flatten", () => {
+    // Where a `break` stops is a question about the walk's order, and a
+    // worklist reaches siblings in the reverse of the loader's document
+    // order, so the refusal stays exactly on `break`.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createEngine,
+                    loadGltf,
+                    setPbrUnlit,
+                } from "@babylonjs/lite";
+                import type { AssetContainer, Mesh, PbrMaterialProps } from "@babylonjs/lite";
+${containerFlattenWalk}
+                async function main() {
+                    const engine = await createEngine({});
+                    const asset = await loadGltf(engine, "model.glb");
+                    for (const mesh of collectMeshes(asset)) {
+                        if (!mesh.material) {
+                            break;
+                        }
+                        setPbrUnlit(mesh.material as PbrMaterialProps, [0.5, 0.5, 0.5]);
+                    }
+                }
+            `),
+        /break in a container's mesh walk is not lowered/,
+    );
+});
+
 test("refuses a container flatten whose renderable test is not the walk's", () => {
     // The same walk with `"_gpu" in node` alone: it would also collect a
     // node the loader made no mesh record for, so the proof must not accept
@@ -11589,6 +11732,165 @@ test("refuses a container flatten whose renderable test is not the walk's", () =
                 function keep(_mesh: Mesh): void {}
             `),
         /container\.entities/,
+    );
+});
+
+const containerFlattenClosure = `
+        function collectMeshes(container: AssetContainer): Mesh[] {
+            const meshes: Mesh[] = [];
+            const visit = (node: unknown): void => {
+                if (node && typeof node === "object") {
+                    if ("_gpu" in node && "material" in node) {
+                        meshes.push(node as unknown as Mesh);
+                    }
+                    const children = (node as { children?: readonly unknown[] }).children;
+                    if (children) {
+                        for (const child of children) {
+                            visit(child);
+                        }
+                    }
+                }
+            };
+            for (const entity of container.entities) {
+                visit(entity);
+            }
+            return meshes;
+        }
+`;
+
+test("lowers the closure arrangement of the same container flatten", () => {
+    // Scene 73 writes the walk as a closure over the result list with both
+    // type guards inlined, which is the recursive visitor with its parts
+    // rearranged: the same `_gpu`/`material` probe selects the same nodes
+    // and the same `children` descent reaches the same subtrees, so it is
+    // answered with the same collection the other two spellings are.
+    const result = compileSource(`
+        import {
+            createEngine,
+            loadGltf,
+            setPbrUnlit,
+        } from "@babylonjs/lite";
+        import type { AssetContainer, Mesh, PbrMaterialProps } from "@babylonjs/lite";
+${containerFlattenClosure}
+        async function main() {
+            const engine = await createEngine({});
+            const asset = await loadGltf(engine, "model.glb");
+            for (const mesh of collectMeshes(asset)) {
+                setPbrUnlit(mesh.material as PbrMaterialProps, [0.5, 0.5, 0.5]);
+            }
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+    );
+    assert.match(
+        result.cpp,
+        /set_pbr_unlit\(.*bbl::Color3\{0\.5f, 0\.5f, 0\.5f\}\)/,
+    );
+    // Nothing emitted the closure itself: the walk is the collection, not
+    // a lambda over an entity tree native loading resolved away.
+    assert.doesNotMatch(result.cpp, /entities/);
+});
+
+test("refuses a closure flatten whose descent skips a node", () => {
+    // The descent moved inside the collect arm: a transform node between
+    // two meshes would end the walk there, so the proof must not accept it.
+    // The call then inlines, and the closure refuses at its own `unknown`
+    // parameter -- ahead of the `container.entities` the worklist spelling
+    // reaches, because a local arrow is lowered before the loop that drives
+    // it.
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine, loadGltf } from "@babylonjs/lite";
+                import type { AssetContainer, Mesh } from "@babylonjs/lite";
+
+                function collectMeshes(container: AssetContainer): Mesh[] {
+                    const meshes: Mesh[] = [];
+                    const visit = (node: unknown): void => {
+                        if (node && typeof node === "object") {
+                            if ("_gpu" in node && "material" in node) {
+                                meshes.push(node as unknown as Mesh);
+                                const children = (node as { children?: readonly unknown[] }).children;
+                                if (children) {
+                                    for (const child of children) {
+                                        visit(child);
+                                    }
+                                }
+                            }
+                        }
+                    };
+                    for (const entity of container.entities) {
+                        visit(entity);
+                    }
+                    return meshes;
+                }
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const asset = await loadGltf(engine, "model.glb");
+                    for (const mesh of collectMeshes(asset)) {
+                        keep(mesh);
+                    }
+                }
+
+                function keep(_mesh: Mesh): void {}
+            `),
+        /Recursive callback parameters must have plain-data types/,
+    );
+});
+
+test("writes a camera viewport as the pin's own normalized record", () => {
+    // `camera.viewport` is a plain optional field upstream rather than a
+    // factory call, so the write IS the opt-in -- and the four lanes stay
+    // double, because getEffectiveAspectRatio divides two of them before
+    // the projection writer's float32 store.
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            scene.camera = createArcRotateCamera(1, 1, 3, { x: 0, y: 0, z: 0 });
+            scene.camera.viewport = { x: 0.5, y: 0, width: 0.5, height: 1 };
+        }
+    `);
+
+    assert.match(
+        result.cpp,
+        /\.viewport = bbl::NormalizedViewport\{0\.5, 0\.0, 0\.5, 1\.0\}/,
+    );
+});
+
+test("refuses a camera viewport lane outside the unit square", () => {
+    // The pinned render task multiplies the raw fraction by the target
+    // extent where the exported resolver clamps it first, so the two agree
+    // only inside [0, 1] -- and this port emits the clamping one. A lane it
+    // cannot FOLD refuses for the same reason: a check that only sees
+    // literals would let a computed lane through with no check at all.
+    assert.throws(
+        () =>
+            compileSource(`
+                import {
+                    createArcRotateCamera,
+                    createEngine,
+                    createSceneContext,
+                } from "@babylonjs/lite";
+
+                async function main() {
+                    const engine = await createEngine({});
+                    const scene = createSceneContext(engine);
+                    scene.camera = createArcRotateCamera(1, 1, 3, { x: 0, y: 0, z: 0 });
+                    scene.camera.viewport = { x: -0.25, y: 0, width: 0.5, height: 1 };
+                }
+            `),
+        /must be a generation-known fraction inside \[0, 1\]/,
     );
 });
 
@@ -14680,6 +14982,128 @@ test("refuses pickBillboardSprite's caller-owned picker by name", () => {
     );
 });
 
+test("lowers the Sprite2D handle and Y-sort entry points", () => {
+    const result = compileSource(`
+        import {
+            addSprite2D,
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            enableSprite2DYSort,
+            getSprite2DHandleIndex,
+            loadSpriteAtlas,
+            registerSpriteRenderer,
+            setSprite2DYSortHandleBias,
+            startEngine,
+            updateSprite2D,
+            updateSprite2DIndex,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const layer = createSprite2DLayer(atlas, {
+                capacity: 4,
+                depth: "none",
+            });
+            const hero = addSprite2D(layer, { positionPx: [1, 2] });
+            const ySort = enableSprite2DYSort(layer, { defaultBias: 3 });
+            const renderer = createSpriteRenderer(engine, {
+                layers: [layer],
+            });
+            renderer._beforeUpdate.push(() => {
+                updateSprite2D(hero, { positionPx: [4, 5] });
+                setSprite2DYSortHandleBias(hero, 7);
+            });
+            registerSpriteRenderer(renderer);
+            await startEngine(engine);
+            // Both reads feed native work rather than a dataset write, so
+            // neither is browser-erased before it lowers.
+            if (ySort.enabled) {
+                updateSprite2DIndex(
+                    layer,
+                    getSprite2DHandleIndex(hero),
+                    { color: [1, 0, 0, 1] },
+                );
+            }
+        }
+        void main();
+    `);
+
+    // The enabler is the opt-in that pulls the extension in, and the
+    // renderer's own hook list is where a per-frame closure lands.
+    assert.ok(result.manifest.features.includes("sprite:2d-y-sort"));
+    assert.match(
+        result.cpp,
+        /bbl::enable_sprite_2d_y_sort\(\w+, \w+, static_cast<double>\(3\.0\)\)/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::sprite_renderer_before_update\(\w+, \w+, \[&\]\(float\)/,
+    );
+    // Both handle entry points resolve the slot the id names at the call,
+    // never the slot the add returned.
+    assert.match(result.cpp, /bbl::update_sprite_2d_id\(/);
+    assert.match(result.cpp, /bbl::set_sprite_2d_y_sort_bias_id\(/);
+    assert.match(result.cpp, /bbl::sprite_2d_handle_index\(/);
+    // `ySort.enabled` is a live question about the layer, not a fold.
+    assert.match(result.cpp, /bbl::sprite_2d_y_sort_enabled\(/);
+});
+
+test("refuses a _beforeUpdate push that is not a SpriteRenderer's", () => {
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine, createSceneContext } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            (scene as unknown as { _beforeUpdate: Array<() => void> })
+                ._beforeUpdate.push(() => undefined);
+        }
+        void main();
+    `),
+        /SpriteRenderer's own\s*\/\/?\s*per-frame hook list|per-frame hook list/,
+    );
+});
+
+test("a sprite scene that never enables Y-sort reaches no Y-sort feature", () => {
+    const result = compileSource(`
+        import {
+            addSprite2DIndex,
+            createEngine,
+            createSprite2DLayer,
+            createSpriteRenderer,
+            loadSpriteAtlas,
+            registerSpriteRenderer,
+            startEngine,
+        } from "babylon-lite";
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const atlas = await loadSpriteAtlas(engine, "sprites.png", {
+                gridSize: [1, 1],
+            });
+            const layer = createSprite2DLayer(atlas, {
+                capacity: 4,
+                depth: "none",
+            });
+            addSprite2DIndex(layer, { positionPx: [1, 2] });
+            registerSpriteRenderer(
+                createSpriteRenderer(engine, { layers: [layer] }),
+            );
+            await startEngine(engine);
+        }
+        void main();
+    `);
+
+    assert.ok(result.manifest.features.includes("sprite:2d"));
+    assert.ok(!result.manifest.features.includes("sprite:2d-y-sort"));
+});
+
 test("compiles a SpriteRenderer.layers owner only once for picking", () => {
     const result = compileSource(`
         import {
@@ -15809,6 +16233,29 @@ test("compiles a scene-less uniform-effect frame graph without the scene rendere
         result.cpp,
         /auto v_from = std::make_shared<bblscene::MorphState>\(bbl::js::make_ref<bblscene::MorphStateData>/,
     );
+});
+
+test("forwards a composite's whole viewport to its factory", () => {
+    const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene187.ts";
+    const result = compileSource(readFileSync(resolve(fileName), "utf8"), {
+        fileName,
+    });
+
+    const [smaa] = result.manifest.postProcessComposites;
+    assert.equal(smaa?.intrinsic, "createSmaaPostProcessTask");
+    // A composite reads the pass settings itself, so `viewport` reaches its
+    // factory as config rather than being consumed by the framework. It is
+    // four fields: reducing it to the `{x, y}` every other record option is
+    // written as moved this half-screen presentation to a full-screen one
+    // with nothing said, and printed the missing extents into C++.
+    assert.deepEqual(smaa?.options, {
+        viewport: { x: 0.5, y: 0, width: 0.5, height: 1 },
+        clear: true,
+        threshold: 0.03,
+        maxSearchSteps: 64,
+    });
+    assert.equal(smaa?.hasTarget, true);
+    assert.ok(result.manifest.features.includes("renderer:post-process"));
 });
 
 test("compiles a scene-less post-process frame graph without effect tasks", () => {
@@ -18536,6 +18983,94 @@ test("carries a physics aggregate's startAsleep into the pinned body add", () =>
     assert.match(
         result.cpp,
         /bbl::js::Nullable<bbl::Vec3d>\{\}, false\}/,
+    );
+});
+
+test("an aggregate's explicit geometry options fill the lanes the pin declares", () => {
+    // The five members `_buildShapeParams` resolves as overrides reach the
+    // emitted struct positionally, in the table's own order, so an omitted
+    // one has to be the absent lane in place rather than a shifted argument.
+    // `examples/regression-physics-aggregate-options.ts` writes one override
+    // per member, each different from what its own mesh derives.
+    const sourcePath = "examples/regression-physics-aggregate-options.ts";
+    const result = compileSource(readFileSync(resolve(sourcePath), "utf8"), {
+        fileName: sourcePath,
+    });
+    const absentVec3 = "bbl::js::Nullable<bbl::Vec3d>\\{\\}";
+    const absentNumber = "bbl::js::Nullable<double>\\{\\}";
+    const aggregate = (type: string, lanes: readonly string[]): RegExp =>
+        new RegExp(
+            `PhysicsShapeType::${type}, bbl::upstream::PhysicsAggregateOptions\\{` +
+                `1\\.0, ${absentNumber}, ${absentNumber}, ` +
+                `bbl::pal::PhysicsShapeHandle\\{\\}, ${lanes.join(", ")}, false\\}`,
+        );
+    const point = (y: string): string =>
+        `bbl::js::Nullable<bbl::Vec3d>\\{bbl::Vec3d\\{0\\.0, ${y}, 0\\.0\\}\\}`;
+    // centre, radius, point A, point B, extents.
+    assert.match(
+        result.cpp,
+        aggregate("SPHERE", [
+            point("0\\.5"),
+            absentNumber,
+            absentVec3,
+            absentVec3,
+            absentVec3,
+        ]),
+    );
+    assert.match(
+        result.cpp,
+        aggregate("CYLINDER", [
+            absentVec3,
+            "bbl::js::Nullable<double>\\{0\\.5\\}",
+            point("\\(-0\\.5\\)"),
+            point("0\\.5"),
+            absentVec3,
+        ]),
+    );
+    assert.match(
+        result.cpp,
+        aggregate("CAPSULE", [
+            absentVec3,
+            "bbl::js::Nullable<double>\\{0\\.25\\}",
+            point("\\(-0\\.5\\)"),
+            point("0\\.5"),
+            absentVec3,
+        ]),
+    );
+    assert.match(
+        result.cpp,
+        aggregate("BOX", [
+            point("0\\.75"),
+            absentNumber,
+            absentVec3,
+            absentVec3,
+            "bbl::js::Nullable<bbl::Vec3d>\\{bbl::Vec3d\\{1\\.0, 1\\.0, 1\\.0\\}\\}",
+        ]),
+    );
+    // The prestep type travels as the pinned enumerator, and its own body is
+    // what turns pre-step syncing on.
+    assert.match(
+        result.cpp,
+        /set_physics_body_prestep_type\(\w+\.body, bbl::upstream::PhysicsPrestepType::TELEPORT\)/,
+    );
+});
+
+test("refuses an aggregate rotation rather than shipping the identity", () => {
+    // `rotation` is declared on both pinned bags and lowered on neither, so
+    // a rotated primitive would ship the pin's own `?? identity` default
+    // instead of the quaternion the scene wrote.
+    const sourcePath = "examples/regression-physics-aggregate-options.ts";
+    const source = readFileSync(resolve(sourcePath), "utf8").replace(
+        "        center: { x: 0, y: 0.75, z: 0 },",
+        "        rotation: { x: 0, y: 0, z: 0.383, w: 0.924 },",
+    );
+    assert.throws(
+        () => compileSource(source, { fileName: sourcePath }),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /A physics aggregate option outside this prototype's reached slice/.test(
+                error.message,
+            ),
     );
 });
 

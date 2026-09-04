@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
-import { browserCaptureStaleness } from "../src/capture-instrumented.js";
+import {
+    browserCaptureStaleness,
+    capturePin,
+} from "../src/capture-instrumented.js";
 import { suiteBrowserModuleDigest } from "../src/capture-suite-reference.js";
 import {
     captureBuffersPath,
@@ -46,6 +49,7 @@ test("names every way a browser capture stops being evidence", () => {
         const metaPath = captureMetaPath(captureDirectory);
         writeSeekMeta(metaPath, undefined, {
             moduleSha256: suiteBrowserModuleDigest(sourcePath),
+            pin: capturePin(),
             goldenIdentity: "not-checked",
         });
         assert.equal(
@@ -70,6 +74,7 @@ test("names every way a browser capture stops being evidence", () => {
         // A filtered capture is an experiment, not evidence.
         writeSeekMeta(metaPath, undefined, {
             moduleSha256: suiteBrowserModuleDigest(sourcePath),
+            pin: capturePin(),
             goldenIdentity: "not-checked",
             drawFilter: 36,
         });
@@ -85,10 +90,35 @@ test("names every way a browser capture stops being evidence", () => {
             "carries no scene-module provenance",
         );
 
+        // A sidecar predating the pin field, which is its own class because
+        // the module digest does not cover the package -- see
+        // `CaptureMeta.pin`.
+        writeSeekMeta(metaPath, undefined, {
+            moduleSha256: suiteBrowserModuleDigest(sourcePath),
+            goldenIdentity: "not-checked",
+        });
+        assert.equal(
+            browserCaptureStaleness(scene, captureDirectory, {}),
+            "carries no pinned-package provenance",
+        );
+
+        // A capture taken through a different pin, with everything else
+        // unchanged.
+        writeSeekMeta(metaPath, undefined, {
+            moduleSha256: suiteBrowserModuleDigest(sourcePath),
+            pin: "1.0.0@0000000000000000000000000000000000000000",
+            goldenIdentity: "not-checked",
+        });
+        assert.match(
+            browserCaptureStaleness(scene, captureDirectory, {}) ?? "",
+            /captured through 1\.0\.0@0{40}, not the current pin/,
+        );
+
         // A scene source that moved since the capture: the digest no
         // longer matches, even though every file is still on disk.
         writeSeekMeta(metaPath, undefined, {
             moduleSha256: suiteBrowserModuleDigest(sourcePath),
+            pin: capturePin(),
             goldenIdentity: "not-checked",
         });
         writeFileSync(

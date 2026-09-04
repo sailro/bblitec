@@ -111,6 +111,22 @@ inline const char* background_skybox_fragment(
                                     : "background-skybox-dds.frag";
 }
 
+/**
+ * The pin's nullish camera, as a record.
+ *
+ * `getEffectiveAspectRatio` and `resolveCameraViewport` both answer the
+ * whole target for a camera with no viewport, so a scene that has no camera
+ * at all goes through the same pinned bodies over this rather than having
+ * the whole-target answer restated at each call -- the restatement being the
+ * copy that drifts when the pin's own arm moves.
+ *
+ * File scope, so no call pays a function-local static's initialization
+ * guard, and OUTSIDE the floating-origin block below: the shadow refresh
+ * that reads it is not gated on that feature, and putting it inside broke
+ * every scene without one.
+ */
+inline const CameraRecord no_camera_record{};
+
 #if BBLITE_FLOATING_ORIGIN
 /**
  * The scene's active camera, whose world translation IS the floating-origin
@@ -2789,6 +2805,20 @@ inline void refresh_shadow_generators(
     // the pin's own `foCam ? ... : 0`. A frame constant, so it is read once
     // here rather than per generator.
     const Vec3d eye = frame_floating_origin_offset(scene, engine);
+    // `csmCameraAspect` is `getEffectiveAspectRatio(camera, rt._width,
+    // rt._height)`, so a camera carrying a viewport fits its cascades to
+    // the frustum it actually draws. A scene with no camera goes through
+    // the same pinned body over a default record -- whose viewport is
+    // empty, which IS the pin's nullish camera -- rather than restating the
+    // whole-target ratio, where the second copy would be the one that
+    // drifts. A frame constant like `eye` above, so it is read once here
+    // rather than per generator.
+    const double csm_camera_aspect = upstream::effective_aspect_ratio(
+        scene.camera.value < engine.cameras.size()
+            ? engine.cameras[scene.camera.value]
+            : no_camera_record,
+        static_cast<double>(engine.options.width),
+        static_cast<double>(engine.options.height));
     for_each_shadow_generator(
         scene,
         engine,
@@ -2800,9 +2830,7 @@ inline void refresh_shadow_generators(
                 engine.shadow_generators[handle.value];
             const LightRecord& light_record = engine.lights[light.value];
             upstream::ShadowRefreshGate& gate = refresh.gates[handle.value];
-            const double aspect =
-                static_cast<double>(engine.options.width) /
-                static_cast<double>(engine.options.height);
+            const double aspect = csm_camera_aspect;
             // `renderCsmShadowMap` keys its gate on the camera the cascade
             // is fitted to — change key and aspect — in place of the
             // single-map generators' floating-origin term. The key here is
@@ -4432,6 +4460,59 @@ inline void mark_sprite_dirty_range_consumed(Sprite2DLayerRecord& layer) {
     layer.dirty_sprite_reset_version = layer.version;
     layer.dirty_sprite_begin = invalid_handle;
     layer.dirty_sprite_end = 0u;
+}
+
+/**
+ * The rows an instance copy transfers, once the optional Y-sort extension
+ * has had its say.
+ *
+ * `uploadSpriteInstances` asks the hook first and uses what it returns
+ * (`sprite-pipeline.ts`); an engine with no enabled layer finds it empty and
+ * transfers the canonical logical rows the derivation above named. Shared for
+ * the same reason the derivation is: both backends copy the same bytes to the
+ * same offsets and differ only in the write call.
+ */
+inline SpriteInstanceUpload resolve_sprite_instance_upload(
+    Engine& engine,
+    Sprite2DLayerRecord& layer,
+    std::uint32_t dirty_begin,
+    std::uint32_t dirty_end) {
+    // Asked unconditionally, exactly as the pin asks it: the hook itself
+    // answers for a layer that never enabled the extension, so there is one
+    // fallback rather than one here and another inside it.
+    if (engine.sprite_y_sort_hook.stage) {
+        return engine.sprite_y_sort_hook.stage(
+            layer, dirty_begin, dirty_end);
+    }
+    return {layer.instance_data.data(), dirty_begin, dirty_end};
+}
+
+/**
+ * `spriteRendererUpdate`'s first act: run the renderer's own per-frame hooks
+ * with the frame's delta, before anything reads its layer list.
+ *
+ * A disposed renderer runs none, which is the pin's own early return; the
+ * list is copied because a hook may push another one, and upstream's
+ * `for (const hook of rr._beforeUpdate)` iterates the array it entered with.
+ */
+inline void run_sprite_renderer_before_update(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    float delta_ms) {
+    if (renderer.value >= engine.sprite_renderers.size()) return;
+    SpriteRendererRecord& record = engine.sprite_renderers[renderer.value];
+    if (record.disposed || record.before_update.empty()) return;
+    // Copied into the record's own scratch rather than a fresh vector: the
+    // copy is what makes this iterate the list it entered with, the way
+    // upstream's `for (const hook of rr._beforeUpdate)` does, and assigning
+    // into a retained buffer keeps that guarantee while paying the
+    // allocation once instead of once per renderer per frame.
+    record.before_update_running.assign(
+        record.before_update.begin(),
+        record.before_update.end());
+    for (const auto& hook : record.before_update_running) {
+        hook(delta_ms);
+    }
 }
 
 /**

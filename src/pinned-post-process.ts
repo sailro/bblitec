@@ -169,6 +169,15 @@ interface PinnedRenderTargetModule {
         samples: number;
         size: { width: number; height: number };
     }) => PinnedRenderTarget;
+    buildRenderTarget: (
+        target: PinnedRenderTarget,
+        engine: unknown,
+    ) => void;
+}
+
+/** The composite facade, of which composition calls only `record`. */
+interface PinnedCompositeTask extends PinnedPostProcessTask {
+    record(): void;
 }
 
 /**
@@ -259,17 +268,18 @@ async function runComposite(
         pinnedEffectModule(composite),
         composite.passes,
         (intrinsic, value) => {
-            // A pass the composite built itself takes the descriptor's
-            // own name for it, and is marked so the parameter read below
-            // knows to look at the composite: its `_shader` closes over the
-            // composite's state, so the pass publishes none of it.
-            const inline = intrinsic === composite.inlinePass?.symbol;
+            // A pass the composite built itself takes the descriptor's own
+            // name for it, and is marked so the parameter read below knows
+            // to look at the composite: its `_shader` closes over the
+            // composite's state, so the pass publishes none of it. Which
+            // effect it is cannot come from the symbol -- every inline pass
+            // is built through the same one -- so it comes from the suffix
+            // the pin gave the pass, resolved once every pass is in.
+            const task = value as PinnedPostProcessTask;
             passes.push({
-                intrinsic: inline
-                    ? composite.inlinePass!.effect
-                    : intrinsic,
-                inline,
-                task: value as PinnedPostProcessTask,
+                intrinsic,
+                inline: intrinsic === composite.inlinePasses?.symbol,
+                task,
             });
         },
     );
@@ -282,6 +292,7 @@ async function runComposite(
         );
     }
     const resolved = await resolvePinnedEnums(options);
+    const engine = compositionEngine();
     const inputs = new Map<PinnedRenderTarget, string>();
     const input = (option: string): PinnedRenderTarget => {
         const target = renderTargets.createRenderTarget({
@@ -290,6 +301,9 @@ async function runComposite(
             samples: 1,
             size: { width, height },
         });
+        // Built, not merely described: `record()` below refuses a source
+        // with no color texture, exactly as it would in the browser.
+        renderTargets.buildRenderTarget(target, engine);
         inputs.set(target, option);
         return target;
     };
@@ -303,11 +317,16 @@ async function runComposite(
     for (const option of composite.extraTextures) {
         config[option] = input(option);
     }
-    const task = factory(
-        config,
-        compositionEngine(),
-        undefined,
-    ) as PinnedPostProcessTask & { outputTexture?: PinnedRenderTarget };
+    const task = factory(config, engine, undefined) as PinnedCompositeTask;
+    // The chain is not settled by the factory alone: a composite may size an
+    // intermediate in `record()` rather than at construction, and SMAA does
+    // -- its edge and weight targets are born 1x1 and take the source's
+    // extent there. Reading the descriptors before that would report a 1x1
+    // target as a ratio of the source that happens to reproduce, which is a
+    // wrong answer rather than a refused one. So composition records the
+    // graph the way the browser does, against a device that allocates
+    // nothing: every quantity below is then the one the frame would use.
+    task.record();
     // The observation seam only sees passes the composite builds through the
     // entry points its descriptor names, so a chain that ends somewhere else
     // would compose short and silently. What the composite says its output is
@@ -320,7 +339,55 @@ async function runComposite(
                 "builds through.",
         );
     }
+    for (const pass of passes) {
+        if (pass.inline) {
+            pass.intrinsic = inlinePassEffect(composite, pass.task.name);
+        }
+    }
     return { passes, inputs, width, height, composite: task };
+}
+
+/**
+ * The effect row an inline pass is, by the suffix the pin named it with.
+ *
+ * Every inline pass is built through the same `createPostProcessTask`, so
+ * the observed symbol names none of them individually; the pin's own naming
+ * does, and `passName` already treats that suffix as a pass's identity. A
+ * suffix the descriptor does not carry is refused rather than guessed --
+ * a composite that grew a pass would otherwise compose one silently against
+ * another pass's parameters.
+ */
+/**
+ * The suffix a composite appended to its own name for one sub-pass.
+ *
+ * The identity lives here because `COMPOSITION_NAME` does: a second
+ * derivation would be a second answer, and the two this replaced disagreed
+ * on the failing case — one threw, the other fell back to the whole name and
+ * then reported something else.
+ */
+export function passSuffix(name: string): string {
+    if (!name.startsWith(COMPOSITION_NAME)) {
+        throw new Error(
+            `A composite named a pass '${name}', which does not derive ` +
+                "from the name it was given.",
+        );
+    }
+    return name.slice(COMPOSITION_NAME.length);
+}
+
+function inlinePassEffect(
+    composite: PostProcessComposite,
+    name: string,
+): string {
+    const suffix = passSuffix(name);
+    const effect = composite.inlinePasses?.effects[suffix];
+    if (!effect) {
+        throw new Error(
+            `Pinned ${composite.intrinsic} builds a pass named '${suffix}' ` +
+                "inline, which its descriptor does not name an effect for.",
+        );
+    }
+    return effect;
 }
 
 /**
@@ -441,19 +508,24 @@ function compositePassParams(
     }
     return effect.params.map((slot) => {
         if (slot.runtime) {
-            return slot.fallback;
+            return Number(slot.fallback);
         }
         let value: unknown = task;
         for (const step of slot.path.split(".")) {
             value = (value as Record<string, unknown>)?.[step];
         }
-        if (typeof value !== "number") {
+        // A flag travels the same numeric vector as everything else: the
+        // pin's writer spends it through a conditional, which the lowered
+        // body reads back off the same slot. The pinned TYPE still has to
+        // agree with the row, so a setting that changed from a flag to a
+        // number (or back) fails here rather than baking 0 or 1.
+        if (typeof value !== typeof slot.fallback) {
             throw new Error(
-                `Pinned ${intrinsic} no longer publishes '${slot.path}' on ` +
-                    "the pass it builds.",
+                `Pinned ${intrinsic} no longer publishes '${slot.path}' as ` +
+                    `a ${typeof slot.fallback} on the pass it builds.`,
             );
         }
-        return value;
+        return Number(value);
     });
 }
 
@@ -541,17 +613,35 @@ function resolveCompositeTexture(
 }
 
 /**
- * A device whose only method is the one `getShaderModule` calls. Composition
- * asks the pin for a shader module and reads the code it would have handed
- * WebGPU, so nothing else on the device is reachable from here — a pin that
- * started needing more would fail loudly rather than compose something else.
+ * A device that answers every call the pin's own `record()` makes and
+ * allocates nothing behind any of them.
+ *
+ * Composition runs the graph rather than reading a half-built one, because
+ * a composite is allowed to settle its targets there — so the device has to
+ * survive `createPostProcessGpuState`, not just `getShaderModule`. Only the
+ * shader module's code is ever read back; the rest are opaque handles whose
+ * identity is all the pin does with them. Anything the pin started calling
+ * beyond this list is a `TypeError` rather than a quietly different
+ * composition, which is the property that makes the stub safe.
  */
 function compositionEngine(): unknown {
+    const handle = (): unknown => ({});
     return {
         _device: {
             createShaderModule: (descriptor: { code: string }) => ({
                 code: descriptor.code,
             }),
+            createTexture: () => ({
+                createView: handle,
+                destroy: () => {},
+            }),
+            createBuffer: () => ({ destroy: () => {} }),
+            createSampler: handle,
+            createBindGroupLayout: handle,
+            createPipelineLayout: handle,
+            createRenderPipeline: handle,
+            createBindGroup: handle,
+            queue: { writeBuffer: () => {} },
         },
     };
 }

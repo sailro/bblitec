@@ -497,7 +497,7 @@ out the entire class of defect in one command.
 | `artifacts/capture/<id>/tex-uploads.json` | `capture` | texture uploads, with raw bytes for small texels; `diff`'s palette matching reads the rgba32float ones |
 | `artifacts/capture/<id>/seek-{minus1,plus1}/`, `seek-bracket.json` | `capture --seek-bracket` | the ±1-frame captures and the one-frame motion scale |
 | `artifacts/capture/<id>/native-{gpu,dawn}.json` | `capture --native` | our scene model, draw list and uniform blocks |
-| `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek, the served browser-module digest and the golden byte-identity verdict — `diff`, `compose` and `uniforms` refuse or recapture on a mismatch |
+| `artifacts/capture/<id>/capture-meta.json`, `native-{gpu,dawn}.meta.json` | `capture` / `capture --native` | the seek, the served browser-module digest, the pinned package it rendered through, and the golden byte-identity verdict — `diff`, `compose` and `uniforms` refuse or recapture on a mismatch |
 | `artifacts/capture/<id>/compose-report.json` | `compose` (single scene) | the per-material compose verdicts with provenance |
 | `artifacts/capture/<id>/diff-{gpu,dawn}.json` | `diff` | the paired report |
 | `artifacts/capture/<id>/probe-variants/{before,after}/native-dawn.*`, `probe-variants/probe-variants.json` | `probe-variants` | the two native renders around one neutralized shader term, and the before/after measurement |
