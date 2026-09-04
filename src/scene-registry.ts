@@ -3783,16 +3783,16 @@ const sceneInputs: readonly SceneInput[] = [
         sourceOrigin: "babylon-lite-application",
         title: "Babylon Lite Native - Torus States",
         parity: {
+            // The morph state machine and the shader's time uniform both
+            // advance on `performance.now()`, so a wall-clock settle names
+            // no reproducible state: the golden is the 60 Hz fixed-clock
+            // frame the platformer's is, on both sides.
+            referenceFrame: 185,
             maxFullMad: 0.25,
             maxForegroundMad: 0.25,
             backgroundColor: [0, 0, 0],
             backgroundThreshold: 8,
-            nativeEnvironment: {
-                ...adHocCaptureEnvironment(),
-                // The immutable browser reference reaches its measured
-                // post-start settle pose on this fixed-rate frame.
-                BBLITE_SCREENSHOT_FRAME: "185",
-            },
+            nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
     {
