@@ -510,7 +510,7 @@ test("the depth-only view composes the pin's NO_COLOR_OUTPUT arm", async () => {
     );
     // `_noColorOutput` drops the colour return entirely; the varyings still
     // number themselves `@location(n)`, so the return type is the marker.
-    assert.ok(!variant.fragmentWgsl.includes("->@location(0)"));
+    assert.ok(!variant.fragmentWgsl.includes("-> @location(0)"));
     assert.match(variant.fragmentWgsl, /fn main\(input:FragmentInput\)\{/);
 });
 

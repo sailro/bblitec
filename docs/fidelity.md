@@ -306,13 +306,13 @@ cross-cascade blend and unbiased-receiver/biased-caster matrix split are all
 source-derived, and `_computeCsmCascades` is **restated and anchored** — the
 arithmetic is written in C++ and guarded against the pinned body by
 expression-shape assertions on every formula it restates, by its statement
-count (an added statement moves no shape, so the count is what refuses), and
-by the two helpers the fit calls being taken from the pin rather than
-restated: `buildLightViewMatrixInto`, the module's own copy of the light
-basis, is lowered from its declaration, and `mat4InvertToRefOrIdentity` is
-matched term for term against the lowered `mat4Invert` so the one inverse
-serves both, with the identity the variant writes for a singular input
-restated in its place. The sibling `computeDirectionalLightMatrix` is
+inventory (an added statement moves no shape, so the inventory of statement
+kinds is what refuses), and by the three helpers the fit calls being
+lowered from their own declarations rather than restated:
+`buildLightViewMatrixInto`, the module's own copy of the light basis;
+`orthoViewInto`, the ortho multiplied into the light view; and
+`mat4InvertToRefOrIdentity`, the allocation-free inverse with the identity
+it writes for a singular input. The sibling `computeDirectionalLightMatrix` is
 lowered from its AST outright. The difference is not
 cosmetic: a mirror can silently omit an arm where a lowering refuses one it
 cannot express, and this one did. `_castersWorldAabbInto` opens with a

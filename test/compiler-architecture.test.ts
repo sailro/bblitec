@@ -1488,7 +1488,7 @@ test("fits one cascade per CSM split", () => {
     );
     assert.match(
         shadows,
-        /const double split =\s*previous_split \+ frustum_lengths\[cascade\] \/ camera_range;/,
+        /const double split =\s*previous_split \+\s*generator\.csm_cascades\[cascade\]\.frustum_length \/ camera_range;/,
     );
     assert.match(shadows, /previous_split = split;/);
 });

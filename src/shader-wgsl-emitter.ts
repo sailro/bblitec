@@ -155,12 +155,12 @@ export function emitNativeWgslProgram(
     stage: ShaderStage,
     /**
      * The `const` lines the pin's own prelude writes for this program's
-     * defines (`pinnedShaderDefineLines`). They are the one part of the
+     * defines (`pinnedShaderDefineText`). They are the one part of the
      * prelude this port does not re-address: a `const` needs no SDL
      * binding or location, so the pin's text is spliced unchanged, in the
      * pin's own position — after the uniform blocks, before `VertexInput`.
      */
-    defineLines = "",
+    defineText = "",
 ): string {
     const module = stage === "vertex" ? program.vertex : program.fragment;
     const block = program.reflection.uniformBlocks.find(
@@ -181,7 +181,7 @@ export function emitNativeWgslProgram(
             "// Native-specialized WGSL generated from the bblitec shader surface.",
             emitUniformBlock(block),
             emitSamplerBindings(program, stage),
-            defineLines.length > 0 ? defineLines.trimEnd() : undefined,
+            defineText.length > 0 ? defineText.trimEnd() : undefined,
             vertexInput,
             module.rawSource.trim(),
             "",
@@ -206,7 +206,7 @@ export function emitNativeWgslProgram(
         "// Native-specialized WGSL generated from the bblitec typed shader IR.",
         emitUniformBlock(block),
         emitSamplerBindings(program, stage),
-        defineLines.length > 0 ? defineLines.trimEnd() : undefined,
+        defineText.length > 0 ? defineText.trimEnd() : undefined,
         vertexInput,
         ...moduleStructs,
         "",

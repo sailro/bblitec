@@ -30,6 +30,7 @@
     "build": "node tools/build-if-stale.mjs",
     "test": "npm run build && node --test \"dist/test/*.test.js\"",
     "test:upstream": "npm run build && node --test \"dist/test/upstream.test.js\" \"dist/test/compiler-architecture.test.js\" \"dist/test/compiler.test.js\"",
+    "upstream:report": "npm run test:upstream && npm run scenes:compile",
     "scene": "npm run build && node dist/src/scene-command.js",
     "doctor": "npm run scene -- doctor",
     "dev:setup": "npm run scene -- setup",

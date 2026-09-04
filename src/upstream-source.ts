@@ -158,15 +158,14 @@ export class UpstreamSourceStore {
     private readonly repositoryRoot: string;
     private readonly sources = new Map<string, string>();
     /**
-     * Each module's text as the pin's own package build leaves it: the
-     * source map carries the source, and `transformTaggedWgsl` -- the pin's
-     * build step, executed from its pinned script -- turns every `wgsl`
-     * tagged template into the minified plain template the package ships.
-     * Everything that reads a pinned module reads this, so a shader folded
-     * from a builder's AST is the text the browser compiles, byte for byte.
+     * Each module's text as the pin's own package build leaves it
+     * (`pinned-wgsl-build.ts`), memoized per module across every store
+     * over the same package, since the transform is a pure function of the
+     * module: everything that reads a pinned module reads this, so a
+     * shader folded from a builder's AST is the text the browser compiles,
+     * byte for byte.
      */
-    private readonly builtSources = new Map<string, string>();
-    private wgslTagChecked = false;
+    private static readonly builtSources = new Map<string, string>();
     private readonly sourceFiles = new Map<string, ts.SourceFile>();
     private readonly publicExports = new Map<string, PublicExport>();
 
@@ -202,29 +201,25 @@ export class UpstreamSourceStore {
         }
 
         this.loadSources();
+        // Stripping the pin's `wgsl` tag -- here, in the compiler's readers
+        // of scene source, and in the Canvas2D helper module -- is sound
+        // only while the helper is the identity over its template; one
+        // check per store settles it for every reader.
+        assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
         this.loadPublicExports();
     }
 
     public getSource(modulePath: string): string {
         const normalized = modulePath.replace(/\\/g, "/");
-        const built = this.builtSources.get(normalized);
+        const key = `${this.packageRoot}\0${normalized}`;
+        const built = UpstreamSourceStore.builtSources.get(key);
         if (built !== undefined) return built;
         const source = this.sources.get(normalized);
         if (!source) throw new Error(`Upstream TypeScript source not found: ${normalized}.`);
-        // The plugin's own early-out: a module that never mentions the tag
-        // is handed back untouched without a parse.
-        const transformed = source.includes("wgsl")
-            ? pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
-            : null;
-        if (transformed && !this.wgslTagChecked) {
-            // Stripping the tag is sound only while the helper is the
-            // identity over its template, which one check settles for the
-            // whole pin.
-            this.wgslTagChecked = true;
-            assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
-        }
-        const text = transformed?.code ?? source;
-        this.builtSources.set(normalized, text);
+        const text =
+            pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
+                ?.code ?? source;
+        UpstreamSourceStore.builtSources.set(key, text);
         return text;
     }
 
@@ -311,6 +306,12 @@ export class UpstreamSourceStore {
     private findSourceExport(name: string): string | undefined {
         for (const path of this.listSources()) {
             if (path === "src/index.ts") {
+                continue;
+            }
+            // A module that never spells the name cannot export it, and
+            // the text test spares the parse this walk would otherwise
+            // pay for most of the package on every store.
+            if (!this.sources.get(path)!.includes(name)) {
                 continue;
             }
             const file = this.getSourceFile(path);

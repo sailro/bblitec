@@ -13,7 +13,7 @@ import type {
 } from "../compiler.js";
 import { emitNativeWgslProgram } from "../shader-wgsl-emitter.js";
 import {
-    pinnedShaderDefineLines,
+    pinnedShaderDefineText,
     shaderPipelineModule,
 } from "./pinned-shader-defines.js";
 import {
@@ -3166,7 +3166,7 @@ ${lifted.fragmentBody}
             const program = lowerWgslShaderProgram(source);
             // The prelude's `defines` lines come from the pin's own
             // builder; everything else in it this port re-addresses.
-            const defineLines = pinnedShaderDefineLines(
+            const defineText = pinnedShaderDefineText(
                 this.context,
                 source.defines ?? [],
             );
@@ -3179,7 +3179,7 @@ ${lifted.fragmentBody}
                             source,
                             sceneUniformsWgsl,
                             "vertex",
-                            defineLines,
+                            defineText,
                         ),
                 },
                 {
@@ -3190,7 +3190,7 @@ ${lifted.fragmentBody}
                             source,
                             sceneUniformsWgsl,
                             "fragment",
-                            defineLines,
+                            defineText,
                         ),
                 },
                 {
@@ -3198,7 +3198,7 @@ ${lifted.fragmentBody}
                     data: emitNativeWgslProgram(
                         program,
                         "vertex",
-                        defineLines,
+                        defineText,
                     ),
                 },
                 {
@@ -3206,7 +3206,7 @@ ${lifted.fragmentBody}
                     data: emitNativeWgslProgram(
                         program,
                         "fragment",
-                        defineLines,
+                        defineText,
                     ),
                 },
             );
@@ -3581,11 +3581,6 @@ ${lifted.fragmentBody}
     public fidelityManifest(): RendererFidelityManifest {
         const rgbd = this.context.store.getSource(rgbdDecodeModule);
         const surface = this.context.store.getSource(surfaceModule);
-        const iblSkybox = this.context.store.getSource(iblSkyboxModule);
-        const refraction = this.context.store.getSource(refractionModule);
-        const dielectric = this.context.store.getSource(
-            dielectricLoaderModule,
-        );
         const clearcoatFragment = this.context.store.getSource(
             clearcoatFragmentModule,
         );
@@ -3598,9 +3593,6 @@ ${lifted.fragmentBody}
         const dispersionWgsl = this.context.store.getSource(
             dispersionWgslModule,
         );
-        const transmissionFrameGraph = this.context.store.getSource(
-            transmissionFrameGraphModule,
-        );
         const clearcoatLoader = this.context.store.getSource(
             clearcoatLoaderModule,
         );
@@ -3610,32 +3602,11 @@ ${lifted.fragmentBody}
         if (!surface.includes("Defaults to `4`.")) {
             throw new Error("Pinned Babylon Lite MSAA default changed.");
         }
+        // The markers the formula table above does not assert for every
+        // plan: the extension arms it pushes only when a scene reaches
+        // them, asserted here unconditionally so a pin drift is read at
+        // the first generation rather than the first reaching scene.
         for (const [source, marker, label] of [
-            [
-                iblSkybox,
-                "let R=input.worldPos-scene.vEyePosition.xyz",
-                "PBR skybox mode",
-            ],
-            [
-                iblSkybox,
-                "let skyboxAlphaG=max(roughness*roughness,0.000001)",
-                "PBR skybox LOD alphaG",
-            ],
-            [
-                refraction,
-                "let ab=exp(material.volumeParams.rgb*th)",
-                "volume attenuation",
-            ],
-            [
-                dielectric,
-                "((ior - 1) / (ior + 1)) ** 2 / 0.04",
-                "IOR Fresnel",
-            ],
-            [
-                transmissionFrameGraph,
-                "updateTransmissionTexture(state, engine)",
-                "scene-color copy",
-            ],
             [
                 clearcoatFragment,
                 "let ccConservation_ibl=1.0-ccFresnelIBL*ccInt_ibl;",

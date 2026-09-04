@@ -122,7 +122,7 @@ function definesLoopAppend(context: LoweringContext): DefinesLoopAppend {
  * to its prelude with no separator, so the texts concatenate as the pin
  * concatenates them.
  */
-export function pinnedShaderDefineLines(
+export function pinnedShaderDefineText(
     context: LoweringContext,
     defines: readonly PinnedShaderDefine[],
 ): string {

@@ -42,34 +42,23 @@ export type FoldGeneratedStringArgument = (
     argument: ts.Expression,
 ) => string | number | boolean | undefined;
 
+/** The compiler's own answer to "is this the pin's `wgsl` tag over a template". */
+export type PinnedWgslTemplate = (
+    expression: ts.Expression,
+) => ts.TemplateLiteral | undefined;
+
 /**
- * The source ranges of every pinned `wgsl` tag in the file: the tag
- * identifier of a tagged template bound by an import of the pin's shader
- * helper. Resolved by import symbol, so a local tag that happens to be
- * spelled `wgsl` is not one.
+ * The source ranges of every pinned `wgsl` tag in the file, tag start to
+ * template start -- the range the pin's own build step removes.
  */
 function pinnedWgslTagRanges(
-    checker: ts.TypeChecker,
     source: ts.SourceFile,
+    pinnedWgslTemplate: PinnedWgslTemplate,
 ): Array<readonly [start: number, end: number]> {
     const ranges: Array<readonly [start: number, end: number]> = [];
     const visit = (node: ts.Node): void => {
-        if (ts.isTaggedTemplateExpression(node) && ts.isIdentifier(node.tag)) {
-            const declaration = checker.getSymbolAtLocation(node.tag)
-                ?.declarations?.[0];
-            if (declaration && ts.isImportSpecifier(declaration)) {
-                const specifier =
-                    declaration.parent.parent.parent.moduleSpecifier;
-                const imported = (declaration.propertyName ?? declaration.name)
-                    .text;
-                if (
-                    imported === "wgsl" &&
-                    ts.isStringLiteral(specifier) &&
-                    /(^|\/)shader\/wgsl(\.js)?$/.test(specifier.text)
-                ) {
-                    ranges.push([node.tag.getStart(source), node.tag.end]);
-                }
-            }
+        if (ts.isTaggedTemplateExpression(node) && pinnedWgslTemplate(node)) {
+            ranges.push([node.getStart(source), node.template.getStart(source)]);
         }
         ts.forEachChild(node, visit);
     };
@@ -81,6 +70,7 @@ export function browserGeneratedString(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     foldArgument: FoldGeneratedStringArgument,
+    pinnedWgslTemplate: PinnedWgslTemplate,
 ): string | undefined {
     if (!ts.isIdentifier(call.expression)) return undefined;
     const declaration = tryResolveFunctionDeclaration(
@@ -127,7 +117,7 @@ export function browserGeneratedString(
         ...source.statements
             .filter(ts.isImportDeclaration)
             .map((statement) => [statement.getFullStart(), statement.end] as const),
-        ...pinnedWgslTagRanges(checker, source),
+        ...pinnedWgslTagRanges(source, pinnedWgslTemplate),
     ];
     for (const [start, end] of removed.sort((a, b) => b[0] - a[0])) {
         sourceText = sourceText.slice(0, start) + sourceText.slice(end);

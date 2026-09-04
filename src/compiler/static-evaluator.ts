@@ -1722,7 +1722,7 @@ export class StaticEvaluator {
         return undefined;
     }
 
-    private unwrap(
+    public unwrap(
         expression: ts.Expression,
     ): ts.Expression {
         let current = expression;

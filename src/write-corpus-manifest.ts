@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -12,21 +13,22 @@ import { findRepositoryRoot, readUpstreamPin } from "./upstream-source.js";
  *
  * The manifest is golden PROVENANCE: per registered scene it records the corpus
  * source digest, the golden's own bytes, the digest of the module the capture
- * harness builds, and the query the golden was captured at. A bump moves
- * exactly one of those columns, for exactly one reason — the browser module
- * embeds the pin in curated asset URLs (the BRDF LUT's URL carries the source
- * commit), so `moduleSha256` moves for every scene that fetches one.
+ * harness builds, and the query the golden was captured at. A bump moves the
+ * module digest for two reasons it can prove: the browser module embeds the
+ * pin in curated asset URLs (the BRDF LUT's URL carries the source commit), so
+ * `moduleSha256` moves for every scene that fetches one; and upstream may edit
+ * a registered scene's source, which moves `sourceSha256` through the corpus
+ * manifest (itself re-derived from the upstream tree by `corpus:verify`) and
+ * the module with it.
  *
  * That is why this is a command rather than a hand edit. Rewriting the column
  * blindly would launder a real change into the provenance record: a digest that
- * moved because the SCENE moved, or because the harness composes something
- * different, is indistinguishable from pin churn once the new value is written.
- * So every move must be EXPLAINED — reverting the pin strings has to reproduce
- * the committed digest, or the scene's own `sourceSha256` moved with the bump
- * (upstream edited a registered scene; the corpus manifest that carries the
- * new digest is itself re-derived from the upstream tree by `corpus:verify`)
- * — and the columns a bump must not touch refuse rather than being
- * rewritten:
+ * moved because the harness composes something different, or because a pose
+ * changed, is indistinguishable from pin churn once the new value is written.
+ * So every move must be EXPLAINED: composing the row's PREVIOUS source under
+ * the previous pin has to reproduce the committed digest — the previous
+ * source read from the git tree the rows were written against — and the
+ * columns a bump must not touch refuse rather than being rewritten:
  *
  * - `referenceSha256` is the golden's own bytes. A golden that moved is a
  *   behaviour change to investigate; recapturing one is its own deliberate
@@ -75,13 +77,12 @@ export interface ManifestRewrite {
     content: string;
     /** True when it differs from what is on disk. */
     changed: boolean;
-    /** Scenes whose `moduleSha256` moved, each explained by the pin or by its own source. */
+    /** Scenes whose `moduleSha256` moved, each explained. */
     movedModules: string[];
     /**
-     * The subset whose SOURCE moved with the bump: upstream edited the
-     * registered scene, so the module carries new text beside the new pin.
-     * Their goldens must be recaptured under the new source, which is a
-     * separate deliberate operation the report names them for.
+     * The subset whose source moved with the bump: their goldens must be
+     * recaptured under the edited source, a separate deliberate operation
+     * the report names them for.
      */
     movedSources: string[];
     /** How many rows were considered. */
@@ -93,12 +94,14 @@ export interface ManifestRewrite {
 /**
  * Re-derives every column a bump may move and refuses the ones it may not.
  *
- * `previous` is the pin the committed rows were written under, which is what
- * makes "explained by the pin" checkable at all.
+ * `previous` is the pin the committed rows were written under, and
+ * `previousTree` the git tree whose corpus sources they were composed from;
+ * together they are what makes "explained" checkable at all.
  */
 export function rewriteExactCorpusManifest(
     previous: UpstreamPinPair,
     repositoryRoot = findRepositoryRoot(),
+    previousTree = "HEAD",
 ): ManifestRewrite {
     const path = resolve(repositoryRoot, MANIFEST_PATH);
     const original = readFileSync(path, "utf8");
@@ -137,10 +140,10 @@ export function rewriteExactCorpusManifest(
                 `${row.id} is in ${MANIFEST_PATH} but not in the corpus manifest.`,
             );
         }
-        // The scene's own source is the module's other input. A bump that
-        // edits a registered scene upstream moves this column through the
-        // corpus manifest -- itself re-derived from the upstream tree by
-        // `corpus:verify` -- and the module digest with it.
+        // The scene's own source is the module's other input: a bump that
+        // edits a registered scene upstream moves this column and the
+        // module digest with it, and the move is then explained by
+        // composing the PREVIOUS source, not by the edit's existence.
         const sourceMoved = row.sourceSha256 !== sourceSha256;
         row.sourceSha256 = sourceSha256;
 
@@ -164,11 +167,20 @@ export function rewriteExactCorpusManifest(
         );
         const digest = sha256(composed);
         if (digest !== row.moduleSha256) {
-            if (sourceMoved) {
-                movedSources.push(row.id);
-            } else {
-                assertExplainedByPin(row, composed, previous, current);
-            }
+            // A moved source is composed as it was, under the pin strings
+            // as they are; reverting the strings must then reproduce the
+            // committed digest exactly as it must for an unedited scene.
+            const previousComposed = sourceMoved
+                ? suiteBrowserModule(
+                      scene.source,
+                      () => previousSource(repositoryRoot, previousTree, scene.source),
+                      parity.referenceTimeSeconds,
+                      parity.referenceAnimationGroups,
+                      parity.referenceFrame,
+                  )
+                : composed;
+            assertExplainedByPin(row, previousComposed, previous, current);
+            if (sourceMoved) movedSources.push(row.id);
             row.moduleSha256 = digest;
             movedModules.push(row.id);
         }
@@ -224,12 +236,26 @@ function assertExplainedByPin(
         return;
     }
     throw new Error(
-        `${row.id}: its capture module moved for a reason the pin does not ` +
-            "explain -- reverting the package version and source commit does not " +
-            "reproduce the recorded digest. A bump moves this column only through " +
-            "the pinned URLs the module embeds, so this is a change to read " +
-            "rather than a row to rewrite.",
+        `${row.id}: its capture module moved for a reason the bump does not ` +
+            "explain -- composing its previous source and reverting the package " +
+            "version and source commit does not reproduce the recorded digest. " +
+            "A bump moves this column only through the pinned URLs the module " +
+            "embeds and the scene's own edit, so this is a change to read rather " +
+            "than a row to rewrite.",
     );
+}
+
+/** A corpus file as the given git tree holds it. */
+function previousSource(
+    repositoryRoot: string,
+    tree: string,
+    path: string,
+): string {
+    return execFileSync("git", ["show", `${tree}:${path.replace(/\\/g, "/")}`], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        maxBuffer: 1 << 26,
+    });
 }
 
 function flag(name: string): string | undefined {
@@ -242,23 +268,29 @@ async function main(): Promise<void> {
     const sourceVersion = flag("--previous-commit");
     if (!version || !sourceVersion) {
         console.error(
-            "usage: corpus:manifest --previous-version <v> --previous-commit <sha> [--write]\n\n" +
-                "The previous pin is what makes a moved module digest checkable:\n" +
-                "reverting it must reproduce the committed value, or the move is a\n" +
-                "finding rather than churn.",
+            "usage: corpus:manifest --previous-version <v> --previous-commit <sha> " +
+                "[--previous-tree <git ref, default HEAD>] [--write]\n\n" +
+                "The previous pin and tree are what make a moved module digest\n" +
+                "checkable: composing the previous source and reverting the pin must\n" +
+                "reproduce the committed value, or the move is a finding rather than churn.",
         );
         process.exitCode = 2;
         return;
     }
 
     const root = findRepositoryRoot();
-    const result = rewriteExactCorpusManifest({ version, sourceVersion }, root);
+    const result = rewriteExactCorpusManifest(
+        { version, sourceVersion },
+        root,
+        flag("--previous-tree") ?? "HEAD",
+    );
     console.log(
         `${result.movedModules.length} of ${result.rows} capture module digest(s) ` +
             `moved, each explained by the pin at ${result.sourceVersion}` +
             (result.movedSources.length > 0
-                ? ` or by its own source (${result.movedSources.join(", ")}: ` +
-                  "recapture their goldens under the edited source)."
+                ? `, ${result.movedSources.length} of them under an edited source ` +
+                  `(${result.movedSources.join(", ")}: recapture their goldens ` +
+                  "under the edited source)."
                 : "."),
     );
     if (!result.changed) {
