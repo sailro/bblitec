@@ -113,6 +113,9 @@ export class StaticEvaluator {
         private readonly onAwait: OnAwait,
         private readonly onJsData: () => void,
         private readonly bindDataTuple: BindDataTuple,
+        private readonly pinnedWgslTemplate: (
+            expression: ts.Expression,
+        ) => ts.TemplateLiteral | undefined,
     ) {}
 
     /**
@@ -1719,23 +1722,32 @@ export class StaticEvaluator {
         return undefined;
     }
 
-    private unwrap(
+    public unwrap(
         expression: ts.Expression,
     ): ts.Expression {
         let current = expression;
-        while (
-            ts.isAsExpression(current) ||
-            ts.isTypeAssertionExpression(current) ||
-            ts.isParenthesizedExpression(current) ||
-            ts.isNonNullExpression(current) ||
-            ts.isAwaitExpression(current)
-        ) {
-            if (ts.isAwaitExpression(current)) {
-                this.onAwait(current);
+        for (;;) {
+            if (
+                ts.isAsExpression(current) ||
+                ts.isTypeAssertionExpression(current) ||
+                ts.isParenthesizedExpression(current) ||
+                ts.isNonNullExpression(current) ||
+                ts.isAwaitExpression(current)
+            ) {
+                if (ts.isAwaitExpression(current)) {
+                    this.onAwait(current);
+                }
+                current = current.expression;
+                continue;
             }
-            current = current.expression;
+            // The pin's `wgsl` tag is the identity over its template.
+            const template = this.pinnedWgslTemplate(current);
+            if (template) {
+                current = template;
+                continue;
+            }
+            return current;
         }
-        return current;
     }
 
     private floatLiteral(value: number): string {

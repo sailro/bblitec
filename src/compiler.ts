@@ -791,6 +791,7 @@ class Compiler
                 ),
             () => this.reachJsData(),
             (value, arity) => this.bindDataTuple(value, arity),
+            (expression) => this.symbols.pinnedWgslTemplate(expression),
         );
     }
 
@@ -8590,8 +8591,11 @@ class Compiler
     private bakedBrowserGeneratedString(
         call: ts.CallExpression,
     ): string | undefined {
-        return browserGeneratedString(this.checker, call, (argument) =>
-            this.foldGeneratedStringArgument(argument),
+        return browserGeneratedString(
+            this.checker,
+            call,
+            (argument) => this.foldGeneratedStringArgument(argument),
+            (expression) => this.symbols.pinnedWgslTemplate(expression),
         );
     }
 
@@ -11039,16 +11043,7 @@ class Compiler
                     callee,
                     (node, message) => this.fail(node, message),
                 );
-                const body = declaration?.body;
-                const onlyStatement = body && ts.isBlock(body)
-                    ? body.statements[0]
-                    : undefined;
-                const returned = body && !ts.isBlock(body)
-                    ? body
-                    : body && ts.isBlock(body) && body.statements.length === 1 &&
-                        onlyStatement && ts.isReturnStatement(onlyStatement)
-                      ? onlyStatement.expression
-                      : undefined;
+                const returned = this.builderReturn(declaration);
                 if (
                     returned &&
                     (ts.isTemplateExpression(returned) ||
@@ -11535,6 +11530,28 @@ class Compiler
      * representation is one pipeline whose material block receives that float
      * when the material is created.
      */
+    /**
+     * What a source builder returns: its expression body, or the expression
+     * of a block body's single `return`, read through `unwrap` so the pin's
+     * `wgsl` tag over a template is that template. Undefined for any other
+     * shape.
+     */
+    private builderReturn(
+        declaration: ts.SignatureDeclaration | undefined,
+    ): ts.Expression | undefined {
+        const body =
+            declaration && ts.isFunctionLike(declaration)
+                ? (declaration as ts.FunctionLikeDeclaration).body
+                : undefined;
+        if (!body) return undefined;
+        if (!ts.isBlock(body)) return this.unwrap(body);
+        const only =
+            body.statements.length === 1 ? body.statements[0] : undefined;
+        return only && ts.isReturnStatement(only) && only.expression
+            ? this.unwrap(only.expression)
+            : undefined;
+    }
+
     public compileShaderSource(expression: ts.Expression): {
         source: string;
         dynamicUniforms: Array<{
@@ -11602,19 +11619,20 @@ class Compiler
                 return { source, dynamicUniforms: [] };
             }
         }
-        if (
-            !declaration ||
-            !body ||
-            ts.isBlock(body) ||
-            !ts.isTemplateExpression(body) ||
-            body.templateSpans.length !== 1
-        ) {
+        const returned = this.builderReturn(declaration);
+        const template =
+            returned &&
+            ts.isTemplateExpression(returned) &&
+            returned.templateSpans.length === 1
+                ? returned
+                : undefined;
+        if (!declaration || !template) {
             return {
                 source: this.compileStaticString(expression),
                 dynamicUniforms: [],
             };
         }
-        const span = body.templateSpans[0]!;
+        const span = template.templateSpans[0]!;
         const formatted = this.unwrap(span.expression);
         if (
             !ts.isCallExpression(formatted) ||
@@ -11650,7 +11668,7 @@ class Compiler
         }
 
         const marker = "__BBL_DYNAMIC_SHADER_FLOAT__";
-        const templated = body.head.text + marker + span.literal.text;
+        const templated = template.head.text + marker + span.literal.text;
         const declarationPattern = new RegExp(
             `(^|\\n)([ \\t]*)const\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*:\\s*f32\\s*=\\s*${marker}\\s*;[ \\t]*(?=\\n|$)`,
         );
@@ -16144,21 +16162,13 @@ class Compiler
         };
     }
 
+    /**
+     * The evaluator's own unwrap -- one rule for what a reader sees
+     * through, including the pin's `wgsl` tag -- which records every await
+     * it passes into `unwrappedAwaitExpressions` through `onAwait`.
+     */
     public unwrap(expression: ts.Expression): ts.Expression {
-        let current = expression;
-        while (
-            ts.isAwaitExpression(current) ||
-            ts.isParenthesizedExpression(current) ||
-            ts.isAsExpression(current) ||
-            ts.isTypeAssertionExpression(current) ||
-            ts.isNonNullExpression(current)
-        ) {
-            if (ts.isAwaitExpression(current)) {
-                this.unwrappedAwaitExpressions.add(current.pos);
-            }
-            current = current.expression;
-        }
-        return current;
+        return this.evaluator.unwrap(expression);
     }
 
     /** The value symbol a name binds, or a failure naming it. */

@@ -54,7 +54,7 @@ test("lifts the pinned ground fragment with both dither arms", () => {
     // zero-noise WGSL_NO_DITHER stand-in (same body) in the other.
     assert.match(
         dithered,
-        /fn dither\(seed: vec2<f32>, varianceAmount: f32\) -> f32 \{/,
+        /fn dither\(seed:vec2<f32>,varianceAmount:f32\)->f32\{/,
     );
     assert.ok(dithered.includes("43758.5453"));
     assert.ok(
@@ -86,7 +86,7 @@ test("lifts the pinned ground fragment with both dither arms", () => {
     );
     assert.ok(dithered.includes("a=max(a,vec4<f32>(0.0));"));
     assert.ok(
-        dithered.includes("const tonemappingCalibration: f32 = 1.590579;"),
+        dithered.includes("const tonemappingCalibration:f32=1.590579;"),
     );
 
     // The binding contract the PAL uploads against is unchanged.
@@ -273,27 +273,27 @@ test("lifts the pinned ip() and per-sample loop for image processing", () => {
 
 test("lifts the pinned WGSL_FOG with the documented renames", () => {
     const fog = fogFactorWgsl();
-    assert.ok(fog.startsWith("const bblFogE: f32 = 2.71828;"));
+    assert.ok(fog.startsWith("const bblFogE:f32=2.71828;"));
     assert.ok(
-        fog.includes("fn bblCalcFogFactor(fogDistance: vec3<f32>) -> f32 {"),
+        fog.includes("fn bblCalcFogFactor(fogDistance:vec3<f32>)->f32{"),
     );
     // The pin's own three falloff arms over the consumers' uniform slot.
     assert.ok(
         fog.includes(
-            "if (fogMode == 3.0) { fogCoeff = (fogEnd - dist) / (fogEnd - fogStart); }",
+            "if(fogMode==3.0){fogCoeff=(fogEnd-dist)/(fogEnd-fogStart);}",
         ),
     );
     assert.ok(
         fog.includes(
-            "else if (fogMode == 1.0) { fogCoeff = 1.0 / pow(bblFogE, dist * fogDensity); }",
+            "else if(fogMode==1.0){fogCoeff=1.0/pow(bblFogE,dist*fogDensity);}",
         ),
     );
     assert.ok(
         fog.includes(
-            "else if (fogMode == 2.0) { fogCoeff = 1.0 / pow(bblFogE, dist * dist * fogDensity * fogDensity); }",
+            "else if(fogMode==2.0){fogCoeff=1.0/pow(bblFogE,dist*dist*fogDensity*fogDensity);}",
         ),
     );
-    assert.ok(fog.includes("let fogMode = uniforms.fogInfos.x;"));
+    assert.ok(fog.includes("let fogMode=uniforms.fogInfos.x;"));
     assert.doesNotMatch(fog, /scene\./);
     assert.doesNotMatch(fog, /E_FOG|[^l]calcFogFactor/);
 });

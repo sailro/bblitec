@@ -236,11 +236,11 @@ export function composeStandaloneWgsl(
     /**
      * The `const` lines the pin's own prelude writes for this program's
      * defines, read from `buildShaderPrelude` by
-     * `pinnedShaderDefineLines`. Passed in because that read needs the
+     * `pinnedShaderDefineText`. Passed in because that read needs the
      * lowering context, and both this composer and the native emitter
      * splice the same block.
      */
-    defineLines = "",
+    defineText = "",
 ): string {
     const uniforms = program.uniforms.map(uniformField);
     const system = uniforms.filter(({ system: isSystem }) => isSystem);
@@ -282,7 +282,7 @@ ${systemFields}
 }
 @group(1) @binding(0) var<uniform> shaderSystem: ShaderSystemUniforms;
 ${customBlock}
-${samplerBlock}${defineLines}struct VertexInput {
+${samplerBlock}${defineText}struct VertexInput {
 ${attributes}
 };
 ${source.trim()}

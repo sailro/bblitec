@@ -88,31 +88,6 @@ const PRIMITIVE_SHAPE_ARMS: ReadonlyArray<
   ["CYLINDER", "HP_Shape_CreateCylinder", "physics_shape_create_cylinder"],
 ];
 
-/** The statement kinds a restated pinned body's inventory names. */
-const STATEMENT_KINDS: ReadonlyArray<
-  readonly [string, (statement: ts.Statement) => boolean]
-> = [
-  ["variable statement", ts.isVariableStatement],
-  ["if statement", ts.isIfStatement],
-  ["for statement", ts.isForStatement],
-  ["expression statement", ts.isExpressionStatement],
-  ["return statement", ts.isReturnStatement],
-];
-
-/**
- * A statement's kind, as an inventory row names it.
- *
- * One projection for every statement-kind inventory below, so the `"other
- * statement"` fallback the refusal message prints is stated once: two copies
- * can disagree about a kind the table has no entry for, which is exactly the
- * case an inventory exists to notice.
- */
-function statementKind(statement: ts.Statement): string {
-  return (
-    STATEMENT_KINDS.find(([, is]) => is(statement))?.[0] ?? "other statement"
-  );
-}
-
 /**
  * `_buildShapeParams`'s prelude scalars, as (the pin's name, the emitted
  * field).
@@ -211,30 +186,24 @@ export class PhysicsLowerer {
 
   /**
    * The numeric value of each `PhysicsShapeType` / `PhysicsMotionType`
-   * member. A `const enum` is inlined by the TypeScript emitter, so the
-   * declaration is the only place the number exists -- and both PALs
-   * translate the emitted enumerator, so a member the pin renumbers has
-   * to renumber here too.
+   * member. The pin declares them as `as const` value objects (1.27.0
+   * replaced its `const enum`s so consumers under `verbatimModuleSyntax`
+   * can import them), so the object literal is the only place the number
+   * exists -- and both PALs translate the emitted enumerator, so a member
+   * the pin renumbers has to renumber here too.
    */
   private enumMembers(name: string): Map<string, number> {
     const file = this.context.sourceFile(havokModule);
-    const declaration = file.statements.find(
-      (statement): statement is ts.EnumDeclaration =>
-        ts.isEnumDeclaration(statement) && statement.name.text === name,
-    );
-    if (!declaration) {
-      this.context.contractError(
-        file,
-        `Expected ${havokModule} to declare enum ${name}.`,
-      );
-    }
+    const literal = this.context.objectInitializer(file, name);
     const members = new Map<string, number>();
-    for (const member of declaration.members) {
-      if (!ts.isIdentifier(member.name) || !member.initializer) {
+    for (const member of literal.properties) {
+      if (
+        !ts.isPropertyAssignment(member) ||
+        !ts.isIdentifier(member.name)
+      ) {
         this.context.contractError(
           member,
-          `Expected ${name} members to carry explicit ` +
-            "numeric initializers.",
+          `Expected ${name} members to be named numeric properties.`,
         );
       }
       members.set(
@@ -1008,12 +977,13 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       restated,
       kinds,
     ] of PhysicsLowerer.inventoryContracts) {
-      this.assertInventory(
-        this.pinnedDeclaration(symbolName),
+      const declaration = this.pinnedDeclaration(symbolName);
+      this.context.assertStatementInventory(
+        declaration,
+        declaration.body!.statements,
         symbolName,
         restated,
         kinds,
-        statementKind,
       );
     }
     this.assertStaticFrictionDefault();
@@ -1220,8 +1190,9 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
    * builder that reads an uninitialised one.
    */
   private assertShapeParamsPrelude(declaration: ts.FunctionDeclaration): void {
-    this.assertInventory(
+    this.context.assertStatementInventory(
       declaration,
+      declaration.body!.statements,
       buildShapeParams,
       "the emitted builder restates each term in that order",
       [
@@ -1231,7 +1202,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         "max",
         "extents",
       ],
-      (statement) =>
+      (statement: ts.Statement) =>
         ts.isVariableStatement(statement)
           ? statement.declarationList.declarations
               .map((entry) =>
@@ -1239,43 +1210,6 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
               )
               .join(", ")
           : undefined,
-    );
-  }
-
-  /**
-   * A pinned body's own top-level inventory, in the pin's order.
-   *
-   * Each body it is called for is restated whole rather than translated
-   * statement by statement, and for each the per-expression contracts
-   * above are complete only while the body still has exactly these
-   * statements: an arm the pin ADDS is invisible to every one of them.
-   * `project` is what a caller compares -- a statement kind for the
-   * `inventoryContracts` rows, a declaration name for the shape prelude
-   * -- and returning undefined skips a statement the inventory does not
-   * describe.
-   */
-  private assertInventory(
-    declaration: ts.FunctionDeclaration,
-    symbolName: string,
-    restated: string,
-    expected: readonly string[],
-    project: (statement: ts.Statement) => string | undefined,
-  ): void {
-    const found = declaration
-      .body!.statements.map(project)
-      .filter((entry): entry is string => entry !== undefined);
-    if (
-      found.length === expected.length &&
-      found.every((entry, index) => entry === expected[index])
-    ) {
-      return;
-    }
-    this.context.contractError(
-      declaration,
-      `${symbolName} carries [${found.join("; ")}]; ${restated} of ` +
-        `exactly [${expected.join("; ")}], so an added or reordered ` +
-        "arm must be read and re-emitted rather than silently " +
-        "dropped.",
     );
   }
 

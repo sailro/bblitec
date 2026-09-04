@@ -9,6 +9,9 @@ function transpileTypeScript(
         compilerOptions: {
             target: ts.ScriptTarget.ES2022,
             module,
+            // The pin's build script default-imports TypeScript's own
+            // CommonJS bundle, which declares no `default` export.
+            esModuleInterop: true,
         },
         fileName,
     }).outputText;

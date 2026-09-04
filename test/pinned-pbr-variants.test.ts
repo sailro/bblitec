@@ -83,17 +83,17 @@ test("composes the pin's colourless thin-instance vertex arm", async () => {
         meshFeatures: meshBits.MSH_HAS_THIN_INSTANCES,
     });
 
-    assert.match(variant.vertexWgsl, /@location\(3\) world0:vec4<f32>/);
-    assert.match(variant.vertexWgsl, /@location\(6\) world3:vec4<f32>/);
+    assert.match(variant.vertexWgsl, /@location\(3\)world0:vec4<f32>/);
+    assert.match(variant.vertexWgsl, /@location\(6\)world3:vec4<f32>/);
     assert.ok(
         variant.vertexWgsl.includes(
-            "let instanceWorld = mat4x4<f32>(world0, world1, world2, " +
+            "let instanceWorld=mat4x4<f32>(world0,world1,world2," +
                 "world3);",
         ),
     );
     assert.ok(
         variant.vertexWgsl.includes(
-            "finalWorld = mesh.world * instanceWorld;",
+            "finalWorld=mesh.world*instanceWorld;",
         ),
     );
 });

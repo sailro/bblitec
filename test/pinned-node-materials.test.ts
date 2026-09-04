@@ -49,11 +49,11 @@ test("compiles the minimal graph through the pin's own emitter", async () => {
         "scene60",
     );
     // Both entry points, from the one module the pin builds.
-    assert.match(composed.wgsl, /@vertex\nfn vs_main/);
-    assert.match(composed.wgsl, /@fragment\nfn fs_main/);
+    assert.match(composed.wgsl, /@vertex fn vs_main/);
+    assert.match(composed.wgsl, /@fragment fn fs_main/);
     // The pin's own per-pass scene block and its node mesh block.
     assert.match(composed.wgsl, /@group\(0\) @binding\(0\) var<uniform> scene/);
-    assert.match(composed.wgsl, /struct MeshU \{/);
+    assert.match(composed.wgsl, /struct MeshU\{/);
     // Scene 60's graph is one vec4 colour input feeding the fragment output.
     assert.equal(composed.uboBytes, 16);
     assert.equal(composed.uboBinding, 1);
@@ -93,15 +93,15 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
     assert.deepEqual(composed.morphBindings, { deltas: 2, weights: 3 });
     assert.match(
         composed.wgsl,
-        /@group\(1\) @binding\(2\) var<storage, read> morphDeltas/,
+        /@group\(1\)@binding\(2\)var<storage,read>morphDeltas/,
     );
     assert.match(
         composed.wgsl,
-        /@group\(1\) @binding\(3\) var<storage, read> morph/,
+        /@group\(1\)@binding\(3\)var<storage,read>morph/,
     );
     assert.match(
         composed.wgsl,
-        /@builtin\(vertex_index\) vertexIndex: u32/,
+        /@builtin\(vertex_index\)vertexIndex:u32/,
     );
 
     const variant = {
@@ -227,7 +227,7 @@ test("runs a module that builds its graph rather than exporting one", async () =
     const graph = await corpusGraph(78);
     assert.ok(Array.isArray(graph["blocks"]));
     const composed = await composeNodeMaterial(graph, "scene78");
-    assert.match(composed.wgsl, /@fragment\nfn fs_main/);
+    assert.match(composed.wgsl, /@fragment fn fs_main/);
     assert.ok(composed.uboBytes > 0);
 });
 
@@ -317,8 +317,8 @@ test("refuses two graphs whose mesh blocks disagree", async () => {
     const widened: ComposedNodeMaterial = {
         ...composed,
         wgsl: composed.wgsl.replace(
-            "struct MeshU {",
-            "struct MeshU {\n    extra: vec4<f32>,",
+            "struct MeshU{",
+            "struct MeshU{extra:vec4<f32>,",
         ),
     };
     assert.throws(

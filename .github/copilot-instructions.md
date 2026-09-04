@@ -148,7 +148,9 @@ residual.
 - The package and source commit are pinned in `upstream/babylon-lite.json`;
   the README states the current pair. Never restate them elsewhere — a prose
   copy is what goes stale.
-- Original TypeScript is reconstructed from published source maps.
+- Original TypeScript is reconstructed from published source maps, then put
+  through the pin's own package build step (`src/pinned-wgsl-build.ts`), so
+  a shader folded from a pinned builder is the text the package ships.
 - **Read the upstream module doc before sizing a capability.** The pinned
   clone carries Babylon Lite's own architecture docs under
   `docs/lite/architecture/` (also published at
@@ -353,6 +355,18 @@ binaries are the same, which means no measurement can have moved. See
   Do not invent a second detector by scanning options or sniffing text;
   a port that decides reachability differently from the pin will disagree
   with it eventually.
+- **Special characters do not survive an agent's shell.** The shell here
+  is Git Bash on Windows, and three layers rewrite text before a program
+  sees it: heredocs collapse a doubled backslash to a single one even with
+  a quoted delimiter, MSYS turns an argument that starts with `/` into a
+  Windows path (`/@vertex/` becomes `C:/Program Files/Git/@vertex/`), and
+  backticks are command substitution outside single quotes. So a file
+  carrying a backslash, a regex, a backtick, or `${...}` is written with a
+  file tool, never a heredoc; a regex or shader literal is never a shell
+  argument (put old/new pairs in a JSON file a script reads); and an edit,
+  build, and test are never chained with `&&` alone, because a helper that
+  choked skips the build and the test run measures a stale tree. Print and
+  read every exit code.
 - There is no hosted CI. Complete the documented local validation matrix
   before committing or pushing.
 - Batch validated milestones and push intentionally.

@@ -334,7 +334,11 @@ record, since a digest that moved because the SCENE moved is indistinguishable
 from pin churn once the new value is written. So the previous pin is a required
 argument: every moved digest must be EXPLAINED — reverting the version and
 commit has to reproduce the committed value — and the two columns a bump may
-not touch refuse instead. `referenceSha256` is the golden's own bytes, and a
+not touch refuse instead. A scene upstream edited between the pins is
+explained the same way, by composing its PREVIOUS source: the writer reads
+it from `--previous-tree` (default `HEAD`), so run it before committing the
+bump or name the main commit, and recapture the goldens it lists under the
+edited source afterwards. `referenceSha256` is the golden's own bytes, and a
 golden that moved is a behaviour change to investigate (step 4); `capturedAt`
 records when the goldens were captured, not when the file was written.
 
@@ -363,8 +367,16 @@ catalog covers registered scenes, support modules, and adopted applications.
 
 ### 3. Fix the compatibility report
 
-`npm run test:upstream` reports the failures. They sort into the kinds below —
-and the last two are the ones to read for, because they report nothing:
+`npm run test:upstream` reports the failures. It is the lowerer contracts and
+the compiler's own tests; it compiles no registered scene. So follow a green
+report with `npm run scenes:compile` (two minutes) before anything longer —
+generation reaches paths the contracts do not, and at 1.27 that compile
+found three failures the report could not: a refactored loop in
+`buildShaderPrelude`, a tagged template returned by a demo's arrow builder,
+and a Canvas2D helper module carrying a new import into Chromium.
+
+The failures sort into the kinds below — and the last two are the ones to
+read for, because they report nothing:
 
 - **Moved contracts.** A lowerer asserts an expression the upstream refactor
   relocated. Check whether the *semantics* moved or only the shape: if the
@@ -428,6 +440,23 @@ and the last two are the ones to read for, because they report nothing:
   body, so guarding a further one is a row rather than a method. When a bump
   adds a statement to such a body, that count is what refuses. Other lowerers
   restate bodies with no count guard yet; `TODO.md` carries the list.
+
+- **A build step between the pin's source and its package.** New at 1.27.0,
+  and the loudest kind, because every text anchor over packaged shader text
+  fails at once: the package build now minifies the pin's `wgsl`-tagged
+  templates, so the WGSL the browser compiles stopped being the text the
+  source maps carry. The pinned source is put through the pin's own
+  transform before anything reads it — `src/pinned-wgsl-build.ts` says
+  what the step does and why it is executed rather than restated, and the
+  corpus manifest's `tooling` row pins the script. What a bump like this
+  leaves is mechanical: every marker spelled from packaged text moves to
+  the minified spelling, which `npm run test:upstream` names one at a time.
+  Spell the new form by running the pinned transform
+  (`pinnedTaggedWgslTransform(root)(code, id)`) over the old marker inside
+  a one-line tagged template, rather than guessing where the separators
+  survive — and remember that a composed shader mixes that text with the
+  compiler's own spaced templates and with `${...}` placeholders, which
+  keep the spacing of the JavaScript strings behind them.
 
 ### Read the release notes, not only the log
 

@@ -536,10 +536,25 @@ CameraHandle enable_orthographic_camera(
     public lowerFreeFactory(): LoweredSource {
         const modulePath = "src/camera/free-camera.ts";
         const symbolName = "createFreeCamera";
+        // The public factory is one call into the shared `_createFreeCamera`
+        // with the world up vector; the banked camera passes its own. Only
+        // the world-up arm is lowered, so the delegation is held to that
+        // argument and the record is read off the shared body.
+        const { declaration: publicFactory } =
+            this.context.functionDeclaration(modulePath, symbolName);
+        const delegation = this.context.callExpression(
+            publicFactory,
+            "_createFreeCamera",
+        );
+        this.context.assertExpressionShape(
+            delegation,
+            "_createFreeCamera(position, target, Vec3Up)",
+            "Pinned free-camera delegation",
+        );
         const { file, declaration } =
             this.context.functionDeclaration(
                 modulePath,
-                symbolName,
+                "_createFreeCamera",
             );
         const camera = this.context.objectInitializer(
             declaration,

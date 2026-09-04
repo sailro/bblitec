@@ -102,7 +102,7 @@ test("anchors the fogInfos packing order to the pinned WGSL_FOG reads", () => {
         ["w", "fogDensity"],
     ] as const) {
         assert.ok(
-            fog.includes(`let ${name} = scene.vFogInfos.${component};`),
+            fog.includes(`let ${name}=scene.vFogInfos.${component};`),
             `pinned WGSL_FOG no longer reads ${name} from .${component}`,
         );
     }
@@ -353,7 +353,7 @@ test("anchors the draw-list rules to the pinned bucket fork", () => {
     assert.ok(renderTask.includes("} else if (r._direct) {"));
     assert.ok(
         renderTask.includes(
-            "opaque.sort((a, b) => a.renderable.order - b.renderable.order);",
+            "opaque.sort(compareBindingOrder);",
         ),
     );
     const plan = new RendererLowerer(

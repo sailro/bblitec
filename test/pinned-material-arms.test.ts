@@ -418,6 +418,6 @@ test("scene metallic-reflectance maps compose both linear bindings", async () =>
     const fragment = variants[0]!.fragmentWgsl;
     assert.match(fragment, /var metallicReflectanceMap\s*:\s*texture_2d<f32>/);
     assert.match(fragment, /var reflectanceMap\s*:\s*texture_2d<f32>/);
-    assert.match(fragment, /let rLinear = pow\(rSample\.rgb/);
-    assert.doesNotMatch(fragment, /let mrLinear = pow\(mrSample\.rgb/);
+    assert.match(fragment, /let rLinear=pow\(rSample\.rgb/);
+    assert.doesNotMatch(fragment, /let mrLinear=pow\(mrSample\.rgb/);
 });

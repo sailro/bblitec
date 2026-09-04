@@ -1,8 +1,8 @@
 {
   "package": "@babylonjs/lite",
-  "version": "1.26.0",
+  "version": "1.27.0",
   "repository": "https://github.com/BabylonJS/Babylon-Lite.git",
-  "sourceVersion": "69c8588f39454f94b6c1657193672cee9f03ee0e",
+  "sourceVersion": "64710b56f9dfe175d919c635812f84c8872d467c",
   "scenes": [
     {
       "id": "scene1",
@@ -86,7 +86,7 @@
       "id": "scene165",
       "upstreamPath": "lab/lite/src/lite/scene165.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene165.ts",
-      "sha256": "244e4f80f3cc142caa91a8c56254e9332409942b90e94e45e7e244a476f3e3f0"
+      "sha256": "a6ced0d8d1976bd3eaee39c172ac7a1924ff396da79b42aaaf38185101977157"
     },
     {
       "id": "scene179",
@@ -344,31 +344,31 @@
       "id": "scene159",
       "upstreamPath": "lab/lite/src/lite/scene159.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene159.ts",
-      "sha256": "52770874f0912716da910ccd82273b972c0659a215198eb6e075740d283ab484"
+      "sha256": "52d1ef2605df2a34570e481df5bfcbcf00349e63d1725165401822655c8de930"
     },
     {
       "id": "scene160",
       "upstreamPath": "lab/lite/src/lite/scene160.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene160.ts",
-      "sha256": "8330b4c70864219441e81eefee399af4261123c4eb0e9e5bd1bdbc153778b4ae"
+      "sha256": "3563b9223ce150c487e7271080fcff3c8277c31319906e7e6f0c54269d830f75"
     },
     {
       "id": "scene161",
       "upstreamPath": "lab/lite/src/lite/scene161.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene161.ts",
-      "sha256": "a8cae736bfcd3b1c17b4d806c06e93578a63a04a29b856c6962bc2e42dba4951"
+      "sha256": "99d69f8cf6bb16d02586545315dfbecd1460de67cd64b66376a241256d11216a"
     },
     {
       "id": "scene162",
       "upstreamPath": "lab/lite/src/lite/scene162.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene162.ts",
-      "sha256": "8aa1acdb102ae090efdc8259f4fd6bc590b30514eae7c544491ae97c17832c5d"
+      "sha256": "a3b6d8f266a404b0dc0dafd33fbb347a58092d2a96ae47bc1f5992dedce43ffa"
     },
     {
       "id": "scene163",
       "upstreamPath": "lab/lite/src/lite/scene163.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene163.ts",
-      "sha256": "d76d74e4ab00f1797493c5abddebe47486fc08a227b9ca35bab9560580cbbce0"
+      "sha256": "0a507bb34bdeb87a10f7f8ac3dfa46b11d59dd0bb1f95b985710d734fc476890"
     },
     {
       "id": "scene168",
@@ -608,7 +608,7 @@
       "id": "scene274",
       "upstreamPath": "lab/lite/src/lite/scene274.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene274.ts",
-      "sha256": "2bd13833f1f32013fdd29087ea426242f6fc96671c0f690852ee62b0384465f9"
+      "sha256": "ab85c8af61751cd6e9b1b0cc957bb4f11ca4ba59a1ee9b6fb6d8098d65d772ce"
     },
     {
       "id": "scene260",
@@ -1312,7 +1312,7 @@
     {
       "upstreamPath": "lab/lite/src/_shared/sprite-atlas-image.ts",
       "source": "corpus/babylon-lite/lab/lite/src/_shared/sprite-atlas-image.ts",
-      "sha256": "e4105e29198f336e792cdb05f2ce70e26eb61e373047ce429808edcded02aa91"
+      "sha256": "f14883acf5b23071a4ccfcdec74002798ca3b7b9e4c33e950b929b86ad7923e7"
     },
     {
       "upstreamPath": "lab/lite/src/_shared/sprite-atlas-soft.ts",
@@ -1634,7 +1634,7 @@
     {
       "upstreamPath": "lab/lite/src/lite/scene180.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene180.ts",
-      "sha256": "94d545ad18085c30dcd57566519088d247ffd0e2d2a716fc5a59c5253f62c0fe"
+      "sha256": "b001d71298d739cdcf9734854b1e0b9db88f45c1b89b4c1fd4d419f343dde9e1"
     },
     {
       "upstreamPath": "lab/lite/src/lite/scene181.ts",
@@ -1732,6 +1732,13 @@
       "sha256": "fe2ce5f8d300fee9ebbec91e2854af94bd4721bee8c8c79a50ebcde87a523509"
     }
   ],
+  "tooling": [
+    {
+      "upstreamPath": "scripts/wgsl-minify-plugin.ts",
+      "source": "corpus/babylon-lite/scripts/wgsl-minify-plugin.ts",
+      "sha256": "898a5c45a629e2ef3c75e18523656ad2ef3cd0b1193ce4b5a796560d67075147"
+    }
+  ],
   "applications": [
     {
       "id": "tetris",
@@ -1749,7 +1756,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -1774,7 +1781,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/tetris/particles.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/tetris/particles.ts",
-          "sha256": "14b7ef731e2c3f0e981b7fe4476928edd9f9c9d7b61682aa9b67abd916877e3f"
+          "sha256": "29f8ffd295f8487b13be80d46fe168e56958d9f50ca4784906e2c6164924fe19"
         },
         {
           "upstreamPath": "lab/lite/src/demos/tetris/pieces.ts",
@@ -1844,7 +1851,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom.ts",
@@ -1902,7 +1909,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/doom/hud/hud.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/doom/hud/hud.ts",
-          "sha256": "c3047ce893012abe48fc121152f8227e9387fc3d516046457bae27fe20031c21"
+          "sha256": "2ad3e6df19ca5a7e18dd4dd46c08db8554be4381aff589acdfeb5e7355282c80"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom/mobj/actions.ts",
@@ -1947,17 +1954,17 @@
         {
           "upstreamPath": "lab/lite/src/demos/doom/render/doom-material.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/doom-material.ts",
-          "sha256": "43f0b6142e198446f99059cf326ec6e5daa12ffcee9f0d73faeb8e76fbc6fe74"
+          "sha256": "10b119376caed6ec261d648bad52f3f39aea5895e725549263654c004f1bad1d"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom/render/sky.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/sky.ts",
-          "sha256": "8650eabc7a1856eb8616efff4176934d618e6956f3c1e3f0ae5161a36b2897aa"
+          "sha256": "53a5989cc6031738b79a6b7071bc0fd4f72e0f47de01b2f24326584e550cac8b"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom/render/sprite-render.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/sprite-render.ts",
-          "sha256": "e6cfc3dcc76a1228c51b4d10fa7f700b54ea597d0d591b6951c479c8421c10c2"
+          "sha256": "3d7c6cea5f60d16d2213e522546a0e017b5e4894cfd3c748548f2e0adec1a940"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom/render/sprites.ts",
@@ -1972,7 +1979,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/doom/render/weapon-view.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/doom/render/weapon-view.ts",
-          "sha256": "9fa857950f6f7ec93415b06a5913b01af72dece0f6eaf88ae7f227b4e2d7e865"
+          "sha256": "7b78f5b1fd70cbfd5059204b8ee5a11027de6a968698ada016b031a633e85b5d"
         },
         {
           "upstreamPath": "lab/lite/src/demos/doom/sound/sound.ts",
@@ -2032,7 +2039,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/quake.ts",
@@ -2112,12 +2119,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/quake/render/quake-material.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/quake-material.ts",
-          "sha256": "35244c9ebf39d1f4aaa7fc0c227a1dea1c26e7dd9ac249d86a633f55ceac80f6"
+          "sha256": "9a9eddb976b5117f37b13f2a997aa1dd08734c3583498171004c33287590ff99"
         },
         {
           "upstreamPath": "lab/lite/src/demos/quake/render/sky-material.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/quake/render/sky-material.ts",
-          "sha256": "c009e603da3b69076efa19f13bc5aa0a2238c2ef3d07bc7697412b7751d017dd"
+          "sha256": "5a9099390ff96364c63d05bc2bb6bcb14276ea78ea4942993fdbda3f84f30085"
         },
         {
           "upstreamPath": "lab/lite/src/demos/quake/render/texture-cache.ts",
@@ -2591,7 +2598,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/torus-states.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/torus-states.ts",
-          "sha256": "fd6055406d2aa4aac8de07de69117475d131be9468c64bb3df38d0fa9d7715fd"
+          "sha256": "811601525348e6de2638ea5540af4e3b9fbe76ca2baf9009c4c0c0bbc01fd8ec"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -2616,7 +2623,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -2636,12 +2643,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/platformer/constants.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/constants.ts",
-          "sha256": "8d2229b657f5a4351e72dbd2565d5c4eabc794bfd93494aa7d2732f6fb474775"
+          "sha256": "3d5db7a735915bda05e9d200be893a21dabd9a9bf39020f5ff6c4f9d193ea1ae"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/crt.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/crt.ts",
-          "sha256": "d514fe3b0622a691ff0ad27f86794d4fa30d5854d055c83355544e6673799b4a"
+          "sha256": "a9cccc287720b5e0cd154ce9576123c01c740338018aa74b86a828af9ebaee1c"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/entities.ts",
@@ -2686,12 +2693,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/platformer/lantern.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/lantern.ts",
-          "sha256": "ed77f4ce96a25aeaad79fc31f2ef81063b8219687c775a71ebdcf127d892a05e"
+          "sha256": "838a6c09b873d29458fa21493c776e8a3e6beca1d6a6aaf0a9e6c29f90781a6e"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/lava.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/lava.ts",
-          "sha256": "ba056310e6986563ce46a1f02c10b0902319ac8e5abae75a7841662bb42db812"
+          "sha256": "433de46aaedcfcb960834ab96418bb99dc027b39f0dc6df71307c8c73330f8ab"
         },
         {
           "upstreamPath": "lab/lite/src/demos/platformer/level.ts",
@@ -2711,7 +2718,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/platformer/portal.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/platformer/portal.ts",
-          "sha256": "1027fc3674ac5ed213b10e0e0ffd4eeaa9ce1832ba7538dc7668adfc26bd0641"
+          "sha256": "dc9ecd40ee01ea921f975a24ad9aaa83825f2de9eb45e210bacfe31126e8bd4f"
         },
         {
           "upstreamPath": "lab/public/platformer/License.txt",
@@ -2811,7 +2818,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -2841,7 +2848,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/racer/audio.ts",
@@ -3052,7 +3059,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3092,7 +3099,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3137,7 +3144,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3272,7 +3279,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/atmosphere.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/atmosphere.ts",
-          "sha256": "59174d2f5330013159be4ebe6dccec9a839eb66b7a862bedea8876f2825f12f6"
+          "sha256": "d4e53f645d11d44d9e3027ba54121da9941fdb5c5e898e0c4c479c216aedb196"
         },
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/backdrop.ts",
@@ -3282,7 +3289,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/commandfx.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/commandfx.ts",
-          "sha256": "edf191973e45c68cfaca276ad1fa178c5d97c983bd181216e18c36f51e559cf1"
+          "sha256": "c9d4a7acf1dd51ba2f3768006a2903c3017dff77a296b8c945d0da570f2f507f"
         },
         {
           "upstreamPath": "lab/public/freeciv/COPYING",
@@ -3303,12 +3310,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/fog.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/fog.ts",
-          "sha256": "1cecd692e9afefe00630e6209ad94757ed14da80e22261fb3948ed915835dedf"
+          "sha256": "554e6a3a48f9c971a700b47eb8fc543ff7d0662ef5cf87eafb8ca0ab3e089e10"
         },
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/glints.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/glints.ts",
-          "sha256": "a319b2256428fd7b25e6242892bc312c2ae963201c216e053ebb1fd6d95ec099"
+          "sha256": "e8cfef6ed7bc25b89a7c815f629a020dcfb142d2fc76c09c35b0cee173a99c5d"
         },
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/iso.ts",
@@ -3322,7 +3329,7 @@
         },
         {
           "upstreamPath": "lab/public/freeciv/mercator-1569.LICENSE.txt",
-            "generatedBy": "scripts/fetch-freeciv.ts",
+          "generatedBy": "scripts/fetch-freeciv.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/mercator-1569.LICENSE.txt",
           "sha256": "1a86ed21750cd279c27ea001799808c516b8b32aa46c8d4d50eac9123312ed9e"
         },
@@ -3345,7 +3352,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/present.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/present.ts",
-          "sha256": "7ee3a9618cd702bdf1971f7fe192a2fe3fef5feeb4458e5b9fba20cd5df6ff6d"
+          "sha256": "9e66bff15dfccc5cec7254c6c0d104301c40d8c26000a6314939a60c2f90a442"
         },
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/spec-parser.ts",
@@ -3365,7 +3372,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/water.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/freeciv/water.ts",
-          "sha256": "9c15db167bab89bd6ca32769d8ce7ad9bbe5a2e47508947903fbe775dc31bae8"
+          "sha256": "f4fd68865fe8e4c2cb5a54f44924ffba5f9d0548254d2a6b0fbc5139dee4f56c"
         },
         {
           "upstreamPath": "lab/lite/src/demos/freeciv/worldgen.ts",
@@ -3390,7 +3397,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/adornments/handles.ts",
@@ -3505,7 +3512,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/stud-material-plugin.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/sandblox/stud-material-plugin.ts",
-          "sha256": "73b24a1d1ccee58b49ce2691c58cbc4d98bb9480f30344306314b960d81a83b2"
+          "sha256": "5ef9a49cc3a564a0d6e6997590fc574cc3c6ab26b3b2ecff1679f17e1c9b9c6a"
         },
         {
           "upstreamPath": "lab/lite/src/demos/sandblox/stud-texture.ts",
@@ -3585,7 +3592,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
-          "sha256": "a1a31c8887776addce51f969ce25f2da704550c0e41cb5a7b85c23316dde7340"
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
         },
         {
           "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
@@ -3615,7 +3622,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/clouds.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/clouds.ts",
-          "sha256": "47f89aad92e76e0bcfeac816f4e0dedc481b26e87717c033f53b23ce5d5ac0d0"
+          "sha256": "0f941049793890a9732ae66ea68b4fd1f43268813057d23c1fd5e987f49d6faf"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/constants.ts",
@@ -3635,7 +3642,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/highlight.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/highlight.ts",
-          "sha256": "143ba9c53a1d5a8a5158b3398974cb2aa7f17ffd4d1ae5ff9b6473171de60f77"
+          "sha256": "3fcd2539c4907aa8f88b0a10bd804150037de8dda11d3086781cd25b59f0fbe0"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/hud.ts",
@@ -3655,7 +3662,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/mob-material.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/mob-material.ts",
-          "sha256": "998b404d203f503a46c643bc02134b92df98a58d49f799848f8c9c3a84ada1bf"
+          "sha256": "d31948f2bf7eff25568687977ff10486f052437867b2157be0489e18a9234c7f"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/mobs.ts",
@@ -3670,7 +3677,7 @@
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/particles.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/particles.ts",
-          "sha256": "e18886957e223da9f0f977be7f67c540e5d18b7982fd9ea67f8110a017bca814"
+          "sha256": "00f68426ad8367f776e063978c0bc0beb639556a6d8de5044f1015a37ecd349d"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/raycast.ts",
@@ -3685,12 +3692,12 @@
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/sky.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/sky.ts",
-          "sha256": "f2266ec20b622104eca0d1abc939cccc16cbc4f393fd9ebcfe933d59335c6900"
+          "sha256": "a5682101e8d7ec041010072d86e748a522b4f5ab8c1defb2e1849f4f0067edd1"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/voxel-material.ts",
           "source": "corpus/babylon-lite/lab/lite/src/demos/minecraft/voxel-material.ts",
-          "sha256": "9688367a6ff68fa806ba5b9c88f022be561a88d2c99947fe4852a49a39ca2bd3"
+          "sha256": "077966c5768a6553e82918fcc3f9223ee00b4eaa8a459fc5b8c756fac1d4d503"
         },
         {
           "upstreamPath": "lab/lite/src/demos/minecraft/water-sim.ts",

@@ -42,19 +42,19 @@ const PINNED_STAGE_MARKERS: readonly (readonly [
 ])[] = [
     [
         PBR_TEMPLATE_MODULE,
-        "let worldPos4 = finalWorld * vec4<f32>(" + "${posVar}, 1.0);",
+        "let worldPos4=finalWorld*vec4<f32>(" + "${posVar},1.0);",
         "vertex-stage position multiply",
     ],
     [
         PBR_TEMPLATE_MODULE,
-        "out.worldNormal = (finalWorld * vec4<f32>(normalize(" +
-            "${normVar}), 0.0)).xyz;",
+        "out.worldNormal=(finalWorld*vec4<f32>(normalize(" +
+            "${normVar}),0.0)).xyz;",
         "vertex-stage direction multiply",
     ],
     [
         STANDARD_TEMPLATE_MODULE,
-        "let normalWorld = mat3x3<f32>(finalWorld[0].xyz, " +
-            "finalWorld[1].xyz, finalWorld[2].xyz);",
+        "let normalWorld=mat3x3<f32>(finalWorld[0].xyz," +
+            "finalWorld[1].xyz,finalWorld[2].xyz);",
         "Standard world basis",
     ],
 ];

@@ -475,7 +475,7 @@ function compileShaderSamplers(
  *
  * The value stays a boolean or a number here because that is what decides
  * the emitted `const`'s type and literal, and the pin's own prelude line
- * makes that decision (`pinnedShaderDefineLines`).
+ * makes that decision (`pinnedShaderDefineText`).
  */
 function compileShaderDefines(
     context: ShaderMaterialContext,

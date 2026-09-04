@@ -13,6 +13,30 @@ export interface LoweredSource {
     symbolName: string;
 }
 
+/** The statement kinds a restated pinned body's inventory names. */
+const STATEMENT_KINDS: ReadonlyArray<
+    readonly [string, (statement: ts.Statement) => boolean]
+> = [
+    ["variable statement", ts.isVariableStatement],
+    ["if statement", ts.isIfStatement],
+    ["for statement", ts.isForStatement],
+    ["expression statement", ts.isExpressionStatement],
+    ["return statement", ts.isReturnStatement],
+];
+
+/**
+ * A statement's kind, as an inventory row names it. One projection for
+ * every inventory, so the `"other statement"` fallback the refusal prints
+ * is stated once: two copies can disagree about a kind the table has no
+ * entry for, which is exactly the case an inventory exists to notice.
+ */
+export function statementKind(statement: ts.Statement): string {
+    return (
+        STATEMENT_KINDS.find(([, is]) => is(statement))?.[0] ??
+        "other statement"
+    );
+}
+
 export class LoweringContext {
     public constructor(public readonly store = new UpstreamSourceStore()) {}
 
@@ -473,9 +497,52 @@ export class LoweringContext {
         actual: ts.Expression,
         expectedSource: string,
     ): boolean {
-        return (
-            this.nodeFingerprint(actual) ===
-            this.expectedFingerprint(expectedSource)
+        const expected = this.expectedFingerprint(expectedSource);
+        // A fingerprint walks the whole subtree, and most candidates a
+        // counting walk offers are not even the expected node kind; the
+        // head is free where the walk is not.
+        const head = this.fingerprintHead(actual);
+        if (
+            head !== undefined &&
+            expected !== head &&
+            !expected.startsWith(`${head}(`)
+        ) {
+            return false;
+        }
+        return this.nodeFingerprint(actual) === expected;
+    }
+
+    /**
+     * A restated pinned body's statement inventory: the kind of every
+     * statement, in the pin's order. Shape contracts assert a shape is
+     * PRESENT and order contracts skip whatever sits between two ordered
+     * calls, so neither notices a statement the pin adds; the inventory
+     * does. `project` names a statement's kind, or undefined to skip a
+     * statement the inventory does not describe.
+     */
+    public assertStatementInventory(
+        owner: ts.Node,
+        statements: readonly ts.Statement[],
+        symbolName: string,
+        restated: string,
+        expected: readonly string[],
+        project: (statement: ts.Statement) => string | undefined = statementKind,
+    ): void {
+        const found = statements
+            .map(project)
+            .filter((entry): entry is string => entry !== undefined);
+        if (
+            found.length === expected.length &&
+            found.every((entry, index) => entry === expected[index])
+        ) {
+            return;
+        }
+        this.contractError(
+            owner,
+            `${symbolName} carries [${found.join("; ")}]; ${restated} of ` +
+                `exactly [${expected.join("; ")}], so an added or reordered ` +
+                "arm must be read and re-emitted rather than silently " +
+                "dropped.",
         );
     }
 
@@ -1016,6 +1083,34 @@ export class LoweringContext {
             current = current.expression;
         }
         return current;
+    }
+
+    /**
+     * The leading segment of `nodeFingerprint(node)` without the walk, or
+     * undefined for the wrappers the fingerprint sees through.
+     */
+    private fingerprintHead(node: ts.Node): string | undefined {
+        if (
+            ts.isAsExpression(node) ||
+            ts.isTypeAssertionExpression(node) ||
+            ts.isParenthesizedExpression(node) ||
+            ts.isNonNullExpression(node)
+        ) {
+            return undefined;
+        }
+        if (ts.isIdentifier(node)) {
+            return `identifier:${node.text}`;
+        }
+        if (ts.isNumericLiteral(node)) {
+            return `number:${Number(node.text)}`;
+        }
+        if (
+            ts.isStringLiteral(node) ||
+            ts.isNoSubstitutionTemplateLiteral(node)
+        ) {
+            return `string:${node.text}`;
+        }
+        return ts.SyntaxKind[node.kind];
     }
 
     private nodeFingerprint(node: ts.Node): string {

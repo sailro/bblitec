@@ -96,34 +96,34 @@ test("a textured two-light-shaped variant is the pin's own text", async () => {
     // LIGHTING_FN, verbatim markers: the hemispheric arm, the directional
     // arm, the point/spot shared falloff, the spot cone gate.
     assert.match(fragment, /fn computeLighting\(/);
-    assert.match(fragment, /if \(t == 3u\)/);
-    assert.match(fragment, /if \(t == 1u\)/);
-    assert.match(fragment, /if \(t == 2u\)/);
+    assert.match(fragment, /if\(t==3u\)/);
+    assert.match(fragment, /if\(t==1u\)/);
+    assert.match(fragment, /if\(t==2u\)/);
     assert.match(
         fragment,
-        /if \(c >= L\.vLightDirection\.w\) \{ a \*= max\(0\.0, pow\(c, L\.vLightSpecular\.a\)\); \} else \{ a = 0\.0; \}/,
+        /if\(c>=L\.vLightDirection\.w\)\{a\*=max\(0\.0,pow\(c,L\.vLightSpecular\.a\)\);\}else\{a=0\.0;\}/,
     );
     // The multi-slot expression of a point-light scene like Scene 9: the
     // pin's own loop over the mesh's light selection, not unrolled slots.
     assert.ok(
         fragment.includes(
-            `array<LightEntry, ${types.MAX_LIGHTS}>`,
+            `array<LightEntry,${types.MAX_LIGHTS}>`,
         ),
     );
-    assert.ok(fragment.includes(`min(mesh.lc, ${types.MAX_LIGHTS}u)`));
-    assert.match(fragment, /for \(var li = 0u; li < lc; li\+\+\)/);
-    assert.match(fragment, /let lightIndex = mli\(li\);/);
+    assert.ok(fragment.includes(`min(mesh.lc,${types.MAX_LIGHTS}u)`));
+    assert.match(fragment, /for\(var li=0u;li<lc;li\+\+\)/);
+    assert.match(fragment, /let lightIndex=mli\(li\);/);
     assert.match(
         fragment,
-        /fn mli\(i: u32\) -> u32 \{ return mesh\.li\[i \/ 4u\]\[i % 4u\]; \}/,
+        /fn mli\(i:u32\)->u32\{return mesh\.li\[i\/4u\]\[i%4u\];\}/,
     );
     // The template's own diffuse sample and material block.
-    assert.match(fragment, /textureSample\(dT, dS, input\.vu\)/);
-    assert.match(fragment, /struct matUniforms \{/);
+    assert.match(fragment, /textureSample\(dT,dS,input\.vu\)/);
+    assert.match(fragment, /struct matUniforms\{/);
     // The vertex stage carries the uv passthrough against the up block.
     assert.match(
         variant.vertexWgsl,
-        /out\.vu = uv \* up\.u\.xy \+ up\.u\.zw;/,
+        /out\.vu=uv\*up\.u\.xy\+up\.u\.zw;/,
     );
 });
 
@@ -148,11 +148,11 @@ test("extension fragments compose under the pin's ids", async () => {
     assert.match(fragment, /fn perturbNormal\(/);
     assert.match(
         fragment,
-        /normalW = perturbNormal\(input\.vn, input\.vp, input\.vu, mat\.bs\);/,
+        /normalW=perturbNormal\(input\.vn,input\.vp,input\.vu,mat\.bs\);/,
     );
     assert.match(
         fragment,
-        /emissiveContrib = mat\.ec \+ textureSample\(eT, eS, input\.vu\)\.rgb \* mat\.tl;/,
+        /emissiveContrib=mat\.ec\+textureSample\(eT,eS,input\.vu\)\.rgb\*mat\.tl;/,
     );
     assert.match(
         fragment,
@@ -172,7 +172,7 @@ test("getAlphaFromRGB composes the pin's luminance opacity arm", async () => {
     assert.equal(plain.features & flags.OPACITY_FROM_RGB, 0);
     assert.ok(
         plain.fragmentWgsl.includes(
-            "alpha *= textureSample(oT, oS, input.vu).a * mat.opLvl;",
+            "alpha*=textureSample(oT,oS,input.vu).a*mat.opLvl;",
         ),
     );
     // The flag selects the pin's dot() luminance arm
@@ -189,14 +189,14 @@ test("getAlphaFromRGB composes the pin's luminance opacity arm", async () => {
     );
     assert.ok(
         fromRgb.fragmentWgsl.includes(
-            "{ let opSample = textureSample(oT, oS, input.vu); " +
-                "alpha *= dot(opSample.rgb, " +
-                "vec3<f32>(0.3, 0.59, 0.11)) * mat.opLvl; }",
+            "{let opSample=textureSample(oT,oS,input.vu);" +
+                "alpha*=dot(opSample.rgb," +
+                "vec3<f32>(0.3,0.59,0.11))*mat.opLvl;}",
         ),
     );
     assert.ok(
         !fromRgb.fragmentWgsl.includes(
-            "textureSample(oT, oS, input.vu).a",
+            "textureSample(oT,oS,input.vu).a",
         ),
     );
     // Fragment-only fork: the vertex stage is byte-identical either way.
@@ -223,29 +223,29 @@ test("a 2D reflection composes the pin's std-reflection arm", async () => {
     // mode is a uniform fork (rCm < 1.5 spherical, else planar), not a
     // composition fork — Sponza carries both modes through one arm.
     assert.ok(
-        fragment.includes("if (mat.rCm < 1.5) { reflCoords = " +
-            "computeSphericalCoords(input.vp, normalW); }"),
+        fragment.includes("if(mat.rCm<1.5){reflCoords=" +
+            "computeSphericalCoords(input.vp,normalW);}"),
     );
     assert.ok(
         fragment.includes(
-            "else { reflCoords = computePlanarCoords(input.vp, normalW); }",
+            "else{reflCoords=computePlanarCoords(input.vp,normalW);}",
         ),
     );
     assert.ok(
         fragment.includes(
-            "reflectionColor = textureSample(rT, rS, reflCoords).rgb " +
-                "* mat.rLvl;",
+            "reflectionColor=textureSample(rT,rS,reflCoords).rgb" +
+                "*mat.rLvl;",
         ),
     );
     // Both helper derivations, verbatim from the pin's REFLECTION_HELPERS.
     assert.match(
         fragment,
-        /fn computeSphericalCoords\(worldPos: vec3<f32>, worldNormal: vec3<f32>\) -> vec2<f32> \{/,
+        /fn computeSphericalCoords\(worldPos:vec3<f32>,worldNormal:vec3<f32>\)->vec2<f32>\{/,
     );
-    assert.match(fragment, /r\.z = r\.z - 1\.0;/);
+    assert.match(fragment, /r\.z=r\.z-1\.0;/);
     assert.match(
         fragment,
-        /return vec2<f32>\(coords\.x, 1\.0 - coords\.y\);/,
+        /return vec2<f32>\(coords\.x,1\.0-coords\.y\);/,
     );
     // The bindings are the pin's rT/rS 2D pair, not the cube's.
     assert.match(fragment, /var rT:texture_2d<f32>;/);
@@ -269,11 +269,11 @@ test("fog composes the pin's scene-shader fragment", async () => {
     assert.match(variant.fragmentWgsl, /fn calcFogFactor\(/);
     assert.match(
         variant.fragmentWgsl,
-        /color = vec4<f32>\(mix\(scene\.vFogColor\.rgb, color\.rgb, fog\), color\.a\);/,
+        /color=vec4<f32>\(mix\(scene\.vFogColor\.rgb,color\.rgb,fog\),color\.a\);/,
     );
     assert.match(
         variant.vertexWgsl,
-        /out\.vf = \(scene\.view \* vec4<f32>\(out\.vp, 1\.0\)\)\.xyz;/,
+        /out\.vf=\(scene\.view\*vec4<f32>\(out\.vp,1\.0\)\)\.xyz;/,
     );
 });
 
@@ -283,8 +283,8 @@ test("vertex colours compose the pin's opt-in fragment", async () => {
         { vertexColors: { vertexAlpha: false } },
     );
     assert.equal(variant.fragmentKey, "std-vertex-color");
-    assert.match(variant.fragmentWgsl, /baseColor \*= input\.vColor\.rgb;/);
-    assert.match(variant.vertexWgsl, /out\.vColor = color;/);
+    assert.match(variant.fragmentWgsl, /baseColor\*=input\.vColor\.rgb;/);
+    assert.match(variant.vertexWgsl, /out\.vColor=color;/);
     // The vertex-alpha arm adds the pin's discard against the diffuse
     // sample's alpha and the blend bits.
     const flags = await importPinnedModule<{
@@ -300,10 +300,10 @@ test("vertex colours compose the pin's opt-in fragment", async () => {
         alpha.features & flags.MATERIAL_ALPHA_BLEND,
         flags.MATERIAL_ALPHA_BLEND,
     );
-    assert.match(alpha.fragmentWgsl, /alpha \*= input\.vColor\.a;/);
+    assert.match(alpha.fragmentWgsl, /alpha\*=input\.vColor\.a;/);
     assert.match(
         alpha.fragmentWgsl,
-        /if \(_ds\.a \* input\.vColor\.a < mat\.aCut\) \{ discard; \}/,
+        /if\(_ds\.a \* input\.vColor\.a <mat\.aCut\)\{discard;\}/,
     );
 });
 
@@ -318,14 +318,14 @@ test("the geometry MRT arm is the pin's own rewrite", async () => {
         },
     );
     assert.match(variant.fragmentWgsl, /-> FragmentOutput/);
-    assert.match(variant.fragmentWgsl, /struct FragmentOutput \{/);
+    assert.match(variant.fragmentWgsl, /struct FragmentOutput\{/);
     assert.match(
         variant.fragmentWgsl,
-        /out\.f0 = vec4<f32>\(normalW \* 0\.5 \+ vec3<f32>\(0\.5\), select\(0\.0, 1\.0, alpha > 0\.4\)\);/,
+        /out\.f0 = vec4<f32>\(normalW\*0\.5\+vec3<f32>\(0\.5\),select\(0\.0, 1\.0, alpha > 0\.4\)\);/,
     );
     assert.match(
         variant.fragmentWgsl,
-        /out\.f1 = vec4<f32>\(baseColor, select\(0\.0, 1\.0, alpha > 0\.4\)\);/,
+        /out\.f1 = vec4<f32>\(baseColor,select\(0\.0, 1\.0, alpha > 0\.4\)\);/,
     );
     await assert.rejects(
         composePinnedStandardVariant(
@@ -405,10 +405,10 @@ test("a CSM slot composes through the reached receiver registry", async () => {
     // separates this arm from the single-map families.
     assert.ok(
         variant.fragmentWgsl.includes(
-            "struct csmInfo_0Uniforms { cascadeTransforms: " +
-                "array<mat4x4<f32>, 4>, viewFrustumZ: vec4<f32>, " +
-                "frustumLengths: vec4<f32>, shadowsInfo: vec4<f32>, " +
-                "csmParams: vec4<f32> };",
+            "struct csmInfo_0Uniforms{cascadeTransforms:" +
+                "array<mat4x4<f32>,4>,viewFrustumZ:vec4<f32>," +
+                "frustumLengths:vec4<f32>,shadowsInfo:vec4<f32>," +
+                "csmParams:vec4<f32>};",
         ),
     );
     assert.ok(variant.fragmentWgsl.includes("texture_depth_2d_array"));
@@ -431,8 +431,8 @@ test("the ESM caster arm composes the pin's own depth code", async () => {
     // rather than the depth-only one a PCF caster takes.
     assert.ok(
         variant.fragmentWgsl.includes(
-            "let depthSM = clamp(exp(-min(87.0, " +
-                "shadowParams.biasAndScale.z * depthMetricSM)), 0.0, 1.0);",
+            "let depthSM=clamp(exp(-min(87.0," +
+                "shadowParams.biasAndScale.z*depthMetricSM)),0.0,1.0);",
         ),
     );
 });
@@ -451,13 +451,13 @@ test("the colourless thin-instance arm composes the pin's fragment", async () =>
     // multiplies into finalWorld before the world-position product.
     assert.ok(
         variant.vertexWgsl.includes(
-            "let instanceWorld = mat4x4<f32>(world0, world1, world2, " +
+            "let instanceWorld=mat4x4<f32>(world0,world1,world2," +
                 "world3);",
         ),
     );
     assert.ok(
         variant.vertexWgsl.includes(
-            "finalWorld = mesh.world * instanceWorld;",
+            "finalWorld=mesh.world*instanceWorld;",
         ),
     );
     const plain = await composePinnedStandardVariant({}, {});
@@ -481,17 +481,17 @@ test("a coloured pool composes the Standard family's own colour slot", async () 
                 meshBits.MSH_HAS_INSTANCE_COLOR,
         },
     );
-    assert.ok(variant.vertexWgsl.includes("out.vInstanceColor = instanceColor;"));
+    assert.ok(variant.vertexWgsl.includes("out.vInstanceColor=instanceColor;"));
     assert.ok(
         variant.fragmentWgsl.includes(
-            "color = vec4<f32>(color.rgb * input.vInstanceColor.rgb, " +
-                "color.a * input.vInstanceColor.a);",
+            "color=vec4<f32>(color.rgb*input.vInstanceColor.rgb," +
+                "color.a*input.vInstanceColor.a);",
         ),
     );
     // The shared fragment's own base-colour slot is the PBR family's and
     // must not survive the replacement.
     assert.ok(
-        !variant.fragmentWgsl.includes("baseColor *= input.vInstanceColor.rgb"),
+        !variant.fragmentWgsl.includes("baseColor*=input.vInstanceColor.rgb"),
     );
     const colourless = await composePinnedStandardVariant(
         {},
@@ -511,7 +511,7 @@ test("the depth-only view composes the pin's NO_COLOR_OUTPUT arm", async () => {
     // `_noColorOutput` drops the colour return entirely; the varyings still
     // number themselves `@location(n)`, so the return type is the marker.
     assert.ok(!variant.fragmentWgsl.includes("-> @location(0)"));
-    assert.match(variant.fragmentWgsl, /fn main\(input: FragmentInput\) \{/);
+    assert.match(variant.fragmentWgsl, /fn main\(input:FragmentInput\)\{/);
 });
 
 test("manifest entries carry deterministic file stems", async () => {

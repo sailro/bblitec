@@ -44,7 +44,7 @@ test("the composer emits the clearcoat base-F0 remap the pin owns", async () => 
     );
     assert.match(
         composed.fragmentWgsl,
-        /colorF0 = mix\(colorF0, remappedF0, ccInt_r\);/,
+        /colorF0=mix\(colorF0,remappedF0,ccInt_r\);/,
     );
 });
 

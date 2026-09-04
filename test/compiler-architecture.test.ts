@@ -1479,16 +1479,18 @@ test("fits one cascade per CSM split", () => {
     const shadows = source("src/lowering/shadow-lowerer.ts");
 
     // The pin's split is `p = (i + 1) / N` over the cascade index, and each
-    // slice runs from the PREVIOUS break to its own -- a body computing
-    // `1 / N` alone would fit every cascade to the nearest one.
+    // slice runs from the PREVIOUS split to its own, stepping by its own
+    // length -- a body computing `1 / N` alone would fit every cascade to
+    // the nearest one.
     assert.match(
         shadows,
         /const double p =\s*static_cast<double>\(index \+ 1\) \/ static_cast<double>\(count\);/,
     );
     assert.match(
         shadows,
-        /const double previous_split =\s*cascade == 0 \? 0\.0 : break_distance\[cascade - 1\];/,
+        /const double split =\s*previous_split \+\s*generator\.csm_cascades\[cascade\]\.frustum_length \/ camera_range;/,
     );
+    assert.match(shadows, /previous_split = split;/);
 });
 
 test("shares parent and clone transforms with shadow caster fitting", () => {

@@ -44,6 +44,11 @@ export interface BabylonLiteCorpusManifest {
      * a row moves to `scenes` when its scene registers.
      */
     staged?: CorpusFile[];
+    /**
+     * Pinned build scripts generation EXECUTES (`pinned-wgsl-build.ts`
+     * says why); they ride the git-blob pin like every other row.
+     */
+    tooling?: CorpusFile[];
     applications: CorpusApplication[];
 }
 

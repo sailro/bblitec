@@ -42,10 +42,35 @@ export type FoldGeneratedStringArgument = (
     argument: ts.Expression,
 ) => string | number | boolean | undefined;
 
+/** The compiler's own answer to "is this the pin's `wgsl` tag over a template". */
+export type PinnedWgslTemplate = (
+    expression: ts.Expression,
+) => ts.TemplateLiteral | undefined;
+
+/**
+ * The source ranges of every pinned `wgsl` tag in the file, tag start to
+ * template start -- the range the pin's own build step removes.
+ */
+function pinnedWgslTagRanges(
+    source: ts.SourceFile,
+    pinnedWgslTemplate: PinnedWgslTemplate,
+): Array<readonly [start: number, end: number]> {
+    const ranges: Array<readonly [start: number, end: number]> = [];
+    const visit = (node: ts.Node): void => {
+        if (ts.isTaggedTemplateExpression(node) && pinnedWgslTemplate(node)) {
+            ranges.push([node.getStart(source), node.template.getStart(source)]);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(source);
+    return ranges;
+}
+
 export function browserGeneratedString(
     checker: ts.TypeChecker,
     call: ts.CallExpression,
     foldArgument: FoldGeneratedStringArgument,
+    pinnedWgslTemplate: PinnedWgslTemplate,
 ): string | undefined {
     if (!ts.isIdentifier(call.expression)) return undefined;
     const declaration = tryResolveFunctionDeclaration(
@@ -83,12 +108,19 @@ export function browserGeneratedString(
     const cached = cache.get(key);
     if (cached !== undefined) return cached;
 
+    // The module runs in the page with its imports removed. The pin's
+    // `wgsl` tag goes with them: it is the identity over its template
+    // (asserted against its declaration when the source store first strips
+    // one), so removing the tag token leaves the module's own text.
     let sourceText = source.text;
-    const imports = source.statements.filter(ts.isImportDeclaration);
-    for (const statement of [...imports].reverse()) {
-        sourceText =
-            sourceText.slice(0, statement.getFullStart()) +
-            sourceText.slice(statement.end);
+    const removed: Array<readonly [start: number, end: number]> = [
+        ...source.statements
+            .filter(ts.isImportDeclaration)
+            .map((statement) => [statement.getFullStart(), statement.end] as const),
+        ...pinnedWgslTagRanges(source, pinnedWgslTemplate),
+    ];
+    for (const [start, end] of removed.sort((a, b) => b[0] - a[0])) {
+        sourceText = sourceText.slice(0, start) + sourceText.slice(end);
     }
     sourceText +=
         `\n(globalThis as any).__bbliteGeneratedString = ` +

@@ -2281,9 +2281,10 @@ family wrappers — including the cross-cascade blend, which comes with the
 fragment rather than being added here. Nothing about it is adapted — but the
 fit is **mirrored rather than lowered**: the split formula, the texel snap,
 the caster-Z tighten and the unbiased-receiver/biased-caster split are
-restated in C++ and guarded by thirteen shape assertions against
-`_computeCsmCascades`, where the sibling `computeDirectionalLightMatrix` is
-lowered from its own AST. That distinction is the debt, and it has already
+restated in C++ and guarded by shape assertions and a pinned statement
+count against `_computeCsmCascades`, where the sibling
+`computeDirectionalLightMatrix` is lowered from its own AST and the fit's
+own light-basis helper is too. That distinction is the debt, and it has already
 cost one dropped arm ([fidelity](fidelity.md#shadows) carries the contract,
 the ownership choice that differs from the pin's shape, and the refusal that
 covers the arm).

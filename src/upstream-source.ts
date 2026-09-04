@@ -9,6 +9,11 @@ import {
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
 
+import {
+    assertPinnedWgslTagIsIdentity,
+    pinnedTaggedWgslTransform,
+} from "./pinned-wgsl-build.js";
+
 interface SourceMapFile {
     sources?: string[];
     sourcesContent?: Array<string | null>;
@@ -150,7 +155,17 @@ export function sharedUpstreamStore(): UpstreamSourceStore {
 export class UpstreamSourceStore {
     public readonly packageRoot: string;
     public readonly pin: UpstreamPin;
+    private readonly repositoryRoot: string;
     private readonly sources = new Map<string, string>();
+    /**
+     * Each module's text as the pin's own package build leaves it
+     * (`pinned-wgsl-build.ts`), memoized per module across every store
+     * over the same package, since the transform is a pure function of the
+     * module: everything that reads a pinned module reads this, so a
+     * shader folded from a builder's AST is the text the browser compiles,
+     * byte for byte.
+     */
+    private static readonly builtSources = new Map<string, string>();
     private readonly sourceFiles = new Map<string, ts.SourceFile>();
     private readonly publicExports = new Map<string, PublicExport>();
 
@@ -165,6 +180,7 @@ export class UpstreamSourceStore {
             pinPath,
         );
         this.pin = pin;
+        this.repositoryRoot = repositoryRoot;
         this.packageRoot = resolve(repositoryRoot, "node_modules", ...pin.package.split("/"));
         const packageJsonPath = join(this.packageRoot, "package.json");
         if (!existsSync(packageJsonPath)) {
@@ -185,14 +201,26 @@ export class UpstreamSourceStore {
         }
 
         this.loadSources();
+        // Stripping the pin's `wgsl` tag -- here, in the compiler's readers
+        // of scene source, and in the Canvas2D helper module -- is sound
+        // only while the helper is the identity over its template; one
+        // check per store settles it for every reader.
+        assertPinnedWgslTagIsIdentity(this.getSourceFile("src/shader/wgsl.ts"));
         this.loadPublicExports();
     }
 
     public getSource(modulePath: string): string {
         const normalized = modulePath.replace(/\\/g, "/");
+        const key = `${this.packageRoot}\0${normalized}`;
+        const built = UpstreamSourceStore.builtSources.get(key);
+        if (built !== undefined) return built;
         const source = this.sources.get(normalized);
         if (!source) throw new Error(`Upstream TypeScript source not found: ${normalized}.`);
-        return source;
+        const text =
+            pinnedTaggedWgslTransform(this.repositoryRoot)(source, normalized)
+                ?.code ?? source;
+        UpstreamSourceStore.builtSources.set(key, text);
+        return text;
     }
 
     public hasSource(modulePath: string): boolean {
@@ -278,6 +306,12 @@ export class UpstreamSourceStore {
     private findSourceExport(name: string): string | undefined {
         for (const path of this.listSources()) {
             if (path === "src/index.ts") {
+                continue;
+            }
+            // A module that never spells the name cannot export it, and
+            // the text test spares the parse this walk would otherwise
+            // pay for most of the package on every store.
+            if (!this.sources.get(path)!.includes(name)) {
                 continue;
             }
             const file = this.getSourceFile(path);
