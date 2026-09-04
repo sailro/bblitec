@@ -660,6 +660,15 @@ the particle buffer, recorded per scene as
 Chrome-dependent-bytes tradeoff. [Fidelity](fidelity.md#node-particles)
 carries the full rationale and each downstream fold's contract.
 
+**Graph plumbing is the pin's own rewrite, run where the scene ran it.**
+`normalizeNodeParticleGraph` routes a reachable Teleport pair to its source
+and compiles Elbow and Debug away as pass-throughs, which is the only way the
+five Teleport-family class names reach a builder at all — every builder
+refuses them on a directly parsed graph. Generation records nothing about the
+rewrite except that the scene asked for it, and the driver then awaits the
+pin's own normalizer between the parse and the build, so the graph the
+simulation walks is the graph the browser walked.
+
 **What stays folded is everything downstream**, on both render targets.
 `createParticleBillboard` and `syncParticleBillboard` are lowered from
 their own pinned declarations, so the generated scene builds the billboard
@@ -825,6 +834,28 @@ Free cameras additionally take `WASD`/arrows plus `Space`/`Shift`.
 guarded reads retain that state, and `getViewProjectionMatrix(camera, aspect)`
 returns the live camera record's float32 projection-view result for indexed
 reads and `ArrayLike<number>` helpers.
+
+`camera.viewport` is the pin's own optional `NormalizedViewport` and its
+write is the opt-in, because upstream it is a plain field rather than a
+factory call. Both of its readers are the pin's own bodies, lowered whole
+and reached on every plan: `getEffectiveAspectRatio` scales the target
+ratio by the viewport's, so a half-width camera projects at half the aspect,
+and `resolveCameraViewport` -- with `clamp01` beside it -- resolves the
+rectangle each backend sets its viewport and scissor to, immediately after
+the pass begins exactly as `executePassBody` sets it. Setting it after the
+pass has begun is what makes the pin's split-screen composition work: the
+load operation has already cleared or loaded the WHOLE attachment, so the
+base scene clears the target and draws its half while a later scene loads
+that and draws the other. A camera with no viewport takes the pin's own
+literal whole-target answer in both, which is why every projection this
+renderer builds -- the frame's, each swapchain overlay layer's, each render
+task's, and the CSM cascade fit's -- is built through the first
+unconditionally. A lane outside `[0, 1]` refuses at generation, because the
+render task multiplies the raw fraction by the target extent where the
+exported resolver clamps it first and the two agree only inside the unit
+square; and a GPU pick through a camera carrying one refuses at run time on
+both backends, since `pickAsync` maps the pointer through the same resolver
+and no reached scene both picks and splits.
 Application window listeners use the same event bridge in scene, sprite,
 effect, and frame-graph executables. SDL scancodes become DOM-compatible
 `KeyboardEvent.code`/`key` pairs (`Space`/`" "` included), pointer button
@@ -1169,9 +1200,11 @@ The dirty key is this port's rather than the pin's: upstream compares camera
 identity, a change counter, the target extent and the effective aspect — four
 proxies for one question, does this frame project lights into different tiles
 than the last did — and the two matrices the cull reads answer it directly.
-A scene giving its camera a viewport would need the other half of
-`getEffectiveAspectRatio`; none does, and the light half of that key folds
-away because nothing here can mutate a light after creating it.
+A camera viewport reaches the cull without reaching this key at all: the
+two matrices are built at the camera's own effective aspect, so a narrowed
+frustum bins into different tiles and the key sees it. The light half of
+that key folds away because nothing here can mutate a light after creating
+it.
 
 What refuses at generation, by name: `markClusteredLightContainerDirty` and
 the in-place edits behind it, a light created after the container was added
@@ -1211,7 +1244,12 @@ lowers to the loader's own mesh records, which are that same flatten already
 performed. What the lowering proves of such a walk is its reach and its
 selection — every node under the container's entities, collecting the ones
 the loader made mesh records for — and deliberately not its order, since a
-worklist reaches siblings in the reverse of document order.
+worklist reaches siblings in the reverse of document order. The consuming
+loop is answered against exactly that: a `continue` lowers, because the loop
+still reaches every renderable and each one skips only the rest of its own
+iteration, which is what the same body written with the condition inverted
+under an `if` already does; a `break` refuses by name, because where it stops
+is a question about the order the walk never promised.
 
 Two arrangements of that walk are proven, because the corpus writes both:
 the worklist, seeded from `entities` and drained (scenes 149, 229), and the
@@ -1756,9 +1794,40 @@ rather than rebuilding the set, with a version compare saying when to walk it
 unregisters, stopping the frame loop from walking that renderer and moving
 the frame's clear to whichever context is now first.
 
+A layer may opt into **renderer-native Y-sort**, for top-down and
+isometric overlap inside one layer. `enableSprite2DYSort` is the whole
+opt-in: upstream keeps the extension behind one lazily-registered hook that
+the always-loaded mutation, upload and picking paths reach it through, so
+enabling is what installs it and a layer that never did keeps the canonical
+logical order. The extension never reorders the layer's own instance rows —
+numeric slots, swap-remove and stable handle ids all stay canonical — and
+what it owns is a GPU-order permutation plus the packed buffer the backends
+upload. The draw key is ascending `positionPx.y + bias` with ties broken by
+a persistent insertion serial, both read off the pin rather than typed here;
+a swap-remove moves the bias, serial and cached key with the sprite the
+layer moved, so equal-key sprites keep the order they entered in. The
+support boundary is the pin's own `depth: "none"`: a depth-hosted layer
+resolves overlap through per-sprite z and intervening geometry, which a CPU
+order alone cannot describe, so enabling one throws. The reached setter is
+the handle companion `setSprite2DYSortHandleBias`, which resolves the
+handle's current slot before writing; only a bias that actually moves the
+key invalidates the order. Its index sibling `setSprite2DYSortBias` and
+`disableSprite2DYSort` are unreached and refuse by name — and the second is
+what keeps the returned state's `enabled` readable off the layer's own
+attachment, since re-enabling after a disable would build a fresh state
+beside a stale one.
+
+The renderer's own per-frame step is `renderer._beforeUpdate`, an ordinary
+array a caller pushes onto that `spriteRendererUpdate` runs, with the
+frame's delta, before it reads its layers. Both PAL sprite drivers and both
+scene-plus-HUD drivers run it in that position, so a hook that moves a
+sprite or a layer is seen by the frame it ran in rather than the next. The
+pure-2D node-particle bridges push their per-frame step onto the same list.
+
 `pickSprite2D` is the synchronous CPU side of that same layer model. It walks
-the renderer's live layer list and each layer's logical sprite order in
-reverse, so the last drawn hit wins, then inverts the pinned vertex
+the renderer's live layer list and each layer's sprite order in
+reverse — draw order where a layer is Y-sorted, and its logical order
+otherwise — so the last drawn hit wins, then inverts the pinned vertex
 transform's rotation and pivot to recover `u` and `v`. A miss remains null;
 a hit retains the pin's complete `SpritePickInfo` record — `layer`,
 `spriteIndex`, `u`, and `v` — so Scene 117 can feed the returned handle and
@@ -2147,14 +2216,21 @@ capsule, cylinder), plus mesh-derived convex hulls with child geometry;
 or a bare transform node exactly as the pin's `SceneNode` does;
 `mass`, `friction`, `restitution`, `startAsleep` — the pin hands that last one
 straight to `HP_World_AddBody`'s third argument, so the body joins the world
-deactivated and stays at its authored pose until a contact wakes it —
-fixed-timestep writes, motion-type and mass
+deactivated and stays at its authored pose until a contact wakes it — and the
+aggregate's own geometry overrides, `center`, `radius`, `pointA`, `pointB`
+and `extents`, each resolved against the bounds-derived value through the
+same `??` `_buildShapeParams` states, so a written one sizes the collider
+and an omitted one derives from the mesh;
+fixed-timestep writes, motion-type, prestep-type and mass
 changes, world-space impulses and central forces, linear-velocity reads,
 collision membership masks, per-body collision-event enablement and deferred
 STARTED/CONTINUED/FINISHED callbacks, filtered raycasts, trigger volumes
 (`setPhysicsShapeIsTrigger` plus an `onPhysicsTrigger` drain reporting the
 pin's own ENTERED/EXITED edges), and
-`onPhysicsAfterStep`. The step registers at
+`onPhysicsAfterStep`. `setPhysicsBodyPrestepType` carries the pin's own
+second statement with it — any type but `DISABLED` turns pre-step syncing on
+— so a scene that names TELEPORT or ACTION drives its body from the node it
+follows without a `setPhysicsBodyPreStep` call beside it. The step registers at
 the *front* of the scene's
 before-render list, as the pin's `unshift` puts it, so a scene reading a
 pose in its own callback reads this frame's rather than the previous
@@ -2172,8 +2248,9 @@ timers while its physics remains live.
 
 Everything else in the pinned physics layer refuses at generation naming
 what it reached: triangle-mesh shapes, containers, heightfields, constraints,
-a shape `rotation` parameter, `onPhysicsTriggerBodies`, the character
-controller, the debug viewer, floating origin, and
+a shape or aggregate `rotation` parameter, `onPhysicsTriggerBodies`, the
+character controller, the debug viewer, floating origin, an explicit centre
+of mass, and
 the body controls and query options not listed above.
 
 ### Audio
@@ -2473,9 +2550,15 @@ or a registered scene-less `FrameGraphContext`. Blur, chromatic aberration,
 black and white, the red/cyan anaglyph and the circle of confusion are
 reached, each contributing only a shader record and a `writeUniforms` body.
 
-A **composite** — depth of field, and bloom — is one entry point building a
-chain of those passes over intermediate targets it owns, while the caller
-still sees one task: one `addTask`, one `updateUniforms`, one output. Bloom's
+A **composite** — depth of field, bloom, and SMAA — is one entry point
+building a chain of those passes over intermediate targets it owns, while the
+caller still sees one task: one `addTask`, one `updateUniforms`, one output.
+SMAA's chain is luma edge detection, a blending-weight pass that searches
+patterns along each run, and a neighbourhood blend, over two source-sized
+`rgba8unorm` intermediates. It ships no lookup textures: reference SMAA's
+AreaTex and SearchTex are neither packaged nor generated by the pin, which
+reconstructs coverage analytically and searches directly in the weight pass,
+so the whole filter is the three composed modules and nothing else. Bloom's
 chain is extract-highlights, two separable blurs and a merge that adds the
 blurred highlights back over the source, its three intermediates sized to
 `floor(sourceSize * bloomScale)` and its blur kernels scaled by the same
@@ -2492,12 +2575,19 @@ An intermediate is a fraction of the source — the blur pyramid runs at 0.75,
 window resize moves the chain with it. The fractions are not read off one
 run: generation composes twice against sources of different sizes and
 formats, and refuses any extent a single fraction does not reproduce exactly.
+Those two runs are *recorded*, not merely constructed: a composite may size an
+intermediate in its own `record()` rather than at construction, and SMAA's
+edge and weight targets are born 1x1 and take the source's extent there. So
+composition records the graph the way the browser does, against a device that
+allocates nothing, and reads the extents the frame would have used.
 
-Bloom's merge is the one pass not built through a leaf factory: it calls
-`createPostProcessTask` itself with a `_shader` written inline in the
-composite's body. The observation therefore watches that entry point beside
-the leaves, and the merge's parameters and uniform writer are read from the
-composite rather than from the pass, which publishes neither
+A pass not built through a leaf factory calls `createPostProcessTask` itself
+with a `_shader` written inline in the composite's body — bloom's merge, and
+all three of SMAA's. The observation therefore watches that entry point beside
+the leaves. It cannot tell two such passes apart by the symbol they share, so
+each is identified by the suffix the pin appends to the composite's name, and
+its parameters and uniform writer are read from the composite rather than from
+the pass, which publishes neither
 ([fidelity](fidelity.md#attribution)).
 
 **Compile time: the stage.** The effect's factory runs under Node against a
@@ -2728,6 +2818,9 @@ generated code refuses them explicitly instead of shading something plausible:
   component encodes the light kind and carries no cone
 - requesting a GPU backend the build did not compile
 - a run-time flag a backend does not implement
+- a GPU pick through a camera carrying a viewport: `pickAsync` maps the
+  pointer through the pin's own `resolveCameraViewport` before it renders
+  the candidates, and no reached scene both picks and splits
 
 ### Platform validation
 

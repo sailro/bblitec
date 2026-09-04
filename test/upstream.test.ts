@@ -39,6 +39,7 @@ import { composeBillboardPickingShader } from "../src/pinned-picking-shaders.js"
 import { composeSplatShModule } from "../src/pinned-splat-fragments.js";
 import {
     pinnedSplatShShader,
+    pinnedSplatShader,
     splatFragmentWgsl,
     splatVertexWgsl,
 } from "../src/shader-builtins-splat.js";
@@ -1681,6 +1682,57 @@ test("translates the pinned perspective writer whole for every plan", () => {
     assert.doesNotMatch(plan.source, /const double focal/);
 });
 
+test("lowers both readers of a camera viewport from their pinned bodies", () => {
+    const plan = new RendererLowerer(new LoweringContext()).lowerRenderPlan();
+    // src/camera/camera.ts getEffectiveAspectRatio: the target ratio
+    // scaled by the viewport's own, with the pin's own `v ? ... : 1`
+    // answering a camera that carries none.
+    assert.match(
+        plan.source,
+        /double effective_aspect_ratio\(\n    const CameraRecord& camera,\n    double target_width,\n    double target_height\)/,
+    );
+    assert.match(
+        plan.source,
+        /return \(\(target_width \/ target_height\) \* \(camera\.viewport \? /,
+    );
+    // src/camera/viewport.ts resolveCameraViewport: `y` flipped to the
+    // top, each edge clamped, floor on the near edges and ceil on the
+    // far ones -- and the module's own clamp01 beside it rather than a
+    // std::clamp typed here. It returns `bbl::PixelViewport`, the one the
+    // copy-task and post-process resolvers already return: a second struct
+    // under `bbl::upstream` would shadow it for any translation unit that
+    // saw this header first, and both of those name the type unqualified
+    // from inside that namespace.
+    assert.match(
+        plan.source,
+        /double clamp01\(\n    double value\) \{\n    return std::max<double>\(0\.0, std::min<double>\(1\.0, value\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /PixelViewport resolve_camera_viewport\(\n    const CameraRecord& camera,\n    double target_width,\n    double target_height\)/,
+    );
+    assert.match(
+        plan.source,
+        /const double y0 = clamp01\(\(\(1\.0 - \(camera\.viewport\.has_value\(\) \? camera\.viewport->y : 0\.0\)\) - \(camera\.viewport\.has_value\(\) \? camera\.viewport->height : 1\.0\)\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /const double x = std::floor\(\(x0 \* target_width\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /const double width = std::max<double>\(0\.0, \(std::ceil\(\(x1 \* target_width\)\) - x\)\);/,
+    );
+    assert.match(
+        plan.source,
+        /return PixelViewport\{static_cast<std::int32_t>\(x\), static_cast<std::int32_t>\(y\), static_cast<std::int32_t>\(width\), static_cast<std::int32_t>\(height\)\};/,
+    );
+    // Both are the pin's, on every plan: the whole-target answer is the
+    // pin's own literal rather than a branch this port added, which is
+    // what lets each backend build every projection through them.
+    assert.match(plan.source, pinnedProvenance());
+});
+
 test("lowers the reachable upstream light matrix implementation", () => {
     const lowered = new LightLowerer(new LoweringContext()).lowerMatrix();
     assert.equal(lowered.modulePath, "src/light/light-matrix.ts");
@@ -2364,6 +2416,71 @@ test("generates the sprite instance layout table from the pinned pipeline", () =
         header,
         /sprite_depth_instance_stride_bytes =\n\s*56u;/,
     );
+});
+
+test("emits the Sprite2D Y-sort extension only where a scene enables it", () => {
+    const context = new LoweringContext();
+    const plain = String(new SpriteLowerer(context).lowerCore().source);
+    // Upstream's extension registers its one hook from inside the enabler,
+    // so a scene that never calls it links none of the module and every
+    // always-loaded reach of the hook stays null.
+    assert.doesNotMatch(plain, /YSortState/);
+    assert.doesNotMatch(plain, /y_sort/);
+
+    const sorted = String(
+        new SpriteLowerer(context).lowerCore(true).source,
+    );
+    // The draw key is the stored positionPx.y lane plus the slot's bias,
+    // summed at the width the pin's F64 bias array gives it. Lane 1 comes
+    // from the pinned keyAt rather than from this expectation: a bump that
+    // moved it fails generation with a named contract error.
+    assert.match(
+        sorted,
+        /layer\.instance_data\[base \+ 1u\]\) \+\n\s*state\.biases\[index\];/,
+    );
+    // Equal keys keep insertion order, which is what makes two sprites at
+    // the same Y stable across an unrelated removal.
+    assert.match(
+        sorted,
+        /if \(left_key < right_key\) return true;\n\s*if \(left_key > right_key\) return false;\n\s*return state\.serials\[left\] < state\.serials\[right\];/,
+    );
+    // The permutation is the GPU's, never the layer's own rows. The pin's
+    // own `packRange` writes lane by lane because JavaScript has nothing
+    // else; the run is the same values either way.
+    assert.match(
+        sorted,
+        /std::copy_n\(\n\s*layer\.instance_data\.data\(\) \+ source_base,\n\s*stride,\n\s*state\.packed_instances\.data\(\) \+ target_base\);/,
+    );
+    // The enabler is the opt-in: it installs the hook the always-loaded
+    // upload and pick paths read, and nothing else does.
+    assert.match(
+        sorted,
+        /engine\.sprite_y_sort_hook\.stage = stage_y_sort_upload;/,
+    );
+    assert.match(
+        sorted,
+        /engine\.sprite_y_sort_hook\.draw_order = y_sort_draw_order;/,
+    );
+    assert.equal(
+        [
+            ...sorted.matchAll(/engine\.sprite_y_sort_hook\./g),
+        ].length,
+        2,
+    );
+    // Depth-hosted layers are out of the pin's own support boundary.
+    assert.match(
+        sorted,
+        /enableSprite2DYSort requires a layer with depth == none/,
+    );
+    // Every canonical mutation observes the extension where the pin does.
+    for (const observer of [
+        /observe_y_sort_dirty\(layer, begin, end\);/,
+        /observe_y_sort_add\(layer, index\);/,
+        /observe_y_sort_remove\(layer, index, last\);/,
+        /observe_y_sort_clear\(layer, count\);/,
+    ]) {
+        assert.match(sorted, observer);
+    }
 });
 
 test("gates pure and depth-hosted sprite vertex permutations independently", () => {
@@ -3126,6 +3243,30 @@ test("spells a baked CSG float at float32 round-trip width", () => {
     assert.equal(empty.positions, "std::vector<float>{}");
 });
 
+test("reads the stock splat module's dialect off the packaged text", () => {
+    // The SH test below covers `SH_DIALECT`, which is spelled here. This
+    // one covers `stockDialect`, which is READ from the packaged module --
+    // the half a pin bump can move under us, and the half that had no test
+    // when 1.27.0's minifier packed the vertex stage onto one line and its
+    // `@location(0)` attribute swallowed the parameter-list scan. Seven
+    // registered scenes then refused generation while `test:upstream` and
+    // the contract report both stayed green, because neither reached this
+    // function.
+    const split = pinnedSplatShader();
+    assert.equal(split.spliced, false);
+    const vertex = splatVertexWgsl("provenance", split);
+    // The varying struct is the value the scan returns, so a stage that
+    // carries it proves the whole dialect resolved rather than throwing.
+    assert.match(vertex, /@vertex fn vs\(/);
+    assert.match(vertex, /struct \w+\{/);
+    for (const binding of [2, 3, 4, 5]) {
+        assert.ok(
+            vertex.includes(`@binding(${binding})`),
+            `the vertex stage carries its data texture at binding ${binding}`,
+        );
+    }
+});
+
 test("splits the pin's own spherical-harmonic splat module", async () => {
     // Executed rather than lifted: this module's WGSL is BUILT per degree,
     // so there is no packaged literal to extract and the only way to get
@@ -3181,5 +3322,132 @@ test("splits the pin's own spherical-harmonic splat module", async () => {
     await assert.rejects(
         () => composeSplatShModule(0, []),
         /SH_TEXTURE_COUNT table does not cover/,
+    );
+});
+
+test("the pin owns the node-particle graph normalizer the driver runs", () => {
+    // Scene 305 routes Scene 262's graph through Teleport, Elbow, Debug and
+    // a LocalVariable, which every builder refuses until the graph is
+    // normalized. Generation does not restate that rewrite: the bake driver
+    // calls the pin's own normalizer in the place the scene called it, so
+    // what this anchors is that the entry point is still there and still
+    // shaped the way the emitted driver composes it.
+    const store = new UpstreamSourceStore();
+    const resolved = store.resolvePublicExport("normalizeNodeParticleGraph");
+    assert.equal(
+        resolved.modulePath,
+        "src/particle/node/npe-graph-plumbing.ts",
+    );
+    const source = store.getSource(resolved.modulePath);
+
+    // The driver emits `await normalizeNodeParticleGraph(parse(...))`, which
+    // is the pin's own documented composition -- and only correct while the
+    // normalizer is asynchronous, because it fetches its rewrite runtime
+    // through a dynamic import.
+    assert.match(
+        source,
+        /export async function normalizeNodeParticleGraph\(/,
+    );
+    assert.match(source, /await import\("\.\/npe-graph-plumbing-runtime\.js"\)/);
+
+    // Two properties let the compiler carry a single `normalized` marker
+    // rather than reasoning about the graph: normalizing twice is the pin's
+    // own no-op, and a graph carrying none of the four candidate classes is
+    // returned unchanged. So the marker records what the SCENE did, and the
+    // driver reproduces it without having to decide whether it mattered.
+    assert.match(source, /if \(graph\._isGraphPlumbingNormalized\) \{\s*return graph;/);
+    for (const candidate of [
+        "ParticleTeleportOutBlock",
+        "ParticleLocalVariableBlock",
+        "ParticleElbowBlock",
+        "ParticleDebugBlock",
+    ]) {
+        assert.ok(
+            source.includes(`block.className === "${candidate}"`),
+            `the normalizer's scan names ${candidate}`,
+        );
+    }
+});
+
+test("sizes an SMAA composite's intermediates from the recorded graph", async () => {
+    const { composeComposite } = await import(
+        "../src/pinned-post-process.js"
+    );
+    const composed = await composeComposite({
+        intrinsic: "createSmaaPostProcessTask",
+        hasTarget: true,
+        options: {
+            viewport: { x: 0.5, y: 0, width: 0.5, height: 1 },
+            clear: true,
+            threshold: 0.03,
+            maxSearchSteps: 64,
+        },
+    });
+
+    // The edge and weight targets are born 1x1 and take the source's extent
+    // in the composite's own record(), so composing without recording would
+    // report them as a vanishing fraction of the source that happens to
+    // reproduce at both probe sizes. Both are the source's size exactly.
+    assert.deepEqual(
+        composed.intermediates.map((target) => [
+            target.format,
+            target.widthRatio,
+            target.heightRatio,
+        ]),
+        [
+            ["rgba8unorm", 1, 1],
+            ["rgba8unorm", 1, 1],
+        ],
+    );
+
+    // Three passes, each an inline `createPostProcessTask` told apart by the
+    // suffix the pin names it with rather than by the symbol they share.
+    assert.deepEqual(
+        composed.passes.map((pass) => [pass.name, pass.intrinsic]),
+        [
+            [
+                "bblitec-composite-edges",
+                "createSmaaEdgeDetectionPostProcessTask",
+            ],
+            [
+                "bblitec-composite-weights",
+                "createSmaaBlendWeightsPostProcessTask",
+            ],
+            [
+                "bblitec-composite-blend",
+                "createSmaaNeighbourhoodBlendPostProcessTask",
+            ],
+        ],
+    );
+
+    // The pattern search reads exact texels; the other two want linear.
+    assert.deepEqual(
+        composed.passes.map((pass) => pass.sampling),
+        ["linear", "nearest", "linear"],
+    );
+
+    // Every parameter, flags included, travels the one numeric vector: the
+    // pin's writers spend the flags through conditionals the lowered bodies
+    // read back off the same slots.
+    assert.deepEqual(
+        composed.passes.map((pass) => pass.params),
+        [[0.03, 0], [64, 0, 4, 0], [1]],
+    );
+
+    // The scene asked for the right half of the target, and the viewport
+    // reaches the pass it ends on with its extent intact.
+    assert.deepEqual(composed.passes[2]?.viewport, {
+        x: 0.5,
+        y: 0,
+        width: 0.5,
+        height: 1,
+    });
+
+    // Reference SMAA's AreaTex/SearchTex are not part of this
+    // implementation, so the chain binds no texture the scene did not name
+    // beyond the composite's own weights.
+    assert.deepEqual(
+        composed.passes.map((pass) => pass.extraTextures),
+        [[], [], [{ kind: "intermediate", index: 1 }]],
     );
 });

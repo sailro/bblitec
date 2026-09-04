@@ -1281,6 +1281,30 @@
       "upstreamPath": "lab/lite/src/lite/scene223.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene223.ts",
       "sha256": "bcee1f2fde33e38c81eff300940ee0646c06880dc6ff48a10289474f580a6617"
+    },
+    {
+      "id": "scene305",
+      "upstreamPath": "lab/lite/src/lite/scene305.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene305.ts",
+      "sha256": "fe2ce5f8d300fee9ebbec91e2854af94bd4721bee8c8c79a50ebcde87a523509"
+    },
+    {
+      "id": "scene73",
+      "upstreamPath": "lab/lite/src/lite/scene73.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
+      "sha256": "cd697444db8da41e9353be82f9dafdcfd7f494ad22e8847bfb05f3b6fdd91c3c"
+    },
+    {
+      "id": "scene187",
+      "upstreamPath": "lab/lite/src/lite/scene187.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene187.ts",
+      "sha256": "074e4d1d2e1d7e218f278a0b495f55eb00df87545f007e3267ef866313fbdd9d"
+    },
+    {
+      "id": "scene303",
+      "upstreamPath": "lab/lite/src/lite/scene303.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene303.ts",
+      "sha256": "ddff9e0af5f52ca1f646100c36c8d7a4d050b890704cceb40438bcc971760b09"
     }
   ],
   "modules": [
@@ -1533,6 +1557,21 @@
       "upstreamPath": "lab/lite/src/shared/scene72-nme.ts",
       "source": "corpus/babylon-lite/lab/lite/src/shared/scene72-nme.ts",
       "sha256": "134bfc96ae0113a5f7820a07063efa5904e7e9e28a3d06de7f563e231a43c79f"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene305-teleport-npe.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene305-teleport-npe.ts",
+      "sha256": "cc380186bbbe03b236fe95bb79ad5e56addd15c5547b53ad344ba34cd5ea802b"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene149-nme.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene149-nme.ts",
+      "sha256": "e361c96b54b80942713dfcf72b64528e441f83e3905925e3e5dd07e9ae0bfe3a"
+    },
+    {
+      "upstreamPath": "lab/lite/src/shared/scene231-skin.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/shared/scene231-skin.ts",
+      "sha256": "52da642058ae3460e48c205d5c79d77984fc40a23d3a339cee174f60c7ec7436"
     }
   ],
   "staged": [
@@ -1565,11 +1604,6 @@
       "upstreamPath": "lab/lite/src/lite/scene49.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene49.ts",
       "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
-    },
-    {
-      "upstreamPath": "lab/lite/src/lite/scene73.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
-      "sha256": "cd697444db8da41e9353be82f9dafdcfd7f494ad22e8847bfb05f3b6fdd91c3c"
     },
     {
       "upstreamPath": "lab/lite/src/lite/scene91.ts",
@@ -1652,11 +1686,6 @@
       "sha256": "94e5412c3d86bda80f2cc5962ed9aed0569710451936c5ff684f310f88a23a03"
     },
     {
-      "upstreamPath": "lab/lite/src/lite/scene187.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene187.ts",
-      "sha256": "074e4d1d2e1d7e218f278a0b495f55eb00df87545f007e3267ef866313fbdd9d"
-    },
-    {
       "upstreamPath": "lab/lite/src/lite/scene187-debug.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene187-debug.ts",
       "sha256": "285c0899039f0eead5d7a0d9465b7186c2cd39a17e6abfa8664fb0f9d5c1af63"
@@ -1717,19 +1746,9 @@
       "sha256": "58a6ecbf8bd43186b0621304211e9b1ba4eef231be644e0f17e24f16fa3a53c2"
     },
     {
-      "upstreamPath": "lab/lite/src/lite/scene303.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene303.ts",
-      "sha256": "ddff9e0af5f52ca1f646100c36c8d7a4d050b890704cceb40438bcc971760b09"
-    },
-    {
       "upstreamPath": "lab/lite/src/lite/scene304.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene304.ts",
       "sha256": "c5e727d1e15968ef6ff1f786f7dc7672c9ecc3d68e5fc4847e0dcdc5d49df2d7"
-    },
-    {
-      "upstreamPath": "lab/lite/src/lite/scene305.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene305.ts",
-      "sha256": "fe2ce5f8d300fee9ebbec91e2854af94bd4721bee8c8c79a50ebcde87a523509"
     }
   ],
   "tooling": [

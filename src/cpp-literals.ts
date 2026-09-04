@@ -59,6 +59,17 @@ export function float32Literal(value: number): string {
 }
 
 export function doubleLiteral(value: number): string {
+    // `String(undefined)` and `String(NaN)` are C++ identifiers, not
+    // literals, so a missing quantity used to reach a generated file and
+    // fail at the compiler with no hint of where it came from. Refusing
+    // here names the value instead, at the point that lost it.
+    if (typeof value !== "number" || !Number.isFinite(value)) {
+        throw new Error(
+            `A generated double literal has no finite value (${String(
+                value,
+            )}).`,
+        );
+    }
     const text = String(value);
     return text.includes(".") || /e/i.test(text) ? text : `${text}.0`;
 }

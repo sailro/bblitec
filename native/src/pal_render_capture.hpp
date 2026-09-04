@@ -1803,8 +1803,10 @@ inline void write_render_capture(
     // frame loops build them before the uploads this describes.
     // getEffectiveAspectRatio divides two JavaScript numbers, exactly as
     // the frame loops do before building the matrix passed in here.
-    const double capture_aspect =
-        static_cast<double>(width) / static_cast<double>(height);
+    const double capture_aspect = upstream::effective_aspect_ratio(
+        camera,
+        static_cast<double>(width),
+        static_cast<double>(height));
     const std::array<float, 16> frame_view = upstream::build_view_matrix(
         upstream::camera_world_matrix(camera));
     const std::array<float, 16> frame_projection =

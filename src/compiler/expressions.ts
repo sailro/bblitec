@@ -2774,6 +2774,43 @@ export class ExpressionLowerer {
             if (animationFrame) return animationFrame;
         }
         if (ts.isPropertyAccessExpression(callee)) {
+            // `renderer._beforeUpdate.push(hook)`: sprite-renderer.ts keeps
+            // its per-frame hooks in an ordinary array a caller pushes onto,
+            // and `spriteRendererUpdate` runs them before it reads its
+            // layers. It is a renderer-owned list rather than the scene's,
+            // so the push is recognized here rather than through an
+            // intrinsic name.
+            if (
+                callee.name.text === "push" &&
+                ts.isPropertyAccessExpression(callee.expression) &&
+                callee.expression.name.text === "_beforeUpdate"
+            ) {
+                const renderer = this.context.compileValue(
+                    callee.expression.expression,
+                );
+                if (renderer.kind !== "sprite-renderer") {
+                    this.context.fail(
+                        callee.expression.expression,
+                        "'_beforeUpdate' is the SpriteRenderer's own " +
+                            `per-frame hook list; received ${renderer.kind}.`,
+                    );
+                }
+                this.context.expectArgumentCount(call, 1, 1);
+                const engineCpp = this.context.requireEngine(
+                    renderer,
+                    call,
+                );
+                return {
+                    kind: "void",
+                    cpp:
+                        "bbl::sprite_renderer_before_update(" +
+                        `${engineCpp}, ${renderer.cpp}, ` +
+                        `${this.context.compileFrameCallback(
+                            call.arguments[0]!,
+                        )})`,
+                    engineCpp,
+                };
+            }
             if (
                 ts.isIdentifier(callee.expression) &&
                 callee.expression.text === "Object" &&

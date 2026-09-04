@@ -423,7 +423,10 @@ export class HandleCollections {
         if (
             !declaration ||
             !ts.isFunctionDeclaration(declaration) ||
-            !isImportedMeshFlattenWalk(declaration)
+            !(
+                isImportedMeshFlattenWalk(declaration) ||
+                isClosureMeshFlattenCollector(declaration)
+            )
         ) {
             return undefined;
         }
@@ -2670,6 +2673,41 @@ function guardedArm(
         : undefined;
 }
 
+/**
+ * `if ("_gpu" in node && "material" in node) meshes.push(node)` — the
+ * renderable test, written identically by every spelling of the walk.
+ *
+ * The pair IS this port's statement of what a renderable is: a loaded mesh
+ * carries both fields and a transform node carries neither. Three
+ * recognizers and the presence guard ask it, so it is asked once here — a
+ * pin that renames either field then moves one predicate rather than four
+ * copies of it.
+ */
+function provesRenderableCollectArm(
+    statement: ts.Statement,
+    node: ts.Identifier,
+    result: ts.Identifier,
+): boolean {
+    const arm = guardedArm(statement);
+    if (!arm) return false;
+    const probes = logicalAndOperands(arm.test);
+    return (
+        probes.length === 2 &&
+        probes.some((probe) => isPropertyPresenceProbe(probe, node, "_gpu")) &&
+        probes.some((probe) =>
+            isPropertyPresenceProbe(probe, node, "material"),
+        ) &&
+        isIdentifierRead(
+            pushedArgument(
+                singleExpressionStatement(arm.body),
+                result,
+                false,
+            ),
+            node,
+        )
+    );
+}
+
 /** Whether a statement is `continue;`, block-wrapped or bare. */
 function isContinueArm(statement: ts.Statement): boolean {
     return ts.isBlock(statement)
@@ -2812,29 +2850,7 @@ function isImportedMeshFlattenWalk(
         return false;
     }
 
-    // `if ("_gpu" in node && "material" in node) meshes.push(node)` — the
-    // renderable test. A loaded mesh carries both fields and a transform
-    // node carries neither, so this selects the loader's mesh records.
-    const collectArm = guardedArm(body[2]!);
-    if (!collectArm) return false;
-    const probes = logicalAndOperands(collectArm.test);
-    if (
-        probes.length !== 2 ||
-        !probes.some((probe) =>
-            isPropertyPresenceProbe(probe, node, "_gpu"),
-        ) ||
-        !probes.some((probe) =>
-            isPropertyPresenceProbe(probe, node, "material"),
-        ) ||
-        !isIdentifierRead(
-            pushedArgument(
-                singleExpressionStatement(collectArm.body),
-                result.name,
-                false,
-            ),
-            node,
-        )
-    ) {
+    if (!provesRenderableCollectArm(body[2]!, node, result.name)) {
         return false;
     }
 
@@ -2850,6 +2866,203 @@ function isImportedMeshFlattenWalk(
         true,
     );
     return !!descend && isPropertyReadOf(descend, node, "children");
+}
+
+/**
+ * Proves the CLOSURE arrangement of the same container flatten the worklist
+ * above proves:
+ *
+ *     function collectMeshes(container: AssetContainer): Mesh[] {
+ *         const meshes: Mesh[] = [];
+ *         const visit = (node: unknown): void => {
+ *             if (node && typeof node === "object") {
+ *                 if ("_gpu" in node && "material" in node) {
+ *                     meshes.push(node as unknown as Mesh);
+ *                 }
+ *                 const children = (node as { children?: readonly unknown[] }).children;
+ *                 if (children) {
+ *                     for (const child of children) {
+ *                         visit(child);
+ *                     }
+ *                 }
+ *             }
+ *         };
+ *         for (const entity of container.entities) {
+ *             visit(entity);
+ *         }
+ *         return meshes;
+ *     }
+ *
+ * It is the recursive visitor with its two type guards written inline and
+ * its result list closed over rather than passed, which is why the visitor
+ * recognizer above does not see it: that one proves a two-parameter
+ * FUNCTION DECLARATION, and this is a one-parameter arrow bound to a local.
+ *
+ * What is proven is what was proven there, and for the same reasons: the
+ * walk is seeded from every entity, the descent runs on every node the
+ * object probe passes, the collect arm is the renderable-field presence
+ * test the loader's mesh records answer, and the body does nothing else --
+ * one push, one recursive call, no other effect. Its ORDER is left
+ * unclaimed, because the caller answers with the collection
+ * `getContainerMeshes` answers with rather than with this traversal.
+ */
+function isClosureMeshFlattenCollector(
+    declaration: ts.FunctionDeclaration,
+): boolean {
+    if (
+        !declaration.body ||
+        declaration.asteriskToken ||
+        declaration.typeParameters?.length ||
+        declaration.parameters.length !== 1 ||
+        !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        declaration.body.statements.length !== 4
+    ) {
+        return false;
+    }
+    const container = declaration.parameters[0]!.name;
+    const [collected, visitor, loop, returned] =
+        declaration.body.statements;
+
+    // `const meshes: Mesh[] = []` -- the result, empty before the walk.
+    const result = singleConstDeclaration(collected!);
+    if (!result) return false;
+    const empty = unwrapWalkExpression(result.initializer);
+    if (
+        !ts.isArrayLiteralExpression(empty) ||
+        empty.elements.length !== 0
+    ) {
+        return false;
+    }
+
+    // `const visit = (node) => { ... }` -- the one-parameter arrow.
+    const bound = singleConstDeclaration(visitor!);
+    if (!bound) return false;
+    const arrow = unwrapWalkExpression(bound.initializer);
+    if (
+        !ts.isArrowFunction(arrow) ||
+        arrow.typeParameters?.length ||
+        arrow.parameters.length !== 1 ||
+        !ts.isIdentifier(arrow.parameters[0]!.name) ||
+        arrow.parameters[0]!.dotDotDotToken ||
+        arrow.parameters[0]!.initializer ||
+        arrow.parameters[0]!.questionToken ||
+        !ts.isBlock(arrow.body) ||
+        arrow.body.statements.length !== 1
+    ) {
+        return false;
+    }
+    const node = arrow.parameters[0]!.name;
+
+    // `return meshes` -- the collected list, unfiltered and unsorted.
+    if (
+        !ts.isReturnStatement(returned!) ||
+        !isIdentifierRead(returned.expression, result.name)
+    ) {
+        return false;
+    }
+
+    // `for (const entity of container.entities) visit(entity)` -- seeded
+    // from every root, so the walk covers the whole container.
+    if (
+        !ts.isForOfStatement(loop!) ||
+        loop.awaitModifier ||
+        !ts.isVariableDeclarationList(loop.initializer) ||
+        loop.initializer.declarations.length !== 1
+    ) {
+        return false;
+    }
+    const entity = loop.initializer.declarations[0]!.name;
+    if (
+        !ts.isIdentifier(entity) ||
+        !isPropertyReadOf(loop.expression, container, "entities")
+    ) {
+        return false;
+    }
+    const seeded = singleExpressionStatement(loop.statement);
+    const seedCall = seeded && unwrapWalkExpression(seeded);
+    if (
+        !seedCall ||
+        !ts.isCallExpression(seedCall) ||
+        seedCall.arguments.length !== 1 ||
+        !isIdentifierRead(seedCall.expression, bound.name) ||
+        !isIdentifierRead(seedCall.arguments[0]!, entity)
+    ) {
+        return false;
+    }
+
+    // `if (node && typeof node === "object") { ... }` -- the object probe
+    // the two hand-written type guards each open with, written once here.
+    const objectArm = guardedArm(arrow.body.statements[0]!);
+    if (!objectArm) return false;
+    const probes = logicalAndOperands(objectArm.test);
+    if (
+        probes.length !== 2 ||
+        !probes.some((probe) => isIdentifierRead(probe, node)) ||
+        !probes.some((probe) => isTypeofObjectProbe(probe, node))
+    ) {
+        return false;
+    }
+    if (
+        !ts.isBlock(objectArm.body) ||
+        objectArm.body.statements.length !== 3
+    ) {
+        return false;
+    }
+    const [collect, childrenRead, descend] = objectArm.body.statements;
+
+    if (!provesRenderableCollectArm(collect!, node, result.name)) {
+        return false;
+    }
+
+    // `const children = node.children` -- read once, through whatever cast
+    // the scene widens the node with.
+    const childrenBinding = singleConstDeclaration(childrenRead!);
+    if (
+        !childrenBinding ||
+        !isPropertyReadOf(childrenBinding.initializer, node, "children")
+    ) {
+        return false;
+    }
+
+    // `if (children) for (const child of children) visit(child)` -- the
+    // descent, on every node, through the same property the pin's own
+    // visitor recurses.
+    const descendArm = guardedArm(descend!);
+    if (
+        !descendArm ||
+        !isIdentifierRead(descendArm.test, childrenBinding.name)
+    ) {
+        return false;
+    }
+    const inner = ts.isBlock(descendArm.body)
+        ? descendArm.body.statements
+        : [descendArm.body];
+    if (inner.length !== 1) return false;
+    const recursion = inner[0]!;
+    if (
+        !ts.isForOfStatement(recursion) ||
+        recursion.awaitModifier ||
+        !ts.isVariableDeclarationList(recursion.initializer) ||
+        recursion.initializer.declarations.length !== 1
+    ) {
+        return false;
+    }
+    const child = recursion.initializer.declarations[0]!.name;
+    if (
+        !ts.isIdentifier(child) ||
+        !isIdentifierRead(recursion.expression, childrenBinding.name)
+    ) {
+        return false;
+    }
+    const recursed = singleExpressionStatement(recursion.statement);
+    const call = recursed && unwrapWalkExpression(recursed);
+    return (
+        !!call &&
+        ts.isCallExpression(call) &&
+        call.arguments.length === 1 &&
+        isIdentifierRead(call.expression, bound.name) &&
+        isIdentifierRead(call.arguments[0]!, child)
+    );
 }
 
 /**

@@ -1005,6 +1005,14 @@ export type PostProcessOptionValue =
   | string
   | { x: number; y: number }
   /**
+   * A normalized viewport, which a composite reads itself and forwards to
+   * the pass it ends on -- SMAA presents into half the swapchain that way.
+   * It is a distinct shape rather than a wider vector because the pin's
+   * vector options carry exactly `x` and `y`, and reducing this one to
+   * those two silently moved a half-screen pass to a full-screen one.
+   */
+  | { x: number; y: number; width: number; height: number }
+  /**
    * A member of one of the pin's own enums, unresolved. Scene code writes
    * `DepthOfFieldBlurLevel.High` and what that is worth is the pin's to
    * say, so the name travels to composition and the pinned module answers
@@ -1279,6 +1287,13 @@ export type ValueKind =
   | "billboard-system"
   | "billboard-sprite"
   | "sprite-2d-handle"
+  /**
+   * The `Sprite2DYSortState` `enableSprite2DYSort` returns. It carries the
+   * layer it was installed on, because the one field a scene reads off it
+   * (`enabled`) is a live question about that layer rather than a value
+   * settled when the state was created.
+   */
+  | "sprite-2d-y-sort"
   | "sprite-animation-manager"
   | "sprite-renderer"
   | "splat-mesh"
@@ -2234,6 +2249,7 @@ export type Feature =
   | "shadow:task"
   | "sprite:2d"
   | "sprite:2d-depth-host"
+  | "sprite:2d-y-sort"
   | "sprite:uv-scroll"
   | "sprite:custom-shader"
   | "material:standard-diffuse-render-texture"

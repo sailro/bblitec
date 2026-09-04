@@ -99,6 +99,41 @@ WGPUCullMode dawn_cull_mode(upstream::RenderCullMode cull) {
         : WGPUCullMode_Back;
 }
 
+/**
+ * The pin's `executePassBody` opening, mirrored from the SDL backend: a
+ * camera carrying a viewport narrows the pass to it, and one without
+ * leaves the pass at the whole target the way `if (v)` leaves it.
+ *
+ * Set AFTER the pass begins, exactly where upstream sets it, so the load
+ * operation has already cleared or loaded the whole attachment.
+ */
+void set_pass_camera_viewport(
+    WGPURenderPassEncoder pass,
+    const CameraRecord& camera,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+    if (!camera.viewport.has_value()) return;
+    const PixelViewport rect =
+        upstream::resolve_camera_viewport(
+            camera,
+            static_cast<double>(target_width),
+            static_cast<double>(target_height));
+    wgpuRenderPassEncoderSetViewport(
+        pass,
+        static_cast<float>(rect.x),
+        static_cast<float>(rect.y),
+        static_cast<float>(rect.width),
+        static_cast<float>(rect.height),
+        0.0f,
+        1.0f);
+    wgpuRenderPassEncoderSetScissorRect(
+        pass,
+        static_cast<std::uint32_t>(rect.x),
+        static_cast<std::uint32_t>(rect.y),
+        static_cast<std::uint32_t>(rect.width),
+        static_cast<std::uint32_t>(rect.height));
+}
+
 // Vertex uniform bindings in group 1 mirror the SDL vertex uniform
 // slots: 0 = viewProjection, 1 = deformation, then the instance
 // parent world matrix.
@@ -10556,7 +10591,21 @@ bool run_dawn_engine(Engine& engine) {
         if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
             return PickingInfo{};
         }
-        const double aspect = width / height;
+        if (camera.viewport.has_value()) {
+            // `pickAsync` maps the pointer through
+            // `resolveCameraViewport` before it renders the candidates
+            // (src/picking/gpu-picker.ts), which this port has not
+            // ported: no scene reaches both. Refusing by name beats
+            // picking against a frustum the pass never drew.
+            dawn_error(
+                "A GPU pick through a camera viewport needs the pin's "
+                "resolveCameraViewport pointer mapping, which is not "
+                "ported: no reached scene both picks and splits.");
+        }
+        const double aspect = upstream::effective_aspect_ratio(
+            camera,
+            width,
+            height);
         const std::array<float, 16> view_projection =
             upstream::build_view_projection(camera, aspect);
         ensure_dawn_pick_targets(state.device, state.pick_targets);
@@ -11171,6 +11220,11 @@ bool run_dawn_engine(Engine& engine) {
         // instance data, so synchronize and upload every sprite context now.
         sync_sprite_gpu_contexts();
         for (DawnSpritePass& sprite_pass : state.sprite_passes) {
+            // `spriteRendererUpdate` runs the renderer's own hooks before
+            // it reads its layers, so an overlay HUD's hook is seen by this
+            // frame rather than the next.
+            run_sprite_renderer_before_update(
+                engine, sprite_pass.renderer, delta_ms);
             sync_dawn_sprite_pass_layers(
                 state.device,
                 state.queue,
@@ -11612,10 +11666,15 @@ bool run_dawn_engine(Engine& engine) {
             camera);
 
         // getEffectiveAspectRatio divides two JavaScript numbers, so
-        // the ratio reaches the projection writer in double.
+        // the ratio reaches the projection writer in double. It is the
+        // pinned function itself: a camera carrying a viewport scales
+        // the target ratio by the viewport's own, and one without takes
+        // the pin's literal 1.
         const double aspect =
-            static_cast<double>(width) /
-            static_cast<double>(height);
+            upstream::effective_aspect_ratio(
+                camera,
+                static_cast<double>(width),
+                static_cast<double>(height));
         const std::array<float, 16> matrix =
             upstream::build_view_projection(camera, aspect);
         // The frame's own two factors, built once. A shader material may
@@ -11779,6 +11838,15 @@ bool run_dawn_engine(Engine& engine) {
                 overlay_scene->camera.value < engine.cameras.size()
                     ? engine.cameras[overlay_scene->camera.value]
                     : camera;
+            // A layer's own camera answers `getEffectiveAspectRatio` for
+            // itself: upstream each scene's render task writes its OWN
+            // scene UBO from `cfg.cam ?? scene.camera`, so two scenes
+            // splitting one target by viewport project at two ratios.
+            const double overlay_aspect =
+                upstream::effective_aspect_ratio(
+                    overlay_camera,
+                    static_cast<double>(width),
+                    static_cast<double>(height));
             const upstream::SceneUniforms overlay_scene_block =
                 pinned_scene_block(
                     *overlay_scene,
@@ -11786,7 +11854,7 @@ bool run_dawn_engine(Engine& engine) {
                     overlay_camera,
                     upstream::build_view_projection(
                         overlay_camera,
-                        aspect));
+                        overlay_aspect));
             wgpuQueueWriteBuffer(
                 state.queue,
                 overlay.scene_uniforms,
@@ -12108,13 +12176,24 @@ bool run_dawn_engine(Engine& engine) {
                 overlay_scene->camera.value < engine.cameras.size()
                     ? engine.cameras[overlay_scene->camera.value]
                     : camera;
+            // The layer's own effective aspect, as above: a viewport is
+            // the camera's, not the target's.
+            const double overlay_aspect =
+                upstream::effective_aspect_ratio(
+                    overlay_camera,
+                    static_cast<double>(width),
+                    static_cast<double>(height));
             const std::array<float, 16> overlay_matrix =
-                upstream::build_view_projection(overlay_camera, aspect);
+                upstream::build_view_projection(
+                    overlay_camera,
+                    overlay_aspect);
             const std::array<float, 16> overlay_view =
                 upstream::build_view_matrix(
                     upstream::camera_world_matrix(overlay_camera));
             const std::array<float, 16> overlay_projection =
-                upstream::build_scene_projection(overlay_camera, aspect);
+                upstream::build_scene_projection(
+                    overlay_camera,
+                    overlay_aspect);
             const std::array<float, 4> overlay_camera_position =
                 shader_camera_position(
                     *overlay_scene,
@@ -12300,11 +12379,18 @@ bool run_dawn_engine(Engine& engine) {
                                 engine.cameras.size()
                         ? engine.cameras[task.render.camera.value]
                         : camera;
+                // `_writePassSceneUBO` folds the camera's own viewport
+                // into whichever extent the task was configured for --
+                // the canvas or the target.
                 const double task_aspect = task.render.canvas_size
-                    ? static_cast<double>(width) /
-                        static_cast<double>(height)
-                    : static_cast<double>(target.width) /
-                        static_cast<double>(target.height);
+                    ? upstream::effective_aspect_ratio(
+                          task_camera,
+                          static_cast<double>(width),
+                          static_cast<double>(height))
+                    : upstream::effective_aspect_ratio(
+                          task_camera,
+                          static_cast<double>(target.width),
+                          static_cast<double>(target.height));
                 // A shadow task renders from the light, not from a
                 // camera: the generator's own matrices replace both of
                 // these below, so building and uploading a camera
@@ -12406,10 +12492,28 @@ bool run_dawn_engine(Engine& engine) {
                 }
 #endif
 #if BBLITE_PINNED_MATERIALS
-                // A task the scene gave its own camera reads its own eye
-                // position and view-projection, which is the whole of what
-                // the pass block holds; the record says so directly.
-                if (target_record.has_color && task.render.has_camera) {
+                // A colour task that is not a caster pass reads its OWN
+                // pass block, which is the rule the SDL_GPU backend states
+                // as `if (!shadow_task)` around its own push.
+                //
+                // It used to be written only for a task the scene gave its
+                // own camera, on the reading that a second camera is the
+                // only thing that moves the view-projection. It is not: the
+                // matrix is built from `task_aspect`, and that comes from
+                // the task's TARGET. A task rendering the scene camera into
+                // a target the canvas's shape does not share -- scene 187
+                // renders into half the canvas width -- then drew through
+                // the frame's matrix and came out squeezed by exactly the
+                // ratio of the two extents.
+                //
+                // `!shadow_task` is the other half, and dropping it was a
+                // regression: `task_matrix` is deliberately the ZERO matrix
+                // for a caster pass, which has no camera view-projection to
+                // build, so writing the block there hands every receiver a
+                // zeroed one. Six shadow scenes and a demo moved on Dawn
+                // alone while SDL_GPU stayed byte-identical -- which is the
+                // differential naming the side before anything was read.
+                if (target_record.has_color && !shadow_task) {
                     // The task's own pass block, in the pin's own shape: the
                     // frame's writer over the task's camera and matrix.
                     const upstream::SceneUniforms task_scene_block =
@@ -12869,6 +12973,7 @@ bool run_dawn_engine(Engine& engine) {
         pass_descriptor.depthStencilAttachment = &depth_attachment;
         WGPURenderPassEncoder pass =
             wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        set_pass_camera_viewport(pass, camera, width, height);
         WGPURenderPipeline bound_pipeline = nullptr;
         bool transmission_copied = false;
         const auto draw_render_list =
@@ -12908,6 +13013,14 @@ bool run_dawn_engine(Engine& engine) {
                         pass = wgpuCommandEncoderBeginRenderPass(
                             encoder,
                             &pass_descriptor);
+                        // A restarted pass starts at the whole target
+                        // again, so the camera's rectangle is set once
+                        // per PASS rather than once per frame.
+                        set_pass_camera_viewport(
+                            pass,
+                            camera,
+                            width,
+                            height);
                         bound_pipeline = nullptr;
                         transmission_copied = true;
                     }
@@ -13180,6 +13293,17 @@ bool run_dawn_engine(Engine& engine) {
                 wgpuCommandEncoderBeginRenderPass(
                     encoder,
                     &overlay_descriptor);
+            {
+                const CameraRecord& overlay_pass_camera =
+                    overlay_scene->camera.value < engine.cameras.size()
+                        ? engine.cameras[overlay_scene->camera.value]
+                        : camera;
+                set_pass_camera_viewport(
+                    overlay_pass,
+                    overlay_pass_camera,
+                    width,
+                    height);
+            }
             WGPURenderPipeline overlay_bound_pipeline = nullptr;
             pass_scene = overlay_scene;
             pass_meshes = &state.overlay_meshes[layer];
@@ -14415,7 +14539,17 @@ bool run_dawn_engine(Engine& engine) {
                 wgpuBindGroupRelease(blit_group);
             }
             if (target_record.swapchain) {
-                capture_source = source_texture;
+                // A copy covering the whole swapchain IS its source, so
+                // the capture reads that source and skips a surface
+                // readback. One writing a VIEWPORT is only part of the
+                // frame -- scene 187 presents SMAA beside the raw image,
+                // each into half -- so the composed image is the surface,
+                // and the source is both the wrong size and the wrong
+                // content. The surface is configured CopySrc, which is
+                // what the standalone frame-graph driver already captures.
+                if (!copy.has_viewport) {
+                    capture_source = source_texture;
+                }
                 frame_graph_presented = true;
             }
         }

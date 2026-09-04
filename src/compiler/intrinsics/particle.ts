@@ -425,6 +425,34 @@ export function compileParticleIntrinsic(
             };
         }
 
+        case "normalizeNodeParticleGraph": {
+            // Graph plumbing, and nothing else: the normalizer rewrites a
+            // reachable TeleportOut edge to its TeleportIn source and
+            // compiles Elbow and Debug away, so the builders' five
+            // otherwise-refused class names resolve to the terminal sources
+            // they route to. Nothing about it is folded here. The graph it
+            // returns is read only by the executed build, so what travels is
+            // the marker, and the driver runs the pin's own normalizer in
+            // the same place the scene ran it. Marking twice is harmless for
+            // the pin's own reason: a normalized graph carries an internal
+            // marker and a second call returns it unchanged.
+            context.expectArgumentCount(call, 1, 1);
+            const graph = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                graph,
+                "node-particle-graph",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "node-particle-graph",
+                cpp: "",
+                nodeParticleGraph: {
+                    ...graph.nodeParticleGraph!,
+                    normalized: true,
+                },
+            };
+        }
+
         case "buildNodeParticleSet":
         case "buildNodeParticleSetWithBlendModes":
         case "buildNodeParticleSetWithFlowMaps":

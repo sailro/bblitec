@@ -42,7 +42,33 @@ import {
     writeSeekMeta,
     type CaptureMeta,
 } from "./parity-scene.js";
-import { resolveScene, type SceneDefinition } from "./scene-registry.js";
+import {
+    resolveScene,
+    scenes,
+    type SceneDefinition,
+} from "./scene-registry.js";
+import { readUpstreamPin } from "./upstream-source.js";
+
+/**
+ * The pinned package a capture rendered through, as the sidecar records it.
+ *
+ * One spelling, read by the writer and the staleness check alike, so a
+ * capture cannot be judged current against a differently-shaped string.
+ */
+let cachedPin: string | undefined;
+
+export function capturePin(): string {
+    // Process-cached like `pinnedLibraryRoot` next door: `readUpstreamPin`
+    // walks for the repository root and parses the pin on every call, and
+    // the staleness check reaches this once per capture directory --
+    // `compose all` and the variant gate both loop over hundreds. Nothing
+    // in this process rewrites the pin.
+    cachedPin ??= (() => {
+        const pin = readUpstreamPin();
+        return `${pin.version}@${pin.sourceVersion}`;
+    })();
+    return cachedPin;
+}
 
 export interface InstrumentedCaptureOptions {
     seekSeconds?: number;
@@ -95,6 +121,14 @@ export function browserCaptureStaleness(
     if (meta.moduleSha256 === undefined) {
         return "carries no scene-module provenance";
     }
+    // Checked separately from the module digest because it moves separately;
+    // `CaptureMeta.pin` carries the reason.
+    if (meta.pin === undefined) {
+        return "carries no pinned-package provenance";
+    }
+    if (meta.pin !== capturePin()) {
+        return `was captured through ${meta.pin}, not the current pin`;
+    }
     // The frame derivation follows the ambient capture mode, exactly as
     // the capture's writer derived it; a `BBLITE_CAPTURE_UI` flip
     // between capture and reuse therefore refuses a retained-UI
@@ -112,6 +146,25 @@ export function browserCaptureStaleness(
         return "was captured from a different scene module (the scene source, pose, or pinned package moved)";
     }
     return undefined;
+}
+
+/**
+ * Whether a capture directory is evidence for the scene it is named after,
+ * at the pin this tree carries.
+ *
+ * The shader gates read `artifacts/capture/**` as ground truth. A directory
+ * no registered scene owns, or one taken through another pin, is not — and
+ * answering `false` rather than throwing is what those gates want, because a
+ * capture is disposable: an absent or superseded one means "no evidence
+ * considered", never "the evidence disagrees".
+ */
+export function captureIsCurrent(
+    sceneId: string,
+    captureDirectory: string,
+): boolean {
+    const scene = scenes.find(({ id }) => id === sceneId);
+    if (!scene) return false;
+    return browserCaptureStaleness(scene, captureDirectory) === undefined;
 }
 
 // Runs inside the page before any scene script. Written as source
@@ -530,6 +583,7 @@ export async function runInstrumentedCapture(
                     animationGroups,
                     referenceFrame,
                 ),
+                pin: capturePin(),
                 goldenIdentity,
                 ...(skipDrawIndexCount !== 0
                     ? { drawFilter: skipDrawIndexCount }

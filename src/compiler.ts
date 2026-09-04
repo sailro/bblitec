@@ -3077,7 +3077,9 @@ class Compiler
             annotated.kind === "number" ||
             annotated.kind === "boolean" ||
             (annotated.kind === "handle" &&
-                annotated.handle === "texture") ||
+                !ts.isObjectLiteralExpression(
+                    initializerLiteral,
+                )) ||
             annotated.kind === "span" ||
             annotated.kind === "table" ||
             (annotated.kind === "optional" &&
@@ -3094,6 +3096,17 @@ class Compiler
             // search) keeps the value path too: a handle a search
             // produced carries its found flag, which is this port's
             // representation of that optionality.
+            //
+            // A HANDLE annotation is carried by the value the initializer
+            // produces rather than by this declaration: `const box: Mesh =
+            // createBox(...)` names the same engine value the unannotated
+            // spelling does, so the annotation must not turn it into data
+            // storage that no longer accepts `box.material`. The exception
+            // is a handle spelled as an object LITERAL -- `const atlas:
+            // SpriteAtlas = { texture, frames, ... }` is a record the data
+            // lowerer materializes, which is the shape freeciv and the
+            // platformer write and the reason a bare `handle` exemption
+            // here cannot be unconditional.
             return false;
         }
         if (ts.isIdentifier(declaration.name)) {

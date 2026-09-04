@@ -237,6 +237,94 @@ test("shape parameters are translated from _buildShapeParams", () => {
     );
 });
 
+test("every aggregate arm takes its explicit override through the pin's `??`", () => {
+    // `_buildShapeParams` resolves five geometry members as overrides of the
+    // bounds-derived value, and the derived half above is only the RIGHT arm
+    // of each `??`. The left arm lives here, at the one caller with an
+    // options bag: an override accepted at generation and dropped here would
+    // size the collider from the mesh instead and rest the body somewhere
+    // else, which is what `examples/regression-physics-aggregate-options.ts`
+    // measures.
+    const body = emittedBody("PhysicsAggregate create_physics_aggregate(");
+    for (const arm of [
+        // The centre is written BEFORE the switch upstream, so a capsule or
+        // a cylinder carries an explicit one too even though neither case
+        // states one.
+        /if \(options\.center\) \{\n *params\.center = \*options\.center;\n *\}\n *switch \(type\)/,
+        /params\.radius =\n? *options\.radius \? \*options\.radius : sphere_radius\(sized\)/,
+        /params\.extents = options\.extents\n? *\? \*options\.extents\n? *: box_extents\(sized\)/,
+        // The pin's two segment cases stay two cases; what they do with the
+        // segment their own arm derived is one helper.
+        /apply_segment_params\(params, options, capsule_shape\(sized\)\)/,
+        /apply_segment_params\(params, options, cylinder_shape\(sized\)\)/,
+    ]) {
+        assert.match(body, arm);
+    }
+    const segment = emittedBody("void apply_segment_params(");
+    for (const arm of [
+        /params\.radius = options\.radius \? \*options\.radius : segment\.radius;/,
+        /params\.point_a = options\.point_a \? \*options\.point_a : segment\.point_a;/,
+        /params\.point_b = options\.point_b \? \*options\.point_b : segment\.point_b;/,
+    ]) {
+        assert.match(segment, arm);
+    }
+    // Only the two cases that state a centre take the derived one, and only
+    // when the options bag left it absent -- the pin's `params.center ??`.
+    assert.equal(
+        body.match(/if \(!params\.center\) \{\n *params\.center = bounding_center\(sized\);/g)
+            ?.length,
+        2,
+    );
+    // Both bags declare the same five members in the same order, because the
+    // intrinsic fills the aggregate's positionally from that one table. The
+    // doc line is what marks a table-generated lane: the scalar options
+    // beside them are `js::Nullable<double>` too.
+    const lanes = (struct: string): string[] => {
+        const start = lowered.header.indexOf(`struct ${struct} {`);
+        assert.ok(start >= 0, `expected the header to declare ${struct}`);
+        return [
+            ...lowered.header
+                .slice(start, lowered.header.indexOf("\n};", start))
+                .matchAll(
+                    /\/\*\* `\w+\.(\w+)`\. \*\/\n *js::Nullable<(\w+)> (\w+)\{\}/g,
+                ),
+        ].map(([, pinned, storage, field]) => `${pinned} ${storage} ${field}`);
+    };
+    assert.deepEqual(lanes("PhysicsAggregateOptions"), [
+        "center Vec3d center",
+        "radius double radius",
+        "pointA Vec3d point_a",
+        "pointB Vec3d point_b",
+        "extents Vec3d extents",
+    ]);
+    assert.deepEqual(
+        lanes("PhysicsShapeParameters"),
+        lanes("PhysicsAggregateOptions"),
+    );
+});
+
+test("a prestep type turns pre-step syncing on, as the pin's own body does", () => {
+    // `setPhysicsBodyPrestepType` is two statements upstream: the type write
+    // and `if (type !== DISABLED) body._preStep = true`. That second one is
+    // the whole reason a scene naming a type never calls
+    // `setPhysicsBodyPreStep` beside it, and dropping it would leave the
+    // pre-step gate closed on every body but an ANIMATED one.
+    const setter = emittedBody("void set_physics_body_prestep_type(");
+    assert.match(setter, /live\.prestep_type = type;/);
+    assert.match(
+        setter,
+        /if \(type != PhysicsPrestepType::DISABLED\) \{\n *live\.pre_step = true;\n *\}/,
+    );
+    // Both setters that take no world find their body the same way, since
+    // the pin reaches it through `body._world` in both.
+    for (const signature of [
+        "void set_physics_body_pre_step(",
+        "void set_physics_body_prestep_type(",
+    ]) {
+        assert.match(emittedBody(signature), /owning_body_record\(body\)/);
+    }
+});
+
 test("mesh bounds apply scene-code overrides before sizing an aggregate", () => {
     const helper = lowered.source.slice(
         lowered.source.indexOf("MeshBounds mesh_bounds"),

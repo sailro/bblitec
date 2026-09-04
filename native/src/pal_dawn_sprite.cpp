@@ -231,6 +231,12 @@ bool run_sprite_dawn_engine(Engine& engine) {
             // Every context updates before any records, which is the
             // pinned loop's order.
             for (DawnSpritePass& pass : passes) {
+                // `spriteRendererUpdate` runs the renderer's own hooks
+                // first, so one that moves a sprite or a layer is seen by
+                // this frame's mirror rebuild and upload rather than the
+                // next one's.
+                run_sprite_renderer_before_update(
+                    engine, pass.renderer, delta_ms);
                 // A scene callback may have added, removed or disposed a
                 // layer since the last frame; the GPU mirror is addressed
                 // by position, so it is rebuilt before anything reads it.

@@ -1294,6 +1294,10 @@ export function emitPropertyAssignment(
     const scene = context.lookup(left.expression.expression);
     context.expectKind(scene, "scene", left.expression.expression);
     const property = left.name.text;
+    if (property === "viewport") {
+      emitCameraViewportAssignment(context, expression, scene, operator);
+      return;
+    }
     const nativeProperty = cameraRecordField(property);
     if (!nativeProperty) {
       context.fail(left.name, `Unsupported camera property '${property}'.`);
@@ -2604,6 +2608,83 @@ function staticStringList(
   context.fail(
     expression,
     "Expected a generation-known array of mesh id strings.",
+  );
+}
+
+/**
+ * `scene.camera.viewport = { x, y, width, height }` -- the pin's own
+ * `NormalizedViewport`, written as the fraction of the render target this
+ * camera draws into.
+ *
+ * Upstream this is a plain optional field on the Camera interface rather
+ * than a factory call, so writing it IS the opt-in: the two readers
+ * (`getEffectiveAspectRatio` and the render task's own viewport/scissor
+ * rectangle) both ask `camera?.viewport` and take the whole-target answer
+ * when it is absent.
+ *
+ * The four lanes are doubles for the reason every other camera scalar is:
+ * `getEffectiveAspectRatio` divides `width / height` as JavaScript numbers
+ * and the quotient reaches the projection writer before its float32 store.
+ *
+ * A lane this port cannot prove is inside the unit square refuses rather
+ * than emitting: the pin's
+ * render task multiplies the raw fraction by the target extent while its
+ * exported `resolveCameraViewport` clamps first, so the two agree only
+ * inside [0, 1] -- and this port emits the clamping one.
+ */
+function emitCameraViewportAssignment(
+  context: AssignmentContext,
+  expression: ts.BinaryExpression,
+  scene: Value,
+  operator: string,
+): void {
+  if (operator !== "=") {
+    context.fail(
+      expression.operatorToken,
+      "Compound assignment is not supported for a camera viewport.",
+    );
+  }
+  const literal = context.unwrap(expression.right);
+  if (!ts.isObjectLiteralExpression(literal)) {
+    context.fail(
+      expression.right,
+      "A camera viewport is the pinned record { x, y, width, height }.",
+    );
+  }
+  const lanes = ["x", "y", "width", "height"].map((name) => {
+    const member = context.objectProperty(literal, name);
+    if (!member) {
+      context.fail(
+        literal,
+        `A camera viewport requires a numeric '${name}'.`,
+      );
+    }
+    // The agreement domain is checked, not assumed. `staticNumberValue`
+    // answers `undefined` for anything it cannot fold, so refusing only an
+    // out-of-range LITERAL would let `{ x: t, width: 1 - t }` through with
+    // no check at all and diverge silently outside the unit square. A lane
+    // this port cannot prove is inside it refuses too.
+    const fraction = staticNumberValue(context, member);
+    if (fraction === undefined || fraction < 0 || fraction > 1) {
+      context.fail(
+        member,
+        `A camera viewport '${name}' must be a generation-known fraction ` +
+          "inside [0, 1]: the pinned render task multiplies the raw " +
+          "fraction by the target extent where resolveCameraViewport " +
+          "clamps it first, so the two agree only there -- and this port " +
+          "emits the clamping one.",
+      );
+    }
+    return context.compileNumber(member, "double");
+  });
+  // The write invalidates the camera's replayable program: a viewport
+  // changes the effective aspect ratio, so a generation-time replay of
+  // this camera would otherwise bake a view-projection the scene never
+  // renders through.
+  noteCameraRecordWrite(context, scene.sceneCamera, "viewport", undefined, false);
+  context.emit(
+    `${context.requireEngine(scene, expression)}.cameras[${scene.cpp}.camera.value]` +
+      `.viewport = bbl::NormalizedViewport{${lanes.join(", ")}};`,
   );
 }
 

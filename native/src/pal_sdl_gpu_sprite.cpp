@@ -210,6 +210,12 @@ bool run_sprite_gpu_engine(Engine& engine) {
             // pinned loop's order and, on D3D12, the only legal one: an
             // upload and a draw cannot share two open command lists.
             for (SpritePass& pass : passes) {
+                // `spriteRendererUpdate` runs the renderer's own hooks
+                // first, so one that moves a sprite or a layer is seen by
+                // this frame's mirror rebuild and upload rather than the
+                // next one's.
+                run_sprite_renderer_before_update(
+                    engine, pass.renderer, delta_ms);
                 // A scene callback may have added, removed or disposed a
                 // layer since the last frame; the GPU mirror is addressed
                 // by position, so it is rebuilt before anything reads it.

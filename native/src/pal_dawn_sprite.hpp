@@ -819,17 +819,23 @@ inline void upload_dawn_sprite_layer(
         const auto [dirty_begin, dirty_end] =
             resolve_sprite_dirty_range(
                 layer, gpu.uploaded, gpu.uploaded_version);
-        if (dirty_begin < dirty_end) {
+        // A Y-sorted layer stages its packed GPU-order rows here and hands
+        // back the draw slots this copy transfers; every other layer gets
+        // its own canonical rows back unchanged.
+        const SpriteInstanceUpload transfer =
+            resolve_sprite_instance_upload(
+                engine, layer, dirty_begin, dirty_end);
+        if (transfer.begin < transfer.end) {
             const std::size_t stride_bytes =
                 layer.instance_floats_per_sprite * sizeof(float);
             wgpuQueueWriteBuffer(
                 queue,
                 gpu.instances,
-                static_cast<std::uint64_t>(dirty_begin) * stride_bytes,
-                layer.instance_data.data() +
-                    static_cast<std::size_t>(dirty_begin) *
+                static_cast<std::uint64_t>(transfer.begin) * stride_bytes,
+                transfer.data +
+                    static_cast<std::size_t>(transfer.begin) *
                         layer.instance_floats_per_sprite,
-                static_cast<std::size_t>(dirty_end - dirty_begin) *
+                static_cast<std::size_t>(transfer.end - transfer.begin) *
                     stride_bytes);
             mark_sprite_dirty_range_consumed(layer);
         }

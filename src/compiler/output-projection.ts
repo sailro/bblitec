@@ -131,6 +131,7 @@ export const featureSources: Record<Feature, string[]> = {
     "shadow:task": [],
     "sprite:2d": [],
     "sprite:2d-depth-host": [],
+    "sprite:2d-y-sort": [],
     "sprite:uv-scroll": [],
     "sprite:custom-shader": [],
     "texture:file": [],

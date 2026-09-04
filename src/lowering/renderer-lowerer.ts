@@ -6,6 +6,7 @@ import {
     pinnedTrsComposition,
     type PinnedTrsComposition,
 } from "./pinned-trs.js";
+import { doubleLiteral as dvalue } from "../cpp-literals.js";
 import { RendererFidelityManifest } from "../fidelity.js";
 import type {
     CompiledShaderProgram,
@@ -68,9 +69,11 @@ import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
 import {
     lowerMat4MultiplyWriterCpp,
+    lowerObjectComponents,
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 
 /**
@@ -413,6 +416,8 @@ const skyboxCubemapModule =
     "src/material/standard/skybox-cubemap.ts";
 const orthoMatrixModule = "src/math/mat4-ortho-lh-to-ref.ts";
 const perspectiveMatrixModule = "src/math/mat4-perspective-lh-to-ref.ts";
+const cameraModule = "src/camera/camera.ts";
+const cameraViewportModule = "src/camera/viewport.ts";
 const backgroundGroundModule = "src/material/pbr/background-ground.ts";
 const backgroundDdsModule = "src/material/pbr/background-dds-skybox.ts";
 const backgroundHdrModule = "src/material/pbr/background-hdr-skybox.ts";
@@ -709,6 +714,7 @@ export class RendererLowerer {
                   },
               )
             : "";
+        const cameraViewport = this.lowerCameraViewport();
         // Under multi-light the pinned lights block owns every light past
         // the primary slot, so the legacy capture block keeps its second
         // analytic slot empty there exactly as the retired uploader did.
@@ -742,9 +748,191 @@ export class RendererLowerer {
                 backgroundGeometry,
                 perspectiveWriter,
                 orthoWriter,
+                cameraViewport,
                 multiplyWriter: lowerMat4MultiplyWriterCpp(this.context),
             }),
         };
+    }
+
+    /**
+     * The two readers of `camera.viewport`, both lowered from their own
+     * pinned declarations.
+     *
+     * `getEffectiveAspectRatio` is what a split-screen camera changes about
+     * the projection: the render target's ratio scaled by the viewport's
+     * own. Every projection this renderer builds goes through it, which is
+     * what makes a camera without a viewport identical to what it was --
+     * the pin's `v ? v.width / v.height : 1` is a literal 1 there.
+     *
+     * `resolveCameraViewport` is the pixel rectangle the pass sets. The
+     * render task writes the same four expressions inline without the
+     * clamps, so the two agree exactly inside the unit square, which is
+     * where the compiler's own refusal keeps a reached viewport
+     * (`assignments.ts` says so at the write).
+     *
+     * `clamp01` is the module's own helper and is lowered beside them
+     * rather than restated, so a pin that widens the clamp widens this.
+     */
+    private lowerCameraViewport(): string {
+        const clamp01 = lowerPinnedFunction(
+            this.context,
+            cameraViewportModule,
+            "clamp01",
+            [{ pinned: "value", kind: "number", cpp: "value" }],
+            {
+                cppName: "clamp01",
+                returns: "double",
+                calls: pinnedNumericMathCalls(),
+            },
+        );
+        // `camera?.viewport`, as the record's own optional. Bound by the
+        // SOURCE TEXT the two bodies read it through, so the `const v =`
+        // each opens with aliases this rather than copying a double -- and
+        // the members answer what the pin's own `??`/ternary answers when
+        // the camera has none: `FULL_VIEWPORT`.
+        // One binding under both spellings, which states the real claim:
+        // `?? FULL_VIEWPORT` binds identically BECAUSE the members already
+        // carry the whole-target answers, so the pin's two ways of asking
+        // for the same lane cannot drift apart here.
+        //
+        // And those answers are READ off `FULL_VIEWPORT` rather than typed
+        // here: they are a pinned constant, and a second copy would agree
+        // until upstream moved it, at which point nothing would notice --
+        // the lowered resolver would simply resolve a different rectangle.
+        const viewportFile = this.context.sourceFile(cameraViewportModule);
+        const fullViewport = this.context.moduleScopeConstant(
+            viewportFile,
+            "FULL_VIEWPORT",
+        );
+        if (!fullViewport || !ts.isObjectLiteralExpression(fullViewport)) {
+            this.context.contractError(
+                viewportFile,
+                `Expected ${cameraViewportModule} to declare FULL_VIEWPORT ` +
+                    "as an object literal: it is what a camera with no " +
+                    "viewport resolves through.",
+            );
+        }
+        const wholeTarget = (name: string): string =>
+            dvalue(
+                this.context.numericValue(
+                    this.context.propertyInitializer(fullViewport, name),
+                    viewportFile,
+                ),
+            );
+        const viewportBinding: PinnedBinding = {
+            cpp: "camera.viewport",
+            type: "scalar",
+            absentCpp: "!camera.viewport.has_value()",
+            optional: {
+                present: "camera.viewport.has_value()",
+                members: new Map(
+                    (["x", "y", "width", "height"] as const).map((name) => [
+                        name,
+                        {
+                            cpp: `camera.viewport->${name}`,
+                            absent: wholeTarget(name),
+                        },
+                    ]),
+                ),
+            },
+        };
+        const viewport = new Map<string, PinnedBinding>([
+            ["camera?.viewport", viewportBinding],
+            ["camera?.viewport ?? FULL_VIEWPORT", viewportBinding],
+        ]);
+        const cameraParameter = {
+            pinned: "camera",
+            kind: "record" as const,
+            cpp: "camera",
+            cppType: "CameraRecord",
+            annotation: "Camera | null | undefined",
+            binding: { cpp: "camera", type: "scalar" as const },
+        };
+        const effectiveAspect = lowerPinnedFunction(
+            this.context,
+            cameraModule,
+            "getEffectiveAspectRatio",
+            [
+                cameraParameter,
+                { pinned: "targetWidth", kind: "number", cpp: "target_width" },
+                {
+                    pinned: "targetHeight",
+                    kind: "number",
+                    cpp: "target_height",
+                },
+            ],
+            {
+                cppName: "effective_aspect_ratio",
+                returns: "double",
+                calls: pinnedNumericMathCalls(),
+                memberBindings: viewport,
+            },
+        );
+        const resolveViewport = lowerPinnedFunction(
+            this.context,
+            cameraViewportModule,
+            "resolveCameraViewport",
+            [
+                cameraParameter,
+                { pinned: "targetWidth", kind: "number", cpp: "target_width" },
+                {
+                    pinned: "targetHeight",
+                    kind: "number",
+                    cpp: "target_height",
+                },
+            ],
+            {
+                cppName: "resolve_camera_viewport",
+                calls: new Map([
+                    ...pinnedNumericMathCalls(),
+                    [
+                        "clamp01",
+                        (args: readonly string[]) => `clamp01(${args[0]})`,
+                    ],
+                ]),
+                memberBindings: viewport,
+                returns: {
+                    type: "PixelViewport",
+                    value: (lowerer, expression) => {
+                        if (!expression) {
+                            return this.context.contractError(
+                                this.context.functionDeclaration(
+                                    cameraViewportModule,
+                                    "resolveCameraViewport",
+                                ).declaration,
+                                "Expected the pinned viewport resolver to " +
+                                    "return its rectangle.",
+                            );
+                        }
+                        // `bbl::PixelViewport`, the one this port already
+                        // has: the pin documents its own as integer
+                        // render-target pixels and every lane comes out of
+                        // `Math.floor`/`Math.ceil`/`Math.max`, which is why
+                        // the copy-task and post-process resolvers already
+                        // return it. A second struct under this namespace
+                        // would shadow it for any translation unit that saw
+                        // this header first, and those two resolvers name
+                        // the type unqualified from inside `bbl::upstream`.
+                        const lanes = lowerObjectComponents(
+                            this.context,
+                            lowerer,
+                            expression,
+                            ["x", "y", "width", "height"],
+                        ).map(
+                            (lane) => `static_cast<std::int32_t>(${lane})`,
+                        );
+                        return `PixelViewport{${lanes.join(", ")}}`;
+                    },
+                },
+            },
+        );
+        // `clamp01` is the pinned module's own private helper and stays
+        // private here: only `resolveCameraViewport` calls it, and the
+        // header declares the two functions the backends read.
+        return (
+            `namespace {\n${clamp01}\n} // namespace\n\n` +
+            `${effectiveAspect}\n\n${resolveViewport}`
+        );
     }
 
     /**
@@ -1385,6 +1573,18 @@ RenderItem bind_render_item(
 // The aspect ratio is a JavaScript number in
 // src/camera/camera.ts getEffectiveAspectRatio, and the pinned
 // projection writer divides by it before its single float32 store.
+/** The render-target ratio a camera's viewport scales, which is the ratio
+ *  every projection below is built at. A camera with no viewport takes the
+ *  pin's own literal 1 and reads exactly as it did. */
+double effective_aspect_ratio(
+    const CameraRecord& camera,
+    double target_width,
+    double target_height);
+/** The pixel rectangle a scene pass sets its viewport and scissor to. */
+PixelViewport resolve_camera_viewport(
+    const CameraRecord& camera,
+    double target_width,
+    double target_height);
 /** The perspective projection alone, which the splat stage reads beside the
  *  view and the skybox builds its own view-projection from. */
 std::array<float, 16> build_projection(
@@ -1569,6 +1769,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             };
             perspectiveWriter: string;
             orthoWriter: string;
+            cameraViewport: string;
             multiplyWriter: string;
         },
     ): string {
@@ -1583,6 +1784,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             backgroundGeometry,
             perspectiveWriter,
             orthoWriter,
+            cameraViewport,
             multiplyWriter,
         } = inputs;
         // Both background fragments wrap their image processing in the pin's
@@ -2143,6 +2345,14 @@ RenderPlan build_render_plan(const Scene& scene, const Engine& engine) {
 // (src/engine/render-target.ts REVERSE_DEPTH_COMPARE), which is the one
 // convention every pinned family renders under, so it is the one this
 // renderer writes -- for the scene's own view and for the skybox's alike.
+//
+// Ahead of them, src/camera/camera.ts getEffectiveAspectRatio and
+// src/camera/viewport.ts resolveCameraViewport, translated whole: the two
+// places a camera's normalized viewport is read. A camera without one takes
+// the pin's own whole-target answer in both, which is why every projection
+// below is built through the first unconditionally.
+${cameraViewport}
+
 ${perspectiveWriter}
 ${orthoWriter ? `
 ${orthoWriter}

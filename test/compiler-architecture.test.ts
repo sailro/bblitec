@@ -105,6 +105,29 @@ test("keeps migrated upstream contracts AST-driven", () => {
     }
 });
 
+test("holds the dist lock from every entry point that runs out of dist", () => {
+    // `tools/clean-dist.mjs` refuses to delete `dist/` under a live run, and
+    // it decides that from the lock alone — so an entry point that does not
+    // take it is one an `npm run build` deletes mid-run. Both do:
+    // `scene-command` for a whole stage and `cli` for one generation, which
+    // is what an ad-hoc compile probe runs beside somebody else's build.
+    for (const entry of ["src/cli.ts", "src/scene-command.ts"]) {
+        assert.match(source(entry), /holdDistLock\(/, entry);
+    }
+    // And the nesting marker is set once, by whoever claimed the lock, so a
+    // child cannot unlink its parent's record. A spawn site spelling it
+    // again is the copy that drifts.
+    const lock = source("src/dist-lock.ts");
+    assert.match(lock, /process\.env\.BBLITE_DIST_LOCK_HELD = "1";/);
+    const setters = readdirSync("src", { recursive: true })
+        .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
+        .filter((path) => path.endsWith(".ts"))
+        .filter((path) =>
+            /BBLITE_DIST_LOCK_HELD\s*[:=]\s*"1"/.test(source(path)),
+        );
+    assert.deepEqual(setters, ["src/dist-lock.ts"]);
+});
+
 test("isolates remaining source-text contracts to the renderer", () => {
     const renderer = source(
         "src/lowering/renderer-lowerer.ts",
@@ -738,13 +761,25 @@ test("keeps depth-hosted sprite buffers growable, paused while hidden, and inser
         )?.length,
         2,
     );
+    // Both backends derive the rows once (`resolve_sprite_dirty_range`),
+    // let the optional Y-sort hook restage them once
+    // (`resolve_sprite_instance_upload`), and then differ only in the write
+    // call. A backend that read `layer.instance_data` directly would upload
+    // a Y-sorted layer in the wrong order.
+    for (const upload of [sdlUpload, dawnUpload]) {
+        assert.match(
+            upload,
+            /dirty_begin[\s\S]{0,400}resolve_sprite_instance_upload\(\s*engine, layer, dirty_begin, dirty_end\)/,
+        );
+        assert.doesNotMatch(upload, /layer\.instance_data\.data\(\)/);
+    }
     assert.match(
         sdlUpload,
-        /dirty_begin[\s\S]{0,900}buffer_uploads\.update\(\s*gpu\.instances,\s*offset,\s*data,\s*bytes\)/,
+        /transfer\.begin[\s\S]{0,900}buffer_uploads\.update\(\s*gpu\.instances,\s*offset,\s*data,\s*bytes\)/,
     );
     assert.match(
         dawnUpload,
-        /dirty_begin[\s\S]{0,700}wgpuQueueWriteBuffer\([\s\S]{0,180}static_cast<std::uint64_t>\(dirty_begin\) \* stride_bytes/,
+        /transfer\.begin[\s\S]{0,700}wgpuQueueWriteBuffer\([\s\S]{0,180}static_cast<std::uint64_t>\(transfer\.begin\) \* stride_bytes/,
     );
 
     // Fixed/layout mutations rebuild before the next upload, and atlas GPU

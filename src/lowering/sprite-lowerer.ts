@@ -31,6 +31,8 @@ const uvScrollModule = "src/sprite/sprite-2d-uvscroll.ts";
 const customShaderModule = "src/sprite/sprite-custom-shader.ts";
 // Shared by both families: the fx block and its byte count.
 const customShaderCoreModule = "src/sprite/custom-shader-core.ts";
+const ySortModule = "src/sprite/sprite-2d-y-sort.ts";
+const ySortHandleModule = "src/sprite/sprite-2d-handle-y-sort.ts";
 
 /** The pinned WGSL, reconstructed for a reached 2D/depth/scroll permutation. */
 export interface SpriteShaderSource {
@@ -144,6 +146,334 @@ export class SpriteLowerer {
             savedSizeFloats,
             defaultCapacity,
         };
+    }
+
+    /**
+     * One row per pinned Y-sort body the emitted module restates, measured
+     * rather than guessed. `assertYSortInventory` reads them; a further body
+     * is a row here rather than a method.
+     */
+    private static readonly ySortInventory: ReadonlyArray<
+        readonly [string, readonly string[]]
+    > = [
+        ["keyAt", ["return statement"]],
+        ["allocateSerial", ["return statement"]],
+        [
+            "ensureStorage",
+            [
+                "variable statement",
+                "if statement",
+                "variable statement",
+                "if statement",
+            ],
+        ],
+        [
+            "syncCount",
+            ["expression statement", "if statement", "expression statement"],
+        ],
+        [
+            "comesBefore",
+            [
+                "variable statement",
+                "variable statement",
+                "if statement",
+                "if statement",
+                "return statement",
+            ],
+        ],
+        [
+            "ensureSorted",
+            [
+                "expression statement",
+                "if statement",
+                "variable statement",
+                "variable statement",
+                "for statement",
+                "variable statement",
+                "variable statement",
+                "for statement",
+                "if statement",
+                "for statement",
+                "expression statement",
+            ],
+        ],
+        ["markPackedDirty", ["if statement"]],
+        [
+            "observeDirty",
+            [
+                "variable statement",
+                "if statement",
+                "expression statement",
+                "variable statement",
+                "for statement",
+            ],
+        ],
+        [
+            "observeAdd",
+            [
+                "variable statement",
+                "if statement",
+                ...Array(7).fill("expression statement"),
+            ],
+        ],
+        [
+            "observeRemove",
+            [
+                "variable statement",
+                "if statement",
+                "if statement",
+                ...Array(6).fill("expression statement"),
+            ],
+        ],
+        [
+            "observeClear",
+            [
+                "variable statement",
+                "if statement",
+                ...Array(8).fill("expression statement"),
+            ],
+        ],
+        ["packRange", ["variable statement", "for statement"]],
+        [
+            "uploadSorted",
+            [
+                "variable statement",
+                "if statement",
+                "if statement",
+                "expression statement",
+                "if statement",
+                "if statement",
+                "variable statement",
+                "variable statement",
+                "if statement",
+                ...Array(5).fill("expression statement"),
+                "return statement",
+            ],
+        ],
+        [
+            "getDrawOrder",
+            [
+                "variable statement",
+                "if statement",
+                "expression statement",
+                "return statement",
+            ],
+        ],
+        [
+            "enableSprite2DYSort",
+            [
+                "if statement",
+                "variable statement",
+                "if statement",
+                "variable statement",
+                "if statement",
+                "variable statement",
+                "variable statement",
+                "for statement",
+                "expression statement",
+                "expression statement",
+                "expression statement",
+                "return statement",
+            ],
+        ],
+    ];
+
+    /**
+     * `sprite-2d-y-sort.ts`: the two things about the extension that are
+     * arithmetic rather than shape, read off the pin instead of typed here.
+     *
+     * The draw KEY is which instance lane the order is taken from plus the
+     * slot's bias, and the TIE is the insertion serial. Everything else the
+     * module does -- allocating the permutation, packing, mapping a logical
+     * dirty range through the inverse -- is bookkeeping around those two,
+     * and a bump that moved either would silently reorder every Y-sorted
+     * layer, so both are asserted where they are read.
+     */
+    private ySortContract(): number {
+        this.assertYSortInventory();
+        const { file, declaration } = this.context.functionDeclaration(
+            ySortModule,
+            "keyAt",
+        );
+        const returned = this.context.findNodes(
+            declaration,
+            ts.isReturnStatement,
+        )[0]?.expression;
+        if (
+            !returned ||
+            !ts.isBinaryExpression(returned) ||
+            returned.operatorToken.kind !== ts.SyntaxKind.PlusToken
+        ) {
+            return this.context.contractError(
+                declaration,
+                "Pinned Sprite2D Y-sort keyAt no longer adds a bias to a stored lane.",
+            );
+        }
+        const lane = this.elementIndexAddend(
+            this.context.unwrapExpression(returned.left),
+            "_instanceData",
+        );
+        if (
+            lane === undefined ||
+            this.elementAccessName(
+                this.context.unwrapExpression(returned.right),
+            ) !== "_biases"
+        ) {
+            return this.context.contractError(
+                declaration,
+                "Pinned Sprite2D Y-sort keyAt no longer reads _instanceData plus _biases.",
+            );
+        }
+        const comparator = this.context.functionDeclaration(
+            ySortModule,
+            "comesBefore",
+        );
+        const returns = this.context.findNodes(
+            comparator.declaration,
+            ts.isReturnStatement,
+        );
+        const tie = returns[returns.length - 1]?.expression;
+        if (
+            !tie ||
+            !ts.isBinaryExpression(tie) ||
+            tie.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
+            this.elementAccessName(tie.left) !== "_serials" ||
+            this.elementAccessName(tie.right) !== "_serials"
+        ) {
+            return this.context.contractError(
+                comparator.declaration,
+                "Pinned Sprite2D Y-sort no longer breaks equal keys by ascending insertion serial.",
+            );
+        }
+        if (
+            !this.context.hasNode(
+                comparator.declaration,
+                (node) =>
+                    ts.isElementAccessExpression(node) &&
+                    this.elementAccessName(node) === "_keys",
+            )
+        ) {
+            return this.context.contractError(
+                comparator.declaration,
+                "Pinned Sprite2D Y-sort no longer orders by the cached key.",
+            );
+        }
+        // The handle companion is the one entry point scene code reaches
+        // the bias through; it resolving the slot rather than taking one is
+        // why a removal cannot leave a scene biasing another sprite.
+        const handleSetter = this.context.functionDeclaration(
+            ySortHandleModule,
+            "setSprite2DYSortHandleBias",
+        );
+        if (
+            !this.context.hasNode(
+                handleSetter.declaration,
+                (node) =>
+                    ts.isCallExpression(node) &&
+                    ts.isIdentifier(node.expression) &&
+                    node.expression.text === "getSprite2DHandleIndex",
+            )
+        ) {
+            this.context.contractError(
+                handleSetter.declaration,
+                "Pinned setSprite2DYSortHandleBias no longer resolves the handle's current slot.",
+            );
+        }
+        if (lane !== 1) {
+            // The emitted key reads the lane the pin names, but the writer
+            // that PUTS positionPx.y there spells its own offset, so the
+            // two have to agree or a Y-sorted layer would order by whatever
+            // lane 1 now holds without anything saying so.
+            this.context.contractError(
+                file,
+                `Pinned Sprite2D Y-sort orders by instance lane ${lane}, ` +
+                    "which is not the lane write_sprite_instance stores " +
+                    "positionPx.y into.",
+            );
+        }
+        return lane;
+    }
+
+    /**
+     * Every pinned Y-sort body this module restates, by statement kind.
+     *
+     * The two expression anchors above pin the draw key and its tie, which
+     * is what decides ORDER. They say nothing about the rest of the module,
+     * and the rest of the module is restated in C++ rather than lowered
+     * from its AST -- a mirror, which `docs/fidelity.md` records as the
+     * weaker form precisely because it can silently omit an arm where a
+     * lowering refuses one it cannot express. A bump that adds a branch to
+     * `syncCount`'s grow/shrink arms, to `uploadSorted`'s dirty-range
+     * mapping, or to the enabler's guards would reorder every Y-sorted
+     * layer with generation staying green.
+     *
+     * So the inventory is the third anchor, the same technique
+     * `physics-lowerer.ts` applies to the bodies it restates whole: an
+     * added, removed or reordered statement fails generation by name
+     * instead. It is a count of shapes, not of behaviour -- it cannot see a
+     * changed expression inside a statement, which is what the two anchors
+     * above are for.
+     */
+    private assertYSortInventory(): void {
+        for (const [symbolName, kinds] of SpriteLowerer.ySortInventory) {
+            const { declaration } = this.context.functionDeclaration(
+                ySortModule,
+                symbolName,
+            );
+            this.context.assertStatementInventory(
+                declaration,
+                declaration.body!.statements,
+                symbolName,
+                "the emitted Y-sort module restates a body",
+                kinds,
+            );
+        }
+    }
+
+    /**
+     * The `_name` an `x._name[i]` element access reads, if it is one.
+     *
+     * The pinned source spells every one of these with a non-null assertion
+     * (`state._serials[left]!`), so the expression is unwrapped first.
+     */
+    private elementAccessName(node: ts.Node): string | undefined {
+        const unwrapped = ts.isExpression(node)
+            ? this.context.unwrapExpression(node)
+            : node;
+        return ts.isElementAccessExpression(unwrapped) &&
+            ts.isPropertyAccessExpression(unwrapped.expression)
+            ? unwrapped.expression.name.text
+            : undefined;
+    }
+
+    /**
+     * The literal added to the row base in an `x._name[i * stride + N]`
+     * read: the lane the expression addresses.
+     */
+    private elementIndexAddend(
+        node: ts.Node,
+        name: string,
+    ): number | undefined {
+        if (
+            !ts.isElementAccessExpression(node) ||
+            this.elementAccessName(node) !== name
+        ) {
+            return undefined;
+        }
+        const argument = this.context.unwrapExpression(
+            node.argumentExpression,
+        );
+        if (
+            !ts.isBinaryExpression(argument) ||
+            argument.operatorToken.kind !== ts.SyntaxKind.PlusToken ||
+            !ts.isNumericLiteral(argument.right)
+        ) {
+            return undefined;
+        }
+        return this.context.numericValue(
+            argument.right,
+            node.getSourceFile(),
+        );
     }
 
     /**
@@ -1269,8 +1599,13 @@ export class SpriteLowerer {
             .trim();
     }
 
-    public lowerCore(): LoweredSource {
+    public lowerCore(ySort = false): LoweredSource {
         const layout = this.layout();
+        // The optional Y-sort extension, emitted only where a scene reached
+        // its enabler -- upstream registers its hook from inside that call
+        // and leaves every other layer on the canonical logical order, so
+        // the enabler is the whole opt-in and nothing else detects it.
+        const ySortKeyLane = ySort ? this.ySortContract() : 0;
         const blends = readPinnedBlendTable(
             this.context,
             blendModule,
@@ -1311,15 +1646,516 @@ export class SpriteLowerer {
         const fxUboBytes = this.assertFxUbo();
         this.assertQuad();
 
+        // sprite-2d-y-sort.ts, emitted whole or not at all. Everything in
+        // it is file-local but the three entry points scene code names, so
+        // the always-loaded paths below reach it through the layer's own
+        // state pointer and the engine's one lazily-installed hook.
+        const ySortSource = ySort
+            ? `
+// ── sprite-2d-y-sort.ts ─────────────────────────────────────────────────
+// The optional stable GPU-order permutation for a pure-2D layer. It never
+// reorders the layer's own instance rows: numeric slots, swap-remove and
+// stable handle ids all stay canonical, and what is permuted is the copy
+// the GPU reads. Upstream keeps this state private to its own module and
+// lets the always-loaded mutation, upload and pick paths reach it through
+// one lazily registered hook, which is why a scene that never enables a
+// layer compiles none of this and finds that hook empty.
+struct YSortState {
+    double default_bias = 0.0;
+    /** Draw slot -> logical slot, and its inverse. */
+    std::vector<std::uint32_t> permutation;
+    std::vector<std::uint32_t> inverse_permutation;
+    std::vector<std::uint32_t> merge_scratch;
+    /** Persistent insertion serial, ordering bias and cached key per slot. */
+    std::vector<double> serials;
+    std::vector<double> biases;
+    std::vector<double> keys;
+    /** The GPU-order rows the backends upload. */
+    std::vector<float> packed_instances;
+    std::uint32_t capacity = 0;
+    std::uint32_t packed_stride = 0;
+    std::uint32_t active_count = 0;
+    double next_serial = 0.0;
+    bool sort_dirty = true;
+    bool full_upload = true;
+    std::uint32_t dirty_min = 0;
+    std::uint32_t dirty_max = 0;
+};
+
+YSortState* y_sort_state(const Sprite2DLayerRecord& layer) {
+    return static_cast<YSortState*>(layer.y_sort.get());
+}
+
+double allocate_y_sort_serial(YSortState& state) {
+    const double serial = state.next_serial;
+    state.next_serial = serial + 1.0;
+    return serial;
+}
+
+/**
+ * Object.is over two keys: the pin compares them with it rather than with
+ * equality, so a key that did not move leaves the order alone and one that
+ * moved between the two zeroes does not.
+ */
+bool y_sort_same_key(double left, double right) {
+    if (std::isnan(left) || std::isnan(right)) {
+        return std::isnan(left) && std::isnan(right);
+    }
+    return left == right &&
+        std::signbit(left) == std::signbit(right);
+}
+
+// keyAt: the slot's own stored ordering lane plus its bias, summed at the
+// width the pin's F64 bias array gives it. Lane ${ySortKeyLane} is
+// positionPx.y, read off the pin rather than typed here.
+double y_sort_key_at(
+    const Sprite2DLayerRecord& layer,
+    const YSortState& state,
+    std::uint32_t index) {
+    const std::size_t base =
+        static_cast<std::size_t>(index) *
+        layer.instance_floats_per_sprite;
+    return static_cast<double>(
+               layer.instance_data[base + ${ySortKeyLane}u]) +
+        state.biases[index];
+}
+
+// ensureStorage: the metadata follows the layer's capacity, and the packed
+// buffer additionally follows its instance stride -- a UV-scroll widening
+// replaces that buffer once.
+void ensure_y_sort_storage(
+    const Sprite2DLayerRecord& layer,
+    YSortState& state) {
+    if (layer.capacity > state.capacity) {
+        state.permutation.resize(layer.capacity, 0u);
+        state.inverse_permutation.resize(layer.capacity, 0u);
+        state.merge_scratch.resize(layer.capacity, 0u);
+        state.serials.resize(layer.capacity, 0.0);
+        state.biases.resize(layer.capacity, 0.0);
+        state.keys.resize(layer.capacity, 0.0);
+        state.capacity = layer.capacity;
+        state.sort_dirty = true;
+        state.full_upload = true;
+    }
+    const std::size_t packed = static_cast<std::size_t>(layer.capacity) *
+        layer.instance_floats_per_sprite;
+    if (state.packed_instances.size() < packed ||
+        state.packed_stride != layer.instance_floats_per_sprite) {
+        state.packed_instances.assign(packed, 0.0f);
+        state.packed_stride = layer.instance_floats_per_sprite;
+        state.full_upload = true;
+    }
+}
+
+// syncCount: metadata follows the layer's live count, so a slot that
+// entered without being observed still gets its serial and default bias.
+void sync_y_sort_count(
+    const Sprite2DLayerRecord& layer,
+    YSortState& state) {
+    ensure_y_sort_storage(layer, state);
+    if (layer.count > state.active_count) {
+        for (std::uint32_t index = state.active_count;
+             index < layer.count;
+             ++index) {
+            state.biases[index] = state.default_bias;
+            state.serials[index] = allocate_y_sort_serial(state);
+            state.keys[index] = y_sort_key_at(layer, state, index);
+        }
+        state.sort_dirty = true;
+        state.full_upload = true;
+    } else if (layer.count < state.active_count) {
+        const auto retired_begin =
+            static_cast<std::ptrdiff_t>(layer.count);
+        const auto retired_end =
+            static_cast<std::ptrdiff_t>(state.active_count);
+        std::fill(
+            state.serials.begin() + retired_begin,
+            state.serials.begin() + retired_end,
+            0.0);
+        std::fill(
+            state.biases.begin() + retired_begin,
+            state.biases.begin() + retired_end,
+            0.0);
+        std::fill(
+            state.keys.begin() + retired_begin,
+            state.keys.begin() + retired_end,
+            0.0);
+        state.sort_dirty = true;
+        state.full_upload = true;
+    }
+    state.active_count = layer.count;
+}
+
+// comesBefore: ascending key, then ascending insertion serial. The serials
+// are unique, so the order is total and equal keys keep the order they
+// entered in even after unrelated removals moved their slots.
+bool y_sort_comes_before(
+    const YSortState& state,
+    std::uint32_t left,
+    std::uint32_t right) {
+    const double left_key = state.keys[left];
+    const double right_key = state.keys[right];
+    if (left_key < right_key) return true;
+    if (left_key > right_key) return false;
+    return state.serials[left] < state.serials[right];
+}
+
+// ensureSorted: a bottom-up stable merge over the cached keys.
+void ensure_y_sorted(
+    const Sprite2DLayerRecord& layer,
+    YSortState& state) {
+    sync_y_sort_count(layer, state);
+    if (!state.sort_dirty) return;
+    const std::uint32_t count = layer.count;
+    for (std::uint32_t index = 0u; index < count; ++index) {
+        state.permutation[index] = index;
+    }
+    std::vector<std::uint32_t>* source = &state.permutation;
+    std::vector<std::uint32_t>* target = &state.merge_scratch;
+    for (std::uint32_t width = 1u; width < count; width *= 2u) {
+        for (std::uint32_t start = 0u;
+             start < count;
+             start += width * 2u) {
+            const std::uint32_t middle = std::min(start + width, count);
+            const std::uint32_t end = std::min(start + width * 2u, count);
+            std::uint32_t left = start;
+            std::uint32_t right = middle;
+            for (std::uint32_t output = start; output < end; ++output) {
+                if (left < middle &&
+                    (right >= end ||
+                     y_sort_comes_before(
+                         state, (*source)[left], (*source)[right]))) {
+                    (*target)[output] = (*source)[left++];
+                } else {
+                    (*target)[output] = (*source)[right++];
+                }
+            }
+        }
+        std::swap(source, target);
+    }
+    if (source != &state.permutation) {
+        for (std::uint32_t index = 0u; index < count; ++index) {
+            state.permutation[index] = (*source)[index];
+        }
+    }
+    for (std::uint32_t draw_index = 0u; draw_index < count; ++draw_index) {
+        state.inverse_permutation[state.permutation[draw_index]] =
+            draw_index;
+    }
+    state.sort_dirty = false;
+}
+
+void mark_y_sort_packed_dirty(YSortState& state, std::uint32_t draw_index) {
+    if (state.dirty_min >= state.dirty_max) {
+        state.dirty_min = draw_index;
+        state.dirty_max = draw_index + 1u;
+    } else {
+        state.dirty_min = std::min(state.dirty_min, draw_index);
+        state.dirty_max = std::max(state.dirty_max, draw_index + 1u);
+    }
+}
+
+// observeDirty: a changed Y key invalidates the order; every other change
+// maps its logical slots through the inverse permutation into the packed
+// draw slots that have to be refreshed.
+void observe_y_sort_dirty(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t lo,
+    std::uint32_t hi) {
+    YSortState* state = y_sort_state(layer);
+    if (!state) return;
+    sync_y_sort_count(layer, *state);
+    const std::uint32_t end = std::min(hi, layer.count);
+    for (std::uint32_t index = lo; index < end; ++index) {
+        const double key = y_sort_key_at(layer, *state, index);
+        if (!y_sort_same_key(key, state->keys[index])) {
+            state->keys[index] = key;
+            state->sort_dirty = true;
+            state->full_upload = true;
+        } else if (!state->full_upload) {
+            mark_y_sort_packed_dirty(
+                *state, state->inverse_permutation[index]);
+        }
+    }
+}
+
+void observe_y_sort_add(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t index) {
+    YSortState* state = y_sort_state(layer);
+    if (!state) return;
+    ensure_y_sort_storage(layer, *state);
+    state->biases[index] = state->default_bias;
+    state->serials[index] = allocate_y_sort_serial(*state);
+    state->keys[index] = y_sort_key_at(layer, *state, index);
+    state->active_count = layer.count;
+    state->sort_dirty = true;
+    state->full_upload = true;
+}
+
+// observeRemove: the swap-remove moves the bias, serial and cached key with
+// the sprite the layer moved, which is what keeps an equal-key tie in its
+// original insertion order across an unrelated removal.
+void observe_y_sort_remove(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t index,
+    std::uint32_t last) {
+    YSortState* state = y_sort_state(layer);
+    if (!state) return;
+    if (index != last) {
+        state->biases[index] = state->biases[last];
+        state->serials[index] = state->serials[last];
+        state->keys[index] = state->keys[last];
+    }
+    state->biases[last] = 0.0;
+    state->serials[last] = 0.0;
+    state->keys[last] = 0.0;
+    state->active_count = layer.count;
+    state->sort_dirty = true;
+    state->full_upload = true;
+}
+
+// observeClear: the active metadata goes, the allocation and the next
+// insertion serial stay.
+void observe_y_sort_clear(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t previous_count) {
+    YSortState* state = y_sort_state(layer);
+    if (!state) return;
+    const auto end = static_cast<std::ptrdiff_t>(previous_count);
+    std::fill(state->biases.begin(), state->biases.begin() + end, 0.0);
+    std::fill(state->serials.begin(), state->serials.begin() + end, 0.0);
+    std::fill(state->keys.begin(), state->keys.begin() + end, 0.0);
+    state->active_count = 0u;
+    state->sort_dirty = true;
+    state->full_upload = true;
+    state->dirty_min = 0u;
+    state->dirty_max = 0u;
+}
+
+// packRange: copy the active records into the packed buffer in draw order,
+// lane by lane into reused storage.
+void pack_y_sort_range(
+    const Sprite2DLayerRecord& layer,
+    YSortState& state,
+    std::uint32_t lo,
+    std::uint32_t hi) {
+    const std::size_t stride = layer.instance_floats_per_sprite;
+    for (std::uint32_t draw_index = lo; draw_index < hi; ++draw_index) {
+        const std::size_t source_base =
+            static_cast<std::size_t>(state.permutation[draw_index]) *
+            stride;
+        const std::size_t target_base =
+            static_cast<std::size_t>(draw_index) * stride;
+        // The pin's own \`packRange\` writes lane by lane because JavaScript
+        // has nothing else; the values are the same either way, and two
+        // \`std::vector<float>\` subscripts the compiler cannot prove
+        // non-aliasing would not collapse to a move on their own. This is
+        // the innermost loop of the whole feature -- a full repack is what
+        // any key change forces, and a moving sprite changes its key every
+        // frame.
+        std::copy_n(
+            layer.instance_data.data() + source_base,
+            stride,
+            state.packed_instances.data() + target_base);
+    }
+}
+
+/**
+ * uploadSorted's staging half.
+ *
+ * The port's shared derivation has already said which LOGICAL rows moved
+ * for this copy, so what is left is the pin's own: sort when the order went
+ * stale, and either repack everything or refresh just the draw slots the
+ * inverse permutation maps those rows onto. A consumer handed the whole
+ * active prefix -- a fresh GPU buffer, or a second pass whose stamp
+ * predates the shared reset -- repacks in full, which is what the pin's
+ * uploadedVersion of -1 does.
+ */
+SpriteInstanceUpload stage_y_sort_upload(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t dirty_begin,
+    std::uint32_t dirty_end) {
+    YSortState* state = y_sort_state(layer);
+    // A layer that never enabled the extension takes its own canonical
+    // rows back, which is uploadSorted returning undefined and letting
+    // the ordinary upload run.
+    if (!state) {
+        return {layer.instance_data.data(), dirty_begin, dirty_end};
+    }
+    ensure_y_sorted(layer, *state);
+    if (layer.count == 0u) {
+        state->full_upload = false;
+        state->dirty_min = 0u;
+        state->dirty_max = 0u;
+        return {state->packed_instances.data(), 0u, 0u};
+    }
+    std::uint32_t lo = layer.count;
+    std::uint32_t hi = 0u;
+    if (state->full_upload ||
+        (dirty_begin == 0u && dirty_end >= layer.count)) {
+        lo = 0u;
+        hi = layer.count;
+    } else {
+        // The rows this copy was handed, mapped onto the draw slots that
+        // answer for them and folded into the packed range the mutations
+        // already widened.
+        const std::uint32_t end = std::min(dirty_end, layer.count);
+        for (std::uint32_t index = dirty_begin; index < end; ++index) {
+            mark_y_sort_packed_dirty(
+                *state, state->inverse_permutation[index]);
+        }
+        lo = state->dirty_min;
+        hi = std::min(state->dirty_max, layer.count);
+    }
+    if (hi > lo) {
+        pack_y_sort_range(layer, *state, lo, hi);
+    }
+    state->full_upload = false;
+    state->dirty_min = 0u;
+    state->dirty_max = 0u;
+    return {state->packed_instances.data(), lo, hi};
+}
+
+// getDrawOrder: the picker asks for this before walking a layer, and the
+// hook sorts the CPU permutation if a same-frame mutation left it stale
+// without packing or touching the GPU. The layer is const because picking
+// does not change it; the state behind its own pointer is not, which is
+// exactly the pin's arrangement -- the order is derived state, and reading
+// it is what settles it.
+const std::uint32_t* y_sort_draw_order(
+    const Sprite2DLayerRecord& layer) {
+    YSortState* state = y_sort_state(layer);
+    if (!state) return nullptr;
+    ensure_y_sorted(layer, *state);
+    return state->permutation.data();
+}
+`
+            : "";
+        const ySortEntryPoints = ySort
+            ? `
+// sprite-2d-y-sort.ts#enableSprite2DYSort. The support boundary is the
+// pin's: a depth-hosted layer resolves overlap by per-sprite z and
+// intervening geometry, which a CPU Y-order alone cannot describe.
+Sprite2DLayerHandle enable_sprite_2d_y_sort(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    double default_bias) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    if (layer.depth_mode != Sprite2DDepthMode::none) {
+        throw std::runtime_error(
+            "enableSprite2DYSort requires a layer with depth == none.");
+    }
+    if (!std::isfinite(default_bias)) {
+        throw std::runtime_error(
+            "enableSprite2DYSort: defaultBias must be finite.");
+    }
+    // A valid repeated enable is idempotent and first-options-wins, so an
+    // installed state is returned unchanged rather than reseeded.
+    if (layer.y_sort) return layer_handle;
+    const auto state = std::make_shared<YSortState>();
+    state->default_bias = default_bias;
+    state->capacity = layer.capacity;
+    state->packed_stride = layer.instance_floats_per_sprite;
+    state->permutation.assign(layer.capacity, 0u);
+    state->inverse_permutation.assign(layer.capacity, 0u);
+    state->merge_scratch.assign(layer.capacity, 0u);
+    state->serials.assign(layer.capacity, 0.0);
+    state->biases.assign(layer.capacity, 0.0);
+    state->keys.assign(layer.capacity, 0.0);
+    state->packed_instances.assign(
+        static_cast<std::size_t>(layer.capacity) *
+            layer.instance_floats_per_sprite,
+        0.0f);
+    state->active_count = layer.count;
+    layer.y_sort = state;
+    // Enabling an already populated layer assigns serials in its current
+    // logical order, so what is on screen keeps the order it entered in.
+    for (std::uint32_t index = 0u; index < layer.count; ++index) {
+        state->biases[index] = default_bias;
+        state->serials[index] = allocate_y_sort_serial(*state);
+        state->keys[index] = y_sort_key_at(layer, *state, index);
+    }
+    // sprite-2d-y-sort-hook.ts: the one lazily registered hook, installed
+    // from inside the enabler exactly as upstream installs it.
+    engine.sprite_y_sort_hook.stage = stage_y_sort_upload;
+    engine.sprite_y_sort_hook.draw_order = y_sort_draw_order;
+    touch_sprite_instances(layer, 0u, layer.count);
+    // Upstream hands back the state object. What a scene reads off it is a
+    // live question about the layer the state is attached to, so the layer
+    // is what travels here and every read is keyed by it.
+    return layer_handle;
+}
+
+/**
+ * The state's own live \`enabled\`.
+ *
+ * Upstream flips it false and detaches the state in the same call, and
+ * \`disableSprite2DYSort\` is the only thing that reaches either, so a
+ * scene holding the state and the layer holding its attachment answer the
+ * same question. The disabler is not lowered, which is what keeps that
+ * true -- re-enabling after a disable would build a fresh state and leave
+ * the old one reading false while the layer read true.
+ */
+bool sprite_2d_y_sort_enabled(
+    const Engine& engine,
+    Sprite2DLayerHandle layer_handle) {
+    return static_cast<bool>(
+        engine.sprite_layers[layer_handle.value].y_sort);
+}
+
+// sprite-2d-handle-y-sort.ts#setSprite2DYSortHandleBias: resolve the
+// handle's current logical slot, then set its finite ordering bias. Only
+// a bias that actually moves the key invalidates the order.
+void set_sprite_2d_y_sort_bias_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    std::uint32_t sprite_id,
+    double bias) {
+    Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
+    if (index >= layer.count) {
+        throw std::runtime_error(
+            "setSprite2DYSortHandleBias: the handle is not alive.");
+    }
+    YSortState* state = y_sort_state(layer);
+    if (!state) {
+        throw std::runtime_error(
+            "setSprite2DYSortBias: Y-sort is not enabled on this layer.");
+    }
+    if (!std::isfinite(bias)) {
+        throw std::runtime_error(
+            "setSprite2DYSortBias: bias must be finite.");
+    }
+    if (state->biases[index] == bias) return;
+    state->biases[index] = bias;
+    const double key = y_sort_key_at(layer, *state, index);
+    if (!y_sort_same_key(key, state->keys[index])) {
+        state->keys[index] = key;
+        state->sort_dirty = true;
+        state->full_upload = true;
+        touch_sprite_instances(layer, index, index + 1u);
+    }
+}
+`
+            : "";
+
         const provenance = this.context.provenance(
             layerModule,
             "createSprite2DLayer, addSprite2DIndex, updateSprite2DIndex, clearSprite2DLayer",
-            `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha/spriteBlendOpaque, ${rendererModule}#createSpriteRenderer, ${sceneModule}#addDepthHostedSpriteLayer, ${renderableModule}#buildSpriteRenderable`,
+            `${atlasModule}#createGridSpriteAtlas, ${blendModule}#spriteBlendAlpha/spriteBlendOpaque, ${rendererModule}#createSpriteRenderer, ${sceneModule}#addDepthHostedSpriteLayer, ${renderableModule}#buildSpriteRenderable${
+                ySort
+                    ? `, ${ySortModule}#enableSprite2DYSort, ${ySortHandleModule}#setSprite2DYSortHandleBias`
+                    : ""
+            }`,
         );
         return {
             modulePath: layerModule,
             symbolName:
-                "createSprite2DLayer,addSprite2DIndex,updateSprite2DIndex,clearSprite2DLayer,loadSpriteAtlas,createSpriteRenderer,addSpriteRendererLayer,removeSpriteRendererLayer,disposeSpriteRenderer",
+                "createSprite2DLayer,addSprite2DIndex,updateSprite2DIndex,clearSprite2DLayer,loadSpriteAtlas,createSpriteRenderer,addSpriteRendererLayer,removeSpriteRendererLayer,disposeSpriteRenderer" +
+                (ySort ? ",enableSprite2DYSort,setSprite2DYSortHandleBias" : ""),
             header: `#pragma once
 
 // ${this.context.provenance(pipelineModule, "buildSpriteLayerUbo")}
@@ -1486,6 +2322,7 @@ constexpr std::uint32_t sprite_saved_size_floats = ${layout.savedSizeFloats}u;
 // sprite-2d-uvscroll.ts UVSCROLL_EXTRA_FLOATS_PER_SPRITE.
 constexpr std::uint32_t sprite_uvscroll_extra_floats = ${this.uvScrollExtraFloats()}u;
 
+${ySortSource}
 void touch_sprite_instances(
     Sprite2DLayerRecord& layer,
     std::uint32_t begin,
@@ -1498,7 +2335,14 @@ void touch_sprite_instances(
             layer.dirty_sprite_end,
             end);
     }
-    layer.version += 1u;
+    layer.version += 1u;${
+        ySort
+            ? `
+    // markDirty's own last act: the Y-sort hook inspects the range the
+    // canonical write already landed.
+    observe_y_sort_dirty(layer, begin, end);`
+            : ""
+    }
 }
 
 void grow_sprite_capacity(
@@ -2124,7 +2968,12 @@ double add_sprite_2d_index(
         grow_sprite_capacity(layer, index + 1u);
     }
     write_sprite_instance(layer, atlas, index, props, true);
-    layer.count = index + 1u;
+    layer.count = index + 1u;${
+        ySort
+            ? `
+    observe_y_sort_add(layer, index);`
+            : ""
+    }
     touch_sprite_instances(layer, index, index + 1u);
     return static_cast<double>(index);
 }
@@ -2288,7 +3137,12 @@ void remove_sprite_2d_id(
     }
     layer.saved_size[last * 2u] = 0.0f;
     layer.saved_size[last * 2u + 1u] = 0.0f;
-    layer.count = last;
+    layer.count = last;${
+        ySort
+            ? `
+    observe_y_sort_remove(layer, index, last);`
+            : ""
+    }
     // Only a swap writes a row that remains active. Removing the tail still
     // bumps the version because a second GPU consumer must observe the new
     // draw count, but it needs no byte upload.
@@ -2322,11 +3176,47 @@ void clear_sprite_2d_layer(
         static_cast<std::size_t>(count) *
             sprite_saved_size_floats,
         0.0f);
-    layer.count = 0u;
+    layer.count = 0u;${
+        ySort
+            ? `
+    observe_y_sort_clear(layer, count);`
+            : ""
+    }
     layer.dirty_sprite_begin = invalid_handle;
     layer.dirty_sprite_end = 0u;
     layer.version += 1u;
 }
+
+// sprite-2d-handle.ts#getSprite2DHandleIndex: the slot a stable id names
+// right now. The throw is the pin's own -- a handle whose sprite was
+// removed has no slot, and answering with one would drive another sprite.
+double sprite_2d_handle_index(
+    const Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    std::uint32_t sprite_id) {
+    const Sprite2DLayerRecord& layer =
+        engine.sprite_layers[layer_handle.value];
+    const std::uint32_t index = sprite_2d_slot_of(layer, sprite_id);
+    if (index >= layer.count) {
+        throw std::runtime_error(
+            "getSprite2DHandleIndex: the handle is not alive.");
+    }
+    return static_cast<double>(index);
+}
+
+// sprite-2d-handle.ts#updateSprite2D: the index form over the slot the id
+// currently names, so the same patch rules apply.
+void update_sprite_2d_id(
+    Engine& engine,
+    Sprite2DLayerHandle layer_handle,
+    std::uint32_t sprite_id,
+    Sprite2DProps props) {
+    update_sprite_2d_index(
+        engine,
+        layer_handle,
+        sprite_2d_handle_index(engine, layer_handle, sprite_id),
+        std::move(props));
+}${ySortEntryPoints}
 
 SpriteRendererHandle create_sprite_renderer(
     Engine& engine,
@@ -2445,6 +3335,18 @@ void register_sprite_renderer(
     Engine& engine,
     SpriteRendererHandle renderer) {
     engine.registered_sprite_renderers.push_back(renderer);
+}
+
+// sprite-renderer.ts: \`_beforeUpdate\` is an ordinary array a caller
+// pushes onto, and \`spriteRendererUpdate\` runs it with the frame's delta
+// before it reads the renderer's layers. Both pure-2D node-particle
+// bridges push their per-frame step here too.
+void sprite_renderer_before_update(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    std::function<void(float)> callback) {
+    engine.sprite_renderers[renderer.value].before_update.push_back(
+        std::move(callback));
 }
 
 } // namespace bbl

@@ -103,6 +103,45 @@ namespace {
     return SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
 }
 
+/**
+ * The pin's `executePassBody` opening: a camera carrying a viewport
+ * narrows the pass to it, and one without leaves the pass at the whole
+ * target the way `if (v)` leaves it.
+ *
+ * Set AFTER the pass begins, exactly where upstream sets it, so the load
+ * operation has already cleared or loaded the whole attachment -- a
+ * split-screen base scene clears the target and draws its half, and the
+ * overlay loads that and draws the other.
+ */
+void set_pass_camera_viewport(
+    SDL_GPURenderPass* pass,
+    const CameraRecord& camera,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+    if (!camera.viewport.has_value()) return;
+    const PixelViewport rect =
+        upstream::resolve_camera_viewport(
+            camera,
+            static_cast<double>(target_width),
+            static_cast<double>(target_height));
+    SDL_GPUViewport viewport{
+        static_cast<float>(rect.x),
+        static_cast<float>(rect.y),
+        static_cast<float>(rect.width),
+        static_cast<float>(rect.height),
+        0.0f,
+        1.0f,
+    };
+    SDL_SetGPUViewport(pass, &viewport);
+    const SDL_Rect scissor{
+        static_cast<int>(rect.x),
+        static_cast<int>(rect.y),
+        static_cast<int>(rect.width),
+        static_cast<int>(rect.height),
+    };
+    SDL_SetGPUScissor(pass, &scissor);
+}
+
 [[maybe_unused]] SDL_GPUCullMode gpu_cull_mode(
     upstream::RenderCullMode cull) {
     return cull == upstream::RenderCullMode::none
@@ -7813,7 +7852,9 @@ bool run_gpu_engine(Engine& engine) {
             // 1 and the sample is the coordinate the scene passed. The
             // viewport is the whole surface: no reached scene picks
             // through a camera viewport, and one that did would need the
-            // pin's `resolveCameraViewport` offset here.
+            // pin's `resolveCameraViewport` offset here -- so one that
+            // carries a viewport refuses by name rather than picking
+            // against a frustum the pass never drew.
             const double width =
                 static_cast<double>(engine.options.width);
             const double height =
@@ -7821,10 +7862,20 @@ bool run_gpu_engine(Engine& engine) {
             if (x < 0.0 || y < 0.0 || x >= width || y >= height) {
                 return PickingInfo{};
             }
+            if (camera_record->viewport.has_value()) {
+                gpu_error(
+                    "A GPU pick through a camera viewport needs the "
+                    "pin's resolveCameraViewport pointer mapping, which "
+                    "is not ported: no reached scene both picks and "
+                    "splits.");
+            }
             const std::array<float, 16> view_projection =
                 upstream::build_view_projection(
                     *camera_record,
-                    width / height);
+                    upstream::effective_aspect_ratio(
+                        *camera_record,
+                        width,
+                        height));
 
             ensure_pick_targets(state.device, state.pick_targets);
             ensure_pick_pipelines(state);
@@ -8793,6 +8844,11 @@ bool run_gpu_engine(Engine& engine) {
             // controls drawing, not whether its layer data stays current.
             sync_sprite_gpu_contexts();
             for (SpritePass& sprite_pass : sprite_passes) {
+                // `spriteRendererUpdate` runs the renderer's own hooks
+                // before it reads its layers, so an overlay HUD's hook is
+                // seen by this frame rather than the next.
+                run_sprite_renderer_before_update(
+                    engine, sprite_pass.renderer, delta_ms);
                 sync_sprite_pass_layers(
                     state.device,
                     engine,
@@ -9270,10 +9326,15 @@ bool run_gpu_engine(Engine& engine) {
                 !captures.cluster_buffer_saved &&
                 !cluster_buffer_path.empty();
             // getEffectiveAspectRatio divides two JavaScript numbers,
-            // so the ratio reaches the projection writer in double.
+            // so the ratio reaches the projection writer in double. It
+            // is the pinned function itself: a camera carrying a
+            // viewport scales the target ratio by the viewport's own,
+            // and one without takes the pin's literal 1.
             const double aspect =
-                static_cast<double>(width) /
-                static_cast<double>(height);
+                upstream::effective_aspect_ratio(
+                    camera,
+                    static_cast<double>(width),
+                    static_cast<double>(height));
             const std::array<float, 16> matrix =
                 upstream::build_view_projection(camera, aspect);
             const std::array<float, 16> skybox_matrix =
@@ -10386,12 +10447,19 @@ bool run_gpu_engine(Engine& engine) {
                                         engine.cameras.size()
                                 ? engine.cameras[task.render.camera.value]
                                 : camera;
+                        // `_writePassSceneUBO` folds the camera's own
+                        // viewport into whichever extent the task was
+                        // configured for -- the canvas or the target.
                         const double task_aspect =
                             task.render.canvas_size
-                                ? static_cast<double>(width) /
-                                    static_cast<double>(height)
-                                : static_cast<double>(target.width) /
-                                    static_cast<double>(target.height);
+                                ? upstream::effective_aspect_ratio(
+                                      task_camera,
+                                      static_cast<double>(width),
+                                      static_cast<double>(height))
+                                : upstream::effective_aspect_ratio(
+                                      task_camera,
+                                      static_cast<double>(target.width),
+                                      static_cast<double>(target.height));
                         // A shadow task renders from the light, not from
                         // a camera: the generator's own matrices replace
                         // both of these below, so building and pushing a
@@ -11106,9 +11174,48 @@ bool run_gpu_engine(Engine& engine) {
 
                     const RenderTargetRecord& target_record =
                         engine.render_targets[copy.target.value];
+                    // A copy writing a VIEWPORT of the swapchain composes
+                    // with whatever else wrote the rest of it -- scene 187
+                    // presents SMAA into one half and the raw image into
+                    // the other -- and an SDL_GPU swapchain texture cannot
+                    // be read back. So it draws into the same readable
+                    // present copy a presenting post-process pass uses, and
+                    // that copy is what gets blitted and captured. Drawing
+                    // straight to the swapchain instead left the capture
+                    // reading this copy's own source: half the frame, at
+                    // half the width.
+                    const bool partial_present =
+                        target_record.swapchain &&
+                        copy.has_viewport &&
+                        !force_full_viewport;
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                    if (partial_present && !state.post_process_present) {
+                        state.post_process_present = create_frame_texture(
+                            state.device,
+                            swapchain_format,
+                            SDL_GPU_SAMPLECOUNT_1,
+                            width,
+                            height,
+                            SDL_GPU_TEXTUREUSAGE_COLOR_TARGET |
+                                SDL_GPU_TEXTUREUSAGE_SAMPLER);
+                    }
+#else
+                    if (partial_present) {
+                        throw std::runtime_error(
+                            "A copy task writing a viewport of the "
+                            "swapchain needs the readable present copy, "
+                            "which only a post-process build carries.");
+                    }
+#endif
                     SDL_GPUColorTargetInfo blit_target{};
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                    blit_target.texture = partial_present
+                        ? state.post_process_present
+                        : target_texture(copy.target, false);
+#else
                     blit_target.texture =
                         target_texture(copy.target, false);
+#endif
                     blit_target.load_op =
                         copy.has_viewport && !force_full_viewport
                             ? SDL_GPU_LOADOP_LOAD
@@ -11172,6 +11279,25 @@ bool run_gpu_engine(Engine& engine) {
                         1);
                     SDL_DrawGPUPrimitives(blit_pass, 3, 1, 0, 0);
                     SDL_EndGPURenderPass(blit_pass);
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
+                    if (partial_present) {
+                        // Present what the frame composed, and capture the
+                        // same texture -- the post-process present pass
+                        // does exactly this after its own draw.
+                        SDL_GPUBlitInfo present_blit{};
+                        present_blit.source = SDL_GPUBlitRegion{
+                            state.post_process_present,
+                            0, 0, 0, 0, width, height};
+                        present_blit.destination = SDL_GPUBlitRegion{
+                            target_texture(copy.target, false),
+                            0, 0, 0, 0, width, height};
+                        present_blit.load_op = SDL_GPU_LOADOP_DONT_CARE;
+                        present_blit.flip_mode = SDL_FLIP_NONE;
+                        present_blit.filter = SDL_GPU_FILTER_NEAREST;
+                        SDL_BlitGPUTexture(command, &present_blit);
+                        capture_texture = state.post_process_present;
+                    } else
+#endif
                     if (target_record.swapchain) {
                         capture_texture = source_texture(copy.source);
                     }
@@ -11332,6 +11458,7 @@ bool run_gpu_engine(Engine& engine) {
             depth_info.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
             SDL_GPURenderPass* pass =
                 SDL_BeginGPURenderPass(command, &color_info, 1, &depth_info);
+            set_pass_camera_viewport(pass, camera, width, height);
             bool scene_matrix_bound = true;
             // The pin's transmission grab fires once, before the first
             // transmissive draw: the opaque scene colour resolved so far is
@@ -11667,6 +11794,14 @@ bool run_gpu_engine(Engine& engine) {
                             &color_info,
                             1,
                             &depth_info);
+                        // A restarted pass starts at the whole target
+                        // again, so the camera's rectangle is set once
+                        // per PASS rather than once per frame.
+                        set_pass_camera_viewport(
+                            pass,
+                            camera,
+                            width,
+                            height);
                         bound_pipeline = nullptr;
                         transmission_copied = true;
                     }
@@ -12198,9 +12333,19 @@ bool run_gpu_engine(Engine& engine) {
                     overlay_scene->camera.value < engine.cameras.size()
                         ? engine.cameras[overlay_scene->camera.value]
                         : camera;
+                // A layer's own camera answers `getEffectiveAspectRatio`
+                // for itself: upstream each scene's render task writes
+                // its OWN scene UBO from `cfg.cam ?? scene.camera`, so
+                // two scenes splitting one target by viewport project
+                // at two different ratios.
+                const double overlay_aspect =
+                    upstream::effective_aspect_ratio(
+                        overlay_camera,
+                        static_cast<double>(width),
+                        static_cast<double>(height));
                 overlay_matrix = upstream::build_view_projection(
                     overlay_camera,
-                    aspect);
+                    overlay_aspect);
                 pass_scene = overlay_scene;
                 pass_meshes = &state.overlay_meshes[layer];
                 pass_matrix = &overlay_matrix;
@@ -12221,6 +12366,11 @@ bool run_gpu_engine(Engine& engine) {
                     &color_info,
                     1,
                     &depth_info);
+                set_pass_camera_viewport(
+                    pass,
+                    overlay_camera,
+                    width,
+                    height);
                 SDL_PushGPUVertexUniformData(
                     command,
                     0,

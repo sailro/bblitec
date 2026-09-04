@@ -1515,7 +1515,9 @@ ${wgsl}`,
                 : sceneCustoms;
             this.writeSource(
                 "upstream/src/sprite_2d.cpp",
-                sprites.lowerCore(),
+                sprites.lowerCore(
+                    features.includes("sprite:2d-y-sort"),
+                ),
                 generated,
                 "upstream/include/bblite/upstream/sprite_layer.hpp",
             );

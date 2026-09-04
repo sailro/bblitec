@@ -808,6 +808,53 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when a corpus scene passes an explicit aggregate geometry
+        // option: 106 is the nearest, two contracts behind its first blocker.
+        //
+        // Every body is given an override that DIFFERS from what its mesh
+        // would derive, so a port that accepted the option and dropped it
+        // rests the body at a different height -- the one property a
+        // substituted solver cannot move, since a resting pose has no phase
+        // and a shape rests at its own geometric height. Derived versus
+        // written: sphere 1.0 -> 0.5, cylinder 1.0 -> 0.5, capsule
+        // 1.0 -> 0.75, box 1.0 -> -0.25. The sixth body carries
+        // `setPhysicsBodyPrestepType`, without which it ignores the node
+        // writes and rests four units away (x 12.99 against 9).
+        //
+        // MEASURED 0.047/0.074 on both backends, byte-identical between
+        // them -- so the whole residual is solver drift, not a renderer
+        // difference: interior MAD 0.000002 at max channel 1 over 581,629
+        // px, with 4.718 of it on 9,251 silhouette pixels.
+        id: "regression-physics-aggregate-options",
+        name: "Regression - Physics Aggregate Options",
+        source: "examples/regression-physics-aggregate-options.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Physics Aggregate Options",
+        buildDirectory:
+            "native/build-regression-physics-aggregate-options-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-physics-aggregate-options/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-physics-aggregate-options",
+            maxFullMad: 0.06,
+            maxForegroundMad: 0.1,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            // The golden is the browser's ordinary settle -- recapturing it
+            // is byte-identical, so the pose is deterministic -- and this
+            // is what puts the native run at the same one. Without it a
+            // registered run free-runs to its own frame and the bodies are
+            // measured mid-fall: 2.658 full and 3.998 region, with 29.043 of
+            // it on edges, against 0.047/0.074 here. Registration does not
+            // supply it the way the ad-hoc path does.
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
         // Retires when a corpus scene writing a material property over
         // `scene.meshes` compiles: 166 and 179 both do, each behind the
         // clustered light container.
@@ -2971,6 +3018,130 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [166, 115, 64],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene73",
+        name: "Scene 73 - Split-Viewport NME Comparison",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
+        title: "Babylon Lite Native - Split-Viewport NME Comparison",
+        // One wheel twice on one canvas, through two SceneContexts split by
+        // camera viewport: the glTF's own PBR clearcoat on the left, a
+        // checked-in NME graph on the right. The second scene was already
+        // free -- registered scenes past the first have rendered as
+        // swapchain-overlay passes since the gizmo family -- so what this
+        // adds is the pin's optional NormalizedViewport and the
+        // `getEffectiveAspectRatio` half `docs/features.md` said no scene
+        // reached, both lowered from their own pinned bodies and routed
+        // through every projection.
+        //
+        // MEASURED at this registered pose: full 0.003, region 0.012 over a
+        // 209,011-px mask, 96.32% of pixels exact and 100% within one count,
+        // max 2. The residual is scattered plus-or-minus-one dither spread
+        // evenly over both wheels -- neither half is misaligned, which is the
+        // failure a split-screen port would actually show.
+        //
+        // The region number is four times what the same build measures
+        // ad-hoc, and the mask is why: this row's black clear and threshold
+        // keep 209,011 pixels where an ad-hoc run's default background
+        // keeps 894,785, so the same absolute error divides by a quarter of
+        // the pixels. Read the registered number, not the ad-hoc one.
+        //
+        // A viewport lane outside [0, 1] refuses at generation: the pinned
+        // render task multiplies the raw fraction by the target extent where
+        // the exported resolver clamps first, so the two agree only inside
+        // the unit square, and this port emits the clamping one.
+        parity: {
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.02,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene303",
+        name: "Scene 303 - Sprite2D Renderer-Native Y-Sort",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene303.ts",
+        title: "Babylon Lite Native - Sprite2D Y-Sort",
+        // Three sampled overlap pairs: a first-inserted sprite moved live to
+        // a larger Y covers a later canonical one, an equal-Y later insertion
+        // wins the stable serial tie, and a +60 bias lifts an earlier sprite
+        // above a later neighbour. `enableSprite2DYSort` is the whole opt-in,
+        // reached where the pin reaches it -- one lazily-registered null hook
+        // that the always-loaded mutation, upload and picking paths ask -- so
+        // a layer that never enables it links none of the module and pays two
+        // null tests.
+        //
+        // MEASURED 0.000/0.000 on both backends, max 0, 100% exact, and
+        // byte-identical between them, so 0.001 is the smallest value the
+        // report prints rather than headroom.
+        //
+        // The gate OBSERVES the permutation rather than merely reaching it:
+        // the same scene with its two Y-sort calls removed, measured against
+        // this same golden, is 0.813 full MAD at max 224 -- eight hundred
+        // times this row.
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [6, 23, 22],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene187",
+        name: "Scene 187 - Subpixel Morphological Anti-Aliasing",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene187.ts",
+        title: "Babylon Lite Native - SMAA",
+        // The same single-sample render presented twice, raw on the left and
+        // through SMAA on the right. Babylon Lite's SMAA carries no Area or
+        // Search lookup texture -- it reconstructs coverage analytically and
+        // searches in the weight pass -- so the whole filter is three
+        // composed WGSL modules and there is no asset to package.
+        //
+        // MEASURED 0.000/0.000 on both backends, max 0, 100% of pixels
+        // exact, and byte-identical between them: the pin's own WGSL
+        // deploys verbatim, so 0.01/0.03 is headroom for the dark panel
+        // rather than a measured band.
+        //
+        // The background threshold has to stay small: the lit panel's mean
+        // is about (13,14,17) against a (2,3,5) clear, so a wider one takes
+        // the subject out of the foreground region. Both MADs read 0.000
+        // either way.
+        parity: {
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.03,
+            backgroundColor: [2, 3, 5],
+            backgroundThreshold: 6,
+        },
+    },
+    {
+        id: "scene305",
+        name: "Scene 305 - NPE Teleport Graph Plumbing",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene305.ts",
+        title: "Babylon Lite Native - NPE Teleport Plumbing",
+        // Scene 262's particle field again, with the graph rewritten before
+        // the builder walks it: Teleport fan-out, Elbow and Debug compiled
+        // away as pass-through, and a Particle-scope LocalVariable around
+        // the per-particle size. The normalizer runs where the pin runs it
+        // -- executed, not folded, because its output is consumed only by
+        // the executed build.
+        //
+        // MEASURED 0.000/0.000 on both backends, byte-identical between
+        // them and against the golden (max 0, 100% exact), so 0.001 is the
+        // smallest value the report prints rather than headroom. The scene
+        // reads no query string, so its registered pose is its only pose.
+        //
+        // The gate OBSERVES the normalizer rather than merely reaching it:
+        // the Teleport fan-out's signature is ten live particles baked with
+        // equal per-particle sizes, which is what the LocalVariable routes,
+        // and a graph that skipped normalization walks a different set.
+        parity: {
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            // The field is drawn over a black clear; every lit pixel is a
+            // billboard.
+            backgroundColor: [0, 0, 0],
             backgroundThreshold: 30,
         },
     },
