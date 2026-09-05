@@ -125,6 +125,43 @@ export class PickingLowerer {
         private readonly context: LoweringContext,
     ) {}
 
+    /** The two pin-owned projection writers used by GPU picking. */
+    public mathHeader(cloudPicking: boolean): string {
+        const scalars = [
+            { pinned: "sampleX", kind: "number" as const, cpp: "sample_x" },
+            { pinned: "sampleY", kind: "number" as const, cpp: "sample_y" },
+            { pinned: "w", kind: "number" as const, cpp: "width" },
+            { pinned: "h", kind: "number" as const, cpp: "height" },
+        ];
+        const output = {
+            pinned: "out", kind: "mat4" as const, cpp: "out",
+            annotation: "Float32Array",
+        };
+        const projection = lowerPinnedFunction(
+            this.context,
+            "src/picking/gpu-picker.ts",
+            "computePickVP",
+            [output, { pinned: "vp", kind: "matrix", cpp: "vp" }, ...scalars],
+            { cppName: "compute_pick_view_projection", returns: "void", inline: true },
+        );
+        const cloud = cloudPicking ? lowerPinnedFunction(
+            this.context,
+            "src/picking/gs-picking-pipeline.ts",
+            "computeGsPickMatrix",
+            [output, ...scalars],
+            { cppName: "compute_cloud_pick_matrix", returns: "void", inline: true },
+        ) : "";
+        return `#pragma once
+#include <array>
+#include <cstdint>
+
+namespace bbl::upstream {
+${projection}
+${cloud}
+} // namespace bbl::upstream
+`;
+    }
+
     /**
      * @param billboardPick whether a scene reached `pickBillboardSprite`,
      *   which is the pin's own thin wrapper over this same pass.

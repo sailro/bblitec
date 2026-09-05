@@ -593,7 +593,6 @@ test("keeps the split lowerer families in their modules", () => {
         [
             "src/lowering/gltf/matrix-leaves.ts",
             [
-                /function lowerMatrixMultiplyCpp/,
                 /function lowerMatrixComposeCpp/,
                 /function lowerLocalMatrixCpp/,
                 /function lowerMatrixNativeCpp/,
@@ -1920,8 +1919,10 @@ test("keeps dynamic shader geometry local and transforms it per draw", () => {
     assert.match(shared, /struct ShaderDrawMatrices \{/);
     assert.match(
         shared,
-        /case upstream::ShaderSystemMatrix::world_view_projection:[\s\S]{0,180}return false;/,
+        /case upstream::ShaderSystemMatrix::world_view_projection:\s*(?:case upstream::ShaderSystemMatrix::\w+:\s*)*return false;/,
     );
+    assert.match(shared, /upstream::matrix_product\(pass\.view_projection, world\)/);
+    assert.doesNotMatch(shared, /shader_matrix_product\(/);
 
     for (const backend of [sdl, dawn]) {
         assert.match(
@@ -2072,7 +2073,7 @@ test("keeps reached Havok body defaults and convex mass frames in the Bullet PAL
 test("releases Dawn mesh dependents before their owned resources", () => {
     const dawn = source("native/src/pal_dawn.cpp");
     const releaseMesh = dawn.slice(
-        dawn.indexOf("    void release_mesh(DawnMesh& mesh)"),
+        dawn.indexOf("    void release_gpu_resources(DawnMeshResources& mesh)"),
         dawn.indexOf("    void release_meshes()"),
     );
     const bindingRelease = releaseMesh.indexOf(

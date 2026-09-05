@@ -12,6 +12,18 @@ namespace bbl::js {
 template <typename Sig>
 class Callback;
 
+// A plain std::function has no shared body field, so its outward value needs
+// a small owning closure. Allocation of that closure is library-dependent.
+template <typename R, typename... Args>
+[[nodiscard]] std::function<R(Args...)> retain_callback(
+    std::shared_ptr<std::function<R(Args...)>> owner) {
+    if (!owner) throw std::bad_function_call();
+    return [owner = std::move(owner)](Args... args) -> R {
+        const auto retained = owner;
+        return (*retained)(std::forward<Args>(args)...);
+    };
+}
+
 inline std::size_t next_callback_identity() {
     static std::size_t next = std::numeric_limits<std::size_t>::max() / 2;
     return next++;
@@ -33,13 +45,26 @@ class Callback<R(Args...)> {
               std::forward<F>(body))) {}
 
     R operator()(Args... args) const {
-        return body()(std::forward<Args>(args)...);
+        const auto retained = body_;
+        if (!retained) throw std::bad_function_call();
+        return (*retained)(std::forward<Args>(args)...);
     }
     explicit operator bool() const { return body_ && static_cast<bool>(*body_); }
     [[nodiscard]] std::size_t identity() const { return identity_; }
-    [[nodiscard]] const std::function<R(Args...)>& body() const {
-        static const std::function<R(Args...)> empty;
-        return body_ ? *body_ : empty;
+    // Erasing identity still shares mutable captures and retains any recursive
+    // owner. Copying the pointed-to function would lose the aliasing owner.
+    [[nodiscard]] std::function<R(Args...)> body() const {
+        return *this ? retain_callback(body_) : std::function<R(Args...)>{};
+    }
+    [[nodiscard]] static Callback retain(std::shared_ptr<Callback> owner) {
+        if (!owner) throw std::bad_function_call();
+        Callback retained;
+        retained.identity_ = owner->identity_;
+        auto* body = owner->body_.get();
+        // Reuse the owner's control block and existing function body. A
+        // recursive invocation creates no new function or heap allocation.
+        retained.body_ = {std::move(owner), body};
+        return retained;
     }
     [[nodiscard]] friend bool operator==(const Callback& left, const Callback& right) {
         return left.identity_ == right.identity_;
@@ -50,5 +75,14 @@ class Callback<R(Args...)> {
     // A dispatch snapshot retains the closure without resetting its local state.
     std::shared_ptr<std::function<R(Args...)>> body_;
 };
+
+// A recursive body holds only a weak reference to its own storage. Every
+// outward function value retains that storage, including a self reference
+// passed to another callback, so the final outward release reclaims it.
+template <typename R, typename... Args>
+[[nodiscard]] Callback<R(Args...)> retain_callback(
+    std::shared_ptr<Callback<R(Args...)>> owner) {
+    return Callback<R(Args...)>::retain(std::move(owner));
+}
 
 } // namespace bbl::js

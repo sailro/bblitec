@@ -26,6 +26,7 @@
 import type { LoweringContext } from "./context.js";
 import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
+import { pinnedTrsComposition } from "./pinned-trs.js";
 
 const PBR_TEMPLATE_MODULE = "src/material/pbr/pbr-template.ts";
 const STANDARD_TEMPLATE_MODULE = "src/material/standard/standard-template.ts";
@@ -91,8 +92,23 @@ export function pinnedWorldTransformHeader(context: LoweringContext): string {
 #include <bblite/runtime.hpp>
 
 #include <array>
+#include <cmath>
 
 namespace bbl::upstream {
+
+// Imported clone roots use the same intrinsic XYZ composition as SceneNode.
+inline std::array<float, 16> outer_transform_matrix(
+    const Vec3& position, const Vec3& rotation) {
+    const struct {
+        Vec3 rotation;
+        Vec3 scaling{1.0f, 1.0f, 1.0f};
+        Vec3 position;
+        bool has_rotation_quaternion = false;
+        Vec4 rotation_quaternion{};
+    } mesh{.rotation = rotation, .position = position};
+${pinnedTrsComposition(context).composeWorldBody}
+    return world;
+}
 
 // The float application of a world basis, restated from the pinned WGSL
 // vertex stages. Float on purpose: the CPU bakes that call these stand in

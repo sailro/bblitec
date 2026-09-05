@@ -1,7 +1,5 @@
 import ts from "typescript";
 import { doubleLiteral, floatLiteral } from "../../cpp-literals.js";
-import type { LoweringContext } from "../context.js";
-import { lowerMat4MultiplyWriterCpp } from "../pinned-function-lowerer.js";
 import { renderCppExpression } from "./animation-interpolation.js";
 import {
     CppExpressionScope,
@@ -104,26 +102,6 @@ function offsetElementIndex(
         return Number((unwrapPin(index.right) as ts.NumericLiteral).text);
     }
     return undefined;
-}
-
-/**
- * `mat4MultiplyInto` → the whole-translated templated writer plus the
- * by-value `multiply_matrix` wrapper the loader has always called. One
- * translation now serves the render plan and this loader from one
- * emission, so an upstream edit to the multiply changes both TUs together
- * instead of one refusing at a canonical-form walk while the other adopts
- * the new order silently; the walk this replaces existed only to prove the
- * loop presentation equal to the pin, and translating the pin whole makes
- * that argument unnecessary.
- */
-export function lowerMatrixMultiplyCpp(context: LoweringContext): string {
-    return `${lowerMat4MultiplyWriterCpp(context)}
-
-Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
-    Matrix result{};
-    mat4_multiply_into(result, 0, left, 0, right, 0);
-    return result;
-}`;
 }
 
 /** The pinned `mat4ComposeInto` body, walked once for both emitters. */

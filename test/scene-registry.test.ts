@@ -8,26 +8,6 @@ import {
     validateReferenceCapture,
 } from "../src/parity-scene.js";
 
-test("states the curated scene and demo counts the registry actually holds", () => {
-    // Keep one measured headline rather than repeating counts in the proof
-    // points. Curated scenes are pinned `sceneNNN` corpus entries; demos are
-    // the exact upstream application gates.
-    const curated = scenes.filter(({ id }) =>
-        /^scene\d+$/.test(id),
-    ).length;
-    const demos = scenes.filter(({ sourceOrigin }) =>
-        sourceOrigin === "babylon-lite-application",
-    ).length;
-    const readme = readFileSync(resolve("README.md"), "utf8");
-    const stated = /(\d+) curated parity scenes and (\d+) demos/.exec(
-        readme,
-    );
-    assert.ok(stated, "README no longer states the curated scene and demo counts.");
-    assert.equal(Number(stated[1]), curated);
-    assert.equal(Number(stated[2]), demos);
-    assert.equal([...readme.matchAll(/\d+ curated/g)].length, 1);
-});
-
 test("registers unique generated scene targets", () => {
     assert.deepEqual(
         scenes

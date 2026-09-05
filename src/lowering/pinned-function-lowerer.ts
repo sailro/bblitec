@@ -38,6 +38,7 @@ export interface PinnedFunctionParameter {
      */
     kind:
         | "number"
+        | "index"
         | "boolean"
         | "mat4"
         | "matrix"
@@ -67,8 +68,8 @@ export interface PinnedFunctionParameter {
      */
     binding?: PinnedBinding;
     /**
-     * The C++ type a `record` parameter binds by const reference. Required
-     * for that kind and ignored by the others, whose type follows the kind.
+     * Override the C++ reference type while retaining the kind's numeric
+     * binding. Required for records; also supports templated matrix storage.
      */
     cppType?: string;
     /**
@@ -108,17 +109,33 @@ export interface PinnedFunctionParameter {
 const parameterKinds: Readonly<
     Record<
         PinnedFunctionParameter["kind"],
-        { annotation: string; declare: (cpp: string) => string }
+        {
+            annotation: string;
+            bindingType: PinnedBinding["type"];
+            declare: (cpp: string) => string;
+        }
     >
 > = {
-    number: { annotation: "number", declare: (cpp) => `double ${cpp}` },
-    boolean: { annotation: "boolean", declare: (cpp) => `bool ${cpp}` },
+    number: {
+        annotation: "number", bindingType: "scalar",
+        declare: (cpp) => `double ${cpp}`,
+    },
+    index: {
+        annotation: "number", bindingType: "index",
+        declare: (cpp) => `std::int64_t ${cpp}`,
+    },
+    boolean: {
+        annotation: "boolean", bindingType: "bool",
+        declare: (cpp) => `bool ${cpp}`,
+    },
     mat4: {
         annotation: "Mat4Storage",
+        bindingType: "f32",
         declare: (cpp) => `std::array<float, 16>& ${cpp}`,
     },
     matrix: {
         annotation: "Float32Array",
+        bindingType: "f32",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
     // `Mat4` is the pin's own alias for the same storage, and
@@ -129,10 +146,12 @@ const parameterKinds: Readonly<
     // accept a pin that swapped them.
     mat4Const: {
         annotation: "Mat4",
+        bindingType: "f32",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
     numberArray: {
         annotation: "ArrayLike<number>",
+        bindingType: "f32",
         declare: (cpp) => `const std::array<float, 16>& ${cpp}`,
     },
     // A typed buffer the body indexes and stores through, sized by its
@@ -140,6 +159,7 @@ const parameterKinds: Readonly<
     // `u32Buffer` rounds where the pin's `Uint32Array` store rounds.
     u32Buffer: {
         annotation: "Uint32Array",
+        bindingType: "u32",
         declare: (cpp) => `std::vector<std::uint32_t>& ${cpp}`,
     },
     // A record the body reads named members off. The caller supplies both
@@ -147,21 +167,10 @@ const parameterKinds: Readonly<
     // members land on -- this table stays free of any one feature's names.
     record: {
         annotation: "",
+        bindingType: "scalar",
         declare: (cpp) => `const auto& ${cpp}`,
     },
 };
-
-/**
- * The kinds that bind a matrix: every one of them is 16 floats the body
- * indexes, so they share the translator's fixed-matrix binding and differ
- * only in the annotation each checks.
- */
-const matrixKinds: ReadonlySet<PinnedFunctionParameter["kind"]> = new Set([
-    "mat4",
-    "matrix",
-    "mat4Const",
-    "numberArray",
-]);
 
 /**
  * The elements of a pinned tuple return, lowered through the caller's
@@ -250,69 +259,31 @@ export function lowerObjectComponents(
  * The pinned matrix multiply translated whole, shared by the render plan
  * and the glTF loader so one pinned declaration has one translation. Its
  * `Mat4Storage` parameters accept F32- or F64-backed storage upstream;
- * every consumer's target and left operand is an f32 array while the right
- * operand is f32 (the view chain, the loader's node matrices) or f64 (the
- * composed instance TRS), and the body's reads widen to double identically
- * for both — so the one axis that varies is the right operand's container,
- * emitted as the template parameter. `lowerPinnedFunction` deliberately
- * does not grow a template concept for this one signature; the parameter
- * contract below carries the same name-and-annotation strength.
+ * the output is an f32 array while the input storage can be an array or a
+ * PAL uniform pointer, containing f32 or f64 lanes. The body's reads widen
+ * to double for both, so the operand containers are template parameters.
+ * Signature adaptation uses the same parameter contracts and body lowering
+ * as other pinned functions.
  */
 export function lowerMat4MultiplyWriterCpp(context: LoweringContext): string {
-    const module = "src/math/mat4-multiply-into.ts";
-    const symbol = "mat4MultiplyInto";
-    const { file, declaration } = context.functionDeclaration(
-        module,
-        symbol,
+    return lowerPinnedFunction(
+        context,
+        "src/math/mat4-multiply-into.ts",
+        "mat4MultiplyInto",
+        [
+            { pinned: "dst", kind: "mat4", cpp: "dst" },
+            { pinned: "d", kind: "index", cpp: "d" },
+            { pinned: "a", kind: "mat4", cpp: "a", cppType: "MatA" },
+            { pinned: "i", kind: "index", cpp: "i" },
+            { pinned: "b", kind: "mat4", cpp: "b", cppType: "MatB" },
+            { pinned: "j", kind: "index", cpp: "j" },
+        ],
+        {
+            cppName: "mat4_multiply_into",
+            returns: "void",
+            templateParameters: ["typename MatA", "typename MatB"],
+        },
     );
-    const expected: readonly (readonly [string, string, PinnedBinding])[] = [
-        ["dst", "Mat4Storage", { cpp: "dst", type: "f32" }],
-        ["d", "number", { cpp: "d", type: "index" }],
-        ["a", "Mat4Storage", { cpp: "a", type: "f32" }],
-        ["i", "number", { cpp: "i", type: "index" }],
-        ["b", "Mat4Storage", { cpp: "b", type: "f32" }],
-        ["j", "number", { cpp: "j", type: "index" }],
-    ];
-    if (declaration.parameters.length !== expected.length) {
-        context.contractError(
-            declaration,
-            "Expected pinned mat4MultiplyInto to take (dst, d, a, i, b, j).",
-        );
-    }
-    declaration.parameters.forEach((parameter, index) => {
-        const [pinned, annotation] = expected[index]!;
-        if (
-            !ts.isIdentifier(parameter.name) ||
-            parameter.name.text !== pinned ||
-            parameter.type?.getText(file) !== annotation
-        ) {
-            context.contractError(
-                parameter,
-                `Expected pinned ${symbol} parameter ${index} to be ` +
-                    `'${pinned}: ${annotation}'.`,
-            );
-        }
-    });
-    const lowerer = new PinnedNumericLowerer(file, {
-        bindings: new Map(
-            expected.map(([pinned, , binding]) => [pinned, binding]),
-        ),
-        calls: new Map(),
-    });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
-        .join("\n");
-    return `// ${context.provenance(module, symbol)}
-template <typename MatB>
-void mat4_multiply_into(
-    std::array<float, 16>& dst,
-    std::int64_t d,
-    const std::array<float, 16>& a,
-    std::int64_t i,
-    const MatB& b,
-    std::int64_t j) {
-${body}
-}`;
 }
 
 /** The pinned full 4x4 inverse, including its f32 allocation boundary. */
@@ -441,6 +412,8 @@ export function lowerPinnedFunction(
               };
         /** Emit `inline` — for a function landing in a generated header. */
         inline?: boolean;
+        /** C++ template parameter declarations; numeric bindings stay explicit. */
+        templateParameters?: readonly string[];
         /** Calls the body may make. The caller owns the whole map. */
         calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
         /** See `PinnedNumericScope.matrixCalls`. */
@@ -538,13 +511,7 @@ export function lowerPinnedFunction(
             spec.pinned,
             spec.binding ?? {
                 cpp: spec.cpp,
-                type: matrixKinds.has(spec.kind)
-                    ? "f32"
-                    : spec.kind === "boolean"
-                      ? "bool"
-                      : spec.kind === "u32Buffer"
-                        ? "u32"
-                        : "scalar",
+                type: kind.bindingType,
             },
         );
         const declared = spec.cppType
@@ -615,6 +582,9 @@ export function lowerPinnedFunction(
         : options.returns.type;
     return (
         `// ${context.provenance(modulePath, symbolName)}\n` +
+        (options.templateParameters
+            ? `template <${options.templateParameters.join(", ")}>\n`
+            : "") +
         `${options.inline ? "inline " : ""}${returnType} ` +
         `${options.cppName}(\n    ${signature.join(",\n    ")}) {\n` +
         `${body}\n}`

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -23,6 +23,9 @@ test("parses only complete memory frame lines out of a run's stderr", () => {
             line(0, 100, 40),
             "noise",
             "[mem][frame] frame=15 mesh_records=41",
+            line(16, Infinity, 41),
+            line(17, -1, 41),
+            line(18, 0, 41),
             line(30, 104.5, 41),
             "",
         ].join("\r\n"),
@@ -50,6 +53,10 @@ test("judges growth from the warm-up third and reports retired records", () => {
     // Fewer than three samples cannot separate warm-up from the run.
     assert.equal(summarizeMemoryProfile(samples.slice(0, 2), 32), undefined);
     assert.equal(summarizeMemoryProfile([], 32), undefined);
+    assert.equal(summarizeMemoryProfile(samples, 32, 6000), undefined,
+        "an early exit cannot pass a longer requested observation");
+    assert.ok(summarizeMemoryProfile(samples, 32, 3000));
+    assert.equal(summarizeMemoryProfile([...samples, samples[0]!], 32), undefined);
 });
 
 test("formats a verdict, and names an unmeasured loop instead of passing it", () => {
@@ -64,15 +71,18 @@ test("formats a verdict, and names an unmeasured loop instead of passing it", ()
     assert.match(formatMemorySummary("sprite", undefined), /unmeasured/);
 });
 
-test("parses the memory command's flags, defaults and a tape file", () => {
+test("parses the memory command's flags, defaults and a tape file", (t) => {
     assert.deepEqual(parseMemoryArguments([]), { frames: 6000, maxGrowthMb: 32 });
     assert.deepEqual(
         parseMemoryArguments(["--frames", "12000", "--max-growth-mb", "8", "--replay", "-,-,+KeyW", "--backend", "dawn"]),
         { frames: 12000, maxGrowthMb: 8, replay: "-,-,+KeyW", backend: "dawn" },
     );
     const directory = mkdtempSync(join(tmpdir(), "bblite-memory-"));
+    t.after(() => rmSync(directory, { recursive: true, force: true }));
     const tape = join(directory, "sprint.tape");
     writeFileSync(tape, "-,-,+ShiftLeft,+KeyW\n");
     assert.equal(parseMemoryArguments(["--replay-file", tape]).replay, "-,-,+ShiftLeft,+KeyW");
     assert.throws(() => parseMemoryArguments(["--frames", "10"]), /--frames/);
+    assert.throws(() => parseMemoryArguments(["--max-growth-mb", "-1"]), /--max-growth-mb/);
+    assert.throws(() => parseMemoryArguments(["--replay", "-", "--replay-file", tape]), /only one/);
 });

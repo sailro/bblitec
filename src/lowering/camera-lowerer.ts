@@ -1,6 +1,5 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
-import { lowerMat4MultiplyWriterCpp } from "./pinned-function-lowerer.js";
 
 export class CameraLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -198,12 +197,6 @@ export class CameraLowerer {
         }
         const parentArm = gltfCameras
             ? `
-namespace {
-
-${lowerMat4MultiplyWriterCpp(this.context)}
-
-} // namespace
-
 // src/scene/world-matrix-state.ts getWorldMatrix: with a parent the world
 // is mat4MultiplyInto(out, 0, parent.worldMatrix, 0, local, 0) — parent
 // on the left, the camera's own look-at local on the right. The record's
@@ -250,6 +243,7 @@ Vec3d camera_position(const CameraRecord& camera);
 `,
             source: `// ${this.context.provenance(modulePath, symbolName)}
 #include <bblite/upstream/camera_math.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 #include <bblite/runtime.hpp>
 
 #include <cmath>

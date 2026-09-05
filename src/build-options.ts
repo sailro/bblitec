@@ -11,6 +11,11 @@ export function defaultDevelopmentBackend(
 
 export type OfflineShaderTarget = "d3d12" | "vulkan" | "metal" | "all";
 
+/** Dawn consumes WGSL directly; an explicit offline target still requests a sweep. */
+export function needsOfflineShaders(backend: string, requestedTarget?: string): boolean {
+    return backend !== "DAWN" || requestedTarget !== undefined;
+}
+
 export function canonicalOfflineShaderTarget(
     value: string,
 ): OfflineShaderTarget {

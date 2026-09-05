@@ -33,21 +33,27 @@ param(
     # static-triplet FreeType headers it compiles against (see below).
     [string]$Vcpkg = $(if ($env:VCPKG_ROOT) { Join-Path $env:VCPKG_ROOT "vcpkg.exe" } else { "" }),
     [switch]$StaticRuntime,
+    [switch]$EnableSvg,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+# Development keeps one complete artifact. Shipping selects SVG only when
+# the generated scene reaches ui:inline-svg.
+$rmlSvgEnabled = -not $StaticRuntime -or $EnableSvg
+$rmlSvgSetting = if ($rmlSvgEnabled) { "ON" } else { "OFF" }
+$staticSuffix = if ($EnableSvg) { "-static-svg" } else { "-static" }
 if (-not $Workspace) {
     $Workspace = if ($StaticRuntime) {
-        ".cache\rmlui-static"
+        ".cache\rmlui$staticSuffix"
     } else {
         ".cache\rmlui"
     }
 }
 if (-not $OutputDirectory) {
     $OutputDirectory = if ($StaticRuntime) {
-        "artifacts\tools\rmlui-static"
+        "artifacts\tools\rmlui$staticSuffix"
     } else {
         "artifacts\tools\rmlui"
     }
@@ -77,15 +83,21 @@ if (-not $FreetypeRoot) {
                         (Get-Item $headers).LastWriteTimeUtc
                 }
         ).Count -gt 0
-        if (-not (Test-Path $headers) -or $manifestMoved) {
+        $svgMissing = $rmlSvgEnabled -and -not (Test-Path (
+            Join-Path $FreetypeRoot "share\lunasvg\lunasvgConfig.cmake"))
+        if (-not (Test-Path $headers) -or $manifestMoved -or $svgMissing) {
             if (-not $Vcpkg -or -not (Test-Path $Vcpkg)) {
                 throw "vcpkg was not found for the static FreeType install. Set VCPKG_ROOT (or pass -Vcpkg), or pass -FreetypeRoot at an x64-windows-static vcpkg install carrying freetype."
             }
-            & $Vcpkg install `
-                "--x-manifest-root=$(Join-Path $root 'native')" `
-                "--x-install-root=$staticRoot" `
-                --triplet=x64-windows-static `
-                --x-feature=ui
+            $vcpkgArguments = @(
+                "install"
+                "--x-manifest-root=$(Join-Path $root 'native')"
+                "--x-install-root=$staticRoot"
+                "--triplet=x64-windows-static"
+                "--x-feature=ui"
+            )
+            if ($rmlSvgEnabled) { $vcpkgArguments += "--x-feature=ui-svg" }
+            & $Vcpkg @vcpkgArguments
             if ($LASTEXITCODE -ne 0) {
                 throw "vcpkg could not install the static-triplet manifest for the RmlUi static artifact."
             }
@@ -98,8 +110,8 @@ if (-not (Test-Path (Join-Path $FreetypeRoot "include\ft2build.h"))) {
     throw "FreeType headers were not found at $FreetypeRoot. Run 'npm run dev:setup' (which installs the development vcpkg manifest), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype."
 }
 $lunaSvgConfig = Join-Path $FreetypeRoot "share\lunasvg\lunasvgConfig.cmake"
-if (-not (Test-Path $lunaSvgConfig)) {
-    throw "LunaSVG was not found at $FreetypeRoot. Run 'npm run dev:setup' (the ui manifest feature installs it), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype and lunasvg."
+if ($rmlSvgEnabled -and -not (Test-Path $lunaSvgConfig)) {
+    throw "LunaSVG was not found at $FreetypeRoot. Run 'npm run dev:setup' (the ui-svg manifest feature installs it), or pass -FreetypeRoot at a vcpkg-installed tree carrying freetype and lunasvg."
 }
 if ($StaticRuntime) {
     # vcpkg's port rewrites the `#elif` guarding the dllimport attribute to a
@@ -113,10 +125,10 @@ if ($StaticRuntime) {
 }
 $pin = Get-Content (Join-Path $root "upstream\rmlui.json") -Raw |
     ConvertFrom-Json
-$workspacePath = Join-Path $root $Workspace
+$workspacePath = [System.IO.Path]::GetFullPath($Workspace, $root)
 $source = Join-Path $workspacePath "rmlui"
 $build = Join-Path $workspacePath "build"
-$output = Join-Path $root $OutputDirectory
+$output = [System.IO.Path]::GetFullPath($OutputDirectory, $root)
 
 if (-not $CMake) {
     $command = Get-Command cmake -ErrorAction SilentlyContinue
@@ -220,13 +232,19 @@ foreach ($patch in @(
 $configureArguments = @(
     "-S", $source,
     "-B", $build,
+    # CMAKE_PREFIX_PATH does not override FindFreetype's cached headers or
+    # package directories. Rediscover them when switching dependency roots;
+    # otherwise a static artifact can still compile against DLL headers.
+    "-U", "FREETYPE_*",
+    "-U", "lunasvg_DIR",
+    "-U", "plutovg_DIR",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DCMAKE_INSTALL_PREFIX=$output",
     "-DCMAKE_PREFIX_PATH=$FreetypeRoot",
     "-DBUILD_SHARED_LIBS=OFF",
     "-DRMLUI_SAMPLES=OFF",
     "-DRMLUI_LUA_BINDINGS=OFF",
-    "-DRMLUI_SVG_PLUGIN=ON",
+    "-DRMLUI_SVG_PLUGIN=$rmlSvgSetting",
     "-DRMLUI_PRECOMPILED_HEADERS=OFF",
     "-DRMLUI_COMPILER_OPTIONS=OFF",
     # Static archives carry no runtime dependencies; leave the empty

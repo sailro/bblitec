@@ -9853,8 +9853,9 @@ test("carries retained mousedown cancellation from the executed callback", () =>
     );
     // Descendants share their button's click target; the button itself remains
     // focusable, and cancelling mousedown still restores the previous focus.
-    assert.match(projection, /button \*\{focus:none;\}/);
-    assert.doesNotMatch(projection, /button\{focus:none/);
+    const defaults = readFileSync("native/src/pal_ui_defaults.hpp", "utf8");
+    assert.match(defaults, /button \*\{focus:none;\}/);
+    assert.doesNotMatch(defaults, /button\{focus:none/);
 
     assert.throws(
         () =>
@@ -10889,6 +10890,18 @@ test("reuses a stored callback while compiling its self-referential record", () 
         new RegExp(
             `\\(\\*${declaration[1]}\\) = \\[=\\]\\(\\) mutable -> void`,
         ),
+    );
+    assert.match(
+        result.cpp,
+        /std::weak_ptr<std::function<void\(\)>> fn\d+_stored_callback_weak = fn\d+_stored_callback_owner;/,
+    );
+    assert.match(
+        result.cpp,
+        /bbl::js::retain_callback\(fn\d+_stored_callback_weak\.lock\(\)\)\(\);/,
+    );
+    assert.match(
+        result.cpp,
+        /std::function<void\(\)> fn\d+_stored_callback = bbl::js::retain_callback\(fn\d+_stored_callback_owner\);/,
     );
 });
 

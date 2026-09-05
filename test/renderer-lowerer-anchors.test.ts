@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
+import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import {
     RendererLowerer,
     lowerOpaqueOrderStamp,
@@ -227,13 +228,15 @@ test("translates the pinned multiply writer whole", () => {
         new LoweringContext(),
     ).lowerRenderPlan({});
     // The multiply is the pinned writer translated whole — the unrolled
-    // accumulation in the pin's own order, templated on the right
-    // operand's storage; the projection writers' emitted rows are pinned
+    // accumulation in the pin's own order, templated on both operands'
+    // storage; the projection writers' emitted rows are pinned
     // by the upstream test that owns them ("translates the pinned
     // perspective writer whole").
-    assert.match(plan.source, /template <typename MatB>\nvoid mat4_multiply_into\(/);
+    assert.match(plan.source, /#include <bblite\/upstream\/pinned_matrix.hpp>/);
+    const matrixHeader = pinnedMatrixHeader(new LoweringContext());
+    assert.match(matrixHeader, /template <typename MatA, typename MatB>\nvoid mat4_multiply_into\(/);
     assert.match(
-        plan.source,
+        matrixHeader,
         /\(\(\(\(a0 \* b0\) \+ \(a4 \* b1\)\) \+ \(a8 \* b2\)\) \+ \(a12 \* b3\)\)/,
     );
 });
@@ -531,11 +534,9 @@ test("adopts the pinned transparent sort center: the draw world's translation", 
     );
     assert.match(
         plan.source,
-        /rotate_outer_point\(\s*local_center, mesh\.outer_rotation\)/,
+        /transform_position\(\s*outer_transform_matrix\(mesh\.outer_position, mesh\.outer_rotation\),\s*local_center\)/,
     );
-    assert.match(plan.source, /rotated_center\.x \+ mesh\.outer_position\.x/);
-    assert.match(plan.source, /rotated_center\.y \+ mesh\.outer_position\.y/);
-    assert.match(plan.source, /rotated_center\.z \+ mesh\.outer_position\.z/);
+    assert.match(plan.source, /#include <bblite\/upstream\/pinned_world_transform\.hpp>/);
     // The bounds-center derivation and its euler helper are gone; the
     // anchored comparator and view-forward distance stay.
     assert.ok(!plan.source.includes("rotate_euler"));

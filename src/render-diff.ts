@@ -250,6 +250,9 @@ export interface PinnedMaterialBlock {
  *  mesh's first bone palette entries, dumped per PBR draw. */
 export interface PinnedMeshBlock {
     meshIndex: number;
+    stage?: string;
+    variant?: number;
+    worldSource?: "effective-draw";
     world?: number[];
     lightCount?: number;
     boneCount?: number;
@@ -539,7 +542,10 @@ export function pinnedBlockFields(capture: NativeCapture): {
         // The capture dumps one entry per PBR draw, so a mesh drawn in
         // several lists repeats byte-identically; one row per distinct
         // payload, like every other field here.
-        const signature = JSON.stringify(block);
+        const signature = JSON.stringify([
+            block.meshIndex, block.world, block.lightCount,
+            block.boneCount, block.bone0, block.bone1,
+        ]);
         if (seen.has(signature)) continue;
         seen.add(signature);
         const prefix = `pinned mesh[${block.meshIndex}]`;

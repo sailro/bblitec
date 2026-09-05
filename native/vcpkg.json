@@ -39,12 +39,17 @@
       ]
     },
     "ui": {
-      "description": "FreeType font rasterization and LunaSVG inline-icon rendering for the optional RmlUi scene-created DOM projection.",
+      "description": "FreeType font rasterization for the optional RmlUi scene-created DOM projection.",
       "dependencies": [
         {
           "name": "freetype",
           "default-features": false
-        },
+        }
+      ]
+    },
+    "ui-svg": {
+      "description": "LunaSVG inline icons for ui:inline-svg and the development RmlUi artifact.",
+      "dependencies": [
         "lunasvg"
       ]
     },
