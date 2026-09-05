@@ -26,13 +26,27 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
+#if BBLITE_VISUAL_CAPTURE
 #include <SDL3_image/SDL_image.h>
+#endif
 
 #ifndef BBLITE_GPU_SHADER_DIR
 #define BBLITE_GPU_SHADER_DIR "shaders"
 #endif
 
 namespace bbl::pal {
+
+template <typename Resource, auto Release>
+struct SdlGpuDeleter {
+    SDL_GPUDevice* device = nullptr;
+    void operator()(Resource* resource) const noexcept { Release(device, resource); }
+};
+
+using OwnedSdlShader = std::unique_ptr<
+    SDL_GPUShader, SdlGpuDeleter<SDL_GPUShader, SDL_ReleaseGPUShader>>;
+using OwnedSdlPipeline = std::unique_ptr<
+    SDL_GPUGraphicsPipeline,
+    SdlGpuDeleter<SDL_GPUGraphicsPipeline, SDL_ReleaseGPUGraphicsPipeline>>;
 
 [[noreturn]] inline void gpu_error(const char* operation) {
     throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
@@ -65,6 +79,7 @@ inline SDL_GPUTexture* create_frame_texture(
     return texture;
 }
 
+#if BBLITE_VISUAL_CAPTURE
 inline void save_texture_png(
     SDL_GPUDevice* device,
     SDL_GPUCommandBuffer* command,
@@ -168,6 +183,11 @@ inline void save_texture_png(
     SDL_ReleaseGPUTransferBuffer(device, transfer);
     if (!saved) gpu_error("IMG_SavePNG screenshot");
 }
+#else
+inline void save_texture_png(
+    SDL_GPUDevice*, SDL_GPUCommandBuffer*, SDL_GPUTexture*, SDL_GPUTextureFormat,
+    std::uint32_t, std::uint32_t, const std::string&, const std::string& = {}) {}
+#endif
 
 /**
  * What the shader step's compaction pass assigned, read back at load.
@@ -547,7 +567,7 @@ inline void create_sdl_gpu_device(
     }
 }
 
-inline SDL_GPUShader* load_shader(
+inline OwnedSdlShader load_shader(
     SDL_GPUDevice* device,
     const char* base_name,
     SDL_GPUShaderStage stage,
@@ -602,7 +622,7 @@ inline SDL_GPUShader* load_shader(
     info.num_storage_textures = storage_textures;
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
     if (!shader) gpu_error("SDL_CreateGPUShader");
-    return shader;
+    return {shader, {device}};
 }
 
 inline SDL_GPUBuffer* upload_buffer(

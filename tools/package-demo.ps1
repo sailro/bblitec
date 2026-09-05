@@ -90,6 +90,7 @@ if (-not [string]::Equals(
 # native/CMakeLists.txt keys its vcpkg manifest features on, so the
 # notice set below follows exactly what the build linked.
 $jpegReached = $true
+$pngReached = $true
 $webpReached = $false
 $audioReached = $false
 $audioDecoded = $false
@@ -98,6 +99,7 @@ $navigationReached = $false
 $uiReached = $false
 $uiSvgReached = $false
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
+$visualCapture = $cache["BBLITE_VISUAL_CAPTURE"] -ne "OFF"
 $featuresPath = Join-Path $generatedDirectory "features.cmake"
 if (Test-Path $featuresPath) {
     $featuresText = Get-Content $featuresPath -Raw
@@ -108,6 +110,7 @@ if (Test-Path $featuresPath) {
     $uiReached = $featuresText -match '"ui:rml"'
     $uiSvgReached = $featuresText -match '"ui:inline-svg"'
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
+        $pngReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"png"'
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
         $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
     }
@@ -249,10 +252,14 @@ if (-not $vcpkgShare) {
 }
 $licensePackages = @{
     "SDL3.txt" = "sdl3"
-    "SDL3_image.txt" = "sdl3-image"
-    "libpng.txt" = "libpng"
-    "zlib.txt" = "zlib"
     "nlohmann-json.txt" = "nlohmann-json"
+}
+if ($pngReached -or $jpegReached -or $webpReached -or $visualCapture) {
+    $licensePackages["SDL3_image.txt"] = "sdl3-image"
+}
+if ($pngReached -or $visualCapture) {
+    $licensePackages["libpng.txt"] = "libpng"
+    $licensePackages["zlib.txt"] = "zlib"
 }
 if ($jpegReached) {
     $licensePackages["libjpeg-turbo.txt"] = "libjpeg-turbo"

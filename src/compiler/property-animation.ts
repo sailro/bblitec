@@ -8,6 +8,7 @@
 // animation.ts calls these through its context.
 import ts from "typescript";
 import type { Value } from "./types.js";
+import { renderClosure, type CapturedClosure } from "./closure-captures.js";
 
 export interface PropertyAnimationContext {
     readonly sourceFile: ts.SourceFile;
@@ -39,9 +40,9 @@ export interface PropertyAnimationContext {
 export interface PropertyAnimationTargetContext {
     fail(node: ts.Node, message: string): never;
     allocateTemporaryCppName(label: string): string;
-    captureStoredDataFunctionLines(
+    captureManagedClosureLines(
         emitBody: () => void,
-    ): { lines: string[]; capture: string };
+    ): CapturedClosure;
     withRecordScopes<T>(owner: Value, work: () => T): T;
     compileRecordSetterValue(
         owner: Value,
@@ -97,8 +98,8 @@ export class PropertyAnimationTargetLowerer {
             const identity = context.callbackIdentity(setter, owner);
             const argument =
                 context.allocateTemporaryCppName("property_animation_value");
-            const { lines, capture } =
-                context.captureStoredDataFunctionLines(() =>
+            const closure =
+                context.captureManagedClosureLines(() =>
                     context.withRecordScopes(owner, () =>
                         context.compileRecordSetterValue(
                             owner,
@@ -115,9 +116,7 @@ export class PropertyAnimationTargetLowerer {
             return (
                 `bbl::PropertyAnimationTarget{` +
                 `bbl::PropertyAnimationTargetKind::callback, ` +
-                `${identity}u, ${capture}(float ${argument}) mutable {\n` +
-                `${lines.map((line) => `    ${line}`).join("\n")}\n` +
-                `}}`
+                `${identity}u, ${renderClosure(closure, `float ${argument}`)}}`
             );
         });
         return {

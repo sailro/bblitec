@@ -53,7 +53,7 @@ struct SpriteLayerGpu {
     std::size_t instance_buffer_bytes = 0;
     // Scene passes share an identical fixed-function/program pipeline. The
     // first compatible layer owns it; later layers only borrow it.
-    bool owns_pipeline = true;
+    OwnedSdlPipeline owned_pipeline;
     // Owners stay atlas-then-extras for updates and release. The bound list
     // follows the compacted fragment sidecar and may omit either.
     std::vector<SDL_GPUTextureSamplerBinding> textures;
@@ -138,7 +138,7 @@ inline SDL_GPUBlendFactor sprite_blend_factor(SpriteBlendFactor factor) {
  * ownership only to that first layer, mirroring the pin's shared cache for
  * the multi-layer case.
  */
-inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
+inline OwnedSdlPipeline create_sprite_layer_pipeline(
     SDL_GPUDevice* device,
     const SpriteBlendDescriptor& blend,
     bool scroll,
@@ -151,7 +151,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     SDL_GPUTextureFormat depth_format,
     SDL_GPUSampleCount sample_count,
     std::uint32_t instance_stride_bytes) {
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         device,
         has_depth
             ? (scroll ? "sprite_depth_uvscroll.vert" : "sprite_depth.vert")
@@ -166,7 +166,7 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
     // fragment uniform.
     const std::string fragment_name =
         sprite_fragment_shader_name(custom_shader);
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         device,
         fragment_name.c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -247,8 +247,8 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
         SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
 
     SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
-    pipeline_info.vertex_shader = vertex_shader;
-    pipeline_info.fragment_shader = fragment_shader;
+    pipeline_info.vertex_shader = vertex_shader.get();
+    pipeline_info.fragment_shader = fragment_shader.get();
     pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -272,16 +272,15 @@ inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
         pipeline_info.target_info.depth_stencil_format = depth_format;
         pipeline_info.target_info.has_depth_stencil_target = true;
     }
-    SDL_GPUGraphicsPipeline* pipeline = SDL_CreateGPUGraphicsPipeline(device, &pipeline_info);
+    OwnedSdlPipeline pipeline{
+        SDL_CreateGPUGraphicsPipeline(device, &pipeline_info), {device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline sprite");
     }
-    SDL_ReleaseGPUShader(device, vertex_shader);
-    SDL_ReleaseGPUShader(device, fragment_shader);
     return pipeline;
 }
 
-inline SDL_GPUGraphicsPipeline* create_sprite_layer_pipeline(
+inline OwnedSdlPipeline create_sprite_layer_pipeline(
     SDL_GPUDevice* device,
     const Sprite2DLayerRecord& layer,
     const PinnedStageSlots& slots,
@@ -382,16 +381,16 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
     gpu.layer_block_slot = stage_uniform_slot(slots, "L");
     gpu.fx_block_slot = stage_uniform_slot(slots, "fx");
     gpu.pipeline = shared_pipeline;
-    gpu.owns_pipeline = shared_pipeline == nullptr;
     gpu.pipeline_version = layer.pipeline_version;
     if (!gpu.pipeline) {
-        gpu.pipeline = create_sprite_layer_pipeline(
+        gpu.owned_pipeline = create_sprite_layer_pipeline(
             device,
             layer,
             slots,
             target_format,
             depth_format,
             sample_count);
+        gpu.pipeline = gpu.owned_pipeline.get();
     }
     SDL_GPUBufferCreateInfo buffer_info{};
     buffer_info.usage = SDL_GPU_BUFFERUSAGE_VERTEX;
@@ -435,9 +434,7 @@ inline SpriteLayerGpu build_sprite_layer_gpu(
 inline void release_sprite_layer_gpu(
     SDL_GPUDevice* device,
     SpriteLayerGpu& layer) {
-    if (layer.owns_pipeline && layer.pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(device, layer.pipeline);
-    }
+    layer.owned_pipeline.reset();
     if (layer.instances) SDL_ReleaseGPUBuffer(device, layer.instances);
     // The pass-level atlas cache owns both entries in slot zero. Extras
     // remain layer-owned and are released by the generic helper.
@@ -549,14 +546,14 @@ inline void rebuild_sprite_layer_pipeline(
     const std::string fragment_name =
         sprite_fragment_shader_name(layer.custom_shader);
     const PinnedStageSlots slots = read_pinned_stage_slots(fragment_name);
-    gpu.pipeline = create_sprite_layer_pipeline(
+    gpu.owned_pipeline = create_sprite_layer_pipeline(
         device,
         layer,
         slots,
         target_format,
         depth_format,
         sample_count);
-    gpu.owns_pipeline = true;
+    gpu.pipeline = gpu.owned_pipeline.get();
     gpu.pipeline_version = layer.pipeline_version;
 }
 
@@ -569,10 +566,6 @@ inline void sync_sprite_pass_pipelines(
         const Sprite2DLayerRecord& layer =
             engine.sprite_layers[gpu.layer.value];
         if (gpu.pipeline_version == layer.pipeline_version) continue;
-        if (gpu.owns_pipeline && gpu.pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(device, gpu.pipeline);
-        }
-        gpu.pipeline = nullptr;
         rebuild_sprite_layer_pipeline(
             device,
             layer,
@@ -865,11 +858,8 @@ inline void upload_scene_sprite_pass(
         // down only owners, then resolve the whole small cache again so a
         // changed layer can leave or join a compatibility class safely.
         for (SpriteLayerGpu& gpu : pass.layers) {
-            if (gpu.owns_pipeline && gpu.pipeline) {
-                SDL_ReleaseGPUGraphicsPipeline(device, gpu.pipeline);
-            }
+            gpu.owned_pipeline.reset();
             gpu.pipeline = nullptr;
-            gpu.owns_pipeline = false;
         }
         for (std::size_t index = 0; index < pass.handles.size(); ++index) {
             const Sprite2DLayerRecord& layer =

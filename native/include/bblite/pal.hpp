@@ -1,5 +1,13 @@
 #pragma once
 
+// CMake selects these for each build. Direct native fixtures use the full PAL.
+#ifndef BBLITE_VISUAL_CAPTURE
+#define BBLITE_VISUAL_CAPTURE 1
+#endif
+#ifndef BBLITE_HAS_IMAGE_DECODER
+#define BBLITE_HAS_IMAGE_DECODER 1
+#endif
+
 #include <cstdint>
 #include <optional>
 #include <string>

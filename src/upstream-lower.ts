@@ -30,6 +30,8 @@ import {
 } from "./lowering/shadow-lowerer.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
+import { pinnedTextureHeader } from "./lowering/pinned-texture.js";
+import { pinnedRgbdHeader } from "./lowering/pinned-rgbd.js";
 import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
@@ -912,6 +914,14 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_matrix.hpp",
             pinnedMatrixHeader(new LoweringContext(this.store)),
+        );
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_texture.hpp",
+            pinnedTextureHeader(new LoweringContext(this.store)),
+        );
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_rgbd.hpp",
+            pinnedRgbdHeader(new LoweringContext(this.store)),
         );
         // The pin's own inverse image processing, translated whole from its
         // declaration and cross-checked against the forward curve, so the

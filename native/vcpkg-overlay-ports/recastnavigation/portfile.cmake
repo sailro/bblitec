@@ -4,7 +4,7 @@ vcpkg_check_linkage(ONLY_STATIC_LIBRARY)
 # isaac-mason's recastnavigation fork at the commit its build.sh checks
 # out. The browser's navmesh triangulation, query and crowd behaviour
 # come from these sources compiled to WASM, so the native library links
-# the same commit — unpatched, because the reference is unpatched.
+# the same commit with the compatibility and component-selection patches below.
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO isaac-mason/recastnavigation
@@ -18,6 +18,7 @@ vcpkg_from_github(
         # triangle's walkability. Measured equal on the current corpus —
         # the patch pins the arithmetic so that stays true for any asset.
         walkable-threshold-libm.patch
+        optional-components.patch
 )
 
 # The wasm reference is emscripten's strict IEEE float; MSVC's default
@@ -29,9 +30,17 @@ if(VCPKG_TARGET_IS_WINDOWS)
     string(APPEND VCPKG_C_FLAGS " /fp:strict")
 endif()
 
+vcpkg_check_features(OUT_FEATURE_OPTIONS FEATURE_OPTIONS
+    FEATURES
+        crowd RECASTNAVIGATION_CROWD
+        tile-cache RECASTNAVIGATION_TILE_CACHE
+)
+
 vcpkg_cmake_configure(
     SOURCE_PATH "${SOURCE_PATH}"
     OPTIONS
+        ${FEATURE_OPTIONS}
+        -DRECASTNAVIGATION_DEBUG_UTILS=OFF
         -DRECASTNAVIGATION_DEMO=OFF
         -DRECASTNAVIGATION_TESTS=OFF
         -DRECASTNAVIGATION_EXAMPLES=OFF
@@ -52,6 +61,7 @@ file(REMOVE_RECURSE "${CURRENT_PACKAGES_DIR}/debug/include")
 # commit and under this port's own strict float, rather than handed to the
 # consumer as sources -- `tile-cache/CMakeLists.txt` beside this file says
 # what they are and why they live here.
+if("tile-cache" IN_LIST FEATURES)
 set(TILE_CACHE_SOURCE "${CURRENT_BUILDTREES_DIR}/tile-cache-src")
 file(
     COPY
@@ -80,5 +90,6 @@ file(
 include(\"\${CMAKE_CURRENT_LIST_DIR}/recastnavigation-tile-cache-targets.cmake\")
 "
 )
+endif()
 
 vcpkg_install_copyright(FILE_LIST "${SOURCE_PATH}/License.txt")

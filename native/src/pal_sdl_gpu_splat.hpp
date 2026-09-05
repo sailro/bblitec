@@ -76,7 +76,7 @@ struct SplatPass {
     SplatMeshHandle mesh{};
     std::uint32_t vertex_count = 0;
 
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    OwnedSdlPipeline pipeline;
     SDL_GPUBuffer* quad = nullptr;
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* order = nullptr;
@@ -131,7 +131,7 @@ inline SplatPass create_splat_pass(
     if (pass.uniform_slot < 0) {
         gpu_error("splat.vert kept no uniform block for the splat UBO");
     }
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         device,
         "splat.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -152,7 +152,7 @@ inline SplatPass create_splat_pass(
             "splat.frag kept a texture binding; the splat fragment stage "
             "binds none");
     }
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         device,
         "splat.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -181,8 +181,8 @@ inline SplatPass create_splat_pass(
     target.blend_state = blend_state_from(transparent_blend);
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     info.vertex_input_state.vertex_buffer_descriptions = buffers;
     info.vertex_input_state.num_vertex_buffers = 2;
     info.vertex_input_state.vertex_attributes = attributes;
@@ -202,10 +202,11 @@ inline SplatPass create_splat_pass(
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
+    pass.pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(device, &info), {device}};
     if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline splat");
-    SDL_ReleaseGPUShader(device, vertex_shader);
-    SDL_ReleaseGPUShader(device, fragment_shader);
+    vertex_shader.reset();
+    fragment_shader.reset();
 
     // The pin's own quad and indices, emitted as data from
     // gaussian-splatting-mesh.ts: the [-2, 2] half-extent is the domain
@@ -344,7 +345,7 @@ inline void record_splat_pass(
     double height) {
     if (pass.vertex_count == 0) return;
     const SplatMeshRecord& record = engine.splat_meshes[pass.mesh.value];
-    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
+    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
 
     upstream::SplatUniforms uniforms;
     upstream::write_splat_uniforms(
@@ -407,14 +408,11 @@ inline void release_splat_pass(SDL_GPUDevice* device, SplatPass& pass) {
     if (pass.order) SDL_ReleaseGPUBuffer(device, pass.order);
     if (pass.indices) SDL_ReleaseGPUBuffer(device, pass.indices);
     if (pass.quad) SDL_ReleaseGPUBuffer(device, pass.quad);
-    if (pass.pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(device, pass.pipeline);
-    }
+    pass.pipeline.reset();
     pass.sampler = nullptr;
     pass.order = nullptr;
     pass.indices = nullptr;
     pass.quad = nullptr;
-    pass.pipeline = nullptr;
 }
 
 } // namespace bbl::pal

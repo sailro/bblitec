@@ -15,6 +15,7 @@
 // rather than leaving to a transcription here.
 
 #include <bblite/pal_navigation.hpp>
+#include "pal_handle_identity.hpp"
 
 #ifndef BBLITE_HAS_NAV_TILE_CACHE
 #define BBLITE_HAS_NAV_TILE_CACHE 0
@@ -24,12 +25,16 @@
 #include <ChunkyTriMesh.h>
 #endif
 #include <DetourCommon.h>
+#if BBLITE_HAS_NAV_CROWD
 #include <DetourCrowd.h>
+#endif
 #include <DetourNavMesh.h>
 #include <DetourNavMeshBuilder.h>
 #include <DetourNavMeshQuery.h>
+#if BBLITE_HAS_NAV_TILE_CACHE
 #include <DetourTileCache.h>
 #include <DetourTileCacheBuilder.h>
+#endif
 #include <Recast.h>
 
 #if BBLITE_HAS_NAV_TILE_CACHE
@@ -147,7 +152,7 @@ public:
 
 /** One compressed tile layer, as `dtBuildTileCacheLayer` returns one. */
 struct TileCacheLayer {
-    unsigned char* data = nullptr;
+    std::unique_ptr<unsigned char, decltype(&dtFree)> data{nullptr, dtFree};
     int size = 0;
 };
 
@@ -168,9 +173,13 @@ using RecastOwner = std::unique_ptr<T, void (*)(T*)>;
 using HeightfieldOwner = RecastOwner<rcHeightfield>;
 using CompactHeightfieldOwner = RecastOwner<rcCompactHeightfield>;
 using HeightfieldLayerSetOwner = RecastOwner<rcHeightfieldLayerSet>;
+#if BBLITE_HAS_NAV_TILE_CACHE
 using TileCacheOwner = RecastOwner<dtTileCache>;
+#endif
 
-struct NavigationPluginState {
+} // namespace
+
+struct NavigationMeshState {
     std::unique_ptr<dtNavMesh, void (*)(dtNavMesh*)> nav_mesh{
         nullptr, [](dtNavMesh* mesh) { dtFreeNavMesh(mesh); }};
     std::unique_ptr<dtNavMeshQuery, void (*)(dtNavMeshQuery*)> query{
@@ -178,34 +187,40 @@ struct NavigationPluginState {
         [](dtNavMeshQuery* value) { dtFreeNavMeshQuery(value); }};
     dtQueryFilter filter;
 #if BBLITE_HAS_NAV_TILE_CACHE
-    /** Present only for a tile-cache build; the obstacle surface is what
-     *  it exists for, and its absence is what refuses that surface. */
-    TileCacheOwner tile_cache{nullptr, [](dtTileCache* v) {
-                                  dtFreeTileCache(v);
-                              }};
-    /** The three the cache holds raw pointers to, so they outlive it. */
+    // The cache borrows these three objects; reverse destruction releases it first.
     std::unique_ptr<TileCacheLinearAllocator> allocator;
     std::unique_ptr<TileCacheFastLzCompressor> compressor;
     std::unique_ptr<TileCacheDefaultMeshProcess> mesh_process;
+    TileCacheOwner tile_cache{nullptr, dtFreeTileCache};
 #endif
 };
 
-std::vector<std::unique_ptr<NavigationPluginState>>& plugins() {
-    static std::vector<std::unique_ptr<NavigationPluginState>> states;
-    return states;
-}
+struct NavigationPluginState {
+    const std::uint32_t identity = next_handle_identity<NavigationPluginState>();
+    std::shared_ptr<NavigationMeshState> mesh = std::make_shared<NavigationMeshState>();
+};
 
-NavigationPluginState& plugin_state(NavigationHandle handle) {
-    if (handle.value >= plugins().size() || !plugins()[handle.value]) {
+#if BBLITE_HAS_NAV_CROWD
+struct NavCrowdState {
+    const std::uint32_t identity = next_handle_identity<NavCrowdState>();
+    // Detour borrows the exact mesh this crowd was initialized against.
+    std::shared_ptr<NavigationMeshState> mesh;
+    RecastOwner<dtCrowd> crowd{nullptr, dtFreeCrowd};
+};
+#endif
+
+namespace {
+NavigationMeshState& plugin_state(const NavigationHandle& handle) {
+    if (!handle.ownership || handle.value != handle.ownership->identity) {
         throw std::runtime_error("Invalid navigation plugin handle.");
     }
-    return *plugins()[handle.value];
+    return *handle.ownership->mesh;
 }
 
 #if BBLITE_HAS_NAV_TILE_CACHE
 /** `_assertTileCache`: the obstacle surface needs a cache to act on. */
-NavigationPluginState& tile_cache_state(NavigationHandle handle) {
-    NavigationPluginState& state = plugin_state(handle);
+NavigationMeshState& tile_cache_state(NavigationHandle handle) {
+    NavigationMeshState& state = plugin_state(handle);
     if (!state.tile_cache) {
         throw std::runtime_error(
             "Navmesh has no tile cache. Build with `maxObstacles > 0` to "
@@ -215,23 +230,15 @@ NavigationPluginState& tile_cache_state(NavigationHandle handle) {
 }
 #endif
 
-/** One `Crowd`: `dtAllocCrowd()` and the navmesh it was init'd over. */
-struct NavCrowdState {
-    std::unique_ptr<dtCrowd, void (*)(dtCrowd*)> crowd{
-        nullptr, [](dtCrowd* value) { dtFreeCrowd(value); }};
-};
+#if BBLITE_HAS_NAV_CROWD
 
-std::vector<std::unique_ptr<NavCrowdState>>& crowds() {
-    static std::vector<std::unique_ptr<NavCrowdState>> states;
-    return states;
-}
-
-NavCrowdState& crowd_state(NavCrowdHandle handle) {
-    if (handle.value >= crowds().size() || !crowds()[handle.value]) {
+NavCrowdState& crowd_state(const NavCrowdHandle& handle) {
+    if (!handle.ownership || handle.value != handle.ownership->identity) {
         throw std::runtime_error("Invalid navigation crowd handle.");
     }
-    return *crowds()[handle.value];
+    return *handle.ownership;
 }
+#endif
 
 /** `NavMeshQuery.defaultQueryHalfExtents`. */
 constexpr float default_query_half_extents[3] = {1.0f, 1.0f, 1.0f};
@@ -367,15 +374,15 @@ RecastInputMesh prepare_input(const NavMeshGeometry& geometry) {
  * calls. The prefix is the arm's own failure spelling.
  */
 void install_query(
-    NavigationPluginState& state,
+    NavigationMeshState& state,
     dtNavMesh* nav_mesh,
     const std::string& failure_prefix) {
-    dtNavMeshQuery* query = dtAllocNavMeshQuery();
+    RecastOwner<dtNavMeshQuery> query{dtAllocNavMeshQuery(), dtFreeNavMeshQuery};
     if (!query || dtStatusFailed(query->init(nav_mesh, 2048))) {
         throw std::runtime_error(
             failure_prefix + "Failed to initialize navmesh query");
     }
-    state.query.reset(query);
+    state.query = std::move(query);
     state.filter = include_all_filter();
 }
 
@@ -394,16 +401,17 @@ void apply_generator_config_transforms(rcConfig& config) {
 } // namespace
 
 NavigationHandle navigation_create_plugin() {
-    plugins().push_back(std::make_unique<NavigationPluginState>());
-    return NavigationHandle{
-        static_cast<std::uint32_t>(plugins().size() - 1)};
+    auto state = std::make_shared<NavigationPluginState>();
+    return NavigationHandle{state->identity, std::move(state)};
 }
 
 void navigation_create_solo_nav_mesh(
     NavigationHandle plugin,
     const NavMeshGeometry& geometry,
     const NavMeshBuildParams& params) {
-    NavigationPluginState& state = plugin_state(plugin);
+    (void)plugin_state(plugin);
+    auto built = std::make_shared<NavigationMeshState>();
+    NavigationMeshState& state = *built;
 
     const RecastInputMesh input = prepare_input(geometry);
     const float* vertices = input.vertices;
@@ -423,7 +431,7 @@ void navigation_create_solo_nav_mesh(
         throw std::runtime_error("createNavMesh failed: " + message);
     };
 
-    rcHeightfield* heightfield = rcAllocHeightfield();
+    RecastOwner<rcHeightfield> heightfield{rcAllocHeightfield(), rcFreeHeightField};
     if (!heightfield ||
         !rcCreateHeightfield(&context, *heightfield, config.width,
                              config.height, config.bmin, config.bmax,
@@ -450,14 +458,14 @@ void navigation_create_solo_nav_mesh(
     rcFilterWalkableLowHeightSpans(&context, config.walkableHeight,
                                    *heightfield);
 
-    rcCompactHeightfield* compact = rcAllocCompactHeightfield();
+    RecastOwner<rcCompactHeightfield> compact{rcAllocCompactHeightfield(), rcFreeCompactHeightfield};
     if (!compact ||
         !rcBuildCompactHeightfield(&context, config.walkableHeight,
                                    config.walkableClimb, *heightfield,
                                    *compact)) {
         fail("Failed to build compact data");
     }
-    rcFreeHeightField(heightfield);
+    heightfield.reset();
 
     if (!rcErodeWalkableArea(&context, config.walkableRadius,
                              *compact)) {
@@ -471,7 +479,7 @@ void navigation_create_solo_nav_mesh(
         fail("Failed to build regions");
     }
 
-    rcContourSet* contours = rcAllocContourSet();
+    RecastOwner<rcContourSet> contours{rcAllocContourSet(), rcFreeContourSet};
     if (!contours ||
         !rcBuildContours(&context, *compact,
                          config.maxSimplificationError,
@@ -480,14 +488,14 @@ void navigation_create_solo_nav_mesh(
         fail("Failed to create contours");
     }
 
-    rcPolyMesh* poly_mesh = rcAllocPolyMesh();
+    RecastOwner<rcPolyMesh> poly_mesh{rcAllocPolyMesh(), rcFreePolyMesh};
     if (!poly_mesh ||
         !rcBuildPolyMesh(&context, *contours, config.maxVertsPerPoly,
                          *poly_mesh)) {
         fail("Failed to triangulate contours");
     }
 
-    rcPolyMeshDetail* detail_mesh = rcAllocPolyMeshDetail();
+    RecastOwner<rcPolyMeshDetail> detail_mesh{rcAllocPolyMeshDetail(), rcFreePolyMeshDetail};
     if (!detail_mesh ||
         !rcBuildPolyMeshDetail(&context, *poly_mesh, *compact,
                                config.detailSampleDist,
@@ -495,8 +503,8 @@ void navigation_create_solo_nav_mesh(
                                *detail_mesh)) {
         fail("Failed to build detail mesh");
     }
-    rcFreeCompactHeightfield(compact);
-    rcFreeContourSet(contours);
+    compact.reset();
+    contours.reset();
 
     // The generator's area/flag normalization, verbatim.
     for (int poly = 0; poly < poly_mesh->npolys; ++poly) {
@@ -590,10 +598,11 @@ void navigation_create_solo_nav_mesh(
                              &nav_data_size)) {
         fail("Failed to create Detour navmesh data");
     }
-    rcFreePolyMesh(poly_mesh);
-    rcFreePolyMeshDetail(detail_mesh);
+    poly_mesh.reset();
+    detail_mesh.reset();
 
-    dtNavMesh* nav_mesh = dtAllocNavMesh();
+    state.nav_mesh.reset(dtAllocNavMesh());
+    dtNavMesh* nav_mesh = state.nav_mesh.get();
     if (!nav_mesh ||
         dtStatusFailed(nav_mesh->init(nav_data, nav_data_size,
                                       DT_TILE_FREE_DATA))) {
@@ -601,8 +610,8 @@ void navigation_create_solo_nav_mesh(
         throw std::runtime_error(
             "createNavMesh failed: Failed to initialize solo NavMesh");
     }
-    state.nav_mesh.reset(nav_mesh);
     install_query(state, nav_mesh, "createNavMesh failed: ");
+    plugin.ownership->mesh = std::move(built);
 }
 
 #if BBLITE_HAS_NAV_TILE_CACHE
@@ -740,12 +749,12 @@ const float tcs = static_cast<float>(config.tileSize) * config.cs;
         header.hmax = static_cast<unsigned short>(layer.hmax);
 
         TileCacheLayer built;
-        if (dtStatusFailed(dtBuildTileCacheLayer(
-                compressor, &header, layer.heights,
-                layer.areas, layer.cons, &built.data, &built.size))) {
-            return {};
-        }
-        tiles.push_back(built);
+        unsigned char* data = nullptr;
+        const dtStatus status = dtBuildTileCacheLayer(compressor, &header, layer.heights,
+            layer.areas, layer.cons, &data, &built.size);
+        built.data.reset(data);
+        if (dtStatusFailed(status)) return {};
+        tiles.push_back(std::move(built));
     }
     return tiles;
 }
@@ -764,7 +773,9 @@ void navigation_create_tile_cache_nav_mesh(
     NavigationHandle plugin,
     const NavMeshGeometry& geometry,
     const NavMeshBuildParams& params) {
-    NavigationPluginState& state = plugin_state(plugin);
+    (void)plugin_state(plugin);
+    auto built = std::make_shared<NavigationMeshState>();
+    NavigationMeshState& state = *built;
 
     const RecastInputMesh input = prepare_input(geometry);
     const float* vertices = input.vertices;
@@ -865,12 +876,11 @@ void navigation_create_tile_cache_nav_mesh(
     nav_params.maxTiles = 1 << tile_bits;
     nav_params.maxPolys = 1 << poly_bits;
 
-    dtNavMesh* nav_mesh = dtAllocNavMesh();
+    state.nav_mesh.reset(dtAllocNavMesh());
+    dtNavMesh* nav_mesh = state.nav_mesh.get();
     if (!nav_mesh || dtStatusFailed(nav_mesh->init(&nav_params))) {
-        if (nav_mesh) dtFreeNavMesh(nav_mesh);
         fail("Failed to initialize tiled navmesh");
     }
-    state.nav_mesh.reset(nav_mesh);
 
     rcChunkyTriMesh chunky_mesh;
     if (!rcCreateChunkyTriMesh(vertices, input.triangles.data(),
@@ -895,10 +905,10 @@ void navigation_create_tile_cache_nav_mesh(
                 // cache is full and the tiles it already holds still make
                 // a navmesh. The data is the cache's on success and ours
                 // on failure, which is what the reference frees.
-                if (dtStatusFailed(tile_cache->addTile(
-                        layer.data, layer.size,
+                if (dtStatusSucceed(tile_cache->addTile(
+                        layer.data.get(), layer.size,
                         DT_COMPRESSEDTILE_FREE_DATA, nullptr))) {
-                    dtFree(layer.data);
+                    (void)layer.data.release();
                 }
             }
         }
@@ -914,10 +924,11 @@ void navigation_create_tile_cache_nav_mesh(
     }
     state.tile_cache = std::move(tile_cache);
     install_query(state, nav_mesh, "createNavMesh (tile cache) failed: ");
+    plugin.ownership->mesh = std::move(built);
 }
 
 /** The cache's own drain, on a state the caller already resolved. */
-void drain_obstacle_requests(NavigationPluginState& state) {
+void drain_obstacle_requests(NavigationMeshState& state) {
     bool up_to_date = false;
     while (!up_to_date) {
         state.tile_cache->update(0.0f, state.nav_mesh.get(), &up_to_date);
@@ -929,7 +940,7 @@ NavObstacleHandle navigation_add_box_obstacle(
     NavVec3 position,
     NavVec3 half_extents,
     float angle) {
-    NavigationPluginState& state = tile_cache_state(plugin);
+    NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     const float half[3] = {half_extents.x, half_extents.y, half_extents.z};
     dtObstacleRef reference = 0;
@@ -940,7 +951,7 @@ NavObstacleHandle navigation_add_box_obstacle(
             "another obstacle.");
     }
     drain_obstacle_requests(state);
-    return NavObstacleHandle{static_cast<std::uint32_t>(reference)};
+    return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
 }
 
 NavObstacleHandle navigation_add_cylinder_obstacle(
@@ -948,7 +959,7 @@ NavObstacleHandle navigation_add_cylinder_obstacle(
     NavVec3 position,
     float radius,
     float height) {
-    NavigationPluginState& state = tile_cache_state(plugin);
+    NavigationMeshState& state = tile_cache_state(plugin);
     const float centre[3] = {position.x, position.y, position.z};
     dtObstacleRef reference = 0;
     if (dtStatusFailed(state.tile_cache->addObstacle(
@@ -958,20 +969,22 @@ NavObstacleHandle navigation_add_cylinder_obstacle(
             "another obstacle.");
     }
     drain_obstacle_requests(state);
-    return NavObstacleHandle{static_cast<std::uint32_t>(reference)};
+    return NavObstacleHandle{static_cast<std::uint32_t>(reference), plugin.ownership->mesh};
 }
 
 void navigation_remove_obstacle(
     NavigationHandle plugin,
     NavObstacleHandle obstacle) {
-    NavigationPluginState& state = tile_cache_state(plugin);
-    state.tile_cache->removeObstacle(
-        static_cast<dtObstacleRef>(obstacle.value));
+    NavigationMeshState& state = tile_cache_state(plugin);
+    if (obstacle.value && obstacle.owner.lock().get() != &state) {
+        throw std::runtime_error("Navigation obstacle belongs to a different or replaced navmesh.");
+    }
+    state.tile_cache->removeObstacle(static_cast<dtObstacleRef>(obstacle.value));
     drain_obstacle_requests(state);
 }
 
 void navigation_update_obstacles(NavigationHandle plugin) {
-    NavigationPluginState& state = tile_cache_state(plugin);
+    NavigationMeshState& state = tile_cache_state(plugin);
     bool up_to_date = false;
     while (!up_to_date) {
         state.tile_cache->update(0.0f, state.nav_mesh.get(),
@@ -982,7 +995,7 @@ void navigation_update_obstacles(NavigationHandle plugin) {
 #endif
 
 NavDebugGeometry navigation_debug_geometry(NavigationHandle plugin) {
-    NavigationPluginState& state = plugin_state(plugin);
+    NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh) {
         throw std::runtime_error(
             "No navmesh generated. Call createNavMesh first.");
@@ -1094,7 +1107,7 @@ NavRaycastHit navigation_raycast(
     NavigationHandle plugin,
     float start_x, float start_y, float start_z,
     float end_x, float end_y, float end_z) {
-    NavigationPluginState& state = plugin_state(plugin);
+    NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh || !state.query) {
         throw std::runtime_error(
             "No navmesh generated. Call createNavMesh first.");
@@ -1132,7 +1145,7 @@ NavRaycastHit navigation_raycast(
 NavVec3 navigation_closest_point(
     NavigationHandle plugin,
     float x, float y, float z) {
-    NavigationPluginState& state = plugin_state(plugin);
+    NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh || !state.query) {
         throw std::runtime_error(
             "No navmesh generated. Call createNavMesh first.");
@@ -1165,7 +1178,7 @@ std::vector<NavVec3> navigation_compute_path(
     NavigationHandle plugin,
     NavVec3 start,
     NavVec3 end) {
-    NavigationPluginState& state = plugin_state(plugin);
+    NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh || !state.query) {
         throw std::runtime_error(
             "No navmesh generated. Call createNavMesh first.");
@@ -1236,28 +1249,23 @@ std::vector<NavVec3> navigation_compute_path(
 // new Crowd(navMesh, { maxAgents, maxAgentRadius }): allocCrowd then
 // init over the plugin's navmesh. dtCrowd builds its own query and
 // filters; the wrapper changes neither.
+#if BBLITE_HAS_NAV_CROWD
 NavCrowdHandle navigation_create_crowd(
     NavigationHandle plugin,
     int max_agents,
     float max_agent_radius) {
-    NavigationPluginState& state = plugin_state(plugin);
+    NavigationMeshState& state = plugin_state(plugin);
     if (!state.nav_mesh) {
         throw std::runtime_error(
             "No navmesh generated. Call createNavMesh first.");
     }
-    dtCrowd* crowd = dtAllocCrowd();
-    if (!crowd ||
-        !crowd->init(max_agents, max_agent_radius,
-                     state.nav_mesh.get())) {
-        dtFreeCrowd(crowd);
-        throw std::runtime_error(
-            "createNavCrowd failed: Failed to initialize crowd");
+    auto owned = std::make_shared<NavCrowdState>();
+    owned->mesh = plugin.ownership->mesh;
+    owned->crowd.reset(dtAllocCrowd());
+    if (!owned->crowd || !owned->crowd->init(max_agents, max_agent_radius, state.nav_mesh.get())) {
+        throw std::runtime_error("createNavCrowd failed: Failed to initialize crowd");
     }
-    auto owned = std::make_unique<NavCrowdState>();
-    owned->crowd.reset(crowd);
-    crowds().push_back(std::move(owned));
-    return NavCrowdHandle{
-        static_cast<std::uint32_t>(crowds().size() - 1)};
+    return NavCrowdHandle{owned->identity, std::move(owned)};
 }
 
 // Crowd.addAgent: the wrapper fills every dtCrowdAgentParams field it
@@ -1340,5 +1348,6 @@ bool navigation_agent_goto(
 void navigation_update_crowd(NavCrowdHandle crowd, float delta_seconds) {
     crowd_state(crowd).crowd->update(delta_seconds, nullptr);
 }
+#endif
 
 } // namespace bbl::pal

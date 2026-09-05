@@ -1,0 +1,62 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -12,6 +12,9 @@
+ option(RECASTNAVIGATION_DEMO "Build demo" ON)
+ option(RECASTNAVIGATION_TESTS "Build tests" ON)
+ option(RECASTNAVIGATION_EXAMPLES "Build examples" ON)
++option(RECASTNAVIGATION_CROWD "Build DetourCrowd" ON)
++option(RECASTNAVIGATION_TILE_CACHE "Build DetourTileCache" ON)
++option(RECASTNAVIGATION_DEBUG_UTILS "Build DebugUtils" ON)
+ option(RECASTNAVIGATION_DT_POLYREF64 "Use 64bit polyrefs instead of 32bit for Detour" OFF)
+ option(RECASTNAVIGATION_DT_VIRTUAL_QUERYFILTER "Use dynamic dispatch for dtQueryFilter in Detour to allow for custom filters" OFF)
+ 
+@@ -42,6 +45,16 @@
+ if(RECASTNAVIGATION_DT_VIRTUAL_QUERYFILTER)
+     set(PKG_CONFIG_CFLAGS "${PKG_CONFIG_CFLAGS} -DDT_VIRTUAL_QUERYFILTER")
+ endif()
++set(PKG_CONFIG_LIBS "-lRecast -lDetour")
++if(RECASTNAVIGATION_DEBUG_UTILS)
++    string(APPEND PKG_CONFIG_LIBS " -lDebugUtils")
++endif()
++if(RECASTNAVIGATION_CROWD)
++    string(APPEND PKG_CONFIG_LIBS " -lDetourCrowd")
++endif()
++if(RECASTNAVIGATION_TILE_CACHE)
++    string(APPEND PKG_CONFIG_LIBS " -lDetourTileCache")
++endif()
+ configure_file(
+         "${RecastNavigation_SOURCE_DIR}/recastnavigation.pc.in"
+         "${RecastNavigation_BINARY_DIR}/recastnavigation.pc"
+@@ -50,10 +63,16 @@
+ install(FILES "${RecastNavigation_BINARY_DIR}/recastnavigation.pc"
+         DESTINATION "${CMAKE_INSTALL_LIBDIR}/pkgconfig")
+ 
+-add_subdirectory(DebugUtils)
+ add_subdirectory(Detour)
+-add_subdirectory(DetourCrowd)
+-add_subdirectory(DetourTileCache)
+ add_subdirectory(Recast)
++if(RECASTNAVIGATION_DEBUG_UTILS)
++    add_subdirectory(DebugUtils)
++endif()
++if(RECASTNAVIGATION_CROWD)
++    add_subdirectory(DetourCrowd)
++endif()
++if(RECASTNAVIGATION_TILE_CACHE)
++    add_subdirectory(DetourTileCache)
++endif()
+ 
+ configure_package_config_file(
+     ${PROJECT_SOURCE_DIR}/recastnavigation-config.cmake.in
+diff --git a/recastnavigation.pc.in b/recastnavigation.pc.in
+--- a/recastnavigation.pc.in
++++ b/recastnavigation.pc.in
+@@ -6,5 +6,5 @@
+ Name: RecastNavigation
+ Description: RecastNavigation is a cross-platform navigation mesh construction toolset for games
+ Version: @PACKAGE_VERSION@
+-Libs: -L${libdir} -lRecast -lDetour -lDebugUtils -lDetourCrowd -lDetourTileCache
++Libs: -L${libdir} @PKG_CONFIG_LIBS@
+ Cflags: -I${includedir} -I${includedir}/recastnavigation @PKG_CONFIG_CFLAGS@
+\ No newline at end of file

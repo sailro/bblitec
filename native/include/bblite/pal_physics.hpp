@@ -27,30 +27,37 @@
  * `substituted-physics-solver` adaptation and measured by trajectory rather
  * than by MAD; `docs/fidelity.md` carries the contract.
  *
- * The handles are opaque integers rather than pointers so the surface stays
- * a C-shaped ABI — the same shape the WASM module exposes — and so a backend
- * can own its objects however it likes.
+ * Handles own opaque solver state. Worlds retain their members; bodies retain
+ * shapes and borrow their current world. No process-wide object registry is needed.
  */
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 namespace bbl::pal {
 
+struct PhysicsWorldState;
+struct PhysicsBodyState;
+struct PhysicsShapeState;
+
 /** `HP_World_Create`'s handle. */
 struct PhysicsWorldHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<PhysicsWorldState> ownership;
 };
 
 /** `HP_Body_Create`'s handle. */
 struct PhysicsBodyHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<PhysicsBodyState> ownership;
 };
 
 /** The handle every `HP_Shape_Create*` returns. */
 struct PhysicsShapeHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<PhysicsShapeState> ownership;
 };
 
 /**
@@ -212,11 +219,9 @@ void physics_world_remove_body(
  * `HP_World_Release`. The floating-origin module reclaims a region the
  * step after its last body migrated out.
  *
- * The handle is retired rather than recycled: a released world's slot
- * stays, so no later `physics_world_create` can hand back a value another
- * record still holds. Any body still in the world is taken out of it
- * first, which is what `_gcRegions` has already guaranteed by only
- * releasing an unused region.
+ * Release is idempotent. It detaches all bodies and frees the solver;
+ * retained body handles remain valid. Identities are never recycled, and
+ * the small closed state dies with its final owning handle.
  */
 void physics_world_release(PhysicsWorldHandle world);
 /** `HP_World_Step`, taking seconds exactly as the pin converts them. */

@@ -505,6 +505,7 @@ export function compileNavigationIntrinsic(
         }
 
         case "createNavCrowd": {
+            context.reachFeature("navigation:crowd", call);
             context.expectArgumentCount(call, 3, 3);
             const plugin = context.compileValue(call.arguments[0]!);
             context.expectKind(

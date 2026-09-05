@@ -394,11 +394,6 @@ export class ClassLowerer {
                     "A nullable-resource fallback factory requires optional storage for every constructor field.",
                 );
             }
-            const mainBus = this.context.allocateUserFunctionPrefix() +
-                "audio_main_bus";
-            this.context.emit(
-                `bbl::pal::AudioNodeHandle ${mainBus}{};`,
-            );
             this.context.emit("try {");
             this.context.increaseIndent();
             this.context.pushScope(
@@ -421,32 +416,10 @@ export class ClassLowerer {
                         value,
                         success!.arguments![index]!,
                     );
-                    if (value.audioMainBusCpp !== undefined) {
-                        this.context.emit(
-                            `${mainBus} = ${value.audioMainBusCpp};`,
-                        );
-                        target.audioMainBusCpp = mainBus;
-                    }
                     if (value.engineCpp !== undefined) {
                         target.engineCpp = value.engineCpp;
                     }
                 });
-                const audioContext = targets.find(
-                    (target) =>
-                        target.kind === "audio-context" ||
-                        target.kind === "audio-engine",
-                );
-                if (audioContext) {
-                    for (const target of targets) {
-                        if (
-                            target.kind === "audio-node" ||
-                            target.kind === "audio-buffer" ||
-                            target.kind === "audio-engine"
-                        ) {
-                            target.audioContextCpp = audioContext.cpp;
-                        }
-                    }
-                }
                 // The fallback construction above deliberately runs the
                 // constructor with null resources, so guarded setup such as
                 // RacerAudio's input-unlock listeners folds away there. The
@@ -1617,12 +1590,6 @@ export class ClassLowerer {
                     );
                     if (value.engineCpp !== undefined) {
                         output.engineCpp = value.engineCpp;
-                    }
-                    if (value.audioContextCpp !== undefined) {
-                        output.audioContextCpp = value.audioContextCpp;
-                    }
-                    if (value.audioMainBusCpp !== undefined) {
-                        output.audioMainBusCpp = value.audioMainBusCpp;
                     }
                 }
             } finally {

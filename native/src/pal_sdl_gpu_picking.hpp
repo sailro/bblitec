@@ -361,14 +361,14 @@ private:
                 "picking-billboard.vert kept neither the scene nor the "
                 "per-system block");
         }
-        SDL_GPUShader* vertex = load_shader(
+        auto vertex = load_shader(
             device_,
             vertex_stem,
             SDL_GPU_SHADERSTAGE_VERTEX,
             0,
             static_cast<std::uint32_t>(vertex_slots.uniforms.size()),
             "vs");
-        SDL_GPUShader* fragment = load_shader(
+        auto fragment = load_shader(
             device_,
             fragment_stem,
             SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -402,8 +402,8 @@ private:
         color_targets[1].format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
 
         SDL_GPUGraphicsPipelineCreateInfo info{};
-        info.vertex_shader = vertex;
-        info.fragment_shader = fragment;
+        info.vertex_shader = vertex.get();
+        info.fragment_shader = fragment.get();
         info.vertex_input_state.vertex_buffer_descriptions =
             &instance_buffer;
         info.vertex_input_state.num_vertex_buffers = 1;
@@ -429,8 +429,6 @@ private:
         info.target_info.has_depth_stencil_target = true;
         pipeline.pipeline =
             SDL_CreateGPUGraphicsPipeline(device_, &info);
-        SDL_ReleaseGPUShader(device_, vertex);
-        SDL_ReleaseGPUShader(device_, fragment);
         if (!pipeline.pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline picking-billboard");
         }

@@ -245,7 +245,7 @@ std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(Engine& en
         auto existing = engine.canvas_pointer_dispatcher.lock();
         if (existing && !existing->drags.empty()) return existing;
     }
-    auto state = std::make_shared<PointerDragDispatcher>();
+    auto state = js::make_gc_shared<PointerDragDispatcher>();
     state->engine = &engine;
     state->layer = layer;
     state->picker = create_gpu_picker(utility_layer_scene(engine, layer));
@@ -272,12 +272,14 @@ js::Callback<void(js::BorrowedEvent)> pointer_drag_listener(const std::shared_pt
         if (auto live = weak.lock()) drag_event(*live, kind, event.as<PlatformMouseEvent>());
     };
 }
-void set_pointer_drag_cleanup(const std::shared_ptr<PointerDragDispatcher>& state, std::function<void()> cleanup) {
+void set_pointer_drag_cleanup(const std::shared_ptr<PointerDragDispatcher>& state, js::Callback<void()> cleanup) {
     state->cleanup = std::move(cleanup);
 }
-std::function<void()> register_pointer_drag(const std::shared_ptr<PointerDragDispatcher>& state, PointerDragHandle drag) {
+js::Callback<void()> register_pointer_drag(const std::shared_ptr<PointerDragDispatcher>& state, PointerDragHandle drag) {
     state->drags.push_back(drag);
-    return [state, drag]() {
+    return js::make_closure(std::tuple{state, drag}, [](auto& captures) {
+        const auto& state = std::get<0>(captures);
+        const auto drag = std::get<1>(captures);
         auto& drags = state->drags;
         const auto found = std::find_if(drags.begin(), drags.end(), [drag](auto item) { return item.value == drag.value; });
         if (found == drags.end()) return;
@@ -289,7 +291,7 @@ std::function<void()> register_pointer_drag(const std::shared_ptr<PointerDragDis
             if (cleanup) cleanup();
             dispose_picker(*state->engine, state->picker);
         }
-    };
+    });
 }
 `;
 }

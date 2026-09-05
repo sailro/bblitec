@@ -172,7 +172,7 @@ test("builds vertex-only custom shader pipelines for shadow targets", () => {
     );
     assert.match(
         sdl,
-        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*depth_only_fragment_shader;[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[variant\]/,
+        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*depth_only_fragment_shader\.get\(\);[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[variant\]/,
     );
     assert.match(
         sdl,

@@ -137,7 +137,7 @@ test("keeps a class nothing stores as a compile-time record", () => {
     assert.doesNotMatch(result.cpp, /make_ref<bblscene::Counter/);
     assert.match(
         result.cpp,
-        /auto v_bblite_class_field_total_\d+ = std::make_shared<double>\(0\.0\)/,
+        /auto v_bblite_class_field_total_\d+ = bbl::js::make_gc_shared<double>\(0\.0\)/,
     );
 });
 
@@ -155,8 +155,13 @@ test("stores a class an array element demands as a shared object", () => {
     // things generation owns -- the renderer and the workspace.
     assert.match(
         result.cpp,
-        /struct PartData \{\s*bool locked;\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed;\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*\};/,
+        /struct PartData \{\s*bool locked;\s*bbl::js::Tuple<3> _size;\s*bblscene::\w+ _position;\s*bblscene::Quat _quat;\s*bool _destroyed;\s*bbl::js::Set<bbl::js::Callback<void\(\)>> _changeHandlers;\s*friend void gc_trace_edges\(/,
     );
+    const trace = result.cpp.match(/friend void gc_trace_edges\(\[\[maybe_unused\]\] const PartData& record,[^]*?\n\s*\}/)?.[0];
+    assert.ok(trace);
+    for (const field of ["locked", "_size", "_position", "_quat", "_destroyed", "_changeHandlers"]) {
+        assert.ok(trace.includes(`visitor(record.${field});`), `${field} participates in managed ownership tracing`);
+    }
     assert.match(result.cpp, /using Part = bbl::js::Ref<PartData>;/);
     assert.match(
         result.cpp,
@@ -202,7 +207,7 @@ test("keeps object identity and null on stored instances", () => {
     // A null instance is the empty reference, not a second state beside it.
     assert.match(
         result.cpp,
-        /auto v_\w+ = std::make_shared<bblscene::Part>\(bblscene::Part\{\}\);/,
+        /auto v_\w+ = bbl::js::make_gc_shared<bblscene::Part>\(bblscene::Part\{\}\);/,
     );
     assert.doesNotMatch(result.cpp, /Nullable<bblscene::Part>/);
 });
@@ -480,7 +485,7 @@ test("emits the one constructor write a hoisted field was proven from", () => {
     // The field names the caller's renderer, and the constructor's own
     // `this._renderer = renderer` emitted nothing beside it.
     const local =
-        /auto (v_bblite_class_field_freed_\d+) = std::make_shared<double>\(0\.0\);/.exec(
+        /auto (v_bblite_class_field_freed_\d+) = bbl::js::make_gc_shared<double>\(0\.0\);/.exec(
         result.cpp,
     )?.[1];
     assert.ok(local);

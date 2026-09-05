@@ -27,6 +27,8 @@
 
 namespace bbl {
 
+namespace pal { class AudioSession; }
+
 namespace js {
 template <typename T>
 class Array;
@@ -941,7 +943,8 @@ struct PropertyAnimationTarget {
     PropertyAnimationTargetKind kind =
         PropertyAnimationTargetKind::mesh;
     std::uint32_t index = 0;
-    std::function<void(float)> write_scalar;
+    js::Callback<void(float)> write_scalar;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(write_scalar); }
 };
 
 enum class PropertyAnimationInterpolation {
@@ -2531,6 +2534,7 @@ struct PropertyAnimationGroupRecord {
     bool playing = true;
     /** `AnimationGroup.weight`: the mixer's contribution, default 1. */
     float weight = 1.0f;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(targets); }
 };
 
 using PropertyAnimationGroup =
@@ -2547,6 +2551,7 @@ struct AnimationWeightFadeTarget {
         AnimationWeightFadeTargetKind::property;
     PropertyAnimationGroup property_group;
     AnimationGroupHandle gltf_group{};
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(property_group); }
 
     static AnimationWeightFadeTarget from_property(
         PropertyAnimationGroup group) {
@@ -2575,6 +2580,7 @@ struct PropertyAnimationWeightFade {
     float to = 0.0f;
     float duration_ms = 0.0f;
     float elapsed_ms = 0.0f;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
 };
 
 /**
@@ -2601,6 +2607,7 @@ struct PropertyAnimationBucket {
     bool has_reference = false;
     std::array<float, 4> reference{
         0.0f, 0.0f, 0.0f, 1.0f};
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(target); }
 };
 
 /**
@@ -2655,6 +2662,11 @@ struct PropertyAnimationManagerRecord {
     /** The mixers' per-manager scratch, upstream's `scratchByManager`. */
     std::vector<PropertyAnimationBucket> buckets;
     std::vector<BlendedClip> blend_scratch;
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(groups);
+        visitor(weight_fades);
+        visitor(buckets);
+    }
 };
 
 using PropertyAnimationManager =
@@ -3801,6 +3813,9 @@ struct BoundingBoxGizmoRecord {
 };
 
 struct Engine {
+    /** Generated subsystem state; callbacks hold weak references back to it. */
+    std::vector<std::shared_ptr<void>> native_resource_owners;
+    std::shared_ptr<pal::AudioSession> audio_session;
     EngineOptions options{};
     /** Logical CSS-pixel extent exposed by renderCanvas.clientWidth/Height. */
     double canvas_client_width = 1280.0;
@@ -3819,12 +3834,6 @@ struct Engine {
      * capture it was asked for.
      */
     std::vector<std::function<bool()>> capture_ready;
-    /**
-     * Heap storage for recursive callbacks that escape their source scope.
-     * Timer lambdas capture the referenced function object, so retaining the
-     * object here preserves JavaScript closure lifetime without a self-cycle.
-     */
-    std::vector<std::shared_ptr<void>> native_callback_owners;
     /**
      * `setTimeout(callback, 0)`: callbacks queued to run once, after the
      * frame that queued them. Non-zero waits live in `timeout_callbacks`;
@@ -4387,8 +4396,8 @@ struct SceneState {
      */
     ClusteredLightContainerHandle clustered_lights{};
     SnapshotList<js::Callback<void(float)>> before_render;
-    std::vector<std::function<void()>> disposables;
-    std::vector<std::function<void(float)>> animation_seekers;
+    std::vector<js::Callback<void()>> disposables;
+    std::vector<js::Callback<void(float)>> animation_seekers;
     /**
      * Whether this scene already contributed the seeker that reaches the
      * engine's animation managers. Registration is idempotent upstream,
@@ -4397,7 +4406,7 @@ struct SceneState {
     bool seeks_animation_managers = false;
     /** The same, for the baked meshes this scene's registration reaches. */
     bool seeks_vat = false;
-    std::vector<std::function<void()>> deferred_builders;
+    std::vector<js::Callback<void()>> deferred_builders;
     EnvironmentState environment;
     float fixed_delta_ms = 0.0f;
     /** Mesh, light, or shadow changes that require renderer state rebuild. */
@@ -4422,6 +4431,12 @@ struct SceneState {
      * positive distance — so the absent case needs no second flag.
      */
     Vec4 clip_plane{};
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        visitor(before_render);
+        visitor(disposables);
+        visitor(animation_seekers);
+        visitor(deferred_builders);
+    }
 };
 
 /**
@@ -4452,11 +4467,11 @@ struct Scene {
     std::vector<SplatMeshHandle>& splat_meshes;
     ClusteredLightContainerHandle& clustered_lights;
     SnapshotList<js::Callback<void(float)>>& before_render;
-    std::vector<std::function<void()>>& disposables;
-    std::vector<std::function<void(float)>>& animation_seekers;
+    std::vector<js::Callback<void()>>& disposables;
+    std::vector<js::Callback<void(float)>>& animation_seekers;
     bool& seeks_animation_managers;
     bool& seeks_vat;
-    std::vector<std::function<void()>>& deferred_builders;
+    std::vector<js::Callback<void()>>& deferred_builders;
     EnvironmentState& environment;
     float& fixed_delta_ms;
     std::uint64_t& render_topology_version;
@@ -4471,7 +4486,9 @@ struct Scene {
     Vec4& clip_plane;
 
     Scene()
-        : Scene(std::make_shared<SceneState>()) {}
+        : Scene(js::make_gc_shared<SceneState>()) {}
+
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(state); }
 
     Scene(const Scene& other)
         : Scene(other.state) {}
@@ -4568,7 +4585,8 @@ struct PointerDragDispatcher {
     Vec3d last_point{};
     Vec3d start_point{};
     bool pick_pending = false;
-    std::function<void()> cleanup;
+    js::Callback<void()> cleanup;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(cleanup); }
 };
 void pointer_drag_hover(Engine& engine, PointerDragHandle drag, bool hovered);
 
@@ -4582,18 +4600,19 @@ inline bool pointer_drag_state(
 
 std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(
     Engine&, UtilityLayerHandle, bool host_canvas);
-std::function<void()> register_pointer_drag(
+js::Callback<void()> register_pointer_drag(
     const std::shared_ptr<PointerDragDispatcher>&, PointerDragHandle);
 js::Callback<void(js::BorrowedEvent)> pointer_drag_listener(
     const std::shared_ptr<PointerDragDispatcher>&, unsigned int event);
 void set_pointer_drag_cleanup(
-    const std::shared_ptr<PointerDragDispatcher>&, std::function<void()>);
+    const std::shared_ptr<PointerDragDispatcher>&, js::Callback<void()>);
 
 /** A scene-less rendering context that owns only an ordered task graph. */
 struct FrameGraphContext {
     Engine* engine = nullptr;
     std::vector<TaskHandle> tasks;
-    std::vector<std::function<void(float)>> updates;
+    std::vector<js::Callback<void(float)>> updates;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(updates); }
 };
 
 // No member defaults: generation fills every field from the pin's own
@@ -5742,10 +5761,10 @@ void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
 void on_before_render(
     Scene& scene,
-    std::function<void(float)> callback);
+    js::Callback<void(float)> callback);
 void on_scene_dispose(
     Scene& scene,
-    std::function<void()> callback);
+    js::Callback<void()> callback);
 void on_key_down(
     Engine& engine,
     std::size_t identity,
@@ -6377,7 +6396,7 @@ void dispose_scene(Scene& scene);
 void rebuild_scene_renderables(Scene& scene);
 void on_frame_graph_update(
     FrameGraphContext& context,
-    std::function<void(float)> callback);
+    js::Callback<void(float)> callback);
 void register_frame_graph_context(FrameGraphContext& context);
 /**
  * `registerSceneWithShadowSupport`: the ordinary registration plus the

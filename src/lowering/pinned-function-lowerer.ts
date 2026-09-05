@@ -104,6 +104,8 @@ export interface PinnedFunctionParameter {
      * the seam silently; only what is behind the guard goes untranslated.
      */
     absent?: true;
+    /** Compile-time parameter binding; no native argument is emitted. */
+    specialized?: true;
 }
 
 const parameterKinds: Readonly<
@@ -514,6 +516,10 @@ export function lowerPinnedFunction(
                 type: kind.bindingType,
             },
         );
+        if (spec.specialized) {
+            if (!spec.binding) context.contractError(parameter, "A specialized parameter requires a binding.");
+            return;
+        }
         const declared = spec.cppType
             ? `${spec.mutableRecord ? "" : "const "}${spec.cppType}& ` +
               `${spec.cpp}`

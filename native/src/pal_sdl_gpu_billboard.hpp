@@ -40,12 +40,12 @@ namespace bbl::pal {
 
 /** One billboard system, as GPU resources. */
 struct BillboardPass {
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    OwnedSdlPipeline pipeline;
     // The mode-4 wrapper's second pipeline: a stock Add pass over the same
     // instances, built only when the descriptor carries two passes. Its
     // fragment is the stock one, so it binds the same textures and the same
     // system block at that stage's own slots.
-    SDL_GPUGraphicsPipeline* add_pipeline = nullptr;
+    OwnedSdlPipeline add_pipeline;
     int add_system_block_slot = -1;
     SDL_GPUBuffer* index_buffer = nullptr;
     SDL_GPUBuffer* instances = nullptr;
@@ -119,7 +119,7 @@ inline BillboardPass create_billboard_pass(
     // backends (`billboard_draw_plan`, pal_gpu_shared.hpp); this side
     // keeps only its API mechanics.
     const BillboardDrawPlan plan = billboard_draw_plan(system);
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         device,
         plan.vertex_stem,
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -131,7 +131,7 @@ inline BillboardPass create_billboard_pass(
         read_pinned_stage_slots(plan.fragment_stem);
     pass.system_block_slot = stage_uniform_slot(slots, "billboards");
     pass.fx_block_slot = stage_uniform_slot(slots, "fx");
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         device,
         plan.fragment_stem,
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -183,8 +183,8 @@ inline BillboardPass create_billboard_pass(
         SDL_GPU_COLORCOMPONENT_B | SDL_GPU_COLORCOMPONENT_A;
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     info.vertex_input_state.vertex_buffer_descriptions =
         &instance_buffer;
     info.vertex_input_state.num_vertex_buffers = 1;
@@ -214,10 +214,11 @@ inline BillboardPass create_billboard_pass(
     info.target_info.num_color_targets = 1;
     info.target_info.depth_stencil_format = depth_format;
     info.target_info.has_depth_stencil_target = true;
-    pass.pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
+    pass.pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(device, &info), {device}};
     if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline");
-    SDL_ReleaseGPUShader(device, vertex_shader);
-    SDL_ReleaseGPUShader(device, fragment_shader);
+    vertex_shader.reset();
+    fragment_shader.reset();
 
     if (plan.particle_passes == 2) {
         // The mode-4 second pass: the STOCK program, the Add blend the
@@ -239,14 +240,14 @@ inline BillboardPass create_billboard_pass(
             read_pinned_stage_slots("billboard.frag");
         pass.add_system_block_slot =
             stage_uniform_slot(add_slots, "billboards");
-        SDL_GPUShader* add_vertex = load_shader(
+        auto add_vertex = load_shader(
             device,
             "billboard.vert",
             SDL_GPU_SHADERSTAGE_VERTEX,
             0,
             1u,
             "mainVertex");
-        SDL_GPUShader* add_fragment = load_shader(
+        auto add_fragment = load_shader(
             device,
             "billboard.frag",
             SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -254,16 +255,14 @@ inline BillboardPass create_billboard_pass(
             static_cast<std::uint32_t>(add_slots.uniforms.size()),
             "mainFragment");
         SDL_GPUGraphicsPipelineCreateInfo add_info = info;
-        add_info.vertex_shader = add_vertex;
-        add_info.fragment_shader = add_fragment;
+        add_info.vertex_shader = add_vertex.get();
+        add_info.fragment_shader = add_fragment.get();
         add_info.target_info.color_target_descriptions = &add_target;
-        pass.add_pipeline =
-            SDL_CreateGPUGraphicsPipeline(device, &add_info);
+        pass.add_pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(device, &add_info), {device}};
         if (!pass.add_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline");
         }
-        SDL_ReleaseGPUShader(device, add_vertex);
-        SDL_ReleaseGPUShader(device, add_fragment);
     }
 
     SDL_GPUBufferCreateInfo instances{};
@@ -359,7 +358,7 @@ inline void record_billboard_pass(
     if (!system.visible || system.count == 0) {
         return;
     }
-    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
+    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
 
     BillboardSceneUniforms scene_uniforms{};
     scene_uniforms.view_projection = view_projection;
@@ -438,7 +437,7 @@ inline void record_billboard_pass(
         // pipeline and its own system block before drawing the same
         // instances again. It restores the primary pipeline afterwards, so a
         // caller caching the bound pipeline stays correct.
-        SDL_BindGPUGraphicsPipeline(render_pass, pass.add_pipeline);
+        SDL_BindGPUGraphicsPipeline(render_pass, pass.add_pipeline.get());
         SDL_BindGPUFragmentSamplers(
             render_pass, 0, pass.textures.data(), 1);
         // The stock fragment keeps the block at the same slot the Multiply
@@ -459,7 +458,7 @@ inline void record_billboard_pass(
             0,
             0,
             0);
-        SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
+        SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
     }
 }
 
@@ -470,12 +469,6 @@ inline void release_billboard_pass(
     if (pass.instances) SDL_ReleaseGPUBuffer(device, pass.instances);
     if (pass.index_buffer) {
         SDL_ReleaseGPUBuffer(device, pass.index_buffer);
-    }
-    if (pass.pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(device, pass.pipeline);
-    }
-    if (pass.add_pipeline) {
-        SDL_ReleaseGPUGraphicsPipeline(device, pass.add_pipeline);
     }
     pass = BillboardPass{};
 }

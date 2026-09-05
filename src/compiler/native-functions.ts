@@ -28,6 +28,7 @@ export interface NativeFunctionContext {
         identifier: ts.Identifier,
     ): Value | undefined;
     compileValue(expression: ts.Expression): Value;
+    useNativeValue(value: Value): void;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -138,7 +139,9 @@ function valueIsPlainLeaf(
         ...Object.keys(expectedRecord),
     ]);
     for (const key of keys) {
-        if (key === "dataType" || key === "nativeLvalue") continue;
+        if (key === "dataType" || key === "nativeLvalue" ||
+            key === "sharedStorageCpp" || key === "nativeCaptures" ||
+            key === "nativeCompanionCaptures") continue;
         if (actualRecord[key] !== expectedRecord[key]) {
             return false;
         }
@@ -559,6 +562,7 @@ export class NativeFunctionLowerer {
             if (!valueIsPlainLeaf(bound, expected)) {
                 return undefined;
             }
+            this.context.useNativeValue(bound);
             fieldArguments.push(bound.cpp);
         }
         return fieldArguments;

@@ -46,7 +46,7 @@ struct PostProcessProgram {
     SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
     std::uint32_t alpha_mode = 0;
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    OwnedSdlPipeline pipeline;
     PinnedStageSlots vertex_slots;
     PinnedStageSlots fragment_slots;
 };
@@ -132,11 +132,6 @@ void release_graph(State& state) {
     }
     state.targets.clear();
 #if BBLITE_HAS_POST_PROCESS
-    for (PostProcessProgram& program : state.programs) {
-        if (program.pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.gpu.device, program.pipeline);
-        }
-    }
     state.programs.clear();
     state.post_processes.clear();
     if (state.present_copy) {
@@ -287,14 +282,14 @@ PostProcessProgram build_post_process_program(
     const std::string fragment_name = stem + ".frag";
     program.vertex_slots = read_pinned_stage_slots(vertex_name);
     program.fragment_slots = read_pinned_stage_slots(fragment_name);
-    SDL_GPUShader* vertex = load_shader(
+    auto vertex = load_shader(
         state.gpu.device,
         vertex_name.c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
         static_cast<Uint32>(program.vertex_slots.textures.size()),
         static_cast<Uint32>(program.vertex_slots.uniforms.size()),
         "postProcessVertex");
-    SDL_GPUShader* fragment = load_shader(
+    auto fragment = load_shader(
         state.gpu.device,
         fragment_name.c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -307,17 +302,16 @@ PostProcessProgram build_post_process_program(
     target.format = format;
     if (blend.enabled) target.blend_state = blend_state_from(blend.factors);
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex;
-    info.fragment_shader = fragment;
+    info.vertex_shader = vertex.get();
+    info.fragment_shader = fragment.get();
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.multisample_state.sample_count = samples;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
-    program.pipeline = SDL_CreateGPUGraphicsPipeline(state.gpu.device, &info);
-    SDL_ReleaseGPUShader(state.gpu.device, vertex);
-    SDL_ReleaseGPUShader(state.gpu.device, fragment);
+    program.pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(state.gpu.device, &info), {state.gpu.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }
@@ -442,7 +436,7 @@ void record_post_process(
     target.store_op = SDL_GPU_STOREOP_STORE;
     SDL_GPURenderPass* render_pass =
         SDL_BeginGPURenderPass(command, &target, 1, nullptr);
-    SDL_BindGPUGraphicsPipeline(render_pass, program.pipeline);
+    SDL_BindGPUGraphicsPipeline(render_pass, program.pipeline.get());
     if (pass.has_viewport) {
         const PixelViewport rect = upstream::resolve_post_process_viewport(
             pass.viewport, output_width, output_height);

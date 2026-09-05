@@ -49,12 +49,13 @@ test("stores reached scene-disposal callbacks in the native scene contract", () 
     const runtime = source("native/include/bblite/runtime.hpp");
     assert.match(
         runtime,
-        /struct SceneState \{[\s\S]{0,5000}std::vector<std::function<void\(\)>> disposables;/,
+        /struct SceneState \{[\s\S]{0,5000}std::vector<js::Callback<void\(\)>> disposables;/,
     );
     assert.match(
         runtime,
-        /void on_scene_dispose\(\s*Scene& scene,\s*std::function<void\(\)> callback\);/,
+        /void on_scene_dispose\(\s*Scene& scene,\s*js::Callback<void\(\)> callback\);/,
     );
+    assert.match(runtime, /visitor\(disposables\);/);
 });
 
 test("preserves SceneContext identity across native value copies", () => {
@@ -854,7 +855,7 @@ test("shares compatible depth-hosted sprite pipelines within a scene pass", () =
         /left_plan\.instance_stride_bytes ==\s*right_plan\.instance_stride_bytes/,
     );
     assert.match(sdl, /shared_pipeline = pass\.layers\[previous\]\.pipeline/);
-    assert.match(sdl, /gpu\.owns_pipeline = shared_pipeline == nullptr/);
+    assert.match(sdl, /gpu\.pipeline = shared_pipeline;[\s\S]{0,100}if \(!gpu\.pipeline\) \{\s*gpu\.owned_pipeline = create_sprite_layer_pipeline\([\s\S]{0,450}gpu\.pipeline = gpu\.owned_pipeline\.get\(\)/);
     assert.match(
         dawn,
         /shared_pipeline = pass\.layers\[previous\]\.pipeline/,
@@ -1340,8 +1341,9 @@ test("keeps image decoding available to standalone effect renderers", () => {
     const decoderGuard =
         /#if BBLITE_HAS_PBR_RENDERER \|\| BBLITE_HAS_SPRITE_RENDERER \|\| \\\s+BBLITE_HAS_EFFECT_RENDERER/;
 
-    assert.equal(platform.match(new RegExp(decoderGuard, "g"))?.length, 3);
+    assert.equal(platform.match(new RegExp(decoderGuard, "g"))?.length, 2);
     assert.match(platform, /pal::DecodedImage pal::decode_image/);
+    assert.match(platform, /#if BBLITE_HAS_IMAGE_DECODER\s+#include <SDL3_image\/SDL_image\.h>/);
 });
 
 test("shares large texture payloads and preserves tuple reference identity", () => {
@@ -2054,7 +2056,7 @@ test("keeps reached Havok body defaults and convex mass frames in the Bullet PAL
     );
     assert.match(
         bullet,
-        /void clamp_body_velocity\(const BodyEntry& entry\)[\s\S]{0,400}body_speed_limit\(entry\)/,
+        /void clamp_body_velocity\(const PhysicsBodyState& entry\)[\s\S]{0,400}body_speed_limit\(entry\)/,
     );
     assert.match(
         bullet,
@@ -2080,7 +2082,7 @@ test("releases Dawn mesh dependents before their owned resources", () => {
         "wgpuBindGroupRelease(binding.textures)",
     );
     const drawStateRelease = releaseMesh.indexOf(
-        "release_dawn_draw_states(mesh.pinned_states)",
+        "mesh.pinned_states.clear()",
     );
     const textureRelease = releaseMesh.indexOf(
         "wgpuTextureViewRelease(mesh.owned_views[slot])",

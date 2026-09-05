@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/js_gc.hpp>
+
 #include <initializer_list>
 #include <memory>
 #include <utility>
@@ -23,7 +25,9 @@ class SnapshotList {
 
     SnapshotList() = default;
     SnapshotList(std::initializer_list<T> values)
-        : entries_(std::make_shared<Storage>(values)) {}
+        : entries_(js::make_gc_shared<Storage>(values)) {}
+
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(entries_); }
 
     [[nodiscard]] bool empty() const { return values().empty(); }
     [[nodiscard]] std::size_t size() const { return values().size(); }
@@ -59,8 +63,8 @@ class SnapshotList {
         return entries_ ? *entries_ : empty;
     }
     Storage& writable() {
-        if (!entries_) entries_ = std::make_shared<Storage>();
-        else if (entries_.use_count() != 1) entries_ = std::make_shared<Storage>(*entries_);
+        if (!entries_) entries_ = js::make_gc_shared<Storage>();
+        else if (entries_.use_count() != 1) entries_ = js::make_gc_shared<Storage>(*entries_);
         return *entries_;
     }
     std::shared_ptr<Storage> entries_;

@@ -30,6 +30,7 @@ interface CompiledPostProcessComposite {
 
 export interface EngineIntrinsicContext
     extends IntrinsicCallContext {
+    emit(line: string): void;
     fail(node: ts.Node, message: string): never;
     expectSameEngine(
         left: Value,
@@ -198,17 +199,19 @@ export function compileEngineIntrinsic(
                 ? context.objectProperty(options, "update")
                 : undefined;
             context.reachFeature("renderer:frame-graph", call);
+            const nativeContext = context.allocateTemporaryCppName("frame_graph");
+            context.emit(`auto ${nativeContext} = bbl::create_frame_graph_context(${surface.cpp});`);
+            if (update) {
+                context.emit(`bbl::on_frame_graph_update(${nativeContext}, ${context.compileFrameCallback(update)});`);
+            }
             return {
                 kind: "frame-graph-context",
-                cpp: `bbl::create_frame_graph_context(${surface.cpp})`,
+                cpp: nativeContext,
                 engineCpp: surface.engineCpp ?? surface.cpp,
                 ...(surface.msaaSamples
                     ? { msaaSamples: surface.msaaSamples }
                     : {}),
                 defaultRenderTask: false,
-                ...(update
-                    ? { frameGraphUpdateCpp: context.compileFrameCallback(update) }
-                    : {}),
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,

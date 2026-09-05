@@ -6,6 +6,7 @@ import ts from "typescript";
 import { validateObjectProperties } from "../option-helpers.js";
 import type { Feature, Value, ValueKind } from "../types.js";
 import type { DataType } from "../data-types.js";
+import type { CapturedClosure, NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { compilePointerDragRegistration, pointerDispatcherCpp } from "../pointer-drag.js";
 
@@ -32,7 +33,9 @@ export interface GizmoIntrinsicContext
     withRecordScopes<T>(owner: Value, work: () => T): T;
     compileCallbackWithValues(declaration: NonNullable<Value["callbackDeclaration"]>, arguments_: readonly Value[], node: ts.Node, discard?: boolean): Value;
     emitDiscardedValue(value: Value): void;
-    captureStoredDataFunctionLines(work: () => void): { lines: string[]; capture: string };
+    captureManagedClosureLines(work: () => void): CapturedClosure;
+    registerNativeBinding(name: string, borrowed?: boolean): NativeCaptureBinding;
+    useNativeValue(value: Value): void;
     requireEngine(value: Value, node: ts.Node): string;
     requireDefaultEngine(node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;

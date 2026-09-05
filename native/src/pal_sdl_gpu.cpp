@@ -32,6 +32,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <map>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -60,7 +61,6 @@
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
-#include <SDL3_image/SDL_image.h>
 #include "pal_sdl_gpu_shared.hpp"
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
 #include "RmlUi_SDL_GPU/ShadersCompiledSPV.h"
@@ -718,7 +718,7 @@ struct GpuPostProcessProgram {
     SDL_GPUTextureFormat format = SDL_GPU_TEXTUREFORMAT_INVALID;
     SDL_GPUSampleCount samples = SDL_GPU_SAMPLECOUNT_1;
     std::uint32_t alpha_mode = 0;
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    OwnedSdlPipeline pipeline;
     PinnedStageSlots vertex_slots;
     PinnedStageSlots fragment_slots;
 };
@@ -895,7 +895,7 @@ struct GpuState {
     // One pipeline per (variant, pipeline kind): the kind carries the cull mode,
     // the winding a mirrored node needs and the blend and depth state, exactly
     // as it does for the transcribed pipelines.
-    std::map<std::size_t, SDL_GPUGraphicsPipeline*> pinned_pipelines;
+    std::map<std::size_t, OwnedSdlPipeline> pinned_pipelines;
     // Each variant's stage slot maps, read once from the `.slots` sidecars.
     std::vector<PinnedStageSlots> pinned_vertex_slots;
     std::vector<PinnedStageSlots> pinned_fragment_slots;
@@ -971,7 +971,7 @@ struct GpuState {
 #if BBLITE_STANDARD_VARIANTS > 0
     // The Standard family's composed pipelines and slot maps, keyed and
     // cached exactly like the PBR ones.
-    std::map<std::size_t, SDL_GPUGraphicsPipeline*> standard_variant_pipelines;
+    std::map<std::size_t, OwnedSdlPipeline> standard_variant_pipelines;
     std::vector<PinnedStageSlots> standard_vertex_slots;
     std::vector<PinnedStageSlots> standard_fragment_slots;
 #if BBLITE_STANDARD_SHADOWS
@@ -982,7 +982,7 @@ struct GpuState {
 #endif
 #if BBLITE_NODE_VARIANTS > 0
     // The node family's pipelines and slot maps, cached the same way.
-    std::map<std::size_t, SDL_GPUGraphicsPipeline*> node_variant_pipelines;
+    std::map<std::size_t, OwnedSdlPipeline> node_variant_pipelines;
     std::vector<PinnedStageSlots> node_vertex_slots;
     std::vector<PinnedStageSlots> node_fragment_slots;
 #if BBLITE_NODE_SHADOWS
@@ -1337,7 +1337,7 @@ enum class UiSdlShader {
     vertex,
 };
 
-SDL_GPUShader* create_ui_sdl_shader(
+OwnedSdlShader create_ui_sdl_shader(
     SDL_GPUDevice* device,
     UiSdlShader shader_kind) {
     const unsigned char* spirv = nullptr;
@@ -1412,7 +1412,7 @@ SDL_GPUShader* create_ui_sdl_shader(
     info.num_uniform_buffers = uniforms;
     SDL_GPUShader* shader = SDL_CreateGPUShader(device, &info);
     if (!shader) gpu_error("SDL_CreateGPUShader UI");
-    return shader;
+    return {shader, {device}};
 }
 
 SDL_GPUGraphicsPipeline* create_ui_sdl_pipeline(
@@ -1481,33 +1481,33 @@ void create_ui_sdl_resources(
     SDL_GPUTextureFormat target_format) {
     UiSdlGpuResources& ui = state.ui;
     if (ui.color_pipeline) return;
-    SDL_GPUShader* vertex =
+    auto vertex =
         create_ui_sdl_shader(state.device, UiSdlShader::vertex);
-    SDL_GPUShader* color =
+    auto color =
         create_ui_sdl_shader(state.device, UiSdlShader::color_fragment);
-    SDL_GPUShader* texture =
+    auto texture =
         create_ui_sdl_shader(state.device, UiSdlShader::texture_fragment);
     ui.color_pipeline = create_ui_sdl_pipeline(
         state.device,
-        vertex,
-        color,
+        vertex.get(),
+        color.get(),
         SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
         state.sample_count);
     ui.texture_pipeline = create_ui_sdl_pipeline(
         state.device,
-        vertex,
-        texture,
+        vertex.get(),
+        texture.get(),
         SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
         state.sample_count);
     ui.composite_pipeline = create_ui_sdl_pipeline(
         state.device,
-        vertex,
-        texture,
+        vertex.get(),
+        texture.get(),
         target_format,
         SDL_GPU_SAMPLECOUNT_1);
-    SDL_ReleaseGPUShader(state.device, vertex);
-    SDL_ReleaseGPUShader(state.device, color);
-    SDL_ReleaseGPUShader(state.device, texture);
+    vertex.reset();
+    color.reset();
+    texture.reset();
 
     SDL_GPUSamplerCreateInfo sampler{};
     sampler.min_filter = SDL_GPU_FILTER_LINEAR;
@@ -1529,19 +1529,17 @@ void create_ui_sdl_resources(
 void ensure_ui_sdl_backdrop_pipeline(GpuState& state) {
     UiSdlGpuResources& ui = state.ui;
     if (ui.backdrop.pipeline) return;
-    SDL_GPUShader* vertex =
+    auto vertex =
         create_ui_sdl_shader(state.device, UiSdlShader::vertex);
-    SDL_GPUShader* texture =
+    auto texture =
         create_ui_sdl_shader(state.device, UiSdlShader::texture_fragment);
     ui.backdrop.pipeline = create_ui_sdl_pipeline(
         state.device,
-        vertex,
-        texture,
+        vertex.get(),
+        texture.get(),
         SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
         SDL_GPU_SAMPLECOUNT_1,
         true);
-    SDL_ReleaseGPUShader(state.device, vertex);
-    SDL_ReleaseGPUShader(state.device, texture);
 }
 
 void ensure_ui_sdl_layers(
@@ -2393,7 +2391,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         kind,
         {shadow_pass});
     const auto existing = state.pinned_pipelines.find(key);
-    if (existing != state.pinned_pipelines.end()) return existing->second;
+    if (existing != state.pinned_pipelines.end()) return existing->second.get();
     ensure_pinned_slots(state, variant);
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const std::string vertex_name = pinned_stage_name(entry.vertex_shader);
@@ -2401,7 +2399,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     const PinnedStageSlots& vertex_slots = state.pinned_vertex_slots[variant];
     const PinnedStageSlots& fragment_slots =
         state.pinned_fragment_slots[variant];
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         state.device,
         vertex_name.c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -2409,7 +2407,7 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "main",
         static_cast<Uint32>(vertex_slots.storage.size()));
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         state.device,
         fragment_name.c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -2457,8 +2455,8 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         color_target.blend_state = blend_state_from(transparent_blend);
     }
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()>
         vertex_buffers{};
     const Uint32 vertex_buffer_count =
@@ -2524,12 +2522,10 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
         // alpha would have said.
         info.depth_stencil_state.enable_depth_write = true;
     }
-    SDL_GPUGraphicsPipeline* pipeline =
-        SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    OwnedSdlPipeline pipeline{
+        SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
     if (!pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline pinned variant");
-    SDL_ReleaseGPUShader(state.device, vertex_shader);
-    SDL_ReleaseGPUShader(state.device, fragment_shader);
-    return state.pinned_pipelines.emplace(key, pipeline).first->second;
+    return state.pinned_pipelines.emplace(key, std::move(pipeline)).first->second.get();
 }
 
 /** One rgba32float upload through this backend's copy pass. */
@@ -3085,7 +3081,7 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         {shadow_pass});
     const auto existing = state.node_variant_pipelines.find(key);
     if (existing != state.node_variant_pipelines.end()) {
-        return existing->second;
+        return existing->second.get();
     }
     ensure_node_slots(state, slot);
     const upstream::NodeVariantEntry& entry =
@@ -3094,7 +3090,7 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     const PinnedStageSlots& vertex_slots = state.node_vertex_slots[slot];
     const PinnedStageSlots& fragment_slots =
         state.node_fragment_slots[slot];
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         state.device,
         std::string(stems.vertex).c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -3102,7 +3098,7 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "vs_main",
         static_cast<Uint32>(vertex_slots.storage.size()));
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         state.device,
         std::string(stems.fragment).c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -3147,8 +3143,8 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         color_target.blend_state = blend_state_from(transparent_blend);
     }
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     SDL_GPUVertexBufferDescription vertex_buffer{};
     vertex_buffer.slot = 0;
     vertex_buffer.pitch = sizeof(GpuVertex);
@@ -3175,15 +3171,12 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     info.target_info.color_target_descriptions =
         pcf_caster ? nullptr : &color_target;
     info.target_info.num_color_targets = pcf_caster ? 0 : 1;
-    SDL_GPUGraphicsPipeline* pipeline =
-        SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    OwnedSdlPipeline pipeline{
+        SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline node variant");
     }
-    SDL_ReleaseGPUShader(state.device, vertex_shader);
-    SDL_ReleaseGPUShader(state.device, fragment_shader);
-    return state.node_variant_pipelines.emplace(key, pipeline)
-        .first->second;
+    return state.node_variant_pipelines.emplace(key, std::move(pipeline)).first->second.get();
 }
 
 /**
@@ -3513,7 +3506,7 @@ GpuState::EsmBlur& ensure_esm_blur(
         read_pinned_stage_slots(stem + ".vert");
     const PinnedStageSlots fragment_slots =
         read_pinned_stage_slots(stem + ".frag");
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         state.device,
         (stem + ".vert").c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -3521,7 +3514,7 @@ GpuState::EsmBlur& ensure_esm_blur(
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "main",
         static_cast<Uint32>(vertex_slots.storage.size()));
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         state.device,
         (stem + ".frag").c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -3534,8 +3527,8 @@ GpuState::EsmBlur& ensure_esm_blur(
     color_target.format =
         esm_texture_format(resources.blur_target_format);
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
@@ -3543,8 +3536,6 @@ GpuState::EsmBlur& ensure_esm_blur(
     info.target_info.color_target_descriptions = &color_target;
     info.target_info.num_color_targets = 1;
     blur.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &info);
-    SDL_ReleaseGPUShader(state.device, vertex_shader);
-    SDL_ReleaseGPUShader(state.device, fragment_shader);
     if (!blur.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline ESM blur");
     }
@@ -3873,7 +3864,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         {shadow_pass});
     const auto existing = state.standard_variant_pipelines.find(key);
     if (existing != state.standard_variant_pipelines.end()) {
-        return existing->second;
+        return existing->second.get();
     }
     ensure_standard_slots(state, variant);
     const upstream::StandardVariantEntry& entry =
@@ -3886,7 +3877,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         state.standard_vertex_slots[variant];
     const PinnedStageSlots& fragment_slots =
         state.standard_fragment_slots[variant];
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         state.device,
         vertex_name.c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -3894,7 +3885,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         static_cast<Uint32>(vertex_slots.uniforms.size()),
         "main",
         static_cast<Uint32>(vertex_slots.storage.size()));
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         state.device,
         fragment_name.c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -3939,8 +3930,8 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         color_target.blend_state = blend_state_from(transparent_blend);
     }
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     std::array<SDL_GPUVertexBufferDescription, vertex_streams.size()>
         vertex_buffers{};
     const Uint32 vertex_buffer_count =
@@ -4001,15 +3992,12 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         // alpha would have said.
         info.depth_stencil_state.enable_depth_write = true;
     }
-    SDL_GPUGraphicsPipeline* pipeline =
-        SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    OwnedSdlPipeline pipeline{
+        SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline standard variant");
     }
-    SDL_ReleaseGPUShader(state.device, vertex_shader);
-    SDL_ReleaseGPUShader(state.device, fragment_shader);
-    return state.standard_variant_pipelines.emplace(key, pipeline)
-        .first->second;
+    return state.standard_variant_pipelines.emplace(key, std::move(pipeline)).first->second.get();
 }
 
 /**
@@ -4459,7 +4447,7 @@ SDL_GPUTexture* upload_cube_texture(
     for (std::size_t index = 0; index < images.size(); ++index) {
         if (texture_data && !(*texture_data)[index].bytes.empty()) {
             images[index] = decode_image(
-                ts::ArrayBuffer((*texture_data)[index].bytes));
+                js::ArrayBuffer((*texture_data)[index].bytes));
         } else {
             images[index].width = 1;
             images[index].height = 1;
@@ -5004,11 +4992,6 @@ void release_frame_graph_textures(GpuState& state) {
     state.post_process_tasks.clear();
     // The programs outlive no build: a rebuilt graph may target different
     // formats, and every pass that borrowed one is being reset above.
-    for (GpuPostProcessProgram& program : state.post_process_programs) {
-        if (program.pipeline) {
-            SDL_ReleaseGPUGraphicsPipeline(state.device, program.pipeline);
-        }
-    }
     state.post_process_programs.clear();
     if (state.post_process_present) {
         SDL_ReleaseGPUTexture(state.device, state.post_process_present);
@@ -5779,27 +5762,14 @@ void release(GpuState& state) {
             SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
         }
     }
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || \
-    BBLITE_NODE_VARIANTS > 0
-    // The three composed families keep their pipelines in maps of the
-    // same shape, so the release loop lives once.
-    const auto release_pipeline_map = [&](const auto& pipelines) {
-        for (const auto& [key, pipeline] : pipelines) {
-            (void)key;
-            if (pipeline) {
-                SDL_ReleaseGPUGraphicsPipeline(state.device, pipeline);
-            }
-        }
-    };
-#endif
 #if BBLITE_PBR_VARIANTS > 0
-    release_pipeline_map(state.pinned_pipelines);
+    state.pinned_pipelines.clear();
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
-    release_pipeline_map(state.standard_variant_pipelines);
+    state.standard_variant_pipelines.clear();
 #endif
 #if BBLITE_NODE_VARIANTS > 0
-    release_pipeline_map(state.node_variant_pipelines);
+    state.node_variant_pipelines.clear();
 #endif
     if (state.grid_pipeline) {
         SDL_ReleaseGPUGraphicsPipeline(
@@ -5861,14 +5831,14 @@ GpuPostProcessProgram build_post_process_program(
     const std::string fragment_name = stem + ".frag";
     program.vertex_slots = read_pinned_stage_slots(vertex_name);
     program.fragment_slots = read_pinned_stage_slots(fragment_name);
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         state.device,
         vertex_name.c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
         static_cast<Uint32>(program.vertex_slots.textures.size()),
         static_cast<Uint32>(program.vertex_slots.uniforms.size()),
         "postProcessVertex");
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         state.device,
         fragment_name.c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -5885,20 +5855,19 @@ GpuPostProcessProgram build_post_process_program(
         target.blend_state = blend_state_from(blend.factors);
     }
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.multisample_state.sample_count = samples;
     info.target_info.color_target_descriptions = &target;
     info.target_info.num_color_targets = 1;
-    program.pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &info);
+    program.pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
     if (!program.pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline post-process");
     }
-    SDL_ReleaseGPUShader(state.device, vertex_shader);
-    SDL_ReleaseGPUShader(state.device, fragment_shader);
     return program;
 }
 
@@ -6091,7 +6060,7 @@ void record_post_process_pass(
             &pass_target,
             1,
             nullptr);
-    SDL_BindGPUGraphicsPipeline(post_pass, program.pipeline);
+    SDL_BindGPUGraphicsPipeline(post_pass, program.pipeline.get());
     if (pass.has_viewport) {
         const PixelViewport rectangle =
             upstream::resolve_post_process_viewport(
@@ -6219,14 +6188,14 @@ inline void ensure_pick_pipelines(GpuState& state) {
     state.pick_frag_mesh_slot =
         stage_uniform_slot(fragment_slots, "mesh");
 
-    SDL_GPUShader* vertex_shader = load_shader(
+    auto vertex_shader = load_shader(
         state.device,
         "picking.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         static_cast<std::uint32_t>(vertex_slots.uniforms.size()),
         "vs");
-    SDL_GPUShader* fragment_shader = load_shader(
+    auto fragment_shader = load_shader(
         state.device,
         "picking.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -6251,8 +6220,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
     color_targets[1].format = SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
 
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex_shader;
-    info.fragment_shader = fragment_shader;
+    info.vertex_shader = vertex_shader.get();
+    info.fragment_shader = fragment_shader.get();
     info.vertex_input_state.vertex_buffer_descriptions = &vertex_buffer;
     info.vertex_input_state.num_vertex_buffers = 1;
     info.vertex_input_state.vertex_attributes = &position;
@@ -6272,8 +6241,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
 
     state.pick_mesh_pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &info);
-    SDL_ReleaseGPUShader(state.device, vertex_shader);
-    SDL_ReleaseGPUShader(state.device, fragment_shader);
+    vertex_shader.reset();
+    fragment_shader.reset();
     if (!state.pick_mesh_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking");
     }
@@ -6302,7 +6271,7 @@ inline void ensure_pick_pipelines(GpuState& state) {
             "picking-thin.vert kept neither its scene, mesh nor instance block");
     }
 
-    SDL_GPUShader* thin_vertex = load_shader(
+    auto thin_vertex = load_shader(
         state.device,
         "picking-thin.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -6310,7 +6279,7 @@ inline void ensure_pick_pipelines(GpuState& state) {
         static_cast<std::uint32_t>(thin_vertex_slots.uniforms.size()),
         "vs",
         static_cast<std::uint32_t>(thin_vertex_slots.storage.size()));
-    SDL_GPUShader* thin_fragment = load_shader(
+    auto thin_fragment = load_shader(
         state.device,
         "picking-thin.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -6319,12 +6288,12 @@ inline void ensure_pick_pipelines(GpuState& state) {
         "fs",
         static_cast<std::uint32_t>(thin_fragment_slots.storage.size()));
     SDL_GPUGraphicsPipelineCreateInfo thin_info = info;
-    thin_info.vertex_shader = thin_vertex;
-    thin_info.fragment_shader = thin_fragment;
+    thin_info.vertex_shader = thin_vertex.get();
+    thin_info.fragment_shader = thin_fragment.get();
     state.pick_thin_pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &thin_info);
-    SDL_ReleaseGPUShader(state.device, thin_vertex);
-    SDL_ReleaseGPUShader(state.device, thin_fragment);
+    thin_vertex.reset();
+    thin_fragment.reset();
     if (!state.pick_thin_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking-thin");
     }
@@ -6355,14 +6324,14 @@ inline void ensure_pick_pipelines(GpuState& state) {
     state.pick_detailed_frag_mesh_slot =
         stage_uniform_slot(detailed_fragment_slots, "mesh");
 
-    SDL_GPUShader* detailed_vertex = load_shader(
+    auto detailed_vertex = load_shader(
         state.device,
         "picking-detailed.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         static_cast<std::uint32_t>(detailed_vertex_slots.uniforms.size()),
         "vs");
-    SDL_GPUShader* detailed_fragment = load_shader(
+    auto detailed_fragment = load_shader(
         state.device,
         "picking-detailed.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -6378,15 +6347,15 @@ inline void ensure_pick_pipelines(GpuState& state) {
         SDL_GPU_TEXTUREFORMAT_R32G32B32A32_UINT;
 
     SDL_GPUGraphicsPipelineCreateInfo detailed_info = info;
-    detailed_info.vertex_shader = detailed_vertex;
-    detailed_info.fragment_shader = detailed_fragment;
+    detailed_info.vertex_shader = detailed_vertex.get();
+    detailed_info.fragment_shader = detailed_fragment.get();
     detailed_info.target_info.color_target_descriptions = detailed_targets;
     detailed_info.target_info.num_color_targets = 3;
 
     state.pick_detailed_pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &detailed_info);
-    SDL_ReleaseGPUShader(state.device, detailed_vertex);
-    SDL_ReleaseGPUShader(state.device, detailed_fragment);
+    detailed_vertex.reset();
+    detailed_fragment.reset();
     if (!state.pick_detailed_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking-detailed");
     }
@@ -6407,7 +6376,7 @@ inline void ensure_pick_pipelines(GpuState& state) {
             "picking-detailed-deform.vert kept neither the scene nor "
             "the mesh block");
     }
-    SDL_GPUShader* deform_vertex = load_shader(
+    auto deform_vertex = load_shader(
         state.device,
         "picking-detailed-deform.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
@@ -6418,7 +6387,7 @@ inline void ensure_pick_pipelines(GpuState& state) {
         "vs",
         static_cast<std::uint32_t>(
             state.pick_deform_vertex_slots.storage.size()));
-    SDL_GPUShader* deform_fragment = load_shader(
+    auto deform_fragment = load_shader(
         state.device,
         "picking-detailed.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -6450,8 +6419,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
     };
 
     SDL_GPUGraphicsPipelineCreateInfo deform_info = detailed_info;
-    deform_info.vertex_shader = deform_vertex;
-    deform_info.fragment_shader = deform_fragment;
+    deform_info.vertex_shader = deform_vertex.get();
+    deform_info.fragment_shader = deform_fragment.get();
     deform_info.vertex_input_state.vertex_attributes =
         deform_attributes.data();
     deform_info.vertex_input_state.num_vertex_attributes =
@@ -6459,8 +6428,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
 
     state.pick_deform_pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &deform_info);
-    SDL_ReleaseGPUShader(state.device, deform_vertex);
-    SDL_ReleaseGPUShader(state.device, deform_fragment);
+    deform_vertex.reset();
+    deform_fragment.reset();
     if (!state.pick_deform_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking-detailed-deform");
     }
@@ -6486,14 +6455,14 @@ inline void ensure_pick_pipelines(GpuState& state) {
             "the pick colour");
     }
 
-    SDL_GPUShader* cloud_vertex = load_shader(
+    auto cloud_vertex = load_shader(
         state.device,
         "picking-splat.vert",
         SDL_GPU_SHADERSTAGE_VERTEX,
         static_cast<std::uint32_t>(cloud_vertex_slots.textures.size()),
         static_cast<std::uint32_t>(cloud_vertex_slots.uniforms.size()),
         "vs");
-    SDL_GPUShader* cloud_fragment = load_shader(
+    auto cloud_fragment = load_shader(
         state.device,
         "picking-splat.frag",
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -6519,8 +6488,8 @@ inline void ensure_pick_pipelines(GpuState& state) {
     cloud_attributes[1].format = SDL_GPU_VERTEXELEMENTFORMAT_FLOAT;
 
     SDL_GPUGraphicsPipelineCreateInfo cloud_info = info;
-    cloud_info.vertex_shader = cloud_vertex;
-    cloud_info.fragment_shader = cloud_fragment;
+    cloud_info.vertex_shader = cloud_vertex.get();
+    cloud_info.fragment_shader = cloud_fragment.get();
     cloud_info.vertex_input_state.vertex_buffer_descriptions =
         cloud_buffers;
     cloud_info.vertex_input_state.num_vertex_buffers = 2;
@@ -6530,8 +6499,6 @@ inline void ensure_pick_pipelines(GpuState& state) {
 
     state.pick_cloud_pipeline =
         SDL_CreateGPUGraphicsPipeline(state.device, &cloud_info);
-    SDL_ReleaseGPUShader(state.device, cloud_vertex);
-    SDL_ReleaseGPUShader(state.device, cloud_fragment);
     if (!state.pick_cloud_pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline picking-splat");
     }
@@ -6782,7 +6749,7 @@ bool run_gpu_engine(Engine& engine) {
         }
         cpu_startup_mark("window-device");
 
-        SDL_GPUShader* vertex_shader =
+        auto vertex_shader =
             load_shader(
                 state.device,
                 "pbr.vert",
@@ -6801,7 +6768,7 @@ bool run_gpu_engine(Engine& engine) {
 #else
                 0);
 #endif
-        SDL_GPUShader* image_processing_vertex_shader =
+        auto image_processing_vertex_shader =
             transmission_enabled
                 ? load_shader(
                       state.device,
@@ -6819,7 +6786,7 @@ bool run_gpu_engine(Engine& engine) {
         const bool per_sample_image_processing =
             transmission_enabled &&
             state.sample_count != SDL_GPU_SAMPLECOUNT_1;
-        SDL_GPUShader* image_processing_fragment_shader =
+        auto image_processing_fragment_shader =
             transmission_enabled
                 ? (per_sample_image_processing
                        ? load_shader(
@@ -6848,7 +6815,7 @@ bool run_gpu_engine(Engine& engine) {
             render_features.standard_material;
         const bool use_grid_material =
             render_features.grid_material;
-        SDL_GPUShader* grid_vertex_shader = use_grid_material
+        auto grid_vertex_shader = use_grid_material
             ? load_shader(
                   state.device,
                   "grid.vert",
@@ -6857,7 +6824,7 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   "mainVertex")
             : nullptr;
-        SDL_GPUShader* grid_fragment_shader = use_grid_material
+        auto grid_fragment_shader = use_grid_material
             ? load_shader(
                   state.device,
                   "grid.frag",
@@ -6872,7 +6839,7 @@ bool run_gpu_engine(Engine& engine) {
             render_features.shader_shadow_variants.begin(),
             render_features.shader_shadow_variants.end(),
             [](bool reached) { return reached; });
-        SDL_GPUShader* depth_only_fragment_shader =
+        auto depth_only_fragment_shader =
             use_no_color_material || use_shader_shadow_material
                 ? load_shader(
                       state.device,
@@ -6884,17 +6851,13 @@ bool run_gpu_engine(Engine& engine) {
                 : nullptr;
         const bool use_shader_materials =
             render_features.shader_material;
-        std::vector<SDL_GPUShader*> shader_vertex_shaders;
-        std::vector<SDL_GPUShader*> shader_fragment_shaders;
+        std::vector<OwnedSdlShader> shader_vertex_shaders;
+        std::vector<OwnedSdlShader> shader_fragment_shaders;
         if (use_shader_materials) {
             const std::uint32_t shader_variant_total =
                 upstream::shader_variant_count();
-            shader_vertex_shaders.resize(
-                shader_variant_total,
-                nullptr);
-            shader_fragment_shaders.resize(
-                shader_variant_total,
-                nullptr);
+            shader_vertex_shaders.resize(shader_variant_total);
+            shader_fragment_shaders.resize(shader_variant_total);
             state.shader_vertex_slots.resize(shader_variant_total);
             state.shader_fragment_slots.resize(shader_variant_total);
             for (
@@ -6947,7 +6910,7 @@ bool run_gpu_engine(Engine& engine) {
         // cubemap arm (background-hdr-skybox.ts) composes none, and one
         // generated fragment serves both skyboxes, so the variant is
         // selected here.
-        SDL_GPUShader* background_fragment_shader = use_ground
+        auto background_fragment_shader = use_ground
             ? load_shader(
                   state.device,
                   pal::background_ground_fragment(scene.environment),
@@ -6956,7 +6919,7 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   "mainFragment")
             : nullptr;
-        SDL_GPUShader* skybox_vertex_shader =
+        auto skybox_vertex_shader =
             use_skybox && !scene.environment.skybox_uses_environment
             ? load_shader(
                   state.device,
@@ -6966,7 +6929,7 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   "mainVertex")
             : nullptr;
-        SDL_GPUShader* skybox_fragment_shader = use_skybox
+        auto skybox_fragment_shader = use_skybox
             ? load_shader(
                   state.device,
                   pal::background_skybox_fragment(scene.environment),
@@ -6975,7 +6938,7 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   "mainFragment")
             : nullptr;
-        SDL_GPUShader* id_fragment_shader = !id_buffer_path.empty()
+        auto id_fragment_shader = !id_buffer_path.empty()
             ? load_shader(
                   state.device,
                   "diagnostic-id.frag",
@@ -6984,7 +6947,7 @@ bool run_gpu_engine(Engine& engine) {
                   1,
                   "mainFragment")
             : nullptr;
-        SDL_GPUShader* cluster_fragment_shader = !cluster_buffer_path.empty()
+        auto cluster_fragment_shader = !cluster_buffer_path.empty()
             ? load_shader(
                   state.device,
                   "diagnostic-cluster.frag",
@@ -7178,7 +7141,7 @@ bool run_gpu_engine(Engine& engine) {
         // info is only the base the standard, grid and diagnostic pipelines
         // copy before setting their own fragment.
         SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
-        pipeline_info.vertex_shader = vertex_shader;
+        pipeline_info.vertex_shader = vertex_shader.get();
         pipeline_info.vertex_input_state =
             SDL_GPUVertexInputState{
                 vertex_buffers.data(),
@@ -7208,9 +7171,9 @@ bool run_gpu_engine(Engine& engine) {
             image_processing_target.format = swapchain_format;
             SDL_GPUGraphicsPipelineCreateInfo image_processing_info{};
             image_processing_info.vertex_shader =
-                image_processing_vertex_shader;
+                image_processing_vertex_shader.get();
             image_processing_info.fragment_shader =
-                image_processing_fragment_shader;
+                image_processing_fragment_shader.get();
             image_processing_info.primitive_type =
                 SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
             image_processing_info.rasterizer_state.fill_mode =
@@ -7236,8 +7199,8 @@ bool run_gpu_engine(Engine& engine) {
         if (grid_vertex_shader && grid_fragment_shader) {
             SDL_GPUGraphicsPipelineCreateInfo grid_pipeline_info =
                 pipeline_info;
-            grid_pipeline_info.vertex_shader = grid_vertex_shader;
-            grid_pipeline_info.fragment_shader = grid_fragment_shader;
+            grid_pipeline_info.vertex_shader = grid_vertex_shader.get();
+            grid_pipeline_info.fragment_shader = grid_fragment_shader.get();
             grid_pipeline_info.rasterizer_state.cull_mode =
                 SDL_GPU_CULLMODE_BACK;
             state.grid_pipeline =
@@ -7266,7 +7229,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUGraphicsPipelineCreateInfo depth_pipeline_info =
                 pipeline_info;
             depth_pipeline_info.fragment_shader =
-                depth_only_fragment_shader;
+                depth_only_fragment_shader.get();
             depth_pipeline_info.rasterizer_state.cull_mode =
                 SDL_GPU_CULLMODE_BACK;
             depth_pipeline_info.multisample_state.sample_count =
@@ -7315,9 +7278,9 @@ bool run_gpu_engine(Engine& engine) {
                 variant < shader_variant_total;
                 ++variant) {
                 SDL_GPUShader* variant_vertex_shader =
-                    shader_vertex_shaders[variant];
+                    shader_vertex_shaders[variant].get();
                 SDL_GPUShader* variant_fragment_shader =
-                    shader_fragment_shaders[variant];
+                    shader_fragment_shaders[variant].get();
                 if (!variant_vertex_shader) {
                     continue;
                 }
@@ -7419,7 +7382,7 @@ bool run_gpu_engine(Engine& engine) {
                     SDL_GPUGraphicsPipelineCreateInfo
                         shadow_pipeline_info = shader_pipeline_info;
                     shadow_pipeline_info.fragment_shader =
-                        depth_only_fragment_shader;
+                        depth_only_fragment_shader.get();
                     shadow_pipeline_info.multisample_state.sample_count =
                         SDL_GPU_SAMPLECOUNT_1;
                     shadow_pipeline_info.depth_stencil_state.compare_op =
@@ -7474,14 +7437,14 @@ bool run_gpu_engine(Engine& engine) {
         }
         state.geometry_tasks.resize(engine.frame_tasks.size());
         if (!scene.tasks.empty()) {
-            SDL_GPUShader* blit_vertex_shader = load_shader(
+            auto blit_vertex_shader = load_shader(
                 state.device,
                 "blit.vert",
                 SDL_GPU_SHADERSTAGE_VERTEX,
                 0,
                 0,
                 "mainVertex");
-            SDL_GPUShader* blit_fragment_shader = load_shader(
+            auto blit_fragment_shader = load_shader(
                 state.device,
                 "blit.frag",
                 SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -7491,8 +7454,8 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUColorTargetDescription blit_target{};
             blit_target.format = swapchain_format;
             SDL_GPUGraphicsPipelineCreateInfo blit_pipeline_info{};
-            blit_pipeline_info.vertex_shader = blit_vertex_shader;
-            blit_pipeline_info.fragment_shader = blit_fragment_shader;
+            blit_pipeline_info.vertex_shader = blit_vertex_shader.get();
+            blit_pipeline_info.fragment_shader = blit_fragment_shader.get();
             blit_pipeline_info.primitive_type =
                 SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
             blit_pipeline_info.rasterizer_state.fill_mode =
@@ -7518,14 +7481,12 @@ bool run_gpu_engine(Engine& engine) {
             if (!state.blit_msaa_pipeline) {
                 gpu_error("SDL_CreateGPUGraphicsPipeline blit MSAA");
             }
-            SDL_ReleaseGPUShader(state.device, blit_vertex_shader);
-            SDL_ReleaseGPUShader(state.device, blit_fragment_shader);
         }
         if (id_fragment_shader) {
             SDL_GPUColorTargetDescription id_target{};
             id_target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
             SDL_GPUGraphicsPipelineCreateInfo id_pipeline_info = pipeline_info;
-            id_pipeline_info.fragment_shader = id_fragment_shader;
+            id_pipeline_info.fragment_shader = id_fragment_shader.get();
             id_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             id_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             id_pipeline_info.target_info.color_target_descriptions = &id_target;
@@ -7539,7 +7500,7 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUColorTargetDescription cluster_target{};
             cluster_target.format = SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
             SDL_GPUGraphicsPipelineCreateInfo cluster_pipeline_info = pipeline_info;
-            cluster_pipeline_info.fragment_shader = cluster_fragment_shader;
+            cluster_pipeline_info.fragment_shader = cluster_fragment_shader.get();
             cluster_pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             cluster_pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
             cluster_pipeline_info.target_info.color_target_descriptions =
@@ -7554,8 +7515,8 @@ bool run_gpu_engine(Engine& engine) {
         pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
         pipeline_info.depth_stencil_state.enable_depth_write = false;
         if (grid_vertex_shader && grid_fragment_shader) {
-            pipeline_info.vertex_shader = grid_vertex_shader;
-            pipeline_info.fragment_shader = grid_fragment_shader;
+            pipeline_info.vertex_shader = grid_vertex_shader.get();
+            pipeline_info.fragment_shader = grid_fragment_shader.get();
             pipeline_info.rasterizer_state.cull_mode =
                 SDL_GPU_CULLMODE_BACK;
             state.grid_transparent_pipeline =
@@ -7581,9 +7542,9 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUGraphicsPipelineCreateInfo skybox_pipeline_info =
                 pipeline_info;
             skybox_pipeline_info.vertex_shader = skybox_vertex_shader
-                ? skybox_vertex_shader
-                : vertex_shader;
-            skybox_pipeline_info.fragment_shader = skybox_fragment_shader;
+                ? skybox_vertex_shader.get()
+                : vertex_shader.get();
+            skybox_pipeline_info.fragment_shader = skybox_fragment_shader.get();
             const SDL_GPUVertexBufferDescription skybox_vertex_buffer{
                 0,
                 sizeof(GpuVertex),
@@ -7616,8 +7577,8 @@ bool run_gpu_engine(Engine& engine) {
                 &skybox_pipeline_info);
         }
         if (background_fragment_shader) {
-            pipeline_info.vertex_shader = vertex_shader;
-            pipeline_info.fragment_shader = background_fragment_shader;
+            pipeline_info.vertex_shader = vertex_shader.get();
+            pipeline_info.fragment_shader = background_fragment_shader.get();
             color_target.blend_state = blend_state_from(ground_blend);
             pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_BACK;
             state.background_pipeline = SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info);
@@ -7626,7 +7587,7 @@ bool run_gpu_engine(Engine& engine) {
         if (
             scene.environment.has_image_skybox &&
             background_enabled) {
-            SDL_GPUShader* image_skybox_vertex_shader =
+            auto image_skybox_vertex_shader =
                 load_shader(
                     state.device,
                     "skybox-cubemap.vert",
@@ -7634,7 +7595,7 @@ bool run_gpu_engine(Engine& engine) {
                     0,
                     1,
                     "mainVertex");
-            SDL_GPUShader* image_skybox_fragment_shader =
+            auto image_skybox_fragment_shader =
                 load_shader(
                     state.device,
                     "skybox-cubemap.frag",
@@ -7659,9 +7620,9 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUGraphicsPipelineCreateInfo
                 image_skybox_info = pipeline_info;
             image_skybox_info.vertex_shader =
-                image_skybox_vertex_shader;
+                image_skybox_vertex_shader.get();
             image_skybox_info.fragment_shader =
-                image_skybox_fragment_shader;
+                image_skybox_fragment_shader.get();
             image_skybox_info.vertex_input_state =
                 SDL_GPUVertexInputState{
                     &image_skybox_buffer,
@@ -7681,19 +7642,13 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_error(
                     "SDL_CreateGPUGraphicsPipeline image skybox");
             }
-            SDL_ReleaseGPUShader(
-                state.device,
-                image_skybox_vertex_shader);
-            SDL_ReleaseGPUShader(
-                state.device,
-                image_skybox_fragment_shader);
         }
 #endif
 #if BBLITE_SOLID_SKYBOX
         if (
             scene.environment.has_solid_skybox &&
             background_enabled) {
-            SDL_GPUShader* solid_skybox_vertex_shader =
+            auto solid_skybox_vertex_shader =
                 load_shader(
                     state.device,
                     "solid-skybox.vert",
@@ -7701,7 +7656,7 @@ bool run_gpu_engine(Engine& engine) {
                     0,
                     2,
                     "mainVertex");
-            SDL_GPUShader* solid_skybox_fragment_shader =
+            auto solid_skybox_fragment_shader =
                 load_shader(
                     state.device,
                     "solid-skybox.frag",
@@ -7730,9 +7685,9 @@ bool run_gpu_engine(Engine& engine) {
             SDL_GPUGraphicsPipelineCreateInfo
                 solid_skybox_info = pipeline_info;
             solid_skybox_info.vertex_shader =
-                solid_skybox_vertex_shader;
+                solid_skybox_vertex_shader.get();
             solid_skybox_info.fragment_shader =
-                solid_skybox_fragment_shader;
+                solid_skybox_fragment_shader.get();
             solid_skybox_info.vertex_input_state =
                 SDL_GPUVertexInputState{
                     &solid_skybox_buffer,
@@ -7756,57 +7711,8 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_error(
                     "SDL_CreateGPUGraphicsPipeline solid skybox");
             }
-            SDL_ReleaseGPUShader(
-                state.device,
-                solid_skybox_vertex_shader);
-            SDL_ReleaseGPUShader(
-                state.device,
-                solid_skybox_fragment_shader);
         }
 #endif
-        SDL_ReleaseGPUShader(state.device, vertex_shader);
-        if (image_processing_vertex_shader) {
-            SDL_ReleaseGPUShader(
-                state.device,
-                image_processing_vertex_shader);
-        }
-        if (image_processing_fragment_shader) {
-            SDL_ReleaseGPUShader(
-                state.device,
-                image_processing_fragment_shader);
-        }
-        if (grid_vertex_shader) {
-            SDL_ReleaseGPUShader(state.device, grid_vertex_shader);
-        }
-        if (grid_fragment_shader) {
-            SDL_ReleaseGPUShader(state.device, grid_fragment_shader);
-        }
-        if (depth_only_fragment_shader) {
-            SDL_ReleaseGPUShader(
-                state.device,
-                depth_only_fragment_shader);
-        }
-        for (SDL_GPUShader* shader : shader_vertex_shaders) {
-            if (shader) SDL_ReleaseGPUShader(state.device, shader);
-        }
-        for (SDL_GPUShader* shader : shader_fragment_shaders) {
-            if (shader) SDL_ReleaseGPUShader(state.device, shader);
-        }
-        if (background_fragment_shader) {
-            SDL_ReleaseGPUShader(state.device, background_fragment_shader);
-        }
-        if (skybox_fragment_shader) {
-            SDL_ReleaseGPUShader(state.device, skybox_fragment_shader);
-        }
-        if (skybox_vertex_shader) {
-            SDL_ReleaseGPUShader(state.device, skybox_vertex_shader);
-        }
-        if (id_fragment_shader) {
-            SDL_ReleaseGPUShader(state.device, id_fragment_shader);
-        }
-        if (cluster_fragment_shader) {
-            SDL_ReleaseGPUShader(state.device, cluster_fragment_shader);
-        }
         if (background_fragment_shader && !state.background_pipeline) {
             gpu_error("SDL_CreateGPUGraphicsPipeline background");
         }
@@ -7821,6 +7727,20 @@ bool run_gpu_engine(Engine& engine) {
             (!state.cluster_pipeline || !state.cluster_double_sided_pipeline)) {
             gpu_error("SDL_CreateGPUGraphicsPipeline triangle cluster");
         }
+
+        vertex_shader.reset();
+        image_processing_vertex_shader.reset();
+        image_processing_fragment_shader.reset();
+        grid_vertex_shader.reset();
+        grid_fragment_shader.reset();
+        depth_only_fragment_shader.reset();
+        shader_vertex_shaders.clear();
+        shader_fragment_shaders.clear();
+        background_fragment_shader.reset();
+        skybox_fragment_shader.reset();
+        skybox_vertex_shader.reset();
+        id_fragment_shader.reset();
+        cluster_fragment_shader.reset();
 
         SDL_GPUSamplerCreateInfo sampler_info{};
         sampler_info.min_filter = SDL_GPU_FILTER_LINEAR;

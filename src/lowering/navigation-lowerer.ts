@@ -844,6 +844,7 @@ std::vector<Vec3d> nav_compute_path(
     return out;
 }
 
+#if BBLITE_HAS_NAV_CROWD
 bbl::pal::NavCrowdHandle create_nav_crowd(
     bbl::pal::NavigationHandle plugin,
     double max_agents,
@@ -905,6 +906,7 @@ Vec3d get_agent_position(
     }
     return Vec3d{position->x, position->y, position->z};
 }
+#endif
 
 } // namespace bbl::upstream
 `,

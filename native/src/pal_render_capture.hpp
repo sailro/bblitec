@@ -27,6 +27,8 @@
 // diff can never disagree with an upload about the block's bytes.
 #include "pal_gpu_shared.hpp"
 
+#if BBLITE_VISUAL_CAPTURE
+
 // Two entry points serve two frame-loop families. `write_render_capture`
 // is called from the two scene frame loops (pal_sdl_gpu.cpp,
 // pal_dawn.cpp): it describes every renderable family a scene's own frame
@@ -2098,3 +2100,17 @@ inline void CaptureGate::maybe_write_standalone_render_capture(
 #endif // standalone renderers (CaptureGate::maybe_write_standalone_render_capture)
 
 } // namespace bbl::pal
+
+#else
+namespace bbl::pal {
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+inline void write_render_capture(
+    const std::string&, const char*, const Scene&, const Engine&, const CameraRecord&,
+    const upstream::RenderPlan&, const std::array<float, 16>&, int, int, long) {}
+#endif
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER
+inline void CaptureGate::maybe_write_standalone_render_capture(
+    const char*, const Engine&, std::uint32_t, std::uint32_t, long) {}
+#endif
+} // namespace bbl::pal
+#endif // BBLITE_VISUAL_CAPTURE

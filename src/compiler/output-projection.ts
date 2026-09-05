@@ -177,6 +177,7 @@ export const featureSources: Record<Feature, string[]> = {
     // feature already brings; what the feature adds is the library behind
     // it and the half of that file the guard compiles.
     "navigation:tile-cache": [],
+    "navigation:crowd": [],
     // The stepper is generated rather than a PAL source, so like every
     // other lowered family it brings no file of its own here.
     "sprite:animation": [],
@@ -321,6 +322,7 @@ export interface MainCppProjection {
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
     jsRandomReached: boolean;
+    audioSessionReached?: boolean;
     throwReached: boolean;
     postProcessCompositeCount: number;
     renderDataPreamble: () => string;
@@ -487,8 +489,9 @@ ${jsDataInclude}${cameraMathInclude}${cameraProjectionInclude}${clusteredInclude
 #include <iostream>${throwReached ? "\n#include <stdexcept>" : ""}
 ${preamble}
 int main() {
+    const bbl::js::CollectOnExit collect_on_exit;
     try {
-${seedRandom}${body.join("\n")}
+${projection.audioSessionReached ? "        auto bbl_audio_session = std::make_shared<bbl::pal::AudioSession>();\n" : ""}${seedRandom}${body.join("\n")}
         return 0;
     } catch (const std::exception& error) {
         std::cerr << "Babylon Lite native error: " << error.what() << '\\n';

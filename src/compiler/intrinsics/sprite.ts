@@ -1133,6 +1133,7 @@ export function compileSpriteIntrinsic(
                     ")",
                 engineCpp,
                 spriteLayerCpp: layer.cpp,
+                nativeCompanionCaptures: { spriteLayerCpp: layer.nativeCaptures ?? [] },
             };
         }
 

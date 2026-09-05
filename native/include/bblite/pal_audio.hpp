@@ -45,7 +45,7 @@
  * `BBLITE_AUDIO_CAPTURE=ON`, `BBLITE_AUDIO_CAPTURE=<path.wav>`
  * makes a context render offline instead of opening a device: the
  * scene's graph is identical and nothing runs in real time, and
- * `audio_render_pending_captures` -- called at the end of `run_engine`,
+ * `AudioSession::finish` -- called at the end of its engine's `run_engine`,
  * the one place a run ends -- renders
  * `BBLITE_AUDIO_CAPTURE_SECONDS` (default 1.0) and writes 32-bit float
  * WAV beside a one-line summary of frames, peak and RMS. Two runs of one
@@ -74,14 +74,31 @@ struct AudioContextHandle {
     std::uint32_t value = 0;
 };
 
-/** One node in a context's graph. */
-struct AudioNodeHandle {
-    std::uint32_t value = 0;
+/** Context ownership follows the generated engine, including failed startup. */
+class AudioSession {
+public:
+    AudioSession() = default;
+    AudioSession(const AudioSession&) = delete;
+    AudioSession& operator=(const AudioSession&) = delete;
+    ~AudioSession();
+    void finish() noexcept;
+private:
+    std::vector<AudioContextHandle> contexts_;
+    friend AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
 };
 
-/** One context-owned planar PCM buffer. */
+/** One node in a context's graph. */
+struct AudioNodeRecord;
+struct AudioNodeHandle {
+    std::uint32_t value = 0;
+    std::shared_ptr<AudioNodeRecord> ownership;
+};
+
+/** Planar PCM retained by JS handles and any source bus using it. */
+struct AudioBufferRecord;
 struct AudioBufferHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<AudioBufferRecord> ownership;
 };
 
 /**
@@ -146,6 +163,7 @@ enum class BiquadFilterKind : std::uint8_t {
  * the same graph with no device and no thread.
  */
 AudioContextHandle audio_create_context();
+AudioContextHandle audio_create_context(std::shared_ptr<AudioSession>& session);
 
 /** `ctx.close()` plus the device teardown a real-time context owns. */
 void audio_close_context(AudioContextHandle context);
@@ -185,7 +203,7 @@ AudioBufferHandle audio_decode_file(
     const std::string& path);
 
 /** `buffer.getChannelData(channel)`: a mutable view into retained PCM. */
-bbl::js::F32Array& audio_buffer_channel(
+bbl::js::F32Array audio_buffer_channel(
     AudioBufferHandle buffer,
     std::uint32_t channel);
 
@@ -261,24 +279,7 @@ void audio_param_exponential_ramp(AudioParamHandle param, float value, double ti
 /** `param.cancelScheduledValues(t)`. */
 void audio_param_cancel_scheduled_values(AudioParamHandle param, double time);
 
-// -- capture -------------------------------------------------------------
-
-/**
- * Render and write every context `BBLITE_AUDIO_CAPTURE` asked for.
- *
- * Called once from `pal::run_engine`, which is the one place a run ends
- * -- the same seam `CaptureGate` takes a screenshot at, rather than an
- * `atexit` hook running after teardown has begun. A build that reached
- * no audio does not include this header at all, so there is no stub to
- * declare: the caller is compiled out with it.
- */
-void audio_render_pending_captures();
-
-/**
- * Closes every context: pauses each device before its graph dies and
- * joins LabSound's threads. Called from the same run-end seam, after the
- * captures rendered, so no audio thread survives into static destruction.
- */
-void audio_close_all_contexts();
+/** Reclaim discarded graphs at a control-thread frame boundary. */
+void audio_collect_finished();
 
 } // namespace bbl::pal

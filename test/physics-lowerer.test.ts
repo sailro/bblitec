@@ -513,7 +513,7 @@ test("a floating-origin world replaces the single-world frame", () => {
     );
     assert.match(
         factory,
-        /if \(world\.fo\) \{[\s\S]*?place_body\(world, body, starts_asleep\);\n    \} else \{[\s\S]*?physics_world_add_body\(/,
+        /if \(world\.fo\) \{[\s\S]*?place_body\(world, body, starts_asleep\);\n\s+\} else \{[\s\S]*?physics_world_add_body\(/,
     );
 });
 

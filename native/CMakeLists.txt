@@ -12,15 +12,30 @@ set(BBLITE_NATIVE_ROOT "${CMAKE_CURRENT_LIST_DIR}")
 # during project().
 include("${BBLITE_GENERATED_DIR}/features.cmake")
 
+if(BBLITE_MINSIZE)
+    set(BBLITE_VISUAL_CAPTURE_DEFAULT OFF)
+else()
+    set(BBLITE_VISUAL_CAPTURE_DEFAULT ON)
+endif()
+option(BBLITE_VISUAL_CAPTURE "Build screenshot and render-state capture" ${BBLITE_VISUAL_CAPTURE_DEFAULT})
+
 # Image codecs reached by the scene's materialized assets (emitted by
 # generation since codec tree-shaking). Generated directories
 # predating the list carry the historical png+jpeg set.
 if(NOT DEFINED BBLITE_IMAGE_CODECS)
     set(BBLITE_IMAGE_CODECS "png" "jpeg")
 endif()
-foreach(BBLITE_IMAGE_CODEC IN ITEMS "jpeg" "webp")
+set(BBLITE_HAS_IMAGE_DECODER OFF)
+if(BBLITE_IMAGE_CODECS)
+    set(BBLITE_HAS_IMAGE_DECODER ON)
+endif()
+set(BBLITE_REQUIRED_IMAGE_CODECS ${BBLITE_IMAGE_CODECS})
+if(BBLITE_VISUAL_CAPTURE)
+    list(APPEND BBLITE_REQUIRED_IMAGE_CODECS "png")
+endif()
+foreach(BBLITE_IMAGE_CODEC IN ITEMS "png" "jpeg" "webp")
     if(
-        "${BBLITE_IMAGE_CODEC}" IN_LIST BBLITE_IMAGE_CODECS
+        "${BBLITE_IMAGE_CODEC}" IN_LIST BBLITE_REQUIRED_IMAGE_CODECS
         AND NOT "${BBLITE_IMAGE_CODEC}" IN_LIST VCPKG_MANIFEST_FEATURES
     )
         list(APPEND VCPKG_MANIFEST_FEATURES "${BBLITE_IMAGE_CODEC}")
@@ -44,6 +59,11 @@ if(
 )
     list(APPEND VCPKG_MANIFEST_FEATURES "navigation")
 endif()
+foreach(BBLITE_NAV_COMPONENT IN ITEMS "crowd" "tile-cache")
+    if("navigation:${BBLITE_NAV_COMPONENT}" IN_LIST BBLITE_RUNTIME_FEATURES)
+        list(APPEND VCPKG_MANIFEST_FEATURES "navigation-${BBLITE_NAV_COMPONENT}")
+    endif()
+endforeach()
 
 # Scene-created DOM lowers to a retained UI IR. Only that reached surface
 # installs the font dependency and composes RmlUi into the executable.
@@ -321,6 +341,10 @@ target_include_directories(
     "${BBLITE_GENERATED_DIR}/upstream/include"
 )
 target_compile_definitions(bblite_native PRIVATE BBLITE_ASSET_DIR="assets")
+target_compile_definitions(bblite_native PRIVATE
+    BBLITE_VISUAL_CAPTURE=$<BOOL:${BBLITE_VISUAL_CAPTURE}>
+    BBLITE_HAS_IMAGE_DECODER=$<BOOL:${BBLITE_HAS_IMAGE_DECODER}>
+)
 target_compile_definitions(bblite_native PRIVATE BBLITE_GPU_SHADER_DIR="shaders")
 if("mesh:update-positions" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
@@ -532,26 +556,22 @@ else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_DAWN=0)
 endif()
 
-if(SDL3_FOUND)
-    # SDL3_image's static WebP fallback currently reports webp_FOUND while
-    # find_dependency(WebP) checks WebP_FOUND. Prefer libwebp's exported config
-    # targets when that optional dependency is present, so the fallback is not
-    # reached and static WebP scenes configure correctly.
-    find_package(WebP CONFIG QUIET)
+if(SDL3_FOUND AND BBLITE_REQUIRED_IMAGE_CODECS)
+    # Use libwebp's exported config; SDL_image's fallback spells WebP_FOUND
+    # differently and cannot discover static WebP consistently.
+    if("webp" IN_LIST BBLITE_IMAGE_CODECS)
+        find_package(WebP CONFIG REQUIRED)
+    endif()
+    find_package(SDL3_image CONFIG REQUIRED)
+    target_link_libraries(bblite_native PRIVATE
+        $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
+    )
 endif()
 
 if("renderer:scene" IN_LIST BBLITE_RUNTIME_FEATURES)
     # BBLITE_RENDERER_TRANSMISSION is generated into render_capabilities.hpp,
     # because a loaded asset reaches scene transmission on its own and the
     # reached-feature list only records what the scene's code asked for.
-    if(SDL3_FOUND)
-        find_package(SDL3_image CONFIG REQUIRED)
-        target_link_libraries(
-            bblite_native
-            PRIVATE
-            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
-        )
-    endif()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=1)
 else()
     target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_PBR_RENDERER=0)
@@ -623,7 +643,6 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
             "BBLITE_RMLUI_DIR=artifacts/tools/rmlui-static.")
     endif()
 
-    find_package(SDL3_image CONFIG REQUIRED)
     target_sources(
         bblite_native
         PRIVATE
@@ -643,7 +662,6 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
         bblite_native
         PRIVATE
         RmlUi::Core
-        $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
     )
     if(WIN32)
         target_link_libraries(bblite_native PRIVATE dwrite)
@@ -666,16 +684,6 @@ else()
 endif()
 
 if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # The sprite atlas is a PNG decoded at load, so this path needs the
-    # image decoder even when no PBR renderer is compiled.
-    if(SDL3_FOUND)
-        find_package(SDL3_image CONFIG REQUIRED)
-        target_link_libraries(
-            bblite_native
-            PRIVATE
-            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
-        )
-    endif()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_SPRITE_RENDERER=1
@@ -688,17 +696,6 @@ else()
 endif()
 
 if("renderer:effect" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # A scene-less effect renderer still saves its screenshot as a PNG, so
-    # this path needs the image encoder even when no PBR renderer or sprite
-    # atlas is compiled.
-    if(SDL3_FOUND)
-        find_package(SDL3_image CONFIG REQUIRED)
-        target_link_libraries(
-            bblite_native
-            PRIVATE
-            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
-        )
-    endif()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_EFFECT_RENDERER=1
@@ -711,15 +708,6 @@ else()
 endif()
 
 if("renderer:frame-graph" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # Screenshot capture encodes PNGs in the standalone task driver.
-    if(SDL3_FOUND)
-        find_package(SDL3_image CONFIG REQUIRED)
-        target_link_libraries(
-            bblite_native
-            PRIVATE
-            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
-        )
-    endif()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_FRAME_GRAPH_RENDERER=1
@@ -791,16 +779,6 @@ else()
 endif()
 
 if("sprite:billboard" IN_LIST BBLITE_RUNTIME_FEATURES)
-    # A billboard draws inside the scene's pass, so unlike a 2D sprite layer
-    # it needs no renderer of its own -- but it still decodes the atlas PNG.
-    if(SDL3_FOUND)
-        find_package(SDL3_image CONFIG REQUIRED)
-        target_link_libraries(
-            bblite_native
-            PRIVATE
-            $<IF:$<TARGET_EXISTS:SDL3_image::SDL3_image-shared>,SDL3_image::SDL3_image-shared,SDL3_image::SDL3_image-static>
-        )
-    endif()
     target_compile_definitions(
         bblite_native
         PRIVATE BBLITE_HAS_BILLBOARDS=1
@@ -894,17 +872,20 @@ if("navigation:recast" IN_LIST BBLITE_RUNTIME_FEATURES)
         PRIVATE
             RecastNavigation::Recast
             RecastNavigation::Detour
-            RecastNavigation::DetourCrowd
-            RecastNavigation::DetourTileCache
-            RecastNavigation::DebugUtils
     )
+    if("navigation:crowd" IN_LIST BBLITE_RUNTIME_FEATURES)
+        target_link_libraries(bblite_native PRIVATE RecastNavigation::DetourCrowd)
+        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_NAV_CROWD=1)
+    else()
+        target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_NAV_CROWD=0)
+    endif()
     # The tile-cache arm's own dependency: the two RecastDemo files the
     # overlay port builds into a library from the same pinned commit. Only
     # a scene that asked for obstacles links it, which is the same fact
     # that decided which build call was emitted.
     if("navigation:tile-cache" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_link_libraries(
-            bblite_native PRIVATE RecastNavigation::RecastNavigationTileCache
+            bblite_native PRIVATE RecastNavigation::DetourTileCache RecastNavigation::RecastNavigationTileCache
         )
         target_compile_definitions(
             bblite_native PRIVATE BBLITE_HAS_NAV_TILE_CACHE=1

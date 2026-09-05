@@ -66,5 +66,22 @@ int main() {
         unpublished.push_back(upload(owner, true));
     } catch (const std::runtime_error&) {}
     assert(owner.live == 0);
+    try {
+        std::map<int, Record> draws;
+        auto& draw = draws.try_emplace(1, owner).first->second;
+        draw.buffer = 1;
+        ++owner.live;
+        // A later allocation can fail after a draw has acquired one resource.
+        throw std::runtime_error("draw binding creation failure");
+    } catch (const std::runtime_error&) {}
+    assert(owner.live == 0);
+    {
+        std::map<int, Record> draws;
+        draws.emplace(1, upload(owner));
+        // Failed publication retains no resources from the rejected record.
+        draws.emplace(1, upload(owner));
+        assert(owner.live == 2);
+    }
+    assert(owner.live == 0);
     std::cout << "owned-gpu-record-check: ok\n";
 }

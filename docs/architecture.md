@@ -103,12 +103,18 @@ container storage. The non-atomic reference count assumes scene code executes
 on the frame thread. GPU objects are backend-owned and released through their
 API's deferred-lifetime rules.
 
-There is no tracing collector. Reference counting does not collect arbitrary
-cycles, and engine-lifetime storage can retain removed topology. These are
-audit and backlog concerns, not a blanket memory-safety guarantee. Avoid raw
-references into growing engine vectors; retain handles and resolve them after
-operations that may append. Structural container mutation must preserve or
-explicitly reject an outstanding alias.
+Managed records, containers and explicit callback environments expose owning
+edges to cycle collection at frame boundaries and generated-scope teardown.
+Acyclic identities still release immediately. Native opaque owners remain
+conservative roots; this does not establish lifetime safety for arbitrary
+unsupported extensions. Avoid raw references into growing engine vectors;
+retain handles and resolve them after operations that may append. Structural
+container mutation must preserve or explicitly reject an outstanding alias.
+
+Physics worlds, navigation plugins/crowds and audio sessions own their native
+resources independently. Closing one owner preserves other live owners. Audio
+handles and PCM views can retain their data after graph retirement; closing a
+session stops its devices and releases its context graph.
 
 `Borrowed` platform-event payloads are valid during one dispatch. The compiler
 rejects retaining an actual borrowed event through containers, fields,

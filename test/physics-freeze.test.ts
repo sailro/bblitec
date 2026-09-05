@@ -99,7 +99,7 @@ test("a scene freezes itself: setTimeout defers, stopEngine stops", () => {
     );
     // The zero-delay timeout is a deferred callback the conductor drains,
     // and the engine stop inside it survives; the canvas write does not.
-    assert.match(main, /bbl::defer_callback\(v_engine, \[=, &v_engine\]\(\) mutable \{/);
+    assert.match(main, /bbl::defer_callback\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] auto& \w+\) \{/);
     assert.match(main, /bbl::stop_engine\(v_engine\)/);
     assert.doesNotMatch(main, /captureReady/);
     // The step the capture is pinned at is the query's own answer: the
@@ -117,14 +117,13 @@ test("a non-zero setTimeout delay uses the elapsed-time queue", () => {
     );
     assert.match(
         main,
-        /bbl::set_timeout\(v_engine, \[=, &v_engine\]\(\) mutable \{\s*bbl::stop_engine\(v_engine\);\s*\}, 1000\)/,
+        /bbl::set_timeout\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_engine\)\}, \[\]\(\[\[maybe_unused\]\] auto& (\w+)\) \{\s*\[\[maybe_unused\]\] auto& v_engine = std::get<0>\(\1\)\.get\(\);\s*bbl::stop_engine\(v_engine\);\s*\}\), 1000\)/,
     );
 });
 
 test("a deferred callback cannot capture the frame that queued it", () => {
-    // The emitted lambda captures by reference and runs after the frame
-    // callback has returned, so naming one of its locals would read dead
-    // storage. It compiles clean in C++, which is why it refuses here.
+    // Frame-local values remain outside the supported deferred-callback
+    // capture boundary and must produce a source diagnostic.
     refuses(
         `onBeforeRender(scene, (deltaMs) => {
             const scratch = deltaMs * 2;

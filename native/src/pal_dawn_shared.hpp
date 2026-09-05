@@ -28,7 +28,9 @@
 #include <vector>
 
 #include <SDL3/SDL.h>
+#if BBLITE_VISUAL_CAPTURE
 #include <SDL3_image/SDL_image.h>
+#endif
 #include <webgpu/webgpu.h>
 
 #if defined(_WIN32)
@@ -659,6 +661,7 @@ struct DawnSurfaceCapture {
     std::uint32_t bytes_per_row = 0;
 };
 
+#if BBLITE_VISUAL_CAPTURE
 inline DawnSurfaceCapture begin_dawn_surface_capture(
     WGPUDevice device,
     WGPUCommandEncoder encoder,
@@ -768,5 +771,18 @@ inline void finish_dawn_surface_capture(
         state.surface_format == WGPUTextureFormat_BGRA8Unorm,
         path);
 }
+
+#else
+inline DawnSurfaceCapture begin_dawn_surface_capture(
+    WGPUDevice, WGPUCommandEncoder, WGPUTexture, std::uint32_t, std::uint32_t) {
+    return {};
+}
+inline void save_capture_png(
+    const std::vector<std::uint8_t>&, std::uint32_t, std::uint32_t, std::uint32_t,
+    bool, const std::string&) {}
+inline void finish_dawn_surface_capture(
+    DawnDevice&, const DawnSurfaceCapture&, std::uint32_t, std::uint32_t,
+    const std::string&) {}
+#endif
 
 } // namespace bbl::pal

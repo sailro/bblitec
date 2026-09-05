@@ -69,7 +69,7 @@ void add_task_at_start(FrameGraphContext& context, TaskHandle task) {
 
 void on_frame_graph_update(
     FrameGraphContext& context,
-    std::function<void(float)> callback) {
+    js::Callback<void(float)> callback) {
     context.updates.push_back(std::move(callback));
 }
 

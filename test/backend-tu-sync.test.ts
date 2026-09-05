@@ -140,17 +140,12 @@ test("the SDL scene loop tears down after its try, like its siblings", () => {
     );
 });
 
-test("the run end closes every audio context", () => {
-    // A context surviving into static destruction keeps its audio thread
-    // alive while the objects it touches are torn down in an order
-    // nothing controls. run_engine's exit guard is the one place a run
-    // ends, so it closes them there, after the captures rendered.
+test("the run end finishes only its engine's audio session", () => {
     const text = readFileSync("native/src/pal_sdl.cpp", "utf8");
     const guard = text.indexOf("~AudioRunEnd()");
     assert.ok(guard >= 0, "run_engine has no audio run-end guard");
-    const captures = text.indexOf("audio_render_pending_captures();", guard);
-    const closes = text.indexOf("audio_close_all_contexts();", guard);
-    assert.ok(closes > captures && captures > guard);
+    assert.match(text.slice(guard), /if \(engine\.audio_session\) engine\.audio_session->finish\(\);/);
+    assert.doesNotMatch(text, /audio_close_all_contexts/);
 });
 
 test("scene replacement restarts both backends without retaining a dead root", () => {

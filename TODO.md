@@ -51,10 +51,6 @@ implementation, follow the sizing/capture workflow in
 - [ ] Extend typed WGSL parsing through reached const/function/loop forms and
   retire strict raw-source fallback when the IR can represent their contracts.
 
-Strong reference cycles and resource-loop output explosion are confirmed
-defects owned by the active audit; a general ownership/expansion policy must
-cover alias-hidden graphs and nested resource helpers.
-
 ## P1 — Lowering reuse and asset processing
 
 - [ ] Lower pick-ray construction through an optional-record return adapter.

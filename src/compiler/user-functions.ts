@@ -6,6 +6,7 @@ import {
     type DataTypeRegistry,
 } from "./data-types.js";
 import type { Value } from "./types.js";
+import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./closure-captures.js";
 import { readOnlyDataMethods, storingDataMethods } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 
@@ -834,6 +835,7 @@ export interface UserFunctionIr {
 
 export interface UserFunctionContext {
     readonly dataTypes: DataTypeRegistry;
+    useNativeValue(value: Value): void;
     compileValue(expression: ts.Expression): Value;
     emitExpressionAsStatement(expression: ts.Expression): void;
     emitDiscardedValue(value: Value): void;
@@ -868,16 +870,16 @@ export interface UserFunctionContext {
         cppName: string,
         signature: string,
         escapesEmittingScope: boolean,
-        exposeReference?: boolean,
-    ): void;
+    ): Value;
     beginInlineFrame(wrapped: boolean): void;
     endInlineFrame(): void;
     beginNativeFunctionBody(returnType: DataType | undefined): void;
     endNativeFunctionBody(): void;
-    captureStoredDataFunctionLines(
+    registerNativeBinding(name: string, borrowed?: boolean): NativeCaptureBinding;
+    captureManagedClosureLines(
         emitBody: () => void,
-        referenceCaptures?: readonly string[],
-    ): { lines: string[]; capture: string };
+        byReference?: boolean,
+    ): CapturedClosure;
     /**
      * The JavaScript identity a materialized callback carries.
      *
@@ -1281,6 +1283,7 @@ export class UserFunctionLowerer {
         call: ts.CallExpression,
         bound: Value,
     ): Value | undefined {
+        context.useNativeValue(bound);
         const parameterTypes = bound.nativeCallbackParameterTypes;
         const declaration = bound.callbackDeclaration;
         if (!declaration) {
@@ -1674,11 +1677,13 @@ export class UserFunctionLowerer {
                         : undefined,
                 )
                 .filter((type): type is string => type !== undefined);
-            context.emitNativeCallbackStorage(
+            const storage = context.emitNativeCallbackStorage(
                 entry.cppName,
                 `${returnCpp}(${parametersCpp.join(", ")})`,
                 escapes,
             );
+            Object.assign(entry.value, storage);
+            entry.cppName = storage.cpp;
         }
 
         // These symbol bindings exist only while the specialized bodies are
@@ -1711,6 +1716,7 @@ export class UserFunctionLowerer {
                 entry.returnMetadata = this.emitRecursiveFunctionBody(
                     context,
                     entry,
+                    escapes,
                 );
             }
         } finally {
@@ -1777,6 +1783,7 @@ export class UserFunctionLowerer {
             cppName: string;
             captured: readonly (Value | undefined)[];
         },
+        escapes: boolean,
     ): Value | undefined {
         const returnCpp = entry.returnType
             ? context.dataTypes.cppType(entry.returnType)
@@ -1790,6 +1797,7 @@ export class UserFunctionLowerer {
                 value: Value;
             }> = [];
             let runtimeIndex = 0;
+            const parameterPrefix = context.allocateUserFunctionPrefix();
             entry.ir.parameters.forEach((parameter, index) => {
                 const type = entry.parameterTypes[index];
                 if (!type) {
@@ -1799,7 +1807,7 @@ export class UserFunctionLowerer {
                     });
                     return;
                 }
-                const cppName = `bbl_recursive_arg_${runtimeIndex++}`;
+                const cppName = `${parameterPrefix}recursive_arg_${runtimeIndex++}`;
                 parameterDeclarations.push(
                     `${this.recursiveParameterCpp(context.dataTypes, type, entry.parameterReadOnly[index]!)} ${cppName}`,
                 );
@@ -1813,12 +1821,10 @@ export class UserFunctionLowerer {
                     },
                 });
             });
-            context.emit(
-                `${entry.cppName} = [&](${parameterDeclarations.join(", ")}) -> ${returnCpp} {`,
-            );
-            context.increaseIndent();
             context.beginNativeFunctionBody(entry.returnType);
+            let captured: CapturedClosure;
             try {
+                captured = context.captureManagedClosureLines(() => {
                 for (const { parameter, value } of parameterBindings) {
                     this.bindSpecializedParameter(
                         context,
@@ -1858,11 +1864,11 @@ export class UserFunctionLowerer {
                         `return ${context.compileForDataSink(body, entry.returnType)};`,
                     );
                 }
+                }, !escapes);
             } finally {
                 context.endNativeFunctionBody();
-                context.decreaseIndent();
             }
-            context.emit("};");
+            context.emit(`${entry.cppName} = ${renderClosure(captured, parameterDeclarations.join(", "), returnCpp)};`);
         } finally {
             context.popScope();
         }
@@ -2034,7 +2040,7 @@ export class UserFunctionLowerer {
         const selfWeakCpp = selfIdentifier ? `${cppName}_weak` : undefined;
         if (selfIdentifier) {
             context.emit(
-                `auto ${selfOwnerCpp} = std::make_shared<${cppType}>();`,
+                `auto ${selfOwnerCpp} = bbl::js::make_gc_shared<${cppType}>();`,
             );
             context.emit(
                 `std::weak_ptr<${cppType}> ${selfWeakCpp} = ${selfOwnerCpp};`,
@@ -2043,6 +2049,7 @@ export class UserFunctionLowerer {
                 kind: "data",
                 cpp: `bbl::js::retain_callback(${selfWeakCpp}.lock())`,
                 dataType,
+                nativeCaptures: [context.registerNativeBinding(selfWeakCpp!)],
             };
             if (context.lookupIdentifierValue(selfIdentifier)) {
                 context.rebindCompileTimeValue(selfIdentifier, selfValue);
@@ -2056,10 +2063,9 @@ export class UserFunctionLowerer {
         }
         context.pushScope(prefix);
         context.beginNativeFunctionBody(dataType.result);
-        let lines: string[] = [];
-        let capture = "[=]";
+        let closure: CapturedClosure;
         try {
-            const captured = context.captureStoredDataFunctionLines(() => {
+            closure = context.captureManagedClosureLines(() => {
                 let runtimeIndex = 0;
                 for (const parameter of ir.parameters) {
                     if (
@@ -2112,8 +2118,6 @@ export class UserFunctionLowerer {
                     }
                 }
             });
-            lines = captured.lines;
-            capture = captured.capture;
         } finally {
             context.endNativeFunctionBody();
             context.popScope();
@@ -2131,18 +2135,15 @@ export class UserFunctionLowerer {
                 ? "{bbl::js::next_callback_identity(), "
                 : `{${context.callbackIdentity(declaration, owner)}u, `
             : " = ";
-        const lambda = `${capture}(${parameters.map(({ type, cppName: name }) => `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`).join(", ")}) mutable -> ${returnCpp} {`;
+        const lambda = renderClosure(closure, parameters.map(({ type, cppName: name }) =>
+            `[[maybe_unused]] ${context.dataTypes.cppType(type)} ${name}`).join(", "), returnCpp);
         context.emit(
             selfIdentifier
                 ? dataType.identity
-                    ? `(*${selfOwnerCpp}) = ${cppType}${identity}${lambda}`
-                    : `(*${selfOwnerCpp}) = ${lambda}`
-                : `${cppType} ${cppName}${identity}${lambda}`,
+                    ? `(*${selfOwnerCpp}) = ${cppType}${identity}${lambda}};`
+                    : `(*${selfOwnerCpp}) = ${lambda};`
+                : `${cppType} ${cppName}${identity}${lambda}${dataType.identity ? "}" : ""};`,
         );
-        context.increaseIndent();
-        for (const line of lines) context.emit(line);
-        context.decreaseIndent();
-        context.emit(dataType.identity ? "}};" : "};");
         if (selfIdentifier) {
             context.emit(
                 `${cppType} ${cppName} = bbl::js::retain_callback(${selfOwnerCpp});`,

@@ -1927,8 +1927,11 @@ struct PhysicsNodeRef {
  * so \`setPhysicsBodyMass\` can branch on it, and that branch runs while the
  * aggregate is still building, so it is a local there rather than a field.
  */
+struct PhysicsWorld;
+
 struct PhysicsBody {
     pal::PhysicsBodyHandle handle{};
+    std::weak_ptr<PhysicsWorld> owner;
     PhysicsNodeRef node{};
     PhysicsShape shape{};
     PhysicsMotionType motion_type = PhysicsMotionType::STATIC;
@@ -2035,6 +2038,7 @@ struct PhysicsFloatingOrigin {
  * travels.
  */
 struct PhysicsWorld {
+    ~PhysicsWorld();
     pal::PhysicsWorldHandle handle{};
     Engine* engine = nullptr;
     /**
@@ -2087,6 +2091,7 @@ struct PhysicsWorld {
  */
 struct PhysicsWorldHandle {
     std::uint32_t value = 0;
+    std::weak_ptr<PhysicsWorld> ownership;
 };
 
 [[nodiscard]] PhysicsWorldHandle create_havok_world(
@@ -2190,7 +2195,6 @@ void on_physics_collision(
 
 #include <algorithm>
 #include <cstddef>
-#include <deque>
 #include <stdexcept>
 #include <utility>
 
@@ -2198,19 +2202,12 @@ namespace bbl::upstream {
 namespace {
 
 
-/**
- * The worlds a scene created. A \`PhysicsWorld\` is handed out by
- * reference and captured by the step closure, so the container must not
- * move its elements -- the same reason the engine's own record arenas are
- * stable.
- */
-std::deque<PhysicsWorld>& physics_worlds() {
-    static std::deque<PhysicsWorld> worlds;
-    return worlds;
-}
-
 PhysicsWorld& physics_world_record(PhysicsWorldHandle handle) {
-    return physics_worlds()[handle.value];
+    const auto world = handle.ownership.lock();
+    if (!world || world->handle.value != handle.value) {
+        throw std::runtime_error("Physics world has no live engine owner.");
+    }
+    return *world;
 }
 
 /**
@@ -2548,12 +2545,12 @@ void place_body(
     const pal::PhysicsWorldHandle region =
         get_or_create_region(world, pose.position);
     pal::physics_world_add_body(region, body.handle, starts_asleep);
+    body.region = region;
     // The re-base is the same write \`_syncNodeToBody\` makes, so it is made
     // in one place: the pose this already read is pure, and reading it
     // again there costs an arena lookup rather than a second spelling of
     // the subtraction.
     fo_sync_node_to_body(engine, body, region_at(*world.fo, region).origin);
-    body.region = region;
 }
 
 /**
@@ -2746,10 +2743,21 @@ void step_world(PhysicsWorld& world, double delta_ms) {
 
 }  // namespace
 
+PhysicsWorld::~PhysicsWorld() {
+    if (fo) {
+        for (const auto& region : fo->regions) {
+            if (region.world.value != handle.value) {
+                pal::physics_world_release(region.world);
+            }
+        }
+    }
+    if (handle.value != 0) pal::physics_world_release(handle);
+}
+
 PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
-    const PhysicsWorldHandle handle{
-        static_cast<std::uint32_t>(physics_worlds().size())};
-    PhysicsWorld& world = physics_worlds().emplace_back();
+    if (!scene.engine) throw std::runtime_error("Physics requires a scene engine.");
+    auto owned = std::make_shared<PhysicsWorld>();
+    PhysicsWorld& world = *owned;
     world.handle = pal::physics_world_create();
     world.engine = scene.engine;
     world.scene = std::make_shared<Scene>(scene);
@@ -2757,17 +2765,24 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
     // it for: a floating-origin region is seeded from it.
     world.gravity = {gravity.x, gravity.y, gravity.z};
     pal::physics_world_set_gravity(world.handle, world.gravity);
+    const PhysicsWorldHandle handle{world.handle.value, owned};
+    scene.engine->native_resource_owners.push_back(std::move(owned));
 
     // \`scene._beforeRender.unshift(stepCb)\`: physics integrates before
     // every other before-render callback, so a scene reading a pose in one
     // reads this frame's rather than the previous frame's.
-    scene.before_render.insert(
-        scene.before_render.begin(),
-        [handle](float delta_ms) {
-            step_world(
-                physics_world_record(handle),
-                static_cast<double>(delta_ms));
-        });
+    try {
+        scene.before_render.insert(
+            scene.before_render.begin(),
+            [handle](float delta_ms) {
+                if (const auto live = handle.ownership.lock()) {
+                    step_world(*live, static_cast<double>(delta_ms));
+                }
+            });
+    } catch (...) {
+        scene.engine->native_resource_owners.pop_back();
+        throw;
+    }
     return handle;
 }
 
@@ -2931,15 +2946,10 @@ void set_physics_body_mass(
  * handle -- the same identity \`physics_body_record\` matches on.
  */
 PhysicsBody& owning_body_record(PhysicsBody body) {
-    for (PhysicsWorld& world : physics_worlds()) {
-        for (PhysicsBody& live : world.bodies) {
-            if (live.handle.value == body.handle.value) {
-                return live;
-            }
-        }
+    if (const auto world = body.owner.lock()) {
+        return physics_body_record(*world, body);
     }
-    throw std::runtime_error(
-        "Physics body is not part of any world.");
+    throw std::runtime_error("Physics body has no live engine owner.");
 }
 
 /**
@@ -3106,23 +3116,37 @@ PhysicsBody create_physics_body(
     PhysicsWorld& world = physics_world_record(handle);
     Engine& engine = *world.engine;
     PhysicsBody body{};
+    body.owner = handle.ownership;
     body.node = node;
     body.motion_type = motion_type;
     body.handle = pal::physics_body_create();
     pal::physics_body_set_motion_type(
         body.handle, pinned_motion_type(motion_type));
-    if (world.fo) {
-        // \`world._fo.placeBody(world, body, startsAsleep)\`: the region
-        // decides which solver world the body joins AND the frame its
-        // transform is written in, so the plain pair below is replaced
-        // rather than followed.
-        place_body(world, body, starts_asleep);
-    } else {
-        pal::physics_world_add_body(
-            world.handle, body.handle, starts_asleep);
-        sync_node_to_body(engine, body, false);
-    }
+    // Publish the generated owner before adding the body to its solver world.
+    // Roll both memberships back if node synchronization fails.
     world.bodies.push_back(body);
+    try {
+        if (world.fo) {
+            // \`world._fo.placeBody(world, body, startsAsleep)\`: the region
+            // decides which solver world the body joins AND the frame its
+            // transform is written in, so the plain pair below is replaced
+            // rather than followed.
+            place_body(world, body, starts_asleep);
+        } else {
+            pal::physics_world_add_body(
+                world.handle, body.handle, starts_asleep);
+            sync_node_to_body(engine, body, false);
+        }
+    } catch (...) {
+        if (body.region.value != 0) {
+            pal::physics_world_remove_body(body.region, body.handle);
+        } else if (!world.fo) {
+            pal::physics_world_remove_body(world.handle, body.handle);
+        }
+        world.bodies.pop_back();
+        throw;
+    }
+    world.bodies.back() = body;
     return body;
 }
 

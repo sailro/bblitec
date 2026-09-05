@@ -77,8 +77,8 @@ selected at both generated-source and dependency boundaries. See
 
 This is not a complete typed user-code IR. Handle-dependent helper inlining,
 escape classification, generic bodies, resource loops and aliasing have
-limitations. Supported callbacks do not imply arbitrary closure graphs are
-safe: accepted strong reference cycles remain an open audit defect.
+limitations. The [runtime ownership contract](architecture.md#runtime-and-memory)
+defines which retained graphs are traced and which native owners remain roots.
 
 No arbitrary JavaScript execution or dynamic modules run in the native
 executable. AOT `await` and frame-yield continuations have different semantics;

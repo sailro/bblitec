@@ -17,10 +17,8 @@
 //
 // Two rules the shape depends on:
 //
-//   * **A handle carries its context.** Web Audio forbids connecting
-//     nodes across contexts and every factory is a method on one, so the
-//     context travels on each node rather than being looked up. The
-//     table's `carriesAudioContext` is what moves it across a read.
+//   * **A native handle encodes its context.** The PAL resolves each node's
+//     packed context ID and rejects connections across contexts.
 //   * **Times are context times, not frame times.** `osc.start(t)` and
 //     `param.setValueAtTime(v, t)` schedule against
 //     `AudioContext.currentTime`, which advances on the audio thread.
@@ -323,7 +321,6 @@ export function compileAudioDecodeAssetCall(
         cpp: decoded,
         dataType: { kind: "handle", handle: "audio-buffer" },
         optionalFoundCpp: `${decoded}.value != 0u`,
-        audioContextCpp: audioContext.cpp,
     };
 }
 
@@ -369,7 +366,6 @@ export function compileAudioMethodCall(
                 cpp: decoded,
                 dataType: { kind: "handle", handle: "audio-buffer" },
                 optionalFoundCpp: `${decoded}.value != 0u`,
-                audioContextCpp: receiver.cpp,
             };
         }
     }
@@ -392,7 +388,6 @@ export function compileAudioMethodCall(
                     `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[1]!)}), ` +
                     `${context.compileNumber(call.arguments[2]!, "double")})`,
                 dataType: { kind: "handle", handle: "audio-buffer" },
-                audioContextCpp: receiver.cpp,
             };
         }
         const factory = NODE_FACTORIES[method];
@@ -416,7 +411,6 @@ export function compileAudioMethodCall(
         return {
             kind: "audio-node",
             cpp: node,
-            audioContextCpp: receiver.cpp,
         };
     }
 
@@ -430,7 +424,6 @@ export function compileAudioMethodCall(
                 `bbl::pal::audio_buffer_channel(${receiver.cpp}, ` +
                 `static_cast<std::uint32_t>(${context.compileNumber(call.arguments[0]!)}))`,
             dataType: { kind: "f32array" },
-            borrowedData: true,
         };
     }
 

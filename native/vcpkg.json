@@ -4,16 +4,13 @@
   "builtin-baseline": "ea1a7396b05637a53bf23c078647ecc0edee4b80",
   "dependencies": [
     "nlohmann-json",
-    {
-      "name": "sdl3-image",
-      "default-features": false,
-      "features": [
-        "png"
-      ]
-    },
     "sdl3"
   ],
   "features": {
+    "png": {
+      "description": "PNG texture decoding or optional visual capture",
+      "dependencies": [{ "name": "sdl3-image", "default-features": false, "features": ["png"] }]
+    },
     "jpeg": {
       "description": "JPEG texture decoding for scenes whose materialized assets reach image/jpeg",
       "dependencies": [
@@ -31,6 +28,14 @@
       "dependencies": [
         "recastnavigation"
       ]
+    },
+    "navigation-crowd": {
+      "description": "Detour crowds for navigation:crowd",
+      "dependencies": [{ "name": "recastnavigation", "default-features": false, "features": ["crowd"] }]
+    },
+    "navigation-tile-cache": {
+      "description": "Detour tile cache and its compressor for navigation:tile-cache",
+      "dependencies": [{ "name": "recastnavigation", "default-features": false, "features": ["tile-cache"] }]
     },
     "physics": {
       "description": "Bullet rigid-body solver for scenes reaching physics:world. Zlib-licensed, and linked only where the scene's own source creates a physics world.",

@@ -2449,9 +2449,7 @@ export class DataTypeRegistry {
         const signature =
           `${dataType.result ? this.cppType(dataType.result) : "void"}` +
           `(${dataType.parameters.map((parameter) => this.cppType(parameter)).join(", ")})`;
-        return dataType.identity
-          ? `bbl::js::Callback<${signature}>`
-          : `std::function<${signature}>`;
+        return `bbl::js::Callback<${signature}>`;
       }
       case "struct":
         this.emittedNamedTypes.add(dataType.name);
@@ -2784,6 +2782,9 @@ export class DataTypeRegistry {
         ...definition.fields.map(
           (field) => `    ${this.cppType(field.type)} ${field.name};`,
         ),
+        `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
+        ...definition.fields.map((field) => `        visitor(record.${field.name});`),
+        "    }",
         "};",
         "",
       );

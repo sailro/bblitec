@@ -25,19 +25,26 @@
  */
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <vector>
 
 namespace bbl::pal {
 
+struct NavigationPluginState;
+struct NavigationMeshState;
+struct NavCrowdState;
+
 /** One navigation plugin: a navmesh and its query. */
 struct NavigationHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<NavigationPluginState> ownership;
 };
 
 /** One crowd, built over a plugin's navmesh. */
 struct NavCrowdHandle {
     std::uint32_t value = 0;
+    std::shared_ptr<NavCrowdState> ownership;
 };
 
 /** A world position as the wrapper's `Vec3` carries one: three floats. */
@@ -171,6 +178,7 @@ void navigation_create_tile_cache_nav_mesh(
  */
 struct NavObstacleHandle {
     std::uint32_t value = 0;
+    std::weak_ptr<NavigationMeshState> owner;
 };
 
 /**

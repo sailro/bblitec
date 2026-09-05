@@ -33,7 +33,7 @@ export interface ShaderStruct {
 }
 
 export type ShaderExpression =
-    | { kind: "binary"; operator: "+" | "-" | "*" | "/" | "<"; left: ShaderExpression; right: ShaderExpression }
+    | { kind: "binary"; operator: "+" | "-" | "*" | "/" | "<" | ">" | ">="; left: ShaderExpression; right: ShaderExpression }
     | { kind: "call"; name: string; arguments: ShaderExpression[] }
     | { kind: "construct"; type: ShaderType; arguments: ShaderExpression[] }
     | { kind: "member"; expression: ShaderExpression; member: string }
@@ -43,14 +43,24 @@ export type ShaderExpression =
 export type ShaderStatement =
     | { kind: "assign"; target: ShaderExpression; value: ShaderExpression }
     | { kind: "discard" }
+    | { kind: "expression"; value: ShaderExpression }
     | { kind: "if"; condition: ShaderExpression; statements: ShaderStatement[] }
     | { kind: "let"; name: string; value: ShaderExpression }
-    | { kind: "return"; value: ShaderExpression }
-    | { kind: "var"; name: string; type: string };
+    | { kind: "return"; value?: ShaderExpression }
+    | { kind: "var"; name: string; type?: string; value?: ShaderExpression };
 
 export interface ShaderParameter {
     name: string;
     type: string;
+    attribute?: ShaderAttribute;
+}
+
+export interface ShaderBinding {
+    name: string;
+    type: string;
+    group: number;
+    binding: number;
+    addressSpace?: "uniform";
 }
 
 export interface ShaderEntryPoint {
@@ -65,8 +75,18 @@ export interface ShaderEntryPoint {
 export interface ShaderModule {
     structs: ShaderStruct[];
     entryPoint: ShaderEntryPoint;
+    bindings?: ShaderBinding[];
     /** Source retained verbatim when it uses WGSL beyond the typed subset. */
     rawSource?: string;
+}
+
+export interface ShaderComputeModule {
+    bindings: ShaderBinding[];
+    overrides: Array<{ name: string; type: string; id: number; value: ShaderExpression }>;
+    name: string;
+    parameters: ShaderParameter[];
+    workgroupSize: number[];
+    statements: ShaderStatement[];
 }
 
 export interface ShaderUniformMemberReflection {
@@ -175,6 +195,25 @@ const instanceColorAttribute: {
     type: ShaderType;
 } = { name: "instanceColor", location: 20, type: "vec4<f32>" };
 
+/** The first offset after a WGSL block comment, including nested comments. */
+function blockCommentEnd(source: string, start: number): number {
+    let index = start + 2;
+    let depth = 1;
+    while (index < source.length && depth > 0) {
+        if (source.startsWith("/*", index)) {
+            ++depth;
+            index += 2;
+        } else if (source.startsWith("*/", index)) {
+            --depth;
+            index += 2;
+        } else {
+            ++index;
+        }
+    }
+    if (depth) throw new Error("Unclosed WGSL block comment.");
+    return index;
+}
+
 function tokenize(source: string): Token[] {
     const tokens: Token[] = [];
     let index = 0;
@@ -189,20 +228,24 @@ function tokenize(source: string): Token[] {
             index = end < 0 ? source.length : end + 1;
             continue;
         }
+        if (source.startsWith("/*", index)) {
+            index = blockCommentEnd(source, index);
+            continue;
+        }
         const identifier = source.slice(index).match(/^[A-Za-z_][A-Za-z0-9_]*/);
         if (identifier) {
             tokens.push({ kind: "identifier", text: identifier[0] });
             index += identifier[0].length;
             continue;
         }
-        const number = source.slice(index).match(/^(?:\d+\.\d+|\d+|\.\d+)/);
+        const number = source.slice(index).match(/^(?:\d+\.\d*|\d+|\.\d+)(?:[eE][+-]?\d+)?[fuih]?/);
         if (number) {
             tokens.push({ kind: "number", text: number[0] });
             index += number[0].length;
             continue;
         }
-        if (source.startsWith("->", index)) {
-            tokens.push({ kind: "symbol", text: "->" });
+        if (source.startsWith("->", index) || source.startsWith(">=", index)) {
+            tokens.push({ kind: "symbol", text: source.slice(index, index + 2) });
             index += 2;
             continue;
         }
@@ -225,10 +268,50 @@ class WgslSubsetParser {
         private readonly expectedStage: ShaderStage,
     ) {}
 
+    public expression(): ShaderExpression {
+        const expression = this.parseExpression();
+        this.expectEof();
+        return expression;
+    }
+
+    public compute(): ShaderComputeModule {
+        const overrides: ShaderComputeModule["overrides"] = [];
+        const bindings: ShaderBinding[] = [];
+        while (this.tokens[this.index + 1]?.text !== "compute") {
+            if (["group", "binding"].includes(this.tokens[this.index + 1]?.text ?? "")) {
+                bindings.push(this.parseBinding());
+            } else {
+                this.expect("@"); this.expect("id"); this.expect("(");
+                const id = Number(this.expectNumber());
+                this.expect(")"); this.expect("override");
+                const name = this.expectIdentifier();
+                this.expect(":");
+                const type = this.parseNamedType();
+                this.expect("=");
+                const value = this.parseExpression();
+                this.expect(";");
+                overrides.push({ name, type, id, value });
+            }
+        }
+        this.expect("@"); this.expect("compute"); this.expect("@"); this.expect("workgroup_size"); this.expect("(");
+        const workgroupSize: number[] = [];
+        do { workgroupSize.push(Number(this.expectNumber())); } while (this.accept(","));
+        this.expect(")"); this.expect("fn");
+        const name = this.expectIdentifier();
+        const parameters = this.parseParameters();
+        const statements = this.parseBlock();
+        this.expectEof();
+        return { bindings, overrides, name, parameters, workgroupSize, statements };
+    }
+
     public parse(): ShaderModule {
         const structs: ShaderStruct[] = [];
-        while (this.peek().text === "struct") {
-            structs.push(this.parseStruct());
+        const bindings: ShaderBinding[] = [];
+        while (this.peek().text === "struct" ||
+               (this.peek().text === "@" &&
+                ["group", "binding"].includes(this.tokens[this.index + 1]!.text))) {
+            if (this.peek().text === "struct") structs.push(this.parseStruct());
+            else bindings.push(this.parseBinding());
         }
         const stageAttribute = this.parseAttribute();
         if (
@@ -239,18 +322,7 @@ class WgslSubsetParser {
         }
         this.expect("fn");
         const name = this.expectIdentifier();
-        this.expect("(");
-        const parameters: ShaderParameter[] = [];
-        while (this.peek().text !== ")") {
-            const parameterName = this.expectIdentifier();
-            this.expect(":");
-            parameters.push({
-                name: parameterName,
-                type: this.parseNamedType(),
-            });
-            if (!this.accept(",")) break;
-        }
-        this.expect(")");
+        const parameters = this.parseParameters();
         this.expect("->");
         const returnAttribute = this.peek().text === "@"
             ? this.parseAttribute()
@@ -260,6 +332,7 @@ class WgslSubsetParser {
         this.expectEof();
         return {
             structs,
+            ...(bindings.length ? { bindings } : {}),
             entryPoint: {
                 stage: this.expectedStage,
                 name,
@@ -269,6 +342,47 @@ class WgslSubsetParser {
                 statements,
             },
         };
+    }
+
+    private parseParameters(): ShaderParameter[] {
+        this.expect("(");
+        const parameters: ShaderParameter[] = [];
+        while (this.peek().text !== ")") {
+            const attribute = this.peek().text === "@" ? this.parseAttribute() : undefined;
+            const name = this.expectIdentifier();
+            this.expect(":");
+            parameters.push({ name, type: this.parseNamedType(), ...(attribute ? { attribute } : {}) });
+            if (!this.accept(",")) break;
+        }
+        this.expect(")");
+        return parameters;
+    }
+
+    private parseBinding(): ShaderBinding {
+        const attributes = new Map<string, number>();
+        while (this.accept("@")) {
+            const name = this.expectIdentifier();
+            if (!["group", "binding"].includes(name) || attributes.has(name)) {
+                throw new Error(`Unsupported or duplicate WGSL binding attribute '${name}'.`);
+            }
+            this.expect("(");
+            attributes.set(name, Number(this.expectNumber()));
+            this.expect(")");
+        }
+        const group = attributes.get("group");
+        const binding = attributes.get("binding");
+        if (group === undefined || binding === undefined) throw new Error("WGSL resource needs group and binding.");
+        this.expect("var");
+        const uniform = this.accept("<");
+        if (uniform) {
+            this.expect("uniform");
+            this.expect(">");
+        }
+        const name = this.expectIdentifier();
+        this.expect(":");
+        const type = this.parseNamedType();
+        this.expect(";");
+        return { name, type, group, binding, ...(uniform ? { addressSpace: "uniform" as const } : {}) };
     }
 
     private parseStruct(): ShaderStruct {
@@ -285,7 +399,7 @@ class WgslSubsetParser {
             members.push({
                 name: memberName,
                 type: this.parseShaderType(),
-                attribute,
+                ...(attribute ? { attribute } : {}),
             });
             this.accept(",");
         }
@@ -332,10 +446,11 @@ class WgslSubsetParser {
         }
         if (this.accept("var")) {
             const name = this.expectIdentifier();
-            this.expect(":");
-            const type = this.parseNamedType();
+            const type = this.accept(":") ? this.parseNamedType() : undefined;
+            const value = this.accept("=") ? this.parseExpression() : undefined;
+            if (!type && !value) throw new Error("WGSL var needs a type or initializer.");
             this.expect(";");
-            return { kind: "var", name, type };
+            return { kind: "var", name, ...(type ? { type } : {}), ...(value ? { value } : {}) };
         }
         if (this.accept("if")) {
             this.expect("(");
@@ -352,11 +467,13 @@ class WgslSubsetParser {
             return { kind: "discard" };
         }
         if (this.accept("return")) {
+            if (this.accept(";")) return { kind: "return" };
             const value = this.parseExpression();
             this.expect(";");
             return { kind: "return", value };
         }
         const target = this.parseExpression();
+        if (target.kind === "call" && this.accept(";")) return { kind: "expression", value: target };
         this.expect("=");
         const value = this.parseExpression();
         this.expect(";");
@@ -374,6 +491,8 @@ class WgslSubsetParser {
         }
         const precedences: Record<string, number | undefined> = {
             "<": 1,
+            ">": 1,
+            ">=": 1,
             "+": 2,
             "-": 2,
             "*": 3,
@@ -387,7 +506,7 @@ class WgslSubsetParser {
             const right = this.parseExpression(precedence + 1);
             expression = {
                 kind: "binary",
-                operator: operator as "+" | "-" | "*" | "/" | "<",
+                operator: operator as Extract<ShaderExpression, { kind: "binary" }>["operator"],
                 left: expression,
                 right,
             };
@@ -405,6 +524,8 @@ class WgslSubsetParser {
             return expression;
         }
         const name = this.expectIdentifier();
+        const shorthand = ({ vec2f: "vec2<f32>", vec3f: "vec3<f32>", vec4f: "vec4<f32>" } as const)[name as "vec2f" | "vec3f" | "vec4f"];
+        if (shorthand) return { kind: "construct", type: shorthand, arguments: this.parseArguments() };
         const genericType =
             this.peek().text === "<" &&
             this.tokens[this.index + 1]?.kind === "identifier" &&
@@ -459,9 +580,10 @@ class WgslSubsetParser {
     private parseNamedType(): string {
         const name = this.expectIdentifier();
         if (!this.accept("<")) return name;
-        const component = this.expectIdentifier();
+        const components: string[] = [];
+        do { components.push(this.parseNamedType()); } while (this.accept(","));
         this.expect(">");
-        return `${name}<${component}>`;
+        return `${name}<${components.join(",")}>`;
     }
 
     private accept(text: string): boolean {
@@ -505,6 +627,53 @@ class WgslSubsetParser {
     private peek(): Token {
         return this.tokens[this.index]!;
     }
+}
+
+/** Strict typed parsing for transformations: unsupported syntax never becomes raw text. */
+export function parseWgslModule(source: string, stage: ShaderStage): ShaderModule {
+    return new WgslSubsetParser(tokenize(source), stage).parse();
+}
+
+export function parseWgslExpression(source: string): ShaderExpression {
+    return new WgslSubsetParser(tokenize(source), "fragment").expression();
+}
+
+export function parseWgslComputeModule(source: string): ShaderComputeModule {
+    return new WgslSubsetParser(tokenize(source), "fragment").compute();
+}
+
+/** Bottom-up expression rewrite, shared by typed shader specializations. */
+export function mapShaderExpression(
+    expression: ShaderExpression,
+    rewrite: (expression: ShaderExpression) => ShaderExpression,
+): ShaderExpression {
+    const map = (child: ShaderExpression): ShaderExpression => mapShaderExpression(child, rewrite);
+    switch (expression.kind) {
+        case "binary": return rewrite({ ...expression, left: map(expression.left), right: map(expression.right) });
+        case "call":
+        case "construct": return rewrite({ ...expression, arguments: expression.arguments.map(map) });
+        case "member": return rewrite({ ...expression, expression: map(expression.expression) });
+        case "number":
+        case "path": return rewrite(expression);
+    }
+}
+
+export function mapShaderStatements(
+    statements: readonly ShaderStatement[],
+    rewrite: (expression: ShaderExpression) => ShaderExpression,
+): ShaderStatement[] {
+    const map = (expression: ShaderExpression): ShaderExpression => mapShaderExpression(expression, rewrite);
+    return statements.map((statement) => {
+        switch (statement.kind) {
+            case "assign": return { ...statement, target: map(statement.target), value: map(statement.value) };
+            case "if": return { ...statement, condition: map(statement.condition), statements: mapShaderStatements(statement.statements, rewrite) };
+            case "let":
+            case "expression": return { ...statement, value: map(statement.value) };
+            case "return": return statement.value ? { ...statement, value: map(statement.value) } : statement;
+            case "var": return statement.value ? { ...statement, value: map(statement.value) } : statement;
+            case "discard": return statement;
+        }
+    });
 }
 
 function validateBalancedWgsl(source: string): void {
@@ -556,22 +725,7 @@ function canonicalRawWgsl(source: string): string {
             continue;
         }
         if (source.startsWith("/*", index)) {
-            let depth = 1;
-            index += 2;
-            while (index < source.length && depth > 0) {
-                if (source.startsWith("/*", index)) {
-                    depth += 1;
-                    index += 2;
-                } else if (source.startsWith("*/", index)) {
-                    depth -= 1;
-                    index += 2;
-                } else {
-                    index += 1;
-                }
-            }
-            if (depth > 0) {
-                throw new Error("Unclosed WGSL block comment.");
-            }
+            index = blockCommentEnd(source, index);
             continue;
         }
         const identifier = source
@@ -832,7 +986,7 @@ function parseUniformSignature(signature: string): { name: string; type: ShaderT
  * keeps one exhaustive switch per node type, so a new IR kind is one edit
  * rather than four.
  */
-function expressionUsesPath(
+export function expressionUsesPath(
     expression: ShaderExpression,
     matches: (parts: readonly string[]) => boolean,
 ): boolean {
@@ -856,7 +1010,7 @@ function expressionUsesPath(
     }
 }
 
-function statementUsesPath(
+export function statementUsesPath(
     statement: ShaderStatement,
     matches: (parts: readonly string[]) => boolean,
 ): boolean {
@@ -869,10 +1023,13 @@ function statementUsesPath(
                 statement.statements.some((nested) =>
                     statementUsesPath(nested, matches));
         case "let":
-        case "return":
+        case "expression":
             return expressionUsesPath(statement.value, matches);
-        case "discard":
+        case "return":
+            return statement.value !== undefined && expressionUsesPath(statement.value, matches);
         case "var":
+            return statement.value !== undefined && expressionUsesPath(statement.value, matches);
+        case "discard":
             return false;
     }
 }
@@ -1038,10 +1195,7 @@ export function lowerWgslShaderProgram(
         stage: ShaderStage,
     ): ShaderModule => {
         try {
-            return new WgslSubsetParser(
-                tokenize(text),
-                stage,
-            ).parse();
+            return parseWgslModule(text, stage);
         } catch (error: unknown) {
             // The raw module path carries reached WGSL constructs that the
             // typed subset has not learned yet (helper functions, constants,

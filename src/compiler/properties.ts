@@ -109,13 +109,6 @@ interface PropertyRead {
    */
   helperArgument?: string;
   /**
-   * Carries the owner's audio context onto the value read. Web Audio
-   * forbids connecting nodes across contexts and every factory is a
-   * method on one, so the context travels with everything a context
-   * produced.
-   */
-  carriesAudioContext?: true;
-  /**
    * This read is a clock rather than a constant: see `Value.impure`.
    */
   impure?: true;
@@ -285,7 +278,6 @@ const AUDIO_PARAM_RULES: readonly PropertyRule[] = AUDIO_PARAM_NAMES.map(
     value: "audio-param" as const,
     helper: "bbl::pal::audio_node_param",
     helperArgument: `bbl::pal::AudioParamName::${enumerator}`,
-    carriesAudioContext: true as const,
   }),
 );
 
@@ -402,7 +394,6 @@ export const propertyRules: readonly PropertyRule[] = [
     property: "audioContext",
     value: "audio-context",
     retag: true,
-    carriesAudioContext: true,
   },
   {
     owner: "audio-engine",
@@ -459,7 +450,6 @@ export const propertyRules: readonly PropertyRule[] = [
     property: "destination",
     value: "audio-node",
     helper: "bbl::pal::audio_destination",
-    carriesAudioContext: true,
   },
   ...AUDIO_PARAM_RULES,
   {
@@ -1105,11 +1095,6 @@ export function readProperty(
       : {}),
     ...(rule.carriesNodeParticleSet && owner.nodeParticleSetIndex !== undefined
       ? { nodeParticleSetIndex: owner.nodeParticleSetIndex }
-      : {}),
-    ...(rule.carriesAudioContext
-      ? {
-          audioContextCpp: owner.audioContextCpp ?? owner.cpp,
-        }
       : {}),
     ...(rule.impure ? { impure: true as const } : {}),
     ...(rule.optionalHandle
