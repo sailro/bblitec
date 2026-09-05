@@ -12,7 +12,8 @@ import type {
     CompiledShaderProgram,
     GeometryOutputTaskManifest,
 } from "../compiler.js";
-import { emitNativeWgslProgram } from "../shader-wgsl-emitter.js";
+import { emitNativeWgslProgram, emitWgslModule } from "../shader-wgsl-emitter.js";
+import { specializeImageSkybox } from "../shader-skybox.js";
 import {
     pinnedShaderDefineText,
     shaderPipelineModule,
@@ -44,7 +45,6 @@ import {
     fogFactorWgsl,
     imageProcessingFragmentWgsl,
     imageProcessingMultisampledFragmentWgsl,
-    rehomeText,
 } from "../shader-builtins-utility.js";
 import {
     backgroundDdsSkyboxVertexWgsl,
@@ -61,9 +61,7 @@ import { materialVertexWgsl } from "../shader-builtins-standard.js";
 import {
     extractPackagedStringLiteral,
     extractPackagedTemplateLiteral,
-    extractWgslFunction,
     readPinnedLibraryModule,
-    splitWgslStatements,
 } from "../pinned-shader-composer.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
@@ -120,259 +118,12 @@ function pinnedFogInfosPacking(): string {
         .join("");
 }
 
-/**
- * The shared re-homing loop, failing in this lowerer's contract voice: a
- * pinned rename fails generation instead of leaving a dangling reference.
- */
-function rehomePinned(
-    source: string,
-    replacements: ReadonlyArray<readonly [string, string]>,
-    what: string,
-): string {
-    return rehomeText(source, replacements, (from) => {
-        throw new Error(
-            `Pinned Babylon Lite ${what} changed ('${from}' is gone).`,
-        );
-    });
-}
-
-/** The statement list of a packaged WGSL literal's `fn main` body. */
-function pinnedEntryStatements(literal: string, what: string): string[] {
-    const entry = extractWgslFunction(literal, "main");
-    const open = entry.indexOf("{");
-    const close = entry.lastIndexOf("}");
-    if (open < 0 || close <= open) {
-        throw new Error(`Pinned Babylon Lite ${what} has no entry body.`);
-    }
-    return splitWgslStatements(entry.slice(open + 1, close));
-}
-
-interface LiftedImageSkybox {
-    /** Re-homed vertex statements, one per line at body indent. */
-    vertexBody: string;
-    /** Re-homed fragment statements, one per line at body indent. */
-    fragmentBody: string;
-    /**
-     * The pin's own names as its bundler mangled them, for the native
-     * declarations the bodies compile against.
-     */
-    names: {
-        /** The vertex position input. */
-        position: string;
-        /** The cubemap texture and its sampler. */
-        texture: string;
-        sampler: string;
-        /** The fragment entry's input parameter. */
-        fragmentInput: string;
-    };
-}
-
-/**
- * Lifts the cubemap skybox's two stages out of the packaged pin.
- *
- * `skybox-cubemap.ts` ships `skyVertSrc`/`skyFragSrc` as inlined string
- * literals (raw imports carry no source-map entry), so the statements are
- * taken from the packaged module text and re-homed onto the native binding
- * contract, each mapping required to occur. The text is miniray's, mangled
- * names included, so each declaration is asserted by SHAPE and its name
- * read back: the native declarations the bodies read are spelled from
- * those names, and a miniray that renames them moves the emitted text
- * rather than refusing generation. Three documented departures from the
- * pin, all forced by the native frame rather than chosen:
- *
- * - `mesh.world` drops out: the pinned skybox mesh carries an identity world
- *   (`build_image_skybox_plan` authors the cube around the origin exactly as
- *   the pinned `createBoxData` does), and the native vertex block is the
- *   64-byte view-projection both PALs already bind — Dawn sizes that bind
- *   group entry to 64 bytes explicitly, so the block cannot grow.
- * - `vFogDistance` moves across the stage boundary: the pin computes
- *   `(scene.view * worldPos).xyz` per vertex and interpolates it, but the
- *   vertex block above cannot carry `scene.view`, so the fragment evaluates
- *   the pin's own expression on the interpolated `vPositionW` instead — the
- *   same affine function of the same varying, evaluated after interpolation
- *   rather than before.
- * - The pin's unused `normal` vertex input is dropped: both PALs feed the
- *   pipeline a single position buffer, and the lift refuses to drop it the
- *   moment the pinned body starts reading it.
- */
-function liftedImageSkyboxWgsl(): LiftedImageSkybox {
-    const module = readPinnedLibraryModule(
-        "material/standard/skybox-cubemap.js",
+function liftedImageSkyboxWgsl() {
+    const module = readPinnedLibraryModule("material/standard/skybox-cubemap.js");
+    return specializeImageSkybox(
+        extractPackagedStringLiteral(module, "skyVertSrc"),
+        extractPackagedStringLiteral(module, "skyFragSrc"),
     );
-    const vertexLiteral = extractPackagedStringLiteral(
-        module,
-        "skyVertSrc",
-    );
-    const fragmentLiteral = extractPackagedStringLiteral(
-        module,
-        "skyFragSrc",
-    );
-    const shape = (
-        text: string,
-        pattern: RegExp,
-        what: string,
-    ): RegExpExecArray => {
-        const match = pattern.exec(text);
-        if (!match) {
-            throw new Error(`Pinned Babylon Lite ${what} changed.`);
-        }
-        return match;
-    };
-    const meshStruct = shape(
-        vertexLiteral,
-        /struct (\w+)\{world:mat4x4<f32>\}/,
-        "skybox-cubemap mesh block",
-    )[1]!;
-    shape(
-        vertexLiteral,
-        new RegExp(`@group\\(1\\) @binding\\(0\\) var<uniform> mesh:${meshStruct};`),
-        "skybox-cubemap mesh binding",
-    );
-    const varyingStruct = shape(
-        vertexLiteral,
-        /struct (\w+)\{@builtin\(position\) clipPos:vec4<f32>,@location\(0\) vPositionW:vec3<f32>,@location\(1\) vPositionLocal:vec3<f32>,@location\(2\) vFogDistance:vec3<f32>\}/,
-        "skybox-cubemap varying block",
-    )[1]!;
-    const [, position, normal] = shape(
-        vertexLiteral,
-        new RegExp(
-            `fn main\\(@location\\(0\\) (\\w+):vec3<f32>,@location\\(1\\) (\\w+):vec3<f32>\\)->${varyingStruct}`,
-        ),
-        "skybox-cubemap vertex inputs",
-    ) as unknown as [string, string, string];
-    const texture = shape(
-        fragmentLiteral,
-        /@group\(1\) @binding\(1\) var (\w+):texture_cube<f32>;/,
-        "skybox-cubemap texture binding",
-    )[1]!;
-    const sampler = shape(
-        fragmentLiteral,
-        /@group\(1\) @binding\(2\) var (\w+):sampler;/,
-        "skybox-cubemap sampler binding",
-    )[1]!;
-    const fragmentStruct = shape(
-        fragmentLiteral,
-        /struct (\w+)\{@location\(0\) vPositionW:vec3<f32>,@location\(1\) vPositionLocal:vec3<f32>,@location\(2\) vFogDistance:vec3<f32>\}/,
-        "skybox-cubemap fragment inputs",
-    )[1]!;
-    const fragmentInput = shape(
-        fragmentLiteral,
-        new RegExp(`fn main\\((\\w+):${fragmentStruct}\\)`),
-        "skybox-cubemap fragment entry",
-    )[1]!;
-
-    const vertexStatements = pinnedEntryStatements(
-        vertexLiteral,
-        "skybox-cubemap vertex stage",
-    );
-    const normalRead = new RegExp(`\\b${normal}\\b`);
-    for (const statement of vertexStatements) {
-        if (normalRead.test(statement)) {
-            throw new Error(
-                "Pinned Babylon Lite skybox-cubemap vertex stage started reading its normal input; the native single-buffer pipeline can no longer drop it.",
-            );
-        }
-    }
-    const vertexText = vertexStatements.join("\n");
-    const output = shape(
-        vertexText,
-        new RegExp(`^var (\\w+):${varyingStruct};$`, "m"),
-        "skybox-cubemap vertex output",
-    )[1]!;
-    const worldPosition = shape(
-        vertexText,
-        new RegExp(
-            `^(?:let|var) (\\w+)=mesh\\.world\\*vec4<f32>\\(${position},1\\.0\\);$`,
-            "m",
-        ),
-        "skybox-cubemap world position",
-    )[1]!;
-    const fogDistancePrefix = `${output}.vFogDistance=`;
-    const fogDistanceStatement = vertexStatements.find((statement) =>
-        statement.startsWith(fogDistancePrefix),
-    );
-    if (!fogDistanceStatement) {
-        throw new Error(
-            "Pinned Babylon Lite skybox-cubemap fog distance varying changed.",
-        );
-    }
-    // The pin's own right-hand side, re-homed for per-fragment evaluation:
-    // the world-position vec4 of the pinned vertex is rebuilt from the
-    // interpolated varying that carries its xyz.
-    const fogDistanceExpression = rehomePinned(
-        fogDistanceStatement
-            .slice(fogDistancePrefix.length)
-            .replace(/;$/, ""),
-        [
-            ["scene.view", "uniforms.view"],
-            [
-                `*${worldPosition})`,
-                `*vec4<f32>(${fragmentInput}.vPositionW,1.0))`,
-            ],
-        ],
-        "skybox-cubemap fog distance",
-    );
-    const vertexBody = rehomePinned(
-        vertexStatements
-            .filter((statement) => statement !== fogDistanceStatement)
-            .map((statement) => `    ${statement}`)
-            .join("\n"),
-        [
-            [`var ${output}:${varyingStruct};`, `var ${output}: VertexOutput;`],
-            [
-                `mesh.world*vec4<f32>(${position},1.0)`,
-                `vec4<f32>(${position},1.0)`,
-            ],
-            ["scene.viewProjection", "uniforms.viewProjection"],
-        ],
-        "skybox-cubemap vertex stage",
-    );
-
-    const fragmentStatements = pinnedEntryStatements(
-        fragmentLiteral,
-        "skybox-cubemap fragment stage",
-    );
-    const fogBranchIndex = fragmentStatements.findIndex((statement) =>
-        statement.startsWith("if"),
-    );
-    if (fogBranchIndex < 0) {
-        throw new Error(
-            "Pinned Babylon Lite skybox-cubemap fog branch changed.",
-        );
-    }
-    const fragmentBody = rehomePinned(
-        [
-            ...fragmentStatements.slice(0, fogBranchIndex),
-            `let vFogDistance=${fogDistanceExpression};`,
-            ...fragmentStatements.slice(fogBranchIndex),
-        ]
-            .map((statement) => `    ${statement}`)
-            .join("\n"),
-        [
-            ["scene.vFogInfos", "uniforms.fogInfos"],
-            ["scene.vFogColor", "uniforms.fogColor"],
-            [
-                `calcFogFactor(${fragmentInput}.vFogDistance)`,
-                "bblCalcFogFactor(vFogDistance)",
-            ],
-        ],
-        "skybox-cubemap fragment stage",
-    );
-    for (const [body, stage] of [
-        [vertexBody, "vertex"],
-        [fragmentBody, "fragment"],
-    ] as const) {
-        if (body.includes("scene.") || body.includes("mesh.")) {
-            throw new Error(
-                `Pinned Babylon Lite skybox-cubemap ${stage} stage carries an unmapped scene or mesh reference.`,
-            );
-        }
-    }
-    return {
-        vertexBody,
-        fragmentBody,
-        names: { position, texture, sampler, fragmentInput },
-    };
 }
 
 const renderTaskModule = "src/frame-graph/render-task.ts";
@@ -3315,53 +3066,14 @@ ${pinnedFogInfosPacking()}    };
                 {
                     output:
                         "upstream/shaders/skybox-cubemap.vert.native.wgsl",
-                    data: `// ${imageSkyboxProvenance}
-struct VertexUniforms {
-    viewProjection: mat4x4<f32>,
-}
-@group(1) @binding(0) var<uniform> uniforms: VertexUniforms;
-
-struct VertexOutput {
-    @builtin(position) clipPos: vec4<f32>,
-    @location(0) vPositionW: vec3<f32>,
-    @location(1) vPositionLocal: vec3<f32>,
-}
-
-@vertex
-fn mainVertex(@location(0) ${lifted.names.position}: vec3<f32>) -> VertexOutput {
-${lifted.vertexBody}
-}
-`,
+                    data: `// ${imageSkyboxProvenance}\n` +
+                        emitWgslModule(lifted.vertex),
                 },
                 {
                     output:
                         "upstream/shaders/skybox-cubemap.frag.native.wgsl",
-                    data: `// ${imageSkyboxProvenance}
-@group(2) @binding(0) var ${lifted.names.texture}: texture_cube<f32>;
-@group(2) @binding(1) var ${lifted.names.sampler}: sampler;
-
-struct FragmentUniforms {
-    view: mat4x4<f32>,
-    fogInfos: vec4<f32>,
-    fogColor: vec4<f32>,
-}
-@group(3) @binding(0) var<uniform> uniforms: FragmentUniforms;
-
-${fogFactorWgsl()}
-struct FragmentInput {
-    // D3D12 links vertex and fragment signatures by hardware register,
-    // so the fragment must consume the position builtin to keep the
-    // varying registers aligned with the shared vertex outputs.
-    @builtin(position) clipPos: vec4<f32>,
-    @location(0) vPositionW: vec3<f32>,
-    @location(1) vPositionLocal: vec3<f32>,
-}
-
-@fragment
-fn mainFragment(${lifted.names.fragmentInput}: FragmentInput) -> @location(0) vec4<f32> {
-${lifted.fragmentBody}
-}
-`,
+                    data: `// ${imageSkyboxProvenance}\n` +
+                        emitWgslModule(lifted.fragment, fogFactorWgsl()),
                 },
             );
         }

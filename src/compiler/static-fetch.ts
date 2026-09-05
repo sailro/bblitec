@@ -166,6 +166,7 @@ function compileDynamicCandidateFetch(
     return {
         kind: "static-fetch-response",
         cpp: "",
+        nativeCompanionCaptures: { dynamicAssetPathCpp: selected.nativeCaptures ?? [] },
         dynamicAssetPathCpp:
             `([&](const std::string& key) -> std::string { ` +
             `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
@@ -194,6 +195,7 @@ export function compileStaticFetchMethod(
                     `${owner.dynamicAssetPathCpp}))`,
                 dataType: { kind: "arraybuffer" },
                 dynamicAssetPathCpp: owner.dynamicAssetPathCpp,
+                nativeCompanionCaptures: { dynamicAssetPathCpp: owner.nativeCompanionCaptures?.dynamicAssetPathCpp ?? owner.nativeCaptures ?? [] },
             };
         }
         if (!owner.staticString) {
@@ -365,6 +367,7 @@ function compileDynamicDirectoryFetch(
     return {
         kind: "static-fetch-response",
         cpp: "",
+        nativeCompanionCaptures: { dynamicAssetPathCpp: suffix.nativeCaptures ?? [] },
         dynamicAssetPathCpp:
             `([&](const std::string& key) -> std::string { ` +
             `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +

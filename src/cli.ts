@@ -46,7 +46,7 @@ import {
 import { packageBabylon } from "./babylon-packager.js";
 import { packageGltf } from "./gltf-packager.js";
 import { resolveGeometryExtensions } from "./compressed-geometry.js";
-import { glbJsonText } from "./gltf-document.js";
+import { reachedImageCodecs } from "./image-codecs.js";
 // The dds/hdr/splat/basis packagers and the node-particle bake are imported
 // lazily at their per-kind branches: each top-level-awaits its pinned
 // modules (the HDR one transitively loads the browser harness), so a static
@@ -593,93 +593,6 @@ async function materializeAsset(
             source,
         ),
     );
-}
-
-/**
- * The optional image codecs a scene's materialized assets can reach, each
- * with the ways an asset names its content. PNG is not listed because it is
- * unconditional: `.env` RGBD payloads, the RGBD BRDF LUT and screenshot
- * capture all go through it.
- */
-const optionalImageCodecs: ReadonlyArray<{
-    codec: string;
-    mimeType: string;
-    namePattern: RegExp;
-}> = [
-    {
-        codec: "jpeg",
-        mimeType: "image/jpeg",
-        namePattern: /\.jpe?g(?:[?#]|$)/i,
-    },
-    {
-        codec: "webp",
-        mimeType: "image/webp",
-        namePattern: /\.webp(?:[?#]|$)/i,
-    },
-];
-
-function glbImages(
-    bytes: Buffer,
-): { mimeType?: string; uri?: string }[] {
-    const text = glbJsonText(bytes);
-    if (text === undefined) {
-        return [];
-    }
-    const document = JSON.parse(text) as {
-        images?: { mimeType?: string; uri?: string }[];
-    };
-    return document.images ?? [];
-}
-
-function reachedImageCodecs(
-    outputPath: string,
-    assets: CompileAsset[],
-): string[] {
-    // PNG stays unconditional: .env RGBD payloads and the RGBD BRDF
-    // LUT decode through PNG, and screenshot capture encodes PNG.
-    // Every other codec is reached only when a materialized asset carries
-    // its content; the native build then links that codec through the
-    // matching vcpkg manifest feature and packaging ships its runtime.
-    const reached = new Set<string>();
-    for (const asset of assets) {
-        const materialized = resolve(outputPath, "assets", asset.output);
-        const bytes = existsSync(materialized)
-            ? readFileSync(materialized)
-            : undefined;
-        const isGlb = /\.glb$/i.test(asset.output);
-        const isTextDocument = /\.(?:babylon|gltf)$/i.test(asset.output);
-        const images = bytes && isGlb ? glbImages(bytes) : [];
-        const text =
-            bytes && isTextDocument ? bytes.toString("utf8") : undefined;
-        for (const { codec, mimeType, namePattern } of optionalImageCodecs) {
-            if (reached.has(codec)) {
-                continue;
-            }
-            const inGlb = images.some(
-                (image) =>
-                    image.mimeType === mimeType ||
-                    (typeof image.uri === "string" &&
-                        (new RegExp(`^data:${mimeType}`, "i").test(image.uri) ||
-                            namePattern.test(image.uri))),
-            );
-            const inText =
-                text !== undefined &&
-                (new RegExp(mimeType.replace("/", "\\/"), "i").test(text) ||
-                    new RegExp(
-                        `${namePattern.source.replace(/\(\?:\[\?#\]\|\$\)/, "")}["']`,
-                        "i",
-                    ).test(text));
-            if (namePattern.test(asset.output) || inGlb || inText) {
-                reached.add(codec);
-            }
-        }
-    }
-    return [
-        "png",
-        ...optionalImageCodecs
-            .map(({ codec }) => codec)
-            .filter((codec) => reached.has(codec)),
-    ];
 }
 
 function materializedAssetSource(
@@ -1582,7 +1495,7 @@ async function main(): Promise<void> {
         "features.cmake",
         `${result.cmake}
 set(BBLITE_IMAGE_CODECS
-${imageCodecLines}
+${imageCodecLines || '    ""'}
 )
 `,
     );

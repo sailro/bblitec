@@ -2063,7 +2063,7 @@ void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
 
 void on_before_render(
     Scene& scene,
-    std::function<void(float)> callback) {
+    js::Callback<void(float)> callback) {
     scene.before_render.insert(
         scene.before_render.begin(),
         std::move(callback));
@@ -2071,7 +2071,7 @@ void on_before_render(
 
 void on_scene_dispose(
     Scene& scene,
-    std::function<void()> callback) {
+    js::Callback<void()> callback) {
     scene.disposables.push_back(std::move(callback));
 }
 

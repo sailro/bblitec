@@ -52,6 +52,34 @@ function lower(
         .join("\n");
 }
 
+test("loop and branch locals preserve outer bindings and avoid native shadowing", () => {
+    const cpp = lower(`let p = 7; let pi = 2; for (let p = 0; p < 3; p++) { pi += p; } if (pi > 0) { let p = 9; pi += p; } { let p = 4; pi += p; } p += pi;`);
+    assert.match(cpp, /double pi_1 = 2.0/);
+    assert.match(cpp, /std::int64_t p_1 =/);
+    assert.match(cpp, /pi_1 \+= p_1/);
+    assert.match(cpp, /double p_1 = 9.0/);
+    assert.match(cpp, /\{\n    double p_1 = 4.0;/);
+    assert.match(cpp, /p \+= pi_1;$/);
+});
+
+test("caller substitutions can name later local declarations", () => {
+    const cpp = lower("const defaultOffset = 3; const offset = options.offset;", [
+        ["options.offset", { cpp: "defaultOffset", type: "scalar" }],
+    ]);
+    assert.match(cpp, /const double defaultOffset = 3.0/);
+    assert.match(cpp, /const double offset = defaultOffset/);
+});
+
+test("optional scalar aliases retain absence in strict equality in either order", () => {
+    const cpp = lower("let result = 0; const copy = option; if (copy === undefined) result = 1; if (undefined !== copy) result = 2; if (copy === false) result = 3;", [
+        ["option", { cpp: "value", type: "bool", absentCpp: "missing" }],
+    ]);
+    assert.match(cpp, /if \(missing\)/);
+    assert.match(cpp, /if \(!\(missing\)\)/);
+    assert.match(cpp, /!\(missing\).*value == false/);
+    assert.doesNotMatch(cpp, /double copy/);
+});
+
 test("initialized Vec3 locals retain vector members through assignment", () => {
     const cpp = lower(`let delta: Vec3 = { x: 1, y: 2, z: 3 }; const projection = delta.x; delta = { x: projection, y: 0, z: 0 };`, [], {
         vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,

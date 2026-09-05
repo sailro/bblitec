@@ -235,12 +235,9 @@ export function compileSceneIntrinsic(
                 "frame-graph-context",
                 call.arguments[0]!,
             );
-            const update = frameGraph.frameGraphUpdateCpp
-                ? `bbl::on_frame_graph_update(${frameGraph.cpp}, ${frameGraph.frameGraphUpdateCpp});\n        `
-                : "";
             return {
                 kind: "void",
-                cpp: `${update}bbl::register_frame_graph_context(${frameGraph.cpp})`,
+                cpp: `bbl::register_frame_graph_context(${frameGraph.cpp})`,
             };
         }
 

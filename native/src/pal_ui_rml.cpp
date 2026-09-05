@@ -17,7 +17,9 @@
 #include <RmlUi/Core/RenderInterface.h>
 #include <RmlUi/Core/TextShapingContext.h>
 #include <SDL3/SDL.h>
+#if BBLITE_HAS_IMAGE_DECODER
 #include <SDL3_image/SDL_image.h>
+#endif
 
 #include "RmlUi_Platform_SDL.h"
 #include "pal_runtime_trace.hpp"
@@ -2497,6 +2499,7 @@ public:
     Rml::TextureHandle LoadTexture(
         Rml::Vector2i& texture_dimensions,
         const Rml::String& source) override {
+#if BBLITE_HAS_IMAGE_DECODER
         Rml::FileInterface* files = Rml::GetFileInterface();
         Rml::FileHandle file = files->Open(source);
         if (
@@ -2559,6 +2562,11 @@ public:
             pixels[offset + 2] = static_cast<Rml::byte>(pixels[offset + 2] * alpha / 255);
         }
         return GenerateTexture(pixels, texture_dimensions);
+#else
+        (void)texture_dimensions;
+        (void)source;
+        throw std::runtime_error("This scene was built without image decoding.");
+#endif
     }
 
     Rml::TextureHandle GenerateTexture(

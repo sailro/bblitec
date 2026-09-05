@@ -1,4 +1,5 @@
 import type ts from "typescript";
+import type { NativeCaptureBinding, NativeCompanionKey } from "./closure-captures.js";
 import type { CompileAdaptation } from "../fidelity.js";
 import type {
   NodeParticleBakeRequest,
@@ -1544,6 +1545,12 @@ export interface SceneTopologyState {
 export interface Value {
   kind: ValueKind;
   cpp: string;
+  /** Owning cell for a mutable captured binding; cpp reads its current value. */
+  sharedStorageCpp?: string;
+  /** Native bindings still read by this value and its companion expressions. */
+  nativeCaptures?: readonly NativeCaptureBinding[];
+  /** Dependencies of delayed companion expressions, replaced with that field. */
+  nativeCompanionCaptures?: Partial<Record<NativeCompanionKey, readonly NativeCaptureBinding[]>>;
   /** Generation-known tag for scene-created retained DOM elements. */
   uiTag?: string;
   /** The live DOMStringMap view returned by an element's `dataset`. */
@@ -1601,10 +1608,6 @@ export interface Value {
   borrowedData?: true;
   /** The C++ spelling is an lvalue that can bind to a mutable reference. */
   nativeLvalue?: true;
-  /** Main-lifetime C++ reference a retained native closure must capture by reference. */
-  retainedReferenceCapture?: string;
-  /** Binding order used to exclude references declared inside the closure body. */
-  retainedReferenceSequence?: number;
   /** The data expression is already a native std::vector, not a JS Array. */
   nativeVectorData?: true;
   /** The expression creates an owning data container at this read. */
@@ -1813,13 +1816,8 @@ export interface Value {
    * through the engine object rather than by name.
    */
   audioMainBusCpp?: string;
-  /**
-   * The context a node or parameter belongs to. Web Audio forbids
-   * connecting across contexts and every factory is a method on one, so
-   * the context travels with everything it made; `carriesAudioContext`
-   * in the property table is what moves it across a read.
-   */
-  audioContextCpp?: string;
+  /** Primary native storage whose main-bus companion is materialized beside it. */
+  audioMainBusOwnerCpp?: string;
   /**
    * The materialized asset an `asset` value was loaded from.
    * `selectVariant` needs it the way the pin's own setter reaches
@@ -2088,8 +2086,6 @@ export interface Value {
   recordScopes?: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
   defaultRenderTask?: boolean;
   defaultRenderTaskEmitted?: boolean;
-  /** The context's optional per-frame `update(deltaMs)` callback. */
-  frameGraphUpdateCpp?: string;
   /** Shared across compiler aliases of one native scene. */
   sceneEnvironmentState?: {
     rotationSet: boolean;
@@ -2235,6 +2231,7 @@ export type Feature =
   | "particle:node"
   | "navigation:recast"
   | "navigation:tile-cache"
+  | "navigation:crowd"
   | "sprite:animation"
   | "audio:engine"
   | "audio:buffer-source"

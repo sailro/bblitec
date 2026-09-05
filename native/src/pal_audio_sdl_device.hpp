@@ -42,7 +42,7 @@ public:
         const lab::AudioStreamConfig& output_config)
         : lab::AudioDevice(input_config, output_config)
     {
-        if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
+        if (!stream_.initialized) {
             return;
         }
 
@@ -53,9 +53,9 @@ public:
         spec.freq = static_cast<int>(
             _outConfig.desired_samplerate > 0.0f ? _outConfig.desired_samplerate : 48000.0f);
 
-        stream_ = SDL_OpenAudioDeviceStream(
+        stream_.value = SDL_OpenAudioDeviceStream(
             SDL_AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &AudioDeviceSdl3::feed, this);
-        if (!stream_) {
+        if (!stream_.value) {
             return;
         }
 
@@ -85,7 +85,7 @@ public:
 
         SDL_AudioSpec device_spec{};
         int device_frames = 0;
-        if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream_),
+        if (!SDL_GetAudioDeviceFormat(SDL_GetAudioStreamDevice(stream_.value),
                                       &device_spec, &device_frames) ||
             device_frames <= 0) {
             device_frames = 4096;
@@ -99,44 +99,23 @@ public:
             0.0f);
     }
 
-    ~AudioDeviceSdl3() override
-    {
-        // Destroying the stream closes the device opened with it and
-        // guarantees the callback is no longer running -- so the buses
-        // below cannot be in use by the time they are released.
-        if (stream_alive()) SDL_DestroyAudioStream(stream_);
-        stream_ = nullptr;
-    }
-
     /** Whether the SDL device came up at all; the PAL turns this into a throw. */
-    bool opened() const { return stream_ != nullptr; }
+    bool opened() const { return stream_.value != nullptr; }
 
     void start() override
     {
-        if (!stream_) return;
-        if (!SDL_ResumeAudioStreamDevice(stream_)) return;
+        if (!stream_.value) return;
+        if (!SDL_ResumeAudioStreamDevice(stream_.value)) return;
         running_ = true;
     }
 
     void stop() override
     {
-        if (stream_alive()) SDL_PauseAudioStreamDevice(stream_);
+        if (stream_.value) SDL_PauseAudioStreamDevice(stream_.value);
         running_ = false;
     }
 
     bool isRunning() const override { return running_; }
-
-    /**
-     * Whether the stream can still be spoken to. The renderer's SDL_Quit
-     * closes every audio device and destroys this stream with it, and a
-     * context reaching that point -- the run-end close runs after the
-     * backend returns -- would otherwise pause or destroy a dangling
-     * handle: a use-after-free inside SDL.
-     */
-    bool stream_alive() const
-    {
-        return stream_ != nullptr && SDL_WasInit(SDL_INIT_AUDIO) != 0;
-    }
 
     void backendReinitialize() override
     {
@@ -226,14 +205,29 @@ private:
     static constexpr float kLow = -1.0f;
     static constexpr float kHigh = 1.0f;
 
+    struct StreamOwner {
+        bool initialized = SDL_InitSubSystem(SDL_INIT_AUDIO);
+        SDL_AudioStream* value = nullptr;
+        StreamOwner() = default;
+        StreamOwner(const StreamOwner&) = delete;
+        StreamOwner& operator=(const StreamOwner&) = delete;
+        ~StreamOwner() {
+            if (value) SDL_DestroyAudioStream(value);
+            if (initialized) SDL_QuitSubSystem(SDL_INIT_AUDIO);
+        }
+    };
+
     std::unique_ptr<lab::AudioBus> render_bus_;
     std::unique_ptr<lab::AudioBus> input_bus_;
-    SDL_AudioStream* stream_ = nullptr;
     lab::SamplingInfo sampling_info_{};
     std::vector<float> scratch_;
     int remainder_ = 0;
     bool running_ = false;
     float sample_rate_ = 0.0f;
+    // Destroy first, including when construction throws: closing the stream
+    // joins its callback before the scratch and buses die. Each device releases
+    // only its own SDL audio initialization, preserving other live sessions.
+    StreamOwner stream_;
 };
 
 } // namespace bbl::pal::detail

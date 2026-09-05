@@ -1,0 +1,14 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {"summary":"Reuse CapturedClosure directly throughout function emission instead of splitting and reconstructing its state and interface.","applied":true},
+    {"summary":"Remove the singleton Set allocation when describing a materialized native binding.","applied":true},
+    {"summary":"Remove the retained-callback fixture template and dead conditional branch for the deleted std::function specialization.","applied":true},
+    {"summary":"Replace stale audio-context metadata commentary with the current native handle ownership contract.","applied":true},
+    {"summary":"Reuse shader IR typeComponents for scalar/vector constructor widths while explicitly refusing matrices.","applied":true},
+    {"summary":"Reuse buildGlb in codec-selection tests instead of duplicating GLB framing and padding.","applied":true},
+    {"summary":"Replace per-entry GC map allocations with sorted owner identity storage and one shared binary lookup helper.","applied":true},
+    {"summary":"Reuse context-owned audio traversal storage and mark reachability on existing graph nodes instead of allocating a set each frame.","applied":true},
+    {"summary":"Preserve concrete capture helper signatures and renderer guards when visual capture is disabled.","applied":true}
+  ]
+}

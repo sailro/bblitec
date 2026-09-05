@@ -136,6 +136,7 @@ export function isNeverResized(name: ts.Identifier): boolean {
 }
 
 export interface DataLoweringContext {
+    useNativeValue(value: Value): void;
     readonly checker: ts.TypeChecker;
     lookup(identifier: ts.Identifier): Value;
     lookupOptional(identifier: ts.Identifier): Value | undefined;
@@ -1881,6 +1882,9 @@ export class DataLowerer {
                     cpp: `bbl::js::ArrayBuffer(${owner.cpp})`,
                     dataType: { kind: "arraybuffer" },
                     wholeTypedArrayBackingCpp: owner.cpp,
+                    nativeCompanionCaptures: {
+                        wholeTypedArrayBackingCpp: owner.nativeCaptures ?? [],
+                    },
                 };
             }
             if (property === "byteOffset") {
@@ -4498,6 +4502,9 @@ export class DataLowerer {
                         ? {
                               wholeTypedArrayBackingCpp:
                                   source.wholeTypedArrayBackingCpp,
+                              nativeCompanionCaptures: {
+                                  wholeTypedArrayBackingCpp: source.nativeCompanionCaptures?.wholeTypedArrayBackingCpp ?? source.nativeCaptures ?? [],
+                              },
                           }
                         : {}),
                 };
@@ -5851,6 +5858,7 @@ export class DataLowerer {
         dataType: DataType,
         node: ts.Node,
     ): string {
+        this.context.useNativeValue(value);
         if (
             dataType.kind !== "optional" &&
             ts.isExpression(node)
@@ -6033,7 +6041,7 @@ export class DataLowerer {
                                 dataType.result,
                             )))
                 ) {
-                    return `${value.cpp}.body()`;
+                    return value.cpp;
                 }
                 if (
                     value.kind === "callback" &&

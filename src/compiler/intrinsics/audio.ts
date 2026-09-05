@@ -31,6 +31,7 @@
 // clothes.
 import ts from "typescript";
 import type { Value } from "../types.js";
+import type { NativeCaptureBinding } from "../closure-captures.js";
 import type { IntrinsicCallContext } from "./context.js";
 import { refuseAudioName } from "../audio-surface.js";
 
@@ -38,6 +39,8 @@ export interface AudioIntrinsicContext extends IntrinsicCallContext {
     fail(node: ts.Node, message: string): never;
     allocateTemporaryCppName(label: string): string;
     emit(line: string): void;
+    registerNativeBinding(name: string, borrowed?: boolean): NativeCaptureBinding;
+    audioSessionCpp(): string;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -132,7 +135,7 @@ export function compileAudioIntrinsic(
             // second gain. Two nodes, and the shape is the contract.
             context.emit(
                 `const bbl::pal::AudioContextHandle ${engine}_ctx = ` +
-                    `bbl::pal::audio_create_context();`,
+                    `bbl::pal::audio_create_context(${context.audioSessionCpp()});`,
             );
             context.emit(
                 `const bbl::pal::AudioNodeHandle ${engine}_main_out = ` +
@@ -152,8 +155,10 @@ export function compileAudioIntrinsic(
             return {
                 kind: "audio-engine",
                 cpp: `${engine}_ctx`,
-                audioContextCpp: `${engine}_ctx`,
                 audioMainBusCpp: `${engine}_main_bus`,
+                nativeCompanionCaptures: {
+                    audioMainBusCpp: [context.registerNativeBinding(`${engine}_main_bus`)],
+                },
             };
         }
 
@@ -223,7 +228,6 @@ export function compileAudioIntrinsic(
             return {
                 kind: "audio-node",
                 cpp: source,
-                audioContextCpp: engine.cpp,
                 requiresExplicitDiscard: true,
             };
         }

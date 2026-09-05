@@ -156,12 +156,12 @@ test("lowers one-file input, change dispatch, files[0], and File.text", () => {
     assert.match(result.cpp, /bbl::js::json_parse/);
     assert.match(
         result.cpp,
-        /auto v_imports = std::make_shared<double>\(0\.0\)/,
+        /auto v_imports = bbl::js::make_gc_shared<double>\(0\.0\)/,
         "mutable outer listener state uses a shared closure cell",
     );
     assert.match(
         result.cpp,
-        /\[=, &v_engine\]\(\) mutable \{[\s\S]*bbl::js::file_text[\s\S]*\(\*v_imports\)/,
+        /make_closure\(std::tuple\{v_input, std::ref\(v_engine\), v_imports\}, \[\]\(\[\[maybe_unused\]\] auto& \w+\) \{[\s\S]*bbl::js::file_text[\s\S]*\(\*v_imports\)/,
         "owned callback-local handles are copied while shared state stays live",
     );
     assert.ok(
@@ -182,9 +182,9 @@ test("registers one-shot pointer-lock listeners in the native registry", () => {
 
     assert.match(
         result.cpp,
-        /bbl::on_pointer_lock_change\([\s\S]*?\}, true\);/,
+        /bbl::on_pointer_lock_change\(v_engine, \d+u, bbl::js::make_closure\(std::tuple\{v_transitions\}, \[\]\([^]*?\}\), true\);/,
     );
-    assert.doesNotMatch(result.cpp, /event_once|std::make_shared<bool>\(false\)/);
+    assert.doesNotMatch(result.cpp, /event_once|(?:std::make_shared|bbl::js::make_gc_shared)<bool>\(false\)/);
 });
 
 test("lowers the complete map export/import browser source shape", () => {

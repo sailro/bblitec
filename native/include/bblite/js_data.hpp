@@ -241,24 +241,33 @@ class Ref {
 
     void swap(Ref& other) noexcept { std::swap(block_, other.block_); }
     void reset() {
-        if (block_ && --block_->count == 0) delete block_;
-        block_ = nullptr;
+        auto* released = std::exchange(block_, nullptr);
+        if (released && --released->count == 0) delete released;
     }
     [[nodiscard]] T* get() const {
-        return block_ ? std::addressof(block_->value) : nullptr;
+        return block_ ? std::addressof(*block_->value) : nullptr;
     }
-    [[nodiscard]] T& operator*() const { return block_->value; }
-    [[nodiscard]] T* operator->() const { return std::addressof(block_->value); }
+    [[nodiscard]] T& operator*() const { return *block_->value; }
+    [[nodiscard]] T* operator->() const { return get(); }
     explicit operator bool() const { return block_ != nullptr; }
+    void gc_trace(const TraceVisitor& visitor) const { visitor.edge(block_); }
 
     [[nodiscard]] friend bool operator==(const Ref& left, const Ref& right) {
         return left.block_ == right.block_;
     }
 
   private:
-    struct Block {
-        std::size_t count;
-        T value;
+    struct Block final : gc::Node {
+        template <typename... Args>
+        explicit Block(Args&&... args) : value(std::in_place, std::forward<Args>(args)...) {}
+        ~Block() override { clear(); }
+        std::size_t count = 1;
+        std::optional<T> value;
+        void trace(const TraceVisitor& visitor) const override { if (value) visitor(*value); }
+        void clear() noexcept override { this->payload_alive = false; value.reset(); }
+        std::size_t owners() const noexcept override { return count; }
+        void pin() noexcept override { ++count; }
+        void unpin() noexcept override { if (--count == 0) delete this; }
     };
 
     template <typename U, typename... Args>
@@ -271,10 +280,7 @@ class Ref {
 
 template <typename T, typename... Args>
 [[nodiscard]] Ref<T> make_ref(Args&&... args) {
-    return Ref<T>(new typename Ref<T>::Block{
-        std::size_t{1},
-        T(std::forward<Args>(args)...),
-    });
+    return Ref<T>(new typename Ref<T>::Block(std::forward<Args>(args)...));
 }
 
 /**
@@ -494,16 +500,16 @@ class Array {
     using iterator = typename Storage::iterator;
     using const_iterator = typename Storage::const_iterator;
 
-    Array() : values_(std::make_shared<Storage>()) {}
+    Array() : values_(make_gc_shared<Storage>()) {}
     Array(std::initializer_list<T> values)
-        : values_(std::make_shared<Storage>(values)) {}
+        : values_(make_gc_shared<Storage>(values)) {}
     explicit Array(std::size_t count)
-        : values_(std::make_shared<Storage>(count)) {}
+        : values_(make_gc_shared<Storage>(count)) {}
     Array(std::size_t count, const T& value)
-        : values_(std::make_shared<Storage>(count, value)) {}
+        : values_(make_gc_shared<Storage>(count, value)) {}
     template <typename Iterator>
     Array(Iterator first, Iterator last)
-        : values_(std::make_shared<Storage>(first, last)) {}
+        : values_(make_gc_shared<Storage>(first, last)) {}
 
     [[nodiscard]] std::size_t size() const { return values_->size(); }
     [[nodiscard]] bool empty() const { return values_->empty(); }
@@ -555,6 +561,7 @@ class Array {
     [[nodiscard]] bool operator==(const Array& other) const {
         return values_ == other.values_;
     }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
 
   private:
     // A JavaScript array literal that then grows a few elements -- the
@@ -650,6 +657,7 @@ class Nullable {
             ? std::optional<T>{value()}
             : std::nullopt;
     }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(owned_); }
 
     Nullable& operator=(std::nullopt_t) {
         reference_ = nullptr;
@@ -867,6 +875,7 @@ template <typename T>
 struct InsertionOrderedSlot {
     T value;
     bool active = true;
+    void gc_trace(const TraceVisitor& visitor) const { visitor(value); }
 };
 
 template <typename T>
@@ -882,6 +891,8 @@ struct InsertionOrderedStorage {
 
     Slots entries;
     std::size_t iterator_count = 0;
+    gc::Node* allocation = nullptr;
+    void gc_bind_node(gc::Node* node) noexcept { allocation = node; }
 };
 
 template <typename T, bool IsConst>
@@ -905,16 +916,17 @@ class InsertionOrderedIterator {
         std::shared_ptr<Storage> storage,
         BaseIterator current,
         BaseIterator end)
-        : storage_(std::move(storage)), current_(current), end_(end) {
+        : storage_(std::move(storage)), allocation_(storage_->allocation), current_(current), end_(end) {
         ++storage_->iterator_count;
         skip_deleted();
     }
     InsertionOrderedIterator(const InsertionOrderedIterator& other)
-        : storage_(other.storage_), current_(other.current_), end_(other.end_) {
-        if (storage_) ++storage_->iterator_count;
+        : storage_(other.storage_), allocation_(other.allocation_), current_(other.current_), end_(other.end_) {
+        if (storage_ && storage_alive()) ++storage_->iterator_count;
     }
     InsertionOrderedIterator(InsertionOrderedIterator&& other) noexcept
         : storage_(std::move(other.storage_)),
+          allocation_(other.allocation_),
           current_(other.current_),
           end_(other.end_) {}
     InsertionOrderedIterator& operator=(
@@ -922,9 +934,10 @@ class InsertionOrderedIterator {
         if (this == &other) return *this;
         release();
         storage_ = other.storage_;
+        allocation_ = other.allocation_;
         current_ = other.current_;
         end_ = other.end_;
-        if (storage_) ++storage_->iterator_count;
+        if (storage_ && storage_alive()) ++storage_->iterator_count;
         return *this;
     }
     InsertionOrderedIterator& operator=(
@@ -932,6 +945,7 @@ class InsertionOrderedIterator {
         if (this == &other) return *this;
         release();
         storage_ = std::move(other.storage_);
+        allocation_ = other.allocation_;
         current_ = other.current_;
         end_ = other.end_;
         return *this;
@@ -960,10 +974,20 @@ class InsertionOrderedIterator {
         const InsertionOrderedIterator& other) const {
         return !(*this == other);
     }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 
   private:
+    [[nodiscard]] bool storage_alive() const {
+        return !allocation_ || allocation_->payload_alive;
+    }
     void release() {
         if (!storage_) return;
+        // Cycle collection may already have destroyed the storage payload.
+        // This iterator's shared owner still keeps its control node alive.
+        if (!storage_alive()) {
+            storage_.reset();
+            return;
+        }
         assert(storage_->iterator_count > 0);
         --storage_->iterator_count;
         if (storage_->iterator_count == 0) {
@@ -976,6 +1000,7 @@ class InsertionOrderedIterator {
     }
 
     std::shared_ptr<Storage> storage_;
+    gc::Node* allocation_ = nullptr;
     BaseIterator current_;
     BaseIterator end_;
 };
@@ -1077,6 +1102,7 @@ class IndexedInsertionOrdered {
     [[nodiscard]] std::size_t size() const {
         return storage_->index.size();
     }
+    void gc_trace(const TraceVisitor& visitor) const { visitor(storage_); }
 
   protected:
     using OrderedStorage = InsertionOrderedStorage<EntryT>;
@@ -1097,6 +1123,12 @@ class IndexedInsertionOrdered {
         void invalidate_lookup() {
             cached_key.reset();
             cached_index.reset();
+        }
+        void gc_trace(const TraceVisitor& visitor) const {
+            visitor(this->entries);
+            // The index and lookup cache own additional key copies.
+            for (const auto& entry : index) visitor(entry.first);
+            visitor(cached_key);
         }
     };
 
@@ -1128,7 +1160,7 @@ class IndexedInsertionOrdered {
     }
 
     std::shared_ptr<Storage> storage_ =
-        std::make_shared<Storage>();
+        make_gc_shared<Storage>();
 };
 
 template <typename K, typename V>

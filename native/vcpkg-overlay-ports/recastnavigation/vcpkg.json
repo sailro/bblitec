@@ -1,10 +1,14 @@
 {
   "name": "recastnavigation",
   "version": "1.6.0",
-  "port-version": 102,
+  "port-version": 103,
   "description": "Navigation-mesh Toolset for Games — isaac-mason's fork at the exact commit the pinned @recast-navigation/wasm builds, so the native navmesh, query and crowd behaviour matches the browser reference.",
   "homepage": "https://github.com/isaac-mason/recastnavigation",
   "license": "Zlib",
+  "features": {
+    "crowd": { "description": "Detour crowd simulation" },
+    "tile-cache": { "description": "Detour tile cache and pinned tile construction helpers" }
+  },
   "dependencies": [
     {
       "name": "vcpkg-cmake",

@@ -274,35 +274,29 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
             shader.output.endsWith("skybox-cubemap.frag.native.wgsl"),
         )?.data,
     );
-    // The pin's own statements, re-homed onto the native bindings.
-    assert.match(vertex, /var a: VertexOutput;/);
-    assert.match(vertex, /let b=vec4<f32>\(c,1\.0\);/);
-    assert.match(vertex, /a\.vPositionW=b\.xyz;/);
-    assert.match(vertex, /a\.clipPos=uniforms\.viewProjection\*b;/);
-    assert.match(fragment, /let e=normalize\(b\.vPositionLocal\);/);
-    assert.match(fragment, /var a=textureSample\(c,d,e\);/);
-    assert.match(
-        fragment,
-        /let vFogDistance=\(uniforms\.view\*vec4<f32>\(b\.vPositionW,1\.0\)\)\.xyz;/,
-    );
-    assert.match(fragment, /bblCalcFogFactor\(vFogDistance\)/);
-    assert.match(fragment, /mix\(uniforms\.fogColor\.rgb,a\.rgb,f\)/);
+    assert.match(vertex, /let b = vec4<f32>\(c, 1\.0\);/);
+    assert.match(vertex, /a\.vPositionW = b\.xyz;/);
+    assert.match(vertex, /a\.clipPos = \(uniforms\.viewProjection \* b\);/);
+    assert.match(fragment, /let e = normalize\(b\.vPositionLocal\);/);
+    assert.match(fragment, /var a = textureSample\(c, d, e\);/);
+    assert.match(fragment, /bblCalcFogFactor\(\(\(uniforms\.view \* vec4<f32>\(b\.vPositionW, 1\.0\)\)\)\.xyz\)/);
+    assert.match(fragment, /mix\(uniforms\.fogColor\.rgb, a\.rgb, f\)/);
     // No pinned browser-frame reference survives the re-homing.
     assert.ok(!vertex.includes("scene.") && !vertex.includes("mesh."));
     assert.ok(!fragment.includes("scene."));
     // The native binding contract and entry points are preserved.
     assert.match(
         vertex,
-        /@group\(1\) @binding\(0\) var<uniform> uniforms: VertexUniforms;/,
+        /@group\(1\) @binding\(0\) var<uniform> uniforms: BblSkyboxUniforms;/,
     );
     assert.match(vertex, /fn mainVertex\(@location\(0\) c: vec3<f32>\)/);
     assert.match(fragment, /@group\(2\) @binding\(0\) var c: texture_cube<f32>;/);
     assert.match(fragment, /@group\(2\) @binding\(1\) var d: sampler;/);
     assert.match(
         fragment,
-        /@group\(3\) @binding\(0\) var<uniform> uniforms: FragmentUniforms;/,
+        /@group\(3\) @binding\(0\) var<uniform> uniforms: BblSkyboxUniforms;/,
     );
-    assert.match(fragment, /fn mainFragment\(b: FragmentInput\)/);
+    assert.match(fragment, /fn mainFragment\(b: g\)/);
     // The generated block matches the lifted fragment's uniform struct.
     const plan = new RendererLowerer(
         new LoweringContext(),

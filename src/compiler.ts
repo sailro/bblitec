@@ -7,6 +7,7 @@ import {
     type UiStyleSelectorKind,
 } from "./ui-style-rule.js";
 import {
+    cppIdentifierPattern,
     doubleLiteral,
     sanitizeCppIdentifier,
     stringLiteral,
@@ -257,6 +258,7 @@ export type {
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import { ClosureCaptures, nativeCompanionKeys, renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./compiler/closure-captures.js";
 import { runtimeOnlyIntrinsics } from "./compiler/intrinsics/registry.js";
 import type { ClusteredContainerState } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
@@ -568,6 +570,7 @@ class Compiler
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     public imageDecodeReached = false;
     public jsRandomReached = false;
+    private audioSessionReached = false;
     public voxelFileStorageReached = false;
     /**
      * The bounded canvas-owning functions this compilation executed at
@@ -626,12 +629,11 @@ class Compiler
         Map<object, number>
     >();
     private nextCallbackIdentity = 0;
-    private nextRetainedReferenceSequence = 0;
-    private readonly retainedReferenceSequences = new Map<string, number>();
-    private readonly retainedCaptureStack: Array<{
-        boundary: number;
-        references: Set<string>;
-    }> = [];
+    private nextNativeBindingSequence = 0;
+    private readonly nativeBindings = new Map<string, NativeCaptureBinding>();
+    private readonly nativeStoredValues = new WeakSet<Value>();
+    private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] = [];
+    private readonly managedCaptures: ClosureCaptures[] = [];
     private readonly body: string[] = [];
     /**
      * Collision listeners are registered before every startup assignment has
@@ -1988,7 +1990,7 @@ class Compiler
             if (resource) {
                 this.emit(
                     sharedClosureStorage
-                        ? `auto ${cppName} = std::make_shared<std::optional<${resource.cppType}>>();`
+                        ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${resource.cppType}>>();`
                         : `std::optional<${resource.cppType}> ${cppName};`,
                 );
                 this.defineVariable(declaration.name, {
@@ -2004,6 +2006,7 @@ class Compiler
                     optionalFoundCpp: sharedClosureStorage
                         ? `${cppName}->has_value()`
                         : `${cppName}.has_value()`,
+                    ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
                     optionalStorageCpp: sharedClosureStorage
                         ? `(*${cppName})`
                         : cppName,
@@ -2048,7 +2051,7 @@ class Compiler
             const cppType = this.dataTypes.cppType(dataType);
             this.emit(
                 sharedClosureStorage
-                    ? `auto ${cppName} = std::make_shared<${cppType}>();`
+                    ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>();`
                     : `${cppType} ${cppName};`,
             );
             const boundCpp = sharedClosureStorage ? `(*${cppName})` : cppName;
@@ -2057,7 +2060,8 @@ class Compiler
             }
             this.defineVariable(
                 declaration.name,
-                this.dataLowerer.leafValue(boundCpp, dataType),
+                { ...this.dataLowerer.leafValue(boundCpp, dataType),
+                    ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}) },
             );
             return;
         }
@@ -2122,7 +2126,7 @@ class Compiler
         ) {
             this.emit(
                 sharedClosureStorage
-                    ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>();`
+                    ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>();`
                     : `std::optional<${nullableResource.cppType}> ${cppName};`,
             );
             this.defineVariable(declaration.name, {
@@ -2136,6 +2140,7 @@ class Compiler
                 optionalFoundCpp: sharedClosureStorage
                     ? `${cppName}->has_value()`
                     : `${cppName}.has_value()`,
+                ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
                 optionalStorageCpp: sharedClosureStorage
                     ? `(*${cppName})`
                     : cppName,
@@ -2202,7 +2207,7 @@ class Compiler
             const initializerCpp = value.optionalStorageCpp ?? value.cpp;
             this.emit(
                 sharedClosureStorage
-                    ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp});`
+                    ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp});`
                     : `std::optional<${nullableResource.cppType}> ${cppName} = ${initializerCpp};`,
             );
             this.defineVariable(declaration.name, {
@@ -2211,6 +2216,7 @@ class Compiler
                 optionalFoundCpp: sharedClosureStorage
                     ? `${cppName}->has_value()`
                     : `${cppName}.has_value()`,
+                ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
                 optionalStorageCpp: sharedClosureStorage
                     ? `(*${cppName})`
                     : cppName,
@@ -2347,7 +2353,7 @@ class Compiler
             const boundCpp = sharedDataBinding ? `(*${cppName})` : cppName;
             this.emit(
                 sharedDataBinding
-                    ? `auto ${cppName} = std::make_shared<${localType}>(${narrowed.cpp});`
+                    ? `auto ${cppName} = bbl::js::make_gc_shared<${localType}>(${narrowed.cpp});`
                     : `${localType}${(aliases && !wrapperCopiesIdentity) || narrowed.borrowedData ? "&" : ""} ${cppName} = ${narrowed.cpp};`,
             );
             if (optionalFoundCpp && referenceStruct) {
@@ -2388,6 +2394,7 @@ class Compiler
                     cpp: boundCpp,
                     dataType: narrowed.dataType,
                 }),
+                ...(sharedDataBinding ? { sharedStorageCpp: cppName } : {}),
                 ...(staticElementsOwner
                     ? {
                           staticElements:
@@ -2411,10 +2418,14 @@ class Compiler
                     ? {
                           wholeTypedArrayBackingCpp:
                               narrowed.wholeTypedArrayBackingCpp,
+                          nativeCompanionCaptures: {
+                              wholeTypedArrayBackingCpp: narrowed.nativeCompanionCaptures?.wholeTypedArrayBackingCpp ?? narrowed.nativeCaptures ?? [],
+                          },
                       }
                     : {}),
                 ...(optionalHandle
                     ? {
+                          optionalStorageCpp: boundCpp,
                           optionalFoundCpp: `${boundCpp}.has_value()`,
                           truthinessCpp: `${boundCpp}.has_value()`,
                       }
@@ -2471,7 +2482,7 @@ class Compiler
                 : this.allocateTemporaryCppName("element_found");
         this.emit(
             sharedPrimitive
-                ? `auto ${cppName} = std::make_shared<${nativeType}>(${initializerCpp});`
+                ? `auto ${cppName} = bbl::js::make_gc_shared<${nativeType}>(${initializerCpp});`
                 : `${maybeUnused}${nativeType} ${cppName} = ${initializerCpp};`,
         );
         if (optionalFoundCpp) {
@@ -2492,9 +2503,11 @@ class Compiler
         const stored: Value = {
             ...value,
             cpp: boundCpp,
+            ...(sharedClosureStorage ? { sharedStorageCpp: cppName } : {}),
             ...(optionalFoundCpp ? { optionalFoundCpp } : {}),
             nativeBinding: true,
         };
+        if (!sharedClosureStorage) delete stored.sharedStorageCpp;
         if (value.kind === "animation-clip") {
             stored.animationFrameRate = `${cppName}.frame_rate`;
             stored.animationDuration = `${cppName}.duration`;
@@ -2597,7 +2610,7 @@ class Compiler
         const parameterCpp = parameterTypes.map((type) =>
             this.dataTypes.cppType(type),
         );
-        this.emitNativeCallbackStorage(
+        const storage = this.emitNativeCallbackStorage(
             cppName,
             `void(${parameterCpp.join(", ")})`,
             // The slot exists because a closure handed to the builder
@@ -2605,12 +2618,10 @@ class Compiler
             // when an event fires after the builder returned -- the
             // forward edge always escapes.
             true,
-            false,
         );
-        const storageCpp = this.nativeCallbackStorageExpression(cppName);
+        const storageCpp = storage.cpp;
         this.defineVariable(declaration.name as ts.Identifier, {
-            kind: "callback",
-            cpp: storageCpp,
+            ...storage,
             nativeCallbackParameterTypes: parameterTypes,
         });
         return { parameterTypes, parameterNames, storageCpp };
@@ -2655,7 +2666,8 @@ class Compiler
         const arguments_ = forward.parameterTypes.map((type, index) =>
             this.dataValue(forward.parameterNames[index]!, type),
         );
-        const compiled = this.captureStoredDataFunctionLines(() => {
+        const compiled = this.captureManagedClosureLines(() => {
+            for (const name of forward.parameterNames) this.registerNativeBinding(name);
             const compile = () =>
                 this.compileCallbackWithValues(
                     value.callbackDeclaration!,
@@ -2672,12 +2684,8 @@ class Compiler
                 `${this.dataTypes.cppType(type)} ${forward.parameterNames[index]}`,
         );
         this.emit(
-            `${forward.storageCpp} = ${compiled.capture}(${parameters.join(", ")}) mutable {`,
+            `${forward.storageCpp} = ${renderClosure(compiled, parameters.join(", "))};`,
         );
-        this.increaseIndent();
-        for (const line of compiled.lines) this.emit(line);
-        this.decreaseIndent();
-        this.emit("};");
         this.rebindVariable(declaration.name as ts.Identifier, {
             kind: "callback",
             cpp: forward.storageCpp,
@@ -2833,14 +2841,13 @@ class Compiler
                 this.variableScopes.length,
             );
         }
-        this.emitNativeCallbackStorage(
+        const storage = this.emitNativeCallbackStorage(
             cppName,
             `${returnCpp}(${parameterTypes.join(", ")})`,
             escapes,
         );
         this.defineVariable(name, {
-            kind: "callback",
-            cpp: cppName,
+            ...storage,
             callbackDeclaration: callback,
         });
         let parameterDeclarations: string[] = [];
@@ -2861,21 +2868,10 @@ class Compiler
             parameterDeclarations = captured.parameterDeclarations;
             for (const line of captured.lines) this.emit(line);
         };
-        const compiled = escapes
-            ? this.captureStoredDataFunctionLines(emitCallbackBody, [cppName])
-            : {
-                  lines: this.captureEmittedLines(emitCallbackBody),
-                  capture: "[&]",
-              };
+        const compiled = this.captureManagedClosureLines(emitCallbackBody, !escapes);
         this.emit(
-            `${cppName} = ${compiled.capture}(${parameterDeclarations.join(", ")})${escapes ? " mutable" : ""} -> ${returnCpp} {`,
+            `${storage.cpp} = ${renderClosure(compiled, parameterDeclarations.join(", "), returnCpp)};`,
         );
-        this.increaseIndent();
-        for (const line of compiled.lines) {
-            this.emit(line);
-        }
-        this.decreaseIndent();
-        this.emit("};");
     }
 
     /**
@@ -3025,11 +3021,12 @@ class Compiler
                 declaration.initializer,
             );
             this.emit(
-                `auto ${cppName} = std::make_shared<${cppType}>(${initializerCpp});`,
+                `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${initializerCpp});`,
             );
             this.defineVariable(declaration.name as ts.Identifier, {
                 kind: "data",
                 cpp: `(*${cppName})`,
+                sharedStorageCpp: cppName,
                 dataType: annotated,
             });
             return true;
@@ -3226,11 +3223,11 @@ class Compiler
             // lowered. Keep the reference in a shared cell so the generated
             // lambda observes the assignment immediately below.
             this.emit(
-                `auto ${cppName} = std::make_shared<${this.dataTypes.cppType(annotated)}>();`,
+                `auto ${cppName} = bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>();`,
             );
             this.defineVariable(
                 declaration.name as ts.Identifier,
-                this.dataLowerer.leafValue(`(*${cppName})`, annotated),
+                { ...this.dataLowerer.leafValue(`(*${cppName})`, annotated), sharedStorageCpp: cppName },
             );
         }
         const literalSnapshot =
@@ -3261,7 +3258,7 @@ class Compiler
             );
             if (sharedDataBinding) {
                 this.emit(
-                    `auto ${cppName} = std::make_shared<${this.dataTypes.cppType(annotated)}>(std::move(${targetCpp}));`,
+                    `auto ${cppName} = bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(std::move(${targetCpp}));`,
                 );
             } else if (selfReferentialStruct) {
                 this.emit(`(*${cppName}) = std::move(${targetCpp});`);
@@ -3280,7 +3277,7 @@ class Compiler
                       );
             this.emit(
                 sharedDataBinding
-                    ? `auto ${cppName} = std::make_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp});`
+                    ? `auto ${cppName} = bbl::js::make_gc_shared<${this.dataTypes.cppType(annotated)}>(${initializerCpp});`
                     : selfReferentialStruct
                       ? `(*${cppName}) = ${initializerCpp};`
                       : `${this.dataTypes.cppType(annotated)} ${cppName} = ${initializerCpp};`,
@@ -3333,6 +3330,7 @@ class Compiler
         const boundValue: Value = {
             kind: "data",
             cpp: boundCpp,
+            ...((sharedDataBinding || selfReferentialStruct) ? { sharedStorageCpp: cppName } : {}),
             dataType: annotated,
             ...(annotated.kind === "map" &&
             ts.isObjectLiteralExpression(initializer) &&
@@ -8308,7 +8306,21 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
-        const value = this.expressions.compileValue(expression);
+        const boundary = this.nextNativeBindingSequence;
+        const dependencies = new Set<NativeCaptureBinding>();
+        this.nativeDependencyStack.push(dependencies);
+        let value: Value;
+        try {
+            value = this.expressions.compileValue(expression);
+        } finally {
+            this.nativeDependencyStack.pop();
+        }
+        const retained = new Set(value.nativeCaptures);
+        for (const binding of dependencies) {
+            if (binding.sequence <= boundary) retained.add(binding);
+        }
+        if (retained.size && !this.nativeStoredValues.has(value)) value.nativeCaptures = [...retained];
+        this.useNativeValue(value);
         // A generation-known list of strings travels on the value, exactly
         // as one string travels on `staticString`. It has to: an inlined
         // call binds its parameter to the argument's VALUE and drops the
@@ -8324,11 +8336,9 @@ class Compiler
             const strings = this.staticStringElements(expression);
             if (strings) {
                 const withStrings = { ...value, staticStrings: strings };
-                this.trackRetainedReference(withStrings);
                 return withStrings;
             }
         }
-        this.trackRetainedReference(value);
         return value;
     }
 
@@ -10583,18 +10593,13 @@ class Compiler
                     bound.cpp.length > 0 &&
                     bound.nativeCallbackParameterTypes?.length === 0
                 ) {
-                    const captureByValue = this.frameCallbackDepth > 0;
+                    const captureByValue = this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
                     const emitBody = () => {
-                        this.trackRetainedReference(bound);
+                        this.useNativeValue(bound);
                         this.emit(`${bound.cpp}();`);
                     };
-                    const compiled = captureByValue
-                        ? this.captureStoredDataFunctionLines(emitBody)
-                        : {
-                              lines: this.captureEmittedLines(emitBody),
-                              capture: "[&]",
-                          };
-                    return `${compiled.capture}()${captureByValue ? " mutable" : ""} { ${compiled.lines.join(" ")} }`;
+                    const compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
+                    return renderClosure(compiled, "");
                 }
                 this.fail(
                     unwrapped,
@@ -10633,6 +10638,8 @@ class Compiler
             parameter && ts.isIdentifier(parameter.name)
                 ? parameter.name.text
                 : undefined;
+        const parameterCppName = parameterName
+            ? this.allocateTemporaryCppName("frame_delta") : undefined;
 
         // Everything the outermost frame callback pushes lives on its own
         // stack frame; a deferred body may not reach into it.
@@ -10656,20 +10663,20 @@ class Compiler
             this.deferredCaptureFloor === undefined
                 ? undefined
                 : this.variableScopes.length;
-        this.pushScope(this.cppNamePrefixes.at(-1) ?? "");
+        this.pushScope(this.allocateBlockPrefix());
         // This body is emitted into a real native callback lambda. A source
         // `return` therefore leaves that lambda directly, including when it
         // guards statements later in the callback; it is not an inlined
         // function return that needs the breakable wrapper path.
         this.beginNativeFunctionBody(undefined, true);
-        const captureByValue = this.frameCallbackDepth > 0;
-        let compiled: { lines: string[]; capture: string };
+        const captureByValue = this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        let compiled: CapturedClosure;
         try {
             const emitBody = () => {
                 if (parameter && ts.isIdentifier(parameter.name)) {
                     this.defineVariable(parameter.name, {
                         kind: "number",
-                        cpp: this.cppIdentifier(parameter.name.text),
+                        cpp: parameterCppName!,
                     });
                 }
                 this.frameCallbackDepth += 1;
@@ -10700,12 +10707,7 @@ class Compiler
                     this.frameCallbackDepth -= 1;
                 }
             };
-            compiled = captureByValue
-                ? this.captureStoredDataFunctionLines(emitBody)
-                : {
-                      lines: this.captureEmittedLines(emitBody),
-                      capture: "[&]",
-                  };
+            compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
         } finally {
             this.endNativeFunctionBody();
             this.popScope();
@@ -10726,7 +10728,7 @@ class Compiler
         const cppParameter = parameterName
             ? `[[maybe_unused]] ` +
               `${signature === "timestamp" ? "double" : "float"} ` +
-              `${this.cppIdentifier(parameterName)}`
+              `${parameterCppName}`
             : signature === "timestamp"
               ? "double"
               : "float";
@@ -10734,7 +10736,7 @@ class Compiler
             signature === "void" || signature === "interval"
                 ? ""
                 : cppParameter;
-        return `${compiled.capture}(${lambdaParameter})${captureByValue ? " mutable" : ""} {\n${compiled.lines.map((line) => `            ${line}`).join("\n")}\n        }`;
+        return renderClosure(compiled, lambdaParameter);
     }
 
     /** A retained zero-argument callback with the same capture checks as timers. */
@@ -10758,7 +10760,7 @@ class Compiler
         const dataName = this.allocateTemporaryCppName("csm_receiver_data");
         const previousDepth = this.frameCallbackDepth;
         this.frameCallbackDepth += 1;
-        let compiled: { lines: string[]; capture: string };
+        let compiled: CapturedClosure;
         try {
             const emitBody = () => {
                 const result = this.compileCallbackWithValues(
@@ -10775,21 +10777,11 @@ class Compiler
                 );
                 this.emitDiscardedValue(result);
             };
-            compiled =
-                previousDepth > 0
-                    ? this.captureStoredDataFunctionLines(emitBody)
-                    : {
-                          lines: this.captureEmittedLines(emitBody),
-                          capture: "[&]",
-                      };
+            compiled = this.captureManagedClosureLines(emitBody, previousDepth === 0);
         } finally {
             this.frameCallbackDepth = previousDepth;
         }
-        return (
-            `${compiled.capture}([[maybe_unused]] const bbl::js::F32Array& ${dataName})${previousDepth > 0 ? " mutable" : ""} {\n` +
-            `${compiled.lines.map((line) => `            ${line}`).join("\n")}\n` +
-            `        }`
-        );
+        return renderClosure(compiled, `[[maybe_unused]] const bbl::js::F32Array& ${dataName}`);
     }
 
     private compileNamedFrameCallback(
@@ -10815,9 +10807,9 @@ class Compiler
                     ? undefined
                     : this.variableScopes.length;
         }
-        const captureByValue = this.frameCallbackDepth > 0;
+        const captureByValue = this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         this.frameCallbackDepth += 1;
-        let compiled: { lines: string[]; capture: string };
+        let compiled: CapturedClosure;
         try {
             const emitBody = () => {
                 const value = this.compileCallbackWithValues(
@@ -10829,12 +10821,7 @@ class Compiler
                     this.emit(`${value.cpp};`);
                 }
             };
-            compiled = captureByValue
-                ? this.captureStoredDataFunctionLines(emitBody)
-                : {
-                      lines: this.captureEmittedLines(emitBody),
-                      capture: "[&]",
-                  };
+            compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
         } finally {
             this.frameCallbackDepth -= 1;
             this.deferredCaptureFloor = previousDeferredFloor;
@@ -10845,9 +10832,7 @@ class Compiler
         const lambdaParameter = parameter
             ? `[[maybe_unused]] ${signature === "timestamp" ? "double" : "float"} ${parameter}`
             : "";
-        return `${compiled.capture}(${lambdaParameter})${captureByValue ? " mutable" : ""} {\n${compiled.lines
-            .map((line) => `            ${line}`)
-            .join("\n")}\n        }`;
+        return renderClosure(compiled, lambdaParameter);
     }
 
     public compileColor3(expression: ts.Expression): string {
@@ -11393,8 +11378,7 @@ class Compiler
         );
         this.engineCreationInsertion = this.body.length;
         this.defaultEngineCpp = cppName;
-        const retainedReferenceSequence = ++this.nextRetainedReferenceSequence;
-        this.retainedReferenceSequences.set(cppName, retainedReferenceSequence);
+        const nativeBinding = this.registerNativeBinding(cppName, true);
         // The policy travels as reached features, which is what every other
         // emission decision reads: `useHighPrecisionMatrix` is what the
         // pin's process-global allocator swaps on, and this port composes
@@ -11413,8 +11397,7 @@ class Compiler
             cpp: cppName,
             engineCpp: cppName,
             msaaSamples,
-            retainedReferenceCapture: cppName,
-            retainedReferenceSequence,
+            nativeCaptures: [nativeBinding],
         };
     }
 
@@ -12310,7 +12293,7 @@ class Compiler
             const storage = sharedStorage ? `(*${cppName})` : cppName;
             this.emit(
                 sharedStorage
-                    ? `auto ${cppName} = std::make_shared<std::optional<${nullableResource.cppType}>>();`
+                    ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>();`
                     : `std::optional<${nullableResource.cppType}> ${cppName};`,
             );
             this.defineVariable(name, {
@@ -12323,6 +12306,7 @@ class Compiler
                     : {}),
                 optionalFoundCpp: `${storage}.has_value()`,
                 optionalStorageCpp: storage,
+                ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
             });
             return;
         }
@@ -12369,7 +12353,7 @@ class Compiler
         const storage = sharedStorage ? `(*${cppName})` : cppName;
         this.emit(
             sharedStorage
-                ? `auto ${cppName} = std::make_shared<std::optional<${resource.cppType}>>();`
+                ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${resource.cppType}>>();`
                 : `std::optional<${resource.cppType}> ${cppName};`,
         );
         const value: Value = {
@@ -12382,6 +12366,7 @@ class Compiler
                 : {}),
             optionalFoundCpp: `${storage}.has_value()`,
             optionalStorageCpp: storage,
+            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
         };
         this.defineVariable(name, value);
         return value;
@@ -12410,12 +12395,13 @@ class Compiler
         const cppType = this.dataTypes.cppType(dataType);
         this.emit(
             sharedStorage
-                ? `auto ${cppName} = std::make_shared<${cppType}>();`
+                ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>();`
                 : `${cppType} ${cppName}{};`,
         );
         this.dataLowerer.registerLocal(storage, "owned");
         const value = this.dataLowerer.leafValue(storage, dataType);
         value.nativeLvalue = true;
+        if (sharedStorage) value.sharedStorageCpp = cppName;
         this.defineVariable(name, value);
         return value;
     }
@@ -12468,7 +12454,7 @@ class Compiler
         const cppType = this.dataTypes.cppType(dataType);
         this.emit(
             sharedStorage
-                ? `auto ${cppName} = std::make_shared<${cppType}>(${cpp});`
+                ? `auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${cpp});`
                 : `${cppType} ${cppName} = ${cpp};`,
         );
         this.dataLowerer.registerLocal(storage, "owned");
@@ -12476,12 +12462,15 @@ class Compiler
         // numeric and stored resource handles remain resources.
         const value = this.dataLowerer.leafValue(storage, dataType);
         value.nativeLvalue = true;
+        if (sharedStorage) value.sharedStorageCpp = cppName;
         this.defineVariable(name, value);
         return value;
     }
 
     public resolveThisField(name: string): Value | undefined {
-        return this.thisInstance?.recordProperties?.[name];
+        const value = this.thisInstance?.recordProperties?.[name];
+        if (value) this.useNativeValue(value);
+        return value;
     }
 
     public activeThis(): Value | undefined {
@@ -12643,49 +12632,25 @@ class Compiler
         this.jsRandomReached = true;
     }
 
-    /**
-     * Give a recursive local function JavaScript closure lifetime when an
-     * engine exists. A reference to the heap function keeps existing `[&]`
-     * callback lowering correct, and the owner local keeps the object
-     * alive for every synchronous call the emitting scope makes. Only a
-     * callback that can outlive that scope -- one some other emission
-     * retains, like a timer registration -- is co-owned by the engine:
-     * `native_callback_owners` is never drained, so pushing every
-     * recursive callback grew it once per execution of the emitting body
-     * (one push per frame from platformer's RAF arm, 52 doom sites).
-     */
+    /** Escaping recursive functions own shared cells. Their traced closures
+     * retain sibling cells; collection releases the group after its last root. */
     public emitNativeCallbackStorage(
         cppName: string,
         signature: string,
         escapesEmittingScope: boolean,
-        exposeReference = true,
-    ): void {
-        const engine = this.defaultEngine();
-        if (!engine || this.activeNativeReturnType() !== undefined) {
-            // Namespace-scope data functions do not capture the entry
-            // engine. Their recursive callbacks are invoked synchronously
-            // within the function, so ordinary stack lifetime is sufficient.
-            this.emit(`std::function<${signature}> ${cppName};`);
-            return;
+    ): Value {
+        const type = `bbl::js::Callback<${signature}>`;
+        if (!escapesEmittingScope) {
+            this.emit(`${type} ${cppName};`);
+            return { kind: "callback", cpp: cppName,
+                nativeCaptures: [this.registerNativeBinding(cppName, false, true)] };
         }
         const owner = `${cppName}_owner`;
         this.emit(
-            `auto ${owner} = std::make_shared<std::function<${signature}>>();`,
+            `auto ${owner} = bbl::js::make_gc_shared<${type}>();`,
         );
-        if (escapesEmittingScope) {
-            this.trackRetainedCaptureName(engine);
-            this.emit(`${engine}.native_callback_owners.push_back(${owner});`);
-        }
-        if (exposeReference) {
-            this.emit(`auto& ${cppName} = *${owner};`);
-        }
-    }
-
-    private nativeCallbackStorageExpression(cppName: string): string {
-        return this.defaultEngine() &&
-            this.activeNativeReturnType() === undefined
-            ? `(*${cppName}_owner)`
-            : cppName;
+        return { kind: "callback", cpp: `(*${owner})`, sharedStorageCpp: owner,
+            nativeCaptures: [this.registerNativeBinding(owner)] };
     }
 
     /**
@@ -12894,66 +12859,89 @@ class Compiler
         this.returnFrames.pop();
     }
 
-    /**
-     * Emit one retained callback body while recording the main-lifetime
-     * engine/scene references it actually reads. A binding created inside the
-     * body has a sequence after this capture's boundary and remains a local;
-     * nested captures still see it as an outer reference of their own.
-     */
-    public captureStoredDataFunctionLines(
-        emitBody: () => void,
-        referenceCaptures: readonly string[] = [],
-    ): { lines: string[]; capture: string } {
-        const state = {
-            boundary: this.nextRetainedReferenceSequence,
-            references: new Set<string>(),
-        };
-        for (const name of referenceCaptures) {
-            state.references.add(name);
+    public registerNativeBinding(name: string, borrowed = false, allowReference = false): NativeCaptureBinding {
+        const existing = this.nativeBindings.get(name);
+        if (existing) return existing;
+        const binding = { name, borrowed, allowReference, sequence: ++this.nextNativeBindingSequence };
+        this.nativeBindings.set(name, binding);
+        return binding;
+    }
+
+    private describeNativeValue(value: Value): void {
+        this.nativeStoredValues.add(value);
+        const storage = value.sharedStorageCpp ??
+            (cppIdentifierPattern.test(value.cpp) ? value.cpp : value.optionalStorageCpp ?? value.cpp);
+        if (isCompileTimeOnlyValue(value.kind) || value.kind === "browser" ||
+            !cppIdentifierPattern.test(storage) || ["true", "false", "nullptr"].includes(storage)) return;
+        value.nativeCaptures = [this.registerNativeBinding(storage, value.kind === "engine",
+            value.sharedStorageCpp === undefined)];
+        for (const key of nativeCompanionKeys) {
+            const companion = value[key];
+            if (companion && cppIdentifierPattern.test(companion) &&
+                !["true", "false", "nullptr"].includes(companion)) {
+                this.registerNativeBinding(companion, key === "engineCpp");
+            }
         }
-        this.retainedCaptureStack.push(state);
+    }
+
+    private useNativeBinding(binding: NativeCaptureBinding): void {
+        // Stored Values keep their own home rather than initializer dependencies.
+        // Propagate reads here so a parent expression still sees those reads when
+        // its child returns an existing stored Value.
+        for (const dependencies of this.nativeDependencyStack) dependencies.add(binding);
+        for (const capture of this.managedCaptures) capture.use(binding);
+    }
+
+    public useNativeValue(value: Value, seen = new Set<Value>()): void {
+        if (seen.has(value)) return;
+        seen.add(value);
+        if (value.kind !== "record" && value.kind !== "tuple") {
+            for (const binding of value.nativeCaptures ?? []) this.useNativeBinding(binding);
+            const binding = this.nativeBindings.get(value.cpp);
+            if (binding) this.useNativeBinding(binding);
+        }
+        for (const key of nativeCompanionKeys) {
+            const companion = value[key];
+            if (companion === undefined) continue;
+            const dependencies = value.nativeCompanionCaptures?.[key];
+            if (dependencies) {
+                for (const binding of dependencies) this.useNativeBinding(binding);
+            } else {
+                const binding = this.nativeBindings.get(companion);
+                if (binding) this.useNativeBinding(binding);
+            }
+        }
+        if (value.kind === "record") {
+            for (const field of Object.values(value.recordProperties ?? {})) this.useNativeValue(field, seen);
+        }
+        if (value.kind === "tuple") {
+            for (const field of value.tupleElements ?? []) this.useNativeValue(field, seen);
+        }
+    }
+
+    public captureManagedClosureLines(
+        emitBody: () => void,
+        byReference = false,
+    ): CapturedClosure {
+        const capture = new ClosureCaptures(
+            this.allocateTemporaryCppName("environment"), this.nextNativeBindingSequence, byReference);
+        this.managedCaptures.push(capture);
         let lines: string[];
         try {
             lines = this.captureEmittedLines(emitBody);
         } finally {
-            this.retainedCaptureStack.pop();
+            this.managedCaptures.pop();
         }
         return {
-            lines,
-            capture: [...state.references].some((name) =>
-                new RegExp(`\\b${name}\\b`).test(lines.join("\n")),
-            )
-                ? `[=, ${[...state.references]
-                      .filter((name) =>
-                          new RegExp(`\\b${name}\\b`).test(lines.join("\n")),
-                      )
-                      .map((name) => `&${name}`)
-                      .join(", ")}]`
-                : "[=]",
+            lines: [...capture.declarations, ...lines],
+            environment: capture.environment,
+            initializer: capture.initializer,
         };
     }
 
     private trackRetainedCaptureName(name: string): void {
-        const sequence = this.retainedReferenceSequences.get(name);
-        for (const capture of this.retainedCaptureStack) {
-            if (sequence === undefined || sequence <= capture.boundary) {
-                capture.references.add(name);
-            }
-        }
-    }
-
-    private trackRetainedReference(value: Value): void {
-        if (
-            !value.retainedReferenceCapture ||
-            value.retainedReferenceSequence === undefined
-        ) {
-            return;
-        }
-        for (const capture of this.retainedCaptureStack) {
-            if (value.retainedReferenceSequence <= capture.boundary) {
-                capture.references.add(value.retainedReferenceCapture);
-            }
-        }
+        const binding = this.nativeBindings.get(name);
+        if (binding) this.useNativeBinding(binding);
     }
 
     public beginInlineFrame(wrapped: boolean): void {
@@ -13037,6 +13025,40 @@ class Compiler
         return this.dataLowerer.emitPostfixUnary(expression);
     }
 
+    private bindAudioMainBusStorage(value: Value): void {
+        if (value.kind !== "audio-engine" ||
+            (value.audioMainBusCpp === undefined && value.optionalStorageCpp === undefined)) return;
+        const owner = value.sharedStorageCpp ??
+            (cppIdentifierPattern.test(value.cpp) ? value.cpp : value.optionalStorageCpp) ?? value.cpp;
+        if (value.audioMainBusOwnerCpp === owner) return;
+        const name = this.allocateTemporaryCppName("audio_main_bus");
+        const initial = value.audioMainBusCpp ?? "bbl::pal::AudioNodeHandle{}";
+        const shared = value.sharedStorageCpp !== undefined;
+        this.useNativeValue(value);
+        this.emit(shared
+            ? `[[maybe_unused]] auto ${name} = bbl::js::make_gc_shared<bbl::pal::AudioNodeHandle>(${initial});`
+            : `[[maybe_unused]] bbl::pal::AudioNodeHandle ${name} = ${initial};`);
+        value.audioMainBusCpp = shared ? `(*${name})` : name;
+        value.audioMainBusOwnerCpp = owner;
+        value.nativeCompanionCaptures = { ...value.nativeCompanionCaptures,
+            audioMainBusCpp: [this.registerNativeBinding(name, false, !shared)] };
+    }
+
+    private assignAudioMainBus(target: Value, value: Value | undefined, node: ts.Node): void {
+        if (target.kind !== "audio-engine") return;
+        const destination = target.audioMainBusCpp ?? this.fail(node,
+            "An audio engine assignment requires materialized main-bus storage.");
+        const source = value
+            ? value.audioMainBusCpp ?? this.fail(node,
+                "An audio engine assignment requires its source main bus.")
+            : "bbl::pal::AudioNodeHandle{}";
+        const present = value?.optionalFoundCpp ??
+            (value?.dataType?.kind === "optional" ? `${value.cpp}.has_value()` : undefined);
+        this.emit(`${destination} = ${present
+            ? `(${present}) ? ${source} : bbl::pal::AudioNodeHandle{}`
+            : source};`);
+    }
+
     public assignOptionalResourceValue(
         target: Value,
         value: Value,
@@ -13059,6 +13081,7 @@ class Compiler
             this.emit("} else {");
             this.emit(`    ${storage}.reset();`);
             this.emit("}");
+            this.assignAudioMainBus(target, value, node);
             return;
         }
         if (value.kind !== target.kind) {
@@ -13080,12 +13103,7 @@ class Compiler
         } else {
             this.emit(`${storage} = ${value.cpp};`);
         }
-        if (value.audioContextCpp !== undefined) {
-            target.audioContextCpp = value.audioContextCpp;
-        }
-        if (value.audioMainBusCpp !== undefined) {
-            target.audioMainBusCpp = value.audioMainBusCpp;
-        }
+        this.assignAudioMainBus(target, value, node);
         if (value.engineCpp !== undefined) {
             target.engineCpp = value.engineCpp;
         }
@@ -13191,12 +13209,14 @@ class Compiler
         const right = this.unwrap(expression.right);
         if (right.kind === ts.SyntaxKind.NullKeyword) {
             this.emit(`${storage}.reset();`);
+            this.assignAudioMainBus(target, undefined, right);
             delete target.spriteDepthMode;
             return true;
         }
         const value = this.compileValue(right);
         if (value.kind === "json-null") {
             this.emit(`${storage}.reset();`);
+            this.assignAudioMainBus(target, undefined, right);
             delete target.spriteDepthMode;
             return true;
         }
@@ -15124,11 +15144,11 @@ class Compiler
             previousPlatformEventCaptureFloor;
         this.platformDocumentHiddenCpp = documentHiddenCpp;
         this.frameCallbackDepth += 1;
-        let lines: string[];
-        let baseCapture = "[&]";
+        let compiled: CapturedClosure;
         let identity: number | undefined;
         try {
-            const compiled = this.captureStoredDataFunctionLines(() => {
+            compiled = this.captureManagedClosureLines(() => {
+                if (parameter) this.registerNativeBinding(parameter.name);
                 const unwrapped = this.unwrap(callback) as
                     | ts.Identifier
                     | ts.PropertyAccessExpression
@@ -15210,9 +15230,7 @@ class Compiler
                     ? this.withRecordScopes(bound.callbackRecordOwner, compile)
                     : compile();
                 this.emitDiscardedValue(result);
-            });
-            lines = compiled.lines;
-            if (captureByValue) baseCapture = compiled.capture;
+            }, !captureByValue);
         } finally {
             this.frameCallbackDepth -= 1;
             this.platformDocumentHiddenCpp = previousHidden;
@@ -15231,9 +15249,7 @@ class Compiler
         }
         return {
             identity: identity ?? 0,
-            cpp: `${baseCapture}(${cppParameter})${captureByValue ? " mutable" : ""} {\n${lines
-                .map((line) => `            ${line}`)
-                .join("\n")}\n        }`,
+            cpp: renderClosure(compiled, cppParameter),
         };
     }
 
@@ -15535,6 +15551,7 @@ class Compiler
                     binding.value,
                 );
                 this.refusePoisonedRebind(identifier, binding);
+                this.useNativeValue(binding.value);
                 return binding.value;
             }
         }
@@ -16321,6 +16338,7 @@ class Compiler
                     binding.value,
                 );
                 this.refusePoisonedRebind(identifier, binding);
+                this.useNativeValue(binding.value);
                 return binding.value;
             }
         }
@@ -16359,9 +16377,26 @@ class Compiler
         }
         const innermost = this.variableScopes.at(-1)!;
         const binding = owner.get(symbol)!;
+        const destination: Value = { ...value, cpp: binding.value.cpp };
+        for (const property of ["sharedStorageCpp", "optionalStorageCpp"] as const) {
+            const storage = binding.value[property];
+            if (storage === undefined) delete destination[property];
+            else destination[property] = storage;
+        }
+        if (binding.value.kind === "audio-engine") {
+            this.assignAudioMainBus(binding.value, value, identifier);
+            for (const property of ["audioMainBusCpp", "audioMainBusOwnerCpp"] as const) {
+                const storage = binding.value[property];
+                if (storage === undefined) delete destination[property];
+                else destination[property] = storage;
+            }
+            destination.nativeCompanionCaptures = { ...destination.nativeCompanionCaptures,
+                audioMainBusCpp: binding.value.nativeCompanionCaptures?.audioMainBusCpp ?? [] };
+        }
+        this.describeNativeValue(destination);
         const rebound = {
             ...binding,
-            value: { ...value, cpp: binding.value.cpp },
+            value: destination,
         };
         if (owner === innermost) {
             owner.set(symbol, rebound);
@@ -16375,6 +16410,8 @@ class Compiler
     }
 
     public defineVariable(identifier: ts.Identifier, value: Value): void {
+        this.bindAudioMainBusStorage(value);
+        this.describeNativeValue(value);
         const symbol = this.requireValueSymbol(identifier);
         const scope = this.variableScopes.at(-1)!;
         if (scope.has(symbol)) {
@@ -16410,6 +16447,7 @@ class Compiler
         identifier: ts.Identifier,
         value: Value,
     ): void {
+        this.describeNativeValue(value);
         const symbol = this.requireValueSymbol(identifier);
         const owner = this.bindingScope(symbol);
         if (!owner) {
@@ -16738,10 +16776,12 @@ class Compiler
             return { ...stored, cpp: `std::move(${cpp})`, objectIdentityCpp: `${cpp}.get()` };
         }
         const properties: Record<string, Value> = {};
+        const classFields = this.classOf(record) !== undefined;
         for (const [name, property] of Object.entries(
             record.recordProperties ?? {},
         )) {
-            if (property.sharedRecordScalar) {
+            if (property.sharedRecordScalar || (classFields && property.sharedStorageCpp &&
+                property.cpp === `(*${property.sharedStorageCpp})`)) {
                 properties[name] = property;
                 continue;
             }
@@ -16768,11 +16808,12 @@ class Compiler
                 );
                 const cppType = this.dataTypes.cppType(property.dataType);
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = std::make_shared<${cppType}>(${property.cpp});`,
+                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${property.cpp});`,
                 );
                 properties[name] = {
                     ...property,
                     cpp: `(*${cppName})`,
+                    sharedStorageCpp: cppName,
                     sharedRecordContainer: true,
                 };
                 continue;
@@ -16782,7 +16823,7 @@ class Compiler
                 const { staticNumber: _staticNumber, ...dynamicProperty } =
                     property;
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = std::make_shared<double>(${
+                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<double>(${
                         property.staticNumber === undefined
                             ? property.cpp
                             : doubleLiteral(property.staticNumber)
@@ -16791,6 +16832,7 @@ class Compiler
                 properties[name] = {
                     ...dynamicProperty,
                     cpp: `(*${cppName})`,
+                    sharedStorageCpp: cppName,
                     sharedRecordScalar: true,
                 };
                 continue;
@@ -16799,22 +16841,24 @@ class Compiler
                 const { staticBoolean: _staticBoolean, ...dynamicProperty } =
                     property;
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = std::make_shared<bool>(${property.cpp});`,
+                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<bool>(${property.cpp});`,
                 );
                 properties[name] = {
                     ...dynamicProperty,
                     cpp: `(*${cppName})`,
+                    sharedStorageCpp: cppName,
                     sharedRecordScalar: true,
                 };
                 continue;
             }
             if (property.staticString !== undefined) {
                 this.emit(
-                    `[[maybe_unused]] auto ${cppName} = std::make_shared<std::string>(${this.cppString(property.staticString)});`,
+                    `[[maybe_unused]] auto ${cppName} = bbl::js::make_gc_shared<std::string>(${this.cppString(property.staticString)});`,
                 );
                 properties[name] = {
                     kind: "data",
                     cpp: `(*${cppName})`,
+                    sharedStorageCpp: cppName,
                     dataType: { kind: "string" },
                     staticString: property.staticString,
                     sharedRecordScalar: true,
@@ -16823,6 +16867,7 @@ class Compiler
             }
             properties[name] = property;
         }
+        for (const property of Object.values(properties)) this.describeNativeValue(property);
         if (preserveIdentity) {
             // Aliases (including native proxy dispatchers) key runtime identity
             // by this table. Materializing its leaves must not replace it.
@@ -16915,12 +16960,14 @@ class Compiler
                 expression,
                 this.variableScopes.length,
             );
-            return this.userFunctions.compileStoredDataFunction(
+            const cpp = this.userFunctions.compileStoredDataFunction(
                 this,
                 expression,
                 dataType,
                 effectiveOwner,
             );
+            this.registerNativeBinding(cpp);
+            return cpp;
         };
         if (!effectiveOwner) {
             return compile();
@@ -17074,6 +17121,7 @@ class Compiler
         explicitCppName?: string,
         sharedStorage = false,
     ): void {
+        this.useNativeValue(value);
         if (value.kind === "void") {
             this.fail(
                 identifier,
@@ -17134,7 +17182,7 @@ class Compiler
                     handle: value.kind,
                 });
                 this.emit(
-                    `${maybeUnused}auto ${cppName} = std::make_shared<${cppType}>(${initializerCpp});`,
+                    `${maybeUnused}auto ${cppName} = bbl::js::make_gc_shared<${cppType}>(${initializerCpp});`,
                 );
             } else {
                 const initial = this.allocateTemporaryCppName(
@@ -17142,7 +17190,7 @@ class Compiler
                 );
                 this.emit(`auto ${initial} = ${initializerCpp};`);
                 this.emit(
-                    `${maybeUnused}auto ${cppName} = std::make_shared<std::decay_t<decltype(${initial})>>(std::move(${initial}));`,
+                    `${maybeUnused}auto ${cppName} = bbl::js::make_gc_shared<std::decay_t<decltype(${initial})>>(std::move(${initial}));`,
                 );
             }
         } else {
@@ -17154,13 +17202,7 @@ class Compiler
         const stored: Value = {
             ...value,
             cpp: storedCpp,
-            ...(reference
-                ? {
-                      retainedReferenceCapture: cppName,
-                      retainedReferenceSequence: ++this
-                          .nextRetainedReferenceSequence,
-                  }
-                : {}),
+            ...(sharedStorage ? { sharedStorageCpp: cppName } : {}),
             ...(parameter ? { parameterBinding: true } : {}),
             ...(!parameter ? { nativeBinding: true } : {}),
             ...(parameter && value.staticElements
@@ -17169,15 +17211,7 @@ class Compiler
                   }
                 : {}),
         };
-        if (
-            stored.retainedReferenceCapture &&
-            stored.retainedReferenceSequence !== undefined
-        ) {
-            this.retainedReferenceSequences.set(
-                stored.retainedReferenceCapture,
-                stored.retainedReferenceSequence,
-            );
-        }
+        if (!sharedStorage) delete stored.sharedStorageCpp;
         if (
             value.kind === "data" &&
             value.dataType?.kind === "struct" &&
@@ -17351,6 +17385,16 @@ class Compiler
             return value.engineCpp;
         }
         return this.requireDefaultEngine(node);
+    }
+
+    public audioSessionCpp(): string {
+        if (this.defaultEngineCpp) {
+            this.trackRetainedCaptureName(this.defaultEngineCpp);
+            return `${this.defaultEngineCpp}.audio_session`;
+        }
+        this.audioSessionReached = true;
+        this.useNativeBinding(this.registerNativeBinding("bbl_audio_session"));
+        return "bbl_audio_session";
     }
 
     public requireDefaultEngine(node: ts.Node): string {
@@ -18553,6 +18597,7 @@ class Compiler
             jsDataReached: this.jsDataReached,
             imageDecodeReached: this.imageDecodeReached,
             jsRandomReached: this.jsRandomReached,
+            audioSessionReached: this.audioSessionReached,
             throwReached: this.throwReached,
             postProcessCompositeCount: this.postProcessComposites.length,
             renderDataPreamble: () => this.dataTypes.renderPreamble(),

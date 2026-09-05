@@ -23,5 +23,31 @@ int main() {
     assert(rejects(1u, max_component + 1u));
     assert(rejects(max_component + 1u, 0u));
     assert(rejects(0u, 0u));
+    Registry<int> registry;
+    auto retained = registry.insert(std::make_shared<int>(17));
+    std::uint32_t reusable = 0;
+    std::weak_ptr<int> discarded;
+    for (int iteration = 0; iteration < 100000; ++iteration) {
+        auto transient = registry.insert(std::make_shared<int>(iteration));
+        if (iteration == 0) reusable = transient.index;
+        assert(transient.index == reusable);
+        assert(registry.contains(retained.index, retained.ownership));
+        assert(registry.contains(transient.index, transient.ownership));
+        assert(!registry.contains(transient.index, retained.ownership));
+        assert(!registry.contains(retained.index, {}));
+        discarded = transient.ownership;
+    }
+    assert(discarded.expired());
+    assert(*retained.ownership == 17);
+    assert(registry.capacity() == 2);
+    registry.for_each_live([](int& value) { value += 1; });
+    assert(*retained.ownership == 18);
+    // The allocation can outlive its lookup table without a callback into
+    // destroyed registry storage, and its last release is still valid.
+    auto surviving = [] {
+        Registry<int> local;
+        return local.insert(std::make_shared<int>(4));
+    }();
+    assert(*surviving.ownership == 4);
     std::cout << "audio-handles-check: ok\n";
 }

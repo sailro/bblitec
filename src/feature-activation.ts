@@ -109,7 +109,7 @@ export interface FeatureActivationInputs {
      * as the CLI computed it for the arm coverage check.
      */
     transmission: boolean;
-    /** `reachedImageCodecs`' output: png first, then reached codecs. */
+    /** Codecs reached by packaged assets; capture is a build option. */
     imageCodecs: readonly string[];
     /** The glTF asset outputs the generation-time refusals checked. */
     gltfAssetNames: readonly string[];
@@ -910,6 +910,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "generateTileCache pipeline and the addBoxObstacle / " +
             "addCylinderObstacle / removeObstacle / " +
             "updateNavMeshObstacles surface it is what makes possible",
+        consumers: CMAKE,
+    },
+    "navigation:crowd": {
+        provenance: "src/navigation/navigation.ts createNavCrowd reaches DetourCrowd",
         consumers: CMAKE,
     },
     "audio:engine": {
@@ -2083,8 +2087,9 @@ function codecRows(inputs: FeatureActivationInputs): FeatureActivationRow[] {
             "png",
             "codec",
             reached("png"),
-            "unconditional: .env RGBD payloads and the RGBD BRDF LUT " +
-                "decode through PNG; screenshot capture encodes PNG",
+            reached("png")
+                ? "a materialized PNG image or .env RGBD container needs PNG decoding"
+                : "no materialized asset needs PNG decoding",
             codecProvenance,
             ["features.cmake", "vcpkg manifest"],
         ),

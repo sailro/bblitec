@@ -717,6 +717,13 @@ export class LoweringContext {
         ) {
             return unwrapped.text;
         }
+        if (ts.isTemplateExpression(unwrapped)) {
+            return unwrapped.head.text + unwrapped.templateSpans.map(span => {
+                const value = this.unwrapExpression(span.expression);
+                return (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)
+                    ? value.text : String(this.numericValue(value, file))) + span.literal.text;
+            }).join("");
+        }
         return this.contractError(
             unwrapped,
             `Expected string constant, found ${unwrapped.getText(file)}.`,

@@ -41,7 +41,7 @@ class SdlWindowRun {
             SDL_DestroyWindow(window_);
         }
         active_window_run = previous_;
-        if (initialized_ && !previous_) SDL_Quit();
+        if (initialized_ && !previous_) SDL_QuitSubSystem(initialized_);
     }
 
     bool initialize(SDL_InitFlags flags) {
@@ -50,7 +50,7 @@ class SdlWindowRun {
         // An outer run may not have initialized its own backend yet. It
         // still owns final SDL shutdown if a nested run initialized SDL.
         for (auto* run = this; run; run = run->previous_) {
-            run->initialized_ = true;
+            run->initialized_ |= missing;
         }
         return true;
     }
@@ -76,7 +76,7 @@ class SdlWindowRun {
   private:
     SdlWindowRun* previous_ = nullptr;
     SDL_Window* window_ = nullptr;
-    bool initialized_ = false;
+    SDL_InitFlags initialized_ = 0;
 };
 
 inline bool initialize_run_sdl(SDL_InitFlags flags) {

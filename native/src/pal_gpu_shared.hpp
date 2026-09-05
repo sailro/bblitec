@@ -2,13 +2,15 @@
 // Moved verbatim from pal_sdl_gpu.cpp so both backends upload
 // byte-identical vertex data.
 #pragma once
+#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+#include <bblite/pal_audio.hpp>
+#endif
 
 #include <span>
 
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
-#include <bblite/ts_runtime.hpp>
 // The backend-neutral RmlUi frame types, for the scissor clamp every UI
 // consumer applies to a recorded draw before encoding it.
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
@@ -28,6 +30,8 @@
 // once from the pinned WGSL vertex stages and shared with both geometry
 // loaders. Always emitted, so the include is unconditional too.
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/pinned_texture.hpp>
+#include <bblite/upstream/pinned_rgbd.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
 #if BBLITE_HAS_PICKING
 #include <bblite/upstream/picking_math.hpp>
@@ -4219,30 +4223,15 @@ inline std::vector<std::uint16_t> decode_rgbd(const TextureData& texture_data, i
         width = height = 1;
         return {0, 0, 0, float_to_half(1.0f)};
     }
-    // The pin's `pow(c.rgb, vec3f(2.2))` reads a normalized byte, so it has
-    // 256 possible arguments. Tabulating them is the same expression on the
-    // same inputs -- bit-identical -- and takes the decode of an environment
-    // off `std::pow` entirely.
-    static const std::array<float, 256> gamma_expanded = [] {
-        std::array<float, 256> table{};
-        for (std::size_t byte = 0; byte < table.size(); ++byte) {
-            table[byte] =
-                std::pow(static_cast<float>(byte) / 255.0f, 2.2f);
-        }
-        return table;
-    }();
-    const std::uint16_t opaque = float_to_half(1.0f);
-    const DecodedImage image = decode_image(ts::ArrayBuffer(texture_data.bytes));
+    const DecodedImage image = decode_image(js::ArrayBuffer(texture_data.bytes));
     width = image.width;
     height = image.height;
     std::vector<std::uint16_t> result(static_cast<std::size_t>(width) * height * 4);
     for (std::size_t index = 0; index < image.rgba.size(); index += 4) {
-        const float alpha = std::max(static_cast<float>(image.rgba[index + 3]) / 255.0f, 1.0f / 255.0f);
-        for (std::size_t channel = 0; channel < 3; ++channel) {
-            result[index + channel] = float_to_half(
-                gamma_expanded[image.rgba[index + channel]] / alpha);
+        const auto pixel = upstream::decode_rgbd_pixel(image.rgba.data() + index);
+        for (std::size_t channel = 0; channel < pixel.size(); ++channel) {
+            result[index + channel] = float_to_half(pixel[channel]);
         }
-        result[index + 3] = opaque;
     }
     return result;
 }
@@ -4436,6 +4425,13 @@ inline FrameOptions read_frame_options() {
         environment_variable("BBLITE_DEFORMATION_DUMP");
     options.render_capture_path =
         environment_variable("BBLITE_RENDER_CAPTURE");
+#if !BBLITE_VISUAL_CAPTURE
+    if (!options.screenshot_path.empty() || !options.id_buffer_path.empty() ||
+        !options.cluster_buffer_path.empty() || !options.render_capture_path.empty() ||
+        !options.deformation_dump.empty()) {
+        throw std::runtime_error("Visual capture is disabled in this build (BBLITE_VISUAL_CAPTURE=OFF).");
+    }
+#endif
     options.gpu_debug = environment_variable("BBLITE_GPU_DEBUG") == "1";
     options.test_pass = environment_variable("BBLITE_TEST_PASS") == "1";
     options.single_sample = environment_variable("BBLITE_MSAA") == "1";
@@ -4913,7 +4909,7 @@ inline DecodedImage decode_uploadable_image(
         image.height = static_cast<int>(texture_data.rgba_height);
         image.rgba = texture_data.bytes;
     } else {
-        image = decode_image(ts::ArrayBuffer(texture_data.bytes));
+        image = decode_image(js::ArrayBuffer(texture_data.bytes));
     }
     if (texture_data.premultiply_alpha) {
         premultiply_image_alpha(image);
@@ -5006,20 +5002,8 @@ inline CompressedBlockFormat compressed_block_format(std::string_view name) {
         "No compressed texture format for '" + std::string(name) + "'.");
 }
 
-/**
- * Mip levels for a full chain over a base level:
- * 1 + floor(log2(max(width, height))), computed through double exactly as
- * both backends always have, so the same image sizes the same chain
- * everywhere. (The transmission grab's shortened chain is derived from
- * this by `transmission_grab_mip_count` below.)
- */
-inline std::uint32_t full_mip_chain(
-    std::uint32_t width,
-    std::uint32_t height) {
-    return 1u + static_cast<std::uint32_t>(
-        std::floor(
-            std::log2(
-                static_cast<double>(std::max(width, height)))));
+inline std::uint32_t full_mip_chain(std::uint32_t width, std::uint32_t height) {
+    return static_cast<std::uint32_t>(upstream::mip_level_count(width, height));
 }
 
 /**
@@ -5035,33 +5019,13 @@ inline std::uint32_t atlas_mip_levels(const SpriteAtlasRecord& atlas) {
     return atlas.mip_maps ? full_mip_chain(atlas.width, atlas.height) : 1u;
 }
 
-// ---------------------------------------------------------------------------
-// The pin's transmission scene-colour grab, stated once for both backends
-// (frame-graph/transmission.ts): a fixed 1024x1024 rgba16float texture
-// whatever the surface size, its full mip chain shortened by the fixed
-// 4-mip LOD bias, sampled through getTrilinearAnisotropicSampler (repeat
-// addressing, trilinear filtering, anisotropy 4). Pass mechanics — how the
-// grab is blitted and when the chain regenerates — stay per backend.
+using upstream::transmission_grab_size;
+using upstream::transmission_sampler_max_anisotropy;
 
-/** The grab's fixed extent; both its width and its height. */
-inline constexpr std::uint32_t transmission_grab_size = 1024;
-
-/**
- * The shortened chain: the full chain over the fixed extent minus the
- * pin's 4-mip bias, never below one level. (Dawn used to hardcode 11-4
- * while SDL_GPU derived the same 7 from the extent — one derivation now.)
- */
 inline std::uint32_t transmission_grab_mip_count() {
-    const std::uint32_t full = full_mip_chain(
-        transmission_grab_size,
-        transmission_grab_size);
-    return std::max(1u, full > 4u ? full - 4u : 1u);
+    return static_cast<std::uint32_t>(upstream::transmission_mip_level_count(
+        transmission_grab_size, transmission_grab_size));
 }
-
-/** getTrilinearAnisotropicSampler's anisotropy; the filters are trilinear
- *  and the addressing repeat, translated to each API where the sampler is
- *  created. */
-inline constexpr std::uint32_t transmission_sampler_max_anisotropy = 4;
 
 /**
  * Whether one draw's material is transmissive — the predicate behind the
@@ -5936,6 +5900,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * timeout queued anywhere in the turn is then drained at the turn boundary.
  */
 inline void finish_frame(Engine& engine) {
+    js::collect_at_frame_boundary();
     if (engine.stopped) return;
     if (engine.post_render_animation_frame_callbacks_armed) {
         for (const auto& callback :
@@ -5950,6 +5915,9 @@ inline void finish_frame(Engine& engine) {
     run_deferred_callbacks(engine);
     run_timeout_callbacks(engine);
     run_interval_callbacks(engine);
+#if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
+    audio_collect_finished();
+#endif
 }
 
 /**
@@ -5995,10 +5963,10 @@ public:
 
     /** Whether this run was asked for any capture at all. */
     [[nodiscard]] bool requested() const {
-        return !options_->screenshot_path.empty() ||
+        return BBLITE_VISUAL_CAPTURE && (!options_->screenshot_path.empty() ||
             !options_->id_buffer_path.empty() ||
             !options_->cluster_buffer_path.empty() ||
-            !options_->render_capture_path.empty();
+            !options_->render_capture_path.empty());
     }
 
     [[nodiscard]] bool pending() const {

@@ -196,7 +196,11 @@ builds can use the whole machine. Measure local workloads before overriding.
 
 Shipping selects one scene/backend, static CRT/dependencies and
 `BBLITE_MINSIZE=ON`. Optional subsystems and codecs derive from generated
-features. PNG remains a base dependency for capture and image I/O.
+features. PNG/JPEG/WebP are selected by packaged image content. Visual
+capture is controlled by `BBLITE_VISUAL_CAPTURE`: off by default for minimal
+builds, on for development. Enabling it adds PNG and capture code; requesting
+capture at runtime in a build without it fails explicitly. Navigation selects
+Recast/Detour, adding crowds and tile-cache libraries only when reached.
 
 ```powershell
 pwsh -File tools/build-sdl-min.ps1

@@ -21,8 +21,8 @@ void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
 
-template <typename Function>
 void recursive_callback_lifetime() {
+    using Function = bbl::js::Callback<void(int)>;
     auto owner = std::make_shared<Function>();
     std::weak_ptr<Function> weak = owner;
     Function escaped;
@@ -42,9 +42,7 @@ void recursive_callback_lifetime() {
         assert(!weak.expired());
     }};
     Function outward = bbl::js::retain_callback(owner);
-    if constexpr (requires { outward.identity(); }) {
-        assert(outward.identity() == owner->identity());
-    }
+    assert(outward.identity() == owner->identity());
     outward(3);
     assert(calls == 4);
     outward = Function{};
@@ -111,10 +109,30 @@ void identity_erasure_retains_recursive_owner() {
     assert(weak.expired());
 }
 
+void retained_body_survives_owner_replacement() {
+    using Function = bbl::js::Callback<void()>;
+    auto owner = bbl::js::make_gc_shared<Function>();
+    auto payload = std::make_shared<int>(7);
+    std::weak_ptr<int> weak_payload = payload;
+    *owner = Function{[payload, &owner, &weak_payload] {
+        auto observation = weak_payload;
+        *owner = {};
+        bbl::js::collect_cycles();
+        const auto live = observation.lock();
+        assert(live && *live == 7);
+    }};
+    auto outward = bbl::js::retain_callback(owner);
+    payload.reset();
+    outward();
+    outward(); // Replacing the cell must not invalidate an existing function value.
+    outward = {};
+    assert(weak_payload.expired());
+}
+
 int main() {
-    recursive_callback_lifetime<std::function<void(int)>>();
-    recursive_callback_lifetime<bbl::js::Callback<void(int)>>();
+    recursive_callback_lifetime();
     recursive_callback_allocations();
+    retained_body_survives_owner_replacement();
     identity_erasure_shares_captures();
     identity_erasure_retains_recursive_owner();
     using Callback = bbl::js::Callback<void(double)>;

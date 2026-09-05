@@ -1,11 +1,12 @@
 import type ts from "typescript";
+import { renderClosure } from "./closure-captures.js";
 import type { Value } from "./types.js";
 import type { GizmoIntrinsicContext } from "./intrinsics/gizmo.js";
 
 // Structural canvas aliases share their property table. The generated state
 // belongs to that runtime object, not to a source spelling or to the engine's
 // real canvas. Weak keys cannot retain one compilation's scopes in the next.
-const proxyDispatchers = new WeakMap<object, string>();
+const proxyDispatchers = new WeakMap<object, Value>();
 
 export function pointerDispatcherCpp(
     context: GizmoIntrinsicContext,
@@ -13,7 +14,9 @@ export function pointerDispatcherCpp(
     site: ts.Node,
 ): string {
     if (canvas.kind === "record" && canvas.recordProperties) {
-        return proxyDispatchers.get(canvas.recordProperties) ?? "nullptr";
+        const dispatcher = proxyDispatchers.get(canvas.recordProperties);
+        if (dispatcher) context.useNativeValue(dispatcher);
+        return dispatcher?.cpp ?? "nullptr";
     }
     if (canvas.kind !== "browser") {
         context.fail(site, "Pointer drag requires a canvas or a structural canvas event proxy.");
@@ -39,7 +42,8 @@ export function compilePointerDragRegistration(
     if (canvas.kind === "record" && canvas.recordProperties) {
         const known = proxyDispatchers.get(canvas.recordProperties);
         if (known) {
-            dispatcher = known;
+            context.useNativeValue(known);
+            dispatcher = known.cpp;
         } else {
             const add = canvas.recordMethods?.addEventListener ?? canvas.recordProperties.addEventListener?.callbackDeclaration;
             const remove = canvas.recordMethods?.removeEventListener ?? canvas.recordProperties.removeEventListener?.callbackDeclaration;
@@ -48,13 +52,16 @@ export function compilePointerDragRegistration(
             }
             dispatcher = context.allocateTemporaryCppName("pointer_dispatcher");
             context.emit(`auto ${dispatcher} = bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, false);`);
-            proxyDispatchers.set(canvas.recordProperties, dispatcher);
+            proxyDispatchers.set(canvas.recordProperties, {
+                kind: "data", cpp: dispatcher,
+                nativeCaptures: [context.registerNativeBinding(dispatcher)],
+            });
             const listeners = ["pointerdown", "pointermove", "pointerup", "pointercancel", "pointerleave"].map((event, index) => {
                 const cpp = context.allocateTemporaryCppName("pointer_listener");
                 context.emit(`auto ${cpp} = bbl::pointer_drag_listener(${dispatcher}, ${index}u);`);
                 const arguments_: Value[] = [
                     { kind: "string", cpp: JSON.stringify(event), staticString: event },
-                    { kind: "data", cpp, dataType: {
+                    { kind: "data", cpp, nativeCaptures: [context.registerNativeBinding(cpp)], dataType: {
                         kind: "function", identity: true, parameters: [{ kind: "borrowed-platform-event", event: "event" }],
                     } },
                 ];
@@ -63,14 +70,14 @@ export function compilePointerDragRegistration(
                 context.emitDiscardedValue(result);
                 return arguments_;
             });
-            const cleanup = context.captureStoredDataFunctionLines(() => {
+            const cleanup = context.captureManagedClosureLines(() => {
                 for (const arguments_ of listeners) {
                     const result = context.withRecordScopes(canvas, () =>
                         context.compileCallbackWithValues(remove, arguments_, call, true));
                     context.emitDiscardedValue(result);
                 }
             });
-            context.emit(`bbl::set_pointer_drag_cleanup(${dispatcher}, ${cleanup.capture}() mutable {\n${cleanup.lines.join("\n")}\n});`);
+            context.emit(`bbl::set_pointer_drag_cleanup(${dispatcher}, ${renderClosure(cleanup, "")});`);
         }
     } else if (canvas.kind === "browser") {
         dispatcher = `bbl::create_pointer_drag_dispatcher(${engine}, ${layer.cpp}, true)`;

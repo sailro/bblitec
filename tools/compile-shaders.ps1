@@ -296,6 +296,9 @@ function Copy-IfDifferent {
         return
     }
     Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    # Copy-Item preserves the cache entry's old timestamp. Changed bytes must
+    # invalidate CMake's shader snapshot even when the cache predates it.
+    [System.IO.File]::SetLastWriteTimeUtc($Destination, [DateTime]::UtcNow)
 }
 
 function Remap-PinnedVariantRegisters {

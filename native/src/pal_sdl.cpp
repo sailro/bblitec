@@ -23,8 +23,7 @@
 
 #include <SDL3/SDL.h>
 #include "pal_window.hpp"
-#if BBLITE_HAS_PBR_RENDERER || BBLITE_HAS_SPRITE_RENDERER || \
-    BBLITE_HAS_EFFECT_RENDERER
+#if BBLITE_HAS_IMAGE_DECODER
 #include <SDL3_image/SDL_image.h>
 #endif
 
@@ -223,6 +222,7 @@ bool gamepad_button_pressed(Engine&, GamepadButtonHandle button) {
 // sdl3-image`, png-grey-ramp-last-index.patch), not here: the dependency
 // decodes right rather than the PAL rebuilding its palette afterwards.
 pal::DecodedImage pal::decode_image(const js::ArrayBuffer& buffer) {
+#if BBLITE_HAS_IMAGE_DECODER
     SDL_IOStream* stream = SDL_IOFromConstMem(buffer.data(), buffer.byte_length());
     if (!stream) throw std::runtime_error(std::string("Unable to open image: ") + SDL_GetError());
     SDL_Surface* source = IMG_Load_IO(stream, true);
@@ -244,6 +244,10 @@ pal::DecodedImage pal::decode_image(const js::ArrayBuffer& buffer) {
     }
     SDL_DestroySurface(converted);
     return result;
+#else
+    (void)buffer;
+    throw std::runtime_error("This scene was built without image decoding.");
+#endif
 }
 #endif
 
@@ -314,19 +318,13 @@ bool run_dawn(Engine& engine, RendererKind kind) {
 void pal::run_engine(Engine& engine) {
     SdlWindowRun window_run;
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
-    // The audio run ends when the render run ends, however it ends -- the
-    // same seam CaptureGate takes a screenshot at: a requested capture
-    // renders, then every context closes, so no audio thread outlives the
-    // run into static destruction. This closes audio before the engine-run
-    // window owner shuts SDL down. A build
-    // that reached no audio compiles none of this, and never parses the
-    // audio contract at all.
+    // Finish this engine's audio before releasing its window services.
     struct AudioRunEnd {
+        Engine& engine;
         ~AudioRunEnd() {
-            pal::audio_render_pending_captures();
-            pal::audio_close_all_contexts();
+            if (engine.audio_session) engine.audio_session->finish();
         }
-    } audio_run_end;
+    } audio_run_end{engine};
 #endif
     for (;;) {
         const RendererKind kind = renderer_kind(engine);

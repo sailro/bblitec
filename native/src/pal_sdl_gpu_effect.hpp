@@ -42,7 +42,7 @@ namespace bbl::pal {
 
 /** One `EffectWrapper` as GPU state, for one target signature. */
 struct EffectPass {
-    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    OwnedSdlPipeline pipeline;
     /** The 1x1 texels `setEffectTexture` stored, in declared binding order. */
     std::vector<SDL_GPUTextureSamplerBinding> textures;
     /**
@@ -122,13 +122,13 @@ inline EffectPass create_effect_pass(
 
     // The vertex stage is the pin's own fullscreen triangle: no vertex
     // buffers, no samplers, no uniforms.
-    SDL_GPUShader* vertex = load_shader(
+    auto vertex = load_shader(
         device,
         std::string(entry.vertex_stem).c_str(),
         SDL_GPU_SHADERSTAGE_VERTEX,
         0,
         0);
-    SDL_GPUShader* fragment = load_shader(
+    auto fragment = load_shader(
         device,
         std::string(entry.fragment_stem).c_str(),
         SDL_GPU_SHADERSTAGE_FRAGMENT,
@@ -140,8 +140,8 @@ inline EffectPass create_effect_pass(
     // `blend: options.blend` — the reached slice declares none, and a
     // descriptor that does refuses at generation.
     SDL_GPUGraphicsPipelineCreateInfo info{};
-    info.vertex_shader = vertex;
-    info.fragment_shader = fragment;
+    info.vertex_shader = vertex.get();
+    info.fragment_shader = fragment.get();
     info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
     info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
     info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
@@ -152,9 +152,10 @@ inline EffectPass create_effect_pass(
     info.target_info.num_color_targets = 1;
     info.target_info.color_target_descriptions = &color;
     info.target_info.has_depth_stencil_target = false;
-    pass.pipeline = SDL_CreateGPUGraphicsPipeline(device, &info);
-    SDL_ReleaseGPUShader(device, vertex);
-    SDL_ReleaseGPUShader(device, fragment);
+    pass.pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(device, &info), {device}};
+    vertex.reset();
+    fragment.reset();
     if (!pass.pipeline) gpu_error("SDL_CreateGPUGraphicsPipeline effect");
 
     // The textures the caller set, in the order the sidecar kept them: the
@@ -172,8 +173,7 @@ inline EffectPass create_effect_pass(
 
 inline void release_effect_pass(SDL_GPUDevice* device, EffectPass& pass) {
     release_sprite_fragment_textures(device, pass.textures);
-    if (pass.pipeline) SDL_ReleaseGPUGraphicsPipeline(device, pass.pipeline);
-    pass.pipeline = nullptr;
+    pass.pipeline.reset();
 }
 
 /** `_record`: the pin's own three-vertex draw, into an already-open pass. */
@@ -183,7 +183,7 @@ inline void record_effect_pass(
     const Engine& engine,
     const EffectPass& pass,
     EffectWrapperHandle handle) {
-    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline);
+    SDL_BindGPUGraphicsPipeline(render_pass, pass.pipeline.get());
     const EffectWrapperRecord& wrapper =
         engine.effect_wrappers.at(handle.value);
     if (pass.has_uniform_block && !wrapper.uniform_values.empty()) {

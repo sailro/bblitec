@@ -2475,13 +2475,13 @@ void seek_manager_groups(
 } // namespace
 
 PropertyAnimationManager create_animation_manager() {
-    return std::make_shared<PropertyAnimationManagerRecord>();
+    return js::make_gc_shared<PropertyAnimationManagerRecord>();
 }
 
 PropertyAnimationManager create_animation_manager(
     Engine& engine) {
     auto manager =
-        std::make_shared<PropertyAnimationManagerRecord>();
+        js::make_gc_shared<PropertyAnimationManagerRecord>();
     bind_manager_engine(manager, engine);
     return manager;
 }
@@ -2532,7 +2532,7 @@ PropertyAnimationGroup create_property_animation_group(
             "Property animation target count must match the clip tracks.");
     }
     auto group =
-        std::make_shared<PropertyAnimationGroupRecord>();
+        js::make_gc_shared<PropertyAnimationGroupRecord>();
     group->targets = std::move(targets);
     group->clip = std::move(clip);
     group->from_time = options.from_time;
@@ -2557,13 +2557,13 @@ void start_animation_manager(
     if (owner.started) return;
     owner.started = true;
     scene.before_render.push_back(
-        [manager, engine](float delta_ms) {
-            tick_manager(*engine, *manager, delta_ms);
-        });
+        js::make_closure(std::tuple{manager, engine}, [](auto& captures, float delta_ms) {
+            tick_manager(*std::get<1>(captures), *std::get<0>(captures), delta_ms);
+        }));
     scene.animation_seekers.push_back(
-        [manager, engine](float time) {
-            seek_manager_groups(*engine, *manager, time);
-        });
+        js::make_closure(std::tuple{manager, engine}, [](auto& captures, float time) {
+            seek_manager_groups(*std::get<1>(captures), *std::get<0>(captures), time);
+        }));
 }
 
 void play_animation(PropertyAnimationGroup group) {

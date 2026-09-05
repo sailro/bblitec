@@ -1,11 +1,13 @@
 import { shaderSamplerName } from "./shader-material-programs.js";
 import { shaderSystemUniformType } from "./shader-ir.js";
 import type {
+    ShaderEntryPoint,
     ShaderExpression,
     ShaderIrProgram,
     ShaderStage,
     ShaderStatement,
     ShaderStruct,
+    ShaderModule,
     ShaderUniformBlockReflection,
 } from "./shader-ir.js";
 
@@ -62,12 +64,15 @@ function emitStatements(
                 break;
             case "return":
                 lines.push(
-                    `${indent}return ${emitExpression(statement.value)};`,
+                    `${indent}return${statement.value ? ` ${emitExpression(statement.value)}` : ""};`,
                 );
+                break;
+            case "expression":
+                lines.push(`${indent}${emitExpression(statement.value)};`);
                 break;
             case "var":
                 lines.push(
-                    `${indent}var ${statement.name}: ${statement.type};`,
+                    `${indent}var ${statement.name}${statement.type ? `: ${statement.type}` : ""}${statement.value ? ` = ${emitExpression(statement.value)}` : ""};`,
                 );
                 break;
         }
@@ -75,8 +80,40 @@ function emitStatements(
     return lines;
 }
 
+function emitStruct(structure: ShaderStruct): string {
+    return [
+        `struct ${structure.name} {`,
+        ...structure.members.map((member) =>
+            `    ${memberAttribute(member)}${member.name}: ${member.type},`),
+        "}",
+    ].join("\n");
+}
+
+function emitEntryPoint(entry: ShaderEntryPoint): string {
+    return [
+        `@${entry.stage}`,
+        `fn ${entry.name}(${entry.parameters.map((parameter) =>
+            `${memberAttribute(parameter)}${parameter.name}: ${parameter.type}`).join(", ")}) -> ${memberAttribute({ attribute: entry.returnAttribute })}${entry.returnType} {`,
+        ...emitStatements(entry.statements, "    "),
+        "}",
+    ].join("\n");
+}
+
+/** Emit a complete typed module without inventing or specializing bindings. */
+export function emitWgslModule(module: ShaderModule, helpers = ""): string {
+    if (module.rawSource !== undefined) throw new Error("Typed WGSL emission requires parsed declarations.");
+    return [
+        ...module.structs.map(emitStruct),
+        ...(module.bindings ?? []).map((binding) =>
+            `@group(${binding.group}) @binding(${binding.binding}) var${binding.addressSpace ? `<${binding.addressSpace}>` : ""} ${binding.name}: ${binding.type};`),
+        helpers,
+        emitEntryPoint(module.entryPoint),
+        "",
+    ].join("\n");
+}
+
 function memberAttribute(
-    member: ShaderStruct["members"][number],
+    member: { attribute?: ShaderStruct["members"][number]["attribute"] },
 ): string {
     if (!member.attribute) return "";
     return member.attribute.kind === "builtin"
@@ -225,19 +262,16 @@ export function emitNativeWgslProgram(
             .filter((value): value is string => value !== undefined)
             .join("\n"), block);
     }
-    const moduleStructs = module.structs.map((struct) =>
-        [
-            `struct ${struct.name} {`,
-            ...struct.members.map(
-                (member) =>
-                    `    ${memberAttribute(member)}${member.name}: ${member.type},`,
-            ),
-            "};",
-        ].join("\n"));
-    const returnAttribute =
-        module.entryPoint.returnAttribute?.kind === "location"
-            ? `@location(${module.entryPoint.returnAttribute.value}) `
-            : "";
+    // Native shader inputs carry attributes on their reflected structs;
+    // this entry interface preserves only a direct return location.
+    const entry: ShaderEntryPoint = {
+        ...module.entryPoint,
+        stage,
+        parameters: module.entryPoint.parameters.map(({ name, type }) => ({ name, type })),
+        returnAttribute: module.entryPoint.returnAttribute?.kind === "location"
+            ? module.entryPoint.returnAttribute
+            : undefined,
+    };
     return specializeMixedUniformRoot([
         "// Native-specialized WGSL generated from the bblitec typed shader IR.",
         emitUniformBlock(block),
@@ -245,14 +279,9 @@ export function emitNativeWgslProgram(
         emitSamplerBindings(program, stage),
         defineText.length > 0 ? defineText.trimEnd() : undefined,
         vertexInput,
-        ...moduleStructs,
+        ...module.structs.map((structure) => `${emitStruct(structure)};`),
         "",
-        `@${stage}`,
-        `fn ${module.entryPoint.name}(${module.entryPoint.parameters
-            .map(({ name, type }) => `${name}: ${type}`)
-            .join(", ")}) -> ${returnAttribute}${module.entryPoint.returnType} {`,
-        ...emitStatements(module.entryPoint.statements, "    "),
-        "}",
+        emitEntryPoint(entry),
         "",
     ].filter((value): value is string => value !== undefined).join("\n"), block);
 }

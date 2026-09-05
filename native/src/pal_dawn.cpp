@@ -230,7 +230,9 @@ static_assert(
  * geometry-arm map by variant; `group_key` records what the held group was
  * built for, so a draw arriving with another answer rebuilds.
  */
-struct DawnDrawState {
+struct DawnState;
+
+struct DawnDrawResources {
     WGPUBuffer mesh_uniforms = nullptr;
     WGPUBuffer material_uniforms = nullptr;
     WGPUBuffer uv_uniforms = nullptr;
@@ -247,27 +249,7 @@ struct DawnDrawState {
     bool mirrored_vertices = false;
 };
 
-/** Releases what one map of draw states owns, and empties it. */
-template <typename Key>
-inline void release_dawn_draw_states(
-    std::map<Key, DawnDrawState>& states) {
-    for (auto& [key, draw_state] : states) {
-        if (draw_state.group) wgpuBindGroupRelease(draw_state.group);
-        if (draw_state.uv_transform_uniforms) {
-            wgpuBufferRelease(draw_state.uv_transform_uniforms);
-        }
-        if (draw_state.uv_uniforms) {
-            wgpuBufferRelease(draw_state.uv_uniforms);
-        }
-        if (draw_state.material_uniforms) {
-            wgpuBufferRelease(draw_state.material_uniforms);
-        }
-        if (draw_state.mesh_uniforms) {
-            wgpuBufferRelease(draw_state.mesh_uniforms);
-        }
-    }
-    states.clear();
-}
+using DawnDrawState = OwnedGpuRecord<DawnDrawResources, DawnState>;
 
 struct DawnSharedShaderGeometry;
 struct DawnSharedMaterialTextures;
@@ -442,7 +424,6 @@ struct DawnMeshResources {
     std::map<DawnShaderBindingKey, DawnShaderBindings> shader_bindings;
 };
 
-struct DawnState;
 using DawnMesh = OwnedGpuRecord<DawnMeshResources, DawnState>;
 
 /** One exact local-space shader geometry retained across topology rebuilds. */
@@ -1316,6 +1297,14 @@ struct DawnState : DawnDevice {
         frame_graph_height = 0;
     }
 
+    void release_gpu_resources(DawnDrawResources& draw) noexcept {
+        if (draw.group) wgpuBindGroupRelease(draw.group);
+        if (draw.uv_transform_uniforms) wgpuBufferRelease(draw.uv_transform_uniforms);
+        if (draw.uv_uniforms) wgpuBufferRelease(draw.uv_uniforms);
+        if (draw.material_uniforms) wgpuBufferRelease(draw.material_uniforms);
+        if (draw.mesh_uniforms) wgpuBufferRelease(draw.mesh_uniforms);
+    }
+
     // Release one mesh in dependency order. Submitted command buffers keep
     // their own references; this drops only the application's references.
     void release_gpu_resources(DawnMeshResources& mesh) {
@@ -1345,15 +1334,15 @@ struct DawnState : DawnDevice {
             }
             mesh.shader_bindings.clear();
 #if BBLITE_PBR_VARIANTS > 0
-            release_dawn_draw_states(mesh.pinned_geometry_states);
-            release_dawn_draw_states(mesh.pinned_states);
+            mesh.pinned_geometry_states.clear();
+            mesh.pinned_states.clear();
 #endif
 #if BBLITE_STANDARD_VARIANTS > 0
-            release_dawn_draw_states(mesh.standard_geometry_states);
-            release_dawn_draw_states(mesh.standard_states);
+            mesh.standard_geometry_states.clear();
+            mesh.standard_states.clear();
 #endif
 #if BBLITE_NODE_VARIANTS > 0
-            release_dawn_draw_states(mesh.node_states);
+            mesh.node_states.clear();
 #endif
             if (mesh.shared_composed_textures) {
                 release_shared_user(
@@ -3094,7 +3083,7 @@ WGPUTexture upload_reflection_cube(
     for (std::size_t index = 0; index < images.size(); ++index) {
         if (!texture_data[index].bytes.empty()) {
             images[index] = decode_image(
-                ts::ArrayBuffer(texture_data[index].bytes));
+                js::ArrayBuffer(texture_data[index].bytes));
         } else {
             images[index].width = 1;
             images[index].height = 1;
@@ -4482,7 +4471,7 @@ DawnDrawState& ensure_pinned_draw_bindings(
     std::uint32_t material,
     std::size_t variant,
     const MaterialRecord* record) {
-    DawnDrawState& draw_state = mesh.pinned_states[material];
+    DawnDrawState& draw_state = mesh.pinned_states.try_emplace(material, state).first->second;
     if (draw_state.group && draw_state.group_key == variant) {
         return draw_state;
     }
@@ -4502,11 +4491,10 @@ DawnDrawState& ensure_pinned_draw_bindings(
             uniform_buffer(sizeof(upstream::MeshUniforms));
     }
     // Sized by the variant, so a swap to one with more fields reallocates.
-    if (draw_state.material_uniforms) {
-        wgpuBufferRelease(draw_state.material_uniforms);
+    if (WGPUBuffer old = std::exchange(
+            draw_state.material_uniforms, uniform_buffer(entry.material_ubo_bytes))) {
+        wgpuBufferRelease(old);
     }
-    draw_state.material_uniforms =
-        uniform_buffer(entry.material_ubo_bytes);
     draw_state.group = build_pinned_draw_group(
         state,
         mesh,
@@ -4534,7 +4522,7 @@ DawnDrawState& ensure_pinned_geometry_bindings(
     if (existing != mesh.pinned_geometry_states.end()) {
         return existing->second;
     }
-    DawnDrawState draw_state{};
+    DawnDrawState draw_state{state};
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
@@ -4556,7 +4544,7 @@ DawnDrawState& ensure_pinned_geometry_bindings(
         draw_state.material_uniforms,
         geometry_params);
     return mesh.pinned_geometry_states
-        .emplace(variant, draw_state)
+        .emplace(variant, std::move(draw_state))
         .first->second;
 }
 
@@ -5802,7 +5790,7 @@ DawnDrawState& ensure_standard_draw_buffers(
     DawnMesh& mesh,
     std::uint32_t material) {
     DawnDrawState& draw_state =
-        mesh.standard_states[material];
+        mesh.standard_states.try_emplace(material, state).first->second;
     const auto uniform_buffer = [&](std::size_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = static_cast<std::uint64_t>(size);
@@ -6001,7 +5989,7 @@ void write_standard_geometry_task(
                     mesh,
                     draw.item.material.value);
             DawnDrawState& draw_state =
-                mesh.standard_geometry_states[variant];
+                mesh.standard_geometry_states.try_emplace(variant, state).first->second;
             // A LOCAL_POSITION variant's mesh block carries the node world
             // where the colour pass's carries the identity over baked
             // vertices, and every queue write lands before the frame's
@@ -7287,7 +7275,7 @@ DawnDrawState& ensure_node_draw_buffers(
     DawnMesh& mesh,
     std::uint32_t material,
     const upstream::NodeVariantEntry& entry) {
-    DawnDrawState& draw_state = mesh.node_states[material];
+    DawnDrawState& draw_state = mesh.node_states.try_emplace(material, state).first->second;
     const auto uniform_buffer = [&](std::uint64_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = size;
