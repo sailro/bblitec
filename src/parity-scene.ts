@@ -1066,8 +1066,14 @@ export function parseMemoryArguments(
         );
     }
     const maxGrowthMb = flagNumber(parsed, "--max-growth-mb", "memory") ?? 32;
+    if (maxGrowthMb < 0) {
+        throw new Error("memory: --max-growth-mb must be nonnegative.");
+    }
     const backend = optionalBackend(parsed, "memory");
     const replayFile = parsed.values.get("--replay-file");
+    if (replayFile !== undefined && parsed.values.has("--replay")) {
+        throw new Error("memory: use only one of --replay and --replay-file.");
+    }
     // A streaming tape runs to thousands of entries, past what a shell
     // passes as one argument; a file carries it whole.
     const replay =
@@ -1106,7 +1112,8 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         }
         const read = (name: string): number | undefined => {
             const value = values.get(name);
-            return value === undefined || Number.isNaN(value) ? undefined : value;
+            return value === undefined || !Number.isFinite(value) || value < 0
+                ? undefined : value;
         };
         const frame = read("frame");
         const workingSetMb = read("working_set_mb");
@@ -1114,8 +1121,8 @@ export function parseMemoryProfile(stderr: string): MemorySample[] {
         const sceneMeshes = read("scene_meshes");
         const geometryMb = read("geometry_mb");
         if (
-            frame === undefined ||
-            workingSetMb === undefined ||
+            frame === undefined || !Number.isInteger(frame) ||
+            workingSetMb === undefined || workingSetMb === 0 ||
             meshRecords === undefined ||
             sceneMeshes === undefined ||
             geometryMb === undefined
@@ -1148,10 +1155,15 @@ export interface MemorySummary {
 export function summarizeMemoryProfile(
     samples: readonly MemorySample[],
     maxGrowthMb: number,
+    requestedFrames?: number,
 ): MemorySummary | undefined {
     if (samples.length < 3) return undefined;
     const settled = samples[Math.ceil((samples.length - 1) / 3)]!;
     const last = samples[samples.length - 1]!;
+    if (
+        (requestedFrames !== undefined && last.frame < requestedFrames - memoryProfileFrames) ||
+        samples.some((sample, index) => index > 0 && sample.frame <= samples[index - 1]!.frame)
+    ) return undefined;
     const growthMb = last.workingSetMb - settled.workingSetMb;
     return {
         settled,
@@ -1167,7 +1179,7 @@ export function formatMemorySummary(
     summary: MemorySummary | undefined,
 ): string {
     if (!summary) {
-        return `${id}: unmeasured (fewer than three [mem][frame] lines; a frame-graph loop prints none)`;
+        return `${id}: unmeasured (missing, unordered or incomplete [mem][frame] samples)`;
     }
     const { settled, last, growthMb, maxGrowthMb } = summary;
     const verdict = summary.passed ? "ok" : `FAILED (> ${maxGrowthMb} MB)`;
@@ -1197,6 +1209,7 @@ export function runMemoryReport(
     const backend = resolveBackend(memoryArguments.backend, "memory");
     applyGpuBackendEnvironment(backend);
     let failures = 0;
+    let unmeasured = 0;
     for (const scene of selected) {
         const executable = resolveNativeExecutable(
             undefined,
@@ -1226,16 +1239,32 @@ export function runMemoryReport(
             true,
         );
         verifyBuildIdentity(executable, generatedDirectory, stampPath);
+        const samples = parseMemoryProfile(stderr);
         const summary = summarizeMemoryProfile(
-            parseMemoryProfile(stderr),
+            samples,
             memoryArguments.maxGrowthMb,
+            memoryArguments.frames,
         );
+        const reportStem = stampPath.slice(0, -".build-stamp".length);
+        writeFileSync(`${reportStem}.log`, stderr);
+        writeReport(`${reportStem}.json`, {
+            tool: "memory", backend, generatedDirectory,
+        }, {
+            scene: scene.id,
+            requestedFrames: memoryArguments.frames,
+            maxGrowthMb: memoryArguments.maxGrowthMb,
+            ...(memoryArguments.replay !== undefined ? { replay: memoryArguments.replay } : {}),
+            status: summary === undefined ? "unmeasured" : summary.passed ? "passed" : "failed",
+            samples,
+            ...(summary !== undefined ? { summary } : {}),
+        });
+        if (!summary) unmeasured += 1;
         if (summary && !summary.passed) failures += 1;
         console.log(formatMemorySummary(scene.id, summary));
     }
-    if (failures > 0) {
+    if (failures > 0 || unmeasured > 0) {
         throw new Error(
-            `memory: ${failures} run(s) grew past ${memoryArguments.maxGrowthMb} MB after warm-up.`,
+            `memory: ${failures} run(s) grew past ${memoryArguments.maxGrowthMb} MB after warm-up; ${unmeasured} unmeasured run(s). See artifacts/memory/.`,
         );
     }
 }

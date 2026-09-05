@@ -2,7 +2,6 @@ import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
   lowerMat4InvertCpp,
-  lowerMat4MultiplyWriterCpp,
 } from "./pinned-function-lowerer.js";
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
 import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
@@ -859,7 +858,7 @@ void enable_mirrored_meshes(Scene& scene) {
       : "";
     const parentMatrixHelpers = options.parenting
       ? [
-          lowerMat4MultiplyWriterCpp(this.context),
+          "using upstream::mat4_multiply_into;",
           lowerMat4InvertCpp(this.context),
           lowerMat4DecomposeFull(this.context),
         ].join("\n\n")
@@ -1511,6 +1510,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
       header: "",
       source: `// ${this.context.provenance(modulePath, `${createName}, ${addName}, ${beforeName}, ${disposeName}, ${registerName}`, `${transformNodeModulePath}#cloneTransformNode, cloneMeshNode`)}
 #include <bblite/runtime.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 ${options.geometryAccess || options.parenting ? "#include <bblite/js_data.hpp>" : ""}
 ${
   options.mirroredMeshes || options.geometryAccess || options.parenting

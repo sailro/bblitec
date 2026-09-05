@@ -74,3 +74,25 @@ test("validation checkpoints are atomic and malformed files restart cleanly", (t
     writeFileSync(path, "not json");
     assert.deepEqual(readValidationCheckpoint(path), { version: 1 });
 });
+
+test("shader checkpoints follow DXC's codegen DLLs only for DXC targets", (t) => {
+    const root = mkdtempSync(join(tmpdir(), "bblitec-shader-tools-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const dxc = resolve(root, "dxc.exe");
+    const tint = resolve(root, "tint.exe");
+    write(dxc, "dxc");
+    write(tint, "tint");
+    const fingerprint = (target: string): string =>
+        validationShaderInput("sources", target, { dxc, tint }, root);
+    const metal = fingerprint("metal");
+    for (const name of ["dxcompiler.dll", "dxil.dll"]) {
+        const before = fingerprint("d3d12");
+        const path = resolve(root, name);
+        write(path, "installed");
+        assert.notEqual(fingerprint("d3d12"), before, `${name} installation`);
+        const installed = fingerprint("vulkan");
+        write(path, "replacement compiler");
+        assert.notEqual(fingerprint("vulkan"), installed, `${name} replacement`);
+        assert.equal(fingerprint("metal"), metal);
+    }
+});

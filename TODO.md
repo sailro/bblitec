@@ -1,1732 +1,254 @@
-# bblitec TODO
+# Unfinished work
+
+This file owns future capabilities and maintenance work. Confirmed audit
+defects and their closure evidence live in [audit.md](audit.md). Supported
+behavior lives in [features](docs/features.md); measured results live in
+[status](docs/status.md). Do not duplicate completed work or development history.
+
+The numbered-scene inventory below is checked against `src/scene-registry.ts`.
+Its rows describe remaining integration scope, not a fresh compile-probe
+transcript or a guarantee that one listed change completes the scene. Before
+implementation, follow the sizing/capture workflow in
+[debugging](docs/debugging.md).
+
+## P1 — Compiler model
+
+- [ ] Generalize namespace/default imports beyond specialized recognized
+  modules; preserve resolved-symbol intrinsic identity.
+- [ ] Build a typed user-code IR with one symbol/alias resolver, escape graph
+  and retaining-sink model. Replace source-text/positional scope recognizers.
+  General render/update callbacks, escaping captures and dynamic-import/AOT
+  promise dispatch need this common contract.
+- [ ] Extend discriminated unions, numeric-literal narrowing and
+  definitely-assigned locals across try/finally. A static nullable annotation
+  must not keep both branches live when its value is known.
+- [ ] Carry runtime numeric width on values rather than in already-rendered
+  C++ text; use the same sink conversion for inline returns and tuple lanes.
+  Invalidate static parameter metadata after assignment. Compare generated
+  output and remeasure affected numeric/sprite scenes.
+- [ ] Preserve JavaScript truthiness for general nullable strings/numbers,
+  including empty string and zero. The localStorage-specific rule does not
+  establish correctness for every optional value.
+- [ ] Add stored subclass/dynamic dispatch and full generic method-body
+  instantiation. Keep concrete class identity and hoisted-field proofs.
+- [ ] Avoid unused class hydration reads, default-initializer duplication and
+  whole-closure construction for identity-only Map/Set lookup. These need lazy
+  properties, default-value recognition and heterogeneous lookup respectively.
+- [ ] Collapse adjacent empty frame-yield continuations into counted requeues.
+  Keep scheduling order while removing compiler nesting ceilings; align
+  for/for-of/budgeted-loop frame-yield classification.
+- [ ] Make probes non-emitting and transactional for compiler state as well as
+  text; use typed optionality/receiver classification instead of compileValue
+  probes. Consolidate alias resolution and loop-control subtree walks.
+- [ ] Generalize optional trailing out-parameters, enum values in native
+  arrays, vector setter aliases and nullable handle-like result records.
+- [ ] Validate warning-clean emission for a direct
+  `if (physicsRaycast(...).hasHit)` and a Vec3 literal inside a frame callback.
+  These forms need their own build regressions before their old probe reports
+  can be considered closed.
+- [ ] Extend every/some and related shape predicates over generation-decoded
+  tuple bindings, using the same static materialization boundary as arguments.
+- [ ] Extend typed WGSL parsing through reached const/function/loop forms and
+  retire strict raw-source fallback when the IR can represent their contracts.
+
+Strong reference cycles and resource-loop output explosion are confirmed
+defects owned by the active audit; a general ownership/expansion policy must
+cover alias-hidden graphs and nested resource helpers.
+
+## P1 — Lowering reuse and asset processing
+
+- [ ] Lower pick-ray construction through an optional-record return adapter.
+  Consolidate repeated computeAabb derivations across mesh, line and morph
+  helpers onto the already-lowered pinned function.
+- [ ] Extend shared statement inventories to restated audio, clustered-light,
+  atlas and VAT bodies. `LoweringContext.assertStatementInventory` already
+  exists; the remaining task is complete contract coverage, not moving the
+  helper. A count alone must not stand in for semantic arm coverage.
+- [ ] Consolidate typed-array name/type tables, imported mesh-search emitters,
+  repeated enum-option validation and distinct-list registries. Generalize
+  recursive flatten recognition by symbols/normalized structure.
+- [ ] Consolidate recording WebGPU stubs only after inventorying each caller's
+  allowed method surface; keep unexpected calls failing rather than supplying
+  a permissive shared stub.
+- [ ] Reuse one parsed repository module graph and browser worker for asset
+  execution. Preserve producer isolation, complete content-addressed inputs and
+  fetched-asset provenance. Retire the voxel-atlas-specific source gate through
+  a typed fetched-asset manifest.
+- [ ] Emit an ordered typed `.babylon` renderable manifest shared by native
+  loader generation and variant composition, replacing their duplicate
+  admission/count predicates.
+- [ ] Generalize the bounded local-factory evaluator and shader-text fold for
+  scene declarations, including source-located failure reporting. Plugin-only
+  copies should consume those shared entry points.
+- [ ] Carry material family as a typed lane, then validate every family-specific
+  write; a generic material handle must not accept an unrelated Standard setter.
+- [ ] Derive post-process option kinds from pinned config declarations, not
+  the scene's chosen field names.
+- [ ] Normalize reflection sidecar source paths so shader-cache replay does
+  not depend on which scene populated the cache first.
+- [ ] Cache SPZ payloads with observed rotation and assert that a scene-wide
+  rotation cannot hide a version-conditional write. Add a same-cloud
+  PLY/SPLAT packaging equivalence fixture and shared output-collision policy.
+- [ ] Cache assembled KTX1 bytes rather than base64 JSON; parse native
+  container ranges through spans to avoid full extra copies. Derive KTX2
+  sampler mapping from the pinned descriptor and measure large-texture replay.
+
+## P1 — Runtime, build and tooling
+
+- [ ] Extract stateful UI analysis into a narrow lowerer with typed style
+  metadata. Split stylesheet/tree/content dirtiness; update affected subtrees,
+  track layout demand, index hover candidates and active textures, and replace
+  hardcoded repeated-background/crosshair markup with generic typed layers.
+- [ ] Add compiled-stage layout tests comparing reflection/slots with PAL
+  bindings. Cover optional node morph pairs, empty generic layouts and removed
+  bindings before narrowing generated capability guards.
+- [ ] Reflect each node variant once into a shared binding map. Build node
+  group-1 layouts from it, preserving nodeU's binding and actual stage
+  visibility rather than the PBR binding-0/1 convention.
+- [ ] Gate optional generated code at its actual reach: CSM blocks/sizes,
+  morph-shadow helpers, physics aggregate/trigger helpers, camera viewport
+  helpers, mesh clone/builders, display gizmos and utility-layer overlays.
+  Build scenes reaching none, each alone and interacting combinations.
+- [ ] Reclaim retired shadow tasks/targets/caster views using
+  generation-checked handles and source-material texture ownership. Release
+  removed resources without invalidating retained source handles.
+- [ ] Share duplicated physics mask/dirty-marking paths. Retain body region
+  origins and indexed triangle-mesh backing storage where supported.
+- [ ] Consolidate gizmo widget builders/options and utility-layer records.
+  Reuse per-frame bounds-walk scratch and indexed visitation instead of
+  repeated allocation and linear duplicate searches.
+- [ ] Use one shared billboard-pick candidate walk and measure the
+  readable-present-copy blit paths before consolidating SDL presentation.
+- [ ] Avoid full detailed-pick CPU-array copies while preserving scene-facing
+  typed-array semantics. Supply an internal borrowed/read-only geometry view.
+- [ ] Remove double compilation/copies of optional vertex streams and place
+  mesh/material compatibility validation at composition, including task
+  material overrides.
+- [ ] Build a shared image-codec manifest contract across generation, CMake,
+  vcpkg and packaging instead of repeating optional codec lists.
+- [ ] Retire SDL overlay fixes only after a candidate dependency implements
+  and passes the multisample-storage and D3D12-line checks. Track
+  [SDL #15838](https://github.com/libsdl-org/SDL/pull/15838) and
+  [SDL #16183](https://github.com/libsdl-org/SDL/pull/16183).
+  Keep the shipping-only static-no-dynapi patch separate.
+- [ ] Establish an upstream retirement path for SDL_image's
+  `png-grey-ramp-last-index.patch`; keep unrelated overlay ports when removing
+  an individual fixed port. Revalidate decoder pixels before updating baseline.
+- [ ] Review the retained RmlUi compatibility patches against upstream
+  responses and supported font engines; they are not all documented RmlUi bugs.
+
+## P1 — Broader feature contracts
+
+| Family | Remaining work and validation boundary |
+| --- | --- |
+| Cameras | Explicit off-center orthographic bounds, disable/restore behavior and wider environment combinations. Camera upperRadiusLimit sizing is implemented; add an observing gate rather than reimplement it. |
+| Imported hierarchy | Full root clone/rotation/scaling, imported light/camera descendants and morph clone weights. Give imported roots a consistent native node representation and preserve clone-of-clone outer transforms. |
+| Rotation | Replace separate Euler/quaternion lanes with the pinned proxy model; lower quaternion-to-Euler conversion and measure mixed writes. |
+| Direct morph | Multiple targets and one shared weights object attached to several meshes. |
+| PBR | Remaining metallic-reflectance options, textured environment rotation, local cubemap blending and unimplemented asset extension fields. |
+| Standard UV | Material uvOffset, lightmap legacyFlipV and rebuild semantics beyond the reached fixed transform. |
+| Textures | Remaining depth/geometry texture-view assignments and explicit per-texture encoding paths; do not conflate supported colour views with other aspects. |
+| Node material | Geometry MRT, delegating blockLoader, loaded-material texture handles and live scalar inputs. Alpha-combine graphs are already supported; wider alpha modes still need contracts. |
+| Plugin | Uniform writers/UBO layouts, priority/defines/runtime enable state and PBR sampler plugins. Trim dead Standard arms using actual material usage counts. |
+| Shader material | Remaining uniform APIs/system values and depth/blend/stencil/plugin options outside the reached sets. Typed 2D/array/comparison samplers and storage creation/update/dispose/binding already exist. Preserve material depthCompare explicitly. |
+| Effects | Wider binding descriptors/textures, custom vertex and renderer update callbacks, disposal and unregister operations. |
+| Sprites | Coverage gamma, handle-object methods, append-atlas forms and mixed-family transparent depth ordering. Atlas-from-frames is already implemented. |
+| Billboards | Cutout, floating-origin and mixed splat contributors in picking; preserve one registration-ordered contributor list. |
+| Picking | Raw skeletons, morph-only/basic deformation, thin-instance/VAT ids, filter/discard/ignore, remaining PickingInfo fields/nullable returns and multiple clouds. Basic/detailed picking and getPickedNormal are implemented. |
+| Splats | Shared splatsData buffer identity, Float32Array-over-ArrayBuffer views, live updateData/upload/versioning, lossless SOG WebP decode and per-cloud plugin sets. F32Array is already a typed-array wrapper; verify its constructor/view semantics rather than assuming vector ownership. |
+| Shadows | Thin-instance CSM caster bounds, unsupported generator options/live receive toggles, task-camera facade and caster-specific composition. Recheck morph-bound numeric width and CSM array sizes against pinned declarations. |
+| Lines | Runtime-computed point lists, createLines/dashed lines, colour updates, material compare and per-instance colour setters outside the reached slice. |
+| Thin instances | Dynamic draw-count fast path, culling/LOD controls and actual GPU culler; measure a sufficiently large changing pool. |
+| Particles | Live sets, moving-emitter replay, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. |
+| Navigation | Tiled-without-obstacles builds, additional queries/random state, sources and disposal not yet lowered. |
+| Physics | Constraints, character controllers/viewer, heightfield/capsule APIs, mass centre updates, disposal, shape rotation and remaining body/trigger options. Existing force/impulse/velocity/prestep controls are not missing. |
+| Physics fidelity | Segment-end raycast misses, first-substep gravity/landing residuals, speculative box contacts, fixed-clock timer boundary and double-precision solver evaluation need focused traces. |
+| Audio | Durable browser/native offline PCM gate; master-volume ramps and broader Babylon sound/bus/spatial/analysis/lifecycle APIs. |
+| UI/platform | General text input/forms, retained UI under other drivers, device loss, multiple surfaces and a renderer-independent Canvas2D-only driver. |
+
+## P1 — Unregistered numbered scenes
+
+The current registry leaves these 29 numbered scenes unregistered. Helper
+modules without a numbered scene entry are not integration candidates.
+
+| Scene | Integration scope still to establish |
+| --- | --- |
+| 41 | Non-glTF container entity traversal and physics scene construction |
+| 46 | Module mutable state and physics constraints/axis limits |
+| 47 | Physics viewer, heightfield and switch-assigned mesh handling |
+| 48 | Shape/material setters and full centre-of-mass behavior in Bullet |
+| 49 | Capsule builder plus the scene's physics/gizmo contracts |
+| 91 | CSG2 through pinned manifold WASM and per-material mesh creation |
+| 103 | PhysicsBody Map identity and segment-end raycasts; keep reference query |
+| 104, 105 | Structural hierarchy guards/owner grouping and character controller |
+| 106 | Enum data values and vector-set aliases; aggregate/prestep setters already exist |
+| 114 | Scene-authored skeleton, box-data result, nullable PickingInfo, barycentric reads and missing deformation pipeline arms |
+| 121 | Retained splat buffer views and live updateData |
+| 122 | SOG ZIP/WebP decode without an alpha-corrupting canvas round trip |
+| 149 | Node geometry emitter/inputs, material texture reads and MRT draws on both backends |
+| 153 | Canvas2D-only driver, fillRect, plain-data animation targets and update loop |
+| 164 | GPU device-loss lifecycle |
+| 180, 181 | Text subsystem plus live text controls/input |
+| 186 | Tuple flatten and PBR local cubemap probes |
+| 225 | Geospatial camera/control surface |
+| 227, 228 | Multiple surfaces and swapchains |
+| 231 | Scene-authored Standard skeleton, vertex-alpha bucket, UV offset and optional out-parameters |
+| 241 | glTF anisotropy, diffuse transmission/translucency, specular textures and animation-pointer inputs |
+| 261 | TAA composite output identity/input tasks, history uniforms and camera projection jitter; compact its frame yields |
+| 275 | Font loading and 3D text |
+| 300 | Executed blob atlas into graph arguments, sprite-sheet state, particle-buffer reads and fixture data shapes |
+| 302 | Definite assignment, provider/matrix step replay, shared seed factory, nested startEngine and capture narrowing |
+| 304 | FlowGraph runtimes and glTF interactivity |
+
+- [ ] Investigate the shared shark-pose residual in scenes 11/152 with a
+  unit-scale control and browser/native palette comparison.
+- [ ] Keep project-owned gates for contracts no registered corpus scene
+  observes, including runtime thin-instance flush/count and observing physics
+  shape/region cases. Retire them only when equivalent corpus coverage exists.
+
+## P1 — File/data platform boundary
+
+- [ ] Replace voxel-module save/load recognition and the handwritten grammar
+  with ordinary JSON/user-module lowering. Resolve typed parse and File System
+  Access API boundaries; reuse the generic browser-file PAL.
+- [ ] Emit one typed file-accept descriptor covering MIME, extensions and
+  labels, used by both input filters and Blob downloads.
+- [ ] Read bounded text directly into a sized string and return a typed
+  absent/error/value result from open, removing the extra byte copy and
+  stat-before-open race without suppressing non-not-found errors.
+- [ ] Parse dynamic JSON directly into JsonValue with source order,
+  duplicate-key/numeric behavior and existing throw boundaries, avoiding the
+  intermediate ordered_json tree.
 
-Only unfinished work belongs here. What is done is in [status](docs/status.md),
-the docs, and Git history. Entries state what remains and the facts needed to
-act on it — not what was tried. While an audit is open, its remaining
-findings live in [AUDIT.md](AUDIT.md), not here.
-
-## Constraints
-
-- derive Babylon behavior from the pinned upstream TypeScript
-- keep handwritten C++ at the PAL/resource boundary
-- preserve tree shaking, provenance, typed records, and C++20 portability
-- do not add scene, geometry, or golden-image heuristics
-- validate generation, native builds, and relevant parity gates locally
-
-## P1 — TypeScript compiler coverage
-
-### Modules and functions
-
-- [ ] Add namespace/default imports.
-- [ ] Build a typed user-code IR from `ts.Program`/`TypeChecker` symbols.
-- [ ] Add discriminated unions and numeric-literal narrowing beyond the
-  checker's null analysis.
-- [ ] Route inline return expressions through double precision: inlined value
-  returns compile through the default float path in compound numeric contexts.
-  Strip static metadata from parameter bindings that are reassigned inside an
-  inlined function.
-  The static lane half is done ([fidelity](docs/fidelity.md#shader-contract)).
-  What remains is the RUNTIME half: a lane with no static value keeps the
-  `static_cast<float>` its first sink baked into `Value.cpp`, right wherever
-  that sink is the only one and wrong for the second. Closing it needs the
-  width tagged on the Value rather than on the text, and a corpus
-  re-measurement, since float wraps still bake into stored cpp there.
-  The same width rule is hand-rolled at four tuple-lane sinks that never
-  consult `staticNumber` -- `setCallComponents` (`statements.ts`),
-  `tupleOption` and its siblings (`intrinsics/sprite.ts`), and
-  `sprite-atlas-record.ts` -- so each spells `static_cast<float>(<double
-  literal>)` where `castNumber` would spell the float literal
-  `compileShaderUniformComponents` now gets; routing them through
-  `castNumber` moves generated bytes for every sprite and billboard scene
-  and wants the `neutrality-generated` pass of that re-measurement.
-- [ ] Support off-center orthographic planes: `enableOrthographicCamera` accepts
-  explicit `left`/`right`/`bottom`/`top` bounds replacing the half-extent
-  derivation, and `disableOrthographicCamera` restores the perspective
-  projection. The native camera record carries one extent. The orthographic
-  branch lives in `build_view_projection` alone, so composing it with an
-  environment skybox or ground fails at generation.
-
-### Closures and async
-
-- [ ] Classify escaping and non-escaping closures. A callback that escapes
-  its call site fails explicitly unless a reached API owns a specialized
-  retained form; scene 300's `renderer._beforeUpdate.push` and the
-  `EffectRenderer` per-frame `update` are tracked by their own entries.
-  Build the classification into the typed user-code IR so shared-binding
-  storage derives from function-typed retaining sinks. Today
-  `collectSharedClosureSymbols` has to recognize object members, local helper
-  references, and platform registrations as separate AST shapes; extending
-  that syntax list is not a substitute for the escape graph the IR does not
-  yet carry.
-- [ ] Collapse a run of adjacent EMPTY continuation parts into one counted
-  re-queue. A constant-trip frame-yield loop now unrolls into one
-  `defer_start_continuation` per iteration, and a body whose only statement
-  is the yield leaves every one of those lambdas empty — scene 261's
-  `for (let i = 0; i < 160; i++) await nextFrame()` would emit 161 nested
-  shells. Two costs, and only the first is closed. The emitted whitespace
-  was quadratic (115 KB at 160 boundaries, 92% of it leading spaces); the
-  nesting now stops adding columns past eight levels, which is linear and
-  moves no byte for any registered scene (the deepest is six). What remains
-  is the DEPTH: MSVC refuses at 43 nested lambdas with
-  `C1061: compiler limit: blocks nested too deeply` — bisected, 42 compiles
-  — and shipping builds use MSVC, where the development default clang-cl
-  accepts 320. No registered scene comes near it (scenes 113/114/115/118
-  emit nine), so this is a ceiling to close before one does, not a defect
-  today. The shape: a `defer_start_continuation_after(engine, k, cb)` beside
-  the counted `defer_capture_until` the drain already uses, which turns 160
-  shells into one call at depth two. It re-pins the module digest of scenes
-  129 and 271, whose continuations already carry adjacent empty parts, so it
-  is its own change with its own recapture.
-  One asymmetry to settle in the same pass: `containsFrameYield` is OR-ed
-  into `requiresStaticIteration` at one of that predicate's call sites, so
-  the budgeted-uniform arm and the `for-of` arm still answer the pre-change
-  question. That is narrow rather than wrong — a yield in a loop those two
-  lower still refuses by name — but extending it widens what they accept,
-  which needs the scene that first wants it to measure against.
-- [ ] Lower general render/update callbacks.
-- [ ] Define ownership for escaping captures.
-- [ ] Generalize immediate AOT promises and dynamic-import dispatch.
-
-### Classes and objects
-
-- [ ] Extend local classes to inheritance (setters lower as inlined bodies).
-  A class demanded by a native data position is one concrete
-  `bbl::js::Ref<XData>`, so a subclass hierarchy stored in a container refuses
-  by name today; lifting it needs a value that dispatches on its dynamic type,
-  which the data model has no representation for.
-- [ ] Instantiate a generic class's method bodies rather than substituting
-  the receiver's type arguments as they are asked for. The substitution
-  installed with `this` answers every type the mapper is asked for inside an
-  inlined body, which is what `new Workspace<Part>()` needs, but a body that
-  reaches the checker directly for a narrowing still sees the declaration's
-  own `P`; `narrowOptional` closes that one case by asking whether the
-  checker still admits null rather than by comparing mapped types.
-- [ ] Three costs the shared-instance lowering leaves on the table, each
-  cheap and each blocked on a mechanism that does not exist yet.
-  `ClassLowerer.hydrate` binds the receiver to a temporary before it knows
-  whether the read is a stored slot, so a read of a hoisted field pays an
-  indexed read and a `Ref` copy it never uses — closing it needs a lazily
-  evaluated record property, which `Value` has no shape for. A
-  `bbl::js::Callback` is compared and hashed on its identity alone, but
-  `Set::erase` and `Map::get` still construct the whole closure to pass
-  one — closing it needs heterogeneous lookup through
-  `IndexedInsertionOrdered`'s index, which every Map and Set shares. And
-  `make_ref<XData>()` value-initializes every slot before the declaration
-  initializers assign over the top, so an empty container field is built
-  twice per instance — closing it needs generation to recognize an
-  initializer as equal to the value-initialized default.
-
-## P1 — Assets and materials
-
-- [ ] Emit one ordered `.babylon` renderable manifest during asset lowering
-  and consume it in both the generated loader and Standard variant
-  composition. `babylonRenderableCount` currently mirrors the runtime
-  loader's visible/unparented/geometry/submesh admission rules because the
-  composer needs row offsets before native loading. Removing that duplicate
-  predicate is blocked on replacing the generic runtime JSON walk with a
-  generated per-asset manifest; no shared typed renderable inventory exists
-  yet.
-
-- [ ] Make generation-time browser texture execution reuse one parsed module
-  graph and one browser worker. `repositoryModuleClosure` discovers imports,
-  then `closureModules` parses the same source before `transpileModule` parses
-  it again; a durable cache hit still pays that work, and each cold producer
-  launches its own Node/server/Chromium process. Closing all three costs needs
-  an AST-backed CommonJS emitter/cache key plus a worker protocol that preserves
-  the current per-producer isolation and content-addressed replay contract.
-  Extend that executor with a typed fetched-asset manifest and retire the
-  voxel-atlas-only `fetched-canvas-atlas` source gate in the same pass.
-
-### Property animation
-
-- [ ] Support multiple direct morph targets and reusable target data. The
-  corpus's five direct `createMorphTargets` calls each use one position target
-  with nullable normals attached to one mesh, so no corpus gate covers the
-  broader surface and the one-target fold is what the sweep supports. What the
-  fold does not cover, and what a scene reaching it would force: a second
-  target (the deltas buffer is laid out per target and the storage-morph path
-  is already uncapped, so this is the compiler's list plus the emitted
-  `attach_morph_target`), and one `MorphTargets` value attached to a second
-  mesh — upstream both meshes then share ONE weights buffer, so
-  `setMorphTargetWeights` moves both, where this port resolves the value to
-  the single mesh it was attached to and refuses the second.
-
-## P1 — Runtime and validation
-
-- [ ] Extract retained DOM/CSS analysis from `Compiler` into a stateful
-  `UiLowerer` with a narrow lowering context. Move the private CSS projection
-  markers to typed `UiStyleRule` declarations in the same pass, then split the
-  PAL's global UI revision into stylesheet/tree/content dirtiness. The runtime
-  can then update only affected subtrees, carry client-rectangle demand before
-  the first layout invalidation instead of seeding every element on that pass,
-  index only elements
-  matched by private `:hover` rules instead of scanning every projected element
-  per frame, represent repeated backgrounds/crosshairs as typed generic layers
-  instead of hardcoded CSS dimensions and markup, and maintain active texture
-  ids without linear rescans. Those typed state and dirty-set mechanisms do not
-  exist yet; extracting only methods would preserve the string contracts and
-  whole-tree work while adding another facade.
-
-- [ ] Drop the vendored SDL patches once upstream ships them.
-  `native/vcpkg-overlay-ports/sdl3` is the registry's own port at the manifest's
-  `builtin-baseline` with two entries appended to its `PATCHES` list, selected
-  by `native/vcpkg-configuration.json`.
-  [libsdl-org/SDL#15838](https://github.com/libsdl-org/SDL/pull/15838) is the
-  first: without it SDL refuses a multisample texture carrying a read usage and
-  the SDL_GPU backend cannot run the pinned per-sample image-processing pass.
-  **3.6.0 is the release to watch**; verify a candidate release by creating a 4x
-  multisample texture with `SDL_GPU_TEXTUREUSAGE_GRAPHICS_STORAGE_READ` (the
-  shape the per-sample pass needs) before moving the baseline.
-  `d3d12-multisample-lines.patch` is the second and is **this project's own**,
-  with no upstream pull request behind it yet: SDL's D3D12 backend hardcodes
-  `RasterizerState.MultisampleEnable = FALSE`, which keeps a line-list on the
-  aliased diamond-exit rule at any sample count, where its Vulkan and Metal
-  backends rasterize lines against the target's samples and Dawn sets the flag
-  from the sample count. Reported upstream as
-  [libsdl-org/SDL#16182](https://github.com/libsdl-org/SDL/issues/16182) with
-  [#16183](https://github.com/libsdl-org/SDL/pull/16183), so this one has a
-  convergence path too; the measurement, including the A/B on two line-free
-  scenes and the documentation claim it contradicts, is in
-  [backends](docs/backends.md#measured-contracts).
-  A third file beside them, `static-no-dynapi.patch`, is not in the port's
-  list and is not for upstream: `tools/build-sdl-min.ps1` alone applies it to
-  the trimmed static shipping SDL (see
-  [development](docs/development.md#minimal-size-shipping-builds)), so it
-  stays with that script when the two fixes are dropped.
-  Delete this file and `native/vcpkg-overlay-ports` once a release carries both,
-  and move the baseline to it. `native/vcpkg-overlay-ports/sdl3-image` is the
-  same recipe for SDL_image's greyscale-ramp defect
-  (`png-grey-ramp-last-index.patch`; the drafted upstream issue is the entry
-  fee for its convergence path) — it self-retires by failing to apply when a
-  release carries the fix.
-- [ ] Compose environment/camera sizing from object-local bounds through the
-  pinned abs-matrix OBB-to-AABB world transform, and add the `upperRadiusLimit`
-  ground/skybox override (upstream `scene-size.ts`, `mesh-world-bounds.ts`,
-  PR #532). No corpus scene sets `upperRadiusLimit`. The blocker is the input,
-  not the arithmetic: `expandWorldAabbForMesh` composes each object-local box
-  through the mesh world matrix while the loader feeds it the tight AABB of
-  already-baked vertices, which is strictly smaller wherever a node carries
-  rotation. This closes once the loader records each primitive's local box
-  beside its node matrix. The port must keep every sized scene bit-identical at
-  its gated pose.
-- [ ] Reclaim retired live-shadow topology state. Replacing a generator now
-  removes its task from the scene and both PALs rebuild only active task draw
-  lists, but the engine retains the old task, render target, generator caster
-  views, and their copied `MaterialRecord` texture payloads. Reusing those
-  slots requires generation-checked handles (so a retained source handle
-  cannot alias a replacement) plus a GPU binding path that resolves a caster
-  view's textures through `source_material` before the copied payload can be
-  dropped.
-- [ ] Make compiler shape probes non-emitting and symbol-aware. Native string
-  dispatch currently calls `compileValue` to decide whether to inline, while
-  expando-write and catch-binding scans match broad source text/property names.
-  `probeEmission` rolls back the emitted LINES of a declined probe; a shared
-  probe transaction must also roll back compiler state (temporaries, reached
-  features, registered assets);
-  owner/catch matching then needs canonical TypeScript symbols. Use that same
-  lookup boundary to remove the duplicate function/alias resolver and fold the
-  two loop-control subtree walks into one result.
-- [ ] Extend the restated-body statement inventory past the physics lowerer.
-  1.26.0 added a statement to a pinned body this port restates whole and every
-  shape and order contract still passed
-  ([development](docs/development.md#3-fix-the-compatibility-report) carries
-  the category). `inventoryContracts` in `src/lowering/physics-lowerer.ts` now
-  pins the count for the five bodies that translation unit restates, but
-  `assertInventory` is private to `PhysicsLowerer`, so nothing else can reuse
-  it. Restated whole elsewhere with no count guard:
-  `src/lowering/clustered-light-runtime.ts` (the pinned `_write`, which carries
-  a stride anchor and no body contract), `src/lowering/audio-lowerer.ts` (whose
-  own doc claims a body "is exactly these two statements" and checks two
-  presences), and `src/lowering/pinned-frame-atlas.ts` /
-  `pinned-grid-atlas.ts`. `src/lowering/vat-lowerer.ts` is the newest: it
-  calls `functionDeclaration(VAT_MODULE, "prepareVatMany")` and
-  `"attachVat"` under a comment stating the params layout those bodies
-  write, but `functionDeclaration` only checks a symbol exists and has a
-  body -- an upstream reorder of the UBO lanes compiles clean and renders a
-  different pose. Its sibling two lines above shows the right depth
-  (`assertExpressionShape` on the frame-count formula, and now on its frame
-  rate too). Related duplication on the same seam:
-  Two more transcriptions on the same footing, both measured 2026-09-03:
-  `populate_pick_ray` re-types the pin's `createPickingRay` line for line --
-  the NDC expressions, the near/far unprojection, the `1e-10` guard -- in a
-  file that lowers the module-private `unprojectPoint` from the AST; lowering
-  it needs a `returns` shape `lowerPinnedFunction` lacks (an optional record
-  built from a pinned object literal). And `ensure_morph_target_ranges` is a
-  third hand-typed copy of `computeAabb`'s local arm, beside
-  `mesh-builders.ts` and `line-lowerer.ts`, in a repo that already lowers
-  that pinned function in `gizmo-lowerer.ts` -- collapsing them moves emitted
-  bytes in every mesh-builder and line scene, so it wants a differential
-  sweep with a generated-tree byte diff as its proof.
-  `compileAssetSkinnedDescendantSearch` and `isAssetSkinnedDescendantSearch`
-  in `src/compiler/handle-collections.ts` are ~120 lines cloned from the
-  name-search pair beside them; a shared `emitAssetMeshSearch(root, engine,
-  label, predicateCpp)` plus a parameterised matcher collapses most of it,
-  and leaves one copy of the shadow-name and walk-body logic instead of two
-  that must stay in step.
-  `typedArrayStem` in `src/compiler/data-types.ts` is a third copy of the
-  same seven-arm table in one file, and its own docstring names the second
-  (`cppType`) as though it already read from it; `typeKey` returns the
-  identical seven stems. Collapsing both onto the stem is mechanical and
-  emission-neutral, but it touches the type spelling for every typed array
-  in the compiler and wants its own whole-tree diff.
-  Two frictions before it generalizes: the helper has
-  to move onto `LoweringContext` beside the other shared contract checks, and
-  each body needs its inventory READ from the pin once rather than guessed —
-  a wrong row is a refusal on the next bump, not a silent pass, but it still
-  costs the bump that meets it. `_buildShapeParams` is the same gap one level
-  in: `assertShapeParamsPrelude` projects only variable statements, so its two
-  top-level `if` arms are invisible to the inventory and to
-  `assertShapeParamsCases` alike.
-  The Sprite2D Y-sort module joined the guarded side 2026-09-04 — sixteen
-  rows read off the pin rather than guessed — which is the pattern the rest
-  of this entry wants, and it used `LoweringContext.assertStatementInventory`
-  rather than a private copy, so the "helper has to move" friction above is
-  already discharged.
-
-  **Deferred `/simplify` findings from wave 10**, each blocked on something
-  this branch could not settle:
-  - **One null WebGPU device stub, not six.** `pinned-post-process.ts`'s
-    `compositionEngine` is the sixth implementation of the same recording
-    surface, beside `pinned-esm-shadow.ts`'s `recordingEngine`,
-    `pinned-node-material.ts` (a second function of the same name),
-    `pinned-shadow-slots.ts`, `pinned-csg.ts` and
-    `pinned-picking-shaders.ts`. When the pin adds a device call on any
-    composition path, six stubs need the method and only the one whose path
-    reaches it fails loudly. Blocked on auditing each path's actual call
-    surface: they are not the same subset, and a shared stub that answers a
-    call one path expects to THROW on would hide a shape change.
-  - **The SDL readable-present-copy, written twice two ways.** The ensure
-    block duplicates the one at `pal_sdl_gpu.cpp:5853` verbatim, but the
-    present half uses `SDL_BlitGPUTexture` where the existing path at `:6019`
-    presents through `state.blit_pipeline` — and the new one's comment claims
-    they are the same. Blocked on measuring the blit form on the presenting
-    post-process path before unifying them on it.
-  - **`expectReachedEnumMember` belongs on `option-helpers.ts`.** The
-    physics stream generalized it correctly and then kept it private;
-    `expectShapeType`, `compileGeometryTextureType` and `maskModeInclude`
-    each still restate "resolve the member, then check my reached list", and
-    `pinnedEnumMemberName`'s own doc is where the split was drawn. Blocked on
-    nothing but touching three families in files this branch does not
-    otherwise change, which wants its own neutrality proof.
-  - **Three flatten recognizers for one proof.** `isImportedMeshFlattenWalk`,
-    `isClosureMeshFlattenCollector` and `isRecursiveMeshFlattenVisitor` are
-    positional exact-statement-count matchers separated by SPELLING, not by
-    obligation, and each is brittle (`statements.length !== 4`). The
-    renderable collect arm is shared now; the recognizers are not. Blocked on
-    a normalizing pass — resolve a recursive callee through a const-bound
-    arrow, treat a closed-over accumulator as an implicit parameter — which
-    is a redesign with four corpus scenes riding on it.
-  - **A post-process option's kind comes from the fields the SCENE spelled**
-    (`fields.has("width")`, then `size !== 4`), where the pin's config
-    interface declares it. A future three-lane vector option is refused with
-    a viewport message. Blocked on the effect table carrying a link to its
-    own pinned config interface, which it does not today.
-  - **`renderer._beforeUpdate.push` is claimed by member name** before the
-    receiver is resolved, so the handler fires on any `_beforeUpdate.push`
-    and then fails. Blocked on resolving a receiver's kind WITHOUT compiling
-    it — `compileValue` has emission side effects, so a fall-through would
-    emit twice.
-- [ ] Normalize the source path Tint's reflection sidecar embeds. A
-  `*.tint-reflection.txt` replayed from the shader cache carries the
-  absolute path of whichever scene FIRST compiled that identical variant
-  (scene4's names break-meshes'), so shared-variant sidecars flip with
-  compile order and churn generated-tree digests. Rewrite the requesting
-  path on replay, or strip it at record time.
-- [ ] Add backend-layout tests: nothing checks a compiled stage's `.slots`
-  register layout against what the PAL binds.
-  Two native-hygiene items sit here rather than in the code:
-  - **Node-only morph graphs compile the generic renderer's morph storage
-    superset too**: generic mesh, background and skybox layouts need a
-    second capability derived only from source/asset morphs beside
-    `BBLITE_GPU_MORPH_STORAGE` (which must keep the shared zero-target
-    buffers for reflected node bindings). Splitting touches both PALs'
-    layouts, bind groups and draw paths; the missing guard is a
-    backend-layout test (node-only graph keeps its reflected pair, generic
-    group 0 stays empty) plus corpus parity on generic morph and background
-    scenes.
-  - **Pinned node binding reflection scans each composed WGSL variant once
-    per row family** (morph, shadow, environment); consolidating onto one
-    reflected binding map needs a shared reflected-row contract plus
-    doctored-variant tests that retain the existing diagnostics and error
-    attribution.
-
-## P1 — Developer experience
-
-- [ ] Lower the voxel sandbox's save/load from the pinned module instead of
-  the hand-written boundary. `compileVoxelFileCall` keys on the module path
-  and the two function names, and `js_voxel_file.hpp` restates the pin's
-  `JSON.stringify(data)` key order and `parseSave`'s shape check as a
-  hand-typed grammar -- an app-keyed branch in two generic layers. **The
-  capability blocker is closed**: `JSON.stringify` and `JSON.parse` now lower
-  generically (`data:json`, `js_json.hpp`, codecs generated beside the
-  records a stringify reaches), so the hand-typed grammar can be replaced by
-  the pin's own module. What remains is the port itself, and one gap the port
-  will meet: `parseSave` reads its document back into a **typed** record,
-  which the bridge does not do -- `JSON.parse` answers a dynamic value, and
-  the pinned module's field reads over it lower only where the source guards
-  them the way `world-io.ts` does. Size that before starting. With both, only
-  the `showSaveFilePicker`/`showOpenFilePicker` calls remain a PAL seam,
-  recognised by the browser API they reach rather than by path. The generic
-  `browser:file` Blob/download/file-input slice now owns the shared dialog,
-  bounded-read, and atomic-write mechanics; this entry retains only the File
-  System Access API spelling and the voxel module's typed parse migration.
-
-- [ ] `Array#every`, `Array.isArray` and the other shape predicates over a
-  **generation-decoded** fetch document. `world-io.ts`'s `isVec` runs over
-  both lanes -- `JSON.parse` (a dynamic document, which lowers) and
-  `await res.json()` (which the compiler decodes at generation into
-  compile-time tuples) -- and the second refuses with `Unsupported call
-  target 'v.every' on tuple`. `Array.isArray` over a decided value already
-  folds (`compileIsArrayOverData`); `every`/`some` over a compile-time tuple
-  bound to a parameter do not, because `materializeKnownTuple` resolves an
-  expression rather than a binding. The current unmodified Sandblox path no
-  longer stops here; retain the entry for other generation-decoded tuple
-  callers.
-
-- [ ] JavaScript falsiness for a nullable string is absent **or** empty, and
-  the general lowering answers only `has_value()`. `localStorage.getItem`
-  carries the correct rule on its own value (`nullableStringFalsy`), because
-  making it general rewrites the conditions in doom, freeciv, platformer and
-  quake -- each reads an optional string with `if (x)` -- and those four then
-  need their parity re-measured. The rewrite is correct and small; it is the
-  measurement that is outstanding. The same question stands for an optional
-  number, where `0` is falsy.
-
-- [ ] Emit one typed file-accept descriptor instead of keeping the
-  MIME-to-extension table in both `browser-file.ts` and `js_file.hpp`.
-  Compilation currently validates and canonicalizes the source string, while
-  the PAL parses it again to build SDL filters and also uses the same mapping
-  for Blob downloads. Removing either copy therefore needs a generated
-  descriptor that carries canonical MIME types, extensions, and labels into
-  both default actions; a string-only change would silently drop the download
-  inference arm.
-
-## P1 — Full Babylon Lite corpus audit
-
-36 corpus scenes remain unregistered; measured scenes
-are in [status](docs/status.md). Each entry below records the **first blocker
-only** — clearing it can expose another, so size a scene with the strip probe
-in [debugging](docs/debugging.md#sizing-a-scene-before-writing-any-code) before
-choosing a shape. Compiling clean is not integration either: scene 206 compiled
-clean and measured 0.828, because the sweep answers what a scene *reaches* and
-only a capture answers what it renders.
-
-Refresh the audit by building `dist` once, then compiling each scene directly —
-the command takes an unregistered path:
-
-```bash
-node dist/src/scene-command.js compile corpus/babylon-lite/lab/lite/src/lite/sceneNNN.ts
-```
-
-Read the verdict from the exit code. Grepping the output for "error" mis-scores
-scenes whose refusal is worded differently.
-
-**Every shared module the corpus scenes import is now pinned in
-`upstream/babylon-lite-corpus.json`**, unregistered scenes included, so the
-probe table above measures real blockers rather than missing files. Keep it
-that way: integrating a scene that imports a new one starts by copying it out
-of the pinned tree and pinning its SHA-256. A missing module is invisible in a
-compile probe — the compiler reports the unresolved identifier the import
-would have bound, not the import — which is what made three of them read as
-compiler gaps for several waves.
-
-**Rank by contracts-to-clean, not by first blocker.** Every unregistered
-scene compile-probed at this pin (2026-09-04, all 35; the six deferred
-physics/platform clusters are folded into the deferred lane below):
-
-| Scene | First blocker | Kind |
-| --- | --- | --- |
-| 91 | intrinsic `initializeCsg2Async` | third-party `manifold-3d` WASM |
-| 114 | `Unsupported property assignment 'mesh.skeleton'` | picking + in-code skeleton |
-| 121 | `Unsupported property value 'gs.splatsData'` | splat row-buffer re-upload |
-| 122 | intrinsic `loadSOG` | ZIP + WebP decode |
-| 149 | `break`/`continue` in a container's mesh walk | language, then node MRT |
-| 186 | `Unsupported call target 'corners.flat' on tuple` | language, then local cubemaps |
-| 231 | intrinsic `enableStandardSkeleton` | Standard skeleton + vertex alpha |
-| 241 | glTF `KHR_materials_anisotropy` not lowered | loader, then PBR2 translucency |
-| 261 | `Unsupported property assignment 'box.material'` | language, then TAA |
-| 275 | intrinsic `loadFont` | text |
-| 300 | `Unsupported constructor expression` in the shared fixture | executed atlas into a graph |
-| 302 | `Variable 'set' needs a native data type` | language, then moving emitter |
-| 304 | `Unsupported property value 'asset.flowGraphRuntimes'` | FlowGraph |
-
-The first blocker is the first line of a chain, not its length, so the table
-ranks nothing on its own — pair it with the strip probe. Every scene FILE is
-staged; the shared modules they import were the trap, and the three that were
-missing (`scene149-nme.ts`, `scene231-skin.ts`, `scene305-teleport-npe.ts`)
-are now pinned.
-
-Measured against the table, wave 10 found the ratio is about one in three:
-305 shipped on one contract, while 114 sized at six, 302 at six and 261 at
-four — each of them bounded, not merely "at least", and each written into its
-own entry below so the next pass does not re-derive it.
-
-Families by distinct scenes their calls touch anywhere in a chain:
-the physics body/shape surface 6 (deferred), `createTransformNode` 7,
-`createUtilityLayer` 5 (221, 222, 223 and 224 shipped; 49 is a physics
-scene), the GPU
-picker 5 (113 shipped; the frame-yield-in-a-loop this note once called
-refused now unrolls, and 118 proves it), text 3, `createTorusKnot` 3, the sprite animation manager 2 (which
-also need two `_shared` modules the corpus does not carry).
-
-### What the recent releases added
-
-Each of these arrived with a pin bump and names a family this port does not
-register at all — a clustered spot field, an opt-in PBR lightmap, a
-local-cubemap probe array — or a whole subsystem. Read it as a capability
-list.
-
-| Scene | First blocker | Family |
-| --- | --- | --- |
-| 186 | `corners.flat` | opt-in PBR local cubemap blending |
-| 302 | a definite-assignment `let set` declared then assigned in a `try` | node particles with a moving emitter |
-| 304 | `asset.flowGraphRuntimes` (an owner asset with no data type) | FlowGraph + glTF `KHR_interactivity` |
-
-**Scene 305 shipped from this list** (0.000/0.000 on both backends), and it is
-the shape to expect from the rest: one contract, because everything under it
-was already built. It is scene 262's field again, so the oracle, the seed, the
-200 steps and the `createParticleBillboard` sync all existed; what it added was
-`normalizeNodeParticleGraph`, executed where the pin executes it. Scene 302 is
-the counter-example from the same family and the same wave — six contracts,
-below.
-
-`186-debug` and `187-debug` are helper modules rather than scenes: they have no
-`main()`, so a sweep reports them clean and neither is integrable.
-
-**No registered scene or demo can retire the runtime-sweep gate.** Scene 267
-covers its `createMeshFromData` half, Scenes 16 and 279 cover
-`setThinInstances`, and Doom/Tetris exercise `removeFromScene`, but no
-registered source calls `flushThinInstances` or `setThinInstanceCount`.
-Corpus scenes are the preferred validation: author a project-owned gate only
-for a contract no corpus scene exercises, and delete it once one does.
-
-Scenes are partitioned by the boundary needed to reproduce their deterministic
-reference behaviour, not by incidental browser helpers: capture-inert demo
-controls and fixed-coordinate picking stay in the first lane when they can be
-erased or lowered, and a scene is deferred when its behaviour needs a new
-platform, user-input or external-service contract. No audited scene requires
-audio, touch, gamepad, AR or VR; add any future one that does to the deferred
-lane by default.
-
-**Integrate first (20 scenes):**
-91, 102, 103, 114, 121, 122, 149, 186, 209, 225,
-231, 241, 261, 272, 275, 300, 302, 304, 48, 106 — the probe table above
-carries each one's first blocker for the fourteen that were already in this
-lane. Includes CSG2, compressed assets and splats, deterministic picking (113
-and 115 ship; 114 remains), and the families the recent pin bumps added.
-Every navigation scene the corpus carries is now integrated, as are the
-cascaded-shadow pair, the billboard pick and the display gizmos.
-
-Five scenes imported a `lab/lite/src/shared/` module that existed upstream at
-the pin and had never been staged here, so none of them compiled or captured
-for a reason no sweep would report: 73, 302, then 149, 231 and 305. All five
-modules are staged now, and every one of those scenes reaches an ordinary
-compiler or intrinsic blocker instead.
-
-**Defer (13 scenes):** 41, 46, 47, 49, 104, 105, 153, 164, 180, 181,
-227, 228, and 225 conditionally.
-
-### The deferred lane was re-audited 2026-09-04, and it was wrong about seven
-
-The partition was drawn before the physics subsystem and the retained UI
-runtime landed, and it had not been re-derived since. All nineteen were
-re-probed **at the pose the pinned spec serves each golden at**, and the
-deferral rule — needs a new platform, user-input or external-service contract
-— holds for only five of them: 164 (GPU device-loss lifecycle), 180 and 181
-(live text input past the 3D text subsystem), and 227/228 (a second surface
-and swapchain in both PALs). Six more are deferred by ladder DEPTH alone,
-which is a different claim and should be recorded as one; seven moved to the
-first lane.
-
-Two structural facts reframe the cost of the whole lane, and both were
-measured rather than assumed:
-
-- **A physics contract does not cost "both backends".**
-  `native/src/pal_physics_bullet.cpp` is one renderer-neutral translation
-  unit against `native/include/bblite/pal_physics.hpp`. The lane is roughly
-  half as expensive as the partition assumed.
-- **Half of these scenes' "user input" is a branch that should fold** — but
-  this bullet named the wrong fold, and the correction is worth keeping.
-  `const t = true; if (t)` really does not propagate, because
-  `compileCondition` folds literals and browser-only expressions and stops
-  there. **No scene in the lane uses that idiom.** Scene 103 writes
-  `const captureFrame = readCaptureFrame(); const autoTest = captureFrame
-  !== null`, and its blocker was that a call to the module helper did not
-  fold even though the compiler had already lowered its body to
-  `return round_js(5.0)`. Scenes 104 and 105 write
-  `const autoTest = new URLSearchParams(window.location.search).has(...)`,
-  a shape that already folded before this wave. So the module-helper fold
-  landed and erases 103's interactive arm at `?captureFrame=5` exactly as
-  the pin intends; the boolean-literal gap remains open and **no current
-  candidate needs it**; and 104/105 never carried an `autoTest` contract at
-  all. One contract serving three scenes was never true.
-
-Ranked by scenes-per-contract, the shortlist the audit measured:
-
-| Scene | Contracts | What it needs |
-| --- | ---: | --- |
-| 103 | 3, one closed | the module-helper fold above landed this wave; what is left is `Map` identity by PAL handle and the raycast segment-end miss, both diagnosed in the physics lane below |
-| 48 | 2 + a PAL change | `setPhysicsShapeMaterial` is ALREADY lowered inside `createPhysicsAggregate`; only the scene-facing intrinsic is missing. `PhysicsMassProperties::center_of_mass` exists but `physics_body_set_mass_properties` writes mass and inertia only, and Bullet models the centre of mass through the motion-state transform |
-| 106 | 4 | enum-value-into-array, aggregate `pointA`/`pointB`, the `const p = mesh.position; p.set(...)` alias, and `setPhysicsBodyPrestepType` (a setter only — the enum, the body field and the ACTION arm all exist) |
-
-Cross-scene demand, for ranking the rest:
-the structural type guard 4, `createCapsule` 4, aggregate `pointA`/`pointB` 4,
-`setPhysicsShapeMaterial` 3, enum-into-array 3, `createPhysicsConstraint` 3.
-(`PhysicsShapeType.MESH` led this list at 5 and has shipped; 41, 47, 104 and
-105 lose it and stay blocked on their own first contracts.)
-
-**The audit's own contract counts were the least reliable column in it.**
-Scenes 102, 209 and 272 shipped from this table; 272 cost the one contract
-claimed, but 102 and 209 cost **three each**, and the misses were specific.
-For 102 the intrinsic arm and the PAL factory were seen but the pinned
-`MeshAccumulator` fold was not. For 209 the claim that the module runs over
-"`HP_*` calls this port already implements" was simply wrong — seven entry
-points were missing (`HP_World_GetSpeedLimit`, `HP_World_SetSpeedLimit`,
-`HP_World_RemoveBody`, `HP_World_Release`, `HP_Body_GetAngularVelocity`,
-`HP_Body_SetLinearVelocity`, `HP_Body_SetAngularVelocity`). Read a
-scenes-per-contract ranking as an ordering hint, never as a size.
-
-Four claims in this register did not survive the re-probe and are corrected
-where they sit: every body control past creation is NOT refused (impulse,
-force, linear velocity, motion type, pre-step and raycast all ship); scene
-103's `getViewProjectionMatrix` ships and its `new Map<PhysicsBody, number>()`
-compiles today; scene 49's first blocker is `createCapsule`, not
-`attachControl`'s options bag; scenes 180 and 181 do not stop at "reached
-`void` expression statements"; scene 272's GPU validation-error contract is
-already closed by browser erasure; and `createGroundFromHeightMap` ships, so
-scene 47's heightfield gap is `createHeightFieldShape` alone. Scene 153's
-reason changed rather than closed: Canvas2D ships, and what is missing is
-`ctx.fillRect`, an animation group over a plain-data target, the autonomous
-`onUpdate` loop, and a **fifth driver** — the scene never calls
-`createEngine`, and all four drivers are engine-based.
-
-- [ ] Scenes 11 and 152 share one residual: the shark's skinned pose, 0.010
-  full and 0.28 foreground, identical on both backends. The composed fragment
-  is byte-identical to the browser's and the pose is not a clock offset, so
-  the palette is the suspect: this port conjugates the mesh world into it
-  where the pin keeps that world on the draw, and both scenes carry the shark
-  at a 0.01 root scale where the conjugation loses the most precision. Next
-  measurement: the same asset at unit scale.
-
-### Integration-first compiler contract gaps
-
-Two defects measured while probing scene 103, both small and both a
-compile failure rather than a wrong picture, recorded here so the next
-scene that hits one does not re-derive it: `if (physicsRaycast(...).hasHit)`
-emits an unused temporary and fails `-Werror,-Wunused-variable` (binding the
-result to a `const` first works); and `const v: Vec3 = { x, y, z }` INSIDE a
-frame callback lowers to a `bbl::js::Ref<Vec3Data>` brace-initialised with
-three scalars, which has no matching constructor, while the same declaration
-at entry scope is fine.
-
-`browser-erasure.ts`'s `helperBinding` keys a helper's `const` bindings by
-identifier TEXT and disambiguates them with a `pos`/`end` containment test
-against the open body, which is a second and weaker scope mechanism beside
-the compiler's own. Keying by `ts.Symbol` would delete the containment test
-outright, but `BrowserErasureContext` exposes no symbol resolver and
-widening it buys nothing measured: no scene shadows a helper binding with a
-module constant of the same name, and the containment guard IS load-bearing
-today because `constantInitializer` re-enters the evaluator with
-module-scope nodes while a frame is open. Worth doing when a third reader
-of that frame appears.
-
-- [ ] Extend `setPbrMetallicReflectance` beyond Scene 12's slice: the upstream
-  `f0Factor` and `specularWeight` options still refuse explicitly.
-- [ ] Extend imported hierarchy/root clones beyond Scene 12's exact slice.
-  The flattened visitor accepts only an effect-free recursive assignment of a
-  scene-created PBR material; order-sensitive effects and other material
-  families refuse. Roots with imported light or camera descendants refuse
-  rather than truncating them. Root rotation/scaling need a full
-  post-deformation outer matrix; animated morph clones need shared weights
-  with an independent node world; and direct mesh/other transform-node clone
-  shapes remain explicitly refused. The root itself is folded into the asset
-  record (`root_position`/`root_rotation`) rather than allocated as a
-  transform node, so a `TransformNode`-typed record field has two native
-  representations and the data-type registry withholds the node handle from
-  any program that spells `container.entities[0]` (the racer's `Vehicle`
-  stays a compile-time record; the voxel sandbox's `Mob` is data). Giving the
-  imported root a `TransformNodeRecord` with the meshes parented under it
-  closes that split, with the clone-of-clone `outer_position`/`outer_rotation`
-  semantics re-measured (scenes 104, 105, 269 and the racer).
-- [ ] Extend the Standard UV transform past what scene 282 measures. The
-  channel writer is lowered from the pin's own AST, so the arithmetic covers
-  all seven channels, but three inputs the fold does not reach would force a
-  wider shape: `material.uvOffset` (the `enableStandardUvOffset()` resolver,
-  which no reached scene installs, so both components read their `?? 0` arm),
-  the lightmap channel's `legacyFlipV` (the generated loader fills no lightmap
-  slot, so the table folds that conjunct to false), and `rebuildMaterial`,
-  which is what upstream requires to move a transform after the renderable is
-  built — a scene writing one after binding refuses instead.
-- [ ] Extend `setEnvironmentRotation` to textured DDS/ENV and HDR environment
-  skyboxes. Scene 12's lighting-only environment now lowers, and solid-colour
-  or image skyboxes are rotation-invariant or unrelated; the remaining
-  textured environment skybox arms need the pin's skybox rotation patch in the
-  native background shaders.
-- [ ] Extend the splat slice past what scenes 120, 125, 126, 127, 128 and
-  123, 124 and 129 measure ([fidelity](docs/fidelity.md#gaussian-splats)
-  carries the shipped contracts, spherical harmonics and the executed SPZ
-  loader included). What remains, each refusing by name:
-  - 121: `splatsData` + `updateData`, **three contracts, re-probed
-    2026-09-04**. Its old first blocker (`gs.firstSortReady`) is gone — a
-    handle annotation now keeps the value path — and the ladder under it is
-    inside the usual bar but two of the three are changes to SHARED
-    facilities, which is why it wants its own branch rather than a wave slot:
-    the proof is a corpus-wide re-validation of the ten shipped splat scenes,
-    not one scene's picture.
-    1. `SplatMeshRecord::rows` must become shared `ArrayBuffer` storage. The
-       pin's `splatsData` is the retained buffer BY IDENTITY and `updateData`
-       reseats exactly it; today `rows` is an owned `std::vector<uint8_t>`
-       kept only for the transform bake.
-    2. `new Float32Array(<ArrayBuffer>)` needs a **new aliasing view type**,
-       not merely support: `data-lowering.ts` gives the aliasing arm to
-       `Uint8Array` alone, and `f32array` is an OWNING `std::vector<float>`,
-       so the scene's element writes would not reach the buffer it then hands
-       to `updateData`. It is a ~40-line mirror of the existing `U8Array`
-       plus a DataType kind.
-    3. `updateData` itself, in BOTH PALs: rebuild the geometry, guard the
-       vertex count, reseat the rows and re-upload the four RGBA32F payload
-       textures on a live `SplatPass` while forcing a re-sort.
-    Fail-fastest order: (1) and re-run scene 125's parity, then a
-    `splat-mesh`/`splatsData` rule in `properties.ts`, then (2), then the
-    intrinsic asserting the pinned closure's boundary statements the way the
-    bake already asserts them, then a `data_version` on the record driving a
-    version-gated payload re-upload with `depth_transform` zeroed.
-  - `loadSOG` (122) needs a ZIP and a WebP decoder. Its loader would
-    execute through the two seams scene 123 added --
-    `importPinnedModuleFetching` and the shared `attachParsedSplat`
-    recorder, which already covers the identical `mesh.rotation.x =
-    Math.PI` it writes. What still blocks it is the browser-executed WebP
-    decode, whose canvas round-trip can perturb RGB where alpha is under
-    255 -- and the SOG quats plane stores its mode in alpha, so that is a
-    fidelity hazard rather than a convenience.
-  Three review findings sit on the SPZ seam, all measured 2026-09-03.
-  `packageSpz` is not bake-cached and the reason written beside it was
-  wrong: the key already covers the pin, the packager's own source and the
-  input bytes, so a hit implies the run its four contracts passed. Caching
-  it is worth 283 ms against a 19 ms replay per recompile, but the OBSERVED
-  rotation has to ride along in the payload, which means re-versioning the
-  12-byte frame a second time on one branch -- it wants its own change.
-  The new cross-kind splat refusal re-implements an output-collision check
-  `registerUiImageAsset` already owns forty lines below, and misses the
-  `basis`-vs-`texture` pair on a URL ending `.ktx`; the general fix
-  reorders asset registration for every kind. And an observed rotation
-  cannot see a per-container fork -- a pin that grew a version-conditional
-  rotation would be observed for the one container a scene loads and
-  emitted scene-wide; the belt is one assertion that the pinned write is
-  not under a branch.
-  The `.ply`-equals-`.splat` packaging identity the harmonics sidecar's
-  design turns on is asserted by no test: nothing compares a `.ply`-packaged
-  row buffer against a `.splat`-packaged one for the same cloud. Writing that
-  test means staging a fixture carrying one cloud in both containers, which
-  is a corpus change with its own hash-recording rather than a scene-wave
-  one -- but the invariant is load-bearing and currently unguarded.
-  A second `loadSplat` naming a different plugin list also refuses: the
-  generated splat stages are one composed module per scene, where upstream
-  keys its module cache by the plugin ids. No corpus scene loads two clouds.
-  Two review findings sit here: the named-pinned-export registry (module
-  map, `has`, `names`, `load`) is written twice — `src/pinned-tone-mapping.ts`
-  and `src/pinned-splat-fragments.ts` — and a third such family would justify
-  one generic form over the two distinct refusal wordings.
-- [ ] Extend GPU picking past what scenes 113 and 129 measure
-  ([features](docs/features.md#picking)). Detailed picking now ships. One
-  efficiency item measured 2026-09-03: a detailed pick materializes 197,916
-  bytes of mesh arrays to read 48, because `mesh_cpu_indices` and its two
-  siblings return by value. The indices one is a straight return of the
-  geometry's own vector and could be a reference, but those copies exist to
-  preserve typed-array value semantics for SCENE code, so changing the
-  return type touches every scene-facing read of the three properties.
-  Scene 113 picks once and no gate can see it; the cost is on the hover path
-  a real app takes, so it wants its own measured pass. The reached slice was
-  one non-detailed pick over meshes and one cloud; each remaining arm
-  refuses by name:
-  - `enableDetailedPicking` and `getPickedNormal` (114): a third
-    rgba32uint attachment, the primitive and barycentric readback, and the
-    CPU position and normal arrays `detailed-picking.ts` interpolates.
-  - `pickAsync`'s `filter`, `discard` and `ignore` options, which select
-    `picking-advanced-pipeline.ts` and `picking-ignore.ts`.
-  - **Scene 114** is an arm of this entry rather than a scene of its own.
-    Sized by probe AND capture 2026-09-03, which corrected its old entry in
-    three places. **Two of its contracts shipped in wave 9** -- the
-    `setPbrUnlit` tint through an inlined parameter, and `TypedArray.set` from
-    any sequence the matching constructor accepts. The compile ladder past
-    them is `mesh.skeleton = createSkeleton(engine, joints, weights, 2,
-    boneData)` (raw bone matrices, not a glTF skin), `createBoxData`,
-    `pickInRegion`'s early value returns typed `PickingInfo | null`, and
-    `PickingInfo.bu`/`.bv` READS -- the record fields exist but
-    `properties.ts` declares no rows for them, and scene 115 only writes them
-    into an erased `canvas.dataset`, so no shipped gate exercises the read.
-    Behind the compile ladder sit two contracts **no compile error reports**:
-    the pin hands its deform projection to the BASIC pick pipeline too, which
-    this port composes without one, and the scene's morph-only quad needs the
-    `noskin-morph` arm -- the browser composes SIX pick modules for this scene,
-    three per pass, against this port's two. With the compile ladder stubbed
-    the scene builds clean, so those two would ship as a wrong picture rather
-    than a refusal: the quad's bind pose sits at x = -1.65 and its posed
-    position at x = -0.30, and the scan region covers only the posed one, so a
-    bind-pose pick misses and the marker stays parked off-frame. The `skin4`
-    arm cannot stand in -- a morph-only vertex has a zero weight quad, which
-    collapses the mesh to the origin. A capture is at
-    `artifacts/capture/scene114/shaders/`.
-    **Re-probed 2026-09-04 on the 1.27.0 pin: the ladder is unchanged at six
-    contracts** — four that refuse and two that do not — so the scene stays
-    out of a wave rather than shipping the wrong picture. Two of the four are
-    small enough to take on their own whenever something else needs them:
-    `createBoxData`'s pinned declaration is already lowered by
-    `src/lowering/factory/mesh-builders.ts` and wants only the scene-facing
-    intrinsic, its `babylon-lite/mesh/create-box.js` subpath and a plain-data
-    return shape; and `bu`/`bv` want two `src/compiler/properties.ts` rows
-    beside the existing `hit`/`pickedMesh`/`pickedPoint` ones, since
-    `src/lowering/picking-lowerer.ts` already maps both. The other two are the
-    scene-authored skeleton (a bone texture and separate joint/weight buffers
-    against this port's one interleaved vertex, shared with scene 231) and
-    `pickInRegion` returning `PickingInfo | null`, where `picking-info` is a
-    value-owner tag rather than a `DataType` — and the accumulator rewrite is
-    not a way around it, failing one line later on `Assignment operator '='
-    is not supported for json-null`.
-  - a thin-instanced or VAT candidate: both need the advanced pipeline's
-    instance-composed id. The morph/skeleton arm SHIPPED with scene 115 --
-    `deform-picking-projection.ts` is executed and fed to the detailed
-    pipeline's own shader builder -- but only its two SKINNED arms are
-    composed, because the gate reads the pinned skeleton bit. A mesh whose
-    only deformation is morph targets is therefore picked at its un-morphed
-    pose where the pin would use `noskin-morph`. No registered scene puts
-    one in front of a detailed pick; closing it wants that scene, not a
-    speculative arm.
-  - `PickingInfo.distance` and detailed picking's `ray`. Basic
-    `pickedPoint` is reached: both backends consume the sampled depth and run
-    the pin's inverse-VP reconstruction. The pin derives `distance` from that
-    point and the camera origin; the native record does not yet declare it,
-    so a scene reading it refuses at the property rather than getting a zero.
-    A non-detailed pick has a null `ray` upstream and needs no native ray.
-  - a second cloud in one pick: the shear and the id colour are single
-    buffers on Dawn, and a second would need the dynamic-offset treatment
-    the mesh blocks already get. It throws from the pass rather than
-    refusing at generation because no per-scene cloud count exists to
-    refuse on -- `splatShaderModule` is singular and the manifest records
-    fragments, not call sites.
-  - the billboard pick walks the systems twice on SDL_GPU. Dawn's `prepare`
-    drives its resources off `collect_pick_billboard_candidates`; SDL's
-    re-walks `scene.billboard_systems` with its own gate, because ids are
-    not known until the pass is open. Two walks have to agree on which
-    systems draw and nothing states it once -- a
-    `for_each_pick_billboard_system` in `pal_gpu_shared.hpp` would.
-- [ ] Collapse the rotation record onto the pin's one-lane model. Upstream
-  `rotation` is an Euler PROXY over `rotationQuaternion` (`createEulerProxy`,
-  `scene/scene-node.ts`), so `composeTrsLocalMatrix` reads the quaternion
-  alone; `MeshRecord` and `SplatMeshRecord` carry both lanes and
-  `pinned-trs.ts` picks between them
-  ([fidelity](docs/fidelity.md#shader-contract)). They agree wherever a scene
-  writes one lane, which is every reached scene. **Blocked on a missing
-  capability**: the proxy needs `quatToEulerXYZ` folded, which nothing here
-  has. Closing it also deletes that Euler arm, moving emitted bytes for every
-  mesh in the corpus.
-
-- [ ] Extend `material.diffuseTexture` past the sources scenes 18, 25, 36,
-  110 and 282 measure. Two refuse by name: a depth-only
-  `createRenderTargetTexture` output, and a geometry task's attachment.
-  `rtt.ts` forks on the attachment, giving a colour view `invertY: true`
-  plus the bilinear sampler and a depth view `invertY: false` plus the
-  nearest one, and the setter folds the colour arm; a geometry attachment is
-  refused on ownership rather than aspect. An image texture whose own `srgb`
-  option is set refuses too: the slot's encoding is the family's, and no
-  reached scene asks for the other.
-- [ ] Extend the sprite path past the slice scenes 50-53, 58 and 117 measure.
-  Each item is a separate arm upstream keeps behind its own module or hook,
-  and each fails explicitly today:
-  - `setSprite2DCoverageGamma`, a shader permutation the pin installs
-    through a lazily-registered hook, as the custom shaders do.
-  - a `depth: "test"` Sprite2D layer mixed with another transparent
-    renderable family. Scene 53 reaches only the fixed-order-100 `_direct`
-    `test-write` arm; the generic transparent arm must join the shared
-    camera-depth/order bucket rather than the current family hard slot.
-  - the Handle API. Its index siblings are done — `removeSprite2DIndex` and
-    `setSprite2DFrameIndex` shipped with the swap-remove and its id
-    reindexing (scenes 58, 59) — so the handle-object form is what remains
-    unreached.
-  - `createSpriteAtlasFromFrames`, which doom's status bar builds its atlas
-    with. It lands no demo on its own: doom's call also needs `Array.map`
-    with an inlined arrow returning a struct, a `Map<string, T>`, and the
-    runtime IWAD read none of this repository has.
-    `appendSpriteAtlasFrames` sits behind the same gap. (The data model is
-    no longer the blocker — `src/compiler/data-types.ts` carries `u8array`
-    beside the `f32array`/`u32array` pair.)
-  - the billboard arms past the two orientations, two depth paths and the
-    custom shader that scenes 54-57, 59, 94 and 98 measure. The pick arm
-    now ships too (scene 118), and it refuses three pairs by name: a cutout
-    system (the pick fragment would bind the atlas its cutoff samples), a
-    floating-origin scene (the pick uploads world anchors while the visible
-    pass bakes eye-relative), and a splat cloud beside it (two contributor
-    families need the pin's one registration-ordered `_pickSources` list).
-- [ ] Extend node materials past the slice scenes 60-72, 77-85 and
-  87-89 measure. Each item is a block the composed graph reaches and
-  this port refuses by name at generation, though a scene whose first blocker
-  is elsewhere reports that instead:
-  - alpha blending: the graph's own `alphaMode`, which needs the transparent
-    bucket and the sort.
-  - `GeometryTextureOutputBlock` (149), the node family's geometry-MRT arm.
-  - the `inputs` handles, which no reached scene writes: a scene setting one
-    would need the node UBO rewritten per frame instead of folded.
-
-  - **Tighten the run-time-optional vertex streams scene 86 introduced.**
-    Each stream argument is compiled TWICE -- once to probe its data type,
-    once for real -- and the emitted select
-    `cond ? nullable.value() : F32Array{}` is a prvalue, so the present
-    stream is copy-constructed before binding to a const reference: three
-    full vector copies per `createMeshFromData` call in scene 86. Both want
-    the optionality answered from the data model rather than by compiling.
-    The refusal pairing such a mesh with a non-node material also covers
-    `mesh.material = ...` but not `RenderTask.addMesh(mesh, { material })`;
-    it belongs where composition fabricates the mesh row, since it is a
-    predicate over (mesh, material) rather than over one assignment syntax.
-- [ ] Extend the fullscreen-effect slice past scenes 74, 75 and 76. Each item
-  fails by name today; the refusal list is in
-  [features](docs/features.md#fullscreen-effects). Of it,
-  `textureSampleType`, `viewDimension` and `samplerType` are what a
-  cascade-array depth sampler needs. `unregisterEffectRenderer`,
-  `disposeEffectRenderer` and `disposeEffectWrapper` are unlowered because
-  the reached slice never detaches one.
-
-- [ ] Carry a `ShaderMaterial`'s own `depthCompare` through lowering.
-  `src/material/shader/shader-material.ts` defaults it to `"greater-equal"`
-  and `shader-pipeline.ts` reads `sig._depthCompare ?? material.depthCompare`,
-  so a scene naming `"less"` is the pin's one per-material opt-out from the
-  convention. `ShaderVariantInfo` carries `depth_write` but no compare, and
-  both PALs hardcode `pinned_depth_compare`. One pinned factory now names
-  one — `createLinearDepthMaterial` passes `"greater-equal"`, which IS the
-  convention, so its lowerer checks the two agree instead of carrying the
-  value; a factory or scene naming another compare refuses there. Still a
-  contract gap rather than a measured defect: no corpus scene names a
-  different one.
-
-- [ ] Build the node group-1 layout from the reflected binding table rather
-  than by hand. `variantBindings` (src/pinned-pbr-variant-cpp.ts) already
-  yields `{binding, name, kind, vertex, fragment}` rows from composed WGSL,
-  and both `pinned_draw_layout_for` and `standard_draw_layout_for` are one
-  generic walk over it with a `kind` switch; `node_draw_layout_for` is the
-  only composed family still choosing `viewDimension` and `sampler.type` in
-  C++. Two frictions to settle first: the reflector drops bindings 0 and 1 by
-  the PBR mesh/material convention while a node `nodeU` sits at binding 1, and
-  a node module is one text deployed to both stages, so a reflected row would
-  widen the env pair's visibility from fragment-only to vertex|fragment. Until
-  then each node capability served adds another hand-written block.
-
-- [ ] Extend the shadow family past the slice scenes 4, 18, 22, 65, 66, 140,
-  141, 207, 214, 215 and 271 measure. Two items the morph-bounds provider
-  left, both measured 2026-09-03 and both wanting a sweep of their own: the
-  expansion accumulates in FLOAT where the pin accumulates in double over a
-  plain array, and widening the caster carrier's bounds changes the fit's
-  inputs for every shadow scene rather than the one morph scene; and
-  `expand_morph_caster_bounds`/`ensure_morph_target_ranges` land in 15 trees
-  that cannot reach them (62,655 bytes), which needs a compile define rather
-  than a generation-time conditional, because the PAL calls them at runtime
-  and `pinnedShadowHeader` takes no feature list -- the same limitation the
-  CSM gating item below is blocked on. The shipped slice is in
-  [features](docs/features.md#shadows); the cascade array, its cross-cascade
-  blend and both receiver families ship, so what is left is per-item. Each
-  remaining item fails by name:
-  - **the cascade fit is mirrored, not lowered, and the mirror dropped an
-    arm.** `_computeCsmCascades` is restated in C++ under shape
-    assertions and a pinned statement count where the sibling
-    `computeDirectionalLightMatrix` is lowered from its AST, and
-    `_castersWorldAabbInto`'s thin-instance branch —
-    bound a caster by the union of its DRAWN instances, because "one
-    prototype-sized box wrecks the cascade Z-fit" — is not implemented, so a
-    thin-instanced CSM caster refuses by name. Lowering the else-arm is NOT
-    blocked: `lowerComputeDirectionalLightMatrix` in the same file already
-    lowers a body that walks `casterMeshes`, binds `worldMatrix`/`boundMin`/
-    `boundMax` onto the carrier and folds the eight `k & 1` corners, and a
-    lowering would have refused `_thinInstanceWorldAabb` by name instead of
-    dropping it. `_computeCsmCascades` itself stays blocked: it takes a
-    `SceneContext`/`Camera`/`Mesh[]`, pushes `Float32Array[]`, and forks on
-    the refused `stabilizeCascades`, none of which `lowerPinnedFunction`'s
-    parameter-kind spec expresses.
-  - **`viewFrustumZ` and `frustumLengths` are literal `std::array<float, 4>`
-    beside a `csm_max_cascades` read from the pin's own `Math.min(…, 4)`
-    clamp**, and `csm_info_block` indexes them by cascade — so a pin raising
-    the clamp writes out of bounds, caught only incidentally by a hand-typed
-    `static_assert(sizeof(CsmInfoUniforms) == 320)`. Spell both lanes at
-    `csm_max_cascades` and derive the assert from the pin's own
-    `new Float32Array(80)`, which `csmDefaults` already parses past.
-  - **`shadow_caster_matrices` is a Babylon selector living in the PAL.** Its
-    twin `shadow_receiver_block` answers the same "which shape does this
-    generator publish" question, keyed on the same test, and is GENERATED
-    into `pinned_shadow.hpp`; that header already includes `runtime.hpp`, so
-    the deeper home needs no plumbing. As it stands a fifth generator family
-    adds one arm in a generated file and one in a hand-written file, and only
-    the first fails generation when the pin moves.
-  - **the cascaded third of `pinned_shadow.hpp` compiles into PCF-only
-    scenes, and its block size reaches them too.** It wants a seventh define,
-    `BBLITE_SHADOWS_CSM`, beside the six in
-    [features](docs/features.md#feature-and-capability-selection) — an
-    attempt that gated it broke every PCF-only scene, so the split is not
-    where it first looks. The measurable half is
-    `shadow_receiver_block_bytes`, which is the cascade block's 320 bytes
-    unconditionally: a PCF- or ESM-only scene carries 224 bytes per
-    generator it cannot use, in `ShadowRefreshState::blocks` and in each
-    backend's generator record, and compares them every frame.
-    `pinnedShadowHeader` takes no feature list, so both halves move
-    together. The emitted half measures 16.7 KB of `pinned_shadow.hpp`'s
-    52 KB -- `update_csm_cascades` 12.5 KB, the two block writers 2.9 KB,
-    `CsmInfoUniforms` 1.3 KB -- carried by the 13 shadow scenes that reach
-    no CSM generator and parsed by four translation units in each.
-  - a caster view's composed arms. The view is drawn on its own caster and
-    nowhere else, so it composes over that mesh's attribute set alone --
-    but still over every light-mode arm the scene has, and a no-colour
-    fragment is `return;` after two texture samples. On
-    `regression-shadow-pbr-only` that is three stage pairs where one does
-    any work; their vertex stages are byte-identical and their fragments
-    differ only in dead declarations ahead of a void entry point. Deploying
-    one arm's text for another arm's key would diverge from what the pin
-    composes for that key, which is exactly what the `diff` report's
-    shader-arm match measures, so the fix is to compose only the arms a
-    caster's own draw reaches -- and nothing has measured which those are
-    for a non-receiving mesh. Unblocks by measuring that.
-  - the generator options past the four factories' own reached sets:
-    `normalBias` refuses on all four. `setShadowCasterMaxCascade` is
-    CSM-only.
-  - a caster or receiver that is an imported mesh, and a `receiveShadows`
-    the scene computes — the variant is selected at generation, so the
-    second would need both fragments composed and a runtime choice.
-  - **a shadow task names its generator on `RenderTaskOptions`, where the
-    pin gives the task a camera facade.** `updateShadowCameraBase` pins the
-    light-space view and view-projection onto a `Camera` whose caches the
-    pass reads straight back, so upstream's shadow pass is an ordinary
-    camera pass; here it is a branch in each backend's task loop, beside a
-    near-duplicate branch for a task with its own camera. A cascaded
-    generator now renders several light-space passes per light, which is
-    where that branch stopped being proportionate.
-- [ ] Scene 91: support `initializeCsg2Async`. Sized 2026-09-03: it is scene
-  90 with CSG v1 swapped for CSG2, and 90 already ships at 0.000, so the
-  label textures, `Promise.all` and every builder are proven. The cost is
-  entirely that the pin delegates all of CSG2 to the `manifold-3d` WASM
-  package, which is not in `node_modules`, `package.json` or the pin's peer
-  dependencies -- a third-party WASM runtime entering the generation
-  toolchain for the first time. `src/pinned-csg.ts` already replays v1 plans
-  under Node and caches them, so the bake shape exists; `createMeshesFromCsg2`
-  (one mesh per material slot) is the one genuinely new contract.
-- [ ] Scene 149: the node family's `GeometryTextureOutputBlock`. **A
-  SUBSYSTEM, six contracts, sized 2026-09-04 by strip probe.** Its shared
-  module is pinned now, and its first two rungs are closed: the consuming
-  loop's `continue` lowers (the refusal was over-broad against its own
-  stated reason and now sits on `break` alone, where the walk's unclaimed
-  order actually matters), and the `Map<Material, Mesh[]>` **already lowers**
-  — the earlier entry was wrong about that; a peeled probe emits
-  `bbl::js::Map<bbl::MaterialHandle, bbl::js::Array<bbl::MeshHandle>>` with
-  `create_node_material` once per key. What is left:
-  - the pin's own `loadNodeBlockEmitterWithGeometry` as the `blockLoader` —
-    an `if` plus a delegate to `loadBlockEmitter`, where `compileBlockLoader`
-    accepts only a local closed switch and `composeNodeMaterial`'s replay
-    loader throws outside its map. Both halves need the delegating form, and
-    it must stay non-default because `useFullPbrMrEmitter` keys on
-    `blockLoader === defaultBlockLoader`;
-  - `nodeMat.inputs.<name>!.texture = <tex>`. Narrower than it reads: the
-    pinned texture input is a plain getter/setter over the same
-    `textureSlots` entry `options.textures` seeds, so a pre-build write is
-    identical to naming the texture up front — the per-frame node-UBO cost
-    belongs to the scalar inputs, not this one;
-  - `baseColorTexture` / `diffuseTexture` / `baseColorFactor` /
-    `diffuseColor` read off a LOADED glTF material. `properties.ts` carries
-    only `occlusionTexture` for owner `material`, and only for presence;
-    `MaterialRecord::base_color_texture` exists but nothing turns one into a
-    bindable handle for a node group-1 binding;
-  - the geometry-MRT composition itself: the pin's `node-geometry-view.ts` +
-    `node-geometry-renderable.ts` re-walk the graph from the geometry
-    terminal with a second `emitGraph` pass into `state._geometryInputs`,
-    turn those into per-attachment `FragmentOutput` writes and feed
-    `compileNodePipeline`'s `_mrtOutput`, plus a per-task `gp` UBO;
-  - the node family in the geometry task's draw path, in BOTH PALs:
-    `write_pinned_geometry_task` / `write_standard_geometry_task` are the
-    only geometry-task write paths and neither has a node arm.
-- [ ] Extend the line slice past what scenes 278 and 279 measure. The
-  polylines themselves are the scene's own static literals, materialized as
-  the nested data the generated flatten reads, so a system whose points are
-  computed at load refuses with a source location — the pin builds its
-  buffers at load and this port could too, but no reached scene needs it.
-  Each remaining entry fails by name: `createLines` and the
-  `createDashedLines`/`updateDashedLines` pair (whose spacing is its own
-  pinned derivation over a retained dash count), `setLineMaterialColor`, a
-  `LineMaterialOptions.depthCompare`, and the per-instance
-  `setThinInstanceColor` twin — which is also what lets the record copy the
-  colour array where the matrix pool keeps the caller's own. No corpus scene
-  at this pin reaches any of them.
-
-- [ ] Extend the thin-instance surface past the pool slice. Established,
-  growing and emptied pools ship — `setThinInstances`, `setThinInstanceCount`,
-  `setThinInstanceMatrix`, `flushThinInstances`, `setThinInstanceColors`,
-  `addThinInstance`, `removeThinInstance`, `mesh.thinInstances.count` — and
-  `enableThinInstanceGpuCulling` is accepted with its culler recorded as an
-  omission. The rest of `src/mesh/thin-instance.ts` fails by name and no
-  corpus scene reaches any of it: `setThinInstanceDrawCount` and
-  `enableThinInstanceDynamicDrawCount` (a fixed-capacity pool's
-  fully-synchronized draw-count fast path, whose whole point is the cached
-  bundle this port does not record), `setThinInstanceCullBoundsPad` and
-  `setThinInstanceLodPartner` (both meaningful only with the culler), and the
-  per-instance `setThinInstanceColor` twin. The culler itself stays out until
-  something measures it — the pin's fallback draws every instance, so the
-  pixels are already right and only a scene big enough to make the cost
-  visible would justify porting `thin-instance-gpu-culling.ts`.
-
-- [ ] Extend shader-material options past the slice scenes 159-163 and 165
-  measure. `samplers` and `defines` shipped, and 165's thin-instance colour
-  lane ships — of `useThinInstanceColors` only the material-side `_tic`
-  opt-out key still refuses. Each remaining option fails by name.
-  A sampler is a bare string binding a 2D float texture the fragment reads:
-  a typed `ShaderSamplerDecl` (its `sampleType`, `viewDimension: "2d-array"`
-  and `comparison` each change the declared WGSL texture and sampler types),
-  a sampler the vertex stage reads (SDL_GPU gives a vertex texture its own
-  register space), `storageBuffers`, `blend` (`blendMode` lowers), `transmissive`,
-  `depthCompare`, `depthOnlyFragment`, `depthBias`/`depthBiasSlopeScale`,
-  `stencil` and `plugins` are all unreached and
-  unlowered. `setShaderMatrix`, `setShaderStorageBuffer`,
-  `enableShaderMaterialUniformCaching` and `enableShaderUniformRangeUpdates`
-  likewise. No corpus scene reaches any of them at this pin.
-  Four of the pin's nine system uniforms also remain: `worldView`,
-  `cameraPosition`, `screenSize` and `alphaCutoff`. `view` and `projection`
-  shipped with `createLinearDepthMaterial` — a pass hands the block writer
-  its own camera and aspect, and `build_scene_projection` answers for the
-  orthographic arm — so what the four still want is a source per matrix,
-  not a mechanism.
-- [ ] Extend the material-plugin slice past what scene 217 and Sandblox
-  measure
-  ([fidelity](docs/fidelity.md#shader-contract) carries the shipped shape).
-  The texture and sampler half is closed: `getSamplers`, `bindTextures` and
-  `getActiveTextures` fold, compose through the pin's own
-  `buildPluginFragment`, and bind per material on both backends. What still
-  refuses at the declaration is the uniform half plus the three signature
-  fields: `getUniforms`/`writeUbo` put fields into the PBR material UBO and
-  build the Standard self-managed `pluginUbo`, which is a second bind-group
-  contract per family; `priority`, `isEnabled` and `defines` fold into the
-  signature and need no native counterpart, though `isEnabled` additionally
-  needs the pin's own rebuild path, since the toggle is a run-time variant
-  change. No corpus scene at this pin reaches any of them.
-  Two capability gaps sit beside them:
-  - **A PBR material's plugin declaring samplers refuses.** The Standard
-    family's textures ride `MaterialRecord::plugin_textures` and resolve
-    through the generated `standard_plugin_bindings` table, because a
-    Standard draw's variant is keyed by the record's derived feature word.
-    A PBR draw resolves its variant by material index and appends the
-    plugin's entries inside `createPbrMeshBindGroup`, which is a different
-    bind path; no scene measures it, so widening the Standard table to it
-    would be an unmeasured guess. Closing it needs a PBR scene that binds
-    one.
-  - **The bounded local-factory see-through lives in the plugin fold.**
-    "A local function whose body is one return of an object literal, with
-    its parameters bound to the call site's values" is a general
-    static-evaluation shape, and `resolveStaticExpression` is where it
-    belongs — any other fold reaching a factory would then get it for free.
-    Missing: `resolveStaticExpression` is the shared evaluator behind
-    `probeStaticArrayLiteral`, `compileStaticString` and every intrinsic's
-    constant fold, so teaching it to inline calls silently widens what all
-    of them accept. It needs its own reached scene and its own refusal set
-    before it can move down.
-  Three review findings sit here, each waiting on a capability that does not
-  exist yet:
-  - **The plugin sweep arm composes one dead Standard variant pair on scene
-    217** (its only Standard material carries the plugin). Trimming it needs
-    a count of Standard materials that took a `plugins` write against those
-    created, which the compiler does not keep; the `disableLighting` arm is
-    equally dead there, so the count would trim both or neither.
-  - **`getCustomCode` is folded by a walker of its own** where
-    `src/lowering/pinned-shader-text.ts` is already a general bounded
-    evaluator — routing through it would accept a template literal over a
-    folded constant and any guard spelling. Missing: a supplied-declaration
-    entry point plus an injectable failure sink (it is keyed by
-    `(modulePath, symbolName)` and fails through `contractError`'s *pinned*
-    location, where scene code needs `context.fail(node, …)`).
-  - **`Value.standardMaterial` should be a `materialFamily` lane.** The
-    boolean already propagates through the mesh assignment and the
-    `mesh.material` read, which is what `material.plugins` needs; a full
-    lane would also close the older gap where `enableMaterialUvTransform`
-    and the Standard texture setters accept any `kind: "material"`, so a
-    grid or shader material silently takes a Standard-only record write.
-    Closing it means naming the family at all five creation sites and
-    refusing at every Standard-only write.
-  - **The distinct-list-to-index registry is written three times** —
-    `recordStandardMaterialPlugins` (`scene-materials.ts`),
-    `compileNodeMaterialOptions` (`node-material.ts`), `reachShaderProgram`
-    (`shader-material.ts`) — and the single-statement-of-a-branch read five
-    times; each copy keys differently, so the shared form needs a
-    key-function parameter — an extraction across five unrelated modules
-    rather than a call.
-- [ ] Per-region gravity is the one part of the floating-origin context still
-  unreached: `setPhysicsGravity` with a `worldPosition` is not a supported
-  intrinsic, so the pinned `setGravity`/`getRegionGravity` hooks are not
-  lowered — the same reason the port already omits `setPhysicsTimestep`.
-  Three sibling hooks (`setVelocityLimits`, `dispose`) are unreached for the
-  same reason.
-- [ ] Scene 231: support `enableStandardSkeleton`. **Sized 2026-09-04 at
-  seven contracts**, and the base under them is clean:
-  `enableStandardVertexColors`, `createMeshFromData` with an RGBA colour
-  stream, `createTexture2DFromPixels`, the shared `scene231-skin` module and
-  the whole camera/light/material rig all ship — a probe with skeleton,
-  uvOffset and vertex alpha peeled compiles. What remains:
-  - `mesh.hasVertexAlpha`. The pinned `std-vertex-color-fragment.ts` consumes
-    `vColor.a` under that opt-in (output alpha, the vertex-alpha alpha test),
-    and `rebuildSingle` derives `!shadowOutput && mesh.hasVertexAlpha &&
-    (hasVertexColor || tiFragment._alphaBlend)` into `MATERIAL_ALPHA_BLEND |
-    VERTEX_ALPHA`. Composition already takes the `vertexAlpha` flag and
-    `standard_variant_key` already ORs mesh-driven bits at the draw; the
-    missing third is that `bind_render_item` buckets a Standard draw on
-    `material.alpha_mode` alone and never sees a per-mesh word.
-  - `enableStandardUvOffset` plus `material.uvOffset` — **the cheapest thing
-    here and the only one with no PAL half**: `write_std_uv_transform_data`
-    already emits `material_offset_x`/`_y` as literal zeroes and the
-    unrolled channel body already consumes them, so it wants the intrinsic, a
-    `MaterialRecord` lane, and the `absentHooks` entry lifted.
-  - an optional trailing typed-array out-parameter: the shared module's
-    `boneMatrixData(0)` defaults `out ?? new Float32Array(n)`, and the call
-    refuses with `requires argument 'out'`.
-  - the scene-authored skeleton itself, which is four contracts, not one, and
-    is the reason this scene is not a wave candidate. `createSkeleton` builds
-    the pin's `rgba32float` per-bone texture (`[boneCount*4, 1]`) plus two
-    SEPARATE joint/weight vertex buffers — confirmed against upstream
-    `docs/lite/architecture/13-skeleton.md`. That texture already exists here
-    (`write_pinned_bone_texture` in both PALs, reading `record.bone_matrices`
-    unchanged), so the transport is not the cost. The costs are: a second
-    `SkeletonRecord` shape carrying raw matrices and no bones at all, against
-    today's one-per-glTF-skin bone-node record; scattering the separate
-    joint/weight arrays into this port's one interleaved `GpuVertex` at
-    upload, and reaching the 200/216-byte deformation layout from a signal
-    that today only glTF-with-animation or `createMorphTargets`
-    reachability produces; and the palette on the STANDARD draw path, which
-    is an extension of the binding model rather than a table row —
-    `pal_sdl_gpu.cpp` states in its own signature comment that the fragment
-    stage is the only stage a Standard draw binds textures for, Dawn's loop
-    is the same shape, the whole `pinned_bone_texture` block sits inside
-    `#if BBLITE_PBR_VARIANTS > 0`, and the pin's `stdSkeletonExt`
-    deliberately relocates its binding into the Standard BASE phase as a
-    vertex-visibility `texture_2d<f32>`. The `pinned-standard-variants.ts`
-    refusal on `MSH_HAS_SKELETON` is the symptom, not the blocker.
-
-  Scene 114 shares only the second `SkeletonRecord` shape and the PBR
-  flavour of the vertex work; it needs neither the Standard palette nor the
-  vertex-alpha bucket, and stays a six-contract scene either way.
-- [ ] Scene 300's whole remaining chain is one mechanism plus two fixture
-  shapes:
-  - an **executed atlas URL flowing into a graph**.
-    `createNpeSprite2DOrientationAtlasUrl()` draws a 128x64 atlas with
-    `OffscreenCanvas` and returns a `URL.createObjectURL` blob, which the
-    scene passes to `createNpeSprite2DGraph(flareUrl)` — so the graph's own
-    `ParticleTextureSourceBlock` loads it. The executed-module machinery
-    already bakes a drawn atlas, but only from a `data:` URL returned to the
-    compiler; here the value is a graph factory ARGUMENT, and the driver has
-    to call the same export so the pin loads the same image. The three parts:
-    accept an executed-module call as a graph factory argument, read a blob
-    URL back inside the page that made it, and join the baked asset to the
-    system whose texture came from that argument.
-  - `system._spriteSheet = { cellWidth, cellHeight, cellIndex, update }`
-    installed after the freeze, which the bake reads for the atlas cell size
-    and the per-particle frame. It is another generation-time write, beside
-    the column writes `src/compiler/particle-buffer.ts` already carries.
-  **Re-sized 2026-09-04 by strip probe: six contracts, not three**, and
-  `renderer._beforeUpdate.push(<closure>)` — the seventh it used to carry —
-  now ships, built for scene 303. The three above are real, and the probe
-  added three more, all compiler-side: a definite-assignment `let set`
-  assigned inside a `try`/`finally` (the same contract scene 302 carries);
-  `system.buffer` and `system.buffer.capacity` read as values off a
-  node-particle system with no data type; and a particle column written at an
-  index the static evaluator will not fold — neither a `readonly [number,
-  number]` const index nor a `[number, number]` local one — beside an
-  `originPx` passed as a shorthand identifier where the intrinsic wants a
-  two-element array literal. The first of the three above is also narrower
-  than it reads: neither existing browser-bake mechanism fits, because
-  `browser-generated-string.ts` gates on a `.toDataURL(` call the helper never
-  makes and `browser-texture-function.ts` wants a one-parameter function
-  reaching a pinned texture factory, and this one takes none and reaches none.
-  Its fixture is `skipParity` upstream (Babylon.js has no pure-2D renderer),
-  so its golden is the Lite page like every other scene here.
-- [ ] Extend the node-particle slice past what scenes 262, 263, 264, 276,
-  277, 280, 281, 283, 284 and 301 measure. Each remaining item fails by name:
-  - a **live** set: a registration whose per-frame step actually moves
-    particles. Generation measures this rather than assuming it — the driver
-    steps each registered system once more and compares every column the sync
-    reads — so what refuses is a set the scene did not freeze.
-  - `parseNodeParticleSetFromSnippet`, the emitter world matrix, a second
-    `createParticleBillboard` or `syncParticleBillboard` on one system, and a
-    flow-map build whose scene camera is not a static arc-rotate construction.
-  - a node-particle texture block asking for a flipped upload
-    (`invertY` on the block): the sprite atlas record carries no upload flip,
-    and no reached graph sets it.
-  - the pure-2D bridge's `view` layer option and the manual
-    `createParticleSprite2DBridge` / `syncParticleSprite2DBridge` /
-    `disposeNodeParticleSet2DBinding` entry points, none of which a corpus
-    scene reaches: the two that do go through the managed registrars.
-  - **Scene 302 is this entry's own worked example, sized 2026-09-04 at six
-    contracts** — bounded rather than "at least", since with all six peeled
-    it compiles and bakes clean. Its `referenceSearch` is `?seekTime=2`
-    (`SCENE302_CAPTURE_SEEK_TIME` in its own shared module, which the pin's
-    spec navigates with), and registering it WITHOUT that query is precisely
-    the live set refused above: `frozen` is false and the provider moves the
-    emitter every frame. The six: the definite-assignment `let set` assigned
-    inside a `try`; `withNodeParticleEmitterProvider(provider, {...})` as the
-    builder's fourth argument, which is the real cost — upstream installs
-    `_setupEmitter`/`_prepareFrame` on the system and the scene then rewrites
-    the emitter matrix BETWEEN `animateParticleSystem` calls, while
-    `NodeParticleStep` carries only scalars, so it wants a step op replaying
-    the scene's own module calls inside the bake loop plus the provider
-    closure, which also writes `canvas.dataset`; `Math.random` seeded from a
-    shared-module factory rather than an inline arrow; `startEngine` reached
-    from inside `try/finally` rather than at the entry body's top level; a
-    `number | null` local that does not narrow, so both capture arms are
-    walked and the set registers twice (measured: `const seekTime = 2` folds
-    the branch and `const seekTime: number | null = 2` does not, and it
-    reproduces WITH `--search "?seekTime=2"`, so the `URLSearchParams`
-    erasure is fine and the nullable narrowing is not); and the self-recursive
-    `requestAnimationFrame` telemetry loop.
-- [ ] Scene 261: `createTaaPostProcessTask`. Both halves of the non-intrinsic
-  side are now closed — the 160-frame accumulation loop unrolls, and a handle
-  annotation on a declaration keeps the value path unless the initializer is
-  an object literal, which is the `SpriteAtlas` shape in freeciv's and
-  platformer's `atlas.ts` that the earlier bare-handle exemption broke. What
-  remains is the intrinsic, four contracts deep and three of them in both
-  PALs. Measured against the pinned factory run device-free rather than read:
-  it builds three passes over two `rgba16float` intermediates, and
-  `task.outputTexture === task._present.outputTexture` while
-  `=== task._historyUpdate.outputTexture` is false. So (1) a **composite whose
-  output is not its last pass**, which `runComposite` asserts the opposite of;
-  (2) a composite input naming a **render task** rather than a texture, which
-  `PostProcessCompositeInputs` has no slot for; (3) a blend pass whose
-  `writeUniforms` reads the task's own per-frame `_factor`, recomputed from a
-  camera-change key neither PAL has; and (4) the Halton **projection jitter
-  fed back into the source task's `viewProjection`** — the pin gets that free
-  from a UBO write cached on `worldMatrixVersion`, which this port has no
-  analogue for, so it must be threaded per task without leaking into the
-  skybox matrix, the frame view, the billboard sort or the splat UBO, all
-  derived from the same per-frame matrix. Behind all four sits a
-  160-iteration `rgba16float` accumulation that has to match Chromium's
-  half-float rounding to under 0.5 MAD. The pin ships no architecture page
-  for TAA; its own header comment is the documentation.
-- [ ] Scene 275: support `loadFont`.
-
-### Integration-first native runtime and loader gaps
-
-- [ ] Port the pinned two-pass `.babylon` parent wiring and geometry-less
-  `TransformNode` containers (`load-babylon.ts` second pass); the native loader
-  skips parented and geometry-less nodes silently. No measured scene is
-  affected. Reached by Scene 143, whose Sponza load hits neither.
-- [ ] Lower `KHR_materials_anisotropy` from glTF assets. Scene 241 now reaches
-  the loader after its query-derived `isNaN` predicates fold, and its
-  AnimationPointerUVs fixture is the first corpus asset carrying the
-  extension. A full asset strip also exposed the follow-on family: nine
-  materials use textured `KHR_materials_diffuse_transmission`, including two
-  transformed texture pairs. That is not a scalar loader addition; it needs
-  the PBR2 translucency feature bits, material UBO vectors, shader/PAL
-  bindings, and animation-pointer plumbing before Scene 241 is a bounded
-  integration candidate.
-- [ ] Extend `KHR_materials_specular` past its two factors: `specularTexture`
-  and `specularColorTexture` fail explicitly at load. Scene 241 is the only
-  corpus asset carrying them and is blocked earlier by its anisotropy
-  extension, so the pinned
-  `metallicReflectanceTexture` / `reflectanceTexture` pair — including the
-  `pow(2.2)` the reflectance fragment applies to each — stays unreached.
-### Deferred external and platform-feature scenes
-
-These stay out of the first integration wave even when the audit reports an
-earlier compiler error.
-
-- [ ] Scenes 41, 46-49, 103-106: finish the physics lane. **Scenes
-  40, 42, 44, 45, 100, 101, 102 and 209 are integrated and published** -- 40
-  the sphere drop, 100 the same drop with a registered collision event, 44
-  the sleeping towers, 101 the trigger volume, 42 the cloned pre-stepped
-  pair, 45 the collision filter masks, 102 the filtered raycast over
-  triangle-soup colliders and 209 the floating-origin regions, each frozen
-  at the pin's own capture query and
-  measured on both backends. What remains is one capability per scene, and none of it is
-  shared plumbing any more.
-  - **Three duplications the lane accumulated**, all on the lines the mask
-    pair touches: `intrinsics/physics.ts:424-438` is a 15-line copy of
-    `:394-408` with one string changed, `physics-lowerer.ts:2094-2101`
-    copies `:2085-2092`, and `pal_physics_bullet.cpp:1135-1145` copies
-    `:1123-1133` including the dirty-marking loop (one
-    `mark_shape_bodies_dirty(shape)` leaves both at three lines). Their
-    neighbour `physics_shape_set_trigger` already grew a change guard that
-    neither mask setter has.
-  - **Floating origin multiplies the PAL's global body scans by region
-    count**, measured 2026-09-04 and left alone deliberately.
-    `physics_world_step` walks the whole `bodies()` deque and filters on
-    `entry.world`, four times per step (`flush_pending_readds` once,
-    `cache_velocities` once per substep, `stabilize_contacting_bodies`
-    twice) -- and Havok's 1/240 s substep makes that eight traversals per
-    1/60 s step. With one world that is 8N; with R regions it is 8RN, and
-    each region re-scans every other region's bodies only to skip them.
-    `physics_world_release` has the same shape. The fix is a
-    `std::vector<std::uint32_t> body_indices` on `WorldEntry`: all three
-    membership transitions are already explicit and centralised
-    (`physics_world_add_body`, `physics_world_remove_body`,
-    `physics_world_release`), so maintaining it is local and every scan
-    site loses its filter. Two smaller ones beside it: `region_at` is a
-    linear scan run per body per step purely to recover an origin the body's
-    own record could carry beside `region` (two writers, both already
-    holding it); and `physics_shape_create_mesh` feeds `btTriangleMesh`
-    triangle-by-triangle, which de-indexes the indexed soup
-    `append_physics_mesh_geometry` just built -- about 6x the vertex memory
-    on a closed mesh -- where `btTriangleIndexVertexArray` over the two
-    vectors already in hand would keep it. None of this is measured as
-    reached by a registered scene, which is why it is recorded rather than
-    fixed alongside a wave.
-  - **First blockers**, each a per-scene API rather than shared plumbing:
-    a non-glTF container's entities (41);
-    a module-level mutable `let`, and behind it the whole constraint family
-    -- `createPhysicsConstraint` over seven types plus `PhysicsConstraintAxis`
-    limits, none of which the pinned layer's port or the PAL carries (46);
-    `createPhysicsViewer`/`showPhysicsBody` (47 -- its container flatten
-    folds now, so the debug-wireframe family is what is left, and behind it
-    a height-field shape and a switch-assigned `let mesh`);
-    `setPhysicsShapeMaterial` and `setPhysicsBodyMassProperties` -- both
-    intrinsics only, the emitted material write and the PAL entry point
-    already exist -- and behind them one real PAL contract the old entry did
-    not name: `physics_body_set_mass_properties` writes mass and inertia and
-    ignores `center_of_mass` entirely, so honouring it means re-framing the
-    body in Bullet, whose origin IS the centre of mass (48);
-    `createCapsule` (49, which is also a gizmo scene);
-    102 ships. 103 is the lane's next scene and its ladder is MEASURED at
-    three contracts, one of them closed this wave: folding a module helper
-    whose body the pinned query answers, which erases its whole interactive
-    arm at `?captureFrame=5`. The other two are diagnosed rather than
-    guessed. `new Map<PhysicsBody, number>()` GENERATES but does not build --
-    the register said "compiles today", true at generation and false under
-    `-Werror`; `ValueHash<T>` in `native/include/bblite/js_data.hpp` has a
-    `.value` arm but none for a struct carrying a `.handle`, and the lowered
-    `bbl::upstream::PhysicsBody` has no `operator==`, so identity by PAL
-    handle is the fix. And `physics_world_raycast` MISSES when the ray
-    segment ends inside the target shape, where Havok reports the entry hit:
-    one build casting at two boxes shows both engines agreeing to 0.000 at
-    100% exact when the ray passes THROUGH, and native missing all six when
-    it aims at the centres, which is 103's own aim. That one defect is the
-    whole of 103's residual -- full MAD 0.162 but foreground 1.201, every
-    differing pixel inside the one 51x51 green indicator disc.
-    The structural type guard (104, 105 -- `"children" in node` at
-    `scene104.ts:158:68` and `scene105.ts:181:68`, the same guard this
-    register already ranks at cross-scene demand 4; behind it the owner-name
-    grouping in `buildOwnerMap`, where a native mesh record carries its own
-    `scene_node_name` rather than its nearest non-mesh ancestor's, and both
-    scenes die on `createPhysicsCharacterController` regardless);
-    a pinned enum member read as a VALUE into an array (106) -- and the array
-    is not foldable, because `inferredArrayIsMutated` gives any local const
-    array a runtime `js::Array`, so this wants a DataType for the emitted enum
-    or a generation-only table binding; beside it, `.set()` through a
-    `const p = mesh.position` alias, where `emitMemberSetCall` requires a
-    property-access receiver. Those two are all that is left of 106 now that
-    the aggregate options and `setPhysicsBodyPrestepType` ship, and the pin
-    serves it at `?captureFrame=20` with `maxMad` 0.32, a favourable
-    mostly-free-fall pose.
-  - The aggregate's geometry options are **done** (2026-09-04), gated by
-    `regression-physics-aggregate-options`. Two things this entry used to
-    claim were wrong: three were missing rather than two, and `radius` on a
-    capsule or cylinder was **accepted and silently dropped** by both segment
-    arms rather than merely absent — a shipping defect, not a gap. All five
-    now travel through the pin's own `??`, including the pre-switch
-    `if (options.center)`, and `_buildShapeParams`' statement inventory pins
-    the two writes ahead of the switch. The lane's warning that "none of it is
-    shared plumbing any more" was half wrong: these were shared across the
-    whole primitive family.
-  - **Gate the emitted physics surface on the features it already
-    declares.** `physics:trigger` reaches CMake and the feature table but
-    gates nothing in the emitted C++: the trigger entry points and
-    `create_physics_primitive_shape` ship into every scene reaching
-    `physics:world`, measured at 3,265 bytes across the five physics scenes
-    that call none of them. `physics:aggregate` has the same shape today, so
-    one pass should decide both rather than leaving the emitter half-gated.
-    The camera viewport joins them: `effective_aspect_ratio` genuinely is
-    unconditional -- every projection this renderer builds goes through it --
-    but `resolve_camera_viewport` and its `clamp01` are reachable only from
-    `set_pass_camera_viewport`, which early-returns on an absent viewport, so
-    ~30 lines ride into every scene for the one that sets one. There is no
-    `camera:viewport` feature; `emitCameraViewportAssignment` is where the
-    `reachFeature` call goes, exactly as the Y-sort work did for
-    `sprite:2d-y-sort`. What it needs beyond the feature is the
-    reaches-nothing check: after gating, build a scene reaching none of it,
-    because an emitted static nothing calls is
-    `-Werror,-Wunneeded-internal-declaration` and only a sweep sees it.
-  - A physics threshold gates this port's own solver, not agreement with
-    the pinned one, and cannot be driven to zero
-    ([fidelity](docs/fidelity.md#physics-contract) lists the three
-    measured residual classes). What unblocks each: the first-1/120 s
-    gravity deficit wants its origin found in the pinned WASM's first
-    sub-step before a constant is copied; the last-sub-step landing wants
-    the rebound fitted over drops that land there, with the driver recipe
-    in that section; box-box pairs want a detector that emits speculative
-    points (that section records what routing them through GJK/EPA
-    measured).
-  - **Scene 44 measures on the wall clock, and the fixed clock is not the
-    browser's frame.** Its 2000 ms drop is a `setTimeout`; the native timer
-    reads wall time unless `BBLITE_FRAME_DELTA_MS` is set, which the
-    harness does for ad-hoc sources and for the registry scenes that ask
-    (`src/capture-timing.ts`; racer asks). Under `fixedCaptureEnvironment()`
-    scene 44 measures 0.337 / 2.202 against 0.005--0.006 on the wall clock,
-    where the presented frames pace at about 60 Hz and the drop lands on
-    the browser's frame. What unblocks it: read which frame each clock
-    fires the timer on (`BBLITE_PHYSICS_TRACE` beside the driver) and align
-    the native fixed clock's timer boundary with the browser harness's
-    pinned timers, then re-measure the fixed-clock scenes that run timers.
-  - **Bullet's own gaps before this is more than a prototype**: the
-    `double-precision` vcpkg feature is unevaluated (the transform chain
-    around it is double, the solver is float), and no constrained body is
-    measured yet; scene 44 is the one measured stack.
-  - **Beyond the reached slice**, each refusing by name: mesh and
-    container shapes, the aggregate's `isTriggerShape` option and
-    `onPhysicsTriggerBodies`, a shape `rotation` parameter, `disposePhysics`,
-    and
-    every body control past creation (impulse, velocity, motion-type
-    switching, teleport). A capsule or cylinder whose segment is not
-    Y-aligned refuses in the PAL rather than standing upright.
-- [ ] Scene 153: add a runtime 2D-canvas boundary; its final frame is drawn
-  through `CanvasRenderingContext2D`, not Babylon Lite rendering. First blocker:
-  animation manager options past `engine`.
-- [ ] Scenes 180, 181: add live HTML text input, sliders, pointer drag, and
-  wheel handling. First blocker: reached `void` expression statements.
-- [ ] Tidy the gizmo family now that all four of its scenes ship (221, 222,
-  223, 224). Three items, all on the same lines:
-  - **Collapse the widget builders.** The four editors share a preamble and
-    a tail -- the colour read is character-identical four times, and the
-    emitted signature, root and return block repeats with three
-    substitutions -- and two per-widget tables already exist (`EDIT_MODULES`
-    and the intrinsic's `editGizmos`) that could drive one builder, worth
-    about 90-100 lines. Scene 224 settled which part is genuinely shared:
-    the cage has its own record, its own material pair and no follow at all,
-    so the collapse is the four editors plus the two display gizmos, not all
-    seven.
-  - **Lower the three transcribed bodies.** `gizmo-lowerer.ts` reads the
-    pin's constants and factory option objects out of its AST, but
-    `buildHemisphereMesh`, `lineDefsForLevel` and
-    `buildFrustumWireframe`/`buildFrustumEdge` are transcribed into the
-    emitted C++ instead, along with the placement literals their callers
-    pass. Every construct in them is one `lowerPinnedFunction` already
-    handles, and the bounding-box cage showed the translator reaches further
-    still -- a `for...of` over a bracketed pair, a method on an element of a
-    bound list, and a `{x, y, z}` record literal, which between them carried
-    the pin's whole `layout` body. Until they are lowered, an upstream edit
-    to a widget's geometry compiles clean and draws a different shape.
-  - **Two more ungated blocks on the same pass, both measured.** Scene 224
-    carries 25,710 B of camera/light gizmo it cannot call -- 36% of its
-    `gizmo.cpp` -- and `reachesBoundingBox()`/`reachesEditGizmos()` in the
-    same file are the pattern for a `reachesDisplayGizmos()` twin. And
-    `clone_mesh_node` (1,734 B) is emitted into all 239 trees for one
-    caller, scene 42: `scene_core.cpp` is listed with `features: []`, so it
-    needs a `mesh:clone` feature, the same shape as the `vat` option this
-    wave added to the glTF loader. 412,692 B of the two together.
-  - **The cage's bounds walk allocates twice per frame** and its `seen()`
-    is a linear `std::find`, so the walk is O(V squared) -- 30 comparisons
-    for scene 224's subtree, but ~500k/frame at 1,000 meshes. Hoist
-    `visited`/`pending` into the record and `clear()` them (which keeps
-    capacity, where `= {}` would not), and replace `seen()` with a
-    per-mesh stamp.
-  - **`optionDefaultTuple` is a byte-for-byte copy of `optionDefault`**
-    (21 identical lines); extracting `nullishRight(declaration, member)`
-    leaves both as three-liners. Same file, same pass.
-  - **Gate the swapchain overlay behind a `BBLITE_HAS_*` define, and give a
-    layer one record instead of three parallel arrays.** `features.cmake`
-    already carries `gizmo:utility-layer` and CMakeLists already has ten
-    such gates, but the overlay has none: 519 lines of PAL compile into
-    every scene and only the gizmo scenes reach it. In the same lines, a
-    layer is stored as three parallel vectors and then recovered from
-    `registered_scenes[layer + 1]`, so every consumer re-derives that
-    offset. Both belong on one pass over those lines.
-- [ ] Scene 225: add geospatial camera controls; the scene reaches
-  `attachGeospatialControls` even though its reference frame is a static pose.
-  First blocker: `createGeospatialCamera`.
-- [ ] Scene 164: add device-loss recovery and direct GPU-device lifecycle
-  access.
-- [ ] Scenes 227, 228: add multiple native surfaces/swapchains for
-  `createSurface`.
 ## P1 — Backend portability
 
 ### Vulkan
 
-Windows NVIDIA through SDL_GPU's Vulkan driver (enable the vcpkg `sdl3` port's
-`vulkan` feature): geometry, camera, vertex uniforms, clip space and the
-Standard family are correct (scene 2 byte-identical to the golden); the PBR
-family mis-shades (scene 1 darkens roughly one gamma-decode, scene 10 renders
-near-black). The generated SPIR-V lands in SDL's expected descriptor sets but
-declares each texture/sampler as separate descriptors sharing one binding, while
-SDL's Vulkan backend builds combined-image-sampler descriptors. The pinned Tint
-CLI exposes no combined-sampler emission.
-
-- [ ] Emit SDL-compatible SPIR-V (combined image samplers at SDL's set/binding
-  contract) directly from Tint instead of recompiling normalized Tint HLSL with
-  DXC.
-- [ ] Localize and fix the PBR-family Vulkan shading divergence. Suspects: the
-  separate-sampler aliasing and the PBR fragment's cbuffer/array layout.
-- [ ] Build and run generated SPIR-V on Linux.
-- [ ] Validate depth, clip space, cubemap orientation, and texture color spaces.
-- [ ] Test discrete and integrated adapters.
+- [ ] Resolve SDL's combined-image-sampler binding contract without relying on
+  the normalized-HLSL stopgap; localize the PBR shading divergence using
+  reflection and uniforms.
+- [ ] Run Linux and multiple adapter classes; validate depth, clip space,
+  cube orientation and texture colour spaces against same-platform references.
 
 ### Metal
 
-- [ ] Build and run generated MSL on macOS.
-- [ ] Validate uniform layout, derivatives, cubemaps, and blending.
+- [ ] Build and run generated MSL on macOS; validate uniforms, derivatives,
+  cube maps and blending.
+- [ ] Extend Dawn surface creation, adapter setup and tool/library deployment
+  beyond Windows; WGSL transport already belongs to Dawn.
 
-## P2 — Platform and performance
+## P2 — Performance and shipping
 
-- [ ] Let bounded text reads fill a sized `std::string` directly and return a
-  typed not-found result from the open attempt. `read_text_file_bounded`
-  currently allocates a byte vector and copies it, while `localStorage.getItem`
-  stats before opening; fixing only one retains either the 64 MiB peak copy or
-  the redundant syscall/race. The shared file reader needs an
-  absent/error/value result that preserves strict errors for every non-ENOENT
-  failure.
-
-- [ ] Reuse backend-owned scratch storage while uploading dynamic thin-instance
-  pools. PBR mirror-conjugation and missing color padding currently allocate
-  full temporary vectors in both PALs when a pool grows or changes; the shared
-  transform/padding helpers need caller-provided output spans before either
-  backend can fill upload staging directly without retaining stale capacity.
-
-- [ ] Parse dynamic JSON directly into `JsonValue` rather than building an
-  `nlohmann::ordered_json` DOM and recursively copying it. The replacement
-  needs a SAX builder that preserves source key order, duplicate-key behavior,
-  numeric conversion, and the parser's existing throw boundary; wrapping the
-  nlohmann tree instead would duplicate the entire read/coercion surface and
-  make the generic JSON bridge depend on a third-party type in every value.
-
-- [ ] Finish the Web Audio slice. A prototype exists: `bblite/pal_audio.hpp`
-  over LabSound with an SDL3 `lab::AudioDevice`, an `audio:engine` feature
-  selecting one translation unit, and `examples/audio-probe.ts`. The contracts
-  and the measured probe are in
-  [fidelity](docs/fidelity.md#audio-contract).
-
-  **No corpus scene reaches audio.** The reach is upstream's seven *game*
-  demos, which use the engine for lifecycle only and then build a raw Web
-  Audio graph on the context they are handed, plus the module's own Tier-4
-  showcase — the one place the sound family, microphone, visualizer and unmute
-  UI appear at all. So the seam is the Web Audio API rather than Babylon's
-  sound API, and the raw surface those files reach is small: `createGain` (25),
-  `createBufferSource` (12), `createBuffer` (7), `createBiquadFilter` (7),
-  `createOscillator` (6), `createStereoPanner` (1), `decodeAudioData` (2), and
-  three `AudioParam` schedulers (`setValueAtTime` 22,
-  `exponentialRampToValueAtTime` 20, `linearRampToValueAtTime` 4).
-
-  What remains:
-  - **The PCM comparison gate.** The pinned engine accepts an
-    `OfflineAudioContext`, so the browser half exists. Reuse upstream's shape
-    rather than inventing one: `docs/lite/architecture/41-audio-engine.md`
-    Tier 3 rasterizes offline PCM to a deterministic waveform PNG and diffs it
-    against a committed golden, which drops onto this repository's PNG/MAD
-    harness directly.
-  - `setMasterVolume`/`getMasterVolume`, which need `audio-param.ts`'s ramp
-    component lowered: the exp/log curve tables, the `MinRampDuration` gate,
-    and `setValueCurveAtTime` reaching the PAL as a span.
-  - Engine creation inside `void (async () => { try { … } catch { … } })()`,
-    which needs both escaping closures and `catch`.
-  - Smaller: LabSound is consumed
-    by path rather than `find_package` because its `install(EXPORT)` names
-    backend targets this build does not compile.
-
-  Everything else refuses by name — the StaticSound/StreamingSound family,
-  buses, spatial, stereo, the analyzer, microphone, unmute UI, visualizer and
-  media-stream tap on the Babylon side; the analyser/panner/delay/convolver/
-  compressor/wave-shaper factories and `setTargetAtTime` on the Web Audio side.
-
-- [ ] Give a billboard system the F64 anchor mirror the pin keeps. A sprite's
-  anchor is stored in `BillboardSystemRecord::instance_data`, a
-  `std::vector<float>`, and the floating-origin bake subtracts the eye from
-  that already-quantized lane -- the pin keeps a separate `_anchor`
-  Float64Array for exactly this reason and says so. The sort depth should
-  move onto the eye-relative anchor with it, which is where the pin computes
-  it. Blocked on a measurement: scene 205's own source notes that every
-  anchor it uses is a multiple of 0.5, so it is lossless in float32 and its
-  0.000 proves the plumbing rather than the width. A large-world sprite scene
-  with an off-grid anchor would settle it.
-
-- [ ] Widen the remaining matrices the pin's high-precision allocator widens.
-  `_setHpmAllocator` is process-global: under it the pin stores every
-  `allocateMat4()` in F64, including each light's local matrix, the
-  thin-instance parent world, the navmesh merge world, the shadow-caster AABB
-  world and the splat world. This port widened the camera's world and a
-  node's translation; the rest still compose into `std::array<float, 16>`
-  unconditionally, and `MeshRecord::outer_position` is likewise still `Vec3`.
-  Scene 204 is the first reached pair and it measures 0.000 on both backends,
-  which bounds the thin-instance row rather than closing it: the parent world
-  is composed and subtracted in double by `mesh_world_eye_relative` before the
-  single float store, so the F32 `instance_parent_matrix` is only the RECORDED
-  parent, and 204's is the identity. A floating-origin pool under a
-  transformed parent node is what would measure the widening.
-  Blocked on a measurement for the rest: no reached scene combines
-  high-precision matrix with an imported light, a navmesh, a shadow or a
-  splat -- `assertFloatingOriginCapabilities` refuses those pairs outright --
-  so there is nothing to measure a widening against.
-
-- [ ] Hoist the floating-origin offset out of the per-draw path. Every
-  floating-origin draw calls `arc_rotate_eye_position` through
-  `mesh_world_eye_relative`, which for an arc-rotate camera is four
-  transcendental calls per draw per pass, where the pin reads three cached
-  floats off `cam.worldMatrix`. The offset is frame-constant, and both
-  backends already hoist the pass scene and lights blocks for exactly this
-  reason -- the fix is one `Vec3d` threaded from beside those blocks through
-  `draw_world`, replacing the `(scene, engine)` pair. Blocked on a
-  measurement: no reached scene draws enough geometry under floating origin
-  for the cost to show, so there is nothing to measure the change against.
-  A large-world scene with a real mesh count would settle it.
-
-- [ ] Re-key the vertex upload gate under floating origin. `transformed_vertices`
-  bakes an identity transform there, so its output no longer depends on the
-  mesh TRS -- but both backends still invalidate on `transform_version`, so a
-  moving mesh re-runs the whole per-vertex loop and re-uploads byte-identical
-  bytes every frame. Blocked on the same missing measurement: every reached
-  floating-origin scene is static, so the path never fires.
-
-- [ ] Extend the typed WGSL subset through the reached `const`, `fn`, and `for`
-  constructs, then remove the strict raw-source fallback. Until those nodes
-  exist, rejecting unsupported reflected members and canonicalizing comments is
-  safer than inferring a typed layout the parser cannot represent.
-## P2 — Dual render backends
-
-Both backends stay long-term as mutually validating implementations;
-[backends](docs/backends.md) carries the comparison and the guards.
-
-- [ ] Extend the Dawn integration beyond Windows. The platform surface is one
-  HWND branch, the adapter backend selection, and the per-OS Dawn library
-  build; the WGSL feeds Dawn directly, so no per-platform shader work exists on
-  this path.
-- [ ] Reduce the shipping executable further. What is left after the
-  trimmed SDL lost its dynamic-API jump table and SDL_image its unreached
-  formats (scene 1 SDL_GPU: 2,426,880 to 1,939,456 bytes), attributed from
-  the linker map (`tools/map-size-report.mjs`, `bblite_native.map`):
-  - **SDL's surface-conversion family, ~300 KiB** — the blitters, RLE and
-    YUV conversion (`SDL_blit_auto` alone 137 KiB) — is kept alive by
-    `SDL_ConvertSurface`, which `pal::decode_image` and the RmlUi image
-    loader call to reach RGBA32, and which SDL_image's own PNG loader
-    (RGBA64/RGB48 sources) and PNG writer (`IMG_SavePNG`, the screenshot
-    path) reference regardless. Converting the four decoder formats
-    (INDEX8 with palette and colour key, RGB24, RGBA32, RGBA64) in the PAL
-    removes only the PAL's references; the family stays until the writer is
-    SDL's own `SDL_SavePNG` (if it does not convert either) or a writer of
-    this repository's, and both changes have to hold the parity matrix on the
-    development build too, since the decode path is shared.
-  - The static CRT is 323 KiB, spread over locale, iostream and printf
-    objects too small to name individually; retiring iostream from the PAL
-    is the only lever there and has not been sized.
-  - Assets dominate every package that carries a glTF (scene 1: 12.0 MB of
-    the 12.8 MB ZIP is the pinned BoomBox), and they are parity evidence
-    that cannot be re-encoded; packed native assets remain unevaluated.
-  - The optional codec pair (`jpeg`, `webp`) is spelled in six places --
-    `optionalImageCodecs` (cli.ts), `native/vcpkg.json`,
-    `native/CMakeLists.txt`, `tools/package-demo.ps1`,
-    `feature-activation.ts` and the SDL_image overlay portfile's comment --
-    across five layers with no shared reader. One list would need a
-    generated manifest fragment the others consume, which nothing produces.
-  - **The KTX2 transcode is now the largest asset weight in the tree**, and
-    two measured costs ride it. Scene 112 packages 30.72 MB of source
-    `.ktx2` into a 74.5 MB GLB, so both scale with the asset rather than
-    the scene. First, `transcodeTexture` replays through `cachedJsonBake`,
-    so a WARM compile pays a parse and a base64 decode -- 549 ms of replay
-    plus 126 ms of `writeKtx1` for fifteen images, about 28% of a 2.44 s
-    warm `packageGltf`; caching the assembled KTX1 through `cachedBake`
-    loses nothing (the container carries its own format, extents and level
-    sizes) and shrinks the cache from 102.5 MB to 71.3 MB. Second, the
-    emitted loader materializes a full copy of the container range per slot
-    only to hand it to `parse_ktx1`, which copies every level out again --
-    117 MB for scene 112; a `std::span` overload and a view at the call
-    site removes it. The KTX2 sampler is also the one pinned fact on that
-    path that is re-derived rather than read: `ktx2SamplerIndex`
-    transcribes the four glTF enums from a prose reading of `makeSampler`,
-    where the same code reads `srgbFormat`'s switch off the pin. A table
-    beside `srgbGpuFormat` mapping the pin's sampler descriptor to glTF
-    enums would make an upstream filter change fail generation instead of
-    silently repackaging.
-  - **`mesh_factories.cpp` is emitted whole whenever any mesh-builder
-    feature is reached**, so `create_mesh_from_data` ships in 138 generated
-    trees while 17 call it -- 31,823 bytes that cannot execute, and the
-    number grows with every option that function gains. Splitting the unit
-    per builder feature wants its own neutrality proof over the whole
-    generated tree.
+- [ ] Reuse dynamic thin-instance staging spans/scratch for mirror transforms
+  and colour padding, preserving capacity/version invalidation.
+- [ ] Widen remaining high-precision matrices only with an observing transformed
+  large-world scene. Reuse a per-pass eye offset instead of recomputing it per
+  draw, and avoid re-uploading byte-identical vertices after a transform-only
+  change under floating origin.
+- [ ] Evaluate SDL surface conversion, image writer and CRT size using linker
+  maps. Remove a dependency only after every decoder/writer consumer is
+  accounted for and pixels still match.
+- [ ] Evaluate packed native assets without modifying immutable source
+  evidence; report original and packaged byte budgets separately.
+- [ ] Improve LabSound package discovery/export consumption and measure the
+  reached audio implementation beyond its prototype PCM checks.

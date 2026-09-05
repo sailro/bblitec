@@ -2031,13 +2031,17 @@ export class UserFunctionLowerer {
             : undefined;
         const cppType = context.dataTypes.cppType(dataType);
         const selfOwnerCpp = selfIdentifier ? `${cppName}_owner` : undefined;
+        const selfWeakCpp = selfIdentifier ? `${cppName}_weak` : undefined;
         if (selfIdentifier) {
             context.emit(
                 `auto ${selfOwnerCpp} = std::make_shared<${cppType}>();`,
             );
+            context.emit(
+                `std::weak_ptr<${cppType}> ${selfWeakCpp} = ${selfOwnerCpp};`,
+            );
             const selfValue: Value = {
                 kind: "data",
-                cpp: `(*${selfOwnerCpp})`,
+                cpp: `bbl::js::retain_callback(${selfWeakCpp}.lock())`,
                 dataType,
             };
             if (context.lookupIdentifierValue(selfIdentifier)) {
@@ -2140,7 +2144,9 @@ export class UserFunctionLowerer {
         context.decreaseIndent();
         context.emit(dataType.identity ? "}};" : "};");
         if (selfIdentifier) {
-            context.emit(`${cppType} ${cppName} = *${selfOwnerCpp};`);
+            context.emit(
+                `${cppType} ${cppName} = bbl::js::retain_callback(${selfOwnerCpp});`,
+            );
         }
         return cppName;
     }

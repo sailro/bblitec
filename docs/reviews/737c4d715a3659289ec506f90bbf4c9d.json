@@ -1,0 +1,14 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    {"summary":"Removed renderer/glTF matrix forwarding wrappers and dead segment/export wiring; all consumers use the shared pinned matrix product.","applied":true},
+    {"summary":"Routed templated matrix-writer lowering through the existing function lowerer with shared index/type bindings.","applied":true},
+    {"summary":"Replaced repeated source-tree output discovery with a successful compiler-output inventory; missing/malformed records rebuild.","applied":true},
+    {"summary":"Recursive identity-bearing callbacks alias existing shared ownership instead of allocating per call; identity erasure retains ownership and mutable captures.","applied":true},
+    {"summary":"Removed manual Dawn mesh reset loops and forwarding release method; owning containers perform teardown.","applied":true},
+    {"summary":"Removed unread RmlUi SVG metadata; the installed package supplies the authoritative feature flag.","applied":true},
+    {"summary":"Removed duplicate documentation ownership tables and TODO tasks already owned by audit.md.","applied":true},
+    {"summary":"Deduplicated captured numeric mesh payloads independently of stage/variant metadata.","applied":true},
+    {"summary":"Passed the already resolved PinnedDrawConventions record through the shared mesh-block builder instead of repeating shader-key searches.","applied":true}
+  ]
+}

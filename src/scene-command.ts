@@ -88,6 +88,7 @@ import {
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
     hostOfflineShaderTarget,
+    needsOfflineShaders,
     type OfflineShaderTarget,
 } from "./build-options.js";
 import { resolveBrowserPath } from "./browser-path.js";
@@ -955,7 +956,7 @@ function developmentChecks(scope: PreflightScope): DevelopmentCheck[] {
                 : { problem: `not built at ${tools.dawnDirectory}` }),
         });
     }
-    if (scope.shaders) {
+    if (scope.shaders && needsOfflineShaders(backend, process.env.BBLITE_SHADER_TARGET)) {
         checks.push({
             label: "PowerShell",
             ...(tools.powershell
@@ -1328,6 +1329,14 @@ function validationCheckpointPath(sceneId: string | undefined): string {
  */
 function shaderStage(selected: readonly SceneDefinition[]): Stage {
     const setup = buildSetup();
+    if (!needsOfflineShaders(setup.backend, process.env.BBLITE_SHADER_TARGET)) {
+        return {
+            name: "shaders (Dawn WGSL)",
+            body: async () => {
+                console.log("shaders: Dawn consumes generated WGSL; no offline compiler required.");
+            },
+        };
+    }
     const single = selected.length === 1 ? selected[0]! : undefined;
     const checkpointPath = validationCheckpointPath(single?.id);
     // The digests `reusable` took, reused by `record`: the sources are

@@ -1,64 +1,26 @@
 # Babylon Lite Native
 
-> Babylon Lite TypeScript-to-C++ compiler with an SDL3 native
-> runtime and dual SDL_GPU / Dawn (WebGPU) render backends.
+`bblitec` compiles a reachable, statically analyzable subset of Babylon Lite
+TypeScript into C++20, with SDL3 platform services and SDL_GPU/Dawn renderers.
+It materializes assets and composes shaders during generation, while native
+scene state, input, animation and draw submission remain live.
 
-`bblitec` compiles a statically analyzable subset of `@babylonjs/lite` scene
-code into C++20. It reconstructs the pinned upstream TypeScript from source
-maps, emits only reached features, materializes remote assets at compile time,
-and keeps handwritten C++ at the platform abstraction layer.
+The [upstream pin](upstream/babylon-lite.json) names the supported package and
+commit. This is a bounded compiler, not a general JavaScript runtime.
+[Features](docs/features.md) defines support and
+[fidelity](docs/fidelity.md) records intentional adaptations.
 
-**Scope:** the documented reachable subset, not a general JavaScript runtime.
-Unsupported syntax and APIs fail at compile time with source locations.
-
-| [<img src="docs/images/scenes/scene1.png" alt="Scene 1" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene5.png" alt="Scene 5" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene7.png" alt="Scene 7" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Scene 14" width="170">](docs/status.md#curated-parity-scenes) |
+| [<img src="docs/images/scenes/scene1.png" alt="BoomBox" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene14.png" alt="Flight Helmet" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/sandblox.png" alt="Sandblox" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/minecraft.png" alt="Voxel Sandbox" width="170">](docs/status.md#upstream-application-gates) |
 | :-: | :-: | :-: | :-: |
-| [<img src="docs/images/scenes/scene24.png" alt="Scene 24" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/scene9.png" alt="Scene 9" width="170">](docs/status.md#curated-parity-scenes) | [<img src="docs/images/scenes/sandblox.png" alt="Sandblox demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/minecraft.png" alt="Voxel Sandbox demo" width="170">](docs/status.md#upstream-application-gates) |
-| [<img src="docs/images/scenes/tetris.png" alt="Tetris demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/doom.png" alt="Doom demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/racer.png" alt="Racer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/littlest-tokyo.png" alt="Littlest Tokyo demo" width="170">](docs/status.md#upstream-application-gates) |
-| [<img src="docs/images/scenes/platformer.png" alt="Platformer demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/quake.png" alt="LibreQuake demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/bath-day.png" alt="Bath Day demo" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/freeciv.png" alt="Freeciv demo" width="170">](docs/status.md#upstream-application-gates) |
+| [<img src="docs/images/scenes/doom.png" alt="Doom" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/racer.png" alt="Racer" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/quake.png" alt="LibreQuake" width="170">](docs/status.md#upstream-application-gates) | [<img src="docs/images/scenes/freeciv.png" alt="Freeciv" width="170">](docs/status.md#upstream-application-gates) |
 
-*A few of the 220 curated parity scenes and 13 demos, compiled to native C++
-and rendered on both GPU backends — click any frame for the measured numbers.*
-
-## Coverage
-
-Pinned upstream: `@babylonjs/lite@1.27.0`,
-commit `64710b56f9dfe175d919c635812f84c8872d467c`.
-
-- **Language** — the reachable TypeScript subset: classes, closures, async,
-  structs, arrays, enums, destructuring, spread, runtime `Math`.
-- **Assets** — glTF/GLB (Draco, Meshopt), KTX/Basis textures, HDR
-  environments, Gaussian splats, browser-drawn textures, node-particle
-  bakes; all materialized at compile time.
-- **Materials** — Standard, PBR (clearcoat, sheen, iridescence, anisotropy,
-  transmission), Grid, node materials, material plugins, shader materials.
-- **Lighting** — punctual, hemispheric and clustered lights; PCF, ESM and
-  CSM shadows.
-- **Geometry** — mesh builders, morph targets, skinning, thin instances,
-  mirrored transforms, scene mutation, GPU picking.
-- **Frame graph** — render targets, MRT and depth passes, post-processes,
-  fullscreen effects, image processing.
-- **2D and UI** — sprites and billboards with custom shaders; DOM/CSS pages
-  lowered to RmlUi.
-- **Simulation** — animation, physics, navigation, audio, cameras and input,
-  gizmos.
-- **Backends** — SDL_GPU (D3D12, Vulkan, Metal through pinned Tint) and
-  Dawn (WebGPU); a scene passes on both or is not integrated.
-
-See [features](docs/features.md) for details and [status](docs/status.md)
-for the measured results.
+Click a frame for the published measurements. Both GPU backends must pass a
+scene's gates; image agreement does not establish complete language coverage.
 
 ## Quick start
 
-Requirements: Node.js 22.12+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg,
-PowerShell and DXC for shader compilation, and Chrome/Edge with WebGPU for
-browser references and executed asset compilation — the HDR GGX prefilter,
-Basis transcodes, drawn atlases, and node-particle bakes (see
-[development](docs/development.md)).
-
-**A built scene requires a GPU.** Both backends render through one, there is
-no software fallback, and a device that cannot be brought up is an error
-rather than a slower picture.
+Install the prerequisites in [development](docs/development.md), including
+Node.js, native build tools and a WebGPU browser. A built scene requires a GPU.
 
 ```powershell
 git clone https://github.com/sailro/bblitec.git
@@ -66,58 +28,35 @@ cd bblitec
 npm ci
 npm run dev:setup
 npm run doctor
-npm test
 npm run scene -- process scene1
-npm run scene -- parity scene1
-npm run sweep
+npm run scene -- parity scene1 --differential
 ```
 
-Process an unregistered repository-local scene with derived defaults:
+`process` generates code/assets, compiles scene-local shaders and builds native
+code. The same command accepts an unregistered repository-local TypeScript
+path. Build configuration, minimal packages and the full validation workflow
+are documented once in development.
 
-```powershell
-npm run scene -- process examples\my-scene.ts
-npm run scene -- parity examples\my-scene.ts --recapture-reference
-```
+## Documentation
 
-`process` performs generation, scene-local shader compilation, CMake
-configuration, and a parallel native build. Ninja is the default generator;
-set `BBLITE_CMAKE_GENERATOR` to override it. On Windows the scene command
-discovers Visual Studio's CMake, Ninja, clang-cl/MSVC, Windows SDK, and vcpkg;
-explicit environment variables remain overrides. `dev:setup` installs the full
-development vcpkg profile and builds pinned Dawn, Tint, DXC, and LabSound.
-Build trees are disposable and generator-specific.
+Read these pages before feature work in a fresh session:
 
-## Documentation (start here in a fresh session)
-
-| Page | Purpose |
+| Page | Owns |
 | --- | --- |
-| [Architecture](docs/architecture.md) | Compiler pipeline, ownership boundaries, runtime, renderer |
-| [Features](docs/features.md) | Supported feature families, compile-time versus run-time, boundaries |
-| [Development](docs/development.md) | Setup, commands, builds, switches, parity, troubleshooting |
-| [Debugging](docs/debugging.md) | The diagnostic ladder: capturing both renderers and diffing them |
-| [Fidelity](docs/fidelity.md) | Semantic adaptations, shader contracts, diagnostics |
-| [Status](docs/status.md) | Measured baselines, parity scenes, diagnostics |
-| [Backends](docs/backends.md) | The two GPU render backends: architecture, comparison, porting contracts |
-| [Native page UI](docs/ui.md) | Scene-created DOM/CSS lowering to retained RmlUi controls |
-| [TODO](TODO.md) | Prioritized future work only |
-
-## Design constraints
-
-- Generate Babylon behavior from pinned upstream sources; PAL owns only OS and
-  SDL mechanics.
-- Treat pinned golden applications as immutable evidence. Their source must
-  remain byte-for-byte identical to the pinned upstream commit; integration
-  work belongs in the compiler, lowerers, generated runtime, or PAL, never in
-  a golden program.
-- Render on a GPU or fail explicitly. A degraded path nothing measures is
-  worse than an error that names what is missing.
-- Preserve tree shaking, provenance, typed records, and C++20 portability.
-- Do not tune shaders or loader behavior against a golden image.
-- Keep generated output disposable; fix compiler, lowerer, template, or PAL
-  sources instead.
+| [Repository instructions](.github/copilot-instructions.md) | Working rules |
+| [Architecture](docs/architecture.md) | Pipeline, source ownership and memory model |
+| [Features](docs/features.md) | Supported surface and feature activation |
+| [Development](docs/development.md) | Setup, commands, builds and validation |
+| [Debugging](docs/debugging.md) | Scene analysis and diagnostic ladder |
+| [Fidelity](docs/fidelity.md) | Adaptations and source/native contracts |
+| [Backends](docs/backends.md) | GPU implementation and binding boundaries |
+| [UI](docs/ui.md) | Retained DOM/CSS/Canvas2D compatibility |
+| [Status](docs/status.md) | Published measurements |
+| [TODO](TODO.md) | Unfinished capabilities and maintenance |
+| [Audit](audit.md) | Current audit defects, fixes and evidence |
 
 ## Acknowledgements
 
-This project is not affiliated with or endorsed by Babylon.js. Babylon.js
-and Babylon Lite are Apache-2.0 projects. DAWN, SDL, and downloaded assets
-retain their respective licenses.
+This project is not affiliated with or endorsed by Babylon.js. Babylon Lite
+and third-party libraries/assets retain their respective licenses and
+attribution; see the repository and packaged notices.

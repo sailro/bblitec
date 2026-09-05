@@ -49,7 +49,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
-    lowerMat4MultiplyWriterCpp,
     lowerObjectComponents,
     lowerPinnedFunction,
     lowerTupleComponents,
@@ -4201,7 +4200,7 @@ struct BoundingBoxPositions {
     std::size_t size() const { return vertices->size() * 3u; }
 };
 
-${lowerMat4MultiplyWriterCpp(this.context)}
+using upstream::mat4_multiply_into;
 
 ${lowerPinnedFunction(
     this.context,
@@ -5023,6 +5022,7 @@ void attach_bounding_box_gizmo_to_node(
 #include <bblite/js_data.hpp>
 #include <bblite/upstream/camera_math.hpp>
 #include <bblite/upstream/renderer_plan.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 
 #include <algorithm>
 #include <array>

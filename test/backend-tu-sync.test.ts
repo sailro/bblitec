@@ -278,7 +278,7 @@ test("Dawn caches thin-pick bindings and invalidates them with their buffers", (
     assert.match(dawn, /mesh\.thin_pick_bound_size == bound_size/);
     assert.match(dawn, /state\.release_thin_pick_groups\(\);[\s\S]{0,300}wgpuBufferRelease\(state\.pick_mesh_buffer\)/);
     assert.match(dawn, /dawn_mesh\.release_thin_pick_group\(\);[\s\S]{0,300}wgpuBufferRelease\(previous_instances\)/);
-    const releaseMesh = dawn.slice(dawn.indexOf("void release_mesh("));
+    const releaseMesh = dawn.slice(dawn.indexOf("void release_gpu_resources(DawnMeshResources&"));
     assert.match(releaseMesh.slice(0, 1000), /mesh\.release_thin_pick_group\(\)/);
     assert.doesNotMatch(dawn, /std::vector<WGPUBindGroup> thin_pick_groups/);
 });

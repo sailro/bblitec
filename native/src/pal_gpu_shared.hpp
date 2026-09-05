@@ -3,6 +3,8 @@
 // byte-identical vertex data.
 #pragma once
 
+#include <span>
+
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
@@ -26,6 +28,10 @@
 // once from the pinned WGSL vertex stages and shared with both geometry
 // loaders. Always emitted, so the include is unconditional too.
 #include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
+#if BBLITE_HAS_PICKING
+#include <bblite/upstream/picking_math.hpp>
+#endif
 // The render plan is generated only for scenes that register a
 // SceneContext; a sprite-only scene has none, and reaches this header for
 // the frame options, capture gate and clock alone.
@@ -298,7 +304,7 @@ inline Vec3d floating_origin_offset(
  * hemispheric) are left alone.
  */
 inline void apply_light_floating_origin(
-    std::vector<upstream::LightEntry>& entries,
+    std::span<upstream::LightEntry> entries,
     std::uint32_t count,
     const Scene& scene,
     const Engine& engine) {
@@ -498,7 +504,6 @@ inline std::uint32_t pass_depth_samples(
 #include <optional>
 #include <sstream>
 #include <stdexcept>
-#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -506,66 +511,21 @@ inline std::uint32_t pass_depth_samples(
 namespace bbl::pal {
 
 /** Apply a cloned imported root after the mesh's own/deformation world. */
-inline Vec3 rotate_outer_point(Vec3 point, const Vec3& rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
-    const float sin_z = std::sin(rotation.z);
-    const float cos_z = std::cos(rotation.z);
-    point = Vec3{
-        point.x,
-        point.y * cos_x - point.z * sin_x,
-        point.y * sin_x + point.z * cos_x};
-    point = Vec3{
-        point.x * cos_y + point.z * sin_y,
-        point.y,
-        -point.x * sin_y + point.z * cos_y};
-    return Vec3{
-        point.x * cos_z - point.y * sin_z,
-        point.x * sin_z + point.y * cos_z,
-        point.z};
-}
-
 inline std::array<float, 16> outer_draw_world(
-    std::array<float, 16> world,
+    const std::array<float, 16>& world,
     const MeshRecord& record) {
     if (
-        record.outer_rotation.x != 0.0f ||
-        record.outer_rotation.y != 0.0f ||
-        record.outer_rotation.z != 0.0f) {
-        for (std::size_t column = 0; column < 4; ++column) {
-            const std::size_t offset = column * 4;
-            const Vec3 rotated = rotate_outer_point(
-                Vec3{world[offset], world[offset + 1], world[offset + 2]},
-                record.outer_rotation);
-            world[offset] = rotated.x;
-            world[offset + 1] = rotated.y;
-            world[offset + 2] = rotated.z;
-        }
+        record.outer_position.x == 0.0f &&
+        record.outer_position.y == 0.0f &&
+        record.outer_position.z == 0.0f &&
+        record.outer_rotation.x == 0.0f &&
+        record.outer_rotation.y == 0.0f &&
+        record.outer_rotation.z == 0.0f) {
+        return world;
     }
-    world[12] += record.outer_position.x;
-    world[13] += record.outer_position.y;
-    world[14] += record.outer_position.z;
-    return world;
-}
-
-/** Column-major matrix product, matching the generated pinned multiply. */
-inline std::array<float, 16> draw_matrix_product(
-    const std::array<float, 16>& left,
-    const std::array<float, 16>& right) {
-    std::array<float, 16> result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        for (std::size_t row = 0; row < 4; ++row) {
-            double sum = 0.0;
-            for (std::size_t term = 0; term < 4; ++term) {
-                sum += static_cast<double>(left[term * 4 + row]) *
-                    static_cast<double>(right[column * 4 + term]);
-            }
-            result[column * 4 + row] = static_cast<float>(sum);
-        }
-    }
-    return result;
+    return upstream::matrix_product(
+        upstream::outer_transform_matrix(
+            record.outer_position, record.outer_rotation), world);
 }
 
 /**
@@ -612,7 +572,7 @@ inline std::array<float, 16> draw_world(
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
     if (record.gpu_world_transform) {
         return outer_draw_world(
-            draw_matrix_product(
+            upstream::matrix_product(
                 base,
                 upstream::mesh_world_matrix(engine, record)),
             record);
@@ -1172,18 +1132,8 @@ inline PickSceneUniforms build_pick_scene_uniforms(
     double width,
     double height) {
     PickSceneUniforms out;
-    const double ndc_x = 2.0 * sample_x / width - 1.0;
-    const double ndc_y = 1.0 - 2.0 * sample_y / height;
-    for (int column = 0; column < 4; ++column) {
-        const auto base = static_cast<std::size_t>(column * 4);
-        const double w3 = static_cast<double>(vp[base + 3]);
-        out.view_projection[base] = static_cast<float>(
-            width * (static_cast<double>(vp[base]) - ndc_x * w3));
-        out.view_projection[base + 1] = static_cast<float>(
-            height * (static_cast<double>(vp[base + 1]) - ndc_y * w3));
-        out.view_projection[base + 2] = vp[base + 2];
-        out.view_projection[base + 3] = vp[base + 3];
-    }
+    upstream::compute_pick_view_projection(
+        out.view_projection, vp, sample_x, sample_y, width, height);
     // The pin writes the sampled pixel's CENTRE; a discard predicate reads
     // it, and the default one does not -- but the block uploads whole.
     out.fragment_coord = {
@@ -1192,29 +1142,9 @@ inline PickSceneUniforms build_pick_scene_uniforms(
     return out;
 }
 
-/**
- * `computeGsPickMatrix`, lowered from its own body.
- *
- * The cloud's vertex stage already produced clip space, so its shear is a
- * post-multiply rather than a replacement projection: scale by the viewport
- * and translate by the sample's NDC.
- */
-inline void compute_cloud_pick_matrix(
-    std::array<float, 16>& out,
-    double sample_x,
-    double sample_y,
-    double width,
-    double height) {
-    const double ndc_x = 2.0 * sample_x / width - 1.0;
-    const double ndc_y = 1.0 - 2.0 * sample_y / height;
-    out = {
-        static_cast<float>(width), 0.0f, 0.0f, 0.0f,
-        0.0f, static_cast<float>(height), 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        static_cast<float>(-ndc_x * width),
-        static_cast<float>(-ndc_y * height),
-        0.0f, 1.0f};
-}
+#if BBLITE_HAS_SPLATS
+using upstream::compute_cloud_pick_matrix;
+#endif
 
 /**
  * One candidate the pick pass drew, in submission order.
@@ -2142,34 +2072,12 @@ inline void finish_detailed_pick(
 #endif
 #endif
 
-/** The pin's projection-view product times one mesh world, preserving its
- *  explicit four-term accumulation order and float32 store boundary. */
-inline std::array<float, 16> shader_matrix_product(
-    const float* left,
-    const std::array<float, 16>& world) {
-    std::array<float, 16> result{};
-    for (std::size_t column = 0; column < 4; ++column) {
-        const double b0 = world[column * 4];
-        const double b1 = world[column * 4 + 1];
-        const double b2 = world[column * 4 + 2];
-        const double b3 = world[column * 4 + 3];
-        for (std::size_t row = 0; row < 4; ++row) {
-            result[column * 4 + row] = static_cast<float>(
-                (((static_cast<double>(left[row]) * b0 +
-                   static_cast<double>(left[4 + row]) * b1) +
-                  static_cast<double>(left[8 + row]) * b2) +
-                 static_cast<double>(left[12 + row]) * b3));
-        }
-    }
-    return result;
-}
-
 inline std::optional<std::array<float, 16>> shader_world_view(
     const std::array<float, 16>* view,
     const std::array<float, 16>& world) {
     return view
         ? std::optional<std::array<float, 16>>{
-              shader_matrix_product(view->data(), world)}
+              upstream::matrix_product(*view, world)}
         : std::nullopt;
 }
 
@@ -2565,7 +2473,7 @@ inline std::array<float, 16> pinned_draw_world(
         // local stream. The live native world therefore precedes the mirror:
         // (world * mirror) * (mirror * local) == world * local.
         return outer_draw_world(
-            draw_matrix_product(
+            upstream::matrix_product(
                 upstream::mesh_world_matrix(engine, record),
                 pinned_mesh_world()),
             record);
@@ -3251,7 +3159,7 @@ inline std::vector<std::uint8_t> pinned_lights_block(
     const Scene& scene,
     const Engine& engine) {
     std::array<std::uint32_t, 4> header{};
-    std::vector<upstream::LightEntry> entries(upstream::pinned_max_lights);
+    std::array<upstream::LightEntry, upstream::pinned_max_lights> entries{};
     std::uint32_t count = 0;
     for (const LightHandle handle : scene.lights) {
         if (count >= upstream::pinned_max_lights) break;
@@ -3771,6 +3679,27 @@ inline PinnedDrawConventions pinned_draw_conventions(
         vat_draw,
         skeleton_draw || vat_draw,
     };
+}
+
+/** The effective mesh block shared by backend uploads and CPU captures. */
+inline upstream::MeshUniforms pinned_draw_mesh_block(
+    const Scene& scene,
+    const Engine& engine,
+    const upstream::RenderDrawCommand& draw,
+    std::size_t variant,
+    const PinnedDrawConventions& conventions) {
+    const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+    return pinned_mesh_block(
+        scene,
+        engine,
+        pinned_draw_world(
+            conventions.identity_world,
+            conventions.world_from_palette,
+            upstream::pbr_variants[variant].uses_local_position,
+            record,
+            scene,
+            engine),
+        draw.item.mesh.value);
 }
 
 /**
@@ -4547,31 +4476,6 @@ inline void apply_animation_seek(
     for (const auto& seek : scene.animation_seekers) {
         seek(time);
     }
-}
-
-/**
- * The renderer that owns the frame's clear, re-derived per frame.
- *
- * Upstream `startEngine` walks `engine._renderingContexts` in registration
- * order and the first one clears. `disposeSpriteRenderer` unregisters, so
- * the owner is whoever is at the FRONT NOW rather than whoever was there
- * when the driver started -- a driver that read it once would keep clearing
- * with a disposed renderer's colour.
- *
- * With every renderer disposed there is no owner, and upstream simply draws
- * nothing while the canvas keeps its last pixels -- not an answer a
- * swapchain can give on its first frame. A default-constructed record
- * stands in, so the fallback is the pinned `createSpriteRenderer` default
- * (`clear` true, `clearValue ?? {0,0,0,1}`) read off the record's own
- * initializers rather than spelled again in each backend. No reached scene
- * disposes its last renderer.
- */
-inline const SpriteRendererRecord& sprite_clear_owner(
-    const Engine& engine) {
-    static const SpriteRendererRecord none{};
-    if (engine.registered_sprite_renderers.empty()) return none;
-    return engine.sprite_renderers
-        [engine.registered_sprite_renderers.front().value];
 }
 
 inline std::vector<std::size_t> sprite_layer_draw_order(
@@ -5785,7 +5689,7 @@ struct ShaderDrawMatrices {
         const ShaderPassMatrices& pass)
         : world(shader_draw_world(engine, mesh)),
           world_view_projection(
-              shader_matrix_product(pass.view_projection, world)),
+              upstream::matrix_product(pass.view_projection, world)),
           world_view(shader_world_view(pass.view, world)) {}
 
     /** The pass matrices with this draw's three lanes patched in. */

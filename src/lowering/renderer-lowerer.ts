@@ -68,7 +68,6 @@ import {
 import { LoweredSource, LoweringContext } from "./context.js";
 import { pinnedInstanceAttributesCpp } from "./thin-instance-attributes.js";
 import {
-    lowerMat4MultiplyWriterCpp,
     lowerObjectComponents,
     lowerPinnedFunction,
 } from "./pinned-function-lowerer.js";
@@ -749,7 +748,6 @@ export class RendererLowerer {
                 perspectiveWriter,
                 orthoWriter,
                 cameraViewport,
-                multiplyWriter: lowerMat4MultiplyWriterCpp(this.context),
             }),
         };
     }
@@ -1807,7 +1805,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             perspectiveWriter: string;
             orthoWriter: string;
             cameraViewport: string;
-            multiplyWriter: string;
         },
     ): string {
         const {
@@ -1822,7 +1819,6 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             perspectiveWriter,
             orthoWriter,
             cameraViewport,
-            multiplyWriter,
         } = inputs;
         // Both background fragments wrap their image processing in the pin's
         // `scene.vImageInfos.w >= 0.0`, and that lane is
@@ -1845,10 +1841,9 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
                 `${renderTaskModule}#sortTransparentBindings`,
             )}
 #include <bblite/upstream/renderer_plan.hpp>
-#include <bblite/upstream/camera_math.hpp>${options.mirroredMeshes ? `
-// The mirrored-mesh watcher reads the pin's determinant from the shared
-// always-emitted fold, so load-time and run-time round alike.
-#include <bblite/upstream/pinned_world_transform.hpp>` : ""}
+#include <bblite/upstream/pinned_matrix.hpp>
+#include <bblite/upstream/pinned_world_transform.hpp>
+#include <bblite/upstream/camera_math.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -1877,22 +1872,6 @@ std::array<float, 16> build_view_matrix(
 ${viewMatrixBody}\
     return view;
 }
-
-namespace {
-
-${multiplyWriter}
-
-// The by-value shape every view-projection composition here uses: the
-// pinned writer over whole matrices at offset zero.
-std::array<float, 16> multiply_into(
-    const std::array<float, 16>& a,
-    const std::array<float, 16>& b) {
-    std::array<float, 16> out{};
-    mat4_multiply_into(out, 0, a, 0, b, 0);
-    return out;
-}
-
-} // namespace
 
 RenderItem bind_render_item(
     RenderItem item,
@@ -2249,27 +2228,6 @@ CameraBasis camera_basis(const CameraRecord& camera) {
     };
 }
 
-Vec3 rotate_outer_point(Vec3 point, const Vec3& rotation) {
-    const float sin_x = std::sin(rotation.x);
-    const float cos_x = std::cos(rotation.x);
-    const float sin_y = std::sin(rotation.y);
-    const float cos_y = std::cos(rotation.y);
-    const float sin_z = std::sin(rotation.z);
-    const float cos_z = std::cos(rotation.z);
-    point = Vec3{
-        point.x,
-        point.y * cos_x - point.z * sin_x,
-        point.y * sin_x + point.z * cos_x};
-    point = Vec3{
-        point.x * cos_y + point.z * sin_y,
-        point.y,
-        -point.x * sin_y + point.z * cos_y};
-    return Vec3{
-        point.x * cos_z - point.y * sin_z,
-        point.x * sin_z + point.y * cos_z,
-        point.z};
-}
-
 void sort_transparent_draws(
     RenderDrawList& transparent,
     const Engine& engine,
@@ -2306,13 +2264,9 @@ void sort_transparent_draws(
                 parent[2] * mesh.position.x + parent[6] * mesh.position.y +
                 parent[10] * mesh.position.z + parent[14]),
         };
-        const Vec3 rotated_center = rotate_outer_point(
-            local_center, mesh.outer_rotation);
-        const Vec3 center{
-            rotated_center.x + mesh.outer_position.x,
-            rotated_center.y + mesh.outer_position.y,
-            rotated_center.z + mesh.outer_position.z,
-        };
+        const Vec3 center = transform_position(
+            outer_transform_matrix(mesh.outer_position, mesh.outer_rotation),
+            local_center);
         const Vec3 delta{
             center.x - eye.x,
             center.y - eye.y,
@@ -2452,7 +2406,7 @@ std::array<float, 16> build_view_projection(
     double aspect) {
     const std::array<float, 16> view =
         build_view_matrix(camera_world_matrix(camera));
-    return multiply_into(build_scene_projection(camera, aspect), view);
+    return matrix_product(build_scene_projection(camera, aspect), view);
 }
 
 std::array<float, 16> build_skybox_view_projection(
@@ -2467,7 +2421,7 @@ std::array<float, 16> build_skybox_view_projection(
     view[12] = 0.0f;
     view[13] = 0.0f;
     view[14] = 0.0f;
-    return multiply_into(build_projection(camera, aspect), view);
+    return matrix_product(build_projection(camera, aspect), view);
 }
 
 // The same composition over a transform node, which upstream is the same
@@ -2500,7 +2454,7 @@ std::array<float, 16> transform_node_world(
     if (record.parent.value >= engine.transform_nodes.size()) {
         return local;
     }
-    return multiply_into(
+    return matrix_product(
         transform_node_world(engine, record.parent),
         local);
 }
@@ -2517,12 +2471,12 @@ std::array<float, 16> mesh_world_matrix(
     // and neither wants it; the shader draw world adds it, as it always
     // did.
     if (mesh.parent.value < engine.meshes.size()) {
-        return multiply_into(
+        return matrix_product(
             mesh_world_matrix(engine, engine.meshes[mesh.parent.value]),
             local);
     }
     if (mesh.transform_parent.value < engine.transform_nodes.size()) {
-        return multiply_into(
+        return matrix_product(
             transform_node_world(engine, mesh.transform_parent),
             local);
     }

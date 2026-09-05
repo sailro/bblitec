@@ -20,6 +20,7 @@
 #include <bblite/pal.hpp>
 
 #include "pal_audio_sdl_device.hpp"
+#include "pal_audio_handles.hpp"
 #include "pal_runtime_trace.hpp"
 
 #include "LabSound/core/AudioContext.h"
@@ -116,12 +117,9 @@ struct ContextRecord {
 };
 
 /** A node handle is `(context << 16) | index`, so one lookup finds both. */
-constexpr std::uint32_t pack(std::uint32_t context, std::uint32_t index)
-{
-    return (context << 16) | (index & 0xffffu);
-}
-constexpr std::uint32_t context_of(std::uint32_t packed) { return packed >> 16; }
-constexpr std::uint32_t index_of(std::uint32_t packed) { return packed & 0xffffu; }
+using audio_handles::pack;
+using audio_handles::context_of;
+using audio_handles::index_of;
 
 std::unordered_map<std::uint32_t, ContextRecord>& contexts()
 {
@@ -169,6 +167,7 @@ std::vector<std::uint32_t>& capture_contexts()
 std::uint32_t next_context_id()
 {
     static std::uint32_t next = 1;
+    audio_handles::require_context_id(next);
     return next++;
 }
 
@@ -309,12 +308,13 @@ template <typename Node>
 AudioNodeHandle create_node(AudioContextHandle context)
 {
     ContextRecord& record = require_context(context.value);
+    const std::uint32_t handle = pack(
+        context.value, static_cast<std::uint32_t>(record.nodes.size()));
     record.nodes.push_back(std::make_shared<Node>(*record.context));
 #if BBLITE_HAS_AUDIO_BUFFER_SOURCE
     record.source_loops.push_back(false);
 #endif
-    return AudioNodeHandle{
-        pack(context.value, static_cast<std::uint32_t>(record.nodes.size() - 1))};
+    return AudioNodeHandle{handle};
 }
 
 /** Peak and RMS in one walk over the captured bus. */

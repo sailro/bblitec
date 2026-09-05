@@ -1058,7 +1058,7 @@ test("emits the opt-in bone-control chunk only when it is reached", () => {
     );
     assert.match(
         source,
-        /native_matrix\(\s*multiply_matrix\(\s*bake_world\(skin\.joints\[joint\]\),/,
+        /native_matrix\(\s*upstream::matrix_product\(\s*bake_world\(skin\.joints\[joint\]\),/,
     );
     // The two entry points, and the show arm's own rules: clear the bit,
     // drop an override the clear emptied, re-bake only when there was one.

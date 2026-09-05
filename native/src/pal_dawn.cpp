@@ -60,6 +60,7 @@
 #include "pal_dawn_effect.hpp"
 #endif
 #include "pal_gpu_shared.hpp"
+#include "pal_owned_gpu_record.hpp"
 #include "pal_render_capture.hpp"
 
 #include <algorithm>
@@ -276,7 +277,7 @@ struct DawnSharedComposedMaterialTextures;
 using DawnSharedPluginMaterialTextures = DawnSharedMaterialTextures;
 #endif
 
-struct DawnMesh {
+struct DawnMeshResources {
     WGPUBuffer vertices = nullptr;
     WGPUBuffer indices = nullptr;
     // Shader-material entries borrow exact local-space geometry from the
@@ -440,6 +441,9 @@ struct DawnMesh {
     // groups are keyed by both the active variant and active material.
     std::map<DawnShaderBindingKey, DawnShaderBindings> shader_bindings;
 };
+
+struct DawnState;
+using DawnMesh = OwnedGpuRecord<DawnMeshResources, DawnState>;
 
 /** One exact local-space shader geometry retained across topology rebuilds. */
 struct DawnSharedShaderGeometry {
@@ -1314,7 +1318,7 @@ struct DawnState : DawnDevice {
 
     // Release one mesh in dependency order. Submitted command buffers keep
     // their own references; this drops only the application's references.
-    void release_mesh(DawnMesh& mesh) {
+    void release_gpu_resources(DawnMeshResources& mesh) {
 #if BBLITE_HAS_PICKING && BBLITE_GPU_INSTANCING
             mesh.release_thin_pick_group();
 #endif
@@ -1515,15 +1519,7 @@ struct DawnState : DawnDevice {
     }
 
     void release_meshes() {
-        for (std::vector<DawnMesh>& layer : overlay_meshes) {
-            for (DawnMesh& overlay_mesh : layer) {
-                release_mesh(overlay_mesh);
-            }
-        }
         overlay_meshes.clear();
-        for (DawnMesh& mesh : meshes) {
-            release_mesh(mesh);
-        }
         meshes.clear();
     }
 
@@ -4568,9 +4564,7 @@ DawnDrawState& ensure_pinned_geometry_bindings(
  * The pin's two per-draw blocks for one resolved variant — the mesh block
  * (draw world + light selection) and the variant's own material UBO —
  * written to the caller's buffers. Shared by the main pass and the
- * geometry task, which differ only in the receiving buffers and in which
- * convention booleans the draw rides; both used to carry this sequence
- * verbatim.
+ * geometry task. Variant and mesh state determine the world conventions.
  */
 void write_pinned_draw_blocks(
     DawnState& state,
@@ -4578,25 +4572,14 @@ void write_pinned_draw_blocks(
     const Engine& engine,
     const upstream::RenderDrawCommand& draw,
     std::size_t variant,
-    bool skeleton_draw,
-    bool world_from_palette,
+    const PinnedDrawConventions& conventions,
     WGPUBuffer mesh_uniforms,
     WGPUBuffer material_uniforms) {
     const MeshRecord& record = engine.meshes[draw.item.mesh.value];
     const upstream::PbrVariantEntry& entry =
         upstream::pbr_variants[variant];
     const upstream::MeshUniforms mesh_block =
-        pinned_mesh_block(
-            scene,
-            engine,
-            pinned_draw_world(
-                skeleton_draw,
-                world_from_palette,
-                entry.uses_local_position,
-                record,
-                scene,
-                engine),
-            draw.item.mesh.value);
+        pinned_draw_mesh_block(scene, engine, draw, variant, conventions);
     wgpuQueueWriteBuffer(
         state.queue,
         mesh_uniforms,
@@ -4682,17 +4665,13 @@ void write_pinned_geometry_task(
                     mesh,
                     variant,
                     geometry.pinned_geometry_params);
-            // Geometry draws are never skinned or palette-driven in the
-            // corpus; the chain still decides local-lane and instanced
-            // worlds the same way the main pass does.
             write_pinned_draw_blocks(
                 state,
                 scene,
                 engine,
                 draw,
                 variant,
-                /*skeleton_draw=*/false,
-                /*world_from_palette=*/false,
+                pinned_draw_conventions(variant, engine.meshes[draw.item.mesh.value]),
                 draw_state.mesh_uniforms,
                 draw_state.material_uniforms);
         }
@@ -9836,7 +9815,7 @@ bool run_dawn_engine(Engine& engine) {
             shader_material
                 ? local_vertices(engine, geometry)
                 : transformed_vertices(engine, geometry, mesh_record);
-        DawnMesh mesh;
+        DawnMesh mesh(state);
         if (shader_material) {
 #if BBLITE_MESH_POSITION_UPDATE
             // Mutable procedural geometry must own its upload instead of
@@ -9871,24 +9850,25 @@ bool run_dawn_engine(Engine& engine) {
                             ? geometry.indices
                             : std::vector<std::uint32_t>{},
                     });
-                created->vertex_buffer = create_buffer(
+                state.shared_shader_geometries.push_back(std::move(created));
+                mesh.shared_geometry = state.shared_shader_geometries.back().get();
+            }
+            ++mesh.shared_geometry->users;
+            mesh.owns_geometry_buffers = false;
+            if (!mesh.shared_geometry->vertex_buffer) {
+                mesh.shared_geometry->vertex_buffer = create_buffer(
                     state,
                     WGPUBufferUsage_Vertex,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
-                created->index_buffer = create_buffer(
+                mesh.shared_geometry->index_buffer = create_buffer(
                     state,
                     WGPUBufferUsage_Index,
                     geometry.indices.data(),
                     geometry.indices.size() * sizeof(std::uint32_t));
-                mesh.shared_geometry = created.get();
-                state.shared_shader_geometries.push_back(
-                    std::move(created));
             }
-            ++mesh.shared_geometry->users;
             mesh.vertices = mesh.shared_geometry->vertex_buffer;
             mesh.indices = mesh.shared_geometry->index_buffer;
-            mesh.owns_geometry_buffers = false;
 #endif
         } else {
             mesh.vertices = create_buffer(
@@ -9930,6 +9910,9 @@ bool run_dawn_engine(Engine& engine) {
         if (
             mesh_record.gpu_deformation &&
             !geometry.morph_positions.empty()) {
+            mesh.morph_deltas = nullptr;
+            mesh.morph_weights = nullptr;
+            mesh.owns_morph_buffers = true;
             const std::vector<float> deltas =
                 pack_morph_deltas(geometry);
             mesh.morph_deltas = create_buffer(
@@ -9946,7 +9929,6 @@ bool run_dawn_engine(Engine& engine) {
                 weights_blob.size());
             mesh.morph_weights_version =
                 mesh_record.morph_weights_version;
-            mesh.owns_morph_buffers = true;
         }
 #endif
 #if BBLITE_GPU_INSTANCING
@@ -10110,6 +10092,9 @@ bool run_dawn_engine(Engine& engine) {
                     std::make_unique<DawnSharedComposedMaterialTextures>();
                 created->material = item.material;
                 created->standard_material = standard_material;
+                state.shared_composed_material_textures.push_back(std::move(created));
+                mesh.shared_composed_textures = state.shared_composed_material_textures.back().get();
+                ++mesh.shared_composed_textures->users;
                 for (
                     const upstream::MaterialTextureSlot& slot_row :
                     upstream::material_texture_slots) {
@@ -10128,7 +10113,7 @@ bool run_dawn_engine(Engine& engine) {
                     const TextureData& data =
                         slot_data ? *slot_data : empty;
                     std::uint32_t mip_count = 1;
-                    created->textures[slot_row.slot] =
+                    mesh.shared_composed_textures->textures[slot_row.slot] =
                         upload_material_texture(
                             state,
                             data,
@@ -10141,24 +10126,21 @@ bool run_dawn_engine(Engine& engine) {
                                 material,
                                 standard_material),
                             mip_count);
-                    created->views[slot_row.slot] =
+                    mesh.shared_composed_textures->views[slot_row.slot] =
                         wgpuTextureCreateView(
-                            created->textures[slot_row.slot],
+                            mesh.shared_composed_textures->textures[slot_row.slot],
                             nullptr);
-                    created->samplers[slot_row.slot] =
+                    mesh.shared_composed_textures->samplers[slot_row.slot] =
                         create_texture_sampler(
                             state.device,
                             slot_data
                                 ? slot_data->sampler
                                 : TextureSamplerState{});
                 }
-                mesh.shared_composed_textures = created.get();
-                state.shared_composed_material_textures.push_back(
-                    std::move(created));
             } else {
                 mesh.shared_composed_textures = shared_it->get();
+                ++mesh.shared_composed_textures->users;
             }
-            ++mesh.shared_composed_textures->users;
             for (std::size_t slot = 0; slot < mesh_texture_slots; ++slot) {
                 if (mesh.shared_composed_textures->views[slot]) {
                     mesh.views[slot] =
@@ -10170,11 +10152,10 @@ bool run_dawn_engine(Engine& engine) {
                 }
             }
         }
-        const auto upload_shader_textures = [&] {
-            std::vector<DawnSampledTexture> textures;
+        const auto upload_shader_textures = [&](std::vector<DawnSampledTexture>& textures) {
             for (const FileTexture& texture : material->shader_textures) {
                 std::uint32_t shader_mip_count = 1;
-                DawnSampledTexture sampled;
+                DawnSampledTexture& sampled = textures.emplace_back();
                 sampled.texture = upload_material_texture(
                     state,
                     texture.data,
@@ -10186,9 +10167,7 @@ bool run_dawn_engine(Engine& engine) {
                 sampled.sampler = create_texture_sampler(
                     state.device,
                     texture.data.sampler);
-                textures.push_back(sampled);
             }
-            return textures;
         };
         // A node graph's declared images take the same per-MATERIAL cache
         // the shader family uses -- keyed by handle, and a material is
@@ -10204,19 +10183,17 @@ bool run_dawn_engine(Engine& engine) {
                     state.shared_shader_material_textures,
                     item.material);
             if (!mesh.shared_shader_textures) {
-                auto created =
-                    std::make_unique<DawnSharedShaderMaterialTextures>(
-                        DawnSharedShaderMaterialTextures{
-                            .material = item.material,
-                            .textures = upload_shader_textures(),
-                        });
-                mesh.shared_shader_textures = created.get();
-                state.shared_shader_material_textures.push_back(
-                    std::move(created));
+                auto created = std::make_unique<DawnSharedShaderMaterialTextures>();
+                created->material = item.material;
+                state.shared_shader_material_textures.push_back(std::move(created));
+                mesh.shared_shader_textures = state.shared_shader_material_textures.back().get();
+                ++mesh.shared_shader_textures->users;
+                upload_shader_textures(mesh.shared_shader_textures->textures);
+            } else {
+                ++mesh.shared_shader_textures->users;
             }
-            ++mesh.shared_shader_textures->users;
         } else if (material) {
-            mesh.shader_textures = upload_shader_textures();
+            upload_shader_textures(mesh.shader_textures);
         }
 #if BBLITE_HAS_MATERIAL_PLUGIN_TEXTURES
         // The textures this material's plugins bound, uploaded once per
@@ -10233,11 +10210,14 @@ bool run_dawn_engine(Engine& engine) {
                 auto created =
                     std::make_unique<DawnSharedPluginMaterialTextures>();
                 created->material = item.material;
+                state.shared_plugin_material_textures.push_back(std::move(created));
+                mesh.shared_plugin_textures = state.shared_plugin_material_textures.back().get();
+                ++mesh.shared_plugin_textures->users;
                 for (
                     const MaterialPluginTexture& texture :
                     material->plugin_textures) {
                     std::uint32_t plugin_mip_count = 1;
-                    DawnSampledTexture sampled;
+                    DawnSampledTexture& sampled = mesh.shared_plugin_textures->textures.emplace_back();
                     sampled.texture = upload_material_texture(
                         state,
                         texture.data,
@@ -10249,13 +10229,10 @@ bool run_dawn_engine(Engine& engine) {
                     sampled.sampler = create_texture_sampler(
                         state.device,
                         texture.data.sampler);
-                    created->textures.push_back(sampled);
                 }
-                mesh.shared_plugin_textures = created.get();
-                state.shared_plugin_material_textures.push_back(
-                    std::move(created));
+            } else {
+                ++mesh.shared_plugin_textures->users;
             }
-            ++mesh.shared_plugin_textures->users;
         }
 #endif
         return mesh;
@@ -10321,11 +10298,6 @@ bool run_dawn_engine(Engine& engine) {
         for (const upstream::RenderItem& item : render_plan.items) {
             state.meshes.push_back(upload_render_item(item));
         }
-        // No clear before the fill: `rebuild_meshes` runs once, and the
-        // three containers are empty when it does. A defensive clear would
-        // also be the wrong one -- `DawnMesh` is a bag of raw WebGPU
-        // handles with no destructor, so dropping the overlay meshes that
-        // way leaks every buffer `release_meshes` exists to release.
         for (
             std::size_t layer = 1;
             layer < engine.registered_scenes.size();
@@ -11959,8 +11931,8 @@ bool run_dawn_engine(Engine& engine) {
                     render_plan.items,
                     updated_plan.items,
                     state.meshes,
-                    [&](DawnMesh& mesh) {
-                        state.release_mesh(mesh);
+                    [](DawnMesh& mesh) {
+                        mesh.reset();
                     },
                     [&](const upstream::RenderItem& item) {
                         return upload_render_item(item);
@@ -12845,8 +12817,7 @@ bool run_dawn_engine(Engine& engine) {
                                 engine,
                                 draw,
                                 variant,
-                                conventions.identity_world,
-                                conventions.world_from_palette,
+                                conventions,
                                 pinned_state.mesh_uniforms,
                                 pinned_state.material_uniforms);
                         }

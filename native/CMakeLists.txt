@@ -53,6 +53,11 @@ if(
 )
     list(APPEND VCPKG_MANIFEST_FEATURES "ui")
 endif()
+if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES AND
+   ("ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES OR NOT BBLITE_MINSIZE) AND
+   NOT "ui-svg" IN_LIST VCPKG_MANIFEST_FEATURES)
+    list(APPEND VCPKG_MANIFEST_FEATURES "ui-svg")
+endif()
 
 # A scene reaching a subsystem against a trimmed SDL that omitted it would
 # fail late and opaquely. The builder records capabilities explicitly; load
@@ -199,9 +204,16 @@ set(
 # LabSound it is consumed through find_package: RmlUi's root-project
 # install exports exactly the targets it built, so its package config
 # resolves. Minimal builds point this at artifacts/tools/rmlui-static.
+set(BBLITE_RMLUI_DEFAULT "${BBLITE_NATIVE_ROOT}/../artifacts/tools/rmlui")
+if(BBLITE_MINSIZE)
+    string(APPEND BBLITE_RMLUI_DEFAULT "-static")
+    if("ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES)
+        string(APPEND BBLITE_RMLUI_DEFAULT "-svg")
+    endif()
+endif()
 set(
     BBLITE_RMLUI_DIR
-    "${BBLITE_NATIVE_ROOT}/../artifacts/tools/rmlui"
+    "${BBLITE_RMLUI_DEFAULT}"
     CACHE PATH
     "Installed pinned RmlUi root"
 )
@@ -599,8 +611,16 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
             FATAL_ERROR
             "This scene reaches bounded inline SVG, but the pinned RmlUi "
             "artifact was built without its SVG plugin. Rebuild it with "
-            "tools/build-rmlui.ps1."
+            "tools/build-rmlui.ps1 -StaticRuntime -EnableSvg for shipping "
+            "or tools/build-rmlui.ps1 for development."
         )
+    endif()
+    if(BBLITE_MINSIZE AND RMLUI_SVG_PLUGIN AND
+       NOT "ui:inline-svg" IN_LIST BBLITE_RUNTIME_FEATURES)
+        message(FATAL_ERROR
+            "This minimal scene reaches no inline SVG but its RmlUi artifact "
+            "includes LunaSVG. Use tools/build-rmlui.ps1 -StaticRuntime and "
+            "BBLITE_RMLUI_DIR=artifacts/tools/rmlui-static.")
     endif()
 
     find_package(SDL3_image CONFIG REQUIRED)

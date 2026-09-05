@@ -21,7 +21,6 @@ import { lowerGltfMaterialDefaults } from "./material-defaults.js";
 import {
     lowerLocalMatrixCpp,
     lowerMatrixComposeCpp,
-    lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
 } from "./matrix-leaves.js";
 import { lowerBoneControl } from "./bone-control.js";
@@ -733,7 +732,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         const composeFile = this.context.sourceFile(
             "src/math/mat4-compose-into.ts",
         );
-        const matrixMultiply = lowerMatrixMultiplyCpp(this.context);
         const matrixLocal = lowerLocalMatrixCpp(
             parserFile,
             composeFile,
@@ -799,7 +797,6 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                     extensionDefaults,
                     materialDefaults,
                     factorBake,
-                    matrixMultiply,
                     matrixLocal,
                     matrixCompose,
                     matrixNative,

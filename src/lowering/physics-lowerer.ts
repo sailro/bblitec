@@ -44,7 +44,6 @@ import {
   type LoweringContext,
 } from "./context.js";
 import {
-  lowerMat4MultiplyWriterCpp,
   lowerObjectComponents,
 } from "./pinned-function-lowerer.js";
 import {
@@ -2187,6 +2186,7 @@ void on_physics_collision(
     const source = `// ${this.context.provenance(havokModule, "_stepWorld")}
 #include "bblite/upstream/physics.hpp"
 #include "bblite/upstream/renderer_plan.hpp"
+#include <bblite/upstream/pinned_matrix.hpp>
 
 #include <algorithm>
 #include <cstddef>
@@ -2197,7 +2197,6 @@ void on_physics_collision(
 namespace bbl::upstream {
 namespace {
 
-${lowerMat4MultiplyWriterCpp(this.context)}
 
 /**
  * The worlds a scene created. A \`PhysicsWorld\` is handed out by

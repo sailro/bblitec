@@ -13,6 +13,8 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { findRepositoryRoot } from "../src/upstream-source.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 
 function nativeSource(name: string): string {
     return readFileSync(
@@ -30,22 +32,11 @@ const consumers = () => ({
 
 test("defines the shader-matrix product once, double-accumulated", () => {
     const header = shared();
-
-    // The pin's four-term accumulation in double with one float32 store,
-    // defined in the shared header and nowhere else.
-    assert.equal(
-        (header.match(/std::array<float, 16> shader_matrix_product\(/g) ?? [])
-            .length,
-        1,
-    );
-    assert.match(
-        header,
-        /const double b0 = world\[column \* 4\];/,
-    );
-    assert.match(
-        header,
-        /result\[column \* 4 \+ row\] = static_cast<float>\(/,
-    );
+    const generated = pinnedMatrixHeader(new LoweringContext());
+    assert.doesNotMatch(header, /(?:shader|draw)_matrix_product\(/);
+    assert.match(header, /#include <bblite\/upstream\/pinned_matrix.hpp>/);
+    assert.match(generated, /const double a0 = static_cast<double>/);
+    assert.match(generated, /dst\[[^\n]+static_cast<float>\(/);
     for (const [name, source] of Object.entries(consumers())) {
         assert.ok(
             !source.includes("shader_matrix_product("),
@@ -69,7 +60,7 @@ test("capture and draw paths take their matrices from one record", () => {
     );
     assert.match(
         header,
-        /world_view_projection\(\s*shader_matrix_product\(pass\.view_projection, world\)\),/,
+        /world_view_projection\(\s*upstream::matrix_product\(pass\.view_projection, world\)\),/,
     );
     assert.match(
         header,
@@ -104,4 +95,21 @@ test("capture and draw paths take their matrices from one record", () => {
             .match(/ShaderDrawMatrices shader_matrices\(/g) ?? []).length,
         2,
     );
+});
+
+test("PBR capture uses the resolved draw world including late root transforms", () => {
+    const capture = consumers()["pal_render_capture.hpp"];
+    const blocks = capture.slice(capture.indexOf('json.key("pinnedMeshBlocks")'));
+    assert.match(blocks, /pinned_variant_for_draw\(scene, engine, draw\)/);
+    assert.match(blocks, /if \(variant == npos\) continue;/);
+    const builder = shared().slice(shared().indexOf("inline upstream::MeshUniforms pinned_draw_mesh_block("));
+    assert.match(blocks, /pinned_draw_conventions\(variant, record\)/);
+    assert.match(builder, /const PinnedDrawConventions& conventions/);
+    assert.match(builder, /pinned_draw_world\(\s*conventions.identity_world,\s*conventions.world_from_palette,\s*upstream::pbr_variants\[variant\].uses_local_position,/);
+    for (const [name, source] of Object.entries(consumers())) {
+        assert.ok(source.includes("pinned_draw_mesh_block("), `${name} bypasses the shared PBR draw block`);
+        assert.doesNotMatch(source, /pinned_draw_world\(/, `${name} reconstructs the PBR draw world`);
+    }
+    assert.doesNotMatch(blocks, /pinned_mesh_world\(\)/);
+    assert.match(blocks, /"worldSource", "effective-draw"/);
 });

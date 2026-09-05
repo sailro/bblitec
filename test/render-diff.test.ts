@@ -276,15 +276,20 @@ test("decodes pinned blocks into vec4 rows, flagging blocks no draw carries", ()
         pinnedMeshBlocks: [
             {
                 meshIndex: 1,
+                stage: "opaque",
+                variant: 1,
+                worldSource: "effective-draw",
                 world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
                 lightCount: 2,
                 boneCount: 1,
                 bone0: [1, 0, 0, 0, 0, 1, 0, 0],
             },
-            // The capture dumps one entry per draw; a mesh drawn twice
-            // repeats byte-identically and collapses to one block.
+            // Draw metadata can differ while the numeric payload repeats.
             {
                 meshIndex: 1,
+                stage: "transparent",
+                variant: 2,
+                worldSource: "effective-draw",
                 world: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1],
                 lightCount: 2,
                 boneCount: 1,

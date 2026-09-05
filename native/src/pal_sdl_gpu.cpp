@@ -2786,17 +2786,7 @@ void draw_pinned_variant(
             pinned_variant,
             pinned_record);
     const upstream::MeshUniforms pinned_mesh =
-        pinned_mesh_block(
-            scene,
-            engine,
-            pinned_draw_world(
-                conventions.identity_world,
-                conventions.world_from_palette,
-                variant_entry.uses_local_position,
-                pinned_record,
-                scene,
-                engine),
-            item.mesh.value);
+        pinned_draw_mesh_block(scene, engine, draw, pinned_variant, conventions);
     std::vector<std::uint8_t> pinned_material(
         variant_entry.material_ubo_bytes,
         0);

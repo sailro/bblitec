@@ -157,6 +157,7 @@ function cells(value: unknown, prefix = ""): Map<string, number> {
     for (const [key, entry] of Object.entries(value as Json)) {
         const path = prefix ? `${prefix}.${key}` : key;
         if (typeof entry === "number") {
+            if (!Number.isFinite(entry)) throw new Error(`Non-finite measurement: ${path}`);
             flat.set(path, entry);
         } else if (typeof entry === "object" && entry !== null) {
             for (const [nested, number] of cells(entry, path)) {
@@ -174,12 +175,15 @@ function reportsIn(directory: string): Map<string, Map<string, number>> {
         const path = join(directory, scene, "report-differential.json");
         if (!existsSync(path)) continue;
         try {
-            reports.set(
-                scene,
-                cells(JSON.parse(readFileSync(path, "utf8")) as unknown),
-            );
-        } catch {
-            // A half-written report from an interrupted run is not a finding.
+            const report: unknown = JSON.parse(readFileSync(path, "utf8"));
+            if (typeof report !== "object" || report === null || Array.isArray(report)) {
+                throw new Error("Expected a report object");
+            }
+            const measurements = cells(report);
+            if (measurements.size === 0) throw new Error("Report has no numeric measurements");
+            reports.set(scene, measurements);
+        } catch (error) {
+            throw new Error(`Cannot compare ${path}: ${String(error)}`);
         }
     }
     return reports;
@@ -211,9 +215,14 @@ export function runNeutralityReport(baselineDirectory: string): void {
         }
         const differences: string[] = [];
         let expected = 0;
-        for (const [path, value] of after) {
+        for (const path of new Set([...before.keys(), ...after.keys()])) {
             const previous = before.get(path);
-            if (previous === undefined || previous === value) continue;
+            const value = after.get(path);
+            if (previous === undefined || value === undefined) {
+                differences.push(`    ${path}: measurement ${previous === undefined ? "added" : "missing"}`);
+                continue;
+            }
+            if (previous === value) continue;
             if (isWobblingCell(scene, path)) {
                 expected++;
                 continue;
@@ -241,10 +250,7 @@ export function runNeutralityReport(baselineDirectory: string): void {
     );
     if (wobbled.length > 0) {
         console.log(
-            "\nExpected multisampling wobble (not a regression — scenes" +
-                " 9, 37, 120, 125, 126, 128 and 129 are not bit-stable between" +
-                " runs at 4x;" +
-                " every one is byte-identical at a single sample):",
+            "\nKnown run-to-run variation (per scene/backend; see wobbleScenes):",
         );
         for (const line of wobbled) console.log(line);
     }
@@ -261,6 +267,8 @@ export function runNeutralityReport(baselineDirectory: string): void {
                 "Re-run the matrix before concluding — but if it moves again, " +
                 "it is not neutral.",
         );
+    }
+    if (moved.length > 0 || missing.length > 0) {
         process.exitCode = 1;
         return;
     }

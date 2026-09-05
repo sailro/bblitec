@@ -96,6 +96,7 @@ $audioDecoded = $false
 $physicsReached = $false
 $navigationReached = $false
 $uiReached = $false
+$uiSvgReached = $false
 $audioCapture = $cache["BBLITE_AUDIO_CAPTURE"] -eq "ON"
 $featuresPath = Join-Path $generatedDirectory "features.cmake"
 if (Test-Path $featuresPath) {
@@ -105,6 +106,7 @@ if (Test-Path $featuresPath) {
     $physicsReached = $featuresText -match '"physics:world"'
     $navigationReached = $featuresText -match '"navigation:recast"'
     $uiReached = $featuresText -match '"ui:rml"'
+    $uiSvgReached = $featuresText -match '"ui:inline-svg"'
     if ($featuresText -match "BBLITE_IMAGE_CODECS") {
         $jpegReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"jpeg"'
         $webpReached = $featuresText -match '(?s)BBLITE_IMAGE_CODECS[^)]*"webp"'
@@ -266,6 +268,8 @@ if ($navigationReached) {
 }
 if ($uiReached) {
     $licensePackages["FreeType.txt"] = "freetype"
+}
+if ($uiSvgReached) {
     $licensePackages["LunaSVG.txt"] = "lunasvg"
     $licensePackages["PlutoVG.txt"] = "plutovg"
 }

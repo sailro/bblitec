@@ -47,7 +47,6 @@ export { lowerGltfExtensionDefaults } from "./gltf/extension-defaults.js";
 export {
     lowerLocalMatrixCpp,
     lowerMatrixComposeCpp,
-    lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
 } from "./gltf/matrix-leaves.js";
 export {

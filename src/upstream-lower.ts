@@ -30,6 +30,7 @@ import {
 } from "./lowering/shadow-lowerer.js";
 import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
+import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
@@ -907,6 +908,10 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         this.tree.write(
             "upstream/include/bblite/upstream/pinned_world_transform.hpp",
             pinnedWorldTransformHeader(new LoweringContext(this.store)),
+        );
+        this.tree.write(
+            "upstream/include/bblite/upstream/pinned_matrix.hpp",
+            pinnedMatrixHeader(new LoweringContext(this.store)),
         );
         // The pin's own inverse image processing, translated whole from its
         // declaration and cross-checked against the forward curve, so the
@@ -2417,6 +2422,10 @@ ${shadow.blurFragmentWgsl}`,
             );
         }
         if (features.includes("picking:gpu")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/picking_math.hpp",
+                new PickingLowerer(context).mathHeader(features.includes("loader:splat")),
+            );
             this.writeSource(
                 "upstream/src/picking.cpp",
                 new PickingLowerer(context).lower(

@@ -1938,53 +1938,45 @@ inline void write_render_capture(
     json.key("pinnedMeshBlocks");
     json.begin_array();
     {
-        const auto dump_list = [&](const upstream::RenderDrawList& list) {
+        const auto dump_list = [&](const char* stage, const upstream::RenderDrawList& list) {
             for (const upstream::RenderDrawCommand& draw : list.commands) {
                 if (
                     draw.item.material_kind !=
-                    upstream::RenderMaterialKind::pbr) {
+                    upstream::RenderMaterialKind::pbr ||
+                    draw.item.mesh.value >= engine.meshes.size()) {
                     continue;
                 }
-                // Deliberately the identity world, not the draw's own
-                // `pinned_draw_world` chain: the capture rebuilds blocks
-                // from (scene, engine, item) without the per-draw
-                // instance context the encoders carry, so an instanced
-                // or local-position world here would be a re-derivation
-                // the diff could disagree with for the wrong reason. A
-                // wrong world in the real draw surfaces in the
-                // SDL-versus-Dawn differential and the mesh-matrix rows
-                // of `scene -- diff`, which read the browser's uploads.
-                const upstream::MeshUniforms block = pinned_mesh_block(
-                    scene,
-                    engine,
-                    pinned_mesh_world(),
-                    draw.item.mesh.value);
+                const std::size_t variant = pinned_variant_for_draw(scene, engine, draw);
+                if (variant == npos) continue;
+                const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+                const PinnedDrawConventions conventions = pinned_draw_conventions(variant, record);
+                const upstream::MeshUniforms block = pinned_draw_mesh_block(
+                    scene, engine, draw, variant, conventions);
                 json.begin_object();
                 json.field("meshIndex", draw.item.mesh.value);
+                json.field("stage", stage);
+                json.field("variant", variant);
+                json.field("worldSource", "effective-draw");
                 json.field("world", block.world.data(), block.world.size());
                 json.field("lightCount", block.lc);
-                if (draw.item.mesh.value < engine.meshes.size()) {
-                    const MeshRecord& record =
-                        engine.meshes[draw.item.mesh.value];
-                    json.field("boneCount", record.bone_matrices.size());
-                    if (!record.bone_matrices.empty()) {
-                        json.field(
-                            "bone0",
-                            record.bone_matrices[0].data(),
-                            record.bone_matrices[0].size());
-                    }
-                    if (record.bone_matrices.size() > 1) {
-                        json.field(
-                            "bone1",
-                            record.bone_matrices[1].data(),
-                            record.bone_matrices[1].size());
-                    }
+                json.field("boneCount", record.bone_matrices.size());
+                if (!record.bone_matrices.empty()) {
+                    json.field(
+                        "bone0",
+                        record.bone_matrices[0].data(),
+                        record.bone_matrices[0].size());
+                }
+                if (record.bone_matrices.size() > 1) {
+                    json.field(
+                        "bone1",
+                        record.bone_matrices[1].data(),
+                        record.bone_matrices[1].size());
                 }
                 json.end_object();
             }
         };
-        dump_list(render_plan.draw_lists.opaque);
-        dump_list(render_plan.draw_lists.transparent);
+        dump_list("opaque", render_plan.draw_lists.opaque);
+        dump_list("transparent", render_plan.draw_lists.transparent);
     }
     json.end_array();
 #endif

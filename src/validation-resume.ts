@@ -134,10 +134,17 @@ export function validationShaderInput(
     tools: { dxc: string | undefined; tint: string | undefined },
     repositoryRoot = process.cwd(),
 ): string {
+    // DXC loads its code generator and validator from sibling DLLs. The outer
+    // checkpoint must see their replacement before it can skip the inner cache.
+    const dxcFiles = target === "metal" || !tools.dxc
+        ? []
+        : [tools.dxc, ...["dxcompiler.dll", "dxil.dll"].map(
+              (name) => resolve(dirname(tools.dxc!), name),
+          )];
     return hashEntries([
         shaderSources,
         target,
-        toolIdentity(tools.dxc),
+        ...dxcFiles.map(toolIdentity),
         toolIdentity(tools.tint),
         contentFingerprint([
             resolve(repositoryRoot, "tools", "compile-shaders.ps1"),

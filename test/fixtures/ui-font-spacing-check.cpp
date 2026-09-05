@@ -28,6 +28,17 @@ struct System final : Rml::SystemInterface {
 };
 
 int main() {
+    // RGB and alpha must use the same rounding after CSS opacity. A white
+    // channel may never exceed its alpha, including at the half-byte edge.
+    for (int alpha = 0; alpha <= 255; ++alpha) {
+        const Rml::Colourb white(255, 255, 255, static_cast<Rml::byte>(alpha));
+        for (const float opacity : {0.0f, 0.001f, 0.002f, 0.25f, 0.5f, 0.75f, 1.0f}) {
+            const auto color = white.ToPremultiplied(opacity);
+            const auto expected = static_cast<Rml::byte>(alpha * opacity + 0.5f);
+            assert(color.alpha == expected);
+            assert(color.red == color.alpha && color.green == color.alpha && color.blue == color.alpha);
+        }
+    }
     const std::string arrow = "\xE2\x96\xB6";
     const std::string pause = "\xE2\x8F\xB8";
     const std::string controller = "\xF0\x9F\x8E\xAE";

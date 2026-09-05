@@ -452,7 +452,7 @@ function loadingCpp(
                           rotation[index],
                           scaling[index]);
                 world[index] = node.parent >= 0
-                    ? multiply_matrix(
+                    ? upstream::matrix_product(
                           bake_world(
                               static_cast<std::size_t>(node.parent)),
                           local)
@@ -484,7 +484,7 @@ function loadingCpp(
                     ++joint) {
                     mesh_record.bone_matrices.push_back(
                         native_matrix(
-                            multiply_matrix(
+                            upstream::matrix_product(
                                 bake_world(skin.joints[joint]),
                                 skin.inverse_bind_matrices[joint])));
                 }

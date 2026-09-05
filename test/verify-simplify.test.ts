@@ -49,7 +49,17 @@ test("committing a review record does not invalidate its work hash", () => {
 test("a record with no angles is not evidence", () => {
     const problems = validateRecord({ angles: [], findings: [] });
     assert.equal(problems.length, 1);
-    assert.match(problems[0]!, /at least three review angles/);
+    assert.match(problems[0]!, /exactly once/);
+});
+
+test("duplicate, unknown or missing review angles cannot satisfy the gate", () => {
+    for (const angles of [
+        ["reuse", "reuse", "reuse", "reuse"],
+        ["reuse", "simplification", "efficiency"],
+        ["reuse", "simplification", "efficiency", "unknown"],
+    ]) {
+        assert.match(validateRecord({ angles, findings: [] })[0]!, /exactly once/);
+    }
 });
 
 test("four angles and nothing found is a real answer", () => {
@@ -64,7 +74,7 @@ test("four angles and nothing found is a real answer", () => {
 
 test("a finding must say whether it was applied", () => {
     const problems = validateRecord({
-        angles: ["reuse", "simplification", "efficiency"],
+        angles: ["reuse", "simplification", "efficiency", "altitude"],
         findings: [{ summary: "duplicated walk" }],
     });
     assert.equal(problems.length, 1);
@@ -73,7 +83,7 @@ test("a finding must say whether it was applied", () => {
 
 test("an unapplied finding needs a real blocker and a durable home", () => {
     const problems = validateRecord({
-        angles: ["reuse", "simplification", "efficiency"],
+        angles: ["reuse", "simplification", "efficiency", "altitude"],
         findings: [{ summary: "collapse the arms", applied: false }],
     });
     assert.equal(problems.length, 2);
@@ -83,7 +93,7 @@ test("an unapplied finding needs a real blocker and a durable home", () => {
 
 test("\"out of scope\" is not a blocker", () => {
     const problems = validateRecord({
-        angles: ["reuse", "simplification", "efficiency"],
+        angles: ["reuse", "simplification", "efficiency", "altitude"],
         findings: [
             {
                 summary: "collapse the arms",
@@ -108,7 +118,7 @@ test("an applied finding needs neither", () => {
 });
 
 test("a missing findings array is named rather than ignored", () => {
-    const problems = validateRecord({ angles: ["a", "b", "c"] });
+    const problems = validateRecord({ angles: ["reuse", "simplification", "efficiency", "altitude"] });
     assert.deepEqual(problems, [
         "`findings` must be an array, empty if nothing was found.",
     ]);

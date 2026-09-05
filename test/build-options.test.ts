@@ -9,7 +9,16 @@ import {
     DEVELOPMENT_VCPKG_INSTALL,
     developmentVcpkgFeatures,
     hostOfflineShaderTarget,
+    needsOfflineShaders,
 } from "../src/build-options.js";
+
+test("Dawn-only iteration needs no offline compiler unless a target is explicitly requested", () => {
+    assert.equal(needsOfflineShaders("DAWN"), false);
+    assert.equal(needsOfflineShaders("SDL_GPU"), true);
+    assert.equal(needsOfflineShaders("BOTH"), true);
+    assert.equal(needsOfflineShaders("DAWN", "all"), true);
+    assert.equal(needsOfflineShaders("DAWN", "d3d12"), true);
+});
 
 test("the development vcpkg install contains every manifest feature", () => {
     const manifest = JSON.stringify({
@@ -46,7 +55,7 @@ test("the repository manifest automatically feeds the full dev set", () => {
         developmentVcpkgFeatures(
             readFileSync("native/vcpkg.json", "utf8"),
         ),
-        ["jpeg", "navigation", "physics", "ui", "webp"],
+        ["jpeg", "navigation", "physics", "ui", "ui-svg", "webp"],
     );
 });
 
@@ -308,7 +317,9 @@ test("RmlUi is the pinned artifact, patched, with a static-runtime variant", () 
     assert.match(builder, /rmlui-css-box-model\.patch/);
     assert.match(builder, /CMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded/);
     assert.match(builder, /bblite-rmlui-features\.cmake/);
-    assert.match(builder, /RMLUI_SVG_PLUGIN=ON/);
+    assert.match(builder, /RMLUI_SVG_PLUGIN=\$rmlSvgSetting/);
+    assert.match(builder, /\$rmlSvgEnabled = -not \$StaticRuntime -or \$EnableSvg/);
+    assert.match(builder, /\[switch\]\$EnableSvg/);
     assert.match(builder, /lunasvgConfig\.cmake/);
     // The SDL platform pair RmlUi itself never installs, and the license
     // the packager copies out of the artifact.

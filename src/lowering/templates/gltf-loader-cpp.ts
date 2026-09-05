@@ -84,13 +84,6 @@ export interface GltfLoaderLoweredSegments {
      */
     factorBake: GltfFactorBake;
     /**
-     * `multiply_matrix`, lowered from
-     * `src/math/mat4-multiply-into.ts#mat4MultiplyInto` — the pin's fully
-     * unrolled product sums verified term by term, emitted as the loop
-     * the loader has always carried.
-     */
-    matrixMultiply: string;
-    /**
      * `local_matrix`, lowered from
      * `src/loader-gltf/gltf-parser.ts#computeNodeWorldMatrix` (the
      * authored-matrix arm, the three JSON keys and their whole-array
@@ -300,6 +293,7 @@ export function gltfLoaderCpp(
 #include <bblite/runtime.hpp>
 #include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/gltf_glb_parser.hpp>
+#include <bblite/upstream/pinned_matrix.hpp>
 ${compressedImages ? "#include <bblite/upstream/compressed_texture.hpp>\n" : ""}#include <bblite/upstream/pinned_world_transform.hpp>
 #include <bblite/upstream/render_capabilities.hpp>
 
@@ -1079,9 +1073,7 @@ Matrix identity_matrix() {
     return result;
 }
 
-${lowered.matrixMultiply}${gltfCameras ? `
-
-${lowered.gltfCameraParentWriter}` : ""}
+${gltfCameras ? lowered.gltfCameraParentWriter : ""}
 
 ${lowered.matrixLocal}
 
@@ -2293,7 +2285,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
         computing[index] = true;
         const Matrix local = local_matrix(node_json[index].as_object());
         world[index] = parents[index] >= 0
-            ? multiply_matrix(compute_world(static_cast<std::size_t>(parents[index])), local)
+            ? upstream::matrix_product(compute_world(static_cast<std::size_t>(parents[index])), local)
             : local;
         computing[index] = false;
         computed[index] = true;
@@ -3228,7 +3220,7 @@ ${lowered.vertexColor}
                 for (const Matrix& instance :
                      instance_matrices) {
                     const Matrix world_instance =
-                        multiply_matrix(
+                        upstream::matrix_product(
                             instance_parent_matrix,
                             instance);
                     for (const ModelVertex& vertex :
@@ -4242,7 +4234,7 @@ ${animationMask ? `        // parseAnimationData's own nodeNames, in document or
                           node.rotation,
                           node.scale);
                 node.world = node.parent >= 0
-                    ? multiply_matrix(
+                    ? upstream::matrix_product(
                           compute_animated_world(
                               static_cast<std::size_t>(
                                   node.parent)),
@@ -4314,7 +4306,7 @@ ${vat ? `                if (mesh_record.has_vat) continue;` : ""}
                     joint_matrices.reserve(skin->joints.size());
                     for (std::size_t joint = 0; joint < skin->joints.size(); ++joint) {
                         joint_matrices.push_back(
-                            multiply_matrix(
+                            upstream::matrix_product(
                                 compute_animated_world(
                                     skin->joints[joint]),
                                 skin->inverse_bind_matrices[joint]));

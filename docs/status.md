@@ -1,38 +1,21 @@
 # Current status
 
-`bblitec` is a real compiler for a deliberately constrained reachable subset
-of Babylon Lite. It is not yet a universal TypeScript or Babylon runtime.
-The supported feature set, split into what is decided at compile time and what
-lives at run time, is in [features](features.md).
+Published full-image / foreground MAD for both native backends against the
+pinned browser references. Thresholds and poses live in `src/scene-registry.ts`;
+`npm run status:verify` checks these rows against the available parity reports.
+These are baseline measurements, not a claim that the current working tree has
+been revalidated.
 
 ## Curated parity scenes
 
-Thresholds live in `src/scene-registry.ts`; run one scene with
-`npm run scene -- parity scene<ID>` or all registered parity scenes with
-`npm run scenes:parity`.
+Values below 0.500 are plain; yellow is 0.500 to below 1.000, and red is
+1.000 or greater. Colour describes magnitude, not the scene-specific pass/fail
+threshold. [Debugging](debugging.md) owns interpretation and capture commands.
 
-Both native GPU backends are measured against the same full-page goldens,
-including reached DOM/CSS UI. Dawn renders through the browser reference's own
-compiler and rasterization stack (see [backends](backends.md)). Each backend
-column is full-image / foreground MAD. Severity:
-green below 0.500,
-$\color{#9a6700}{\textsf{yellow from 0.500 to below 1.000}}$, and
-$\color{#cf222e}{\textsf{red above 1.000}}$.
-A value in the green band prints plain; colour marks only values that need
-attention. This keeps the table within GitHub's math-rendering limit.
-
-A scene that does not reach zero carries a recorded adaptation: every
-generated scene writes a `fidelity.json` giving the source and native
-semantics side by side, with its risk and validation.
-
-Scenes 40, 44, 45, 100 and 101 compare Bullet with Havok at the same moving
-pose, not two renderers over one simulation -- so their numbers size a
-solver difference rather than a rendering one: what remains after Bullet is
-stepped on Havok's measured model, and each is attributed against the
-pinned solver's own trajectory ([fidelity](fidelity.md#physics-contract)).
-Scene 100's golden is byte-identical to scene 40's, which makes it the
-collision-event variant of that scene; scene 44 freezes two stacks
-mid-collapse, one of them started asleep.
+Physics rows can include Bullet/Havok trajectory differences; UI rows can
+include RmlUi/browser layout and font differences. Those substitutions are
+explained in [fidelity](fidelity.md). A nonzero residual alone does not identify
+its cause.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -271,9 +254,9 @@ parity scene intentionally does not.
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.058 / 0.058 | 0.058 / 0.058 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |
 | Torus States | <img src="images/scenes/torus-states.png" alt="Torus States rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Frame graph; offscreen effects; bloom. |
-| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.780}} / \color{#9a6700}{\textsf{0.780}}$ | $\color{#9a6700}{\textsf{0.777}} / \color{#9a6700}{\textsf{0.777}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.013 / 0.013, Dawn 0.010 / 0.010. |
+| Platformer | <img src="images/scenes/platformer.png" alt="Platformer rendering" width="160"> | $\color{#9a6700}{\textsf{0.782}} / \color{#9a6700}{\textsf{0.782}}$ | $\color{#9a6700}{\textsf{0.779}} / \color{#9a6700}{\textsf{0.779}}$ | Sprite game; CRT pass; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.013 / 0.013, Dawn 0.010 / 0.010. |
 | Break Meshes | <img src="images/scenes/break-meshes.png" alt="Break Meshes rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Voronoi fracture; PBR; physics. |
-| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#9a6700}{\textsf{0.644}} / \color{#9a6700}{\textsf{0.644}}$ | $\color{#9a6700}{\textsf{0.644}} / \color{#9a6700}{\textsf{0.644}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.003 / 0.003, Dawn 0.003 / 0.003. |
+| Racer | <img src="images/scenes/racer.png" alt="Racer rendering" width="160"> | $\color{#9a6700}{\textsf{0.645}} / \color{#9a6700}{\textsf{0.645}}$ | $\color{#9a6700}{\textsf{0.645}} / \color{#9a6700}{\textsf{0.645}}$ | Driving game; CSM; physics; audio; retained HUD. UI residual; no-UI MAD: SDL_GPU 0.004 / 0.004, Dawn 0.004 / 0.004. |
 | Antigravity Racer | <img src="images/scenes/antigravity-racer.png" alt="Antigravity Racer rendering" width="160"> | $\color{#cf222e}{\textsf{3.520}} / \color{#cf222e}{\textsf{3.585}}$ | $\color{#cf222e}{\textsf{3.520}} / \color{#cf222e}{\textsf{3.585}}$ | Antigravity racing game; dynamic hierarchy instances; shader storage; CSM; HDR/IBL; gamepads; GPU picking; retained menu. UI residual; canvas-only MAD: SDL_GPU 0.028 / 0.029, Dawn 0.028 / 0.029. |
 | Littlest Tokyo | <img src="images/scenes/littlest-tokyo.png" alt="Littlest Tokyo rendering" width="160"> | 0.145 / 0.104 | 0.145 / 0.104 | Animated glTF; PBR/IBL; retained chrome. |
 | Bath Day | <img src="images/scenes/bath-day.png" alt="Bath Day rendering" width="160"> | 0.120 / 0.166 | 0.120 / 0.166 | Skinned Draco/WebP glTF; transmission; retained chrome. |

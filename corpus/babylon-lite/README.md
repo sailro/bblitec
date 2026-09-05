@@ -1,36 +1,15 @@
-# Babylon Lite pinned corpus
+# Pinned Babylon Lite corpus
 
-These files are byte-identical scene inputs from:
+Scene and application inputs come from `BabylonJS/Babylon-Lite`. The package
+and commit are recorded once in [the upstream pin](../../upstream/babylon-lite.json).
+[The corpus catalog](../../upstream/babylon-lite-corpus.json) records every
+adopted or staged file, its origin and SHA-256; `npm run corpus:verify` checks
+the catalog. [Status](../../docs/status.md) lists the integrated gates.
 
-- repository: `BabylonJS/Babylon-Lite`
-- package: `@babylonjs/lite@1.25.0`
-- source commit: `286525f8041dd9adc72b2c9962e8bff4d9aeb764`
-- upstream path: `lab/lite/src`
+These files are immutable evidence. Fix integrations in the compiler,
+lowerers, generated runtime or PAL. An explicit upstream migration updates
+the source graph and hashes together. An external integration probe must
+likewise preserve its complete reached source/assets graph and pinned origin.
 
-The snapshot mirrors upstream's whole numbered-scene directory. Every file
-in the corpus is recorded with its SHA-256 in
-`upstream/babylon-lite-corpus.json` — registered inputs under
-`scenes`/`modules`/`applications`, everything not yet integrated under
-`staged` — and the corpus tests refuse a file the manifest does not list.
-The corpus is immutable evidence; update it only as part of an explicit
-upstream-pin migration.
-
-Shared modules reached by registered scenes are copied byte-identically and
-hash-recorded in the same catalog, along with the ten adopted upstream
-applications and their complete reached file graphs.
-
-## External golden applications
-
-Any golden application temporarily copied here for an integration probe must
-include its complete local TypeScript module graph and reached assets, copied
-byte-for-byte from a recorded upstream commit and hash-checked before use.
-
-Do not edit those files, including to work around an unsupported browser API
-or compiler construct. Every golden must compile as written; all integration
-changes belong in bblitec's compiler, lowerers, generated runtime, or PAL. A
-snapshot may change only during an explicit upstream-pin migration that
-updates its provenance and hashes together. A probe is not part of the
-curated corpus unless it is deliberately adopted with durable provenance.
-
-Babylon Lite is distributed under Apache License 2.0. See `LICENSE` and
-`NOTICE.txt` in this directory.
+Babylon Lite is Apache-2.0; see `LICENSE` and `NOTICE.txt`. Third-party assets
+retain their recorded licenses and attribution.

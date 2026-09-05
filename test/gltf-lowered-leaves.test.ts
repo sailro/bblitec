@@ -28,7 +28,6 @@ import {
     lowerImageProcessingDefaultsCpp,
     lowerLocalMatrixCpp,
     lowerMatrixComposeCpp,
-    lowerMatrixMultiplyCpp,
     lowerMatrixNativeCpp,
     lowerPunctualLightsCpp,
     lowerSamplerMappingCpp,
@@ -36,6 +35,7 @@ import {
     lowerVertexColorCpp,
 } from "../src/lowering/gltf-lowerer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
+import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 
 const store = new UpstreamSourceStore();
 
@@ -819,18 +819,10 @@ test("a changed iridescence default flows into the emitted keys", () => {
 
 /* ───────────────────────────── round 3 ───────────────────────────── */
 
-// The whole-translated writer's head and first accumulation, plus the
-// by-value wrapper the loader calls. The writer body is the shared
-// translation the render plan also emits, so this test pins the wrapper
-// verbatim and the writer by its load-bearing lines rather than
-// duplicating the full translated body here.
-const expectedMatrixMultiplyWrapper = `Matrix multiply_matrix(const Matrix& left, const Matrix& right) {
-    Matrix result{};
-    mat4_multiply_into(result, 0, left, 0, right, 0);
-    return result;
-}`;
+// The loader and render plan consume the same generated matrix header.
+// Check its signature and accumulation without duplicating the full body.
 const expectedMultiplyWriterLines = [
-    "template <typename MatB>\nvoid mat4_multiply_into(",
+    "template <typename MatA, typename MatB>\nvoid mat4_multiply_into(",
     "const double a0 = static_cast<double>(a[static_cast<std::size_t>(i)]);",
     "((((a0 * b0) + (a4 * b1)) + (a8 * b2)) + (a12 * b3))",
 ];
@@ -1075,15 +1067,14 @@ const expectedPunctualLightLoading = `                const std::string type =
                         std::numeric_limits<float>::max());`;
 
 test("lowers the pinned matrix multiply through the shared translation", () => {
-    const emitted = lowerMatrixMultiplyCpp(new LoweringContext(store));
-    assert.ok(emitted.endsWith(expectedMatrixMultiplyWrapper));
+    const header = pinnedMatrixHeader(new LoweringContext(store));
     for (const line of expectedMultiplyWriterLines) {
         assert.ok(
-            emitted.includes(line),
+            header.includes(line),
             `multiply emission lost: ${line}`,
         );
     }
-    assert.match(emitted, /mat4-multiply-into\.ts#mat4MultiplyInto\./);
+    assert.match(header, /mat4-multiply-into\.ts#mat4MultiplyInto\./);
 });
 
 test("lowers the pinned TRS compose byte-identically to the shipped loader text", () => {
@@ -1132,7 +1123,6 @@ test("the emitted loader carries every round-3 lowered segment", () => {
     const adapter = new GltfLowerer(new LoweringContext(store))
         .lowerLoaderAdapter();
     for (const segment of [
-        expectedMatrixMultiplyWrapper,
         expectedMatrixCompose,
         expectedMatrixNative,
         expectedIblPolynomial,
@@ -1152,7 +1142,7 @@ test("a re-associated pinned matrix product flows into the translation", () => {
     // render plan from one emission — drift is visible as changed bytes
     // in both TUs together, never as one TU refusing while the other
     // silently adopts the new order.
-    const emitted = lowerMatrixMultiplyCpp(
+    const emitted = pinnedMatrixHeader(
         new LoweringContext(
             mutatedStore(
                 multiplyModule,

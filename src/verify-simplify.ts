@@ -150,10 +150,14 @@ export function validateRecord(record: unknown): string[] {
     const problems: string[] = [];
     const entry = record as Partial<SimplifyRecord> | null;
     const angles = entry?.angles;
-    if (!Array.isArray(angles) || angles.length < 3) {
+    const requiredAngles = ["reuse", "simplification", "efficiency", "altitude"];
+    if (
+        !Array.isArray(angles) ||
+        angles.length !== requiredAngles.length ||
+        !requiredAngles.every((angle) => angles.includes(angle))
+    ) {
         problems.push(
-            "`angles` must list at least three review angles actually run " +
-                "(reuse, simplification, efficiency, altitude).",
+            "`angles` must list reuse, simplification, efficiency and altitude exactly once.",
         );
     }
     const findings = entry?.findings;
