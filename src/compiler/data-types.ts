@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
+import { nativeReturnTsType } from "./native-return-type.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 
@@ -21,6 +22,16 @@ export type HandleKind =
   | "camera"
   | "property-animation-group"
   | "ui-element"
+  | "utility-layer"
+  | "pointer-drag"
+  | "gamepad"
+  | "gamepad-button"
+  | "scene"
+  | "scene-node"
+  | "light"
+  | "shadow-generator"
+  | "hierarchy-instance-pool"
+  | "storage-buffer"
   | "material"
   | "physics-body"
   | "physics-shape"
@@ -43,6 +54,16 @@ const handleCppTypes: Record<HandleKind, string> = {
   camera: "bbl::CameraHandle",
   "property-animation-group": "bbl::PropertyAnimationGroup",
   "ui-element": "bbl::UiElementHandle",
+  "utility-layer": "bbl::UtilityLayerHandle",
+  "pointer-drag": "bbl::PointerDragHandle",
+  gamepad: "bbl::GamepadHandle",
+  "gamepad-button": "bbl::GamepadButtonHandle",
+  scene: "bbl::Scene",
+  "scene-node": "bbl::SceneNodeHandle",
+  light: "bbl::LightHandle",
+  "shadow-generator": "bbl::ShadowGeneratorHandle",
+  "hierarchy-instance-pool": "bbl::HierarchyInstancePoolHandle",
+  "storage-buffer": "bbl::StorageBufferHandle",
   material: "bbl::MaterialHandle",
   "physics-body": "bbl::upstream::PhysicsBody",
   "physics-shape": "bbl::upstream::PhysicsShape",
@@ -70,6 +91,19 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   BillboardSpriteHandle: "billboard-sprite",
   BillboardSpriteSystem: "billboard-system",
   Camera: "camera",
+  BankedFreeCamera: "camera",
+  UtilityLayer: "utility-layer",
+  PointerDrag: "pointer-drag",
+  SceneContext: "scene",
+  SceneNode: "scene-node",
+  LightBase: "light",
+  HemisphericLight: "light",
+  DirectionalLight: "light",
+  PointLight: "light",
+  SpotLight: "light",
+  ShadowGenerator: "shadow-generator",
+  HierarchyInstancePool: "hierarchy-instance-pool",
+  StorageBuffer: "storage-buffer",
   Material: "material",
   PhysicsBody: "physics-body",
   PhysicsShape: "physics-shape",
@@ -81,8 +115,6 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   // model rather than produced by an intrinsic.
   GaussianSplattingMesh: "splat-mesh",
   Texture2D: "texture",
-  // TransformNode is a pure alias for the pin's SceneNode interface.
-  SceneNode: "transform-node",
   TransformNode: "transform-node",
   Skeleton: "skeleton",
   Bone: "bone",
@@ -637,7 +669,6 @@ export class DataTypeRegistry {
   public constructor(
     private readonly checker: ts.TypeChecker,
     private readonly fail: Fail,
-    private readonly assetRootsReachable: () => boolean = () => false,
   ) {}
 
   /**
@@ -664,6 +695,11 @@ export class DataTypeRegistry {
           element,
         };
       }
+      case "enummap":
+        return {
+          ...dataType,
+          element: this.markStoredObjectReferences(dataType.element),
+        };
       case "set":
         return {
           kind: "set",
@@ -773,6 +809,20 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "DataView") {
       return { kind: "dataview" };
     }
+    if (
+      type.symbol &&
+      declaredInDomLibrary(type.symbol) &&
+      type.symbol.name === "Gamepad"
+    ) {
+      return { kind: "handle", handle: "gamepad" };
+    }
+    if (
+      type.symbol &&
+      declaredInDomLibrary(type.symbol) &&
+      type.symbol.name === "GamepadButton"
+    ) {
+      return { kind: "handle", handle: "gamepad-button" };
+    }
     const borrowedEvent = borrowedPlatformEventKind(type.symbol);
     if (borrowedEvent) {
       return {
@@ -852,19 +902,14 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "Int32Array") {
       return { kind: "i32array" };
     }
-    const pinnedHandle = type.symbol
-      ? pinnedHandleTypes[type.symbol.name]
+    const pinnedHandleSymbol =
+      type.aliasSymbol && pinnedHandleTypes[type.aliasSymbol.name]
+        ? type.aliasSymbol
+        : type.symbol;
+    const pinnedHandle = pinnedHandleSymbol
+      ? pinnedHandleTypes[pinnedHandleSymbol.name]
       : undefined;
-    if (pinnedHandle && declaredInBabylonLite(type.symbol!)) {
-      if (pinnedHandle === "transform-node" && this.assetRootsReachable()) {
-        // TransformNode has two native representations: a node the scene
-        // created (a bbl::TransformNodeHandle) and an imported asset's
-        // synthetic root, which native loading folds into the asset record
-        // rather than allocating a node. A program that can mint the second
-        // keeps every TransformNode-typed record compile-time, where either
-        // may sit; only a program that cannot gets the handle.
-        return undefined;
-      }
+    if (pinnedHandle && declaredInBabylonLite(pinnedHandleSymbol!)) {
       return { kind: "handle", handle: pinnedHandle };
     }
     if (type.symbol && declaredInBabylonLite(type.symbol) && isSceneGraphNode(type)) {
@@ -910,8 +955,11 @@ export class DataTypeRegistry {
         }
         // Replacing an element and mutating the object stored in an
         // element are separate permissions: even ReadonlyArray keeps
-        // object identity for its values.
-        const storedElement = this.markStoredObjectReferences(element);
+        // object identity for its values. Functions carry identity too,
+        // because indexOf/includes compare the stored function object.
+        const storedElement = markIdentityFunctions(
+          this.markStoredObjectReferences(element),
+        );
         return symbolName === "Array"
           ? { kind: "vector", element: storedElement }
           : { kind: "span", element: storedElement };
@@ -988,16 +1036,23 @@ export class DataTypeRegistry {
         parameterType,
         declaration ?? node,
       );
-      return mapped ? [mapped] : [undefined];
+      // A function passed through another stored function remains the same
+      // JavaScript function object. Carry its identity across that native
+      // call boundary so an eventual Array/Map/Set comparison can observe it.
+      return mapped ? [markIdentityFunctions(mapped)] : [undefined];
     });
     if (parameters.some((parameter) => parameter === undefined)) {
       return undefined;
     }
-    const resultType = this.checker.getReturnTypeOfSignature(signature);
-    const result = (resultType.flags & ts.TypeFlags.Void) !== 0
-      ? undefined
-      : this.fromStoredTsType(resultType, node);
-    if ((resultType.flags & ts.TypeFlags.Void) === 0 && !result) {
+    const resultType = nativeReturnTsType(
+      this.checker,
+      this.checker.getReturnTypeOfSignature(signature),
+      signature.declaration,
+    );
+    const result = resultType
+      ? this.fromStoredTsType(resultType, node)
+      : undefined;
+    if (resultType && !result) {
       return undefined;
     }
     return {
@@ -1677,11 +1732,10 @@ export class DataTypeRegistry {
    *
    * A property is stored when its declared type -- resolved through the
    * instantiated class type, so `Workspace<Part>` answers with `Part` and
-   * not with `P` -- maps into the plain-data model and holds no engine
-   * handle. A handle-bearing field is a per-instance reference to something
-   * generation owns rather than something the instance owns; it is hoisted
-   * out of the layout, and construction then has to prove it the same at
-   * every site.
+   * not with `P` -- maps into the plain-data model. Copyable resource handles
+   * are slots too: a runtime collection of class instances must preserve
+   * which camera, mesh, material, or other resource belongs to each instance
+   * just as it preserves its numbers.
    *
    * The layout is settled the moment the struct exists, before any
    * construction: a method inlined on an instance read out of a container
@@ -1729,11 +1783,7 @@ export class DataTypeRegistry {
             "compare it by.",
         );
       }
-      if (!mapped || this.carriesHandle(mapped)) {
-        // Nothing an instance stores may reach an engine handle: what such
-        // a field names is something generation owns, not something the
-        // instance owns, so it is hoisted and the construction proof has to
-        // find it the same at every site.
+      if (!mapped) {
         continue;
       }
       fields.push({
@@ -1803,10 +1853,16 @@ export class DataTypeRegistry {
     if (!property) {
       return undefined;
     }
-    return this.fromClassFieldType(
+    const mapped = this.fromClassFieldType(
       this.checker.getTypeOfSymbolAtLocation(property, name),
       name,
     );
+    // A class outlives the constructor expression that initializes it.
+    // In particular, `readonly T[]` is readonly through the field but it is
+    // still an owned JavaScript Array.  Keeping the ordinary parameter/view
+    // representation (`Span<const T>`) here would leave the field pointing
+    // into a temporary such as `items.map(...)` after construction returns.
+    return mapped ? this.markStoredObjectReferences(mapped) : undefined;
   }
 
   /** The class one class-backed struct name stands for. */
@@ -1957,7 +2013,7 @@ export class DataTypeRegistry {
     return {
       kind: "enummap",
       enumName: key.name,
-      element,
+      element: this.markStoredObjectReferences(element),
     };
   }
 

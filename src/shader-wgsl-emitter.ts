@@ -142,11 +142,46 @@ function emitSamplerBindings(
     if (stage !== "fragment" || program.reflection.samplers.length === 0) {
         return undefined;
     }
-    return program.reflection.samplers
-        .flatMap((name, index) => [
-            `@group(2) @binding(${index * 2}) var ${name}: texture_2d<f32>;`,
-            `@group(2) @binding(${index * 2 + 1}) var ${shaderSamplerName(name)}: sampler;`,
-        ])
+    return program.reflection.samplerDeclarations
+        .flatMap((decl, index) => {
+            const depth = decl.comparison || decl.sampleType === "depth";
+            const textureType = depth
+                ? decl.viewDimension === "2d-array"
+                    ? "texture_depth_2d_array"
+                    : "texture_depth_2d"
+                : decl.viewDimension === "2d-array"
+                    ? "texture_2d_array<f32>"
+                    : "texture_2d<f32>";
+            return [
+                `@group(2) @binding(${index * 2}) var ${decl.name}: ${textureType};`,
+                `@group(2) @binding(${index * 2 + 1}) var ${shaderSamplerName(decl.name)}: ${decl.comparison ? "sampler_comparison" : "sampler"};`,
+            ];
+        })
+        .join("\n");
+}
+
+function emitStorageBindings(
+    program: ShaderIrProgram,
+    stage: ShaderStage,
+): string | undefined {
+    const reached = program.reflection.storageBuffers
+        .filter((buffer) => buffer[stage])
+        .map((buffer, binding) => ({ ...buffer, binding }));
+    if (reached.length === 0) return undefined;
+    // SDL_GPU's graphics binding convention puts vertex resources in group 0
+    // and fragment resources in group 2. Storage buffers follow every sampled
+    // texture in that same resource group; each texture/sampler pair spends
+    // two WebGPU bindings but one t-register, which Tint compacts for the
+    // target artifact and publishes through the stage-slot sidecar.
+    const group = stage === "vertex" ? 0 : 2;
+    const firstBinding = stage === "vertex"
+        ? 0
+        : program.reflection.samplerDeclarations.length * 2;
+    return reached
+        .map(
+            ({ name, type, binding }) =>
+                `@group(${group}) @binding(${firstBinding + binding}) var<storage, read> ${name}: ${type};`,
+        )
         .join("\n");
 }
 
@@ -180,6 +215,7 @@ export function emitNativeWgslProgram(
         return specializeMixedUniformRoot([
             "// Native-specialized WGSL generated from the bblitec shader surface.",
             emitUniformBlock(block),
+            emitStorageBindings(program, stage),
             emitSamplerBindings(program, stage),
             defineText.length > 0 ? defineText.trimEnd() : undefined,
             vertexInput,
@@ -205,6 +241,7 @@ export function emitNativeWgslProgram(
     return specializeMixedUniformRoot([
         "// Native-specialized WGSL generated from the bblitec typed shader IR.",
         emitUniformBlock(block),
+        emitStorageBindings(program, stage),
         emitSamplerBindings(program, stage),
         defineText.length > 0 ? defineText.trimEnd() : undefined,
         vertexInput,

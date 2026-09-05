@@ -13,7 +13,16 @@ import type {
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type { CsgSolidPlan } from "../pinned-csg.js";
+import type {
+  NativeHostUiStyleSource,
+} from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
+
+export type {
+  NativeHostUiClassStyle,
+  NativeHostUiStyleRule,
+  UiStyleSelectorKind,
+} from "../ui-style-rule.js";
 
 /** A static host-page element projected beside scene-created retained UI. */
 export interface NativeHostUiElement {
@@ -23,24 +32,17 @@ export interface NativeHostUiElement {
   children?: NativeHostUiElement[];
 }
 
-/** A bounded class rule imported from the browser host page. */
-export interface NativeHostUiClassStyle {
-  className: string;
-  style: string;
-}
-
 /**
  * Browser host-page chrome that is not present in the immutable scene module.
  * This is deliberately a retained-tree companion, not an HTML/CSS parser.
  */
-export interface NativeHostUi {
+export interface NativeHostUi extends NativeHostUiStyleSource {
   /**
    * The audited companion file the elements came from, recorded as
    * `ui:rml`'s activation site: a companion-only scene has no reaching
    * call in its own source, so the attribution must name this file.
-   */
+  */
   sourcePath: string;
-  classStyles?: NativeHostUiClassStyle[];
   elements: NativeHostUiElement[];
 }
 
@@ -679,6 +681,10 @@ export interface CompiledShaderProgram {
    * `setShaderTexture` binds by the index it has here.
    */
   samplers: string[];
+  /** The normalized sampler shapes parallel to `samplers`. */
+  samplerDeclarations: CompiledShaderSampler[];
+  /** Read-only storage bindings in declaration order. */
+  storageBuffers: CompiledShaderStorageBuffer[];
   /**
    * The `defines` map, normalized into the pin's own sorted
    * `ShaderDefine[]`. Each becomes a module-scope WGSL `const` in both
@@ -713,6 +719,18 @@ export interface CompiledShaderProgram {
    * prelude the stage compiles against.
    */
   useThinInstanceColors?: boolean;
+}
+
+export interface CompiledShaderSampler {
+  name: string;
+  sampleType: "float" | "unfilterable-float" | "depth";
+  viewDimension: "2d" | "2d-array";
+  comparison: boolean;
+}
+
+export interface CompiledShaderStorageBuffer {
+  name: string;
+  type: string;
 }
 
 export interface CompiledShaderDefine {
@@ -1174,7 +1192,14 @@ export type ValueKind =
   | "light"
   | "material"
   | "mesh"
+  /** Runtime data view of the pinned SceneNode union. */
+  | "scene-node"
   | "transform-node"
+  /** Engine-owned fixed-capacity thin-instance pool for an imported hierarchy. */
+  | "hierarchy-instance-pool"
+  | "gamepad"
+  | "gamepad-button"
+  | "storage-buffer"
   /**
    * `mesh.thinInstances` — the pin's own `ThinInstanceData`. It is a live
    * view of the pool rather than a handle of its own: the only member the
@@ -1265,6 +1290,7 @@ export type ValueKind =
   | "record"
   | "regexp"
   | "scene"
+  | "surface"
   | "frame-graph-context"
   | "sprite-atlas"
   | "sprite-layer"
@@ -1345,6 +1371,7 @@ export type ValueKind =
   | "axis-scale-gizmo"
   | "plane-drag-gizmo"
   | "plane-rotation-gizmo"
+  | "pointer-drag"
   // The three composites. One native record serves all three, because
   // the pin's own composite is a list of sub-gizmos and its fan-outs; the
   // kinds stay apart here so a rotation gizmo cannot be handed to the
@@ -1498,6 +1525,20 @@ export interface LightIdentity {
   sceneLightIndex?: number;
   /** Generator assigned through `light.shadowGenerator`, when present. */
   shadowGeneratorIndex?: number;
+  /** Candidate slots observed when this light is stored in an ordered data array. */
+  dataCollectionIndices?: Set<number>;
+}
+
+/**
+ * The generation-known light order for one scene construction.
+ *
+ * A light may belong to several scenes, but its shadow receiver suffix is the
+ * slot it occupies inside each scene's own `lights` array. Keeping the array on
+ * the scene identity prevents independent surfaces from inflating those slots
+ * into one process-global index.
+ */
+export interface SceneTopologyState {
+  lights: Array<{ identity: LightIdentity; kind: LightKind }>;
 }
 
 export interface Value {
@@ -1505,6 +1546,8 @@ export interface Value {
   cpp: string;
   /** Generation-known tag for scene-created retained DOM elements. */
   uiTag?: string;
+  /** The live DOMStringMap view returned by an element's `dataset`. */
+  uiDataset?: true;
   /**
    * Generation-known identity for one retained element construction site.
    * Runtime loops may evaluate the site more than once, but every resulting
@@ -1535,6 +1578,8 @@ export interface Value {
   staticElements?: Value[];
   /** Root binding whose static element snapshot this parameter alias shares. */
   staticElementsOwner?: Value;
+  /** Representative metadata for a handle read from a runtime container. */
+  runtimeElementTemplate?: Value;
   /**
    * Keep this lookup nullable when it initializes a local even if
    * TypeScript reports the binding itself as non-nullable.
@@ -1566,6 +1611,14 @@ export interface Value {
   freshData?: true;
   dataStore?: TypedArrayKind;
   /**
+   * Native typed array whose complete byte storage this value views.
+   *
+   * This is carried through `typed.buffer` and a whole-buffer Uint8Array view
+   * so byte consumers can capture the owning typed array instead of a raw
+   * pointer into a shorter-lived native vector copy.
+   */
+  wholeTypedArrayBackingCpp?: string;
+  /**
    * Set on a value read out of a container of const elements (a span,
    * including a materialized constant table). It cannot be bound by
    * reference, and the source language would not let it be written
@@ -1589,11 +1642,7 @@ export interface Value {
   nativeCallbackReturnType?: DataType;
   /** Scope-carrying record a function-valued property was read from. */
   callbackRecordOwner?: Value;
-  /**
-   * The function/object expression producing this callback is emitted inside
-   * a native iteration and would create a fresh JavaScript function object on
-   * every execution.
-   */
+  /** The function/object expression is re-evaluated by emitted native code. */
   repeatedCallbackEvaluation?: true;
   /** Distinguishes one statically emitted evaluation of a function expression. */
   callbackEvaluationIdentity?: object;
@@ -1632,6 +1681,8 @@ export interface Value {
   classHoistedAssignment?: ts.BinaryExpression;
   /** The concrete native texture record produced by a texture factory. */
   textureStorage?: "file" | "pixels" | "solid" | "render";
+  /** Borrowed 2D-array depth view returned by getCsmReceiverTexture. */
+  csmReceiverGeneratorIndex?: number;
   textureFile?: {
     srgb: boolean;
     /** Packaged source used only when source dimensions are reached. */
@@ -2019,8 +2070,10 @@ export interface Value {
   recordGetters?: Record<string, ts.GetAccessorDeclaration>;
   /** Class or object properties declared with `set`; assignment evaluates the body. */
   recordSetters?: Record<string, ts.SetAccessorDeclaration>;
-  /** Function-local native map materialized for a runtime-valued record. */
+  /** Native map materialized for a runtime-valued record in one emitted scope. */
   runtimeRecordCpp?: string;
+  /** Emission scope that owns `runtimeRecordCpp`; generated locals cannot cross it. */
+  runtimeRecordScope?: number;
   /** Heap scalar shared by every closure that captures an escaping record. */
   sharedRecordScalar?: true;
   /** Heap container retained by an escaping compile-time record. */
@@ -2042,6 +2095,8 @@ export interface Value {
     rotationSet: boolean;
     hasTexturedSkybox: boolean;
   };
+  /** Shared across aliases of one native scene. */
+  sceneTopologyState?: SceneTopologyState;
   /**
    * Shared across compiler aliases of one clustered light container.
    *
@@ -2092,6 +2147,7 @@ export type Feature =
   | "background:skybox"
   | "core"
   | "backend:sdl"
+  | "input:gamepad"
   | "camera:arc-rotate"
   | "camera:default"
   | "camera:free"
@@ -2139,6 +2195,7 @@ export type Feature =
   | "material:grid"
   | "material:node"
   | "material:shader"
+  | "material:shader-storage"
   | "material:standard"
   | "material:standard-vertex-colors"
   | "mesh:box"
@@ -2190,11 +2247,15 @@ export type Feature =
   | "physics:trigger"
   | "physics:floating-origin"
   | "scene:remove"
+  | "scene:node-transforms"
   // `src/math/normalize-vec3.ts`, which a scene calls directly and the
   // pin's detailed picking imports. Its own row because the header
   // carrying the translated declaration is emitted only where one of the
   // two reaches it.
   | "math:normalize-vec3"
+  // `src/math/quat-from-look-direction-rh.ts` and its rotation-basis helper,
+  // translated together only when scene code calls the public function.
+  | "math:look-direction"
   // GPU picking. The pin's own split is by PIPELINE rather than by entry
   // point: the simple pass, the advanced one and the detailed one are
   // three modules behind one `pickAsync`, and this port reaches the
@@ -2233,6 +2294,7 @@ export type Feature =
   // gates only the emitted assembly, and reaches the widget rows its own
   // pinned body calls.
   | "gizmo:position"
+  | "gizmo:pointer-drag"
   | "gizmo:rotation"
   | "gizmo:scale"
   // The bounding-box gizmo: its own pinned module, its own cage, and the

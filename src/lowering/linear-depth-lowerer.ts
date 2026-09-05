@@ -121,6 +121,8 @@ export class LinearDepthLowerer {
                 { name: custom.name, values: [options.near, options.far] },
             ],
             samplers: [],
+            samplerDeclarations: [],
+            storageBuffers: [],
             defines: [],
             needAlphaBlending: false,
             blendMode: "alpha",

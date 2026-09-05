@@ -41,6 +41,11 @@ inline void handle_camera_pointer_event(
         event.type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
         event.type == SDL_EVENT_MOUSE_BUTTON_UP) {
         const bool pressed = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+        if (pressed && camera.should_handle_pointer_down &&
+            !camera.should_handle_pointer_down()) {
+            state = {};
+            return;
+        }
         if (event.button.button == SDL_BUTTON_LEFT) {
             state.orbiting = pressed;
         } else if (
@@ -52,6 +57,16 @@ inline void handle_camera_pointer_event(
     }
 
     if (event.type == SDL_EVENT_MOUSE_MOTION) {
+        if ((state.orbiting || state.panning) &&
+            camera.external_drag_active && camera.external_drag_active()) {
+            state = {};
+            camera.inertial_alpha_offset = 0.0;
+            camera.inertial_beta_offset = 0.0;
+            camera.inertial_panning_x = 0.0;
+            camera.inertial_panning_y = 0.0;
+            return;
+        }
+        if (camera.external_pick_pending && camera.external_pick_pending()) return;
         if (camera.kind == CameraKind::free) {
             if (state.orbiting) {
                 upstream::apply_free_camera_pointer_rotation(

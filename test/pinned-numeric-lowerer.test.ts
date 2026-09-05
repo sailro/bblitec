@@ -52,6 +52,23 @@ function lower(
         .join("\n");
 }
 
+test("initialized Vec3 locals retain vector members through assignment", () => {
+    const cpp = lower(`let delta: Vec3 = { x: 1, y: 2, z: 3 }; const projection = delta.x; delta = { x: projection, y: 0, z: 0 };`, [], {
+        vec3Literal: (x, y, z) => `Vec3d{${x}, ${y}, ${z}}`,
+    });
+    assert.match(cpp, /Vec3d delta = Vec3d\{1.0, 2.0, 3.0\}/);
+    assert.match(cpp, /const double projection = delta.x/);
+    assert.match(cpp, /delta = Vec3d\{projection, 0.0, 0.0\}/);
+});
+
+test("nullable vector guard tests presence without coercing its value", () => {
+    const cpp = lower("if (axis) { const projection = axis.x; }", [
+        ["axis", { cpp: "axis", type: "vec3", absentCpp: "!axis_mode" }],
+    ]);
+    assert.match(cpp, /if \(!\(!axis_mode\)\)/);
+    assert.match(cpp, /projection = axis.x/);
+});
+
 test("lowers a JavaScript numeric or-else to the value-selecting helper", () => {
     const emitted = lower("const length = value || 1;", [
         ["value", { cpp: "value", type: "scalar" }],
@@ -371,4 +388,3 @@ test("narrows both sides of a bit test the way ToInt32 does", () => {
     );
     assert.match(emitted, /bbl::js::bitwise_and\(i, 4\.0\)/);
 });
-

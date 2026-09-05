@@ -245,6 +245,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "upstream targets the browser and has no platform abstraction",
         consumers: CMAKE,
     },
+    "input:gamepad": {
+        provenance:
+            "browser navigator.getGamepads + Gamepad standard mapping; " +
+            "native-architecture: SDL3 gamepad polling in pal_sdl.cpp",
+        consumers: CMAKE,
+    },
     "camera:arc-rotate": {
         provenance:
             "src/camera/arc-rotate.ts + src/camera/arc-rotate-controls.ts",
@@ -499,6 +505,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/shader/shader-material.ts",
         consumers: CMAKE,
     },
+    "material:shader-storage": {
+        provenance:
+            "src/material/shader/storage-buffer.ts + " +
+            "src/material/shader/shader-material.ts storage bindings",
+        consumers: ["features.cmake", "renderer plan", "deployed shaders"],
+    },
     "material:node": {
         provenance: "src/material/node/node-material.ts",
         consumers: ["features.cmake", "variant table"],
@@ -632,6 +644,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/math/normalize-vec3.ts",
         consumers: CMAKE,
     },
+    "math:look-direction": {
+        provenance:
+            "src/math/quat-from-look-direction-rh.ts + " +
+            "src/math/quat-from-rotation-matrix.ts",
+        consumers: CMAKE,
+    },
     "picking:gpu": {
         provenance: "src/picking/gpu-picker.ts",
         consumers: CMAKE,
@@ -651,6 +669,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "scene:remove": {
         provenance: "src/scene/scene-remove.ts",
+        consumers: CMAKE,
+    },
+    "scene:node-transforms": {
+        provenance: "src/scene/scene-node.ts + src/scene/transform-node.ts",
         consumers: CMAKE,
     },
     // The display-gizmo family. The layer is what both backends read as a
@@ -693,6 +715,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     // body calls them.
     "gizmo:position": {
         provenance: "src/gizmo/composite-gizmos.ts",
+        consumers: CMAKE,
+    },
+    "gizmo:pointer-drag": {
+        provenance: "src/gizmo/pointer-drag.ts",
         consumers: CMAKE,
     },
     "gizmo:rotation": {

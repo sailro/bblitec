@@ -56,8 +56,8 @@ bool run_effect_dawn_engine(Engine& engine) {
         if (state.adapter) wgpuAdapterRelease(state.adapter);
         if (state.surface) wgpuSurfaceRelease(state.surface);
         if (state.instance) wgpuInstanceRelease(state.instance);
-        if (state.window) SDL_DestroyWindow(state.window);
-        SDL_Quit();
+        if (state.window) release_run_window(state.window);
+        quit_run_sdl();
     };
 
     try {

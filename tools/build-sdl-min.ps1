@@ -2,6 +2,7 @@ param(
     [string]$Workspace = "",
     [string]$OutputDirectory = "",
     [switch]$EnableAudio,
+    [switch]$EnableGamepad,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -20,18 +21,26 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
+$enabledFeatures = @(
+    if ($EnableAudio) { "audio" }
+    if ($EnableGamepad) { "gamepad" }
+)
+# Preserves the established sdl-min-audio and sdl-min-gamepad directory names.
+$featureSuffix = if ($enabledFeatures.Count -gt 0) {
+    "-" + ($enabledFeatures -join "-")
+} else {
+    ""
+}
 
 if (-not $Workspace) {
-    $Workspace = if ($EnableAudio) { ".cache\sdl-audio" } else { ".cache\sdl" }
+    $Workspace = ".cache\sdl$featureSuffix"
 }
 if (-not $OutputDirectory) {
-    $OutputDirectory = if ($EnableAudio) {
-        "artifacts\tools\sdl-min-audio"
-    } else {
-        "artifacts\tools\sdl-min"
-    }
+    $OutputDirectory = "artifacts\tools\sdl-min$featureSuffix"
 }
 $audioSetting = if ($EnableAudio) { "ON" } else { "OFF" }
+$gamepadSetting = if ($EnableGamepad) { "ON" } else { "OFF" }
+$variantFeatures = @("video", "events", "dialogs") + $enabledFeatures + @("gpu")
 
 # Keep in lockstep with the vcpkg baseline's sdl3 version
 # (native/vcpkg.json builtin-baseline).
@@ -133,9 +142,9 @@ foreach ($patchName in $patchNames) {
     -DSDL_TEST_LIBRARY=OFF `
     -DSDL_EXAMPLES=OFF `
     -DSDL_AUDIO=$audioSetting `
-    -DSDL_JOYSTICK=OFF `
+    -DSDL_JOYSTICK=$gamepadSetting `
     -DSDL_HAPTIC=OFF `
-    -DSDL_HIDAPI=OFF `
+    -DSDL_HIDAPI=$gamepadSetting `
     -DSDL_SENSOR=OFF `
     -DSDL_CAMERA=OFF `
     -DSDL_POWER=OFF `
@@ -171,6 +180,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
 # from an install-directory name or from a prose provenance field.
 @(
     "set(BBLITE_SDL_AUDIO $audioSetting)"
+    "set(BBLITE_SDL_GAMEPAD $gamepadSetting)"
     "set(BBLITE_SDL_DIALOG ON)"
 ) -join "`n" |
     Set-Content (Join-Path $output "bblite-sdl-features.cmake") -Encoding Ascii
@@ -180,11 +190,7 @@ Copy-Item (Join-Path $source "LICENSE.txt") (Join-Path $output "LICENSE.txt") -F
     tag = $tag
     version = $sdlVersion
     patches = $patchNames
-    variant = if ($EnableAudio) {
-        "static, MinSizeRel, static CRT, video+events+dialogs+audio+gpu only"
-    } else {
-        "static, MinSizeRel, static CRT, video+events+dialogs+gpu only"
-    }
+    variant = "static, MinSizeRel, static CRT, $($variantFeatures -join '+') only"
     builtAt = (Get-Date).ToUniversalTime().ToString("o")
 } | ConvertTo-Json | Set-Content (Join-Path $output "provenance.json")
 

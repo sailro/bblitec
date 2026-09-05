@@ -263,11 +263,12 @@ export function lowerMat4DecomposeFull(context: LoweringContext): string {
 }
 
 /** The pin's quaternion-basis fold, projected onto a caller-owned record. */
-function lowerQuatFromRotationBasis(
+export function lowerQuatFromRotationBasis(
     context: LoweringContext,
     calls: ReadonlyMap<string, (args: readonly string[]) => string>,
     cppName: string,
     resultType: string,
+    inline = false,
 ): string {
     return lowerPinnedFunction(
         context,
@@ -296,6 +297,7 @@ function lowerQuatFromRotationBasis(
                     ).join(", ")}}`,
             },
             calls,
+            ...(inline ? { inline } : {}),
             // The trace method picks its branch with `&&` over numeric
             // comparisons.
             booleanAnd: true,

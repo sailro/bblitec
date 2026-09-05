@@ -77,8 +77,8 @@ bool run_sprite_dawn_engine(Engine& engine) {
         if (state.adapter) wgpuAdapterRelease(state.adapter);
         if (state.surface) wgpuSurfaceRelease(state.surface);
         if (state.instance) wgpuInstanceRelease(state.instance);
-        if (state.window) SDL_DestroyWindow(state.window);
-        SDL_Quit();
+        if (state.window) release_run_window(state.window);
+        quit_run_sdl();
     };
 
     try {
@@ -329,6 +329,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
             render_sprite_ui_dawn_frame(
                 state,
                 encoder,
+                surface_texture.texture,
                 surface_view,
                 ui_resources,
                 ui_frame);

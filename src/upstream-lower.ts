@@ -32,6 +32,7 @@ import { pinnedSurfaceHeader } from "./lowering/pinned-surface.js";
 import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
+import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
@@ -303,6 +304,8 @@ export interface UpstreamEmitOptions {
      */
     pickingShaders?: {
         mesh: string;
+        /** The advanced pipeline's affine thin-instance arm. */
+        thin?: string;
         detailed?: string;
         /**
          * The detailed module composed with the pin's deform vertex
@@ -923,6 +926,15 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 pinnedNormalizeVec3Header(new LoweringContext(this.store)),
             );
         }
+        // The public look-direction quaternion and the private basis fold it
+        // delegates to, both translated from the pin only where scene code
+        // reaches that public helper.
+        if (features.includes("math:look-direction")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_look_direction.hpp",
+                pinnedLookDirectionHeader(new LoweringContext(this.store)),
+            );
+        }
         // The texture-slot table both render backends execute. Emitted for
         // every scene beside the capability defines above (the base slots
         // serve the Standard family too, so it cannot ride pbr_variants.hpp,
@@ -973,6 +985,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     "animation:managed-groups",
                 ),
                 transformNodes: features.includes("mesh:transform-node"),
+                sceneNodeTransforms: features.includes("scene:node-transforms"),
                 mirroredMeshes: features.includes("mesh:mirrored"),
                 vat: features.includes("mesh:vat"),
             }),
@@ -1230,6 +1243,9 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         options.pickingShaders?.deform !== undefined,
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
+                    dynamicThinInstances: features.includes(
+                        "mesh:thin-instances-dynamic",
+                    ),
                     nonTrianglePrimitives:
                         options.nonTrianglePrimitives,
                     gaussianSplats: options.gaussianSplats,
@@ -2322,20 +2338,6 @@ ${shadow.blurFragmentWgsl}`,
         // that something is unsupported.
         for (const [reached, paired, reason] of [
             [
-                "picking:gpu",
-                "mesh:thin-instances",
-                "GPU picking and thin instances compose only through " +
-                    "the pin's advanced picking pipeline, which this " +
-                    "port does not build.",
-            ],
-            [
-                "picking:gpu",
-                "mesh:thin-instances-dynamic",
-                "GPU picking and thin instances compose only through " +
-                    "the pin's advanced picking pipeline, which this " +
-                    "port does not build.",
-            ],
-            [
                 "picking:billboard",
                 "sprite:billboard-cutout",
                 "A cutout billboard system's pick pipeline samples " +
@@ -2420,6 +2422,7 @@ ${shadow.blurFragmentWgsl}`,
                 new PickingLowerer(context).lower(
                     features.includes("picking:billboard"),
                     features.includes("picking:detailed"),
+                    features.includes("gizmo:pointer-drag"),
                 ),
                 generated,
             );
@@ -2443,6 +2446,13 @@ ${shadow.blurFragmentWgsl}`,
                 throw new Error(
                     "A scene reaching picking:gpu must arrive with the " +
                         "pin's composed picking module.",
+                );
+            }
+            const thinPickingWgsl = options.pickingShaders?.thin;
+            if (options.gpuInstancing && thinPickingWgsl === undefined) {
+                throw new Error(
+                    "A picking scene with thin-instanced candidates must " +
+                        "arrive with the pin's composed advanced picking module.",
                 );
             }
             const detailedPickingProvenance = context.provenance(
@@ -2481,6 +2491,19 @@ ${shadow.blurFragmentWgsl}`,
                     data: `// ${pickingProvenance}\n${meshPickingWgsl}`,
                     family: "picking",
                 });
+                if (thinPickingWgsl !== undefined) {
+                    composedShaders.push({
+                        output:
+                            `upstream/shaders/picking-thin.${stage}` +
+                            ".native.wgsl",
+                        data:
+                            `// ${context.provenance(
+                                "src/picking/picking-advanced-shader.ts",
+                                "pickingThinInstanceShaderSource",
+                            )}\n` + thinPickingWgsl,
+                        family: "picking",
+                    });
+                }
                 if (detailedPickingWgsl !== undefined) {
                     composedShaders.push({
                         output:

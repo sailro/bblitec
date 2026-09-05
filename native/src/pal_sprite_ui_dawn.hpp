@@ -17,25 +17,14 @@
 // The backend-neutral scissor clamp all four RmlUi consumers share.
 #include "pal_gpu_shared.hpp"
 #include "pal_dawn_shared.hpp"
+#include "pal_ui_backdrop_dawn.hpp"
 
 namespace bbl::pal {
 
-struct SpriteUiDawnTexture {
-    WGPUTexture texture = nullptr;
-    WGPUTextureView view = nullptr;
-    WGPUBindGroup group = nullptr;
-    WGPUBindGroup nearest_group = nullptr;
-
-    void release() {
-        if (nearest_group) wgpuBindGroupRelease(nearest_group);
-        if (group) wgpuBindGroupRelease(group);
-        if (view) wgpuTextureViewRelease(view);
-        if (texture) wgpuTextureRelease(texture);
-        *this = {};
-    }
-};
+using SpriteUiDawnTexture = UiDawnTexture;
 
 struct SpriteUiDawnResources {
+    UiBackdropDawnResources backdrop;
     WGPUBindGroupLayout screen_layout = nullptr;
     WGPUBindGroupLayout texture_layout = nullptr;
     WGPUPipelineLayout texture_pipeline_layout = nullptr;
@@ -114,7 +103,8 @@ inline WGPURenderPipeline create_sprite_ui_dawn_pipeline(
     WGPUShaderModule module,
     const char* fragment_entry,
     WGPUTextureFormat format,
-    WGPUPipelineLayout layout) {
+    WGPUPipelineLayout layout,
+    bool additive = false) {
     std::array<WGPUVertexAttribute, 3> attributes{};
     attributes[0] = WGPU_VERTEX_ATTRIBUTE_INIT;
     attributes[0].format = WGPUVertexFormat_Float32x2;
@@ -137,10 +127,10 @@ inline WGPURenderPipeline create_sprite_ui_dawn_pipeline(
     WGPUBlendState blend{};
     blend.color.operation = WGPUBlendOperation_Add;
     blend.color.srcFactor = WGPUBlendFactor_One;
-    blend.color.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.color.dstFactor = additive ? WGPUBlendFactor_One : WGPUBlendFactor_OneMinusSrcAlpha;
     blend.alpha.operation = WGPUBlendOperation_Add;
     blend.alpha.srcFactor = WGPUBlendFactor_One;
-    blend.alpha.dstFactor = WGPUBlendFactor_OneMinusSrcAlpha;
+    blend.alpha.dstFactor = additive ? WGPUBlendFactor_One : WGPUBlendFactor_OneMinusSrcAlpha;
     WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
     target.format = format;
     target.blend = &blend;
@@ -304,6 +294,21 @@ inline void create_sprite_ui_dawn_resources(
     if (!ui.screen_group) dawn_error("wgpuDeviceCreateBindGroup sprite UI");
 }
 
+inline void ensure_sprite_ui_dawn_backdrop_pipeline(
+    DawnDevice& state,
+    SpriteUiDawnResources& ui) {
+    if (ui.backdrop.pipeline) return;
+    WGPUShaderModule module = create_sprite_ui_dawn_module(state.device);
+    ui.backdrop.pipeline = create_sprite_ui_dawn_pipeline(
+        state.device,
+        module,
+        "fs_texture",
+        WGPUTextureFormat_RGBA16Float,
+        ui.texture_pipeline_layout,
+        true);
+    wgpuShaderModuleRelease(module);
+}
+
 inline void ensure_sprite_ui_dawn_buffer(
     WGPUDevice device,
     WGPUBuffer& buffer,
@@ -320,11 +325,15 @@ inline void ensure_sprite_ui_dawn_buffer(
 inline void render_sprite_ui_dawn_frame(
     DawnDevice& state,
     WGPUCommandEncoder encoder,
+    WGPUTexture target_texture,
     WGPUTextureView target,
     SpriteUiDawnResources& ui,
     const UiRenderFrame& frame) {
     if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
     create_sprite_ui_dawn_resources(state, ui);
+    if (!frame.backdrops.empty()) {
+        ensure_sprite_ui_dawn_backdrop_pipeline(state, ui);
+    }
     const std::uint64_t vertex_bytes =
         frame.vertices.size() * sizeof(UiRenderVertex);
     const std::uint64_t index_bytes =
@@ -388,6 +397,10 @@ inline void render_sprite_ui_dawn_frame(
         ui.textures.emplace(source.id, texture);
     }
 
+    std::size_t draw_begin = 0;
+    for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
+    const std::size_t draw_end = segment < frame.backdrops.size()
+        ? frame.backdrops[segment].before_draw : frame.draws.size();
     WGPURenderPassColorAttachment attachment =
         WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
     attachment.view = target;
@@ -409,7 +422,8 @@ inline void render_sprite_ui_dawn_frame(
         WGPUIndexFormat_Uint32,
         0,
         WGPU_WHOLE_SIZE);
-    for (const UiRenderDraw& draw : frame.draws) {
+    for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
+        const UiRenderDraw& draw = frame.draws[draw_index];
         const std::optional<UiScissorRect> scissor =
             clamped_ui_scissor(draw, frame.width, frame.height);
         if (!scissor) continue;
@@ -439,10 +453,19 @@ inline void render_sprite_ui_dawn_frame(
     }
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
+    if (segment < frame.backdrops.size()) {
+        render_ui_backdrop_dawn(state.device, encoder, target_texture, target,
+            state.surface_format, ui.vertices, ui.indices, ui.sampler,
+            ui.screen_group, ui.texture_layout, ui.texture_pipeline,
+            ui.backdrop, frame, segment);
+    }
+    draw_begin = draw_end;
+    }
 }
 
 inline void release_sprite_ui_dawn_resources(
     SpriteUiDawnResources& ui) {
+    ui.backdrop.release();
     for (auto& [id, source] : ui.textures) {
         static_cast<void>(id);
         source.release();

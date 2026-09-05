@@ -17,6 +17,7 @@ import {
     type ShaderIrProgram,
 } from "../shader-ir.js";
 import {
+    predeclaredShaderProgram,
     shaderMaterialPrograms,
     shaderSamplerName,
     shaderUniformValueLayout,
@@ -30,6 +31,8 @@ import {
 import type {
     CompiledShaderDefine,
     CompiledShaderProgram,
+    CompiledShaderSampler,
+    CompiledShaderStorageBuffer,
     CompiledShaderUniformDefault,
     SceneMeshManifest,
     Value,
@@ -57,7 +60,8 @@ const WGSL_IDENTIFIER = cppIdentifierPattern;
  * means a per-variant layout, the way the composed families already build
  * one.
  */
-const MAX_SHADER_SAMPLERS = 4;
+const MAX_SHADER_SAMPLERS = 8;
+const MAX_SHADER_STORAGE_BUFFERS = 8;
 
 export interface ShaderMaterialContext
     extends ObjectValidationContext,
@@ -117,6 +121,7 @@ export function compileShaderMaterialOptions(
             "attributes",
             "uniforms",
             "samplers",
+            "storageBuffers",
             "defines",
             "needAlphaBlending",
             "blendMode",
@@ -124,7 +129,7 @@ export function compileShaderMaterialOptions(
             "backFaceCulling",
             "depthWrite",
         ],
-        "Reached shader materials support source, attributes, uniforms, samplers, defines, alpha state and blend mode, culling, and depthWrite only.",
+        "Reached shader materials support source, attributes, uniforms, samplers, storage buffers, defines, alpha state and blend mode, culling, and depthWrite only.",
     );
 
     const vertexExpression = context.objectProperty(object, "vertexSource");
@@ -174,9 +179,15 @@ export function compileShaderMaterialOptions(
             return separator < 1 ? signature : signature.slice(0, separator);
         }),
     );
-    const samplers = compileShaderSamplers(
+    const samplerDeclarations = compileShaderSamplers(
         context,
         context.objectProperty(object, "samplers"),
+        generatedNames,
+    );
+    const samplers = samplerDeclarations.map(({ name }) => name);
+    const storageBuffers = compileShaderStorageBuffers(
+        context,
+        context.objectProperty(object, "storageBuffers"),
         generatedNames,
     );
     const defines = compileShaderDefines(
@@ -220,6 +231,13 @@ export function compileShaderMaterialOptions(
             stringArraysEqual(attributes, program.attributes) &&
             stringArraysEqual(uniforms, program.uniforms) &&
             stringArraysEqual(samplers, program.samplers ?? []) &&
+            storageBuffers.length === 0 &&
+            samplerDeclarations.every(
+                ({ sampleType, viewDimension, comparison }) =>
+                    sampleType === "float" &&
+                    viewDimension === "2d" &&
+                    !comparison,
+            ) &&
             definesEqual(defines, program.defines ?? []) &&
             needAlphaBlending === program.needAlphaBlending &&
             blendMode === (program.blendMode ?? "alpha") &&
@@ -259,20 +277,13 @@ export function compileShaderMaterialOptions(
                 JSON.stringify(candidate) ===
                 JSON.stringify(expected)
             ) {
+                const predeclared = predeclaredShaderProgram(program);
                 return reachShaderProgram(context, {
-                    name: program.name,
-                    vertexSource: program.vertexSource,
-                    fragmentSource: program.fragmentSource,
-                    attributes: program.attributes,
-                    uniforms: program.uniforms,
+                    ...predeclared,
                     uniformDefaults: [],
-                    samplers: [...(program.samplers ?? [])],
-                    defines: [...(program.defines ?? [])],
-                    needAlphaBlending: program.needAlphaBlending,
-                    blendMode: program.blendMode ?? "alpha",
-                    needAlphaTesting: program.needAlphaTesting,
-                    backFaceCulling: program.backFaceCulling,
-                    depthWrite: program.depthWrite,
+                    samplers: [...predeclared.samplers],
+                    storageBuffers: [],
+                    defines: [...predeclared.defines],
                 });
             }
         }
@@ -338,6 +349,8 @@ export function compileShaderMaterialOptions(
         uniforms,
         uniformDefaults,
         samplers,
+        samplerDeclarations,
+        storageBuffers,
         defines,
         needAlphaBlending,
         blendMode,
@@ -406,41 +419,87 @@ export function compileShaderMaterialOptions(
  * name, together with the `<name>Sampler` companion the prelude writes
  * beside it (the pin reserves both).
  *
- * The reached slice is the bare-string form. The pin also takes a
- * `ShaderSamplerDecl` object naming a sample type, a view dimension or a
- * comparison sampler, and each of those changes the declared WGSL texture
- * type and the sampler's own kind, so one refuses by name rather than
- * compiling to the float/2d pair a plain string means.
+ * A bare string selects the pin's float/2d defaults. A `ShaderSamplerDecl`
+ * carries the reached depth, 2d-array and comparison shapes explicitly so
+ * reflection and both native backends see the same declaration.
  */
 function compileShaderSamplers(
     context: ShaderMaterialContext,
     expression: ts.Expression | undefined,
     used: Set<string>,
-): string[] {
+): CompiledShaderSampler[] {
     if (!expression) {
         return [];
     }
-    const samplers: string[] = [];
+    const samplers: CompiledShaderSampler[] = [];
     for (const element of context.expectStaticArrayLiteral(expression)
         .elements) {
         // A typed `ShaderSamplerDecl` names its own sample type, view
-        // dimension or comparison mode, each of which changes the declared
-        // WGSL texture and sampler types, so it refuses rather than
-        // compiling to the float/2d pair a plain string means. Everything
-        // else goes through the same static-string resolution `attributes`
-        // and `uniforms` take, so a module constant naming a sampler works
-        // in all three.
-        if (
-            ts.isObjectLiteralExpression(
-                context.resolveStaticExpression(element),
-            )
-        ) {
-            context.fail(
-                element,
-                "Reached shader-material samplers are named by a string; a typed sampler declaration is not lowered.",
+        // dimension and comparison mode. Everything else goes through the
+        // same static-string resolution `attributes` and `uniforms` take, so
+        // a module constant naming a sampler works in all three.
+        const resolved = context.resolveStaticExpression(element);
+        let name: string;
+        let sampleType: CompiledShaderSampler["sampleType"] = "float";
+        let viewDimension: CompiledShaderSampler["viewDimension"] = "2d";
+        let comparison = false;
+        if (ts.isObjectLiteralExpression(resolved)) {
+            validateObjectProperties(
+                context,
+                resolved,
+                ["name", "sampleType", "viewDimension", "comparison"],
+                "Shader sampler declaration",
             );
+            const nameExpression = context.objectProperty(resolved, "name");
+            if (!nameExpression) {
+                context.fail(resolved, "Shader sampler declaration requires a name.");
+            }
+            name = context.compileStaticString(nameExpression);
+            const sampleTypeExpression = context.objectProperty(
+                resolved,
+                "sampleType",
+            );
+            if (sampleTypeExpression) {
+                const candidate = context.compileStaticString(
+                    sampleTypeExpression,
+                );
+                if (
+                    candidate !== "float" &&
+                    candidate !== "unfilterable-float" &&
+                    candidate !== "depth"
+                ) {
+                    context.fail(
+                        sampleTypeExpression,
+                        `Unsupported shader sampler sampleType '${candidate}'.`,
+                    );
+                }
+                sampleType = candidate;
+            }
+            const viewExpression = context.objectProperty(
+                resolved,
+                "viewDimension",
+            );
+            if (viewExpression) {
+                const candidate = context.compileStaticString(viewExpression);
+                if (candidate !== "2d" && candidate !== "2d-array") {
+                    context.fail(
+                        viewExpression,
+                        `Unsupported shader sampler viewDimension '${candidate}'.`,
+                    );
+                }
+                viewDimension = candidate;
+            }
+            comparison = compileOptionalStaticBoolean(
+                context,
+                context.objectProperty(resolved, "comparison"),
+                false,
+            );
+            if (comparison && !sampleTypeExpression) {
+                sampleType = "depth";
+            }
+        } else {
+            name = context.compileStaticString(element);
         }
-        const name = context.compileStaticString(element);
         if (!WGSL_IDENTIFIER.test(name)) {
             context.fail(
                 element,
@@ -456,7 +515,7 @@ function compileShaderSamplers(
             }
             used.add(generated);
         }
-        samplers.push(name);
+        samplers.push({ name, sampleType, viewDimension, comparison });
     }
     if (samplers.length > MAX_SHADER_SAMPLERS) {
         context.fail(
@@ -465,6 +524,71 @@ function compileShaderSamplers(
         );
     }
     return samplers;
+}
+
+function compileShaderStorageBuffers(
+    context: ShaderMaterialContext,
+    expression: ts.Expression | undefined,
+    used: Set<string>,
+): CompiledShaderStorageBuffer[] {
+    if (!expression) return [];
+    const buffers = context.expectStaticArrayLiteral(expression).elements.map(
+        (element): CompiledShaderStorageBuffer => {
+            const resolved = context.resolveStaticExpression(element);
+            if (!ts.isObjectLiteralExpression(resolved)) {
+                context.fail(
+                    element,
+                    "Shader storage-buffer declarations must be object literals.",
+                );
+            }
+            validateObjectProperties(
+                context,
+                resolved,
+                ["name", "type"],
+                "Shader storage-buffer declaration",
+            );
+            const nameExpression = context.objectProperty(resolved, "name");
+            const typeExpression = context.objectProperty(resolved, "type");
+            if (!nameExpression || !typeExpression) {
+                context.fail(
+                    resolved,
+                    "Shader storage-buffer declaration requires name and type.",
+                );
+            }
+            const name = context.compileStaticString(nameExpression);
+            const type = context.compileStaticString(typeExpression);
+            if (!WGSL_IDENTIFIER.test(name)) {
+                context.fail(
+                    nameExpression,
+                    `Shader material storage buffer '${name}' is not a valid WGSL identifier.`,
+                );
+            }
+            if (used.has(name)) {
+                context.fail(
+                    nameExpression,
+                    `Shader material storage buffer '${name}' collides with another generated identifier.`,
+                );
+            }
+            // This is the host-shareable read-only shape reached by the
+            // racer. Other WGSL storage element layouts require their own
+            // minimum-size/alignment validation before they may be bound.
+            if (type !== "array<vec4<f32>>") {
+                context.fail(
+                    typeExpression,
+                    `Reached shader storage buffers support type 'array<vec4<f32>>', received '${type}'.`,
+                );
+            }
+            used.add(name);
+            return { name, type };
+        },
+    );
+    if (buffers.length > MAX_SHADER_STORAGE_BUFFERS) {
+        context.fail(
+            expression,
+            `Reached shader materials declare at most ${MAX_SHADER_STORAGE_BUFFERS} storage buffers; this one declares ${buffers.length}.`,
+        );
+    }
+    return buffers;
 }
 
 /**
@@ -787,6 +911,35 @@ export function resolveShaderTextureSlot(
         context.fail(
             nameExpression,
             `Shader variant '${program.name}' declares no sampler '${name}'.`,
+        );
+    }
+    return slot;
+}
+
+export function resolveShaderStorageBufferSlot(
+    context: ShaderMaterialContext,
+    material: Value,
+    nameExpression: ts.Expression,
+): number {
+    if (!material.shaderVariant) {
+        context.fail(
+            nameExpression,
+            "Shader storage-buffer writes require a shader material.",
+        );
+    }
+    const program = reachedShaderProgram(
+        context,
+        material.shaderVariant,
+        nameExpression,
+    );
+    const name = context.compileStringLiteral(nameExpression);
+    const slot = program.storageBuffers.findIndex(
+        (buffer) => buffer.name === name,
+    );
+    if (slot < 0) {
+        context.fail(
+            nameExpression,
+            `Shader variant '${program.name}' declares no storage buffer '${name}'.`,
         );
     }
     return slot;

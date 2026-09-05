@@ -2147,6 +2147,13 @@ struct ShadowLightMatrix {
  */
 struct ShadowCaster {
     std::array<double, 16> world{};
+    /**
+     * One active thin-instance matrix for the CSM caster fold. The pin
+     * transforms a bound corner through this matrix and only then through
+     * mesh.world; retaining both preserves that exact two-step arithmetic.
+     */
+    std::array<float, 16> instance{};
+    bool has_instance = false;
     std::array<float, 3> bounds_min{};
     std::array<float, 3> bounds_max{};
 };
@@ -2734,14 +2741,29 @@ inline void update_csm_cascades(
                 ? caster.bounds_max[1] : caster.bounds_min[1];
             const double local_z = (corner & 4u)
                 ? caster.bounds_max[2] : caster.bounds_min[2];
-            const double world_x = caster.world[0] * local_x +
-                caster.world[4] * local_y + caster.world[8] * local_z +
+            const double instance_x = caster.has_instance
+                ? caster.instance[0] * local_x +
+                    caster.instance[4] * local_y +
+                    caster.instance[8] * local_z + caster.instance[12]
+                : local_x;
+            const double instance_y = caster.has_instance
+                ? caster.instance[1] * local_x +
+                    caster.instance[5] * local_y +
+                    caster.instance[9] * local_z + caster.instance[13]
+                : local_y;
+            const double instance_z = caster.has_instance
+                ? caster.instance[2] * local_x +
+                    caster.instance[6] * local_y +
+                    caster.instance[10] * local_z + caster.instance[14]
+                : local_z;
+            const double world_x = caster.world[0] * instance_x +
+                caster.world[4] * instance_y + caster.world[8] * instance_z +
                 caster.world[12];
-            const double world_y = caster.world[1] * local_x +
-                caster.world[5] * local_y + caster.world[9] * local_z +
+            const double world_y = caster.world[1] * instance_x +
+                caster.world[5] * instance_y + caster.world[9] * instance_z +
                 caster.world[13];
-            const double world_z = caster.world[2] * local_x +
-                caster.world[6] * local_y + caster.world[10] * local_z +
+            const double world_z = caster.world[2] * instance_x +
+                caster.world[6] * instance_y + caster.world[10] * instance_z +
                 caster.world[14];
             caster_min_x = std::min(caster_min_x, world_x);
             caster_min_y = std::min(caster_min_y, world_y);
@@ -3219,7 +3241,9 @@ ${esmShadows ? `    const bool esm =
 ` : ""}\
     const MaterialRecord& source = engine.materials[material.value];
     const MaterialHandle view =
-        ${nodeCasters ? `source.node_material
+        source.shadow_caster_material.value != invalid_handle
+            ? source.shadow_caster_material
+            : ${nodeCasters ? `source.node_material
             ? ${casterView("node")}
             : ` : ""}source.standard_material
             ? ${casterView("standard")}

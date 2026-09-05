@@ -65,7 +65,9 @@ const ARITHMETIC = new Map<
     (left: number, right: number) => number
 >([
     [ts.SyntaxKind.PlusToken, (left, right) => left + right],
+    [ts.SyntaxKind.MinusToken, (left, right) => left - right],
     [ts.SyntaxKind.AsteriskToken, (left, right) => left * right],
+    [ts.SyntaxKind.SlashToken, (left, right) => left / right],
 ]);
 
 /**
@@ -717,7 +719,7 @@ export class PinnedShaderText {
             // supplied, which is what keeps that module owning it.
             const declared = this.moduleConstant(node.text, modulePath);
             if (declared !== undefined) {
-                return this.evaluateString(
+                return this.evaluateValue(
                     declared,
                     scope,
                     modulePath,
@@ -857,7 +859,10 @@ export class PinnedShaderText {
                 modulePath;
             const { declaration } =
                 this.context.functionDeclaration(home, callee);
-            const bound = new Map<string, ShaderTextBinding>();
+            // A nested shader-text builder closes over the module/import
+            // constants visible to its caller. Start from that lexical
+            // scope, then let the callee's own parameters shadow it.
+            const bound = new Map<string, ShaderTextBinding>(scope);
             declaration.parameters.forEach((parameter, index) => {
                 const argument = node.arguments[index];
                 if (!ts.isIdentifier(parameter.name) || !argument) {

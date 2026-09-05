@@ -224,6 +224,60 @@ test("generates the shared Tint material vertex interface", () => {
     );
 });
 
+test("places stage storage buffers in SDL resource groups after samplers", () => {
+    const program = lowerWgslShaderProgram({
+        name: "stage-storage",
+        vertexSource: `fn vertexOffset() -> vec3<f32> {
+    return vertexData[0u].xyz;
+}
+struct VertexOutput {
+    @builtin(position) position: vec4<f32>,
+};
+@vertex fn mainVertex(input: VertexInput) -> VertexOutput {
+    var out: VertexOutput;
+    out.position = vec4<f32>(input.position + vertexOffset(), 1.0);
+    return out;
+}`,
+        fragmentSource: `fn fragmentColor() -> vec4<f32> {
+    return fragmentData[0u];
+}
+@fragment fn mainFragment() -> @location(0) vec4<f32> {
+    return fragmentColor();
+}`,
+        attributes: ["position"],
+        uniforms: [],
+        samplerDeclarations: [{
+            name: "albedo",
+            sampleType: "float",
+            viewDimension: "2d",
+            comparison: false,
+        }],
+        storageBuffers: [
+            { name: "vertexData", type: "array<vec4<f32>>" },
+            { name: "fragmentData", type: "array<vec4<f32>>" },
+        ],
+        needAlphaBlending: false,
+        needAlphaTesting: false,
+        backFaceCulling: false,
+        depthWrite: true,
+    });
+
+    const vertex = emitNativeWgslProgram(program, "vertex");
+    const fragment = emitNativeWgslProgram(program, "fragment");
+    assert.match(
+        vertex,
+        /@group\(0\) @binding\(0\) var<storage, read> vertexData/,
+    );
+    assert.doesNotMatch(vertex, /fragmentData/);
+    assert.match(fragment, /@group\(2\) @binding\(0\) var albedo:/);
+    assert.match(fragment, /@group\(2\) @binding\(1\) var albedoSampler:/);
+    assert.match(
+        fragment,
+        /@group\(2\) @binding\(2\) var<storage, read> fragmentData/,
+    );
+    assert.doesNotMatch(fragment, /vertexData/);
+});
+
 test("packs several system matrices at the head of a stage block", () => {
     // The pin's own line material declares `world` + `viewProjection` and
     // reads both in its vertex stage (material/line/line-material.ts), so

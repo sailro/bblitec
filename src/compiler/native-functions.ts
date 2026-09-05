@@ -254,6 +254,7 @@ export class NativeFunctionLowerer {
     private readonly rejected =
         new Set<SupportedFunction>();
     private readonly usedNames = new Set<string>();
+    private readonly referenceStorageCache = new Map<string, boolean>();
 
     public constructor(
         private readonly context: NativeFunctionContext,
@@ -760,7 +761,7 @@ export class NativeFunctionLowerer {
             if (
                 mapped?.kind === "struct" &&
                 !options.markAllStructReturns &&
-                this.returnTypeIsStored(returnTsType)
+                this.typeRequiresReferenceStorage(returnTsType, mapped.name)
             ) {
                 mapped =
                     this.context.dataTypes.markStoredObjectReferences(
@@ -791,19 +792,17 @@ export class NativeFunctionLowerer {
             if (!ts.isIdentifier(parameter.name)) {
                 return undefined;
             }
+            const parameterTsType = this.context.checker.getTypeAtLocation(parameter);
             let parameterType =
                 this.context.dataTypes.fromTsType(
-                    this.context.checker.getTypeAtLocation(
-                        parameter,
-                    ),
+                    parameterTsType,
                     parameter,
                 );
             if (
                 parameterType?.kind === "struct" &&
-                this.returnTypeIsStored(
-                    this.context.checker.getTypeAtLocation(
-                        parameter,
-                    ),
+                this.typeRequiresReferenceStorage(
+                    parameterTsType,
+                    parameterType.name,
                 )
             ) {
                 // Reference representation is a property of the source
@@ -1020,10 +1019,19 @@ export class NativeFunctionLowerer {
             ) {
                 continue;
             }
-            const fieldType =
+            const mappedFieldType =
                 this.context.dataLowerer.dataTypeAt(
                     member.name,
                 );
+            // Class fields own the JavaScript objects assigned to them even
+            // when their declared surface is readonly. Match construction's
+            // owning representation rather than exposing a Span channel to
+            // a field backed by an Array.
+            const fieldType = mappedFieldType
+                ? this.context.dataTypes.markStoredObjectReferences(
+                      mappedFieldType,
+                  )
+                : undefined;
             if (
                 !fieldType ||
                 fieldType.kind === "function" ||
@@ -1743,9 +1751,11 @@ export class NativeFunctionLowerer {
         return found;
     }
 
-    /** Whether callers place this returned object behind a JS container. */
-    private returnTypeIsStored(returnType: ts.Type): boolean {
-        const target = this.context.checker.getNonNullableType(returnType);
+    /** Establish object storage before emitting any native member accesses. */
+    private typeRequiresReferenceStorage(sourceType: ts.Type, structName: string): boolean {
+        const target = this.context.checker.getNonNullableType(sourceType);
+        const cached = this.referenceStorageCache.get(structName);
+        if (cached !== undefined) return cached;
         const sameType = (candidate: ts.Type): boolean => {
             const normalized = this.context.checker.getNonNullableType(
                 candidate,
@@ -1755,7 +1765,12 @@ export class NativeFunctionLowerer {
                 (normalized.aliasSymbol !== undefined &&
                     normalized.aliasSymbol === target.aliasSymbol) ||
                 (normalized.symbol !== undefined &&
-                    normalized.symbol === target.symbol)
+                    normalized.symbol === target.symbol) ||
+                // The data registry coalesces structurally equal records.
+                // A differently named equivalent type can therefore impose
+                // the same storage requirement on this native parameter.
+                (this.context.checker.isTypeAssignableTo(normalized, target) &&
+                    this.context.checker.isTypeAssignableTo(target, normalized))
             );
         };
         let stored = false;
@@ -1764,6 +1779,14 @@ export class NativeFunctionLowerer {
             let storedTypeNode: ts.TypeNode | undefined;
             if (ts.isArrayTypeNode(node)) {
                 storedTypeNode = node.elementType;
+            } else if (
+                ts.isPropertyDeclaration(node) ||
+                ts.isPropertySignature(node) ||
+                ts.isMethodDeclaration(node)
+            ) {
+                // Fields own their object values, and native method returns
+                // use the same reference representation (mapSignature).
+                storedTypeNode = node.type;
             } else if (
                 ts.isTypeReferenceNode(node) &&
                 ts.isIdentifier(node.typeName)
@@ -1798,6 +1821,7 @@ export class NativeFunctionLowerer {
             if (!source.isDeclarationFile) visit(source);
             if (stored) break;
         }
+        this.referenceStorageCache.set(structName, stored);
         return stored;
     }
 

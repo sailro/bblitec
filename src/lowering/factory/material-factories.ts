@@ -29,7 +29,7 @@ const solidTextureDataFunction = `
 // getBilinearSampler -- linear min/mag, no mipmap filter, and WebGPU's
 // clamp-to-edge address defaults. That the pinned factory calls
 // getBilinearSampler is asserted at generation rather than remembered here.
-static TextureData solid_texture_data(const SolidTexture& texture) {
+[[maybe_unused]] static TextureData solid_texture_data(const SolidTexture& texture) {
     TextureData data;
     data.bytes.assign(texture.texel.begin(), texture.texel.end());
     data.rgba_width = 1;
@@ -442,6 +442,51 @@ void set_shader_texture(
     record.shader_textures[slot] = std::move(texture);
 }
 
+void set_shader_storage_buffer(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    StorageBufferHandle buffer) {
+    MaterialRecord& record = shader_material(engine, material);
+    if (buffer.value >= engine.storage_buffers.size() ||
+        engine.storage_buffers[buffer.value].disposed) {
+        throw std::runtime_error("Invalid shader storage buffer.");
+    }
+    if (record.shader_storage_buffers.size() <= slot) {
+        record.shader_storage_buffers.resize(slot + 1);
+    }
+    record.shader_storage_buffers[slot] = buffer;
+}
+
+void set_shader_csm_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    ShadowGeneratorHandle generator) {
+    MaterialRecord& record = shader_material(engine, material);
+    if (generator.value >= engine.shadow_generators.size() ||
+        engine.shadow_generators[generator.value].filter !=
+            ShadowFilter::csm_directional) {
+        throw std::runtime_error("Invalid CSM receiver texture.");
+    }
+    if (record.shader_textures.size() <= slot) {
+        record.shader_textures.resize(slot + 1);
+    }
+    if (record.shader_csm_textures.size() <= slot) {
+        record.shader_csm_textures.resize(slot + 1);
+    }
+    record.shader_csm_textures[slot] = generator;
+}
+
+void set_shadow_caster_material(
+    Engine& engine,
+    MaterialHandle material,
+    MaterialHandle caster) {
+    MaterialRecord& record = shader_material(engine, material);
+    static_cast<void>(shader_material(engine, caster));
+    record.shadow_caster_material = caster;
+}
+
 // The same Texture2D slot, filled by caller-provided RGBA pixels. The pin has
 // one Texture2D interface for file and pixels producers; the native material
 // normalizes both to the TextureData record consumed by the PALs.
@@ -810,12 +855,13 @@ void update_pixels_texture(
 
 namespace bbl {
 
+${solidTextureDataFunction}
 // src/texture/texture-2d.ts loadTexture2D: the encoded image bytes load at
 // startup (the compiler materialized the asset), and the sampler mirrors the
 // pinned defaults (linear filters, repeat addressing, invertY true, srgb
 // false; mip sampling clamps to the base level when mipMaps is false).
 FileTexture load_file_texture(
-    Engine&,
+    Engine& engine,
     const std::string& path,
     TextureSamplerState sampler,
     bool invert_y,
@@ -827,6 +873,7 @@ FileTexture load_file_texture(
     texture.data.invert_y = invert_y;
     texture.data.premultiply_alpha = premultiply_alpha;
     texture.srgb = srgb;
+    texture.identity = engine.next_file_texture_identity++;
     const pal::DecodedImage decoded = pal::decode_image(
         js::ArrayBuffer(texture.data.bytes));
     texture.width = static_cast<std::uint32_t>(decoded.width);

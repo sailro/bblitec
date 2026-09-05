@@ -9,6 +9,7 @@
 #include <RmlUi/Core.h>
 #include <RmlUi/Core/Event.h>
 #include <RmlUi/Core/EventListener.h>
+#include <RmlUi/Core/ElementText.h>
 #include <RmlUi/Core/Factory.h>
 #include <RmlUi/Core/FileInterface.h>
 #include <RmlUi/Core/FontEngineInterface.h>
@@ -19,6 +20,9 @@
 #include <SDL3_image/SDL_image.h>
 
 #include "RmlUi_Platform_SDL.h"
+#include "pal_runtime_trace.hpp"
+#include "pal_ui_backdrop.hpp"
+#include "pal_ui_text.hpp"
 
 #include <algorithm>
 #include <array>
@@ -79,6 +83,41 @@ bool is_concrete_authored_width(std::string_view value) {
         keyword != "revert" &&
         keyword != "revert-layer" &&
         keyword != "unset";
+}
+
+void replace_all(
+    std::string& text,
+    std::string_view needle,
+    std::string_view replacement) {
+    std::size_t position = 0;
+    while ((position = text.find(needle, position)) != std::string::npos) {
+        text.replace(position, needle.size(), replacement);
+        position += replacement.size();
+    }
+}
+
+/** Expand HTML named entities that RmlUi's XML-oriented RML parser lacks. */
+std::string normalize_html_entities_for_rml(std::string_view markup) {
+    constexpr std::array<std::pair<std::string_view, std::string_view>, 12>
+        entities{{
+            {"&nbsp;", "\xC2\xA0"},
+            {"&ndash;", "\xE2\x80\x93"},
+            {"&mdash;", "\xE2\x80\x94"},
+            {"&lsquo;", "\xE2\x80\x98"},
+            {"&rsquo;", "\xE2\x80\x99"},
+            {"&ldquo;", "\xE2\x80\x9C"},
+            {"&rdquo;", "\xE2\x80\x9D"},
+            {"&hellip;", "\xE2\x80\xA6"},
+            {"&bull;", "\xE2\x80\xA2"},
+            {"&middot;", "\xC2\xB7"},
+            {"&copy;", "\xC2\xA9"},
+            {"&reg;", "\xC2\xAE"},
+        }};
+    std::string normalized(markup);
+    for (const auto& [entity, utf8] : entities) {
+        replace_all(normalized, entity, utf8);
+    }
+    return pal::ui_normalize_emoji_presentation(std::move(normalized));
 }
 
 UiElementRecord& ui_element(Engine& engine, UiElementHandle handle) {
@@ -192,6 +231,121 @@ void ui_set_inner_rml(
     record.inner_rml = std::move(markup);
     record.text.clear();
     mark_ui_changed(engine);
+}
+
+UiElementHandle ui_query_markup(
+    Engine& engine,
+    UiElementHandle owner,
+    std::uint32_t node_id,
+    std::string_view expected_tag) {
+    UiElementRecord& owner_record = ui_element(engine, owner);
+    for (const UiElementHandle child : owner_record.markup_children) {
+        const UiElementRecord& candidate = ui_element(engine, child);
+        if (candidate.markup_node_id == node_id) {
+            if (candidate.tag != expected_tag) {
+                throw std::runtime_error(
+                    "Static UI markup node tag changed after lowering.");
+            }
+            return child;
+        }
+    }
+
+    const std::string marker =
+        "data-bbl-node=\"" + std::to_string(node_id) + "\"";
+    const std::size_t marker_at = owner_record.inner_rml.find(marker);
+    const std::size_t opening = marker_at == std::string::npos
+        ? std::string::npos
+        : owner_record.inner_rml.rfind('<', marker_at);
+    const std::size_t closing = marker_at == std::string::npos
+        ? std::string::npos
+        : owner_record.inner_rml.find('>', marker_at);
+    if (opening == std::string::npos || closing == std::string::npos) {
+        throw std::runtime_error(
+            "Static UI markup node was not materialized.");
+    }
+    std::size_t cursor = opening + 1;
+    while (cursor < closing &&
+           std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor]))) {
+        ++cursor;
+    }
+    const std::size_t tag_begin = cursor;
+    while (cursor < closing &&
+           !std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor])) &&
+           owner_record.inner_rml[cursor] != '/' &&
+           owner_record.inner_rml[cursor] != '>') {
+        ++cursor;
+    }
+    if (owner_record.inner_rml.substr(tag_begin, cursor - tag_begin) !=
+        expected_tag) {
+        throw std::runtime_error(
+            "Static UI markup node does not match its lowered tag.");
+    }
+
+    UiElementRecord record;
+    record.tag = std::string(expected_tag);
+    record.parent = owner;
+    record.markup_owner = owner;
+    record.markup_node_id = node_id;
+    while (cursor < closing) {
+        while (cursor < closing &&
+               std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor]))) {
+            ++cursor;
+        }
+        if (cursor >= closing || owner_record.inner_rml[cursor] == '/') break;
+        const std::size_t name_begin = cursor;
+        while (cursor < closing &&
+               !std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor])) &&
+               owner_record.inner_rml[cursor] != '=' &&
+               owner_record.inner_rml[cursor] != '>') {
+            ++cursor;
+        }
+        std::string name = owner_record.inner_rml.substr(
+            name_begin, cursor - name_begin);
+        while (cursor < closing &&
+               std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor]))) {
+            ++cursor;
+        }
+        std::string value;
+        if (cursor < closing && owner_record.inner_rml[cursor] == '=') {
+            ++cursor;
+            while (cursor < closing &&
+                   std::isspace(static_cast<unsigned char>(owner_record.inner_rml[cursor]))) {
+                ++cursor;
+            }
+            if (cursor < closing &&
+                (owner_record.inner_rml[cursor] == '\"' ||
+                 owner_record.inner_rml[cursor] == '\'')) {
+                const char quote = owner_record.inner_rml[cursor++];
+                const std::size_t value_begin = cursor;
+                while (cursor < closing &&
+                       owner_record.inner_rml[cursor] != quote) {
+                    ++cursor;
+                }
+                value = owner_record.inner_rml.substr(
+                    value_begin, cursor - value_begin);
+                if (cursor < closing) ++cursor;
+            }
+        }
+        if (!name.empty()) {
+            record.attributes.insert_or_assign(
+                std::move(name), std::move(value));
+        }
+    }
+    const UiElementHandle handle{
+        static_cast<std::uint32_t>(engine.ui_elements.size())};
+    engine.ui_elements.push_back(std::move(record));
+    engine.ui_elements[owner.value].markup_children.push_back(handle);
+    mark_ui_changed(engine);
+    return handle;
+}
+
+std::string ui_get_attribute(
+    Engine& engine,
+    UiElementHandle element,
+    std::string_view name) {
+    const UiElementRecord& record = ui_element(engine, element);
+    const auto found = record.attributes.find(std::string(name));
+    return found == record.attributes.end() ? std::string{} : found->second;
 }
 
 std::string ui_escape_rml(std::string_view text) {
@@ -406,22 +560,29 @@ void ui_add_style_rule(
     mark_ui_changed(engine);
 }
 
-void ui_add_host_class_style(
+void ui_add_host_style_rule(
     Engine& engine,
-    std::string class_name,
-    std::string style) {
-    if (class_name.empty() || style.empty()) {
+    UiStyleSelectorKind selector,
+    std::string primary,
+    std::string secondary,
+    std::string tag,
+    bool hover,
+    double max_width,
+    std::string style,
+    bool focus_visible) {
+    if (primary.empty() || style.empty()) {
         throw std::runtime_error(
-            "A native host UI class rule must have a target and declarations.");
+            "A native host UI style rule must have a target and declarations.");
     }
     engine.ui_host_style_rules.push_back({
-        UiStyleSelectorKind::Class,
-        std::move(class_name),
-        {},
-        {},
+        selector,
+        std::move(primary),
+        std::move(secondary),
+        std::move(tag),
         std::move(style),
-        -1.0,
-        false});
+        max_width,
+        hover,
+        focus_visible});
     mark_ui_changed(engine);
 }
 
@@ -590,6 +751,48 @@ void ui_click(Engine& engine, UiElementHandle element) {
         js::click_file_input(engine, element);
     }
 #endif
+}
+
+namespace {
+bool ui_focusable(Engine& engine, UiElementHandle element) {
+    if (element.value >= engine.ui_elements.size()) return false;
+    const auto& target = engine.ui_elements[element.value];
+    if (target.attributes.contains("disabled")) return false;
+    for (auto cursor = element; cursor.value < engine.ui_elements.size();) {
+        const auto& record = engine.ui_elements[cursor.value];
+        if (ui_get_style_property(engine, cursor, "display") == "none") return false;
+        if (record.attached_to_root) return true;
+        cursor = record.markup_owner.value != invalid_handle ? record.markup_owner : record.parent;
+    }
+    return false;
+}
+}
+
+UiElementHandle ui_active_element(Engine& engine) {
+    if (!ui_focusable(engine, engine.ui_focused_element)) {
+        if (engine.ui_focused_element.value != invalid_handle) ++engine.ui_focus_revision;
+        engine.ui_focused_element = {};
+    }
+    return engine.ui_focused_element;
+}
+
+void ui_focus(Engine& engine, UiElementHandle element, bool visible) {
+    if (!ui_focusable(engine, element)) return;
+    if (engine.ui_focus_visible != visible) {
+        engine.ui_focus_visible = visible;
+        ++engine.ui_focus_revision;
+    }
+    if (ui_active_element(engine) == element) return;
+    engine.ui_focused_element = element;
+    engine.canvas_focused = false;
+    ++engine.ui_focus_revision;
+    const auto& events = ui_element(engine, element).event_callbacks;
+    const auto found = events.find("focus");
+    if (found != events.end()) {
+        const auto callbacks = found->second;
+        const PlatformMouseEvent event{};
+        for (const auto& callback : callbacks) callback(event);
+    }
 }
 
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
@@ -1098,8 +1301,15 @@ public:
           default_prevented(default_prevented) {}
 
     void ProcessEvent(Rml::Event& event) override {
+        if (::bbl::pal::runtime_trace_enabled()) {
+            std::cerr << "[bblite trace] ui-event type=" << event_type
+                << " element=" << element.value
+                << " tag=" << ui_element(engine, element).tag << '\n';
+        }
         // Copy the callback list so a callback may safely mutate UI state.
-        if (event_type == "click") {
+        if (event_type == "focus") {
+            ui_focus(engine, element, engine.ui_focus_visible);
+        } else if (event_type == "click") {
             ui_click(engine, element);
         } else {
             float fallback_x = 0.0f;
@@ -1154,6 +1364,18 @@ public:
 
     double GetElapsedTime() override {
         return ::bbl::pal::performance_milliseconds() / 1000.0;
+    }
+
+    void SetMouseCursor(const Rml::String& name) override {
+        // A scene canvas may have hidden the cursor before this UI took over.
+        // SDL's RmlUi backend selects a shape but does not restore visibility.
+        SDL_ShowCursor();
+        SystemInterface_SDL::SetMouseCursor(name == "default" ? "arrow" : name);
+        if (::bbl::pal::runtime_trace_enabled()) {
+            std::cerr << "[bblite trace] ui-cursor name=" << name
+                << " default=" << (SDL_GetCursor() == SDL_GetDefaultCursor())
+                << " visible=" << SDL_CursorVisible() << '\n';
+        }
     }
 };
 
@@ -1210,6 +1432,16 @@ std::optional<SystemFontFace> system_ui_fallback_font() {
 #endif
 }
 
+std::optional<SystemFontFace> system_emoji_font() {
+#if defined(_WIN32)
+    return find_system_font("Segoe UI Emoji", 400);
+#elif defined(__APPLE__)
+    return find_system_font("Apple Color Emoji", 400);
+#else
+    return find_system_font("Noto Color Emoji", 400);
+#endif
+}
+
 std::string quote_css_font_family(std::string family) {
     if (family.find_first_of(" \t'\"\\") == std::string::npos) return family;
     std::string quoted = "\"";
@@ -1236,17 +1468,6 @@ void load_rml_font(
         throw std::runtime_error(
             "RmlUi failed to load discovered font face: " +
             face.path.string());
-    }
-}
-
-void replace_all(
-    std::string& text,
-    std::string_view needle,
-    std::string_view replacement) {
-    std::size_t position = 0;
-    while ((position = text.find(needle, position)) != std::string::npos) {
-        text.replace(position, needle.size(), replacement);
-        position += replacement.size();
     }
 }
 
@@ -1392,7 +1613,8 @@ bool is_private_ui_declaration(std::string_view declaration) {
     const std::size_t first = declaration.find_first_not_of(" \t\r\n");
     return
         first != std::string_view::npos &&
-        declaration.substr(first).starts_with("--bbl-");
+        declaration.substr(first).starts_with("--bbl-") &&
+        !declaration.substr(first).starts_with("--bbl-text-gradient");
 }
 
 std::string filter_private_ui_declarations(
@@ -1493,12 +1715,13 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
         break;
     }
     if (rule.hover) selector += ":hover";
+    if (rule.focus_visible) selector += ":focus-visible";
     return selector;
 }
 
 std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
     std::uint32_t ids = 0;
-    std::uint32_t classes = rule.hover ? 1u : 0u;
+    std::uint32_t classes = (rule.hover ? 1u : 0u) + (rule.focus_visible ? 1u : 0u);
     std::uint32_t tags = 0;
     switch (rule.selector) {
     case UiStyleSelectorKind::Class:
@@ -1623,6 +1846,9 @@ std::string take_crosshair_color(std::string& style) {
 }
 
 std::string take_inset_outline(std::string& style) {
+    // Outside outlines are projected after layout, without altering the box.
+    take_css_declaration(style, "--bbl-outline");
+    take_css_declaration(style, "--bbl-outline-offset");
     return take_css_declaration(style, "--bbl-inset-outline");
 }
 
@@ -1640,50 +1866,21 @@ struct GradientTextColor {
     double blue = 0.0;
 };
 
-struct GradientTextStyle {
-    std::string palette;
-    std::string duration;
-    std::string scale;
-
-    bool operator==(const GradientTextStyle&) const = default;
-};
-
-GradientTextStyle take_gradient_text_style(std::string& style) {
-    return {
-        take_css_declaration(style, "--bbl-text-gradient"),
-        take_css_declaration(style, "--bbl-text-gradient-duration"),
-        take_css_declaration(style, "--bbl-text-gradient-scale")};
-}
+Rml::ColourbPremultiplied canvas_color(std::string_view source);
 
 std::vector<GradientTextColor> gradient_text_colors(
     std::string_view palette) {
     std::vector<GradientTextColor> result;
-    std::size_t start = 0;
-    while (start <= palette.size()) {
-        const std::size_t end = palette.find('|', start);
-        const std::string color(palette.substr(
-            start,
-            end == std::string_view::npos
-                ? palette.size() - start
-                : end - start));
-        unsigned red = 0;
-        unsigned green = 0;
-        unsigned blue = 0;
-        if (
-            color.size() == 7 &&
-            std::sscanf(
-                color.c_str(),
-                "#%02x%02x%02x",
-                &red,
-                &green,
-                &blue) == 3) {
+    for (const std::string& source :
+         js::string_split(std::string(palette), "|")) {
+        if (source.size() != 7 || source.front() != '#') continue;
+        const Rml::ColourbPremultiplied color = canvas_color(source);
+        if (color.alpha == 255) {
             result.push_back({
-                static_cast<double>(red),
-                static_cast<double>(green),
-                static_cast<double>(blue)});
+                static_cast<double>(color.red),
+                static_cast<double>(color.green),
+                static_cast<double>(color.blue)});
         }
-        if (end == std::string_view::npos) break;
-        start = end + 1;
     }
     return result;
 }
@@ -1982,9 +2179,6 @@ CanvasMesh canvas_text_mesh(
 struct ProjectedUiElement {
     Rml::Element* element = nullptr;
     Rml::Element* children_container = nullptr;
-    std::vector<Rml::Element*> gradient_text_elements;
-    std::vector<GradientTextColor> gradient_text_colors;
-    GradientTextStyle gradient_text_style;
     std::string text;
     std::string inner_rml;
     std::unordered_map<std::string, std::string> attributes;
@@ -1999,8 +2193,20 @@ struct ProjectedUiElement {
     bool text_wrapped = false;
     bool intrinsic_width_applied = false;
     bool hovered = false;
+    bool outline_positioned_parent = false;
     bool click_listener_attached = false;
     std::unordered_map<std::string, bool> event_listeners_attached;
+};
+
+struct ProjectedGradientText {
+    Rml::Element* element = nullptr;
+    std::vector<Rml::Element*> gradient_text_elements;
+    std::vector<GradientTextColor> gradient_text_colors;
+    std::vector<std::uint32_t> rendered_colors;
+    std::vector<double> rendered_positions;
+    std::vector<double> rendered_half_extents;
+    double duration = 0.0;
+    double scale = 1.0;
 };
 
 /**
@@ -2025,6 +2231,10 @@ public:
         frame.indices.clear();
         frame.textures.clear();
         frame.draws.clear();
+        frame.backdrops.clear();
+        backdrop_layers.clear();
+        clip_mask.clear();
+        clip_mask_enabled = false;
         frame.composite_first_index = 0;
         scissor_enabled = false;
         scissor = Rml::Rectanglei::FromSize(Rml::Vector2i{
@@ -2060,6 +2270,92 @@ public:
         geometry->indices.assign(indices.begin(), indices.end());
         return reinterpret_cast<Rml::CompiledGeometryHandle>(
             geometry.release());
+    }
+
+    void EnableClipMask(bool enable) override { clip_mask_enabled = enable; }
+
+    void RenderToClipMask(
+        Rml::ClipMaskOperation operation, Rml::CompiledGeometryHandle handle,
+        Rml::Vector2f translation) override {
+        const auto& geometry = *reinterpret_cast<const Geometry*>(handle);
+        std::vector<UiClipTriangle> triangles;
+        triangles.reserve(geometry.indices.size() / 3);
+        for (std::size_t i = 0; i + 2 < geometry.indices.size(); i += 3) {
+            UiClipTriangle triangle{};
+            for (std::size_t j = 0; j < 3; ++j) {
+                const auto position = geometry.vertices[geometry.indices[i + j]].position + translation;
+                const auto transformed = transform * Rml::Vector4f{position.x, position.y, 0, 1};
+                triangle[j] = {transformed.x / transformed.w, transformed.y / transformed.w};
+            }
+            triangles.push_back(triangle);
+        }
+        if (operation == Rml::ClipMaskOperation::Set) clip_mask = std::move(triangles);
+        else if (operation == Rml::ClipMaskOperation::Intersect) clip_mask = intersect_ui_masks(clip_mask, triangles);
+        else throw std::runtime_error("Inverse retained UI masks are not implemented.");
+    }
+
+    Rml::CompiledFilterHandle CompileFilter(const Rml::String& name, const Rml::Dictionary& parameters) override {
+        if (name != "blur") return {};
+        const float sigma = Rml::Get(parameters, "sigma", 0.0f);
+        if (!std::isfinite(sigma) || sigma < 0) return {};
+        return reinterpret_cast<Rml::CompiledFilterHandle>(new float(sigma));
+    }
+
+    void ReleaseFilter(Rml::CompiledFilterHandle handle) override {
+        delete reinterpret_cast<float*>(handle);
+    }
+
+    Rml::LayerHandle PushLayer() override {
+        backdrop_layers.push_back({});
+        return static_cast<Rml::LayerHandle>(backdrop_layers.size());
+    }
+
+    void PopLayer() override {
+        if (!backdrop_layers.empty()) backdrop_layers.pop_back();
+    }
+
+    void CompositeLayers(Rml::LayerHandle source, Rml::LayerHandle destination,
+        Rml::BlendMode blend, Rml::Span<const Rml::CompiledFilterHandle> filters) override {
+        // RmlUi's backdrop protocol snapshots layer zero into a temporary,
+        // filters it, then composites it through the element's border mask.
+        // Ordinary filter/mask-image/box-shadow layers remain outside the
+        // supported CSS surface; do not silently interpret them as backdrops.
+        if (backdrop_layers.size() != 1 || blend != Rml::BlendMode::Blend)
+            throw std::runtime_error("Unsupported retained UI layer composition.");
+        auto& layer = backdrop_layers.back();
+        if (source == 0 && destination == 1 && !filters.empty()) {
+            layer.region = scissor;
+            for (const auto filter : filters) {
+                const float sigma = *reinterpret_cast<const float*>(filter);
+                layer.sigma = std::hypot(layer.sigma, sigma);
+            }
+            return;
+        }
+        if (source != 1 || destination != 0 || !filters.empty())
+            throw std::runtime_error("Unsupported retained UI backdrop composition.");
+        if (layer.sigma < 0.1f) return;
+        const auto viewport = Rml::Rectanglei::FromSize({static_cast<int>(frame.width), static_cast<int>(frame.height)});
+        const auto region = layer.region.Intersect(viewport);
+        const auto output = scissor.Intersect(viewport);
+        if (region.Width() <= 0 || region.Height() <= 0 || output.Width() <= 0 || output.Height() <= 0) return;
+        auto mask = ui_rect_mask(float(output.Left()), float(output.Top()), float(output.Right()), float(output.Bottom()));
+        if (clip_mask_enabled) mask = intersect_ui_masks(mask, clip_mask);
+        UiBackdrop backdrop{};
+        backdrop.before_draw = static_cast<std::uint32_t>(frame.draws.size());
+        backdrop.left = region.Left();
+        backdrop.top = region.Top();
+        backdrop.width = static_cast<std::uint32_t>(region.Width());
+        backdrop.height = static_cast<std::uint32_t>(region.Height());
+        const std::size_t kernel_index = frame.backdrops.size();
+        if (blur_kernels.size() <= kernel_index) {
+            blur_kernels.resize(kernel_index + 1);
+        }
+        UiBlurKernel& kernel = blur_kernels[kernel_index];
+        if (kernel.sigma != layer.sigma) {
+            kernel = make_ui_blur_kernel(layer.sigma);
+        }
+        append_ui_backdrop_geometry(frame, backdrop, kernel, mask);
+        frame.backdrops.push_back(backdrop);
     }
 
     void RenderGeometry(
@@ -2291,19 +2587,15 @@ public:
         const Rml::String& name,
         const Rml::Dictionary& parameters) override {
         auto shader = std::make_unique<GradientShader>();
-        const bool repeating = Rml::Get(parameters, "repeating", false);
+        shader->repeating = Rml::Get(parameters, "repeating", false);
 
         if (name == "linear-gradient") {
-            shader->function = repeating
-                ? GradientFunction::repeating_linear
-                : GradientFunction::linear;
+            shader->function = GradientFunction::linear;
             shader->p = Rml::Get(parameters, "p0", Rml::Vector2f{0.0f});
             shader->v =
                 Rml::Get(parameters, "p1", Rml::Vector2f{0.0f}) - shader->p;
         } else if (name == "radial-gradient") {
-            shader->function = repeating
-                ? GradientFunction::repeating_radial
-                : GradientFunction::radial;
+            shader->function = GradientFunction::radial;
             shader->p = Rml::Get(
                 parameters,
                 "center",
@@ -2316,9 +2608,7 @@ public:
                 std::abs(radius.x) > 1e-7f ? 1.0f / radius.x : 0.0f,
                 std::abs(radius.y) > 1e-7f ? 1.0f / radius.y : 0.0f};
         } else if (name == "conic-gradient") {
-            shader->function = repeating
-                ? GradientFunction::repeating_conic
-                : GradientFunction::conic;
+            shader->function = GradientFunction::conic;
             shader->p = Rml::Get(
                 parameters,
                 "center",
@@ -2337,14 +2627,12 @@ public:
         }
         const Rml::ColorStopList& stop_list =
             stops->second.GetReference<Rml::ColorStopList>();
-        shader->stop_positions.reserve(stop_list.size());
-        shader->stop_colors.reserve(stop_list.size());
+        shader->stops.reserve(stop_list.size());
         for (const Rml::ColorStop& stop : stop_list) {
             if (stop.position.unit != Rml::Unit::NUMBER) return {};
-            shader->stop_positions.push_back(stop.position.number);
-            shader->stop_colors.push_back(stop.color);
+            shader->stops.push_back({stop.position.number, stop.color});
         }
-        if (shader->stop_positions.empty()) return {};
+        if (shader->stops.empty()) return {};
         return reinterpret_cast<Rml::CompiledShaderHandle>(shader.release());
     }
 
@@ -2379,8 +2667,8 @@ public:
 
         if (
             !shader.texture || shader.minimum != minimum ||
-            shader.maximum != maximum || shader.width != width ||
-            shader.height != height) {
+            shader.extent != extent || shader.dimensions.x != int(width) ||
+            shader.dimensions.y != int(height)) {
             if (shader.texture) ReleaseTexture(shader.texture);
             std::vector<Rml::byte> pixels(
                 static_cast<std::size_t>(width) * height * 4);
@@ -2409,9 +2697,10 @@ public:
                     static_cast<int>(width),
                     static_cast<int>(height)});
             shader.minimum = minimum;
-            shader.maximum = maximum;
-            shader.width = width;
-            shader.height = height;
+            shader.extent = extent;
+            shader.dimensions = {
+                static_cast<int>(width),
+                static_cast<int>(height)};
         }
 
         Geometry geometry = source;
@@ -2475,22 +2764,23 @@ private:
         linear,
         radial,
         conic,
-        repeating_linear,
-        repeating_radial,
-        repeating_conic,
+    };
+
+    struct GradientStop {
+        float position = 0.0f;
+        Rml::ColourbPremultiplied color{};
     };
 
     struct GradientShader {
         GradientFunction function = GradientFunction::linear;
+        bool repeating = false;
         Rml::Vector2f p{};
         Rml::Vector2f v{};
-        std::vector<float> stop_positions;
-        std::vector<Rml::ColourbPremultiplied> stop_colors;
+        std::vector<GradientStop> stops;
         Rml::TextureHandle texture{};
         Rml::Vector2f minimum{};
-        Rml::Vector2f maximum{};
-        std::uint32_t width = 0;
-        std::uint32_t height = 0;
+        Rml::Vector2f extent{};
+        Rml::Vector2i dimensions{};
     };
 
     static Rml::ColourbPremultiplied sample_gradient(
@@ -2500,7 +2790,7 @@ private:
         const Rml::Vector2f offset = coordinate - shader.p;
         switch (shader.function) {
             case GradientFunction::linear:
-            case GradientFunction::repeating_linear: {
+            {
                 const float squared_length =
                     shader.v.x * shader.v.x + shader.v.y * shader.v.y;
                 if (squared_length > 1e-7f) {
@@ -2511,13 +2801,12 @@ private:
                 break;
             }
             case GradientFunction::radial:
-            case GradientFunction::repeating_radial:
                 amount = std::sqrt(
                     shader.v.x * offset.x * shader.v.x * offset.x +
                     shader.v.y * offset.y * shader.v.y * offset.y);
                 break;
             case GradientFunction::conic:
-            case GradientFunction::repeating_conic: {
+            {
                 const float x =
                     shader.v.x * offset.x + shader.v.y * offset.y;
                 const float y =
@@ -2529,27 +2818,24 @@ private:
             }
         }
 
-        if (
-            shader.function == GradientFunction::repeating_linear ||
-            shader.function == GradientFunction::repeating_radial ||
-            shader.function == GradientFunction::repeating_conic) {
-            const float begin = shader.stop_positions.front();
-            const float period = shader.stop_positions.back() - begin;
+        if (shader.repeating) {
+            const float begin = shader.stops.front().position;
+            const float period = shader.stops.back().position - begin;
             if (std::abs(period) > 1e-7f) {
                 amount = begin + std::fmod(std::fmod(amount - begin, period) + period, period);
             }
         }
 
-        Rml::ColourbPremultiplied color = shader.stop_colors.front();
-        for (std::size_t index = 1; index < shader.stop_colors.size(); ++index) {
-            const float begin = shader.stop_positions[index - 1];
-            const float end = shader.stop_positions[index];
+        Rml::ColourbPremultiplied color = shader.stops.front().color;
+        for (std::size_t index = 1; index < shader.stops.size(); ++index) {
+            const float begin = shader.stops[index - 1].position;
+            const float end = shader.stops[index].position;
             float factor = amount >= end ? 1.0f : 0.0f;
             if (std::abs(end - begin) > 1e-7f) {
                 factor = std::clamp((amount - begin) / (end - begin), 0.0f, 1.0f);
             }
             color = Rml::Math::RoundedLerp(
-                factor, color, shader.stop_colors[index]);
+                factor, color, shader.stops[index].color);
         }
         return color;
     }
@@ -2559,6 +2845,11 @@ private:
     std::uint64_t next_texture_id = 1;
     bool scissor_enabled = false;
     bool nearest_sampling = false;
+    struct BackdropLayer { Rml::Rectanglei region{}; float sigma = 0; };
+    std::vector<BackdropLayer> backdrop_layers;
+    std::vector<UiClipTriangle> clip_mask;
+    std::vector<UiBlurKernel> blur_kernels;
+    bool clip_mask_enabled = false;
     std::unordered_map<std::uint32_t, RetainedCanvasTexture>
         retained_canvas_textures;
 };
@@ -2581,6 +2872,15 @@ struct UiRmlRuntime {
                 throw std::runtime_error("RmlUi initialization failed.");
             }
             initialized = true;
+            // Let the retained stylesheet cascade these properties on all
+            // markup, including innerHTML nodes with no JavaScript handle.
+            for (const auto& [name, value] : std::array{
+                     std::pair{"bbl-text-gradient", ""},
+                     std::pair{"bbl-text-gradient-duration", "0s"},
+                     std::pair{"bbl-text-gradient-scale", "100%"}}) {
+                Rml::StyleSheetSpecification::RegisterProperty(name, value, false)
+                    .AddParser("string");
+            }
 
             const std::optional<SystemFontFace> system_regular =
                 system_ui_font(400);
@@ -2613,11 +2913,19 @@ struct UiRmlRuntime {
             load_system_weight(600, 600);
             load_system_weight(900, 800);
             load_system_weight(900, 900);
-            if (const auto fallback = system_ui_fallback_font();
-                fallback &&
+            const auto fallback = system_ui_fallback_font();
+            if (fallback &&
                 (fallback->path != system_regular->path ||
                  fallback->face_index != system_regular->face_index)) {
                 load_rml_font(*fallback, fallback->family, 400, true);
+            }
+            // Unicode/VS16-selected spans name the color face explicitly.
+            // Text-presentation arrows and media symbols must first retain
+            // the ordinary symbol face, even when the color font has glyphs.
+            if (const auto emoji = system_emoji_font()) {
+                load_rml_font(*emoji, "bbl-emoji", 400, true);
+            } else if (fallback) {
+                load_rml_font(*fallback, "bbl-emoji", 400);
             }
             css_font_family = quote_css_font_family(system_family);
 
@@ -2701,8 +3009,9 @@ struct UiRmlRuntime {
                 Rml::FocusFlag::None,
                 Rml::ScrollFlag::None);
             sync_tree();
-            update_gradient_text();
             context->Update();
+            if (refresh_gradient_text()) context->Update();
+            if (update_gradient_text()) context->Update();
             static_cast<void>(sync_hover_states());
             if (sync_svg_current_colors()) {
                 context->Update();
@@ -2740,6 +3049,7 @@ struct UiRmlRuntime {
     }
 
     std::string project_css(std::string value) const {
+        replace_all(value, "--bbl-text-gradient", "bbl-text-gradient");
         replace_all(value, "system-ui", css_font_family);
         replace_all(value, "sans-serif", css_sans_family);
         replace_all(value, "ui-monospace", css_monospace_family);
@@ -2830,6 +3140,7 @@ struct UiRmlRuntime {
                     IsPseudoClassSet("hover");
             if (
                 (rule.hover && !hovered) ||
+                (rule.focus_visible && (!engine.ui_focus_visible || engine.ui_focused_element != handle)) ||
                 !style_rule_media_matches(rule) ||
                 !ui_style_rule_matches(engine, handle, rule)) {
                 return;
@@ -2845,8 +3156,13 @@ struct UiRmlRuntime {
         // rules participate in the ordinary RmlUi cascade.
         std::string source =
             "div,canvas{display:block;}\n"
+            "a[href]{color:#0000ee;text-decoration:underline;cursor:pointer;}\n"
             "button{display:inline-block;box-sizing:border-box;"
-            "text-align:center;}\n";
+            "text-align:center;tab-index:auto;}\n"
+            // RmlUi clicks only when press/release resolve to the same focus
+            // target. Browser button labels/icons are not independent focus
+            // targets: a small motion between them must still click the button.
+            "button *{focus:none;}\n";
         const auto append_rule = [&source](const UiStyleRule& rule) {
             const std::string public_style =
                 filter_private_ui_declarations(rule.style, false);
@@ -2875,6 +3191,7 @@ struct UiRmlRuntime {
             return;
         }
         projected_style_sheet_source = source;
+        invalidate_gradient_text();
         // Inline decorators still need a StyleSheet instance to resolve
         // their registered instancers. Keep an empty container when no
         // reached <style> element contributes keyframes.
@@ -3040,12 +3357,6 @@ struct UiRmlRuntime {
              !record.event_callbacks.empty())             ) {
                  append("pointer-events:auto;");
              }
-             if (
-                 !record.text.empty() &&
-                 style.find("--bbl-text-gradient:") != std::string::npos &&
-            style.find("position:") == std::string::npos) {
-            append("position:relative;");
-        }
         return projected_attribute_value("style", style);
     }
 
@@ -3057,44 +3368,20 @@ struct UiRmlRuntime {
     }
 
     void append_text_content(
-        ProjectedUiElement& projected,
         Rml::Element& parent,
         const std::string& text,
         bool wrapped) {
-        projected.gradient_text_elements.clear();
-        projected.gradient_text_colors = ::bbl::pal::gradient_text_colors(
-            projected.gradient_text_style.palette);
-        const bool gradient_text =
-            projected.gradient_text_colors.size() > 1;
-        if (!wrapped && !gradient_text) {
+        const bool normalize = ui_text_needs_emoji_normalization(text);
+        if (!wrapped && !normalize) {
             parent.AppendChild(document->CreateTextNode(text));
             return;
         }
 
         Rml::ElementPtr wrapper = document->CreateElement("span");
-        if (gradient_text) {
-            wrapper->SetAttribute(
-                "style",
-                "position:relative;white-space:nowrap;");
-        }
-        if (gradient_text) {
-            for (const char character : text) {
-                Rml::ElementPtr glyph = document->CreateElement("span");
-                Rml::Element* raw_glyph = glyph.get();
-                raw_glyph->SetProperty(
-                    "color",
-                    projected.gradient_text_style.palette.substr(
-                        0,
-                        projected.gradient_text_style.palette.find('|')));
-                const std::string glyph_text = character == ' '
-                    ? std::string{"\xC2\xA0"}
-                    : std::string(1, character);
-                raw_glyph->AppendChild(document->CreateTextNode(glyph_text));
-                wrapper->AppendChild(std::move(glyph));
-                projected.gradient_text_elements.push_back(raw_glyph);
-            }
-        } else {
+        if (!normalize) {
             wrapper->AppendChild(document->CreateTextNode(text));
+        } else {
+            wrapper->SetInnerRML(ui_normalize_emoji_presentation(ui_escape_rml(text)));
         }
         parent.AppendChild(std::move(wrapper));
     }
@@ -3176,6 +3463,12 @@ struct UiRmlRuntime {
         ProjectedUiElement& projected,
         UiElementHandle handle) {
         const UiElementRecord& record = ui_element(engine, handle);
+        if (!projected.event_listeners_attached["focus"]) {
+            auto listener = std::make_unique<UiEventListener>(engine, handle, "focus", default_prevented);
+            projected.element->AddEventListener("focus", listener.get());
+            listeners.push_back(std::move(listener));
+            projected.event_listeners_attached["focus"] = true;
+        }
         if (
             !projected.click_listener_attached &&
             !record.click_callbacks.empty()) {
@@ -3263,7 +3556,40 @@ struct UiRmlRuntime {
         projected.grid_children_style = style;
     }
 
+    void clear_markup_descendants(UiElementHandle owner) {
+        for (const UiElementHandle child :
+             ui_element(engine, owner).markup_children) {
+            if (child.value < projected_elements.size()) {
+                projected_elements[child.value] = {};
+            }
+        }
+    }
+
+    void bind_markup_descendants(
+        UiElementHandle owner,
+        Rml::Element& owner_raw) {
+        ensure_projection_size();
+        for (const UiElementHandle child :
+             ui_element(engine, owner).markup_children) {
+            const UiElementRecord& record = ui_element(engine, child);
+            const std::string selector =
+                "[data-bbl-node=\"" +
+                std::to_string(record.markup_node_id) + "\"]";
+            Rml::Element* raw = owner_raw.QuerySelector(selector);
+            if (!raw || raw->GetTagName() != record.tag) {
+                throw std::runtime_error(
+                    "RmlUi could not bind lowered static markup node " +
+                    std::to_string(record.markup_node_id) + ".");
+            }
+            ProjectedUiElement& projected = projected_elements[child.value];
+            projected = {};
+            projected.element = raw;
+            update_element(child);
+        }
+    }
+
     void append_element(Rml::Element& parent, UiElementHandle handle) {
+        invalidate_gradient_text();
         ensure_projection_size();
         const UiElementRecord& record = ui_element(engine, handle);
         Rml::ElementPtr element = document->CreateElement(record.tag);
@@ -3292,8 +3618,6 @@ struct UiRmlRuntime {
             take_crosshair_color(projected.resolved_style);
         projected.inset_outline =
             take_inset_outline(projected.resolved_style);
-        projected.gradient_text_style =
-            take_gradient_text_style(projected.resolved_style);
         if (!projected.resolved_style.empty()) {
             raw->SetAttribute("style", projected.resolved_style);
         }
@@ -3302,12 +3626,13 @@ struct UiRmlRuntime {
             raw->SetProperty(name, project_css(value));
         }
         if (!record.inner_rml.empty()) {
-            raw->SetInnerRML(record.inner_rml);
+            raw->SetInnerRML(
+                normalize_html_entities_for_rml(record.inner_rml));
+            bind_markup_descendants(handle, *raw);
         } else if (!record.text.empty()) {
             projected.text_wrapped = text_needs_flex_wrapper(
                 resolved_display);
             append_text_content(
-                projected,
                 *raw,
                 record.text,
                 projected.text_wrapped);
@@ -3360,6 +3685,10 @@ struct UiRmlRuntime {
         }
         reachable[handle.value] = true;
         for (const UiElementHandle child :
+             engine.ui_elements[handle.value].markup_children) {
+            mark_reachable(child, reachable);
+        }
+        for (const UiElementHandle child :
              engine.ui_elements[handle.value].children) {
             mark_reachable(child, reachable);
         }
@@ -3367,6 +3696,10 @@ struct UiRmlRuntime {
 
     void clear_projected_subtree(UiElementHandle handle) {
         if (handle.value >= projected_elements.size()) return;
+        if (projected_elements[handle.value].element) {
+            invalidate_gradient_text();
+        }
+        clear_markup_descendants(handle);
         for (const UiElementHandle child :
              engine.ui_elements[handle.value].children) {
             clear_projected_subtree(child);
@@ -3404,6 +3737,23 @@ struct UiRmlRuntime {
         ProjectedUiElement& projected = projected_elements[handle.value];
         UiElementRecord& record = ui_element(engine, handle);
         Rml::Element& raw = *projected.element;
+        const auto attribute_changed = [&](std::string_view name) {
+            const auto old_value = projected.attributes.find(std::string(name));
+            const auto new_value = record.attributes.find(std::string(name));
+            return
+                old_value == projected.attributes.end()
+                    ? new_value != record.attributes.end()
+                    : new_value == record.attributes.end() ||
+                        old_value->second != new_value->second;
+        };
+        const bool selector_changed =
+            attribute_changed("class") || attribute_changed("id");
+        const bool text_changed = projected.text != record.text;
+        const bool inner_rml_changed =
+            projected.inner_rml != record.inner_rml;
+        const Rml::String active_gradient =
+            raw.GetProperty<Rml::String>("bbl-text-gradient");
+        const bool had_gradient = active_gradient.find('|') != Rml::String::npos;
 
         for (const auto& [name, old_value] : projected.attributes) {
             static_cast<void>(old_value);
@@ -3435,12 +3785,32 @@ struct UiRmlRuntime {
             projected.crosshair_color != crosshair_color;
         const std::string inset_outline =
             take_inset_outline(resolved_style);
-        const GradientTextStyle gradient_text_style =
-            take_gradient_text_style(resolved_style);
-        const bool gradient_text_style_changed =
-            projected.gradient_text_style != gradient_text_style;
         const bool resolved_style_changed =
             projected.resolved_style != resolved_style;
+        const auto gradient_property_changed = [&]() {
+            const auto changed = [&](const char* name) {
+                const auto old_value = projected.style_properties.find(name);
+                const auto new_value = record.style_properties.find(name);
+                return
+                    old_value == projected.style_properties.end()
+                        ? new_value != record.style_properties.end()
+                        : new_value == record.style_properties.end() ||
+                            old_value->second != new_value->second;
+            };
+            return
+                changed("bbl-text-gradient") ||
+                changed("bbl-text-gradient-duration") ||
+                changed("bbl-text-gradient-scale");
+        };
+        if (
+            selector_changed || resolved_style_changed ||
+            gradient_property_changed() || inner_rml_changed ||
+            (text_changed &&
+             (had_gradient ||
+              resolved_style.find("bbl-text-gradient:") !=
+                  std::string::npos))) {
+            invalidate_gradient_text();
+        }
         if (
             !projected.intrinsic_min_width.empty() &&
             intrinsic_min_width.empty()) {
@@ -3487,8 +3857,7 @@ struct UiRmlRuntime {
             projected.text != record.text ||
             projected.inner_rml != record.inner_rml ||
             projected.text_wrapped != text_wrapped ||
-            crosshair_changed ||
-            gradient_text_style_changed) {
+            crosshair_changed) {
             // The lowered surface currently models either text or element
             // children, matching every reached scene. Keep the owning element
             // stable while replacing only its text node so hover, active, and
@@ -3502,18 +3871,17 @@ struct UiRmlRuntime {
                     record.inner_rml + "' children=" +
                     std::to_string(record.children.size()) + ".");
             }
+            clear_markup_descendants(handle);
             while (raw.GetNumChildren() > 0) {
                 projected.inset_outline_element = nullptr;
                 Rml::ElementPtr removed = raw.RemoveChild(raw.GetChild(0));
             }
-            projected.gradient_text_elements.clear();
-            projected.gradient_text_colors.clear();
-            projected.gradient_text_style = gradient_text_style;
             if (!record.inner_rml.empty()) {
-                raw.SetInnerRML(record.inner_rml);
+                raw.SetInnerRML(
+                    normalize_html_entities_for_rml(record.inner_rml));
+                bind_markup_descendants(handle, raw);
             } else if (!record.text.empty()) {
                 append_text_content(
-                    projected,
                     raw,
                     record.text,
                     text_wrapped);
@@ -3535,7 +3903,6 @@ struct UiRmlRuntime {
             projected.text_wrapped = text_wrapped;
         }
         projected.crosshair_color = crosshair_color;
-        projected.gradient_text_style = gradient_text_style;
 
         attach_listeners(projected, handle);
         Rml::Element& children_parent = projected.children_container
@@ -3546,6 +3913,14 @@ struct UiRmlRuntime {
             if (!projected_elements[child.value].element) {
                 append_element(children_parent, child);
             } else {
+                update_element(child);
+            }
+        }
+        for (const UiElementHandle child : record.markup_children) {
+            if (
+                child.value != handle.value &&
+                child.value < projected_elements.size() &&
+                projected_elements[child.value].element) {
                 update_element(child);
             }
         }
@@ -3655,6 +4030,66 @@ struct UiRmlRuntime {
             changed = true;
         }
         return changed;
+    }
+
+    bool sync_focus() {
+        const auto focused = ui_active_element(engine);
+        if (projected_focus_revision == engine.ui_focus_revision && projected_focused == focused) return false;
+        if (focused.value < projected_elements.size()) {
+            if (auto* element = projected_elements[focused.value].element) element->Focus(engine.ui_focus_visible);
+        } else if (auto* element = context->GetFocusElement()) {
+            element->Blur();
+        }
+        projected_focus_revision = engine.ui_focus_revision;
+        projected_focused = focused;
+        return true;
+    }
+
+    void sync_outlines() {
+        for (std::uint32_t index = 0; index < projected_elements.size(); ++index) {
+            auto& projected = projected_elements[index];
+            auto* parent = projected.element;
+            if (!parent) continue;
+            std::string style = resolved_style_attribute(UiElementHandle{index}, engine.ui_elements[index]);
+            const std::string outline = take_css_declaration(style, "--bbl-outline");
+            const std::string offset_text = take_css_declaration(style, "--bbl-outline-offset");
+            auto* ring = parent->QuerySelector("bbl-outline");
+            if (outline.empty() || outline == "none") {
+                if (ring) parent->RemoveChild(ring);
+                if (projected.outline_positioned_parent) {
+                    parent->RemoveProperty("position");
+                    projected.outline_positioned_parent = false;
+                }
+                continue;
+            }
+            const double width = std::strtod(outline.c_str(), nullptr);
+            const double offset = std::strtod(offset_text.c_str(), nullptr);
+            const auto solid = outline.find(" solid ");
+            if (width <= 0.0 || solid == std::string::npos) continue;
+            if (!ring) {
+                auto node = document->CreateElement("bbl-outline");
+                ring = node.get();
+                parent->AppendChild(std::move(node));
+            }
+            const auto& computed = parent->GetComputedValues();
+            if (computed.position() == Rml::Style::Position::Static) {
+                parent->SetProperty("position", "relative");
+                projected.outline_positioned_parent = true;
+            }
+            const double extent = width + offset;
+            const auto inset = [&](const char* side, double border) {
+                return std::string(side) + ":" + std::to_string(-extent - border / density_ratio) + "dp;";
+            };
+            const auto radius = [&](const char* corner, double value) {
+                return std::string("border-") + corner + "-radius:" + std::to_string(value / density_ratio + extent) + "dp;";
+            };
+            ring->SetAttribute("style", "position:absolute;pointer-events:none;box-sizing:border-box;"
+                + inset("top", computed.border_top_width()) + inset("right", computed.border_right_width())
+                + inset("bottom", computed.border_bottom_width()) + inset("left", computed.border_left_width())
+                + radius("top-left", computed.border_top_left_radius()) + radius("top-right", computed.border_top_right_radius())
+                + radius("bottom-left", computed.border_bottom_left_radius()) + radius("bottom-right", computed.border_bottom_right_radius())
+                + "border:" + std::to_string(width) + "dp " + outline.substr(solid + 7) + ";");
+        }
     }
 
     void update_intrinsic_widths() {
@@ -3982,37 +4417,100 @@ struct UiRmlRuntime {
         return true;
     }
 
-    void update_gradient_text() {
-        const double now = system_interface.GetElapsedTime();
-        for (ProjectedUiElement& projected : projected_elements) {
+    void invalidate_gradient_text() { gradient_text_dirty = true; }
+
+    bool refresh_gradient_text() {
+        if (!gradient_text_dirty) return false;
+        gradient_text_dirty = false;
+        gradient_text.clear();
+        Rml::ElementList elements;
+        document->QuerySelectorAll(elements, "*");
+        for (Rml::Element* element : elements) {
+            if (element->GetTagName().starts_with("bbl-gradient-")) continue;
+            const Rml::String palette =
+                element->GetProperty<Rml::String>("bbl-text-gradient");
+            ProjectedGradientText projected;
+            projected.element = element;
+            projected.gradient_text_colors = gradient_text_colors(palette);
+            const bool enabled = projected.gradient_text_colors.size() > 1;
+            for (int index = 0; index < element->GetNumChildren(); ++index) {
+                Rml::Element* child = element->GetChild(index);
+                if (enabled) {
+                    if (const auto* text = rmlui_dynamic_cast<Rml::ElementText*>(child)) {
+                        const std::string value = text->GetText();
+                        auto run = document->CreateElement("bbl-gradient-run");
+                        for (const std::string& character :
+                             js::string_characters(value)) {
+                            auto glyph = document->CreateElement("bbl-gradient-glyph");
+                            // An isolated whitespace-only inline box otherwise
+                            // collapses to nothing between adjacent glyph boxes.
+                            glyph->AppendChild(
+                                document->CreateTextNode(character == " " ? "\xC2\xA0" : character));
+                            run->AppendChild(std::move(glyph));
+                        }
+                        child = run.get();
+                        element->ReplaceChild(std::move(run), element->GetChild(index));
+                    }
+                }
+                if (child->GetTagName() != "bbl-gradient-run") continue;
+                for (int glyph_index = 0; glyph_index < child->GetNumChildren(); ++glyph_index) {
+                    Rml::Element* glyph = child->GetChild(glyph_index);
+                    if (enabled) projected.gradient_text_elements.push_back(glyph);
+                    else glyph->RemoveProperty("color");
+                }
+            }
+            if (!projected.gradient_text_elements.empty()) {
+                const auto parse_positive = [](const Rml::String& value) {
+                    char* end = nullptr;
+                    const double parsed = std::strtod(value.c_str(), &end);
+                    return end != value.c_str() && parsed > 0.0
+                        ? parsed
+                        : 0.0;
+                };
+                projected.duration = parse_positive(
+                    element->GetProperty<Rml::String>(
+                        "bbl-text-gradient-duration"));
+                const double scale = parse_positive(
+                    element->GetProperty<Rml::String>(
+                        "bbl-text-gradient-scale"));
+                projected.scale = scale > 0.0 ? scale / 100.0 : 1.0;
+                projected.rendered_colors.resize(
+                    projected.gradient_text_elements.size(),
+                    invalid_handle);
+                projected.rendered_positions.resize(
+                    projected.gradient_text_elements.size());
+                projected.rendered_half_extents.resize(
+                    projected.gradient_text_elements.size());
+                gradient_text.push_back(std::move(projected));
+            }
+        }
+        return true;
+    }
+
+    bool update_gradient_text() {
+        if (gradient_text.empty()) return false;
+        bool changed = false;
+        double now = 0.0;
+        bool sampled_time = false;
+        for (ProjectedGradientText& projected : gradient_text) {
             const std::size_t glyph_count =
                 projected.gradient_text_elements.size();
             const std::size_t color_count =
                 projected.gradient_text_colors.size();
             if (glyph_count == 0 || color_count < 2) continue;
-
-            char* duration_end = nullptr;
-            const double duration = std::strtod(
-                projected.gradient_text_style.duration.c_str(),
-                &duration_end);
-            const double phase =
-                duration_end != projected.gradient_text_style.duration.c_str() &&
-                    duration > 0.0
-                ? std::fmod((now / duration) * 2.0, 1.0)
-                : 0.0;
-            char* scale_end = nullptr;
-            const double parsed_scale = std::strtod(
-                projected.gradient_text_style.scale.c_str(),
-                &scale_end);
-            const double scale =
-                scale_end != projected.gradient_text_style.scale.c_str() &&
-                    parsed_scale > 0.0
-                ? parsed_scale / 100.0
-                : 1.0;
+            double phase = 0.0;
+            if (projected.duration > 0.0) {
+                if (!sampled_time) {
+                    now = system_interface.GetElapsedTime();
+                    sampled_time = true;
+                }
+                phase = std::fmod(
+                    (now / projected.duration) * 2.0,
+                    1.0);
+            }
             const auto sample_palette = [color_count, &projected](
                                             double position) {
-                position = std::fmod(position, 1.0);
-                if (position < 0.0) position += 1.0;
+                position = std::clamp(position, 0.0, 1.0);
                 const double palette_position =
                     position * static_cast<double>(color_count - 1);
                 const std::size_t left = std::min(
@@ -4028,28 +4526,45 @@ struct UiRmlRuntime {
                     a.green + (b.green - a.green) * amount,
                     a.blue + (b.blue - a.blue) * amount};
             };
+            const auto origin = projected.element->GetAbsoluteOffset(
+                Rml::BoxArea::Border);
+            const double width = std::max(
+                1.0f,
+                projected.element->GetBox().GetSize(
+                    Rml::BoxArea::Border).x);
             for (std::size_t index = 0; index < glyph_count; ++index) {
-                const double glyph_position = glyph_count > 1
-                    ? static_cast<double>(index) /
-                        static_cast<double>(glyph_count - 1) / scale
-                    : 0.0;
+                Rml::Element& glyph = *projected.gradient_text_elements[index];
+                const double glyph_width = glyph.GetBox().GetSize(Rml::BoxArea::Border).x;
+                const double glyph_position =
+                    (glyph.GetAbsoluteOffset(Rml::BoxArea::Border).x - origin.x + glyph_width * 0.5) /
+                    width / projected.scale;
                 // One Rml glyph cannot carry a clipped gradient. Average a
                 // few samples across its visual interval rather than taking
                 // a single high-saturation point from the palette.
                 GradientTextColor average{};
                 constexpr int sample_count = 5;
-                const double half_extent = glyph_count > 1
-                    ? 0.45 /
-                        (static_cast<double>(glyph_count - 1) * scale)
-                    : 0.0;
+                const double half_extent =
+                    glyph_width * 0.5 / width / projected.scale;
+                if (
+                    projected.duration <= 0.0 &&
+                    projected.rendered_colors[index] != invalid_handle &&
+                    projected.rendered_positions[index] == glyph_position &&
+                    projected.rendered_half_extents[index] == half_extent) {
+                    continue;
+                }
+                projected.rendered_positions[index] = glyph_position;
+                projected.rendered_half_extents[index] = half_extent;
                 for (int sample = 0; sample < sample_count; ++sample) {
                     const double across =
                         static_cast<double>(sample) /
                             static_cast<double>(sample_count - 1) *
                             2.0 -
                         1.0;
-                    const GradientTextColor color = sample_palette(
-                        glyph_position + phase + across * half_extent);
+                    double position = glyph_position + phase + across * half_extent;
+                    if (projected.duration > 0.0) {
+                        position -= std::floor(position);
+                    }
+                    const GradientTextColor color = sample_palette(position);
                     average.red += color.red / sample_count;
                     average.green += color.green / sample_count;
                     average.blue += color.blue / sample_count;
@@ -4060,19 +4575,28 @@ struct UiRmlRuntime {
                         0l,
                         255l));
                 };
+                const std::uint32_t red = channel(average.red);
+                const std::uint32_t green = channel(average.green);
+                const std::uint32_t blue = channel(average.blue);
+                const std::uint32_t packed =
+                    (red << 16) | (green << 8) | blue;
+                if (projected.rendered_colors[index] == packed) continue;
+                projected.rendered_colors[index] = packed;
                 char color[8]{};
                 std::snprintf(
                     color,
                     sizeof(color),
                     "#%02x%02x%02x",
-                    channel(average.red),
-                    channel(average.green),
-                    channel(average.blue));
+                    red,
+                    green,
+                    blue);
                 projected.gradient_text_elements[index]->SetProperty(
                     "color",
                     color);
+                changed = true;
             }
         }
+        return changed;
     }
 
     void sync_client_rects(bool all_elements) {
@@ -4140,9 +4664,14 @@ struct UiRmlRuntime {
     Rml::ElementDocument* document = nullptr;
     std::vector<std::unique_ptr<UiEventListener>> listeners;
     std::vector<ProjectedUiElement> projected_elements;
+    std::vector<ProjectedGradientText> gradient_text;
+    bool gradient_text_dirty = true;
+    bool style_trace_written = false;
     std::vector<Rml::Element*> current_color_svg_elements;
     std::vector<std::uint32_t> projected_root_order;
     std::uint64_t projected_revision = invalid_handle;
+    std::uint64_t projected_focus_revision = ~std::uint64_t{0};
+    UiElementHandle projected_focused{};
     std::string css_font_family;
     std::string css_sans_family;
     std::string css_monospace_family;
@@ -4167,6 +4696,13 @@ void destroy_ui_rml_runtime(UiRmlRuntime* runtime) noexcept {
 }
 
 bool handle_ui_rml_event(UiRmlRuntime& runtime, SDL_Event& event) {
+    if (event.type == SDL_EVENT_KEY_DOWN || event.type == SDL_EVENT_MOUSE_BUTTON_DOWN) {
+        const bool visible = event.type == SDL_EVENT_KEY_DOWN;
+        if (runtime.engine.ui_focus_visible != visible) {
+            runtime.engine.ui_focus_visible = visible;
+            ++runtime.engine.ui_focus_revision;
+        }
+    }
     // Pointer lock belongs exclusively to the scene canvas. Letting RmlUi
     // inspect relative-mode packets can both consume the application's look
     // events and ask SDL to show a UI cursor while the browser contract says
@@ -4215,8 +4751,9 @@ void update_ui_rml_runtime(
         runtime.sync_style_sheet();
         runtime.sync_tree();
     }
-    runtime.update_gradient_text();
     runtime.context->Update();
+    const bool focus_changed = runtime.sync_focus();
+    if (focus_changed) runtime.context->Update();
     const bool hover_changed = runtime.sync_hover_states();
     if (hover_changed) {
         // Public :hover declarations are handled by RmlUi itself. Re-run the
@@ -4225,9 +4762,15 @@ void update_ui_rml_runtime(
         runtime.sync_tree();
         runtime.context->Update();
     }
+    if (
+        focus_changed || hover_changed || dimensions_changed ||
+        density_changed) {
+        runtime.invalidate_gradient_text();
+    }
     if (runtime.sync_svg_current_colors()) {
         runtime.context->Update();
     }
+    if (runtime.refresh_gradient_text()) runtime.context->Update();
     if (
         tree_changed ||
         density_changed ||
@@ -4240,6 +4783,11 @@ void update_ui_rml_runtime(
         density_changed ||
         dimensions_changed ||
         hover_changed);
+    if (tree_changed || focus_changed || dimensions_changed || density_changed || hover_changed) {
+        runtime.sync_outlines();
+        runtime.context->Update();
+    }
+    if (runtime.update_gradient_text()) runtime.context->Update();
 }
 
 const UiRenderFrame& record_ui_rml_frame(
@@ -4252,6 +4800,22 @@ const UiRenderFrame& record_ui_rml_frame(
     // first, then let RmlUi draw the interactive tree above it.
     runtime.render_canvases();
     runtime.context->Render();
+    if (!runtime.style_trace_written && std::getenv("BBLITE_UI_STYLE_TRACE")) {
+        Rml::ElementList elements;
+        runtime.document->QuerySelectorAll(elements, "button,h1,p,a,div");
+        if (!elements.empty()) {
+            runtime.style_trace_written = true;
+            for (auto* element : elements) {
+                const auto& style = element->GetComputedValues();
+                const auto position = element->GetAbsoluteOffset(Rml::BoxArea::Border);
+                const auto size = element->GetBox().GetSize(Rml::BoxArea::Border);
+                std::cerr << "[bblite ui] " << element->GetTagName() << "." << element->GetClassNames()
+                    << " font=" << style.font_family() << " weight=" << static_cast<int>(style.font_weight())
+                    << " size=" << style.font_size() << " box=" << position.x << ',' << position.y
+                    << ',' << size.x << ',' << size.y << '\n';
+            }
+        }
+    }
     if (runtime.engine.canvas_focused) {
         append_canvas_focus_outline(runtime.render_interface.frame);
     }

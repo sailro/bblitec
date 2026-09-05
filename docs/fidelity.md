@@ -1867,14 +1867,32 @@ to that engine-relative clock, and freezes after every callback on the
 registry's `referenceFrame` has run. Async browser initialization can consume RAF turns, but time remains
 at zero until the engine starts, matching native's synchronous initialization.
 Native derives
-`BBLITE_SCREENSHOT_FRAME` from that one registry value. This keeps the source
-live—the game loop and shader time still execute—while making the measured
-state identical in reference, instrumented, and native captures. Interactive
+`BBLITE_SCREENSHOT_FRAME` from that one registry value. A reviewed render
+boundary may additionally declare an integer `nativeFrameOffset`: the browser
+reference remains at the source frame while the native screenshot gate moves
+by that offset. Antigravity Racer uses `+1` because its browser-side dynamic
+hierarchy-instance upload becomes visible at the following draw; its enforced
+canvas-only lane then measures 0.028 / 0.029 MAD on both backends. This keeps
+the source live—the game loop and shader time still execute—while making the
+measured state identical in reference, instrumented, and native captures. Interactive
 RAF receives the absolute
 monotonic timestamp at double precision too; converting it to float would
 quantize a machine with long uptime into runs of zero `dt` followed by jumps,
 which changes the platformer's collision, friction, and stand/crouch/jump
 state machine even though a fixed-clock golden would hide the defect.
+
+**Antigravity Racer's initial integration reference was corrected before
+adoption.** The first host companion capture omitted descendant title/link
+rules, and the capture bootstrap omitted the `:focus-visible` selector flag.
+The pinned browser was recaptured after preserving those authored rules; no
+TypeScript source or parity threshold was changed. The current full-page
+SDL_GPU MAD is 3.520 / 3.585 and Dawn is 3.520 / 3.585 (full / foreground), with the independent
+canvas-only lane at 0.028 / 0.029. A fresh pre-fix run measured 8.992 full MAD;
+that baseline used the incomplete reference and is not a same-reference score
+comparison. Generic anchor defaults, DOM-discovered gradient text, clipped GPU
+backdrop blur, fractional letter spacing, emoji line-height isolation, and
+canvas focus synchronization account for the retained-UI work. Integer font
+sizes/rasterization and unsupported outer shadows remain visible residuals.
 
 **The platformer's projection follows the canvas, so native has to as well.**
 Its application loop reads `canvas.width` and `canvas.height` on every frame,
@@ -2757,6 +2775,10 @@ renderer substitutions, not silent fallbacks; unsupported selectors, markup,
 attributes, or grid shapes refuse.
 Programmatic render-canvas focus is retained as host state and its browser
 focus outline is composited above the page UI.
+Retained control focus and button-list navigation keep application callback
+identity. Host focus-visible rules project solid outlines outside the original
+box. Emoji use the platform color font; explicit VS16 is projected to a font
+run because RmlUi does not shape that selector (nor general ZWJ sequences).
 
 Browser and native UI use different layout and font rasterization stacks, so a
 composite residual can be larger than the canvas residual. Status rows above

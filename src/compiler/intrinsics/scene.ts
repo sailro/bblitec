@@ -3,7 +3,7 @@ import type { LightKind, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     type CameraDeferralContext,
-    foldCameraDeferralOptions,
+    compileCameraDeferralOptions,
 } from "./gizmo.js";
 
 export interface SceneIntrinsicContext
@@ -29,6 +29,7 @@ export interface SceneIntrinsicContext
     ): void;
     compileFrameCallback(expression: ts.Expression): string;
     compileVoidCallback(expression: ts.Expression): string;
+    emit(line: string): void;
     /**
      * Records where the render loop starts, so the statements after it --
      * the browser's own continuation -- are hoisted into the conductor's
@@ -36,8 +37,9 @@ export interface SceneIntrinsicContext
      */
     markEngineStart(engineCpp: string, node: ts.Node): void;
     /** Add/remove a light in the compiler's current scene-topology model. */
-    addSceneLight(light: Value, kind: LightKind): void;
-    removeSceneLight(light: Value): void;
+    addSceneLight(scene: Value, light: Value, kind: LightKind): void;
+    addDynamicSceneLight(): void;
+    removeSceneLight(scene: Value, light: Value): void;
     requireEngine(value: Value, node: ts.Node): string;
     ensureDefaultRenderTask(
         scene: Value,
@@ -73,6 +75,7 @@ export function compileSceneIntrinsic(
                 resource.kind !== "mesh" &&
                 resource.kind !== "light" &&
                 resource.kind !== "camera" &&
+                resource.kind !== "scene-node" &&
                 resource.kind !== "transform-node"
             ) {
                 context.fail(
@@ -86,13 +89,19 @@ export function compileSceneIntrinsic(
             // and bindings by. Generators created before this call are
             // patched to the slot here.
             if (resource.kind === "light") {
-                if (!resource.lightKind) {
-                    context.fail(
-                        call.arguments[1]!,
-                        "A scene light is missing its generated light kind.",
+                if (resource.lightKind && resource.lightIdentity) {
+                    context.addSceneLight(
+                        scene,
+                        resource,
+                        resource.lightKind,
                     );
+                } else {
+                    // A light read from native data has the runtime handle
+                    // but no single generation-time identity/kind. The
+                    // pipeline therefore composes its dynamic light arms;
+                    // the runtime add keeps the handle's actual kind/order.
+                    context.addDynamicSceneLight();
                 }
-                context.addSceneLight(resource, resource.lightKind);
             }
             // A container's entity takes the pin's entity walk alone: its
             // animation groups, per-frame tick, camera and clear colour
@@ -103,6 +112,8 @@ export function compileSceneIntrinsic(
                 cpp:
                     resource.kind === "camera"
                         ? ""
+                        : resource.kind === "scene-node"
+                          ? `bbl::add_to_scene(${scene.cpp}, ${resource.cpp})`
                         : resource.kind === "asset-entity" ||
                     resource.kind === "asset-root"
                         ? `bbl::add_asset_entities(` +
@@ -134,7 +145,7 @@ export function compileSceneIntrinsic(
             }
             context.expectSameEngine(scene, resource, call);
             if (resource.kind === "light") {
-                context.removeSceneLight(resource);
+                context.removeSceneLight(scene, resource);
             }
             context.reachFeature("scene:remove", call);
             return {
@@ -237,8 +248,8 @@ export function compileSceneIntrinsic(
         case "attachFreeControl": {
             // Only the ArcRotate hook takes a fourth argument: the pinned
             // `AttachControlOptions` bag of camera-deferral callbacks,
-            // folded by the gizmo family that owns the predicates they
-            // read. `attachFreeControl` declares no such parameter.
+            // compiled as live predicates over the registered dispatcher.
+            // `attachFreeControl` declares no such parameter.
             context.expectArgumentCount(
                 call,
                 2,
@@ -263,24 +274,28 @@ export function compileSceneIntrinsic(
                 sceneArgument,
             );
             context.expectSameEngine(camera, scene, call);
-            if (call.arguments[3]) {
-                foldCameraDeferralOptions(
-                    context,
-                    call.arguments[3],
-                );
-            }
+            const deferrals = call.arguments[3]
+                ? compileCameraDeferralOptions(context, call.arguments[3]) : [];
             if (importedName === "attachFreeControl") {
                 context.reachFeature("camera:free", call);
             }
+            // The scene is checked but not passed: both pinned hooks read it
+            // only to reach the canvas and the render loop. Install the
+            // native control immediately and preserve the pin's returned
+            // disposer, which disables controls and releases its callbacks.
+            context.emit(
+                importedName === "attachFreeControl"
+                    ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp});`
+                    : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp});`,
+            );
+            const engine = context.requireEngine(camera, call);
+            for (const { member, cpp } of deferrals) {
+                context.emit(`${engine}.cameras[${camera.cpp}.value].${member} = ${cpp};`);
+            }
             return {
-                kind: "void",
-                cpp:
-                    // The scene is checked but not passed: both pinned hooks
-                    // read it only to reach the canvas and the render loop,
-                    // neither of which crosses into the runtime's state.
-                    importedName === "attachFreeControl"
-                        ? `bbl::attach_free_control(${context.requireEngine(camera, call)}, ${camera.cpp})`
-                        : `bbl::attach_control(${context.requireEngine(camera, call)}, ${camera.cpp})`,
+                kind: "data",
+                cpp: `std::function<void()>{[&${engine}, camera = ${camera.cpp}]() { auto& record = ${engine}.cameras[camera.value]; record.controls_enabled = false; record.should_handle_pointer_down = {}; record.external_drag_active = {}; record.external_pick_pending = {}; }}`,
+                dataType: { kind: "function", parameters: [] },
             };
         }
 
@@ -434,6 +449,16 @@ export function compileSceneIntrinsic(
             return {
                 kind: "void",
                 cpp: `bbl::unregister_scene(${scene.cpp})`,
+            };
+        }
+
+        case "disposeScene": {
+            context.expectArgumentCount(call, 1, 1);
+            const scene = context.compileValue(call.arguments[0]!);
+            context.expectKind(scene, "scene", call.arguments[0]!);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_scene(${scene.cpp})`,
             };
         }
 

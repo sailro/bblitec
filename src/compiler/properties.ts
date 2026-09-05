@@ -86,6 +86,8 @@ interface PropertyRead {
   optionalHandle?: true;
   /** Presence expression for an optional value whose owner is not a handle. */
   optionalFound?: (ownerCpp: string, engineCpp?: string) => string;
+  /** Concrete storage used by a Texture2D-valued native property. */
+  textureStorage?: "file";
   /** JavaScript object/typed-array truthiness for a retained native value. */
   alwaysTruthy?: true;
   /**
@@ -210,6 +212,14 @@ const handleCollections: readonly HandleCollectionRead[] = [
     property: "cameras",
     record: ["assets", "cameras"],
     temporaryLabel: "asset_camera",
+  },
+  {
+    // HierarchyInstancePool.meshes: the descendant carrier meshes, in the
+    // same depth-first order createHierarchyInstancePool collected them.
+    owner: "hierarchy-instance-pool",
+    property: "meshes",
+    record: ["hierarchy_instance_pools", "meshes"],
+    temporaryLabel: "hierarchy_instance_mesh",
   },
   {
     // `AssetContainer.skeletons` — one per glTF skin instance, filled
@@ -592,13 +602,65 @@ export const propertyRules: readonly PropertyRule[] = [
     record: ["materials", "name"],
   },
   {
-    // The separate UV2 occlusion carrier. The texture record itself is only
-    // observed for presence in reached source; the subsequent assignment
-    // replaces it through the dedicated material setter.
+    // A loaded PBR material exposes its Texture2D objects through these five
+    // public slots. `material_texture` preserves the object identity of a
+    // slot while adapting the renderer's TextureData record to the common
+    // StoredTexture value used by source arrays. The racer walks the names
+    // through a readonly tuple, so the ordinary statically-resolved element
+    // access reaches the same rows as a spelled-out property read.
+    owner: "material",
+    property: "baseColorTexture",
+    value: "texture",
+    helper: "bbl::material_texture",
+    helperTakesEngine: true,
+    helperArgument: "bbl::MaterialTextureSlot::base_color",
+    textureStorage: "file",
+    optionalFound: (ownerCpp, engineCpp) =>
+      `${engineCpp}.materials[${ownerCpp}.value].base_color_texture.has_image()`,
+  },
+  {
+    owner: "material",
+    property: "normalTexture",
+    value: "texture",
+    helper: "bbl::material_texture",
+    helperTakesEngine: true,
+    helperArgument: "bbl::MaterialTextureSlot::normal",
+    textureStorage: "file",
+    optionalFound: (ownerCpp, engineCpp) =>
+      `${engineCpp}.materials[${ownerCpp}.value].normal_texture.has_image()`,
+  },
+  {
+    owner: "material",
+    property: "ormTexture",
+    value: "texture",
+    helper: "bbl::material_texture",
+    helperTakesEngine: true,
+    helperArgument: "bbl::MaterialTextureSlot::orm",
+    textureStorage: "file",
+    optionalFound: (ownerCpp, engineCpp) =>
+      `${engineCpp}.materials[${ownerCpp}.value].metallic_roughness_texture.has_image()`,
+  },
+  {
+    owner: "material",
+    property: "emissiveTexture",
+    value: "texture",
+    helper: "bbl::material_texture",
+    helperTakesEngine: true,
+    helperArgument: "bbl::MaterialTextureSlot::emissive",
+    textureStorage: "file",
+    optionalFound: (ownerCpp, engineCpp) =>
+      `${engineCpp}.materials[${ownerCpp}.value].emissive_texture.has_image()`,
+  },
+  {
+    // The separate UV2 occlusion carrier. Unlike the other four slots its
+    // subsequent reached write replaces it through the dedicated setter.
     owner: "material",
     property: "occlusionTexture",
     value: "texture",
-    record: ["materials", "occlusion_texture"],
+    helper: "bbl::material_texture",
+    helperTakesEngine: true,
+    helperArgument: "bbl::MaterialTextureSlot::occlusion",
+    textureStorage: "file",
     optionalFound: (ownerCpp, engineCpp) =>
       `${engineCpp}.materials[${ownerCpp}.value].occlusion_texture.has_image()`,
   },
@@ -611,6 +673,41 @@ export const propertyRules: readonly PropertyRule[] = [
     value: "shadow-generator",
     record: ["lights", "shadow_generator"],
     carriesShadowGenerator: true,
+  },
+  {
+    owner: "gamepad",
+    property: "index",
+    value: "number",
+    helper: "bbl::gamepad_index",
+    helperTakesEngine: true,
+  },
+  {
+    owner: "gamepad",
+    property: "axes",
+    value: "data",
+    dataType: { kind: "vector", element: { kind: "number" } },
+    helper: "bbl::gamepad_axes",
+    helperTakesEngine: true,
+    helperReturnsFreshData: true,
+  },
+  {
+    owner: "gamepad",
+    property: "buttons",
+    value: "data",
+    dataType: {
+      kind: "vector",
+      element: { kind: "handle", handle: "gamepad-button" },
+    },
+    helper: "bbl::gamepad_buttons",
+    helperTakesEngine: true,
+    helperReturnsFreshData: true,
+  },
+  {
+    owner: "gamepad-button",
+    property: "pressed",
+    value: "boolean",
+    helper: "bbl::gamepad_button_pressed",
+    helperTakesEngine: true,
   },
   {
     // Read as plain data, which is what lets `g.name !== "swimming"`
@@ -826,6 +923,13 @@ export const propertyRules: readonly PropertyRule[] = [
     feature: "sprite:2d-y-sort",
   },
   {
+    owner: "hierarchy-instance-pool",
+    property: "count",
+    value: "number",
+    record: ["hierarchy_instance_pools", "count"],
+    feature: "mesh:thin-instances-dynamic",
+  },
+  {
     owner: "scene",
     property: "clearColor",
     value: "color4",
@@ -967,6 +1071,9 @@ export function readProperty(
     kind: rule.value,
     cpp,
     ...(rule.dataType ? { dataType: rule.dataType } : {}),
+    ...(rule.textureStorage
+      ? { textureStorage: rule.textureStorage }
+      : {}),
     ...(engineCpp ? { engineCpp } : {}),
     ...(rule.carriesScenePbrMaterial &&
     owner.scenePbrMaterialIndex !== undefined

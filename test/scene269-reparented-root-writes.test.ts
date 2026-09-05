@@ -59,7 +59,8 @@ test("keeps separate roots for repeated loads of one glTF source", () => {
 
     assert.match(result.cpp, /bbl::set_asset_root_parent\(/);
     assert.equal(
-        result.cpp.match(/bbl::set_asset_root_position_component\(/g)?.length,
-        3,
+        result.cpp.match(/bbl::set_asset_root_position\(/g)?.length,
+        1,
     );
+    assert.doesNotMatch(result.cpp, /bbl::set_asset_root_position_component\(/);
 });

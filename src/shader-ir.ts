@@ -1,5 +1,12 @@
 import { layoutOf, roundUp } from "./capture-uniforms.js";
-import type { ShaderMaterialProgramSource } from "./shader-material-programs.js";
+import {
+    shaderSamplerDeclarations,
+    type ShaderMaterialProgramSource,
+} from "./shader-material-programs.js";
+import type {
+    CompiledShaderSampler,
+    CompiledShaderStorageBuffer,
+} from "./compiler/types.js";
 
 export type ShaderStage = "vertex" | "fragment";
 export type ShaderType =
@@ -97,6 +104,13 @@ export interface ShaderProgramReflection {
      * the `.slots` sidecar it publishes is what the PAL binds by.
      */
     samplers: string[];
+    samplerDeclarations: CompiledShaderSampler[];
+    storageBuffers: Array<
+        CompiledShaderStorageBuffer & {
+            vertex: boolean;
+            fragment: boolean;
+        }
+    >;
 }
 
 export interface ShaderIrProgram {
@@ -904,6 +918,20 @@ function stageReadsSampler(
         ));
 }
 
+function stageReadsStorageBuffer(
+    module: ShaderModule,
+    name: string,
+): boolean {
+    if (module.rawSource !== undefined) {
+        return new RegExp(`\\b${name}\\b`).test(module.rawSource);
+    }
+    return module.entryPoint.statements.some((statement) =>
+        statementUsesPath(
+            statement,
+            (parts) => parts[0] === name,
+        ));
+}
+
 /** How many floats a custom uniform type spans; the one such table. */
 export function typeComponents(type: ShaderType): number {
     switch (type) {
@@ -1003,6 +1031,7 @@ export function lowerWgslShaderProgram(
     const complexModule = (text: string): boolean =>
         /(^|\n)\s*(?:const\s+|fn\s+)/.test(text) ||
         /\bfor\s*\(/.test(text) ||
+        /%/.test(text) ||
         /\bvar\s+[A-Za-z_][A-Za-z0-9_]*\s*=/.test(text);
     const lowerModule = (
         text: string,
@@ -1043,14 +1072,20 @@ export function lowerWgslShaderProgram(
     // its own register space, and no reached scene samples in a vertex
     // stage, so one that does refuses rather than binding at the fragment
     // stage's registers.
-    for (const name of source.samplers ?? []) {
+    const samplerDeclarations = shaderSamplerDeclarations(source);
+    for (const { name } of samplerDeclarations) {
         if (stageReadsSampler(vertex, name)) {
             throw new Error(
                 `Shader material sampler '${name}' is read by the vertex stage, which is not lowered.`,
             );
         }
     }
-    const samplers = [...(source.samplers ?? [])];
+    const samplers = samplerDeclarations.map(({ name }) => name);
+    const storageBuffers = (source.storageBuffers ?? []).map((buffer) => ({
+        ...buffer,
+        vertex: stageReadsStorageBuffer(vertex, buffer.name),
+        fragment: stageReadsStorageBuffer(fragment, buffer.name),
+    }));
     const vertexBlock = reflectUniformBlock("vertex", vertex, uniforms);
     const fragmentBlock = reflectUniformBlock("fragment", fragment, uniforms);
     const vertexOutput = vertex.structs.find(
@@ -1077,6 +1112,8 @@ export function lowerWgslShaderProgram(
                 (block): block is ShaderUniformBlockReflection => !!block,
             ),
             samplers,
+            samplerDeclarations,
+            storageBuffers,
         },
     };
 }

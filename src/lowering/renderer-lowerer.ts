@@ -1131,6 +1131,8 @@ export class RendererLowerer {
                 return {
                     name: program.name,
                     samplers: reflection.samplers,
+                    samplerDeclarations: reflection.samplerDeclarations,
+                    storageBuffers: reflection.storageBuffers,
                     topology: program.topology ?? "triangle-list",
                     instanceColors:
                         program.useThinInstanceColors === true,
@@ -1185,6 +1187,12 @@ export class RendererLowerer {
         ${stageBlockLiteral(info.vertex)},
         ${stageBlockLiteral(info.fragment)},
         {${info.samplers.map((name) => `"${name}"`).join(", ")}},
+        {${info.samplerDeclarations.map((decl) =>
+            `ShaderSamplerShape{ShaderSamplerSampleType::${decl.sampleType === "depth" ? "depth" : decl.sampleType === "unfilterable-float" ? "unfilterable_float" : "float_sample"}, ShaderSamplerViewDimension::${decl.viewDimension === "2d-array" ? "texture_2d_array" : "texture_2d"}, ${decl.comparison}}`
+        ).join(", ")}},
+        {${info.storageBuffers.map((buffer) =>
+            `ShaderStorageBufferInfo{"${buffer.name}", ${buffer.vertex}, ${buffer.fragment}}`
+        ).join(", ")}},
     },`,
         ).join("\n");
         return { shaderVariantTable, shaderVariantEntries };
@@ -1377,6 +1385,8 @@ struct RenderFeatures {
     bool no_color_material = false;
     bool shader_material = false;
     bool node_material = false;
+    // Reached depth-target uses, independent of a variant's uniform blocks.
+    std::vector<bool> shader_shadow_variants;
 };
 
 // Generated per-scene shader-variant metadata: pipeline state from the
@@ -1408,6 +1418,31 @@ enum class ShaderTopology : std::uint8_t {
     line_list,
 };
 
+enum class ShaderSamplerSampleType : std::uint8_t {
+    float_sample,
+    unfilterable_float,
+    depth,
+};
+
+enum class ShaderSamplerViewDimension : std::uint8_t {
+    texture_2d,
+    texture_2d_array,
+};
+
+struct ShaderSamplerShape {
+    ShaderSamplerSampleType sample_type =
+        ShaderSamplerSampleType::float_sample;
+    ShaderSamplerViewDimension view_dimension =
+        ShaderSamplerViewDimension::texture_2d;
+    bool comparison = false;
+};
+
+struct ShaderStorageBufferInfo {
+    const char* name = "";
+    bool vertex = false;
+    bool fragment = false;
+};
+
 struct ShaderVariantInfo {
     const char* name = "";
     ShaderTopology topology = ShaderTopology::triangle_list;
@@ -1430,6 +1465,8 @@ struct ShaderVariantInfo {
     // fewer, at its own dense registers, so a backend that binds by
     // register looks the surviving name up here.
     std::vector<const char*> samplers;
+    std::vector<ShaderSamplerShape> sampler_shapes;
+    std::vector<ShaderStorageBufferInfo> storage_buffers;
 };
 
 std::uint32_t shader_variant_count();
@@ -2051,7 +2088,8 @@ double default_render_order(const RenderItem& item) {
 void include_material_features(
     RenderFeatures& features,
     const Engine& engine,
-    MaterialHandle handle) {
+    MaterialHandle handle,
+    bool shadow_pass = false) {
     if (handle.value >= engine.materials.size()) return;
     const MaterialRecord& material = engine.materials[handle.value];
     features.standard_material |= material.standard_material;
@@ -2059,12 +2097,16 @@ void include_material_features(
     features.no_color_material |= material.no_color;
     features.shader_material |= material.shader_material;
     features.node_material |= material.node_material;
+    if (shadow_pass && material.shader_material) {
+        features.shader_shadow_variants.at(material.shader_variant) = true;
+    }
 }
 
 RenderFeatures build_render_features(
     const Scene& scene,
     const Engine& engine) {
     RenderFeatures result;
+    result.shader_shadow_variants.resize(shader_variant_count());
     for (const MeshHandle handle : scene.meshes) {
         if (handle.value < engine.meshes.size()) {
             include_material_features(
@@ -2075,7 +2117,9 @@ RenderFeatures build_render_features(
     }
     for (const FrameTaskRecord& task : engine.frame_tasks) {
         for (const RenderTaskMesh& entry : task.render_meshes) {
-            include_material_features(result, engine, entry.material);
+            include_material_features(
+                result, engine, entry.material,
+                task.render.shadow_generator.value != invalid_handle);
         }
     }
     return result;
@@ -3168,15 +3212,10 @@ ${pinnedFogInfosPacking()}    };
             ])[] = [
                 [options.gridMaterial, "GridMaterial"],
                 [options.ground, "environment grounds"],
-                [options.skybox, "environment skyboxes"],
                 [options.transmission, "transmission"],
                 [
                     options.geometryOutputTasks.length > 0,
                     "geometry outputs",
-                ],
-                [
-                    options.shaderPrograms.length > 0,
-                    "custom shader materials",
                 ],
             ];
             for (const [reached, label] of unportedFogSurfaces) {

@@ -46,9 +46,26 @@ The compiler accepts:
 - programmatic render-canvas `focus()`, including the browser's one-pixel
   focused-canvas outline in the full-page native frame.
 
+Retained controls also support `focus()`, `focus` listeners, and the retained
+identity read by `document.activeElement`. Button-list helpers remain generated
+application code, including arrow/D-pad navigation and Enter/Space/A activation.
+Tab uses RmlUi's button focus order. An active element outside the retained tree
+is represented by an unmatched handle, not a general browser DOM object.
+Window keyboard listeners receive keys even while UI owns focus, before default
+UI actions; `preventDefault()` suppresses those actions and camera propagation.
+Host companions can mark a rule `focusVisible:true`. Solid pixel-width outlines
+and nonnegative pixel offsets paint outside the control without changing layout.
+
 RmlUi receives input before scene controls. Consumed UI events do not also
 move the camera. Element records are patched in place, so hover, pressed, and
 pointer-capture identity survive text and style updates.
+Cursor ownership follows those pointer events too: keyboard, controller, and
+window traffic cannot replace a hovered control's hand with the canvas arrow.
+Taking the UI cursor also restores visibility after a canvas hides it.
+Button descendants use `focus:none` in the native user-agent sheet: RmlUi
+requires press and release to resolve to the same focus target, so labels and
+emoji must resolve to their button rather than independent inline spans. A
+small movement within one button still activates it; release outside cancels.
 `preventDefault()` is carried on the event while its callback executes.
 RmlUi focuses before dispatching `mousedown`, so native restores the previous
 focus only when that execution cancelled; a conditional cancellation does not
@@ -139,6 +156,9 @@ Class/tag descendants are accepted only after the complete retained
 construction subtree proves at least one matching tag; the typed retained
 selector keeps the ancestor scope, so unrelated tags cannot inherit it.
 RmlUi evaluates the reached hover pseudo-class directly.
+The Antigravity host companion retains the source button hover background and
+border rules separately from keyboard focus. Its primary-button hover retains
+the gradient; the browser's additional `brightness(1.08)` filter is not modeled.
 
 The same typed rules accept `@media (max-width:Npx)` for the reached position,
 size, and font-size overrides. RmlUi evaluates them against the live context
@@ -172,8 +192,14 @@ children without recreating them. Each applied shape is named in
 Font paths are resolved through DirectWrite on Windows, CoreText on macOS, and
 fontconfig on Linux. The UI layer contains no hardcoded font paths. Platform
 font rasterization and browser font rasterization are not pixel-identical.
+Color emoji use the discovered platform emoji face before monochrome symbol
+fallback. Explicit VS16 emoji presentation selects that face and consumes the
+variation selector. Its fallback span has a zero line strut so the surrounding
+text, not the emoji font's ascent, determines the authored line height.
+General emoji-sequence/ZWJ shaping remains outside RmlUi's
+default font engine. If no color face exists, the symbol fallback is monochrome.
 
-The pinned RmlUi carries two patches under `native/patches/`, each a
+The pinned RmlUi carries three patches under `native/patches/`, each a
 browser rule it did not implement, measured on the retained demos and
 corrected in the library rather than compensated in the projection, so that
 every element from every style source gets it:
@@ -194,6 +220,16 @@ every element from every style source gets it:
   by truncating `c·a/255` where Chrome's Skia rounds it (`SkMulDiv255Round`),
   so tetris's `rgba(10,12,20,0.75)` panel premultiplied to (7,8,14) against
   the browser's (7,9,15) -- one level dark on every translucent panel pixel.
+- **`rmlui-fractional-letter-spacing.patch`.** Accumulates fractional spacing
+  across glyphs before rounding the final measured width, in both measurement
+  and geometry generation. This preserves subpixel CSS letter spacing without
+  changing RmlUi's public API or its separate integer-font-size limitation.
+
+After a maintained patch changes, rebuild the installed library with
+`pwsh -File tools/build-rmlui.ps1` before processing UI scenes; an existing
+installation does not acquire patches merely by regenerating a scene. When
+using a separate installation, set `BBLITE_RMLUI_DIR` to its root. CMake honors
+that explicit root even if an older configuration cached another `RmlUi_DIR`.
 
 The text itself is the remaining floor, and it is measured rather than
 assumed. CSS computes `0.8rem` as 12.8 px; RmlUi's default font engine
@@ -209,15 +245,27 @@ on top of the glyph rasterization difference itself.
 
 ## Rendering
 
-RmlUi records CPU-side geometry, texture updates, scissors, and transforms.
+RmlUi records CPU-side geometry, texture updates, scissors, transforms, and
+ordered backdrop-blur stages.
 Each GPU backend owns upload, caches, pipelines, multisample targets, and final
 composition. CSS and Canvas geometry render into a transparent UI layer at the
-scene sample count, resolve once, and premultiplied-alpha composite over the
-single-sample scene. Glyph atlases retain filtered sampling.
+scene sample count and premultiplied-alpha composite over the single-sample
+scene. A backdrop stage first resolves preceding UI, snapshots that accumulated
+image, and applies a separable Gaussian blur in cached FP16 scratch targets.
+Its composition intersects RmlUi's clip triangles (including rounded corners)
+with the scissor; later UI continues above it. Scene and sprite loops on both
+backends use this ordering. Without backdrop stages the UI resolves once.
+Glyph atlases retain filtered sampling.
 Inline image decorators resolve relative URLs through the scene's packaged
 asset directory. The projector keeps a minimal stylesheet container even when
 the page supplies only inline styles, because RmlUi's decorator instancers are
 owned by that container.
+
+Browser-default link color, underline, and pointer cursor are supplied before
+authored CSS, which can override them. Gradient text is discovered on the real
+RmlUi DOM, including static descendants from `innerHTML`; it does not depend on
+a JavaScript element binding. Canvas focus clears the retained document's focus
+so startup focus and keyboard selection follow the source application's order.
 
 The UI path is integrated into the scene and sprite-only presentation loops.
 The standalone fullscreen-effect and frame-graph drivers render no UI on
@@ -268,8 +316,7 @@ The accepted divergences below are also recorded in the
   border on an out-of-flow retained child, preserving both the selection
   outline and the original element's content geometry. Other box
   shadows remain accepted with a recorded degradation and no native rendering,
-  alongside `backdrop-filter` (and its `-webkit-` twin),
-  `font-variant-numeric`, and the voxel sandbox crosshair's
+  alongside `font-variant-numeric` and the voxel sandbox crosshair's
   exact `mix-blend-mode:difference` (other blend modes still refuse). The
   crosshair's reviewed two-layer gradient shape itself projects to the same
   retained bar markup used by Doom; only the difference blend is degraded.
@@ -279,6 +326,10 @@ The accepted divergences below are also recorded in the
   commands instead). "Shadows" in the supported surface means text shadows:
   `text-shadow` projects to glyph shadow/glow effects, and an unparseable
   shadow list refuses.
+- `backdrop-filter:blur(<nonnegative px>)` and `none` (including the `-webkit-`
+  spelling) are supported. Other backdrop-filter functions remain recorded
+  degradations. Ordinary filter layers, mask images, and inverse clip masks are
+  not implemented by the backdrop path.
 - `background-clip:text`, `background-size`, `-webkit-text-stroke`, and
   `filter: drop-shadow(...)` are consumed only by the gradient-text
   projection and refuse outside that combination, as do `color:transparent`

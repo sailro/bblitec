@@ -2044,7 +2044,7 @@ struct PhysicsWorld {
      * a scene may write \`fixedDeltaMs\` after the world exists, and the
      * pin would see that write.
      */
-    Scene* scene = nullptr;
+    std::shared_ptr<Scene> scene;
     std::vector<PhysicsBody> bodies;
     /**
      * \`_fixedDeltaMs\`: the world's own step, independent of the scene.
@@ -2753,7 +2753,7 @@ PhysicsWorldHandle create_havok_world(Scene& scene, Vec3d gravity) {
     PhysicsWorld& world = physics_worlds().emplace_back();
     world.handle = pal::physics_world_create();
     world.engine = scene.engine;
-    world.scene = &scene;
+    world.scene = std::make_shared<Scene>(scene);
     // \`_gravity: [g.x, g.y, g.z]\`, kept for the one reader the pin keeps
     // it for: a floating-origin region is seeded from it.
     world.gravity = {gravity.x, gravity.y, gravity.z};

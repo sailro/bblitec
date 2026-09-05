@@ -15,6 +15,7 @@ import {
     composeDeformDetailedMeshPickingShader,
     composeDetailedMeshPickingShader,
     composeMeshPickingShader,
+    composeThinInstancePickingShader,
 } from "./pinned-picking-shaders.js";
 import type { CompiledShaderProgram } from "./compiler.js";
 import type {
@@ -96,6 +97,10 @@ import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { holdDistLock } from "./dist-lock.js";
+import {
+    isUiStyleSelectorKind,
+    nativeHostUiStyleRules,
+} from "./ui-style-rule.js";
 import {
     composeSplatModule,
     composeSplatShModule,
@@ -284,7 +289,7 @@ function readNativeHostUi(path: string): NativeHostUi {
     const record = value as Record<string, unknown>;
     refuseUnknownKeys(
         record,
-        ["elements", "classStyles"],
+        ["elements", "classStyles", "styleRules"],
         `Native host UI '${path}'`,
     );
     if (!Array.isArray(record.elements)) {
@@ -314,11 +319,81 @@ function readNativeHostUi(path: string): NativeHostUi {
         }
         return { className: item.className, style: item.style };
     });
+    if (
+        record.styleRules !== undefined &&
+        !Array.isArray(record.styleRules)
+    ) {
+        throw new Error(`Native host UI '${path}' styleRules must be an array.`);
+    }
+    const styleRules = (record.styleRules ?? []).map((rule, index) => {
+        const location = `Native host UI '${path}' styleRules[${index}]`;
+        if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
+            throw new Error(`${location} must be an object.`);
+        }
+        const item = rule as Record<string, unknown>;
+        refuseUnknownKeys(
+            item,
+            [
+                "kind",
+                "primary",
+                "secondary",
+                "tag",
+                "hover",
+                "focusVisible",
+                "maxWidth",
+                "style",
+            ],
+            location,
+        );
+        if (
+            !isUiStyleSelectorKind(item.kind) ||
+            typeof item.primary !== "string" ||
+            typeof item.style !== "string"
+        ) {
+            throw new Error(
+                `${location} requires a supported kind plus string primary and style values.`,
+            );
+        }
+        if (
+            item.secondary !== undefined &&
+            typeof item.secondary !== "string"
+        ) {
+            throw new Error(`${location}.secondary must be a string.`);
+        }
+        if (item.tag !== undefined && typeof item.tag !== "string") {
+            throw new Error(`${location}.tag must be a string.`);
+        }
+        if (item.hover !== undefined && typeof item.hover !== "boolean") {
+            throw new Error(`${location}.hover must be a boolean.`);
+        }
+        if (item.focusVisible !== undefined && typeof item.focusVisible !== "boolean") {
+            throw new Error(`${location}.focusVisible must be a boolean.`);
+        }
+        if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
+            throw new Error(`${location}.maxWidth must be a number.`);
+        }
+        return {
+            kind: item.kind,
+            primary: item.primary,
+            style: item.style,
+            ...(item.secondary !== undefined
+                ? { secondary: item.secondary }
+                : {}),
+            ...(item.tag !== undefined ? { tag: item.tag } : {}),
+            ...(item.hover !== undefined ? { hover: item.hover } : {}),
+            ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
+            ...(item.maxWidth !== undefined
+                ? { maxWidth: item.maxWidth }
+                : {}),
+        };
+    });
     return {
         // As given (registry-relative), so the recorded activation site is
         // machine-independent where an absolute resolution would not be.
         sourcePath: path,
-        ...(classStyles.length > 0 ? { classStyles } : {}),
+        ...((classStyles.length > 0 || styleRules.length > 0)
+            ? { styleRules: nativeHostUiStyleRules({ classStyles, styleRules }) }
+            : {}),
         elements: record.elements.map((element, index) =>
             nativeHostUiElement(
                 element,
@@ -1192,6 +1267,10 @@ async function main(): Promise<void> {
     const morphStorage =
         specializationFeatures.morphStorage ||
         result.manifest.features.includes("mesh:morph-targets");
+    const gpuInstancing =
+        specializationFeatures.gpuInstancing ||
+        result.manifest.features.includes("mesh:thin-instances") ||
+        result.manifest.features.includes("mesh:thin-instances-dynamic");
     // Named rather than inline so the activation inventory below records
     // the exact values the emitters consumed, not a restatement of them.
     // Which palette transport a skin takes: a build whose composed variants
@@ -1213,6 +1292,9 @@ async function main(): Promise<void> {
     const pickingShaders = result.manifest.features.includes("picking:gpu")
         ? {
               mesh: await composeMeshPickingShader(),
+              ...(gpuInstancing
+                  ? { thin: await composeThinInstancePickingShader() }
+                  : {}),
               // The detailed pipeline is a second pinned module rather
               // than an option, composed only where a scene armed it.
               ...(result.manifest.features.includes("picking:detailed")
@@ -1440,14 +1522,7 @@ async function main(): Promise<void> {
             specializationFeatures.textureTransform,
         imageBasedLighting:
             specializationFeatures.imageBasedLighting,
-        gpuInstancing:
-            specializationFeatures.gpuInstancing ||
-            result.manifest.features.includes(
-                "mesh:thin-instances",
-            ) ||
-            result.manifest.features.includes(
-                "mesh:thin-instances-dynamic",
-            ),
+        gpuInstancing,
         gpuInstanceColors: result.manifest.features.includes(
             "mesh:thin-instance-colors",
         ),

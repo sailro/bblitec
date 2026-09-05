@@ -9,6 +9,10 @@ import {
     sep,
 } from "node:path";
 import type { NativeHostUi } from "./compiler/types.js";
+import {
+    nativeHostUiStyleRules,
+    uiStyleSelector,
+} from "./ui-style-rule.js";
 
 // ---------------------------------------------------------------------------
 // Lazy module loads
@@ -365,14 +369,28 @@ export function captureUiEnabled(
 function hostUiBootstrapScript(
     hostUi: NonNullable<SuiteCaptureOptions["hostUi"]>,
 ): string {
-    const payload = JSON.stringify(hostUi).replaceAll("</script", "<\\/script");
+    const payload = JSON.stringify({ elements: hostUi.elements }).replaceAll(
+        "</script",
+        "<\\/script",
+    );
+    const styleSheet = nativeHostUiStyleRules(hostUi)
+        .map((rule) => {
+            const body = `${uiStyleSelector(rule)}{${rule.style}}`;
+            return rule.maxWidth === undefined
+                ? body
+                : `@media(max-width:${rule.maxWidth}px){${body}}`;
+        })
+        .join("\n");
+    const stylePayload = JSON.stringify(styleSheet).replaceAll(
+        "</script",
+        "<\\/script",
+    );
     return `<script>(() => {
 const hostUi = ${payload};
-if (hostUi.classStyles?.length) {
+const hostStyleSheet = ${stylePayload};
+if (hostStyleSheet) {
     const style = document.createElement("style");
-    style.textContent = hostUi.classStyles
-        .map((rule) => "." + rule.className + "{" + rule.style + "}")
-        .join("\\n");
+    style.textContent = hostStyleSheet;
     document.head.appendChild(style);
 }
 const create = (record) => {

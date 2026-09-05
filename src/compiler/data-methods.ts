@@ -316,7 +316,8 @@ export function compileDataMethodCall(
                   ts.isTemplateExpression(ownerExpression)
                 ? lowerer.context.compileValue(ownerExpression)
                 : undefined;
-    const tupleOwnerElements = dynamicOwner?.kind === "tuple"
+    const tupleOwnerElements: Value[] | undefined =
+        dynamicOwner?.kind === "tuple"
         ? (dynamicOwner.tupleElements ?? [])
         : dynamicOwner?.kind === "data" &&
             dynamicOwner.dataType?.kind === "tuple"
@@ -329,6 +330,37 @@ export function compileDataMethodCall(
                 }),
             )
           : undefined;
+    if (tupleOwnerElements && method === "join") {
+        if (call.arguments.length > 1) {
+            lowerer.context.fail(
+                call,
+                "Tuple Array.join expects zero or one separator argument.",
+            );
+        }
+        const separatorValue = call.arguments[0]
+            ? lowerer.context.compileValue(call.arguments[0])
+            : undefined;
+        const separator = separatorValue
+            ? separatorValue.staticString
+            : ",";
+        const strings = tupleOwnerElements.map(
+            (element) => element.staticString,
+        );
+        if (
+            separator !== undefined &&
+            strings.every(
+                (value): value is string => value !== undefined,
+            )
+        ) {
+            const staticString = strings.join(separator);
+            return {
+                kind: "string",
+                cpp: lowerer.context.cppString(staticString),
+                staticString,
+                dataType: { kind: "string" },
+            };
+        }
+    }
     if (
         tupleOwnerElements &&
         dynamicOwner &&
@@ -476,6 +508,29 @@ export function compileDataMethodCall(
         optionalOwnerType?.inner.kind === "set"
             ? optionalOwnerType.inner
             : undefined;
+    if (callee.questionDotToken && optionalOwnerType &&
+        (method === "indexOf" || method === "includes") &&
+        (optionalOwnerType.inner.kind === "vector" || optionalOwnerType.inner.kind === "span")) {
+        const receiver = lowerer.context.allocateTemporaryCppName("optional_array");
+        const result = lowerer.context.allocateTemporaryCppName("optional_search");
+        const resultType: DataType = { kind: "optional", inner: { kind: method === "indexOf" ? "number" : "boolean" } };
+        lowerer.context.emit(`const auto ${receiver} = ${owner.cpp};`);
+        lowerer.context.emit(`${lowerer.context.dataTypes.cppType(resultType)} ${result};`);
+        lowerer.context.emit(`if (${receiver}.has_value()) {`);
+        lowerer.context.increaseIndent();
+        lowerer.context.enterRuntimeControlFlow();
+        try {
+            const search = lowerer.compileArraySearch(call,
+                { kind: "data", cpp: `(*${receiver})`, dataType: optionalOwnerType.inner },
+                optionalOwnerType.inner.element, method);
+            lowerer.context.emit(`${result} = ${search.cpp};`);
+        } finally {
+            lowerer.context.leaveRuntimeControlFlow();
+            lowerer.context.decreaseIndent();
+        }
+        lowerer.context.emit("}");
+        return { kind: "data", cpp: result, dataType: resultType };
+    }
     if (
         callee.questionDotToken !== undefined &&
         method === "delete" &&
@@ -550,17 +605,22 @@ export function compileDataMethodCall(
     // elements, each of which is another document. Handing the element
     // view to the ordinary array lowering is the whole adaptation:
     // nothing about the callback protocol changes.
-    const narrowed: Value =
-        isJsonValue(narrowedOwner)
-            ? {
-                  kind: "data",
-                  cpp: `${narrowedOwner.cpp}.elements()`,
-                  dataType: {
-                      kind: "span",
-                      element: { kind: "json" },
-                  },
-              }
-            : narrowedOwner;
+    let narrowed = narrowedOwner;
+    if (isJsonValue(narrowedOwner)) {
+        narrowed = {
+            kind: "data",
+            cpp: `${narrowedOwner.cpp}.elements()`,
+            dataType: { kind: "span", element: { kind: "json" } },
+        };
+    } else if (narrowedOwner.dataType?.kind === "tuple" &&
+        (method === "some" || method === "every")) {
+        narrowed = {
+            ...narrowedOwner,
+            // A numeric tuple's observing predicates use the same indexed
+            // range loop as a readonly numeric array.
+            dataType: { kind: "span", element: { kind: "number" } },
+        };
+    }
     if (snapshotInvalidatingMethods.has(method)) {
         lowerer.invalidateStaticElements(narrowed);
     }
@@ -2021,14 +2081,14 @@ export function compileDataMethodCall(
                       lowerer.context.compileValue(argument),
                   )
                 : undefined;
-        // A handle snapshot is also the generation-time reach set used
-        // to retain identities such as shader variants and scene slots.
-        // One reached handle can stand for every native instance created
-        // by a runtime loop. Plain-data snapshots, in contrast, must be
-        // path-complete before static iteration can consume them.
+        // A snapshot consumed by a later static iteration must be
+        // path-complete. Intrinsics record their own generation-time reach
+        // while the pushed arguments are compiled, so handles created behind
+        // a runtime branch do not need to remain in this array snapshot.
+        // Keeping one there would leak its block-local C++ name into code
+        // emitted after the branch.
         if (
-            (pushedHandleKind !== undefined ||
-                !lowerer.context.isInRuntimeControlFlow()) &&
+            !lowerer.context.isInRuntimeControlFlow() &&
             staticElements &&
             pushedValues?.every(
                 (value) =>
@@ -2057,6 +2117,12 @@ export function compileDataMethodCall(
                 }),
             );
         } else {
+            if (pushedHandleKind && pushedValues?.length) {
+                const snapshotOwner =
+                    narrowed.staticElementsOwner ?? narrowed;
+                snapshotOwner.runtimeElementTemplate ??=
+                    staticElements?.[0] ?? pushedValues[0]!;
+            }
             lowerer.invalidateStaticElements(narrowed);
             // `compileDataPath(..., "write")` may return a leaf wrapper
             // around an identifier binding. Invalidate the binding too;

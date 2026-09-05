@@ -32,9 +32,14 @@ export function runNativeFixtureCompiler(
     tools: WindowsBuildTools,
     arguments_: readonly string[],
 ): void {
-    execFileSync(tools.compiler, arguments_, {
-        cwd: resolve("."),
-        env: tools.environment,
-        stdio: "pipe",
-    });
+    try {
+        execFileSync(tools.compiler, arguments_, {
+            cwd: resolve("."),
+            env: tools.environment,
+            stdio: "pipe",
+        });
+    } catch (error) {
+        const failure = error as Error & { stdout?: Buffer; stderr?: Buffer };
+        throw new Error(`${failure.message}\n${failure.stdout ?? ""}\n${failure.stderr ?? ""}`, { cause: error });
+    }
 }

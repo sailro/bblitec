@@ -135,6 +135,7 @@ export class PickingLowerer {
     public lower(
         billboardPick: boolean,
         detailed: boolean,
+        pointerDrag = false,
     ): LoweredSource {
         const modulePath = "src/picking/gpu-picker.ts";
         // Anchored rather than assumed: if the pin stops exporting these,
@@ -198,10 +199,12 @@ GpuPickerHandle create_gpu_picker(Scene& scene) {
     }
     Engine& engine = *scene.engine;
     engine.gpu_pickers.push_back(GpuPickerRecord{});
+    engine.gpu_pickers.back().scene = scene.state;
     return GpuPickerHandle{
         static_cast<std::uint32_t>(engine.gpu_pickers.size() - 1)};
 }
 ${detailed ? this.lowerDetailedEntryPoints() : ""}
+${detailed || pointerDrag ? this.lowerPickRay() : ""}
 // ${this.context.provenance(modulePath, "pickAsync")}
 // A disposed picker answers the empty info the pin's
 // \`createEmptyPickingInfo\` returns, as does a pick taken before the
@@ -750,7 +753,28 @@ void enable_detailed_picking(Engine& engine, GpuPickerHandle picker) {
     picker_record(engine, picker).detailed = true;
 }
 
-// ${this.context.provenance("src/picking/ray.ts", "createPickingRay")}
+// ${this.context.provenance(helpersModule, "getPickedNormal")}
+// The pinned body above reads the live mesh resolved from this handle.
+js::Nullable<js::Tuple<3>> picked_normal(
+    const Engine& engine,
+    const PickingInfo& info,
+    bool use_world_coordinates) {
+    const bool resolved = info.picked_kind == PickedNodeKind::mesh;
+    const MeshHandle mesh{info.picked_index};
+    return picked_normal_impl(
+        resolved ? mesh_cpu_normals(engine, mesh) : std::vector<float>{},
+        resolved ? mesh_cpu_indices(engine, mesh)
+                 : std::vector<std::uint32_t>{},
+        resolved ? upstream::mesh_world_matrix(engine, engine.meshes[mesh.value])
+                 : std::array<float, 16>{},
+        info,
+        use_world_coordinates);
+}
+`;
+    }
+
+    private lowerPickRay(): string {
+        return `// ${this.context.provenance("src/picking/ray.ts", "createPickingRay")}
 // The pin builds this ray only for a detailed pick and hands it to the
 // facing test that decides whether a surface normal is flipped. It is
 // the same inverse-VP unprojection \`populate_picked_point\` performs,
@@ -782,26 +806,6 @@ void populate_pick_ray(
         length};
 }
 
-// ${this.context.provenance(helpersModule, "getPickedNormal")}
-// The pinned body is above; this reads the three things it asks of the
-// picked MESH out of the identity this port resolved, because upstream's
-// \`pickedMesh\` is a live node reference and ours is a handle.
-js::Nullable<js::Tuple<3>> picked_normal(
-    const Engine& engine,
-    const PickingInfo& info,
-    bool use_world_coordinates) {
-    const bool resolved = info.picked_kind == PickedNodeKind::mesh;
-    const MeshHandle mesh{info.picked_index};
-    return picked_normal_impl(
-        resolved ? mesh_cpu_normals(engine, mesh) : std::vector<float>{},
-        resolved ? mesh_cpu_indices(engine, mesh)
-                 : std::vector<std::uint32_t>{},
-        resolved ? upstream::mesh_world_matrix(
-                       engine, engine.meshes[mesh.value])
-                 : std::array<float, 16>{},
-        info,
-        use_world_coordinates);
-}
 `;
     }
 

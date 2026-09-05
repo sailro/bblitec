@@ -1,5 +1,7 @@
 #pragma once
 
+#include <bblite/js_callback.hpp>
+
 // Plain-data JavaScript runtime support for compiled scene logic: dynamic
 // arrays, nullable objects, readonly views, all-number tuples, JavaScript
 // Math semantics, and the deterministic seeded Math.random replacement.
@@ -33,6 +35,87 @@
 #include <vector>
 
 namespace bbl::js {
+
+/**
+ * A numeric JavaScript TypedArray.
+ *
+ * JavaScript copies an object reference when a typed array is assigned,
+ * captured, returned, or stored in another object.  A plain std::vector
+ * copied its elements instead, which separated a Uint8Array(buffer) view
+ * from later writes through another reference to the source typed array.
+ * Keep the vector allocation behind a shared handle so every native wrapper
+ * continues to name the same fixed-length backing store.
+ */
+template <typename T>
+class TypedArray {
+  public:
+    using value_type = T;
+    using iterator = typename std::vector<T>::iterator;
+    using const_iterator = typename std::vector<T>::const_iterator;
+
+    TypedArray()
+        : values_(std::make_shared<std::vector<T>>()) {}
+    explicit TypedArray(std::size_t count)
+        : values_(std::make_shared<std::vector<T>>(count)) {}
+    TypedArray(std::size_t count, const T& value)
+        : values_(std::make_shared<std::vector<T>>(count, value)) {}
+    TypedArray(std::initializer_list<T> values)
+        : values_(std::make_shared<std::vector<T>>(values)) {}
+    // Native mesh-data producers own vectors. Crossing into JavaScript data
+    // takes a snapshot (or transfers a temporary), then aliases share it.
+    TypedArray(std::vector<T> values)
+        : values_(std::make_shared<std::vector<T>>(std::move(values))) {}
+    template <typename Iterator>
+    TypedArray(Iterator first, Iterator last)
+        : values_(std::make_shared<std::vector<T>>(first, last)) {}
+
+    [[nodiscard]] std::size_t size() const { return values_->size(); }
+    [[nodiscard]] bool empty() const { return values_->empty(); }
+    [[nodiscard]] T* data() { return values_->data(); }
+    [[nodiscard]] const T* data() const { return values_->data(); }
+    [[nodiscard]] iterator begin() { return values_->begin(); }
+    [[nodiscard]] iterator end() { return values_->end(); }
+    [[nodiscard]] const_iterator begin() const { return values_->begin(); }
+    [[nodiscard]] const_iterator end() const { return values_->end(); }
+    [[nodiscard]] const_iterator cbegin() const { return values_->cbegin(); }
+    [[nodiscard]] const_iterator cend() const { return values_->cend(); }
+    [[nodiscard]] T& operator[](std::size_t index) { return (*values_)[index]; }
+    [[nodiscard]] const T& operator[](std::size_t index) const {
+        return (*values_)[index];
+    }
+    [[nodiscard]] T& at(std::size_t index) { return values_->at(index); }
+    [[nodiscard]] const T& at(std::size_t index) const {
+        return values_->at(index);
+    }
+    [[nodiscard]] T& front() { return values_->front(); }
+    [[nodiscard]] const T& front() const { return values_->front(); }
+    [[nodiscard]] T& back() { return values_->back(); }
+    [[nodiscard]] const T& back() const { return values_->back(); }
+
+    void reserve(std::size_t count) { values_->reserve(count); }
+    void resize(std::size_t count) { values_->resize(count); }
+    void resize(std::size_t count, const T& value) {
+        values_->resize(count, value);
+    }
+    void clear() { values_->clear(); }
+    void push_back(const T& value) { values_->push_back(value); }
+    void push_back(T&& value) { values_->push_back(std::move(value)); }
+
+    [[nodiscard]] operator std::vector<T>&() { return *values_; }
+    [[nodiscard]] operator const std::vector<T>&() const { return *values_; }
+    [[nodiscard]] const std::shared_ptr<std::vector<T>>& storage() const {
+        return values_;
+    }
+
+    [[nodiscard]] friend bool operator==(
+        const TypedArray& left,
+        const TypedArray& right) {
+        return *left.values_ == *right.values_;
+    }
+
+  private:
+    std::shared_ptr<std::vector<T>> values_;
+};
 
 /** Runs a JavaScript finally block on every exit from its native scope. */
 template <typename F>
@@ -69,11 +152,43 @@ class ArrayBuffer {
         : bytes_(std::make_shared<std::vector<std::uint8_t>>(std::move(bytes))) {}
     explicit ArrayBuffer(std::shared_ptr<std::vector<std::uint8_t>> bytes)
         : bytes_(std::move(bytes)) {}
+    template <typename T>
+        requires std::is_trivially_copyable_v<T>
+    explicit ArrayBuffer(const TypedArray<T>& values)
+        : external_owner_(values.storage()),
+          external_data_(reinterpret_cast<std::uint8_t*>(
+              const_cast<T*>(values.data()))),
+          external_length_(values.size() * sizeof(T)) {}
+    template <typename T>
+        requires std::is_trivially_copyable_v<T>
+    explicit ArrayBuffer(std::vector<T>& values)
+        : external_data_(reinterpret_cast<std::uint8_t*>(values.data())),
+          external_length_(values.size() * sizeof(T)) {}
+    template <typename T>
+        requires std::is_trivially_copyable_v<T>
+    explicit ArrayBuffer(const std::vector<T>& values)
+        // JavaScript's `TypedArray.buffer` is the same mutable ArrayBuffer
+        // object even when the generated C++ binding for the view is const.
+        // The constness is a compiler implementation detail, not part of the
+        // source value's semantics, so retain the alias instead of copying.
+        : external_data_(reinterpret_cast<std::uint8_t*>(
+              const_cast<T*>(values.data()))),
+          external_length_(values.size() * sizeof(T)) {}
 
-    [[nodiscard]] std::size_t byte_length() const { return bytes_->size(); }
-    [[nodiscard]] const std::uint8_t* data() const { return bytes_->data(); }
-    [[nodiscard]] std::uint8_t* data() { return bytes_->data(); }
+    [[nodiscard]] std::size_t byte_length() const {
+        return bytes_ ? bytes_->size() : external_length_;
+    }
+    [[nodiscard]] const std::uint8_t* data() const {
+        return bytes_ ? bytes_->data() : external_data_;
+    }
+    [[nodiscard]] std::uint8_t* data() {
+        return bytes_ ? bytes_->data() : external_data_;
+    }
     [[nodiscard]] const std::vector<std::uint8_t>& bytes() const {
+        if (!bytes_) {
+            throw std::runtime_error(
+                "A typed-array-backed ArrayBuffer has no owned byte vector.");
+        }
         return *bytes_;
     }
     [[nodiscard]] const std::shared_ptr<std::vector<std::uint8_t>>& storage() const {
@@ -82,6 +197,9 @@ class ArrayBuffer {
 
   private:
     std::shared_ptr<std::vector<std::uint8_t>> bytes_;
+    std::shared_ptr<void> external_owner_;
+    std::uint8_t* external_data_ = nullptr;
+    std::size_t external_length_ = 0;
 };
 
 /**
@@ -191,6 +309,7 @@ class BorrowedEvent {
         requires requires(const T& value) { value.prevent_default(); }
     explicit BorrowedEvent(const T& value) noexcept
         : value_(std::addressof(value)),
+          type_(&type_tag<T>),
           prevent_default_([](const void* borrowed) noexcept {
               static_cast<const T*>(borrowed)->prevent_default();
           }) {}
@@ -198,49 +317,20 @@ class BorrowedEvent {
     [[nodiscard]] const BorrowedEvent& get() const noexcept { return *this; }
     void prevent_default() const noexcept { prevent_default_(value_); }
 
+    template <typename T>
+    [[nodiscard]] const T& as() const {
+        if (type_ != &type_tag<T>) {
+            throw std::runtime_error("Borrowed DOM event has the wrong payload type.");
+        }
+        return *static_cast<const T*>(value_);
+    }
+
   private:
+    template <typename T>
+    static inline const char type_tag = 0;
     const void* value_;
+    const void* type_;
     void (*prevent_default_)(const void*) noexcept;
-};
-
-/**
- * A JavaScript function value with identity.
- *
- * `std::function` compares nothing, so a Set of handlers could neither
- * refuse a duplicate `add` nor honour a `delete`, and a Map could not key
- * by one. JavaScript compares function values by object identity, and a
- * program mints one function object per function expression it evaluates --
- * so what a compiled callback carries is the identity of the function object
- * that evaluation produced. Statically repeated expressions receive distinct
- * generation identities; references to one declared callback share one.
- * `off(handler)` then removes exactly what `on(handler)` added.
- */
-template <typename Sig>
-class Callback;
-
-template <typename R, typename... Args>
-class Callback<R(Args...)> {
-  public:
-    Callback() = default;
-    template <typename F>
-    Callback(std::size_t identity, F&& body)
-        : identity_(identity), body_(std::forward<F>(body)) {}
-
-    R operator()(Args... args) const {
-        return body_(std::forward<Args>(args)...);
-    }
-    explicit operator bool() const { return static_cast<bool>(body_); }
-    [[nodiscard]] std::size_t identity() const { return identity_; }
-
-    [[nodiscard]] friend bool operator==(
-        const Callback& left,
-        const Callback& right) {
-        return left.identity_ == right.identity_;
-    }
-
-  private:
-    std::size_t identity_ = 0;
-    std::function<R(Args...)> body_;
 };
 
 /** A Uint8Array view. Subarrays share storage; slices own a copy. */
@@ -250,22 +340,19 @@ class U8Array {
     using iterator = value_type*;
     using const_iterator = const value_type*;
 
-    U8Array()
-        : storage_(std::make_shared<std::vector<std::uint8_t>>()) {}
+    U8Array() = default;
     explicit U8Array(std::size_t length)
-        : storage_(std::make_shared<std::vector<std::uint8_t>>(
-              length,
-              std::uint8_t{0})),
+        : buffer_(std::vector<std::uint8_t>(length, std::uint8_t{0})),
           length_(length) {}
     explicit U8Array(const ArrayBuffer& buffer)
-        : storage_(buffer.storage()), length_(buffer.byte_length()) {}
+        : buffer_(buffer), length_(buffer.byte_length()) {}
     U8Array(const ArrayBuffer& buffer, std::size_t byte_offset)
         : U8Array(buffer, byte_offset, buffer.byte_length() - byte_offset) {}
     U8Array(
         const ArrayBuffer& buffer,
         std::size_t byte_offset,
         std::size_t length)
-        : storage_(buffer.storage()),
+        : buffer_(buffer),
           offset_(byte_offset),
           length_(length) {
         if (offset_ > buffer.byte_length() ||
@@ -276,47 +363,37 @@ class U8Array {
 
     [[nodiscard]] std::size_t size() const { return length_; }
     [[nodiscard]] std::size_t length() const { return length_; }
-    [[nodiscard]] std::uint8_t* data() { return storage_->data() + offset_; }
-    [[nodiscard]] const std::uint8_t* data() const { return storage_->data() + offset_; }
+    [[nodiscard]] std::uint8_t* data() { return buffer_.data() + offset_; }
+    [[nodiscard]] const std::uint8_t* data() const { return buffer_.data() + offset_; }
     [[nodiscard]] iterator begin() { return data(); }
     [[nodiscard]] iterator end() { return data() + length_; }
     [[nodiscard]] const_iterator begin() const { return data(); }
     [[nodiscard]] const_iterator end() const { return data() + length_; }
     [[nodiscard]] std::uint8_t& operator[](std::size_t index) {
-        return storage_->data()[offset_ + index];
+        return data()[index];
     }
     [[nodiscard]] const std::uint8_t& operator[](std::size_t index) const {
-        return storage_->data()[offset_ + index];
+        return data()[index];
     }
-    [[nodiscard]] ArrayBuffer buffer() const { return ArrayBuffer(storage_); }
+    [[nodiscard]] ArrayBuffer buffer() const { return buffer_; }
     [[nodiscard]] std::size_t byte_offset() const { return offset_; }
     [[nodiscard]] std::size_t byte_length() const { return length_; }
     [[nodiscard]] std::vector<std::uint8_t> to_vector() const {
-        return std::vector<std::uint8_t>(
-            storage_->begin() + static_cast<std::ptrdiff_t>(offset_),
-            storage_->begin() + static_cast<std::ptrdiff_t>(offset_ + length_));
+        return std::vector<std::uint8_t>(data(), data() + length_);
     }
     [[nodiscard]] U8Array subarray(std::size_t begin, std::size_t end) const {
         begin = std::min(begin, length_);
         end = std::min(std::max(end, begin), length_);
-        return U8Array(storage_, offset_ + begin, end - begin);
+        return U8Array(buffer_, offset_ + begin, end - begin);
     }
     [[nodiscard]] U8Array slice(std::size_t begin, std::size_t end) const {
         const U8Array view = subarray(begin, end);
-        std::vector<std::uint8_t> copied(
-            view.storage_->begin() + static_cast<std::ptrdiff_t>(view.offset_),
-            view.storage_->begin() + static_cast<std::ptrdiff_t>(view.offset_ + view.length_));
+        std::vector<std::uint8_t> copied(view.data(), view.data() + view.length_);
         return U8Array(ArrayBuffer(std::move(copied)));
     }
 
   private:
-    U8Array(
-        std::shared_ptr<std::vector<std::uint8_t>> storage,
-        std::size_t offset,
-        std::size_t length)
-        : storage_(std::move(storage)), offset_(offset), length_(length) {}
-
-    std::shared_ptr<std::vector<std::uint8_t>> storage_;
+    ArrayBuffer buffer_;
     std::size_t offset_ = 0;
     std::size_t length_ = 0;
 };
@@ -330,7 +407,7 @@ class DataView {
         std::size_t byte_offset = 0,
         std::size_t byte_length =
             std::numeric_limits<std::size_t>::max())
-        : storage_(buffer.storage()),
+        : buffer_(buffer),
           offset_(byte_offset),
           length_(byte_length == std::numeric_limits<std::size_t>::max()
               ? buffer.byte_length() - byte_offset
@@ -344,7 +421,7 @@ class DataView {
     [[nodiscard]] std::size_t byte_length() const { return length_; }
     [[nodiscard]] std::uint8_t get_uint8(std::size_t offset) const {
         require(offset, 1);
-        return (*storage_)[offset_ + offset];
+        return buffer_.data()[offset_ + offset];
     }
     [[nodiscard]] std::int8_t get_int8(std::size_t offset) const {
         return static_cast<std::int8_t>(get_uint8(offset));
@@ -353,7 +430,7 @@ class DataView {
         std::size_t offset,
         bool little_endian) const {
         require(offset, 2);
-        const auto* bytes = storage_->data() + offset_ + offset;
+        const auto* bytes = buffer_.data() + offset_ + offset;
         return little_endian
             ? static_cast<std::uint16_t>(bytes[0] | (bytes[1] << 8))
             : static_cast<std::uint16_t>((bytes[0] << 8) | bytes[1]);
@@ -367,7 +444,7 @@ class DataView {
         std::size_t offset,
         bool little_endian) const {
         require(offset, 4);
-        const auto* bytes = storage_->data() + offset_ + offset;
+        const auto* bytes = buffer_.data() + offset_ + offset;
         if (little_endian) {
             return static_cast<std::uint32_t>(bytes[0]) |
                 (static_cast<std::uint32_t>(bytes[1]) << 8) |
@@ -392,12 +469,12 @@ class DataView {
 
   private:
     void require(std::size_t offset, std::size_t width) const {
-        if (!storage_ || offset > length_ || width > length_ - offset) {
+        if (offset > length_ || width > length_ - offset) {
             throw std::runtime_error("DataView read exceeds buffer.");
         }
     }
 
-    std::shared_ptr<std::vector<std::uint8_t>> storage_;
+    ArrayBuffer buffer_;
     std::size_t offset_ = 0;
     std::size_t length_ = 0;
 };
@@ -1657,17 +1734,17 @@ template <typename Range>
     });
 }
 
-/** `%TypedArray%.prototype.slice` for the vector-backed numeric views. */
-template <typename T>
-[[nodiscard]] inline std::vector<T> typed_array_slice(
-    const std::vector<T>& values,
+/** `%TypedArray%.prototype.slice` copies a numeric range into fresh storage. */
+template <typename Values>
+[[nodiscard]] inline Values typed_array_slice(
+    const Values& values,
     double begin_value,
     double end_value) {
     const auto [begin, end] = relative_slice_bounds(
         values.size(),
         begin_value,
         end_value);
-    return std::vector<T>(values.begin() + begin, values.begin() + end);
+    return Values(values.begin() + begin, values.begin() + end);
 }
 
 // `array.indexOf(value)` — the first strictly-equal element, or -1.
@@ -1760,19 +1837,10 @@ inline Array<T>& array_reverse(Array<T>& values) {
     return values;
 }
 
-// `array.fill(value)` on an existing array.
-template <typename T>
-inline void array_fill(Array<T>& values, const T& value) {
-    for (T& entry : values) {
-        entry = value;
-    }
-}
-
-// Typed arrays except Uint8Array use contiguous native vectors. Keep their
-// JavaScript `fill` route beside the ordinary Array overload so every typed
-// array kind accepted by the data lowerer has the same runtime operation.
-template <typename T>
-inline void array_fill(std::vector<T>& values, const T& value) {
+// `array.fill(value)` shares one range assignment across native vectors,
+// JavaScript arrays, and typed-array views (including Uint8Array).
+template <typename Values, typename T>
+inline void array_fill(Values& values, const T& value) {
     std::fill(values.begin(), values.end(), value);
 }
 
@@ -2025,12 +2093,12 @@ template <typename T>
 }
 
 // JavaScript typed arrays reached by the compiled subset.
-using F64Array = std::vector<double>;
-using F32Array = std::vector<float>;
-using U16Array = std::vector<std::uint16_t>;
-using I16Array = std::vector<std::int16_t>;
-using U32Array = std::vector<std::uint32_t>;
-using I32Array = std::vector<std::int32_t>;
+using F64Array = TypedArray<double>;
+using F32Array = TypedArray<float>;
+using U16Array = TypedArray<std::uint16_t>;
+using I16Array = TypedArray<std::int16_t>;
+using U32Array = TypedArray<std::uint32_t>;
+using I32Array = TypedArray<std::int32_t>;
 
 // src/math/mat4-compose.ts + mat4-compose-into.ts: JavaScript evaluates the
 // quaternion products in double precision, then each Float32Array store
@@ -2080,6 +2148,11 @@ using I32Array = std::vector<std::int32_t>;
     const double wrapped = std::fmod(truncated, 4294967296.0);
     return static_cast<std::uint32_t>(
         wrapped < 0.0 ? wrapped + 4294967296.0 : wrapped);
+}
+
+template <std::integral Value>
+[[nodiscard]] inline std::uint32_t to_uint32(Value value) {
+    return static_cast<std::uint32_t>(value);
 }
 
 [[nodiscard]] inline std::int32_t uint32_as_int32(std::uint32_t value) {
@@ -2219,10 +2292,6 @@ template <typename Values>
     return result;
 }
 
-inline void array_fill(U8Array& values, std::uint8_t value) {
-    std::fill(values.begin(), values.end(), value);
-}
-
 [[nodiscard]] inline F32Array f32_array_sized(double count) {
     return F32Array(static_cast<std::size_t>(count), 0.0f);
 }
@@ -2307,8 +2376,8 @@ template <typename Values>
  */
 template <typename T>
 inline void typed_array_set(
-    std::vector<T>& target,
-    const std::vector<T>& source,
+    TypedArray<T>& target,
+    const TypedArray<T>& source,
     double offset) {
     const auto start = array_index(offset);
     if (start > target.size() ||

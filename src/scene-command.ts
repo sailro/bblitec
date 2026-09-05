@@ -1195,6 +1195,8 @@ async function runSceneBuild(
     configureArguments.push(
         `-DBBLITE_BACKEND=${backend}`,
         `-DBBLITE_DAWN_DIR=${tools.dawnDirectory}`,
+        `-DBBLITE_LABSOUND_DIR=${tools.labSoundDirectory}`,
+        `-DBBLITE_RMLUI_DIR=${tools.rmlUiDirectory}`,
     );
     // An SDL3 install to use instead of the toolchain's. Forwarded like
     // BBLITE_BACKEND so a whole-matrix run can be pointed at one build,

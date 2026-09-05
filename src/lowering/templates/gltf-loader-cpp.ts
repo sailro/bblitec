@@ -270,6 +270,7 @@ export function gltfLoaderCpp(
         vat = false,
         deformPicking = false,
         pinnedSkeletonPalette = false,
+        dynamicThinInstances = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
         animationMask = false,
@@ -2796,7 +2797,16 @@ ${nonTrianglePrimitives
             const std::string authored_name = string_or(mesh, "name");
             const bool retains_live_wheel_vertices =
                 authored_name.rfind("wheel", 0) == 0;
-            if (retains_live_wheel_vertices) {
+            // A hierarchy pool is attached after a static glTF has already
+            // baked this node world into geometry.vertices. Keep the loader's
+            // mirrored-local copy so that later thin-instance draws can use
+            // the same local attribute bytes the browser retained.
+            const bool retains_runtime_instance_vertices =
+                ${dynamicThinInstances ? "true" : "false"};
+            const bool retains_local_vertices =
+                retains_live_wheel_vertices ||
+                retains_runtime_instance_vertices;
+            if (retains_local_vertices) {
                 geometry.bind_vertices.resize(positions.count);
             }
             // A primitive with no material index takes the pin's default
@@ -2923,7 +2933,7 @@ ${lowered.vertexColor}
                 geometry.bounds_max.y = std::max(geometry.bounds_max.y, vertex.position.y);
                 geometry.bounds_max.z = std::max(geometry.bounds_max.z, vertex.position.z);
                 geometry.vertices[index] = vertex;
-                if (retains_live_wheel_vertices) {
+                if (retains_local_vertices) {
                     ModelVertex local_vertex = vertex;
                     local_vertex.position = Vec3{
                         -local_position.x,
@@ -3118,6 +3128,10 @@ ${lowered.vertexColor}
                 geometry.flat_normals = true;
                 std::vector<ModelVertex> flat_vertices;
                 flat_vertices.reserve(geometry.indices.size());
+                std::vector<ModelVertex> flat_bind_vertices;
+                if (!geometry.bind_vertices.empty()) {
+                    flat_bind_vertices.reserve(geometry.indices.size());
+                }
                 std::vector<std::vector<Vec3>> flat_morph_positions(
                     geometry.morph_positions.size());
                 std::vector<std::vector<Vec3>> flat_morph_normals(
@@ -3127,6 +3141,10 @@ ${lowered.vertexColor}
                 for (const std::uint32_t index : geometry.indices) {
                     flat_vertices.push_back(
                         geometry.vertices.at(index));
+                    if (!geometry.bind_vertices.empty()) {
+                        flat_bind_vertices.push_back(
+                            geometry.bind_vertices.at(index));
+                    }
                     for (std::size_t target = 0; target < flat_morph_positions.size(); ++target) {
                         flat_morph_positions[target].push_back(
                             geometry.morph_positions[target].at(index));
@@ -3137,6 +3155,10 @@ ${lowered.vertexColor}
                     }
                 }
                 geometry.vertices = std::move(flat_vertices);
+                if (!geometry.bind_vertices.empty()) {
+                    geometry.bind_vertices =
+                        std::move(flat_bind_vertices);
+                }
                 geometry.morph_positions =
                     std::move(flat_morph_positions);
                 geometry.morph_normals =

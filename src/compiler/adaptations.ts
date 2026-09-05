@@ -441,7 +441,9 @@ export function compileAdaptations(
                 // those same meshes is not reached.
                 "gizmo:bounding-box",
             ] as const satisfies readonly Feature[]
-        ).some((feature) => features.includes(feature))
+        ).some((feature) => features.includes(feature) &&
+            (!features.includes("gizmo:pointer-drag") ||
+                (feature !== "gizmo:axis-drag" && feature !== "gizmo:plane-drag")))
     ) {
         adaptations.push({
             id: "display-only-editing-gizmo",
@@ -510,6 +512,20 @@ export function compileAdaptations(
                 "scene 90 parity against the browser golden, which runs the same boolean at load",
                 "the replay asserts each source mesh still starts at the identity world matrix",
                 "byte-stable across repeated compilations",
+            ],
+        });
+    }
+    if (features.includes("gizmo:pointer-drag")) {
+        adaptations.push({
+            id: "native-position-gizmo-pointer-drag",
+            category: "platform",
+            sourceSemantics: "A per-canvas dispatcher picks utility-layer colliders and converts pointer movement into axis/plane translation; camera controls defer to its active and pending state.",
+            nativeSemantics: "Explicit registerPointerDrag reaches position-gizmo axis/plane translation, enlarged axis colliders, hover materials, disposal and live camera predicates. Forwarding canvas proxies retain their source-defined add/remove/emit listener code and callback identities. GPU readback completes synchronously against the picker's own scene. Ray/plane intersection, axis projection and parent-space delta math are translated from the pinned source. Custom drag observables, sibling-disable styling, scale/rotation dragging and multi-pointer/touch capture remain outside this reached slice.",
+            risk: "medium",
+            validation: [
+                "focused editor-pointer-drag compiler, lowering and native event/camera regressions",
+                "Antigravity editor point selection and handle drag on SDL_GPU and Dawn",
+                "editor to menu to editor to menu cleanup replay",
             ],
         });
     }
@@ -693,7 +709,11 @@ export function compileAdaptations(
                 "as `sine*`; canvas overlays composite below the DOM " +
                 "chrome regardless of z-index; typed author rules retain " +
                 "source order and specificity, and RmlUi evaluates reached " +
-                ":hover and max-width state against the live viewport" +
+                ":hover and max-width state against the live viewport; " +
+                "retained focus identity and host focus-visible outlines are " +
+                "projected without a general DOM activeElement object; color " +
+                "emoji use the platform face with explicit VS16 font runs, " +
+                "not general ZWJ/emoji-sequence shaping" +
                 (scoped.length > 0
                     ? `; the statically-proven descendant rule(s) ${scoped
                          .map((selector) => `'${selector}'`)

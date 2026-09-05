@@ -576,7 +576,7 @@ LightHandle create_directional_light(
         static_cast<std::uint32_t>(engine.lights.size() - 1)};
 }
 
-${this.lightVectorSetters(modulePath, symbolName, "directional", ["position"])}
+${this.lightVectorSetters(modulePath, symbolName, "directional", ["position", "direction"])}
 } // namespace bbl
 `,
         };

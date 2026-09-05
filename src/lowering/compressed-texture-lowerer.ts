@@ -769,7 +769,7 @@ namespace bbl {
 // unset and basis-loader.ts sets — it is what decides the Standard UV
 // block's V flip, not an upload-time row swap.
 FileTexture load_compressed_texture(
-    Engine&,
+    Engine& engine,
     const std::string& path,
     bool invert_y) {
     FileTexture texture;
@@ -785,6 +785,7 @@ FileTexture load_compressed_texture(
         chain ? 4.0f : 1.0f,
         1000.0f};
     texture.data.uv_invert_y = invert_y;
+    texture.identity = engine.next_file_texture_identity++;
     return texture;
 }
 

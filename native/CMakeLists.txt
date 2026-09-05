@@ -79,6 +79,18 @@ if(
 endif()
 if(
     BBLITE_SDL_DIR
+    AND "input:gamepad" IN_LIST BBLITE_RUNTIME_FEATURES
+    AND NOT BBLITE_SDL_GAMEPAD
+)
+    message(
+        FATAL_ERROR
+        "This scene reaches input:gamepad, but BBLITE_SDL_DIR does not "
+        "declare BBLITE_SDL_GAMEPAD=ON. Rebuild the trimmed install with "
+        "tools/build-sdl-min.ps1 -EnableGamepad or use the toolchain SDL3."
+    )
+endif()
+if(
+    BBLITE_SDL_DIR
     AND "browser:file" IN_LIST BBLITE_RUNTIME_FEATURES
     AND NOT BBLITE_SDL_DIALOG
 )
@@ -407,6 +419,11 @@ if(NOT SDL3_FOUND)
     )
 endif()
 target_link_libraries(bblite_native PRIVATE SDL3::SDL3)
+if("input:gamepad" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GAMEPAD=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_GAMEPAD=0)
+endif()
 if("browser:file" IN_LIST BBLITE_RUNTIME_FEATURES)
     target_compile_definitions(
         bblite_native PRIVATE BBLITE_HAS_BROWSER_FILE=1
@@ -562,6 +579,13 @@ if("ui:rml" IN_LIST BBLITE_RUNTIME_FEATURES)
     # itself (RmlUi's own Dependencies.cmake), against this tree's vcpkg
     # install via the ui manifest feature -- so both linked libraries follow
     # the consuming triplet and CRT.
+    # find_package otherwise prefers its cached RmlUi_DIR even when PATHS and
+    # NO_DEFAULT_PATH name a different install. The explicit BBLITE root must
+    # choose both the backend sources and the linked library on reconfigure.
+    set(
+        RmlUi_DIR "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi"
+        CACHE PATH "RmlUi package selected by BBLITE_RMLUI_DIR" FORCE
+    )
     find_package(
         RmlUi CONFIG REQUIRED
         PATHS "${BBLITE_RMLUI_DIR}/lib/cmake/RmlUi"
