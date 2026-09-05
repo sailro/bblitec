@@ -70,7 +70,7 @@ test("Antigravity hover rules are independent of keyboard focus", () => {
 });
 
 test("button labels and emoji share their owning button's mouse activation target", () => {
-    const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    const source = readFileSync("native/src/pal_ui_defaults.hpp", "utf8");
     assert.match(source, /button \*\{focus:none;\}/);
     assert.match(source, /text-align:center;tab-index:auto;/);
 });
@@ -89,8 +89,9 @@ test("transparent button borders and backgrounds are not gradient text colors", 
 });
 
 test("native links retain browser user-agent decoration below author rules", () => {
-    const source = readFileSync("native/src/pal_ui_rml.cpp", "utf8");
+    const source = readFileSync("native/src/pal_ui_defaults.hpp", "utf8");
     assert.match(source, /a\[href\]\{color:#0000ee;text-decoration:underline;cursor:pointer;\}/);
+    assert.match(readFileSync("native/src/pal_ui_rml.cpp", "utf8"), /std::string source\(ui_user_agent_css\)/);
 });
 
 test("per-glyph gradient spans preserve inter-word spaces", () => {

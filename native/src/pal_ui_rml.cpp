@@ -22,6 +22,7 @@
 #include "RmlUi_Platform_SDL.h"
 #include "pal_runtime_trace.hpp"
 #include "pal_ui_backdrop.hpp"
+#include "pal_ui_defaults.hpp"
 #include "pal_ui_text.hpp"
 
 #include <algorithm>
@@ -3154,15 +3155,7 @@ struct UiRmlRuntime {
         // Browser user-agent defaults belong below author rules. Keeping them
         // in this sheet rather than on each element also lets :hover and media
         // rules participate in the ordinary RmlUi cascade.
-        std::string source =
-            "div,canvas{display:block;}\n"
-            "a[href]{color:#0000ee;text-decoration:underline;cursor:pointer;}\n"
-            "button{display:inline-block;box-sizing:border-box;"
-            "text-align:center;tab-index:auto;}\n"
-            // RmlUi clicks only when press/release resolve to the same focus
-            // target. Browser button labels/icons are not independent focus
-            // targets: a small motion between them must still click the button.
-            "button *{focus:none;}\n";
+        std::string source(ui_user_agent_css);
         const auto append_rule = [&source](const UiStyleRule& rule) {
             const std::string public_style =
                 filter_private_ui_declarations(rule.style, false);

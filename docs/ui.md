@@ -136,7 +136,9 @@ objects. Nearest and linear sampling intent is carried into both renderers.
 Inline styles, reviewed sheet rules, and reached `@keyframes` are
 projected to RmlUi. Compatibility lowering covers:
 
-- browser defaults for `div`, `canvas`, and `button`;
+- browser defaults for `div`, `canvas`, `button`, and the supported `h1`/`h2`
+  headings, including block layout, bold weight, sizes, and margins below author
+  rules (also for unbound `innerHTML` descendants);
 - system UI, sans-serif, and monospace family resolution;
 - regular and weighted platform font faces;
 - `position: fixed`, `inset`, positioned `calc()`, and density units;

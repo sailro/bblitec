@@ -12,7 +12,7 @@ test("an explicit RmlUi root replaces a previously cached package location", () 
     assert.match(readFileSync("native/CMakeLists.txt", "utf8"),
         /set\(\s*RmlUi_DIR "\$\{BBLITE_RMLUI_DIR\}\/lib\/cmake\/RmlUi"\s*CACHE PATH "[^"]*" FORCE\s*\)\s*find_package\(\s*RmlUi/);
 });
-test("RmlUi preserves fractional letter spacing until final line measurement", {
+test("RmlUi preserves fractional spacing and browser heading layout defaults", {
     skip: !tools || !existsSync(join(rml, "lib/rmlui.lib")),
 }, () => {
     const output = resolve("artifacts/ui-font-spacing-check");
