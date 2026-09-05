@@ -1,51 +1,17 @@
-// The display-gizmo family: the utility layer and the camera and light
-// gizmos hosted on it.
-//
-// A `UtilityLayer` is the pin's second SceneContext over one engine
-// (`src/gizmo/utility-layer.ts`), registered after the main scene -- which
-// is exactly what makes both backends record it as a swapchain overlay
-// layer, colour loaded and depth freshly cleared. So the value is a native
-// handle and nothing about the layer is folded: its camera is shared with
-// the main scene by reference and forwarded every frame, as upstream
-// forwards it.
-//
-// The camera and light gizmos are display only in the reached slice. What
-// each attach call does at generation is bind the target; the geometry it
-// builds is the pin's own lazy build, emitted in the generated family unit.
-//
-// The four EDITING widgets -- axis drag, axis scale, plane drag, plane
-// rotation -- reach the same layer and the same follow, and their drag is
-// the one half that does not: this runtime has no pointer-input contract,
-// so `createPointerDrag`/`registerPointerDrag` reach nothing, and every
-// part of a pinned widget whose only consumer is a drag (the invisible
-// collider arrows, the hover and disabled materials, the rotation
-// "camembert" sector) is not built. What is asserted, and where, is stated
-// once on the `display-only-editing-gizmo` adaptation in
-// `src/compiler/adaptations.ts`.
-//
-// The three COMPOSITES are fan-outs over those four, so each reaches the
-// widget rows its own pinned body calls and adds only its own assembly.
-// That same unreached pointer drag is what makes a camera's
-// `attachControl` deferral bag fold rather than refuse -- the three
-// predicates it names read a dispatcher map nothing here fills, so the bag
-// leaves the pinned camera taking the branches it takes without one. The
-// fold lives beside those predicates, below.
+// Utility layers host display and editing gizmos over a shared camera.
+// Explicit pointer-drag registration reaches native axis/plane translation,
+// including source-defined canvas proxies; other editing families retain the
+// documented display-only adaptation. Camera deferral callbacks remain live.
 import ts from "typescript";
 import { validateObjectProperties } from "../option-helpers.js";
-import type { CompilerSymbols } from "../symbols.js";
 import type { Feature, Value, ValueKind } from "../types.js";
+import type { DataType } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { compilePointerDragRegistration, pointerDispatcherCpp } from "../pointer-drag.js";
 
-/**
- * What folding `attachControl`'s options bag needs.
- *
- * Declared apart from the family context below because the bag arrives at
- * the CAMERA's intrinsic rather than a gizmo's -- the pin puts the
- * callbacks on `AttachControlOptions` and their meaning on
- * `src/gizmo/pointer-drag.ts`, so the fold lives with the predicates it
- * reads and the camera call reaches it.
- */
+/** Camera-owned callbacks querying the gizmo dispatcher. */
 export interface CameraDeferralContext {
+    compileStoredDataFunction(expression: ts.ArrowFunction, type: DataType & { kind: "function" }): string;
     compileValue(expression: ts.Expression): Value;
     expectObjectLiteral(
         expression: ts.Expression,
@@ -56,17 +22,17 @@ export interface CameraDeferralContext {
     ): ts.Expression | undefined;
     propertyName(name: ts.PropertyName): string | undefined;
     fail(node: ts.Node, message: string): never;
-    /**
-     * The resolved import symbols: the fold has to know that
-     * `isGizmoInteracting` is the pin's own predicate rather than a
-     * scene-local function that happens to share its spelling.
-     */
-    readonly symbols: CompilerSymbols;
 }
 
 export interface GizmoIntrinsicContext
     extends IntrinsicCallContext,
         CameraDeferralContext {
+    emit(line: string): void;
+    allocateTemporaryCppName(label: string): string;
+    withRecordScopes<T>(owner: Value, work: () => T): T;
+    compileCallbackWithValues(declaration: NonNullable<Value["callbackDeclaration"]>, arguments_: readonly Value[], node: ts.Node, discard?: boolean): Value;
+    emitDiscardedValue(value: Value): void;
+    captureStoredDataFunctionLines(work: () => void): { lines: string[]; capture: string };
     requireEngine(value: Value, node: ts.Node): string;
     requireDefaultEngine(node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
@@ -305,135 +271,27 @@ function compileEditGizmo(
     };
 }
 
-/**
- * The three pinned predicates a camera's `attachControl` options bag
- * defers to (`src/gizmo/pointer-drag.ts`).
- *
- * All three read the same module-level `_dispatchers` WeakMap, which only
- * `registerPointerDrag` populates -- and this port reaches no
- * pointer-drag registration at all (the `display-only-editing-gizmo`
- * adaptation), so `_dispatchers?.get(canvas)` is always undefined and
- * each returns `false` from the pinned body's own early return. That the
- * map has exactly that one writer is asserted at generation, beside the
- * gizmo family it belongs to.
- */
-const gizmoStatePredicates: ReadonlySet<string> = new Set([
-    "isGizmoInteracting",
-    "isGizmoDragging",
-    "isGizmoPickPending",
-]);
-
-/**
- * `attachControl`'s optional fourth argument, and what each member has to
- * fold to for the camera to keep handling its own pointer input.
- *
- * The pinned `attachControl` consults `shouldHandlePointerDown` on every
- * pointer-down and the other two on every pointer-move; those are the
- * only reads, so a bag whose members fold to these values selects exactly
- * the branches the no-options call selects and lowers to nothing.
- */
-const cameraDeferralMembers: ReadonlyMap<string, boolean> = new Map([
-    ["shouldHandlePointerDown", true],
-    ["isExternalDragActive", false],
-    ["isExternalPickPending", false],
-]);
-
-/** One `() => <predicate>(canvas)` callback, folded to its constant. */
-function foldGizmoStatePredicate(
+export function compileCameraDeferralOptions(
     context: CameraDeferralContext,
     expression: ts.Expression,
-    refusal: string,
-): boolean {
-    if (
-        !ts.isArrowFunction(expression) ||
-        expression.parameters.length !== 0 ||
-        ts.isBlock(expression.body)
-    ) {
-        context.fail(expression, refusal);
-    }
-    let body = expression.body as ts.Expression;
-    let negated = false;
-    if (
-        ts.isPrefixUnaryExpression(body) &&
-        body.operator === ts.SyntaxKind.ExclamationToken
-    ) {
-        negated = true;
-        body = body.operand;
-    }
-    if (
-        !ts.isCallExpression(body) ||
-        !ts.isIdentifier(body.expression) ||
-        !gizmoStatePredicates.has(
-            context.symbols.importedName(body.expression) ?? "",
-        ) ||
-        body.arguments.length !== 1
-    ) {
-        context.fail(expression, refusal);
-    }
-    const canvas = context.compileValue(body.arguments[0]!);
-    if (canvas.kind !== "browser") {
-        context.fail(
-            body.arguments[0]!,
-            "A gizmo state predicate reads the dispatcher registered for " +
-                `one canvas element, received ${canvas.kind}.`,
-        );
-    }
-    // The pinned body's own value with no dispatcher registered.
-    return negated;
-}
-
-/**
- * `attachControl(camera, canvas, scene, { ...deferral callbacks })`.
- *
- * Folded rather than refused, and folded rather than erased. Each
- * callback is proved to be one of the pin's three gizmo-state predicates
- * (optionally negated), each of which returns `false` here by the pinned
- * body quoted above; the resulting constants are then required to be the
- * ones that leave the pinned `attachControl` taking the same branches it
- * takes with no options at all. A bag that folds any other way would
- * change what the camera does, and native camera control has no external
- * interactor to defer to -- so it refuses by name instead of compiling a
- * camera that ignores it.
- */
-export function foldCameraDeferralOptions(
-    context: CameraDeferralContext,
-    expression: ts.Expression,
-): void {
-    const refusal =
-        "attachControl's camera-deferral callbacks fold from the pinned " +
-        "gizmo state predicates, so each must be `() => " +
-        "isGizmoInteracting(canvas)`, `() => isGizmoDragging(canvas)` or " +
-        "`() => isGizmoPickPending(canvas)`, optionally negated. Anything " +
-        "else is consulted only from a pointer handler this port does not " +
-        "reach, and would be accepted and then never called.";
+): Array<{ member: string; cpp: string }> {
     const options = context.expectObjectLiteral(expression);
-    validateObjectProperties(
-        context,
-        options,
-        [...cameraDeferralMembers.keys()],
-        "attachControl options support the three camera-deferral " +
-            "callbacks the pinned AttachControlOptions declares.",
-    );
-    for (const [member, inert] of cameraDeferralMembers) {
-        const supplied = context.objectProperty(options, member);
-        if (!supplied) {
-            continue;
+    const fields = [
+        ["shouldHandlePointerDown", "should_handle_pointer_down"],
+        ["isExternalDragActive", "external_drag_active"],
+        ["isExternalPickPending", "external_pick_pending"],
+    ] as const;
+    validateObjectProperties(context, options, fields.map(([name]) => name), "Unsupported camera-deferral option.");
+    return fields.flatMap(([source, member]) => {
+        const callback = context.objectProperty(options, source);
+        if (!callback) return [];
+        if (!ts.isArrowFunction(callback) || callback.parameters.length !== 0) {
+            context.fail(callback, "Camera deferral requires a zero-argument predicate callback.");
         }
-        if (foldGizmoStatePredicate(context, supplied, refusal) !== inert) {
-            context.fail(
-                supplied,
-                `attachControl's ${member} folds to ${String(!inert)} ` +
-                    "here: the pinned predicates read the pointer-drag " +
-                    "dispatcher map that only registerPointerDrag " +
-                    "populates, and this port reaches no pointer-drag " +
-                    "registration, so each returns false by the pinned " +
-                    "body's own early return. Only a bag that leaves the " +
-                    "camera handling its own pointer input lowers, because " +
-                    "native camera control has no external interactor to " +
-                    "defer the gesture to.",
-            );
-        }
-    }
+        return [{ member, cpp: context.compileStoredDataFunction(callback, {
+            kind: "function", parameters: [], result: { kind: "boolean" },
+        }) }];
+    });
 }
 
 /**
@@ -447,6 +305,7 @@ export function foldCameraDeferralOptions(
 interface CompositeGizmoShape {
     factory: string;
     attach: string;
+    dispose: string;
     /** The pinned coordinate-mode fan-out, where the pin declares one. */
     setLocal: string;
     kind: ValueKind;
@@ -466,6 +325,7 @@ const compositeGizmos: readonly CompositeGizmoShape[] = [
     {
         factory: "createPositionGizmo",
         attach: "attachPositionGizmoToNode",
+        dispose: "disposePositionGizmo",
         setLocal: "setPositionGizmoLocalCoordinates",
         kind: "position-gizmo",
         cppFactory: "bbl::create_position_gizmo",
@@ -488,6 +348,7 @@ const compositeGizmos: readonly CompositeGizmoShape[] = [
     {
         factory: "createRotationGizmo",
         attach: "attachRotationGizmoToNode",
+        dispose: "disposeRotationGizmo",
         setLocal: "setRotationGizmoLocalCoordinates",
         kind: "rotation-gizmo",
         cppFactory: "bbl::create_rotation_gizmo",
@@ -501,6 +362,7 @@ const compositeGizmos: readonly CompositeGizmoShape[] = [
     {
         factory: "createScaleGizmo",
         attach: "attachScaleGizmoToNode",
+        dispose: "disposeScaleGizmo",
         setLocal: "setScaleGizmoLocalCoordinates",
         kind: "scale-gizmo",
         cppFactory: "bbl::create_scale_gizmo",
@@ -614,6 +476,27 @@ function compileCompositeLocalCoordinates(
             `bbl::set_composite_gizmo_local_coordinates(` +
             `${context.requireEngine(gizmo, call)}, ` +
             `${gizmo.cpp}, ${useLocal.cpp})`,
+    };
+}
+
+/** `dispose<Composite>Gizmo(gizmo, layer)`. */
+function compileCompositeDispose(
+    context: GizmoIntrinsicContext,
+    shape: CompositeGizmoShape,
+    call: ts.CallExpression,
+): Value {
+    context.expectArgumentCount(call, 2, 2);
+    const gizmo = context.compileValue(call.arguments[0]!);
+    const layer = context.compileValue(call.arguments[1]!);
+    context.expectKind(gizmo, shape.kind, call.arguments[0]!);
+    context.expectKind(layer, "utility-layer", call.arguments[1]!);
+    context.expectSameEngine(gizmo, layer, call);
+    return {
+        kind: "void",
+        cpp:
+            `bbl::dispose_composite_gizmo(` +
+            `${context.requireEngine(gizmo, call)}, ` +
+            `${gizmo.cpp}, ${layer.cpp})`,
     };
 }
 
@@ -783,8 +666,24 @@ export function compileGizmoIntrinsic(
                 call,
             );
         }
+        if (importedName === shape.dispose) {
+            return compileCompositeDispose(context, shape, call);
+        }
     }
     switch (importedName) {
+        case "registerPointerDrag": {
+            return compilePointerDragRegistration(context, call);
+        }
+
+        case "isGizmoDragging":
+        case "isGizmoPickPending":
+        case "isGizmoInteracting":
+            context.expectArgumentCount(call, 1, 1);
+            return {
+                kind: "boolean",
+                cpp: `bbl::pointer_drag_state(${pointerDispatcherCpp(context, context.compileValue(call.arguments[0]!), call)}, ${importedName === "isGizmoDragging" ? 0 : importedName === "isGizmoPickPending" ? 1 : 2}u)`,
+            };
+
         case "createBoundingBoxGizmo":
             return compileBoundingBoxGizmo(context, call);
 
@@ -833,6 +732,22 @@ export function compileGizmoIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::register_utility_layer(` +
+                    `${context.requireEngine(layer, call)}, ${layer.cpp})`,
+            };
+        }
+
+        case "disposeUtilityLayer": {
+            context.expectArgumentCount(call, 1, 1);
+            const layer = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                layer,
+                "utility-layer",
+                call.arguments[0]!,
+            );
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::dispose_utility_layer(` +
                     `${context.requireEngine(layer, call)}, ${layer.cpp})`,
             };
         }

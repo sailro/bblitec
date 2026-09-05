@@ -56,8 +56,8 @@ bool run_effect_gpu_engine(Engine& engine) {
         if (color) SDL_ReleaseGPUTexture(device, color);
         if (window && device) SDL_ReleaseWindowFromGPUDevice(device, window);
         if (device) SDL_DestroyGPUDevice(device);
-        if (window) SDL_DestroyWindow(window);
-        SDL_Quit();
+        if (window) release_run_window(window);
+        quit_run_sdl();
     };
 
     try {

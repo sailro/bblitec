@@ -142,6 +142,91 @@ test("gates each family's fit and publishes the verdict to the task loops", () =
     }
 });
 
+test("fits CSM casters to every active non-degenerate thin instance", () => {
+    const shared = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    assert.match(
+        shared,
+        /const std::size_t active_instances =\s*thin_instance_active_count\(record\);/,
+    );
+    assert.match(
+        shared,
+        /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instanced && active_instances > 0/,
+    );
+    assert.match(shared, /if \(linear_magnitude < 1e-9\) continue;/);
+    assert.match(shared, /caster\.instance = instance;\s*caster\.has_instance = true;\s*casters\.push_back\(caster\);/);
+    assert.doesNotMatch(shared, /A thin-instanced mesh is a caster/);
+
+    const header = pinnedShadowHeader(new LoweringContext());
+    assert.match(header, /std::array<float, 16> instance\{\};\s*bool has_instance = false;/);
+    assert.match(
+        header,
+        /const double instance_x = caster\.has_instance[\s\S]{0,900}caster\.world\[0\] \* instance_x/,
+    );
+});
+
+test("builds vertex-only custom shader pipelines for shadow targets", () => {
+    const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    assert.match(
+        sdl,
+        /std::vector<SDL_GPUGraphicsPipeline\*> shader_shadow_pipelines;/,
+    );
+    assert.match(
+        sdl,
+        /if \(render_features\.shader_shadow_variants\[variant\]\) \{[\s\S]{0,700}shadow_pipeline_info\.fragment_shader =\s*depth_only_fragment_shader;[\s\S]{0,700}pass_depth_compare\(true\)[\s\S]{0,700}SDL_GPU_TEXTUREFORMAT_D32_FLOAT[\s\S]{0,700}shader_shadow_pipelines\[variant\]/,
+    );
+    assert.match(
+        sdl,
+        /shadow_pipeline_info[\s\S]{0,1800}if \(!variant_fragment_shader\) continue;\s*state\.shader_pipelines\[variant\]/,
+    );
+    assert.match(
+        sdl,
+        /draw_scene\(\s*graph_scene, graph_meshes,\s*shadow_pass,[\s\S]{0,300}state\.shader_shadow_pipelines,\s*state\.shader_shadow_pipelines/,
+    );
+
+    const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
+    assert.match(dawn, /DawnPipeline>\s+shader_shadow_pipelines;/);
+    assert.match(
+        dawn,
+        /auto& pipeline_map = shadow_pass\s*\? state\.shader_shadow_pipelines/,
+    );
+    assert.match(
+        dawn,
+        /depth_stencil\.format = shadow_pass\s*\? WGPUTextureFormat_Depth32Float/,
+    );
+    assert.match(
+        dawn,
+        /descriptor\.fragment = shadow_pass &&\s*shader_info\s*\? nullptr/,
+    );
+    assert.match(dawn, /if \(!shadow_pass && !state\.shader_fragment_modules\[shader_variant\]\) \{/);
+    // Reflection describes uniform blocks, not whether a fragment stage
+    // exists. A color shader without a fragment UBO is not a shadow caster.
+    const renderer = readFileSync("src/lowering/renderer-lowerer.ts", "utf8");
+    assert.match(renderer, /shader_shadow_variants\.at\(material\.shader_variant\) = true;/);
+    assert.match(renderer, /task\.render\.shadow_generator\.value != invalid_handle/);
+    assert.doesNotMatch(sdl, /if \(!info\.fragment\.present\)/);
+    // A custom caster keeps the same reflected groups as its colour
+    // sibling. In particular, group 0 is the caller's vertex storage -- it
+    // is not the optional morph-storage group from the ordinary mesh
+    // layout -- and every task supplies its own light-space uniform block.
+    assert.match(
+        dawn,
+        /WGPUPipelineLayout shader_pipeline_layout_for\([\s\S]{0,3200}WGPUBufferBindingType_ReadOnlyStorage/,
+    );
+    assert.match(dawn, /return WGPUTextureViewDimension_2DArray;/);
+    assert.match(
+        dawn,
+        /descriptor\.layout = shader_info\s*\? shader_pipeline_layout_for\(state, shader_variant\)\s*: mesh_pipeline_layout_for\(state\)/,
+    );
+    assert.match(
+        dawn,
+        /esm_shadow_index,\s*render_task\.view_projection\);/,
+    );
+    assert.match(
+        dawn,
+        /sync_shader_storage_buffers\(state, engine\);/,
+    );
+});
+
 test("resolves forceRefreshEveryFrame into the emitted options", () => {
     const compile = (option: string): string =>
         compileSource(`

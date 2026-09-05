@@ -11,10 +11,12 @@ import {
 import type {
     CompileAsset,
     CompiledNodeParticles,
+    Feature,
     Value,
     ValueKind,
 } from "./types.js";
-import { isTrsVectorName, lightVectorSetter } from "./assignments.js";
+import { lightVectorSetter } from "./assignments.js";
+import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -36,6 +38,7 @@ export interface StatementLoweringContext {
     resolveStaticExpression(expression: ts.Expression): ts.Expression;
     /** Marks that a scene threw, so the generated main includes <stdexcept>. */
     reachThrow(): void;
+    reachFeature(feature: Feature, site: ts.Node): void;
     reachJsData(): void;
     cppString(value: string): string;
     emitDataAssignment(
@@ -45,13 +48,22 @@ export interface StatementLoweringContext {
         expression: ts.BinaryExpression,
         target: Value,
     ): boolean;
+    assignOptionalResourceValue(
+        target: Value,
+        value: Value,
+        node: ts.Node,
+    ): void;
     emitDataPostfix(
         expression: ts.PostfixUnaryExpression,
     ): boolean;
     dataIterationTarget(
         expression: ts.Expression,
     ):
-        | { container: Value; element: DataIterationElement }
+        | {
+              container: Value;
+              element: DataIterationElement;
+              template?: Value;
+          }
         | undefined;
     assetEntitiesIterationTarget(
         expression: ts.Expression,
@@ -72,6 +84,7 @@ export interface StatementLoweringContext {
         name: ts.BindingName,
         itemCpp: string,
         element: DataIterationElement,
+        template?: Value,
     ): void;
     activeNativeReturnType():
         | DataType
@@ -376,6 +389,7 @@ const MAX_STATIC_UNROLL_PRODUCT = 256;
 // emitted C++, so a replacement can never collide with scene text.
 const HANDLE_TOKEN_PLACEHOLDER = "\u0001";
 const BITWISE_ASSIGNMENT_HELPERS: Readonly<Record<string, string>> = {
+    "%=": "remainder_js",
     "&=": "bitwise_and",
     "|=": "bitwise_or",
     "^=": "bitwise_xor",
@@ -389,6 +403,7 @@ const ASSIGNMENT_OPERATORS: ReadonlyMap<ts.SyntaxKind, string> = new Map([
     [ts.SyntaxKind.MinusEqualsToken, "-="],
     [ts.SyntaxKind.AsteriskEqualsToken, "*="],
     [ts.SyntaxKind.SlashEqualsToken, "/="],
+    [ts.SyntaxKind.PercentEqualsToken, "%="],
     [ts.SyntaxKind.AmpersandEqualsToken, "&="],
     [ts.SyntaxKind.BarEqualsToken, "|="],
     [ts.SyntaxKind.CaretEqualsToken, "^="],
@@ -1344,11 +1359,14 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
-        const finallyGuard = statement.finallyBlock
+        const capturedFinally = statement.finallyBlock
             ? this.captureFinallyGuard(
                   context,
                   statement.finallyBlock,
               )
+            : undefined;
+        const finallyGuard = capturedFinally?.length
+            ? capturedFinally
             : undefined;
         if (finallyGuard) {
             context.reachJsData();
@@ -1364,16 +1382,22 @@ export class StatementLowerer {
             context.emit("});");
         }
         if (statement.catchClause) {
-            if (
-                statement.catchClause.variableDeclaration &&
-                !this.catchBindingIsErased(
+            const catchDeclaration =
+                statement.catchClause.variableDeclaration;
+            const erasedCatchBinding =
+                catchDeclaration !== undefined &&
+                this.catchBindingIsErased(
                     context,
                     statement.catchClause,
-                )
+                );
+            if (
+                catchDeclaration &&
+                !erasedCatchBinding &&
+                !ts.isIdentifier(catchDeclaration.name)
             ) {
                 context.fail(
-                    statement.catchClause.variableDeclaration,
-                    "Native catch bindings are supported only when every read erases with browser-only instrumentation.",
+                    catchDeclaration,
+                    "Native catch bindings require an identifier.",
                 );
             }
             context.emit("try {");
@@ -1390,12 +1414,31 @@ export class StatementLowerer {
                 context.popScope();
                 context.decreaseIndent();
             }
-            context.emit("} catch (...) {");
+            const catchCpp =
+                catchDeclaration && !erasedCatchBinding
+                    ? context.allocateTemporaryCppName("caught_error")
+                    : undefined;
+            context.emit(
+                catchCpp
+                    ? `} catch (const std::exception& ${catchCpp}) {`
+                    : "} catch (...) {",
+            );
             context.increaseIndent();
             context.pushScope(
                 context.allocateBlockPrefix(),
             );
             try {
+                if (
+                    catchCpp &&
+                    catchDeclaration &&
+                    ts.isIdentifier(catchDeclaration.name)
+                ) {
+                    context.bindLocalValue(catchDeclaration.name, {
+                        kind: "data",
+                        cpp: `std::string(${catchCpp}.what())`,
+                        dataType: { kind: "string" },
+                    });
+                }
                 for (const child of statement.catchClause
                     .block.statements) {
                     this.emit(context, child);
@@ -1417,6 +1460,18 @@ export class StatementLowerer {
                 "A try statement is lowered only with a finally block " +
                     "that erases to nothing.",
             );
+        }
+        if (!finallyGuard) {
+            context.pushScope(context.allocateBlockPrefix());
+            try {
+                for (const child of statement.tryBlock.statements) {
+                    this.emit(context, child);
+                    if (this.terminatesAfterLowering(child)) break;
+                }
+            } finally {
+                context.popScope();
+            }
+            return;
         }
         this.emitScopedBody(context, statement.tryBlock);
         if (finallyGuard) {
@@ -2130,6 +2185,15 @@ export class StatementLowerer {
         ) {
             return;
         }
+        // A callback list is a live subscription set, even if its generation
+        // snapshot is an empty tuple before another stored closure adds to it.
+        const runtimeTarget = ts.isIdentifier(context.unwrap(statement.expression))
+            ? context.dataIterationTarget(statement.expression)
+            : undefined;
+        if (runtimeTarget?.element.kind === "function" &&
+            this.emitRuntimeForOf(context, statement, declaration)) {
+            return;
+        }
         if (
             this.emitTupleForOf(
                 context,
@@ -2144,13 +2208,8 @@ export class StatementLowerer {
         // iterate its native contents. Looking only through the identifier
         // to its original `[]` initializer would incorrectly unroll zero
         // iterations and erase the body.
-        const runtimeHandleTarget = ts.isIdentifier(
-            context.unwrap(statement.expression),
-        )
-            ? context.dataIterationTarget(statement.expression)
-            : undefined;
         if (
-            runtimeHandleTarget?.element.kind === "handle" &&
+            runtimeTarget?.element.kind === "handle" &&
             this.emitRuntimeForOf(
                 context,
                 statement,
@@ -2693,7 +2752,7 @@ export class StatementLowerer {
             // generation-time identity facts learned in the body (notably a
             // light's scene slot) are visible through every alias after the
             // loop. Plain-data lanes still get native iteration storage.
-            if (isHandleKind(value.kind) || value.kind === "light") {
+            if (isHandleKind(value.kind)) {
                 context.bindCompileTimeValue(name, value);
             } else {
                 context.bindLocalValue(name, value);
@@ -2823,35 +2882,42 @@ export class StatementLowerer {
         }
         const item =
             context.allocateTemporaryCppName("item");
+        const lines = context.captureEmittedLines(() => {
+            context.pushScope(
+                context.allocateBlockPrefix(),
+            );
+            try {
+                context.bindDataIterationVariable(
+                    declaration.name,
+                    item,
+                    target.element,
+                    target.template,
+                );
+                const statements = ts.isBlock(
+                    statement.statement,
+                )
+                    ? statement.statement.statements
+                    : [statement.statement];
+                this.inRuntimeIteration(context, () => {
+                    this.inRuntimeControlFlow(context, () => {
+                        for (const nested of statements) {
+                            this.emit(context, nested);
+                        }
+                    });
+                });
+            } finally {
+                context.popScope();
+            }
+        });
         context.emit(
             `for (auto&& ${item} : ${target.container.cpp}) {`,
         );
         context.increaseIndent();
-        context.pushScope(
-            context.allocateBlockPrefix(),
-        );
-        try {
-            context.bindDataIterationVariable(
-                declaration.name,
-                item,
-                target.element,
-            );
-            const statements = ts.isBlock(
-                statement.statement,
-            )
-                ? statement.statement.statements
-                : [statement.statement];
-            this.inRuntimeIteration(context, () => {
-                this.inRuntimeControlFlow(context, () => {
-                    for (const nested of statements) {
-                        this.emit(context, nested);
-                    }
-                });
-            });
-        } finally {
-            context.popScope();
-            context.decreaseIndent();
+        for (const line of lines) context.emit(line);
+        if (!new RegExp(`\\b${item}\\b`).test(lines.join("\n"))) {
+            context.emit(`static_cast<void>(${item});`);
         }
+        context.decreaseIndent();
         context.emit("}");
         return true;
     }
@@ -3051,6 +3117,14 @@ export class StatementLowerer {
                         `Assignment operator '${operator}' is not supported for ${target.kind}.`,
                     );
                 }
+            } else if (
+                assignmentOperator === "=" &&
+                ts.isArrayLiteralExpression(unwrapped.left) &&
+                !ts.isArrayLiteralExpression(
+                    context.unwrap(unwrapped.right),
+                )
+            ) {
+                this.emitTupleResourceAssignment(context, unwrapped);
             } else {
                 context.emitAssignment(unwrapped);
             }
@@ -3234,6 +3308,65 @@ export class StatementLowerer {
         );
     }
 
+    /** Assigns a tuple result to definite-assignment resource bindings. */
+    private emitTupleResourceAssignment(
+        context: StatementLoweringContext,
+        expression: ts.BinaryExpression,
+    ): void {
+        const left = context.unwrap(expression.left);
+        if (!ts.isArrayLiteralExpression(left)) {
+            context.fail(left, "Tuple assignment requires an array target.");
+        }
+        const value = context.compileValue(expression.right);
+        if (
+            value.kind !== "tuple" ||
+            !value.tupleElements ||
+            value.tupleElements.length !== left.elements.length
+        ) {
+            context.fail(
+                expression.right,
+                "Array destructuring assignment requires a matching tuple-producing expression.",
+            );
+        }
+        const targets = left.elements.map((element) => {
+            if (!ts.isIdentifier(element)) {
+                context.fail(
+                    element,
+                    "Tuple resource assignment supports identifier targets.",
+                );
+            }
+            const target = context.lookup(element);
+            if (!target.optionalStorageCpp) {
+                context.fail(
+                    element,
+                    "Tuple resource assignment requires predeclared resource storage.",
+                );
+            }
+            return { identifier: element, value: target };
+        });
+        const temporaries = value.tupleElements.map((element, index) => {
+            const target = targets[index]!.value;
+            if (element.kind !== target.kind) {
+                context.fail(
+                    expression.right,
+                    `Tuple resource target expects ${target.kind}, received ${element.kind}.`,
+                );
+            }
+            const name = context.allocateTemporaryCppName(
+                "destructure_resource",
+            );
+            context.emit(`const auto ${name} = ${element.cpp};`);
+            return { ...element, cpp: name };
+        });
+        targets.forEach((target, index) => {
+            context.assignOptionalResourceValue(
+                target.value,
+                temporaries[index]!,
+                target.identifier,
+            );
+        });
+    }
+
     private numericAssignmentCpp(
         context: StatementLoweringContext,
         target: string,
@@ -3262,15 +3395,12 @@ export class StatementLowerer {
         if (!ts.isPropertyAccessExpression(owner)) {
             return false;
         }
-        // Identifier owners look up directly; anything else compiles as
-        // a value so a mesh read out of the data model (a handle in a
-        // struct or array) sets its transform like a mesh local.
-        const target = ts.isIdentifier(owner.expression)
-            ? context.lookup(owner.expression)
-            : context.compileValue(owner.expression);
+        // Value compilation also applies the checker's non-null narrowing
+        // to a handle destructured from a retained record.
+        const target = context.compileValue(owner.expression);
         if (
             target.kind === "camera" &&
-            ["position", "target"].includes(
+            ["position", "target", "upVector"].includes(
                 owner.name.text,
             )
         ) {
@@ -3288,8 +3418,12 @@ export class StatementLowerer {
                     context.compileNumber(argument, "double"),
                 )
                 .join(", ")}}`;
+            const field =
+                owner.name.text === "upVector"
+                    ? "up_vector"
+                    : owner.name.text;
             context.emit(
-                `${context.requireEngine(target, call)}.cameras[${target.cpp}.value].${owner.name.text} = ${vector};`,
+                `${context.requireEngine(target, call)}.cameras[${target.cpp}.value].${field} = ${vector};`,
             );
             return true;
         }
@@ -3304,128 +3438,151 @@ export class StatementLowerer {
         if (
             target.kind === "asset-root" &&
             (owner.name.text === "position" ||
-                owner.name.text === "rotation")
+                owner.name.text === "rotation" ||
+                owner.name.text === "rotationQuaternion" ||
+                owner.name.text === "scaling")
         ) {
             context.assertAssetRootWritable(target, call);
+            if (
+                owner.name.text === "rotationQuaternion" ||
+                owner.name.text === "scaling"
+            ) {
+                const expected =
+                    owner.name.text === "rotationQuaternion"
+                        ? [0, 0, 0, 1]
+                        : [1, 1, 1];
+                if (call.arguments.length !== expected.length) {
+                    context.fail(
+                        call,
+                        `${owner.name.text}.set expects exactly ${expected.length} numeric arguments.`,
+                    );
+                }
+                const values = call.arguments.map((argument) =>
+                    context.compileValue(argument),
+                );
+                if (
+                    values.some(
+                        (value, index) =>
+                            value.kind !== "number" ||
+                            value.staticNumber !== expected[index],
+                    )
+                ) {
+                    context.fail(
+                        call,
+                        owner.name.text === "scaling"
+                            ? "An imported glTF root currently supports resetting its synthetic handedness scale to identity."
+                            : "An imported glTF root currently supports resetting its synthetic rotation quaternion to identity.",
+                    );
+                }
+                if (owner.name.text === "scaling") {
+                    context.emit(
+                        `bbl::reset_asset_root_scaling(` +
+                            `${context.requireEngine(target, call)}, ${target.cpp});`,
+                    );
+                }
+                return true;
+            }
             const components = this.setCallComponents(
                 context,
                 call,
                 3,
                 `${owner.name.text}.set`,
+                "float",
             );
             const engine = context.requireEngine(target, call);
-            components.forEach((component, axis) =>
-                context.emit(
-                    `bbl::set_asset_root_${owner.name.text}_component(` +
-                        `${engine}, ${target.cpp}, ${axis}u, ${component});`,
-                ),
+            const transform = sceneNodeTransformDescriptor(
+                owner.name.text,
+            );
+            if (!transform?.assetSetter) {
+                context.fail(
+                    owner,
+                    `An imported root has no '${owner.name.text}' writer.`,
+                );
+            }
+            context.emit(
+                `bbl::${transform.assetSetter}(` +
+                    `${engine}, ${target.cpp}, ` +
+                    `bbl::Vec3{${components.join(", ")}});`,
             );
             return true;
         }
-        if (target.kind === "transform-node") {
+        const transform = sceneNodeTransformDescriptor(owner.name.text);
+        if (
+            (target.kind === "transform-node" ||
+                target.kind === "scene-node") &&
+            transform
+        ) {
             // A node's TRS lanes are the same ObservableVec3/ObservableQuat
             // a mesh's are -- upstream a TransformNode IS a SceneNode -- so
             // each write moves the field and marks the node's local matrix
             // dirty. The version bump is what a child re-bakes against.
-            const property = owner.name.text;
-            const setters: Readonly<Record<string, {
-                entry: string;
-                components: number;
-                wide: boolean;
-            }>> = {
-                position: {
-                    entry: "set_transform_node_position",
-                    components: 3,
-                    wide: true,
-                },
-                scaling: {
-                    entry: "set_transform_node_scaling",
-                    components: 3,
-                    wide: false,
-                },
-                rotation: {
-                    entry: "set_transform_node_rotation",
-                    components: 3,
-                    wide: false,
-                },
-                rotationQuaternion: {
-                    entry: "set_transform_node_rotation_quaternion",
-                    components: 4,
-                    wide: false,
-                },
-            };
-            const setter = setters[property];
-            if (!setter) return false;
-            const type = setter.wide
-                ? "bbl::Vec3d"
-                : setter.components === 4
-                  ? "bbl::Vec4"
-                  : "bbl::Vec3";
-            const vector = `${type}{${this.setCallComponents(
+            if (target.kind === "scene-node") {
+                context.reachFeature("scene:node-transforms", call);
+            }
+            let targetCpp = target.cpp;
+            if (target.kind === "scene-node") {
+                targetCpp = context.allocateTemporaryCppName(
+                    "scene_node_transform_target",
+                );
+                context.emit(`const auto ${targetCpp} = ${target.cpp};`);
+            }
+            const vector = `${transform.cppType}{${this.setCallComponents(
                 context,
                 call,
-                setter.components,
-                `${property}.set`,
-                setter.wide ? "double" : undefined,
+                transform.components.length,
+                `${transform.sourceProperty}.set`,
+                transform.precision,
             ).join(", ")}}`;
+            const runtimeTransform =
+                context.meshTransformDirtyEntry() ===
+                "mark_mesh_runtime_transform";
             context.emit(
-                `bbl::${setter.entry}(` +
+                `bbl::${
+                    target.kind === "scene-node"
+                        ? transform.sceneNodeSetter
+                        : transform.transformNodeSetter
+                }(` +
                     `${context.requireEngine(target, call)}, ` +
-                    `${target.cpp}, ${vector});`,
+                    `${targetCpp}, ${vector}, ${runtimeTransform});`,
             );
             return true;
         }
         if (target.kind !== "mesh") {
             return false;
         }
-        if (owner.name.text === "rotationQuaternion") {
-            const components = this.setCallComponents(
-                context,
-                call,
-                4,
-                "rotationQuaternion.set",
-                "float",
-            );
-            const engine = context.requireEngine(target, call);
+        if (!transform) {
+            return false;
+        }
+        const components = this.setCallComponents(
+            context,
+            call,
+            transform.components.length,
+            `${transform.sourceProperty}.set`,
+            transform.precision,
+        );
+        const vector = `${transform.cppType}{${components.join(", ")}}`;
+        const engine = context.requireEngine(target, call);
+        const runtimeTransform =
+            context.meshTransformDirtyEntry() ===
+            "mark_mesh_runtime_transform";
+        if (transform.meshSetter) {
             context.emit(
-                `bbl::set_mesh_rotation_quaternion(${engine}, ${target.cpp}, ` +
-                    `bbl::Vec4{${components.join(", ")}}, ` +
-                    `${context.meshTransformDirtyEntry() === "mark_mesh_runtime_transform"});`,
+                `bbl::${transform.meshSetter}(` +
+                    `${engine}, ${target.cpp}, ${vector}, ` +
+                    `${runtimeTransform});`,
             );
             return true;
         }
-        if (!isTrsVectorName(owner.name.text)) {
-            return false;
-        }
-        if (call.arguments.length !== 3) {
-            context.fail(
-                call,
-                `${owner.name.text}.set expects exactly three numeric arguments.`,
-            );
-        }
-        // A mesh's translation is kept at the pin's own width: upstream
-        // holds three JavaScript numbers, and at large-world coordinates
-        // the float32 ULP is half a unit -- enough to move a silhouette
-        // before anything downstream can recover it. Rotation and scaling
-        // stay float, which is the width every consumer reads them at.
-        const wide = owner.name.text === "position";
-        const vector = `${wide ? "bbl::Vec3d" : "bbl::Vec3"}{${call.arguments
-            .map((argument) =>
-                context.compileNumber(
-                    argument,
-                    wide ? "double" : undefined,
-                ),
-            )
-            .join(", ")}}`;
-        const engine = context.requireEngine(target, call);
         context.emit(
-            `${engine}.meshes[${target.cpp}.value].${owner.name.text} = ${vector};`,
+            `${engine}.meshes[${target.cpp}.value].` +
+                `${transform.nativeField} = ${vector};`,
         );
         // Baked ordinary geometry includes its parent world matrix. Mark
         // the complete dependent subtree so parent-only motion re-uploads
         // children as well as the mesh directly written here.
         context.emit(
-            `bbl::${context.meshTransformDirtyEntry()}(${engine}, ${target.cpp});`,
+            `bbl::${context.meshTransformDirtyEntry()}(` +
+                `${engine}, ${target.cpp});`,
         );
         return true;
     }
@@ -3527,10 +3684,15 @@ export class StatementLowerer {
                     `${label} spreads a value that is not a ${arity}-element numeric tuple.`,
                 );
             }
-            return tupleComponents(
+            const components = tupleComponents(
                 context.bindDataTuple(value, arity, "spread"),
                 arity,
             );
+            return precision === "float"
+                ? components.map(
+                      (component) => `static_cast<float>(${component})`,
+                  )
+                : components;
         }
         if (call.arguments.length !== arity) {
             context.fail(

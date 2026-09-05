@@ -823,6 +823,12 @@ export class PinnedNumericLowerer {
                 continue;
             }
             const initializer = this.unwrap(declaration.initializer);
+            if (this.scope.vec3Literal && ts.isObjectLiteralExpression(initializer)) {
+                const value = this.expression(initializer);
+                this.scope.bindings.set(name, { cpp: name, type: "vec3" });
+                lines.push(`${indent}${isConst ? "const " : ""}Vec3d ${name} = ${value};`);
+                continue;
+            }
             // A call the caller declared matrix-valued binds the fixed
             // matrix, so a later element read indexes it rather than
             // indexing a double.
@@ -1253,6 +1259,8 @@ export class PinnedNumericLowerer {
      * dropped where the statement supplies its own.
      */
     private condition(expression: ts.Expression): string {
+        const absent = this.absenceTest(expression);
+        if (absent !== undefined) return `!(${absent})`;
         const text = this.expression(expression);
         if (!text.startsWith("(") || !text.endsWith(")")) return text;
         let depth = 0;

@@ -48,6 +48,8 @@ namespace bbl::pal {
 struct alignas(256) DawnPickMeshUniforms {
     std::array<float, 16> world{};
     std::uint32_t pick_id = 0;
+    std::uint32_t excluded_thin_instance_start = 0;
+    std::uint32_t excluded_thin_instance_count = 0;
 };
 static_assert(
     sizeof(DawnPickMeshUniforms) == 256,
@@ -178,6 +180,34 @@ inline WGPUBindGroupLayout create_dawn_pick_mesh_layout(
     if (!layout) dawn_error("pick mesh bind group layout");
     return layout;
 }
+
+#if BBLITE_GPU_INSTANCING
+/** The advanced thin arm adds the instance-matrix storage binding. */
+inline WGPUBindGroupLayout create_dawn_pick_thin_layout(
+    WGPUDevice device) {
+    std::array<WGPUBindGroupLayoutEntry, 2> entries{};
+    for (WGPUBindGroupLayoutEntry& entry : entries) {
+        entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+    }
+    entries[0].binding = 0;
+    entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
+    entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+    entries[0].buffer.hasDynamicOffset = true;
+    entries[0].buffer.minBindingSize = sizeof(DawnPickMeshUniforms);
+    entries[1].binding = 1;
+    entries[1].visibility = WGPUShaderStage_Vertex;
+    entries[1].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+    entries[1].buffer.minBindingSize = sizeof(std::array<float, 16>);
+    WGPUBindGroupLayoutDescriptor descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    descriptor.entryCount = entries.size();
+    descriptor.entries = entries.data();
+    WGPUBindGroupLayout layout =
+        wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+    if (!layout) dawn_error("pick thin bind group layout");
+    return layout;
+}
+#endif
 
 /**
  * The pin's own attachment formats, shared by every pick pipeline: the id

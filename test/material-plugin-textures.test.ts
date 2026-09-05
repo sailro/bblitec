@@ -198,6 +198,58 @@ test("folds a MaterialPlugin through a bounded local factory call", () => {
     );
 });
 
+test("keeps optional mesh identity and Standard inputs for plugin composition", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            createStandardMaterial,
+            enableMaterialPlugins,
+            loadTexture2D,
+            registerScene,
+            type Mesh,
+        } from "@babylonjs/lite";
+        async function main(): Promise<void> {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            let mesh: Mesh;
+            try {
+                mesh = createBox(engine, { width: 1, height: 1, depth: 1 });
+            } catch {
+                throw new Error("mesh creation failed");
+            }
+            const material = createStandardMaterial();
+            material.diffuseTexture = await loadTexture2D(engine, "${INLINE_PNG}", {});
+            material.alpha = 0.5;
+            material.plugins = [{
+                name: "fade",
+                getCustomCode: (shaderType) =>
+                    shaderType === "fragment"
+                        ? { CUSTOM_FRAGMENT_UPDATE_ALPHA: "alpha *= 0.5;" }
+                        : null,
+            }];
+            mesh.material = material;
+            addToScene(scene, mesh);
+            enableMaterialPlugins(scene);
+            await registerScene(scene);
+        }
+    `);
+
+    assert.deepEqual(result.manifest.standardMaterialPluginInputs, [[{
+        diffuseTexture: {},
+        alpha: 0.5,
+        pluginIndex: 1,
+    }]]);
+    assert.equal(result.manifest.sceneMeshes[0]?.standardMaterial, true);
+    assert.equal(
+        result.manifest.sceneMeshes[0]?.standardMaterialPluginIndex,
+        1,
+    );
+});
+
 test("binds a plugin's textures in getSamplers order", () => {
     const result = compileSource(
         pluginScene("createPairPlugin({ a: tint, b: stripe })", factoryDeclaration),

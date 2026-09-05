@@ -437,14 +437,29 @@ function Write-StageSlots {
     #>
     param([string]$Path, [string]$normalized)
 
-    $sampledCount = [regex]::Matches(
-        $normalized,
-        "Texture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(t\d+"
-    ).Count
+    # D3D12 shares sampled textures and read-only storage buffers only
+    # within one register space. Pinned shaders remap both into the same
+    # space; generic shader materials retain their WGSL group spaces. Count
+    # the sampled prefix per space so a storage buffer in space0 is not
+    # rebased by textures living in space2.
+    $sampledBySpace = @{}
+    foreach (
+        $sampled in [regex]::Matches(
+            $normalized,
+            "Texture\w*(?:<[^>]+>)?\s+\w+\s*:\s*register\(t\d+(?:, space(\d+))?"
+        )
+    ) {
+        $space = if ($sampled.Groups[1].Success) {
+            [int]$sampled.Groups[1].Value
+        } else {
+            0
+        }
+        $sampledBySpace[$space] = 1 + ($sampledBySpace[$space] ?? 0)
+    }
     $slots = @(
         [regex]::Matches(
             $normalized,
-            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)"
+            "(?:cbuffer\s+cbuffer_(\w+)|(?:Texture\w*(?:<[^>]+>)?|Sampler\w*State)\s+(\w+)|(?:RW)?(?:ByteAddress|Structured)Buffer(?:<[^>]+>)?\s+(\w+))\s*:\s*register\(([tsb])(\d+)(?:, space(\d+))?"
         ) |
             ForEach-Object {
                 $storage = $_.Groups[3].Success
@@ -457,7 +472,13 @@ function Write-StageSlots {
                 }
                 $class = if ($storage) { "r" } else { $_.Groups[4].Value }
                 $index = if ($storage) {
-                    [int]$_.Groups[5].Value - $sampledCount
+                    $space = if ($_.Groups[6].Success) {
+                        [int]$_.Groups[6].Value
+                    } else {
+                        0
+                    }
+                    [int]$_.Groups[5].Value -
+                        ($sampledBySpace[$space] ?? 0)
                 } else {
                     [int]$_.Groups[5].Value
                 }

@@ -160,6 +160,18 @@ inline void trace_dynamic_frame(
             << ",instance-version=" << system.instance_version
             << ",checksum=" << checksum << '}';
     }
+    for (std::size_t index = 0; index < engine.storage_buffers.size(); ++index) {
+        const auto& buffer = engine.storage_buffers[index];
+        if (buffer.disposed) continue;
+        std::cerr << " storage[" << index << "]={label=" << buffer.label
+            << ",version=" << buffer.version << ",bytes=" << buffer.bytes.size() << '}';
+    }
+    for (const auto& drag : engine.edit_gizmos) {
+        if (!drag.dragging || drag.attached_node.value >= engine.meshes.size()) continue;
+        const auto& node = engine.meshes[drag.attached_node.value];
+        std::cerr << " drag={node=" << node.name << ",position=("
+            << node.position.x << ',' << node.position.y << ',' << node.position.z << ")}";
+    }
     std::cerr << '\n';
 }
 

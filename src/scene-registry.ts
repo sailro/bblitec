@@ -3,11 +3,17 @@ export interface SceneParityDefinition {
     referenceTimeSeconds?: number;
     referenceAnimationGroups?: string[];
     /**
-     * Freeze the browser RAF scheduler on this exact positive native frame and
-     * derive the native screenshot frame from the same value. Live
-     * application shaders must use this instead of a wall-clock settle.
+     * Freeze the browser RAF scheduler on this exact positive frame and derive
+     * the native screenshot gate from it. Live application shaders must use
+     * this instead of a wall-clock settle.
      */
     referenceFrame?: number;
+    /**
+     * Offset the native screenshot gate from `referenceFrame`. This is for a
+     * renderer boundary whose browser-side update becomes visible on the next
+     * draw; it does not move the browser reference pose.
+     */
+    nativeFrameOffset?: number;
     /**
      * The query string the pinned parity spec serves this scene at, when it
      * serves one (`"?seekTime=0"`). The reference page is navigated with it
@@ -4206,6 +4212,32 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "antigravity-racer",
+        name: "Antigravity Racer",
+        source: "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Antigravity Racer",
+        nativeHostUi: "ui/antigravity-racer-host.json",
+        parity: {
+            referenceFrame: 180,
+            // Dynamic thin-instance uploads are visible on the browser's next
+            // draw; the native renderer consumes them in the same frame.
+            nativeFrameOffset: 1,
+            // Measured 3.504 full / 3.569 foreground across both backends. The residual
+            // is retained text rasterization and unsupported outer shadows; the
+            // canvas-only lane below isolates the renderer at 0.028 / 0.029.
+            maxFullMad: 4.2,
+            maxForegroundMad: 4.3,
+            canvasThresholds: {
+                maxFullMad: 0.05,
+                maxForegroundMad: 0.05,
+            },
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "littlest-tokyo",
         name: "Littlest Tokyo",
         source: "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
@@ -4344,7 +4376,7 @@ function withDerivedPaths(scene: SceneInput): SceneDefinition {
     };
 }
 
-/** One frame index for the deterministic browser RAF and native capture. */
+/** Derive the native capture gate from the deterministic browser frame. */
 function derivedReferenceFrameEnvironment(
     sceneId: string,
     parity: NonNullable<SceneInput["parity"]>,
@@ -4358,16 +4390,24 @@ function derivedReferenceFrameEnvironment(
             `Scene '${sceneId}' has invalid referenceFrame=${frame}.`,
         );
     }
-    if (explicit !== undefined && Number(explicit) !== frame) {
+    const offset = parity.nativeFrameOffset ?? 0;
+    if (!Number.isInteger(offset) || frame + offset < 1) {
+        throw new Error(
+            `Scene '${sceneId}' has invalid nativeFrameOffset=${offset}.`,
+        );
+    }
+    const nativeFrame = frame + offset;
+    if (explicit !== undefined && Number(explicit) !== nativeFrame) {
         throw new Error(
             `Scene '${sceneId}' spells its capture frame twice and they disagree: ` +
-                `referenceFrame=${frame} but BBLITE_SCREENSHOT_FRAME='${explicit}'.`,
+                `referenceFrame=${frame} with nativeFrameOffset=${offset} but ` +
+                `BBLITE_SCREENSHOT_FRAME='${explicit}'.`,
         );
     }
     return {
         nativeEnvironment: {
             ...parity.nativeEnvironment,
-            BBLITE_SCREENSHOT_FRAME: String(frame),
+            BBLITE_SCREENSHOT_FRAME: String(nativeFrame),
         },
     };
 }

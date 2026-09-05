@@ -529,10 +529,11 @@ These are the diagnostic ones:
 | `BBLITE_GPU_DEBUG=1` | enable the backend debug layer (prefer `--gpu-debug`, which `parity`, `diff`, `capture --native` and `probe-variants` all take and which also defuses SDL's assertion handler) |
 | `BBLITE_MSAA=1` | render single-sampled |
 | `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | drive a headless measured run |
-| `BBLITE_RUNTIME_TRACE=1` | print input dispatch, camera changes and dynamic scene-membership rebuilds |
-| `BBLITE_INPUT_REPLAY=<actions>` | replay one deterministic keyboard (optionally `Ctrl+`), mouse-button/client-boundary, `MouseMoveRight`, wheel, or `WindowClose` action per frame through the ordinary callbacks |
+| `BBLITE_RUNTIME_TRACE=1` | print input dispatch, camera changes, UI cursor selection, storage-buffer versions, active gizmo positions, scene-membership rebuilds and window identity/geometry across renderer restarts |
+| `BBLITE_INPUT_REPLAY=<actions>` | replay one deterministic keyboard (optionally `Ctrl+`), mouse-button/client-boundary, retained-UI `UiClick@x:y`, `MouseMoveRight`, wheel, or `WindowClose` action per frame; `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` queue SDL events through UI **and camera controls** without moving the desktop pointer. The tape position, pointer coordinates and held buttons survive scene/renderer replacement |
 | `BBLITE_FILE_DIALOG_SAVE_PATH=<path>` / `BBLITE_FILE_DIALOG_OPEN_PATH=<path>` | supply an exact save/open path without displaying the native dialog |
 | `BBLITE_CAPTURE_UI=0` | canvas-only screenshots (retained UI omitted) for attribution |
+| `BBLITE_UI_STYLE_TRACE=1` | one computed RmlUi style dump per UI runtime: tags/classes, actual font family/weight/size, and layout boxes; no desktop input |
 | `BBLITE_PHYSICS_TRACE=1` | per-step body trajectories, which are what grade the substituted solver |
 | `BBLITE_CPU_PROFILE=1` | startup/frame phase timings and Bullet work counters |
 | `BBLITE_MEM_PROFILE=1` | a `[mem][frame]` line every 30th frame; `scene -- memory <id|all>` judges whether the working set settles |

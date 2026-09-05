@@ -70,6 +70,10 @@ export interface GltfLoaderOptions {
     /** A composed skeleton variant carries the palette, lifting the
      *  transcribed 64-matrix cap. */
     pinnedSkeletonPalette?: boolean;
+    /** Scene code can attach a thin-instance pool after a static glTF
+     *  primitive was loaded, so retain that primitive's local vertices for
+     *  the instanced draw path instead of reusing its baked world vertices. */
+    dynamicThinInstances?: boolean;
     nonTrianglePrimitives?: boolean;
     /**
      * The asset carries Gaussian-splat clouds: packaging ran the pinned

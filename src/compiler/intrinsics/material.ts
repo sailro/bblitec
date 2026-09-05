@@ -10,6 +10,7 @@ import {
 import type { CompiledNodeMaterialCall } from "../node-material.js";
 import { isToneMappingExport } from "../../pinned-tone-mapping.js";
 import { linearDepthDefaultPlanes } from "../linear-depth-material.js";
+import { isTypedArrayType } from "../data-types.js";
 import {
     compileOptionalStaticBoolean,
     compileStaticNumber,
@@ -183,12 +184,31 @@ export interface MaterialIntrinsicContext
         material: Value,
         nameExpression: ts.Expression,
     ): number;
+    resolveShaderStorageBufferSlot(
+        material: Value,
+        nameExpression: ts.Expression,
+    ): number;
     compileShaderUniformComponents(
         expression: ts.Expression,
         count: number,
     ): string[];
     cppString(value: string): string;
     fail(node: ts.Node, message: string): never;
+}
+
+function compileStorageBufferData(
+    context: MaterialIntrinsicContext,
+    expression: ts.Expression,
+    intrinsic: "createStorageBuffer" | "updateStorageBuffer",
+) {
+    const data = context.compileValue(expression);
+    if (data.kind !== "data" || !isTypedArrayType(data.dataType)) {
+        context.fail(
+            expression,
+            `${intrinsic} requires a typed-array view.`,
+        );
+    }
+    return data;
 }
 
 /**
@@ -476,6 +496,32 @@ export function compileMaterialIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "isPbrMaterial": {
+            context.expectArgumentCount(call, 1, 1);
+            const material = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                material,
+                "material",
+                call.arguments[0]!,
+            );
+            const isPbr =
+                material.scenePbrMaterialIndex !== undefined ||
+                material.assetPbrMaterial === true;
+            if (!isPbr && !material.standardMaterial) {
+                context.fail(
+                    call.arguments[0]!,
+                    "isPbrMaterial requires a material whose family is known at generation.",
+                );
+            }
+            return {
+                kind: "boolean",
+                cpp: isPbr ? "true" : "false",
+                staticBoolean: isPbr,
+            };
+        }
+
         case "createSolidTexture2D": {
             context.expectArgumentCount(call, 4, 5);
             const engine =
@@ -855,6 +901,105 @@ export function compileMaterialIntrinsic(
             };
         }
 
+        case "createStorageBuffer": {
+            context.expectArgumentCount(call, 2, 3);
+            const engineValue = context.compileValue(call.arguments[0]!);
+            context.expectKind(engineValue, "engine", call.arguments[0]!);
+            const engine = context.requireDefaultEngine(call);
+            const data = compileStorageBufferData(
+                context,
+                call.arguments[1]!,
+                "createStorageBuffer",
+            );
+            const label = call.arguments[2]
+                ? context.cppString(
+                      context.compileStringLiteral(call.arguments[2]!),
+                  )
+                : '""';
+            context.reachFeature("material:shader-storage", call);
+            return {
+                kind: "storage-buffer",
+                cpp:
+                    `bbl::create_storage_buffer(${engine}, ` +
+                    `${data.cpp}, ${label})`,
+                engineCpp: engine,
+            };
+        }
+
+        case "updateStorageBuffer": {
+            context.expectArgumentCount(call, 3, 4);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const buffer = context.compileValue(call.arguments[1]!);
+            context.expectKind(buffer, "storage-buffer", call.arguments[1]!);
+            const data = compileStorageBufferData(
+                context,
+                call.arguments[2]!,
+                "updateStorageBuffer",
+            );
+            const engineCpp = context.requireEngine(buffer, call);
+            const byteOffset = call.arguments[3]
+                ? context.compileNumber(call.arguments[3]!)
+                : "0.0f";
+            context.reachFeature("material:shader-storage", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::update_storage_buffer(${engineCpp}, ` +
+                    `${buffer.cpp}, ${data.wholeTypedArrayBackingCpp ?? data.cpp}, ${byteOffset})`,
+            };
+        }
+
+        case "disposeStorageBuffer": {
+            context.expectArgumentCount(call, 1, 1);
+            const buffer = context.compileValue(call.arguments[0]!);
+            context.expectKind(buffer, "storage-buffer", call.arguments[0]!);
+            context.reachFeature("material:shader-storage", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::dispose_storage_buffer(` +
+                    `${context.requireEngine(buffer, call)}, ${buffer.cpp})`,
+            };
+        }
+
+        case "setShaderStorageBuffer": {
+            context.expectArgumentCount(call, 3, 3);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const slot = context.resolveShaderStorageBufferSlot(
+                material,
+                call.arguments[1]!,
+            );
+            const buffer = context.compileValue(call.arguments[2]!);
+            context.expectKind(buffer, "storage-buffer", call.arguments[2]!);
+            context.expectSameEngine(material, buffer, call);
+            context.reachFeature("material:shader-storage", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_shader_storage_buffer(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${slot}u, ${buffer.cpp})`,
+            };
+        }
+
+        case "setShadowCasterMaterial": {
+            context.expectArgumentCount(call, 2, 2);
+            const material = context.compileValue(call.arguments[0]!);
+            context.expectKind(material, "material", call.arguments[0]!);
+            const caster = context.compileValue(call.arguments[1]!);
+            context.expectKind(caster, "material", call.arguments[1]!);
+            context.expectSameEngine(material, caster, call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_shadow_caster_material(` +
+                    `${context.requireEngine(material, call)}, ` +
+                    `${material.cpp}, ${caster.cpp})`,
+            };
+        }
+
         case "createLinearDepthMaterial": {
             // The pin's own `createShaderMaterial` call, folded: two module
             // constants for the stages, the pin's plane defaults, and the
@@ -958,7 +1103,9 @@ export function compileMaterialIntrinsic(
             const cachedPixelsTexture =
                 texture.dataType?.kind === "handle" &&
                 texture.dataType.handle === "texture";
-            const setter = texture.textureFile
+            const setter = texture.csmReceiverGeneratorIndex !== undefined
+                ? "set_shader_csm_texture"
+                : texture.textureFile
                 ? "set_shader_texture"
                 : texture.textureStorage === "pixels" ||
                     cachedPixelsTexture
@@ -967,7 +1114,7 @@ export function compileMaterialIntrinsic(
             if (!setter) {
                 context.fail(
                     call.arguments[2]!,
-                    "Reached shader-material textures come from loadTexture2D or createTexture2DFromPixels.",
+                    "Reached shader-material textures come from loadTexture2D, createTexture2DFromPixels, or getCsmReceiverTexture.",
                 );
             }
             context.expectSameEngine(material, texture, call);

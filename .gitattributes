@@ -14,8 +14,9 @@
 # rejects as a corrupt patch. The vendored SDL port applies these, so the
 # whole native build depends on them staying LF.
 # Blank context lines in unified diffs carry the required single-space prefix.
-*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof
-*.diff text eol=lf whitespace=-blank-at-eol,-blank-at-eof
+# That context prefix also precedes tabs when the upstream source uses them.
+*.patch text eol=lf whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
+*.diff text eol=lf whitespace=-blank-at-eol,-blank-at-eof,-space-before-tab
 *.png binary
 *.ts text eol=lf
 *.yml text eol=lf

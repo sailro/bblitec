@@ -6,7 +6,11 @@
 // (`compileShaderMaterialOptions` in src/compiler.ts), so this table is a
 // verified mirror, never an independent source of truth.
 import type { ShaderMaterialVariantName } from "./compiler.js";
-import type { CompiledShaderProgram } from "./compiler/types.js";
+import type {
+    CompiledShaderProgram,
+    CompiledShaderSampler,
+    CompiledShaderStorageBuffer,
+} from "./compiler/types.js";
 
 export interface ShaderMaterialProgramSource {
     name: string;
@@ -19,6 +23,8 @@ export interface ShaderMaterialProgramSource {
     uniformDefaults?: Array<{ name: string; values: number[] }>;
     /** Reached `samplers`, in declaration order — the binding order too. */
     samplers?: string[];
+    samplerDeclarations?: CompiledShaderSampler[];
+    storageBuffers?: CompiledShaderStorageBuffer[];
     /** Reached `defines`, already in the pin's sorted `ShaderDefine` order. */
     defines?: Array<{ name: string; value: boolean | number }>;
     needAlphaBlending: boolean;
@@ -173,6 +179,24 @@ export function shaderSamplerName(name: string): string {
     return `${name}Sampler`;
 }
 
+/** Normalize bare sampler names to the pin's default sampler shape. */
+export function shaderSamplerDeclarations(
+    program: Pick<
+        ShaderMaterialProgramSource,
+        "samplers" | "samplerDeclarations"
+    >,
+): CompiledShaderSampler[] {
+    return (
+        program.samplerDeclarations ??
+        (program.samplers ?? []).map((name) => ({
+            name,
+            sampleType: "float" as const,
+            viewDimension: "2d" as const,
+            comparison: false,
+        }))
+    );
+}
+
 /**
  * A predeclared program as the compiler's own reached-program record: the
  * table above leaves the optional halves off the entries that do not use
@@ -186,6 +210,8 @@ export function predeclaredShaderProgram(
         blendMode: program.blendMode ?? "alpha",
         uniformDefaults: program.uniformDefaults ?? [],
         samplers: program.samplers ?? [],
+        samplerDeclarations: shaderSamplerDeclarations(program),
+        storageBuffers: program.storageBuffers ?? [],
         defines: program.defines ?? [],
     };
 }
@@ -261,11 +287,31 @@ ${custom.map(({ name, type }) => `    ${name}: ${type},`).join("\n")}
     // (see `emitNativeWgslProgram`), so only this evidence copy keeps the
     // pin's addresses.
     let nextBinding = custom.length > 0 ? 2 : 1;
-    const samplerBlock = (program.samplers ?? [])
+    const samplerDeclarations = shaderSamplerDeclarations(program);
+    const samplerBlock = samplerDeclarations
         .map(
-            (name) =>
-                `@group(1) @binding(${nextBinding++}) var ${name}: texture_2d<f32>;\n` +
-                `@group(1) @binding(${nextBinding++}) var ${shaderSamplerName(name)}: sampler;\n`,
+            (decl) => {
+                const depth =
+                    decl.comparison || decl.sampleType === "depth";
+                const textureType = depth
+                    ? decl.viewDimension === "2d-array"
+                        ? "texture_depth_2d_array"
+                        : "texture_depth_2d"
+                    : decl.viewDimension === "2d-array"
+                        ? "texture_2d_array<f32>"
+                        : "texture_2d<f32>";
+                const samplerType = decl.comparison
+                    ? "sampler_comparison"
+                    : "sampler";
+                return `@group(1) @binding(${nextBinding++}) var ${decl.name}: ${textureType};\n` +
+                    `@group(1) @binding(${nextBinding++}) var ${shaderSamplerName(decl.name)}: ${samplerType};\n`;
+            },
+        )
+        .join("");
+    const storageBlock = (program.storageBuffers ?? [])
+        .map(
+            ({ name, type }) =>
+                `@group(1) @binding(${nextBinding++}) var<storage, read> ${name}: ${type};\n`,
         )
         .join("");
     const attributes = program.attributes.map((name, location) => {
@@ -282,7 +328,7 @@ ${systemFields}
 }
 @group(1) @binding(0) var<uniform> shaderSystem: ShaderSystemUniforms;
 ${customBlock}
-${samplerBlock}${defineText}struct VertexInput {
+${samplerBlock}${storageBlock}${defineText}struct VertexInput {
 ${attributes}
 };
 ${source.trim()}

@@ -1,8 +1,26 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 
 import { CompileError, compileSource } from "../src/compiler.js";
+import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+
+const nativeTools = optionalNativeFixtureTools();
+test("retained callback snapshots preserve mutable state and survive self-disposal", {
+    skip: !nativeTools,
+}, () => {
+    const output = resolve("artifacts/retained-callback-check");
+    mkdirSync(output, { recursive: true });
+    const executable = join(output, "retained-callback-check.exe");
+    runNativeFixtureCompiler(nativeTools!, [
+        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include",
+        "test/fixtures/js-callback/retained-callback-check.cpp",
+    ]);
+    assert.match(execFileSync(executable, [], { encoding: "utf8" }), /retained-callback-check: ok/);
+});
 
 const platformPreamble = `
     import { createEngine } from "@babylonjs/lite";
@@ -365,7 +383,7 @@ test("evaluates erased void callback defaults before the callback body", () => {
     );
 });
 
-test("distinguishes callback expressions in static loops and refuses runtime loops", () => {
+test("distinguishes callback expressions in static and runtime loops", () => {
     const result = compileSource(`
         const callbacks = new Set<() => void>();
         const seen = new Set<number>();
@@ -393,19 +411,19 @@ test("distinguishes callback expressions in static loops and refuses runtime loo
         /for \(auto&& \w+ : v_callbacks\) \{\s*\w+\(\);/,
     );
 
-    assert.throws(
-        () =>
-            compileSource(`
-                const callbacks = new Set<() => void>();
-                const values: number[] = [];
-                if (Math.random() > 0.5) values.push(1);
-                for (const value of values) {
-                    callbacks.add((): void => {
-                        const used = value;
-                    });
-                }
-            `),
-        /callback expression evaluated by a runtime loop creates a new JavaScript function/,
+    const runtime = compileSource(`
+        const callbacks = new Set<() => void>();
+        const values: number[] = [];
+        if (Math.random() > 0.5) values.push(1);
+        for (const value of values) {
+            callbacks.add((): void => {
+                const used = value;
+            });
+        }
+    `);
+    assert.match(
+        runtime.cpp,
+        /Callback<void\(\)> \w+\{bbl::js::next_callback_identity\(\),/,
     );
 
     const named = compileSource(`

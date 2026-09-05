@@ -43,7 +43,7 @@ test("registers unique generated scene targets", () => {
                 sourceOrigin === "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "littlest-tokyo", "bath-day", "freeciv", "sandblox", "minecraft"],
+        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "antigravity-racer", "littlest-tokyo", "bath-day", "freeciv", "sandblox", "minecraft"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is
@@ -108,8 +108,20 @@ test("registers unique generated scene targets", () => {
     assert.equal(getScene("racer").parity?.referenceFrame, 180);
     assert.equal(getScene("racer").nativeHostUi, "ui/racer-host.json");
     assert.equal(
+        getScene("antigravity-racer").nativeHostUi,
+        "ui/antigravity-racer-host.json",
+    );
+    assert.equal(
         getScene("racer").parity?.nativeEnvironment?.BBLITE_SCREENSHOT_FRAME,
         "180",
+    );
+    assert.equal(getScene("antigravity-racer").name, "Antigravity Racer");
+    assert.equal(getScene("antigravity-racer").parity?.referenceFrame, 180);
+    assert.equal(getScene("antigravity-racer").parity?.nativeFrameOffset, 1);
+    assert.equal(
+        getScene("antigravity-racer").parity?.nativeEnvironment
+            ?.BBLITE_SCREENSHOT_FRAME,
+        "181",
     );
     assert.equal(getScene("littlest-tokyo").parity?.referenceFrame, 180);
     assert.equal(
@@ -329,6 +341,14 @@ test("keeps package scene commands registry-driven", () => {
     assert.match(
         sceneCommand,
         /`-DBBLITE_DAWN_DIR=\$\{tools\.dawnDirectory\}`/,
+    );
+    assert.match(
+        sceneCommand,
+        /`-DBBLITE_LABSOUND_DIR=\$\{tools\.labSoundDirectory\}`/,
+    );
+    assert.match(
+        sceneCommand,
+        /`-DBBLITE_RMLUI_DIR=\$\{tools\.rmlUiDirectory\}`/,
     );
     assert.match(
         sceneCommand,

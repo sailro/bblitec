@@ -38,9 +38,9 @@
  * options through a `??`, builds sub-widgets with the axis, colour and
  * option values it passes each one, turns local-coordinate mode on where
  * the pin turns it on, and returns the list. `wireCrossAxisDisable` is the
- * one statement dropped, because it subscribes drag observers alone.
+ * one statement dropped: sibling-disable styling is not yet reached.
  *
- * One thing here is asserted rather than emitted: that the pinned gizmo
+ * For display-only compositions one thing is asserted rather than emitted: that the pinned gizmo
  * pointer-drag dispatcher map has exactly one writer, reached from exactly
  * one place. That is the fact a camera's folded `attachControl` deferral
  * bag rests on, and it is a statement about the pin, so it is checked
@@ -66,6 +66,7 @@ import {
 } from "./pinned-mat4-decompose.js";
 import { pinnedMeshOptionFlag } from "../pinned-mesh-defaults.js";
 import { pinnedPolyhedron } from "../pinned-polyhedra.js";
+import { lowerPointerDrag } from "./pointer-drag-lowerer.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -1428,7 +1429,7 @@ ${indent}    root);`;
 
     /**
      * The two `buildArrow`-shaped calls a widget makes: one rendered, one
-     * an invisible collider. Only the first is built, and this asserts the
+     * an invisible collider. Display-only compositions build only the first; this asserts the
      * second is the collider and that the pin still hides every mesh it
      * makes -- so an upstream change that rendered one fails here.
      */
@@ -1800,11 +1801,16 @@ EditGizmoHandle push_edit_gizmo(
                 "root",
             );
         }
+        const widgets = [
+            ["gizmo:axis-drag", () => this.axisDragGizmo()],
+            ["gizmo:axis-scale", () => this.axisScaleGizmo()],
+            ["gizmo:plane-drag", () => this.planeDragGizmo()],
+            ["gizmo:plane-rotation", () => this.planeRotationGizmo()],
+        ] as const;
         return [
-            this.axisDragGizmo(),
-            this.axisScaleGizmo(),
-            this.planeDragGizmo(),
-            this.planeRotationGizmo(),
+            ...widgets
+                .filter(([feature]) => this.features.includes(feature))
+                .map(([, emit]) => emit()),
             ...this.reachedComposites().map((composite) =>
                 this.compositeGizmo(composite),
             ),
@@ -2302,6 +2308,15 @@ ${body}
             "line",
             arrow,
         );
+        let colliderThickness: ts.Expression | undefined;
+        this.context.hasNode(factory, (node) => {
+            if (ts.isCallExpression(node) && node.expression.getText(file) === "buildArrow" && node.arguments[5]?.kind === ts.SyntaxKind.TrueKeyword) colliderThickness = node.arguments[4];
+            return false;
+        });
+        if (!colliderThickness) this.context.contractError(factory, "Missing pinned axis-drag collider width.");
+        const colliderLowerer = this.widgetLowerer(AXIS_DRAG_MODULE, new Map([["thickness", arrow.expression(colliderThickness)]]));
+        const colliderCone = this.widgetMesh(AXIS_DRAG_MODULE, "buildArrow", "cone", colliderLowerer);
+        const colliderLine = this.widgetMesh(AXIS_DRAG_MODULE, "buildArrow", "line", colliderLowerer);
         this.assertColliderArm(
             AXIS_DRAG_MODULE,
             "createAxisDragGizmo",
@@ -2346,7 +2361,13 @@ ${this.widgetPart(
     `create_cylinder(engine, ${this.widgetCylinder(line)})`,
     line,
 )}
-    return push_edit_gizmo(
+${this.features.includes("gizmo:pointer-drag") ? `
+    const auto collider_start = scene.meshes.size();
+${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderCone)})`, colliderCone)}
+${this.widgetPart(`create_cylinder(engine, ${this.widgetCylinder(colliderLine)})`, colliderLine)}
+    for (std::size_t i = collider_start; i < scene.meshes.size(); ++i) engine.meshes[scene.meshes[i].value].visible = false;
+` : ""}
+    const auto handle = push_edit_gizmo(
         engine,
         scene,
         layer,
@@ -2365,6 +2386,10 @@ ${this.widgetPart(
         )},
         baked,
         GizmoLocalOrientation::look_at_world_axis);
+${this.features.includes("gizmo:pointer-drag") ? `
+    initialize_pointer_gizmo(engine, layer, handle, material, false);
+` : ""}
+    return handle;
 }`;
     }
 
@@ -2660,7 +2685,7 @@ ${this.widgetPart(
         "static_cast<float>(plane_size)})",
     plane,
 )}
-    return push_edit_gizmo(
+    const auto handle = push_edit_gizmo(
         engine,
         scene,
         layer,
@@ -2679,6 +2704,10 @@ ${this.widgetPart(
         )},
         baked,
         GizmoLocalOrientation::look_at_world_axis);
+${this.features.includes("gizmo:pointer-drag") ? `
+    initialize_pointer_gizmo(engine, layer, handle, material, true);
+` : ""}
+    return handle;
 }`;
     }
 
@@ -4809,7 +4838,7 @@ void attach_bounding_box_gizmo_to_node(
                 this.context.functionDeclaration(modulePath, symbol);
             }
         }
-        this.assertPointerDispatchersInert();
+        if (!this.features.includes("gizmo:pointer-drag")) this.assertPointerDispatchersInert();
         // The bounding-box cage, emitted only for a scene that builds
         // one: it is the family's largest widget by some way, and an
         // emitted static function nothing calls fails under -Werror.
@@ -5256,7 +5285,7 @@ UtilityLayerHandle create_utility_layer(
     Scene& main_scene) {
     auto record = std::make_unique<UtilityLayerRecord>();
     record->scene = create_scene_context(engine);
-    record->main_scene = &main_scene;
+    record->main_scene = std::make_shared<Scene>(main_scene);
     record->scene.clear_color = Color4{0.0f, 0.0f, 0.0f, 0.0f};
     record->scene.camera = main_scene.camera;
     UtilityLayerRecord* live = record.get();
@@ -5282,6 +5311,10 @@ Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer) {
 
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer) {
     register_scene(layer_record(engine, layer).scene);
+}
+
+void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer) {
+    dispose_scene(layer_record(engine, layer).scene);
 }
 
 CameraGizmoHandle create_camera_gizmo(
@@ -5759,6 +5792,7 @@ void attach_light_gizmo_to_light(
     build_light_lines(engine, scene, record.material, type_root, 2.0);
 }
 
+${this.features.includes("gizmo:pointer-drag") ? "void initialize_pointer_gizmo(Engine&, UtilityLayerHandle, EditGizmoHandle, MaterialHandle, bool);" : ""}
 ${this.reachesEditGizmos() ? this.editGizmos() : ""}
 
 // ${this.context.provenance(
@@ -5772,6 +5806,21 @@ void attach_gizmo_to_node(
     MeshHandle node) {
     EditGizmoRecord& record = engine.edit_gizmos[gizmo.value];
     record.attached_node = node;
+}
+
+bool pointer_drag_has_collider(
+    const Engine& engine,
+    PointerDragHandle drag,
+    MeshHandle mesh) {
+    if (
+        drag.value >= engine.edit_gizmos.size() ||
+        mesh.value >= engine.meshes.size()) {
+        return false;
+    }
+    // Visible geometry and enlarged invisible colliders share one root;
+    // both identify the widget, as in the pinned collider list.
+    return engine.meshes[mesh.value].transform_parent.value ==
+        engine.edit_gizmos[drag.value].root.value;
 }
 
 ${
@@ -5813,10 +5862,42 @@ void set_composite_gizmo_local_coordinates(
             engine, gizmo.parts[i], use_local);
     }
 }
+
+
+void dispose_composite_gizmo(
+    Engine& engine,
+    CompositeGizmoHandle gizmo,
+    UtilityLayerHandle layer) {
+    Scene& scene = utility_layer_scene(engine, layer);
+    for (std::uint32_t i = 0; i < gizmo.part_count; ++i) {
+        const EditGizmoHandle part = gizmo.parts[i];
+        if (part.value >= engine.edit_gizmos.size()) continue;
+        EditGizmoRecord& record = engine.edit_gizmos[part.value];
+        record.dispose_pointer();
+        record.dispose_pointer = []() {};
+        std::vector<MeshHandle> meshes;
+        for (const MeshHandle mesh : scene.meshes) {
+            if (
+                mesh.value < engine.meshes.size() &&
+                engine.meshes[mesh.value].transform_parent.value ==
+                    record.root.value) {
+                meshes.push_back(mesh);
+            }
+        }
+        for (const MeshHandle mesh : meshes) {
+            remove_from_scene(scene, mesh);
+        }
+        record.attached_node = {};
+        record.enabled = false;
+        record.dragging = false;
+        record.hovering = false;
+    }
+}
 `
                 : ""
         }
 ${boundingBox ? boundingBox.factories : ""}
+${this.features.includes("gizmo:pointer-drag") ? lowerPointerDrag(this.context) : ""}
 } // namespace bbl
 `,
         };

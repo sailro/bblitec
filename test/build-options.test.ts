@@ -348,6 +348,24 @@ test("shader compilation gates non-target formats", () => {
     assert.match(script, /Copy-IfDifferent \$cachedDxil/);
 });
 
+test("shader slot sidecars rebase storage buffers within their register space", () => {
+    const script = readFileSync("tools/compile-shaders.ps1", "utf8");
+    assert.match(script, /\$sampledBySpace = @\{\}/);
+    assert.match(script, /\$sampled\.Groups\[1\]\.Success/);
+    assert.match(script, /\$_\.Groups\[6\]\.Success/);
+    assert.match(script, /\$sampledBySpace\[\$space\]/);
+    assert.match(script, /\$sampledBySpace\[\$space\] \?\? 0/);
+    assert.doesNotMatch(script, /\[int\]\$_\.Groups\[5\]\.Value - \$sampledCount/);
+});
+
+test("SDL shader slot loading rejects unbounded generated indices", () => {
+    const source = readFileSync("native/src/pal_sdl_gpu_shared.hpp", "utf8");
+    assert.match(source, /constexpr std::size_t max_slot_index = 4096;/);
+    assert.match(source, /digit < '0' \|\| digit > '9'/);
+    assert.match(source, /Malformed shader slot/);
+    assert.doesNotMatch(source, /std::stoul\(reg\.substr\(1\)\)/);
+});
+
 test("native shader snapshots track additions and removals", () => {
     const cmake = readFileSync("native/CMakeLists.txt", "utf8");
     assert.match(cmake, /list\(SORT BBLITE_GENERATED_SHADER_FILES\)/);

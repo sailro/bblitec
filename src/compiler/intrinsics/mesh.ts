@@ -4,6 +4,7 @@ import ts from "typescript";
 
 import type { CompileAsset, Value } from "../types.js";
 import type { CompilerSymbols } from "../symbols.js";
+import type { DataTypeRegistry } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     staticNumberValue,
@@ -42,6 +43,7 @@ export interface MeshIntrinsicContext
     extends IntrinsicCallContext,
         ObjectValidationContext,
         PositiveIntegerContext {
+    readonly dataTypes: DataTypeRegistry;
     compileBoxOptions(
         expression: ts.Expression,
     ): [string, string, string];
@@ -119,6 +121,7 @@ export interface MeshIntrinsicContext
         node: ts.Node,
     ): void;
     markAssetRootReparented(root: Value, node: ts.Node): void;
+    assertAssetRootWritable(root: Value, node: ts.Node): void;
     unwrap(expression: ts.Expression): ts.Expression;
     resolveStaticExpression(
         expression: ts.Expression,
@@ -133,6 +136,136 @@ export interface MeshIntrinsicContext
         ): readonly { value: Value; node: ts.Node }[] | undefined;
     };
     fail(node: ts.Node, message: string): never;
+}
+
+function writableVec3Lanes(
+    context: MeshIntrinsicContext,
+    value: Value,
+    node: ts.Node,
+): [string, string, string] {
+    if (value.kind === "record") {
+        const lanes = ["x", "y", "z"].map(
+            (name) => value.recordProperties?.[name],
+        );
+        if (
+            lanes.every(
+                (lane) => lane?.kind === "number" && lane.cpp.length > 0,
+            )
+        ) {
+            return lanes.map((lane) => lane!.cpp) as [
+                string,
+                string,
+                string,
+            ];
+        }
+    }
+    if (value.kind === "data" && value.dataType?.kind === "struct") {
+        const separator = context.dataTypes.isReferenceStruct(
+            value.dataType.name,
+        )
+            ? "->"
+            : ".";
+        return ["x", "y", "z"].map((name) => {
+            const field = context.dataTypes.structField(
+                value.dataType!.kind === "struct"
+                    ? value.dataType.name
+                    : context.fail(node, "Expected a Vec3 data struct."),
+                name,
+                node,
+            );
+            return `${value.cpp}${separator}${field.name}`;
+        }) as [string, string, string];
+    }
+    return context.fail(
+        node,
+        "A Vec3 *ToRef output must be a writable Vec3 record.",
+    );
+}
+
+function writeVec3Lanes(
+    context: MeshIntrinsicContext,
+    output: Value,
+    outputNode: ts.Node,
+    components: readonly [string, string, string],
+): void {
+    const lanes = writableVec3Lanes(context, output, outputNode);
+    for (let index = 0; index < 3; index += 1) {
+        context.emit(`${lanes[index]} = ${components[index]};`);
+    }
+}
+
+function compileVec3Temporary(
+    context: MeshIntrinsicContext,
+    expression: ts.Expression,
+    label: string,
+): string {
+    const value = context.compileValue(expression);
+    const temporary =
+        context.allocateTemporaryCppName(label);
+    context.emit(
+        `const bbl::Vec3d ${temporary} = ` +
+            `${context.vec3FromRecord(value, expression, "double")};`,
+    );
+    return temporary;
+}
+
+type BinaryVec3Intrinsic =
+    | "addVec3"
+    | "addVec3ToRef"
+    | "subVec3"
+    | "subVec3ToRef"
+    | "crossVec3"
+    | "crossVec3ToRef";
+
+function binaryVec3Components(
+    intrinsic: BinaryVec3Intrinsic,
+    left: string,
+    right: string,
+): [string, string, string] {
+    if (intrinsic === "addVec3" || intrinsic === "addVec3ToRef") {
+        return [
+            `${left}.x + ${right}.x`,
+            `${left}.y + ${right}.y`,
+            `${left}.z + ${right}.z`,
+        ];
+    }
+    if (intrinsic === "subVec3" || intrinsic === "subVec3ToRef") {
+        return [
+            `${left}.x - ${right}.x`,
+            `${left}.y - ${right}.y`,
+            `${left}.z - ${right}.z`,
+        ];
+    }
+    return [
+        `${left}.y * ${right}.z - ${left}.z * ${right}.y`,
+        `${left}.z * ${right}.x - ${left}.x * ${right}.z`,
+        `${left}.x * ${right}.y - ${left}.y * ${right}.x`,
+    ];
+}
+
+function vec3Record(cpp: string): Value {
+    return {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+            x: { kind: "number", cpp: `${cpp}.x` },
+            y: { kind: "number", cpp: `${cpp}.y` },
+            z: { kind: "number", cpp: `${cpp}.z` },
+        },
+    };
+}
+
+function quatRecord(cpp: string): Value {
+    return {
+        kind: "record",
+        cpp: "",
+        recordProperties: {
+            x: { kind: "number", cpp: `${cpp}[0]` },
+            y: { kind: "number", cpp: `${cpp}[1]` },
+            z: { kind: "number", cpp: `${cpp}[2]` },
+            w: { kind: "number", cpp: `${cpp}[3]` },
+        },
+    };
 }
 
 /** A Vec3d expression from a statically known path element: its x/y/z lanes
@@ -394,6 +527,198 @@ export function compileMeshIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "quatFromLookDirectionRH": {
+            context.expectArgumentCount(call, 2, 2);
+            context.reachFeature("math:look-direction", call);
+            const forward = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "look_forward",
+            );
+            const up = compileVec3Temporary(
+                context,
+                call.arguments[1]!,
+                "look_up",
+            );
+            const temporary =
+                context.allocateTemporaryCppName("look_quaternion");
+            context.emit(
+                `const auto ${temporary} = ` +
+                    `bbl::upstream::quat_from_look_direction_rh(` +
+                    `${forward}, ${up});`,
+            );
+            return quatRecord(temporary);
+        }
+
+        case "addVec3":
+        case "subVec3":
+        case "crossVec3": {
+            context.expectArgumentCount(call, 2, 2);
+            const left = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "vec3_left",
+            );
+            const right = compileVec3Temporary(
+                context,
+                call.arguments[1]!,
+                "vec3_right",
+            );
+            const temporary =
+                context.allocateTemporaryCppName(
+                    "vec3_result",
+                );
+            const components = binaryVec3Components(
+                importedName,
+                left,
+                right,
+            );
+            context.emit(
+                `const bbl::Vec3d ${temporary}{${components.join(", ")}};`,
+            );
+            return vec3Record(temporary);
+        }
+        case "addVec3ToRef":
+        case "subVec3ToRef":
+        case "crossVec3ToRef": {
+            context.expectArgumentCount(call, 3, 3);
+            const left = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "vec3_left",
+            );
+            const right = compileVec3Temporary(
+                context,
+                call.arguments[1]!,
+                "vec3_right",
+            );
+            const output = context.compileValue(call.arguments[2]!);
+            const components = binaryVec3Components(
+                importedName,
+                left,
+                right,
+            );
+            writeVec3Lanes(
+                context,
+                output,
+                call.arguments[2]!,
+                components,
+            );
+            return output;
+        }
+        case "scaleVec3": {
+            context.expectArgumentCount(call, 2, 2);
+            const vector = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "scaled_vec3",
+            );
+            const scalar = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const temporary =
+                context.allocateTemporaryCppName(
+                    "vec3_result",
+                );
+            context.emit(
+                `const bbl::Vec3d ${temporary}{` +
+                    `${vector}.x * ${scalar}, ${vector}.y * ${scalar}, ` +
+                    `${vector}.z * ${scalar}};`,
+            );
+            return vec3Record(temporary);
+        }
+        case "scaleVec3ToRef": {
+            context.expectArgumentCount(call, 3, 3);
+            const vector = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "scaled_vec3",
+            );
+            const scalarCpp = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const scalar =
+                context.allocateTemporaryCppName("vec3_scale");
+            context.emit(`const double ${scalar} = ${scalarCpp};`);
+            const output = context.compileValue(call.arguments[2]!);
+            writeVec3Lanes(
+                context,
+                output,
+                call.arguments[2]!,
+                [
+                    `${vector}.x * ${scalar}`,
+                    `${vector}.y * ${scalar}`,
+                    `${vector}.z * ${scalar}`,
+                ],
+            );
+            return output;
+        }
+        case "lerpVec3ToRef": {
+            context.expectArgumentCount(call, 4, 4);
+            const left = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "lerp_left",
+            );
+            const right = compileVec3Temporary(
+                context,
+                call.arguments[1]!,
+                "lerp_right",
+            );
+            const amountCpp = context.compileNumber(
+                call.arguments[2]!,
+                "double",
+            );
+            const amount =
+                context.allocateTemporaryCppName("lerp_amount");
+            context.emit(`const double ${amount} = ${amountCpp};`);
+            const output = context.compileValue(call.arguments[3]!);
+            writeVec3Lanes(
+                context,
+                output,
+                call.arguments[3]!,
+                [
+                    `${left}.x + (${right}.x - ${left}.x) * ${amount}`,
+                    `${left}.y + (${right}.y - ${left}.y) * ${amount}`,
+                    `${left}.z + (${right}.z - ${left}.z) * ${amount}`,
+                ],
+            );
+            return output;
+        }
+        case "lengthVec3": {
+            context.expectArgumentCount(call, 1, 1);
+            const vector = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "length_vec3",
+            );
+            return {
+                kind: "number",
+                cpp: `std::hypot(${vector}.x, ${vector}.y, ${vector}.z)`,
+            };
+        }
+        case "dotVec3": {
+            context.expectArgumentCount(call, 2, 2);
+            const left = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "dot_left",
+            );
+            const right = compileVec3Temporary(
+                context,
+                call.arguments[1]!,
+                "dot_right",
+            );
+            return {
+                kind: "number",
+                cpp:
+                    `${left}.x * ${right}.x + ` +
+                    `${left}.y * ${right}.y + ` +
+                    `${left}.z * ${right}.z`,
+            };
+        }
         case "setMeshVisible":
         case "setSubtreeVisible": {
             context.expectArgumentCount(call, 2, 2);
@@ -451,6 +776,70 @@ export function compileMeshIntrinsic(
                 dataType: { kind: "tuple", arity: 3 },
                 freshData: true,
             };
+        }
+        case "normalizeVec3Object": {
+            context.expectArgumentCount(call, 1, 1);
+            context.reachFeature("math:normalize-vec3", call);
+            const input = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "normalize_input",
+            );
+            const temporary =
+                context.allocateTemporaryCppName(
+                    "normalized_vec3",
+                );
+            context.emit(
+                `const bbl::Vec3d ${temporary} = ` +
+                    `bbl::upstream::normalize_vec3_object(` +
+                    `${input});`,
+            );
+            return vec3Record(temporary);
+        }
+        case "normalizeVec3ToRef": {
+            context.expectArgumentCount(call, 2, 3);
+            const input = compileVec3Temporary(
+                context,
+                call.arguments[0]!,
+                "normalize_input",
+            );
+            const output = context.compileValue(call.arguments[1]!);
+            const lanes = writableVec3Lanes(
+                context,
+                output,
+                call.arguments[1]!,
+            );
+            const epsilonCpp = call.arguments[2]
+                ? context.compileNumber(call.arguments[2], "double")
+                : "1e-10";
+            const epsilon =
+                context.allocateTemporaryCppName("normalize_epsilon");
+            const length =
+                context.allocateTemporaryCppName("normalize_length");
+            context.emit(`const double ${epsilon} = ${epsilonCpp};`);
+            context.emit(
+                `const double ${length} = std::hypot(` +
+                    `${input}.x, ${input}.y, ${input}.z);`,
+            );
+            context.emit(`if (${length} <= ${epsilon}) {`);
+            writeVec3Lanes(
+                context,
+                output,
+                call.arguments[1]!,
+                ["0.0", "0.0", "0.0"],
+            );
+            context.emit("} else {");
+            const inverse =
+                context.allocateTemporaryCppName("normalize_inverse");
+            context.emit(`const double ${inverse} = 1.0 / ${length};`);
+            for (let index = 0; index < 3; index += 1) {
+                const component = ["x", "y", "z"][index]!;
+                context.emit(
+                    `${lanes[index]} = ${input}.${component} * ${inverse};`,
+                );
+            }
+            context.emit("}");
+            return output;
         }
         case "mat4Identity": {
             context.expectArgumentCount(call, 0, 0);
@@ -746,6 +1135,109 @@ export function compileMeshIntrinsic(
                     `bbl::update_mesh_positions(${engine.cpp}, ${mesh.cpp}, ` +
                     `${positions}, ${vertexOffset}, ${vertexCount}, ` +
                     `${sourceVertexOffset})`,
+            };
+        }
+
+        case "createHierarchyInstancePool": {
+            context.expectArgumentCount(call, 2, 2);
+            const root = context.compileValue(call.arguments[0]!);
+            if (
+                root.kind !== "asset-root" ||
+                !root.assetRootClone
+            ) {
+                context.fail(
+                    call.arguments[0]!,
+                    "createHierarchyInstancePool currently lowers a cloned imported glTF root hierarchy.",
+                );
+            }
+            context.assertAssetRootWritable(root, call);
+            const capacity = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const engine = context.requireEngine(root, call);
+            const pool = context.allocateTemporaryCppName(
+                "hierarchy_instance_pool",
+            );
+            context.reachFeature("mesh:thin-instances", call);
+            context.reachFeature("mesh:thin-instances-dynamic", call);
+            // The pin materializes the imported hierarchy's parent links before
+            // snapshotting mesh worlds. Native loading has already flattened
+            // those links, and the scene core owns the same matrix helpers.
+            context.reachFeature("mesh:parenting", call);
+            context.recordThinInstanceMesh(undefined);
+            context.emit(
+                `const bbl::HierarchyInstancePoolHandle ${pool} = ` +
+                    `bbl::create_hierarchy_instance_pool(` +
+                    `${engine}, ${root.cpp}, ${capacity});`,
+            );
+            return {
+                kind: "hierarchy-instance-pool",
+                cpp: pool,
+                engineCpp: engine,
+            };
+        }
+
+        case "addHierarchyInstance":
+        case "setHierarchyInstanceMatrix": {
+            const updatesExisting =
+                importedName === "setHierarchyInstanceMatrix";
+            context.expectArgumentCount(
+                call,
+                updatesExisting ? 3 : 2,
+                updatesExisting ? 3 : 2,
+            );
+            const pool = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                pool,
+                "hierarchy-instance-pool",
+                call.arguments[0]!,
+            );
+            const index = updatesExisting
+                ? context.compileNumber(call.arguments[1]!, "double")
+                : undefined;
+            const matrix = context.compileTypedArrayArgument(
+                call.arguments[updatesExisting ? 2 : 1]!,
+                "f32array",
+            );
+            const invocation = updatesExisting
+                ? `bbl::set_hierarchy_instance_matrix(` +
+                  `${context.requireEngine(pool, call)}, ${pool.cpp}, ` +
+                  `${index}, ${matrix})`
+                : `bbl::add_hierarchy_instance(` +
+                  `${context.requireEngine(pool, call)}, ${pool.cpp}, ` +
+                  `${matrix})`;
+            return updatesExisting
+                ? { kind: "void", cpp: invocation }
+                : {
+                      kind: "number",
+                      cpp: invocation,
+                      dataType: { kind: "number" },
+                  };
+        }
+
+        case "setHierarchyInstanceCount":
+        case "removeHierarchyInstance": {
+            context.expectArgumentCount(call, 2, 2);
+            const pool = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                pool,
+                "hierarchy-instance-pool",
+                call.arguments[0]!,
+            );
+            const value = context.compileNumber(
+                call.arguments[1]!,
+                "double",
+            );
+            const helper =
+                importedName === "setHierarchyInstanceCount"
+                    ? "set_hierarchy_instance_count"
+                    : "remove_hierarchy_instance";
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::${helper}(` +
+                    `${context.requireEngine(pool, call)}, ${pool.cpp}, ${value})`,
             };
         }
 

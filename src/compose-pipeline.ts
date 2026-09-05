@@ -223,6 +223,15 @@ export function staticSceneLightArms(
     };
 }
 
+/** Runtime mesh fallback compares attributes, not flags read live per draw. */
+export function uniformRuntimeMeshAttributes(
+    features: readonly number[],
+    liveBits: number,
+): number | undefined {
+    const attributes = new Set(features.map((value) => value & ~liveBits));
+    return attributes.size === 1 ? [...attributes][0]! : undefined;
+}
+
 /**
  * Every mesh shape a dynamically populated caster task can pair with one
  * asset material. The task may receive that asset's imported meshes or a
@@ -238,6 +247,24 @@ export function dynamicCasterFeatureSets(
         [...new Set([...assetFeatures, ...sceneFeatures])],
         runtimeBits,
     ).sort((left, right) => left - right);
+}
+
+/**
+ * Every runtime-decorated PBR key for an asset feature set.
+ *
+ * Thin-instance pools and dynamic shadow receiving are independent runtime
+ * decorations. Expanding one as an alternative to the other omits the legal
+ * combined key (for example NORMAL + thin instances + receive shadows).
+ */
+export function runtimePbrAssetFeatureSets(
+    featureSets: readonly number[],
+    meshBits: readonly number[],
+    receiverBits: readonly number[],
+): number[] {
+    return expandRuntimeMeshFeatureSets(
+        featureSets,
+        [...meshBits, ...receiverBits],
+    );
 }
 
 /**
@@ -573,10 +600,6 @@ export async function composeScenePipeline({
             ? [thinInstancesBit | instanceColorBit]
             : []),
     ];
-    const runtimePbrCompositionBits = [
-        ...runtimePbrMeshBits,
-        ...dynamicReceiverBits,
-    ];
     // A baked mesh composes under MSH_VAT where its own attributes say
     // MSH_HAS_SKELETON: `_computeMeshFeatures` writes the two as one
     // either/or, so this is a REWRITE of the asset's rows rather than
@@ -595,13 +618,14 @@ export async function composeScenePipeline({
                 ]),
             ].sort((left, right) => left - right)
             : features;
-    const assetMaterialMeshFeatures = expandRuntimeMeshFeatureSets(
+    const assetMaterialMeshFeatures = runtimePbrAssetFeatureSets(
         result.manifest.sceneMeshes.flatMap((mesh, index) =>
             mesh.assetPbrMaterial
                 ? [renderableMeshFeatures[sceneMeshRows[index]!] ?? 0]
                 : [],
         ),
-        runtimePbrCompositionBits,
+        runtimePbrMeshBits,
+        dynamicReceiverBits,
     );
     const geometryTasks = result.manifest.geometryOutputTasks.map(
         (task, index) => ({
@@ -750,30 +774,21 @@ export async function composeScenePipeline({
                 // that had a baked mesh. The base rows go through the VAT
                 // rewrite first, then the widening, then the light lists
                 // ride along when there are receivers.
-                ...(hasVat || dynamicReceiverBits.length > 0
-                    ? {
-                          meshFeatureSets: expandRuntimeMeshFeatureSets(
-                              hasVat
-                                  ? await vatFeatureSets(
-                                        gltfRenderableFeatureSets[
-                                            assetIndex
-                                        ] ?? [],
-                                    )
-                                  : gltfRenderableFeatureSets[assetIndex] ??
-                                    [],
-                              // The runtime product beside the rewrite: a
-                              // baked mesh that is also thin-instanced
-                              // takes the per-instance VAT arm, which the
-                              // pin derives from MSH_HAS_THIN_INSTANCES
-                              // rather than from a bit of its own.
-                              dynamicReceiverBits.length > 0
-                                  ? dynamicReceiverBits
-                                  : runtimePbrCompositionBits,
-                          ),
-                          ...(dynamicReceiverBits.length > 0
-                              ? { shadowLights, perMeshLightLists }
-                              : {}),
-                      }
+                meshFeatureSets: runtimePbrAssetFeatureSets(
+                    hasVat
+                        ? await vatFeatureSets(
+                            gltfRenderableFeatureSets[assetIndex] ?? [],
+                        )
+                        : gltfRenderableFeatureSets[assetIndex] ?? [],
+                    // The runtime product beside the rewrite: a baked mesh
+                    // that is also thin-instanced takes the per-instance VAT
+                    // arm, while receiving shadows remains an independent
+                    // decoration of that same key.
+                    runtimePbrMeshBits,
+                    dynamicReceiverBits,
+                ),
+                ...(dynamicReceiverBits.length > 0
+                    ? { shadowLights, perMeshLightLists }
                     : {}),
             },
             // A PBR mesh drawn in a geometry-output task resolves the pin's
@@ -937,12 +952,13 @@ export async function composeScenePipeline({
                 scenePbrMaterials,
                 sceneArms,
                 0,
-                expandRuntimeMeshFeatureSets(
+                runtimePbrAssetFeatureSets(
                     [
                         ...renderableMeshFeatures,
                         await proceduralRenderableFeatures(),
                     ],
-                    runtimePbrCompositionBits,
+                    runtimePbrMeshBits,
+                    dynamicReceiverBits,
                 ),
                 {
                     linearImageProcessing,
@@ -982,15 +998,14 @@ export async function composeScenePipeline({
                     ? [standardSceneMeshFeatures[index] ?? 0]
                     : [],
             );
-        const runtimeStandardFeatureSet = new Set(
-            runtimeStandardFeatureValues,
-        );
         standardRuntimeMeshFeatures =
-            runtimeStandardFeatureSet.size === 1
-                ? [...runtimeStandardFeatureSet][0]!
-                : result.manifest.sceneMeshes.length === 0
-                  ? await proceduralRenderableFeatures()
-                  : undefined;
+            result.manifest.sceneMeshes.length === 0
+                ? await proceduralRenderableFeatures()
+                // Like the PBR fallback above, only attributes must agree.
+                // receiveShadows is already resolved from each live mesh;
+                // mixing receivers and nonreceivers must not refuse every
+                // mesh allocated after the static table (e.g. a later mode).
+                : uniformRuntimeMeshAttributes(runtimeStandardFeatureValues, receiveShadowsBit);
         const babylonAssets = result.manifest.assets
             .filter((asset) => asset.kind === "babylon")
             .map((asset) => resolve(outputPath, "assets", asset.output));

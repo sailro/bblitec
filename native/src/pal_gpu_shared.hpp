@@ -70,6 +70,7 @@
 #include <bblite/upstream/esm_shadow.hpp>
 #endif
 #include <bblite/upstream/pinned_depth_state.hpp>
+#include <cstdio>
 
 namespace bbl::pal {
 
@@ -80,6 +81,130 @@ namespace bbl::pal {
  * way instead of repeating the `numeric_limits` incantation per site.
  */
 inline constexpr std::size_t npos = std::numeric_limits<std::size_t>::max();
+
+/** Whether the scene set a backend planned at startup has changed. */
+inline bool registered_scene_set_changed(
+    const Engine& engine,
+    const std::vector<std::shared_ptr<Scene>>& planned) {
+    if (engine.registered_scenes.size() != planned.size()) return true;
+    for (std::size_t i = 0; i < planned.size(); ++i) {
+        const std::shared_ptr<Scene>& current = engine.registered_scenes[i];
+        if (static_cast<bool>(current) != static_cast<bool>(planned[i])) {
+            return true;
+        }
+        if (current && !current->shares_identity(*planned[i])) return true;
+    }
+    return false;
+}
+
+/** Stop this render plan whenever its scene set changes, including removal. */
+inline bool request_renderer_restart_if_scene_set_changed(
+    Engine& engine,
+    const std::vector<std::shared_ptr<Scene>>& planned) {
+    if (!registered_scene_set_changed(engine, planned)) return false;
+    engine.renderer_restart_requested = !engine.registered_scenes.empty();
+    return true;
+}
+
+#if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/**
+ * Native presents every browser canvas through one operating-system window.
+ * Keep the browser's independent surface ownership by assigning the primary
+ * scene and every registered auxiliary-surface scene an equal horizontal
+ * pane. Ordinary utility-layer scenes carry no surface canvas and continue to
+ * overlay the full primary target.
+ */
+inline std::optional<PixelViewport> scene_surface_pane(
+    const Engine& engine,
+    const Scene& scene,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+    if (engine.registered_scenes.empty()) return std::nullopt;
+
+    std::size_t pane_count = 1;
+    for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
+        const std::shared_ptr<Scene>& registered = engine.registered_scenes[i];
+        if (registered && registered->surface_canvas.has_value()) {
+            ++pane_count;
+        }
+    }
+    if (pane_count == 1) return std::nullopt;
+
+    std::size_t pane_index = npos;
+    const std::shared_ptr<Scene>& primary = engine.registered_scenes.front();
+    if (primary && primary->shares_identity(scene)) {
+        pane_index = 0;
+    } else if (scene.surface_canvas.has_value()) {
+        std::size_t auxiliary_index = 1;
+        for (std::size_t i = 1; i < engine.registered_scenes.size(); ++i) {
+            const std::shared_ptr<Scene>& registered =
+                engine.registered_scenes[i];
+            if (!registered || !registered->surface_canvas.has_value()) {
+                continue;
+            }
+            if (registered->shares_identity(scene)) {
+                pane_index = auxiliary_index;
+                break;
+            }
+            ++auxiliary_index;
+        }
+    }
+    if (pane_index == npos) return std::nullopt;
+
+    const std::uint64_t width = target_width;
+    const std::int32_t x0 = static_cast<std::int32_t>(
+        width * pane_index / pane_count);
+    const std::int32_t x1 = static_cast<std::int32_t>(
+        width * (pane_index + 1) / pane_count);
+    return PixelViewport{
+        x0,
+        0,
+        std::max<std::int32_t>(1, x1 - x0),
+        std::max<std::int32_t>(1, static_cast<std::int32_t>(target_height)),
+    };
+}
+
+/** Target extent used when building one surface scene's projection. */
+inline PixelViewport scene_surface_extent(
+    const Engine& engine,
+    const Scene& scene,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+    return scene_surface_pane(engine, scene, target_width, target_height)
+        .value_or(PixelViewport{
+            0,
+            0,
+            static_cast<std::int32_t>(target_width),
+            static_cast<std::int32_t>(target_height),
+        });
+}
+
+/** Final viewport/scissor after composing a camera viewport into its pane. */
+inline std::optional<PixelViewport> scene_camera_viewport(
+    const Engine& engine,
+    const Scene& scene,
+    const CameraRecord& camera,
+    std::uint32_t target_width,
+    std::uint32_t target_height) {
+    const std::optional<PixelViewport> pane =
+        scene_surface_pane(engine, scene, target_width, target_height);
+    if (!pane.has_value()) {
+        if (!camera.viewport.has_value()) return std::nullopt;
+        return upstream::resolve_camera_viewport(
+            camera,
+            static_cast<double>(target_width),
+            static_cast<double>(target_height));
+    }
+    if (!camera.viewport.has_value()) return pane;
+    PixelViewport viewport = upstream::resolve_camera_viewport(
+        camera,
+        static_cast<double>(pane->width),
+        static_cast<double>(pane->height));
+    viewport.x += pane->x;
+    viewport.y += pane->y;
+    return viewport;
+}
+#endif
 
 inline std::string sprite_fragment_shader_name(
     std::uint32_t program) {
@@ -1024,7 +1149,9 @@ struct PickSceneUniforms {
 struct PickMeshUniforms {
     std::array<float, 16> world{};
     std::uint32_t pick_id = 0;
-    std::array<std::uint32_t, 3> _pad{};
+    std::uint32_t excluded_thin_instance_start = 0;
+    std::uint32_t excluded_thin_instance_count = 0;
+    std::uint32_t _pad = 0;
 };
 
 /**
@@ -1418,8 +1545,17 @@ inline std::vector<GpuVertex> transformed_vertices(
             ? identity_transform
             : mesh;
 #endif
+    // A static imported primitive normally carries its node world baked into
+    // geometry.vertices. If scene code later turns a clone into a hierarchy
+    // instance pool, the pin's vertex stage composes mesh.world *
+    // instanceWorld and therefore needs the loader-retained local copy; using
+    // the baked vertices would apply the descendant node world twice.
+    const bool restores_runtime_instance_vertices =
+        mesh.thin_instanced &&
+        geometry.vertex_space == VertexSpace::world;
     const std::vector<ModelVertex>& source_vertices =
-        (mesh.gpu_deformation || mesh.live_imported_transform) &&
+        (mesh.gpu_deformation || mesh.live_imported_transform ||
+         restores_runtime_instance_vertices) &&
                 geometry.bind_vertices.size() ==
                     geometry.vertices.size()
             ? geometry.bind_vertices
@@ -1821,11 +1957,20 @@ inline bool pick_mesh_deforms(const MeshRecord& mesh) {
 struct PickMeshCandidate {
     std::size_t item_index = 0;
     PickMeshUniforms uniforms{};
+#if BBLITE_GPU_INSTANCING
+    /** The advanced pipeline draws one invocation and id per active row. */
+    bool thin = false;
+    std::uint32_t instance_count = 1;
+#endif
 #if BBLITE_DEFORM_PICKING
     /** `pick_mesh_deforms` for this candidate's mesh. */
     bool deform = false;
 #endif
 };
+
+#if BBLITE_GPU_INSTANCING
+inline std::size_t thin_instance_active_count(const MeshRecord& record);
+#endif
 
 /**
  * The render-plan walk both pick passes share: which meshes are drawn, in
@@ -1841,9 +1986,22 @@ struct PickMeshCandidate {
  * selection and the id/range assignment are decided here, once, so the two
  * backends cannot drift on which mesh answers a pick.
  */
+inline std::optional<std::size_t> picker_scene_index(
+    const Engine& engine, GpuPickerHandle picker,
+    const std::vector<std::shared_ptr<Scene>>& scenes) {
+    if (picker.value >= engine.gpu_pickers.size()) return std::nullopt;
+    const auto picked_state = engine.gpu_pickers[picker.value].scene.lock();
+    if (!picked_state || picked_state->disposed) return std::nullopt;
+    for (std::size_t index = 0; index < scenes.size(); ++index) {
+        if (scenes[index] && scenes[index]->state == picked_state) return index;
+    }
+    return std::nullopt;
+}
+
 template <typename HasGeometry>
 inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
     const Engine& engine,
+    [[maybe_unused]] const Scene& scene,
     const upstream::RenderPlan& render_plan,
     std::size_t gpu_mesh_count,
     const HasGeometry& has_geometry,
@@ -1872,6 +2030,14 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
         PickMeshCandidate candidate;
         candidate.item_index = item_index;
         const MeshRecord& pick_mesh = engine.meshes[handle.value];
+#if BBLITE_GPU_INSTANCING
+        candidate.thin = pick_mesh.thin_instanced;
+        if (candidate.thin) {
+            candidate.instance_count = static_cast<std::uint32_t>(
+                thin_instance_active_count(pick_mesh));
+            if (candidate.instance_count == 0) continue;
+        }
+#endif
         constexpr std::array<float, 16> identity_world{
             1.0f, 0.0f, 0.0f, 0.0f,
             0.0f, 1.0f, 0.0f, 0.0f,
@@ -1881,6 +2047,11 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
         candidate.deform = pick_mesh_deforms(pick_mesh);
 #endif
         candidate.uniforms.world =
+#if BBLITE_GPU_INSTANCING
+            candidate.thin
+            ? instance_parent_draw_world(pick_mesh, scene, engine)
+            :
+#endif
 #if BBLITE_DEFORM_PICKING
             // The skinned arm's own convention, which is the render
             // path's: the loader's palette is the mirror-conjugated
@@ -1903,8 +2074,14 @@ inline std::vector<PickMeshCandidate> collect_pick_mesh_candidates(
             : identity_world;
         candidate.uniforms.pick_id = next_id;
         candidates.push_back(candidate);
-        ranges.push_back({next_id, PickedNodeKind::mesh, handle.value});
-        ++next_id;
+        const std::uint32_t id_count =
+#if BBLITE_GPU_INSTANCING
+            candidate.thin ? candidate.instance_count :
+#endif
+            1u;
+        ranges.push_back(
+            {next_id, PickedNodeKind::mesh, handle.value, id_count});
+        next_id += id_count;
     }
     return candidates;
 }
@@ -2566,33 +2743,7 @@ inline void fitted_shadow_casters(
     for (const MeshHandle handle : generator.caster_meshes) {
         if (handle.value >= engine.meshes.size()) continue;
         const MeshRecord& record = engine.meshes[handle.value];
-        // The cascade fit is the one place the pin bounds a caster by its
-        // INSTANCES rather than by its own box: `_castersWorldAabb` opens
-        // with `_thinInstanceWorldAabb`, whose comment says why -- one
-        // prototype-sized box wrecks the cascade Z-fit, an off-world herd
-        // collapsing every shadow. The carrier below is filled from the
-        // mesh's own geometry bounds, which is right for the PCF and ESM
-        // fits (`computeDirectionalLightMatrix` has no such arm) and
-        // silently wrong here, so it fails by name instead.
-        //
-        // Named here rather than refused at generation because the pairing
-        // that matters is this GENERATOR's caster list against this MESH,
-        // and the list is a runtime array -- `setShadowTaskCasterMeshes`
-        // takes one, and racer spreads two into it. A scene that merely
-        // reaches both features is fine, and racer is exactly that scene.
-        if (
-            record.thin_instanced &&
-            generator.filter == ShadowFilter::csm_directional) {
-            throw std::runtime_error(
-                "A thin-instanced mesh is a caster of a cascaded shadow "
-                "generator. The pin fits the cascades to the union of "
-                "every drawn instance (`_thinInstanceWorldAabb`); this "
-                "port bounds a caster by its own geometry box, which "
-                "would collapse the cascade Z-fit around the prototype "
-                "rather than fail.");
-        }
         upstream::ShadowCaster caster;
-        caster.world = upstream::shadow_caster_world(engine, record);
         caster.bounds_min = upstream::shadow_caster_bounds_fallback_min;
         caster.bounds_max = upstream::shadow_caster_bounds_fallback_max;
         if (record.geometry < engine.geometries.size()) {
@@ -2653,6 +2804,46 @@ inline void fitted_shadow_casters(
         apply_mesh_bound_overrides(record, minimum, maximum);
         caster.bounds_min = {minimum.x, minimum.y, minimum.z};
         caster.bounds_max = {maximum.x, maximum.y, maximum.z};
+
+        // `_castersWorldAabb` gives a live CSM caster with an active
+        // ThinInstanceData pool to `_thinInstanceWorldAabb`: every active,
+        // non-degenerate matrix transforms the mesh bounds, and mesh.world
+        // transforms that result. One carrier per instance lets the pinned
+        // cascade fold perform those same two transforms without reducing
+        // rotated boxes to an intermediate AABB. The refresh gate already
+        // keys on `instance_version`, so this work runs only when the pin's
+        // own cache would be invalidated.
+#if BBLITE_GPU_INSTANCING
+        const std::size_t active_instances =
+            thin_instance_active_count(record);
+        if (
+            generator.filter == ShadowFilter::csm_directional &&
+            record.thin_instanced && active_instances > 0) {
+            const std::array<float, 16> parent = outer_draw_world(
+                upstream::build_instance_parent_world(record), record);
+            std::copy(parent.begin(), parent.end(), caster.world.begin());
+            for (std::size_t index = 0; index < active_instances; ++index) {
+                const std::array<float, 16>& instance =
+                    record.instance_matrices[index];
+                const double linear_magnitude =
+                    std::abs(static_cast<double>(instance[0])) +
+                    std::abs(static_cast<double>(instance[1])) +
+                    std::abs(static_cast<double>(instance[2])) +
+                    std::abs(static_cast<double>(instance[4])) +
+                    std::abs(static_cast<double>(instance[5])) +
+                    std::abs(static_cast<double>(instance[6])) +
+                    std::abs(static_cast<double>(instance[8])) +
+                    std::abs(static_cast<double>(instance[9])) +
+                    std::abs(static_cast<double>(instance[10]));
+                if (linear_magnitude < 1e-9) continue;
+                caster.instance = instance;
+                caster.has_instance = true;
+                casters.push_back(caster);
+            }
+            continue;
+        }
+#endif
+        caster.world = upstream::shadow_caster_world(engine, record);
         casters.push_back(caster);
     }
 }
@@ -2813,12 +3004,14 @@ inline void refresh_shadow_generators(
     // whole-target ratio, where the second copy would be the one that
     // drifts. A frame constant like `eye` above, so it is read once here
     // rather than per generator.
+    const PixelViewport surface_extent = scene_surface_extent(
+        engine, scene, engine.options.width, engine.options.height);
     const double csm_camera_aspect = upstream::effective_aspect_ratio(
         scene.camera.value < engine.cameras.size()
             ? engine.cameras[scene.camera.value]
             : no_camera_record,
-        static_cast<double>(engine.options.width),
-        static_cast<double>(engine.options.height));
+        static_cast<double>(surface_extent.width),
+        static_cast<double>(surface_extent.height));
     for_each_shadow_generator(
         scene,
         engine,
@@ -2911,6 +3104,20 @@ inline void refresh_shadow_generators(
             }
             const upstream::ShadowReceiverBlock block =
                 upstream::shadow_receiver_block(generator);
+            const auto receiver_callbacks = generator.csm_receiver_callbacks;
+            if (
+                generator.filter == ShadowFilter::csm_directional &&
+                receiver_callbacks && !receiver_callbacks->empty()) {
+                js::F32Array values(block.size / sizeof(float));
+                if (!values.empty()) {
+                    std::memcpy(
+                        values.data(), block.bytes.data(), block.size);
+                }
+                // getCsmReceiverData subscribers observe the exact block
+                // produced by the pin's packer on every refresh, before the
+                // backend consumes resources updated by their callbacks.
+                receiver_callbacks->dispatch(values);
+            }
             const bool moved = !refresh.uploaded[handle.value] ||
                 block != refresh.blocks[handle.value];
             refresh.blocks[handle.value] = block;
@@ -5719,10 +5926,11 @@ inline void shader_stage_block_floats(
 /** Give every pre-render application RAF callback this turn's one timestamp. */
 inline void run_animation_frame_callbacks(Engine& engine) {
     engine.animation_frame_timestamp_ms = performance_milliseconds();
+    const auto persistent_callbacks = engine.animation_frame_callbacks;
     auto once_callbacks =
         std::move(engine.animation_frame_once_callbacks);
     engine.animation_frame_once_callbacks.clear();
-    for (const auto& callback : engine.animation_frame_callbacks) {
+    for (const auto& callback : persistent_callbacks) {
         callback(engine.animation_frame_timestamp_ms);
     }
     for (const auto& callback : once_callbacks) {
@@ -5761,7 +5969,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
             ? frame_delta_ms
             : scene.fixed_delta_ms);
     run_animation_frame_callbacks(engine);
-    for (const auto& callback : scene.before_render) {
+    // A callback may dispose its own scene while it is running. Snapshot the
+    // dispatch list so clearing SceneState::before_render cannot destroy the
+    // currently executing std::function (or invalidate the next iterator).
+    const auto root_callbacks = scene.before_render;
+    for (const auto& callback : root_callbacks) {
         callback(delta_ms);
     }
     // Every other registered scene's own callbacks. A swapchain overlay
@@ -5769,9 +5981,11 @@ inline void run_animation_frame_callbacks(Engine& engine) {
     // the utility layer's camera forwarding and each gizmo's follow live
     // there -- and upstream runs a scene's callbacks as part of rendering
     // it, so a layer that is drawn is a layer whose callbacks ran.
-    for (Scene* registered : engine.registered_scenes) {
-        if (!registered || registered == &scene) continue;
-        for (const auto& callback : registered->before_render) {
+    const auto registered_scenes = engine.registered_scenes;
+    for (const std::shared_ptr<Scene>& registered : registered_scenes) {
+        if (!registered || registered->shares_identity(scene)) continue;
+        const auto callbacks = registered->before_render;
+        for (const auto& callback : callbacks) {
             callback(delta_ms);
         }
     }

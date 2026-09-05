@@ -1,14 +1,20 @@
 #pragma once
 
+#include <bblite/js_callback.hpp>
+#include <bblite/snapshot_list.hpp>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <deque>
 #include <functional>
 #include <list>
 #include <limits>
 #include <memory>
+#include <new>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -25,10 +31,14 @@ namespace js {
 template <typename T>
 class Array;
 template <typename T>
+class TypedArray;
+using F32Array = TypedArray<float>;
+template <typename T>
 class Nullable;
 template <std::size_t N>
 class Tuple;
 class U8Array;
+class BorrowedEvent;
 }
 
 inline constexpr float pi = 3.14159265358979323846f;
@@ -175,6 +185,8 @@ class PlatformEventListeners<void(Args...)> {
         compact_if_idle();
     }
 
+    [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
+
     void dispatch(Args... args) {
         const std::size_t boundary = next_sequence_;
         ++dispatch_depth_;
@@ -229,6 +241,7 @@ class PlatformEventListeners<void(Args...)> {
  */
 struct UiElementHandle {
     std::uint32_t value = invalid_handle;
+    [[nodiscard]] bool operator==(const UiElementHandle&) const = default;
 };
 
 /** Opaque URL token for one engine-owned Blob payload. */
@@ -289,6 +302,29 @@ struct MaterialHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/** One GPU-readable byte buffer created by the shader-material API. */
+struct StorageBufferHandle {
+    std::uint32_t value = invalid_handle;
+};
+
+/** A browser Gamepad identity backed by one SDL joystick instance. */
+struct GamepadHandle {
+    std::uint32_t instance_id = invalid_handle;
+    std::uint32_t index = invalid_handle;
+
+    [[nodiscard]] bool operator==(const GamepadHandle&) const = default;
+};
+
+/** A button in the browser standard-mapping order for one gamepad. */
+struct GamepadButtonHandle {
+    GamepadHandle gamepad{};
+    std::uint32_t index = invalid_handle;
+
+    [[nodiscard]] bool operator==(const GamepadButtonHandle&) const = default;
+};
+
+struct PlatformGamepadState;
+
 struct LightHandle {
     std::uint32_t value = invalid_handle;
 };
@@ -316,6 +352,15 @@ using TransformNodeChild =
     std::variant<MeshHandle, TransformNodeHandle>;
 
 struct AssetHandle {
+    std::uint32_t value = invalid_handle;
+    [[nodiscard]] bool operator==(const AssetHandle&) const = default;
+};
+
+/** The three concrete native representations admitted by SceneNode. */
+using SceneNodeHandle =
+    std::variant<MeshHandle, TransformNodeHandle, AssetHandle>;
+
+struct HierarchyInstancePoolHandle {
     std::uint32_t value = invalid_handle;
 };
 
@@ -550,6 +595,16 @@ struct EditGizmoHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/** The pointer interaction owned by one editing gizmo. */
+struct PointerDragHandle {
+    std::uint32_t value = invalid_handle;
+
+    // PointerDrag is an upstream object. Its native handle is the stable
+    // engine-owned identity used by strict equality in editor hover state.
+    [[nodiscard]] bool operator==(
+        const PointerDragHandle&) const = default;
+};
+
 /**
  * A composite gizmo: the sub-widget handles the pinned composite holds.
  *
@@ -703,7 +758,9 @@ struct PickingInfo {
  * -- only the renderer knows how to make them -- so this record carries the
  * scene it picks in and the slot the backend keeps its resources under.
  */
+struct SceneState;
 struct GpuPickerRecord {
+    std::weak_ptr<SceneState> scene;
     bool disposed = false;
     /**
      * The pin's `_detailedPicking`, which `enableDetailedPicking` arms and
@@ -1521,6 +1578,8 @@ struct FileTexture {
     bool srgb = false;
     std::uint32_t width = 0;
     std::uint32_t height = 0;
+    /** JavaScript Texture2D object identity for array search and aliases. */
+    std::uint64_t identity = 0;
 };
 
 /**
@@ -1548,6 +1607,18 @@ struct PixelsTexture {
     TextureUvTransform uv_transform{};
     bool uv_invert_y = false;
 };
+
+inline bool operator==(
+    const FileTexture& left,
+    const FileTexture& right) {
+    return left.identity == right.identity;
+}
+
+inline bool operator==(
+    const PixelsTexture& left,
+    const PixelsTexture& right) {
+    return left.identity == right.identity;
+}
 
 // Texture2D is one upstream interface with multiple reached producers. Plain
 // data records therefore need storage that preserves either a decoded file
@@ -2808,6 +2879,12 @@ struct MaterialRecord {
     // member offsets; created (and defaults-applied) by the emitted
     // create_shader_material, written by the emitted offset setters.
     std::vector<float> shader_uniform_values;
+    /** Storage slots in the shader's declared order. */
+    std::vector<StorageBufferHandle> shader_storage_buffers;
+    /** CSM receiver textures keyed by shader sampler slot. */
+    std::vector<ShadowGeneratorHandle> shader_csm_textures;
+    /** Optional shader material used only by this material's shadow pass. */
+    MaterialHandle shadow_caster_material{};
     Color3 grid_main_color{0.0f, 0.0f, 0.0f};
     Color3 grid_line_color{0.0f, 0.5f, 0.5f};
     Vec4 grid_control{1.0f, 10.0f, 0.33f, 1.0f};
@@ -2978,6 +3055,7 @@ struct CameraRecord {
     double beta = 1.1;
     double radius = 6.0;
     Vec3d target{};
+    Vec3d up_vector{0.0, 1.0, 0.0};
     double fov = 0.8;
     double near_plane = 0.1;
     double far_plane = 1000.0;
@@ -3004,6 +3082,9 @@ struct CameraRecord {
     std::optional<double> lower_radius_limit;
     std::optional<double> upper_radius_limit;
     bool controls_enabled = false;
+    std::function<bool()> should_handle_pointer_down;
+    std::function<bool()> external_drag_active;
+    std::function<bool()> external_pick_pending;
     // Orthographic projection state (src/camera/orthographic.ts). The
     // four clip planes stay derived from the half-extent, which is the
     // reached surface: vertically +/-half_height, horizontally scaled by
@@ -3104,6 +3185,8 @@ struct AssetRecord {
     // values preserve absolute assignment and clone-of-clone semantics.
     Vec3 root_position{};
     Vec3 root_rotation{};
+    /** Whether the public glTF root's synthetic X mirror was reset to identity. */
+    bool root_scaling_reset = false;
     CameraHandle camera{};
     Color4 clear_color{};
     bool has_camera = false;
@@ -3197,6 +3280,22 @@ struct AssetRecord {
      * by a loader compiled with bone control.
      */
     std::function<void()> bake_skeletons;
+};
+
+struct HierarchyInstancePoolBinding {
+    MeshHandle mesh{};
+    std::array<float, 16> mesh_world{};
+    std::array<float, 16> mesh_world_inverse{};
+};
+
+/** Engine-owned state for the pin's fixed-capacity hierarchy instance pool. */
+struct HierarchyInstancePoolRecord {
+    AssetHandle root{};
+    std::uint32_t capacity = 0;
+    std::uint32_t count = 0;
+    std::vector<MeshHandle> meshes;
+    std::vector<HierarchyInstancePoolBinding> bindings;
+    std::array<float, 16> scratch{};
 };
 
 /**
@@ -3324,6 +3423,10 @@ struct ShadowGeneratorRecord {
     double csm_cascade_blend_percentage = 0.1;
     std::optional<double> csm_shadow_max_z{};
     std::vector<ShadowCascade> csm_cascades;
+    /** Subscribers to the exact packed CSM receiver block for this frame. */
+    std::shared_ptr<
+        PlatformEventListeners<void(const js::F32Array&)>>
+        csm_receiver_callbacks;
     /**
      * ESM only: this generator's ordinal among the ESM ones, which is the
      * row generation emitted its recorded resources under.
@@ -3356,6 +3459,7 @@ struct UiStyleRule {
     /** A negative value means the rule is not inside a max-width query. */
     double max_width = -1.0;
     bool hover = false;
+    bool focus_visible = false;
 };
 
 /**
@@ -3423,6 +3527,15 @@ struct UiElementRecord {
     std::vector<UiStyleRule> style_rules;
     UiElementHandle parent{};
     std::vector<UiElementHandle> children;
+    /**
+     * A compiler-addressable node inside static inner RML. These records do
+     * not render a second element; the UI projection binds them to the node
+     * carrying the matching data-bbl-node attribute.
+     */
+    UiElementHandle markup_owner{};
+    std::uint32_t markup_node_id = invalid_handle;
+    /** Materialized static-markup nodes owned by this element. */
+    std::vector<UiElementHandle> markup_children;
     std::vector<std::function<void()>> click_callbacks;
     std::unordered_map<
         std::string,
@@ -3618,6 +3731,8 @@ enum class GizmoLocalOrientation : std::uint8_t {
     compose_baked_rotation,
 };
 
+struct PointerDragDispatcher;
+
 struct EditGizmoRecord {
     TransformNodeHandle root{};
     MeshHandle attached_node{};
@@ -3627,6 +3742,14 @@ struct EditGizmoRecord {
     std::array<double, 4> baked_rotation{0.0, 0.0, 0.0, 1.0};
     GizmoLocalOrientation orientation =
         GizmoLocalOrientation::look_at_world_axis;
+    bool enabled = true;
+    bool dragging = false;
+    bool hovering = false;
+    bool plane_drag = false;
+    MaterialHandle colored_material{};
+    MaterialHandle hover_material{};
+    std::vector<MeshHandle> visible_meshes;
+    std::function<void()> dispose_pointer = []() {};
 };
 
 /**
@@ -3760,6 +3883,10 @@ struct Engine {
         mouse_wheel_callbacks;
     PlatformEventListeners<void(const PlatformMouseEvent&)>
         mouse_cancel_callbacks;
+#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+    /** Cached browser property identities; owns no SDL handles. */
+    std::shared_ptr<PlatformGamepadState> platform_gamepad_state;
+#endif
     /** Browser `window.resize` callbacks, dispatched after canvas size sync. */
     PlatformEventListeners<void()> window_resize_callbacks;
     PlatformEventListeners<void()> pointer_lock_change_callbacks;
@@ -3774,6 +3901,9 @@ struct Engine {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
+    UiElementHandle ui_focused_element{};
+    std::uint64_t ui_focus_revision = 0;
+    bool ui_focus_visible = true;
     /** Direct document children in live DOM attachment order. */
     std::vector<UiElementHandle> ui_root_children;
     /** Audited host-page rules, preceding scene-created sheets in cascade. */
@@ -3794,7 +3924,7 @@ struct Engine {
      * `startEngine`. Browser RAF callbacks run in registration order, so these
      * precede the engine-owned render callback.
      */
-    std::vector<std::function<void(double)>> animation_frame_callbacks;
+    SnapshotList<js::Callback<void(double)>> animation_frame_callbacks;
     /**
      * One-shot browser RAF callbacks. The conductor moves this queue before
      * invoking it, so a callback which schedules another RAF naturally runs
@@ -3830,14 +3960,26 @@ struct Engine {
     /** Whether original meshes and their clones have stable feature rows. */
     bool composition_feature_rows_initialized = false;
     std::vector<MaterialRecord> materials;
+    struct StorageBufferRecord {
+        std::vector<std::uint8_t> bytes;
+        std::uint64_t version = 1;
+        bool disposed = false;
+        std::string label;
+    };
+    std::vector<StorageBufferRecord> storage_buffers;
     /** Creation-ordered handles retained for source values that escape scope. */
     std::vector<MaterialHandle> scene_material_slots;
     std::vector<LightRecord> lights;
     std::vector<TransformNodeRecord> transform_nodes;
-    std::vector<CameraRecord> cameras;
+    // Camera controls and render loops keep references to active records while
+    // UI callbacks may construct the next mode's cameras. End insertion must
+    // therefore preserve those references until the loop observes the scene
+    // replacement and restarts.
+    std::deque<CameraRecord> cameras;
     std::vector<ModelGeometry> geometries;
     std::vector<std::array<TextureData, 6>> reflection_cubes;
     std::vector<AssetRecord> assets;
+    std::vector<HierarchyInstancePoolRecord> hierarchy_instance_pools;
     std::vector<AnimationGroupRecord> animation_groups;
     /** The VAT payloads `bakeVat` produced, addressed by `VatBake`. */
     std::vector<VatBakeRecord> vat_bakes;
@@ -3846,7 +3988,24 @@ struct Engine {
     std::vector<RenderTargetRecord> render_targets;
     std::vector<FrameTaskRecord> frame_tasks;
     RenderTargetHandle swapchain_target{};
-    std::vector<Scene*> registered_scenes;
+    /**
+     * Stable wrappers for registered JavaScript SceneContext identities.
+     * Scene copies share their state, so retaining a wrapper here remains
+     * valid after the generated local that registered it leaves scope.
+     */
+    SnapshotList<std::shared_ptr<Scene>> registered_scenes;
+    /**
+     * A scene renderer sets this when an application callback replaces its
+     * root SceneContext. The PAL dispatcher then rebuilds the backend around
+     * the newly registered root instead of letting the current frame retain
+     * references into the disposed scene.
+     */
+    bool renderer_restart_requested = false;
+    /** Diagnostic input continues across renderer restarts and scene changes. */
+    std::size_t input_replay_next_frame = 0;
+    unsigned int input_replay_mouse_buttons = 0u;
+    double input_replay_pointer_x = 0.0;
+    double input_replay_pointer_y = 0.0;
     std::vector<FrameGraphContext*> registered_frame_graph_contexts;
     std::vector<SpriteAtlasRecord> sprite_atlases;
     std::vector<Sprite2DLayerRecord> sprite_layers;
@@ -3876,6 +4035,7 @@ struct Engine {
     std::vector<CameraGizmoRecord> camera_gizmos;
     std::vector<LightGizmoRecord> light_gizmos;
     std::vector<EditGizmoRecord> edit_gizmos;
+    std::weak_ptr<PointerDragDispatcher> canvas_pointer_dispatcher;
     std::vector<BoundingBoxGizmoRecord> bounding_box_gizmos;
     /**
      * The live renderer's pick pass.
@@ -3903,7 +4063,153 @@ struct Engine {
      * the extension without using it installs nothing.
      */
     Sprite2DYSortHook sprite_y_sort_hook;
+    std::uint64_t next_file_texture_identity = 1;
 };
+
+/** Copy a typed-array view into an engine-owned GPU storage record. */
+template <typename Data>
+[[nodiscard]] inline StorageBufferHandle create_storage_buffer(
+    Engine& engine,
+    const Data& data,
+    std::string label) {
+    using Element = typename Data::value_type;
+    Engine::StorageBufferRecord record;
+    const std::size_t byte_length = data.size() * sizeof(Element);
+    record.bytes.resize(byte_length);
+    if (byte_length != 0) {
+        std::memcpy(record.bytes.data(), data.data(), byte_length);
+    }
+    record.label = std::move(label);
+    const StorageBufferHandle handle{
+        static_cast<std::uint32_t>(engine.storage_buffers.size())};
+    engine.storage_buffers.push_back(std::move(record));
+    return handle;
+}
+
+/** Apply a typed-array byte range update with WebGPU-style bounds checks. */
+template <typename Data>
+inline void update_storage_buffer(
+    Engine& engine,
+    StorageBufferHandle handle,
+    const Data& data,
+    double byte_offset) {
+    if (
+        handle.value >= engine.storage_buffers.size() ||
+        !std::isfinite(byte_offset) ||
+        byte_offset < 0.0 ||
+        std::floor(byte_offset) != byte_offset) {
+        throw std::runtime_error("Invalid storage-buffer update.");
+    }
+    auto& record = engine.storage_buffers[handle.value];
+    if (record.disposed) {
+        throw std::runtime_error("Cannot update a disposed storage buffer.");
+    }
+    using Element = typename Data::value_type;
+    const std::size_t offset = static_cast<std::size_t>(byte_offset);
+    const std::size_t byte_length = data.size() * sizeof(Element);
+    if (offset > record.bytes.size() ||
+        byte_length > record.bytes.size() - offset) {
+        throw std::runtime_error("Storage-buffer update exceeds its allocation.");
+    }
+    if (byte_length != 0) {
+        std::memcpy(record.bytes.data() + offset, data.data(), byte_length);
+    }
+    ++record.version;
+}
+
+inline void dispose_storage_buffer(
+    Engine& engine,
+    StorageBufferHandle handle) {
+    if (handle.value >= engine.storage_buffers.size()) return;
+    auto& record = engine.storage_buffers[handle.value];
+    if (record.disposed) return;
+    record.disposed = true;
+    record.bytes.clear();
+    ++record.version;
+}
+
+/** Subscribe to the bytes produced by the CSM receiver's own packer. */
+template <typename Callback>
+[[nodiscard]] inline auto on_csm_receiver_update(
+    Engine& engine,
+    ShadowGeneratorHandle generator,
+    Callback callback) {
+    if (generator.value >= engine.shadow_generators.size()) {
+        throw std::runtime_error("Invalid CSM shadow generator.");
+    }
+    using Registry = PlatformEventListeners<void(const js::F32Array&)>;
+    std::shared_ptr<Registry>& registry =
+        engine.shadow_generators[generator.value].csm_receiver_callbacks;
+    if (!registry) registry = std::make_shared<Registry>();
+    const std::size_t identity = js::next_callback_identity();
+    registry->add(identity, std::move(callback));
+    std::weak_ptr<Registry> weak_registry = registry;
+    return [weak_registry, identity]() {
+        if (const std::shared_ptr<Registry> retained = weak_registry.lock()) {
+            retained->remove(identity);
+        }
+    };
+}
+
+/** SDL-backed browser Gamepad surface (implemented by pal_sdl.cpp). */
+js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine& engine);
+double gamepad_index(Engine& engine, GamepadHandle gamepad);
+js::Array<double> gamepad_axes(Engine& engine, GamepadHandle gamepad);
+js::Array<GamepadButtonHandle> gamepad_buttons(
+    Engine& engine,
+    GamepadHandle gamepad);
+bool gamepad_button_pressed(
+    Engine& engine,
+    GamepadButtonHandle button);
+
+/** Public PBR Texture2D slots backed by one material record. */
+enum class MaterialTextureSlot : std::uint8_t {
+    base_color,
+    normal,
+    orm,
+    emissive,
+    occlusion,
+};
+
+/**
+ * Adapt a material-owned texture slot to the source-level Texture2D value.
+ *
+ * Native material records retain decoded texture data rather than a separate
+ * wrapper object. The synthetic high-bit identity keeps repeated reads of one
+ * slot strictly equal while remaining disjoint from texture factory objects.
+ */
+[[nodiscard]] inline FileTexture material_texture(
+    const Engine& engine,
+    MaterialHandle material,
+    MaterialTextureSlot slot) {
+    const MaterialRecord& record = engine.materials.at(material.value);
+    FileTexture texture;
+    switch (slot) {
+        case MaterialTextureSlot::base_color:
+            texture.data = record.base_color_texture;
+            texture.srgb = record.base_color_srgb;
+            break;
+        case MaterialTextureSlot::normal:
+            texture.data = record.normal_texture;
+            break;
+        case MaterialTextureSlot::orm:
+            texture.data = record.metallic_roughness_texture;
+            break;
+        case MaterialTextureSlot::emissive:
+            texture.data = record.emissive_texture;
+            texture.srgb = true;
+            break;
+        case MaterialTextureSlot::occlusion:
+            texture.data = record.occlusion_texture;
+            break;
+    }
+    constexpr std::uint64_t material_texture_identity =
+        std::uint64_t{1} << 63u;
+    texture.identity = material_texture_identity |
+        (static_cast<std::uint64_t>(material.value) << 8u) |
+        (static_cast<std::uint64_t>(slot) + 1u);
+    return texture;
+}
 
 /**
  * Finds the topmost visible sprite containing a point in layer-local pixels.
@@ -4029,8 +4335,26 @@ struct EnvironmentState {
     Color3 primary_color{0.08697356f, 0.08697356f, 0.21222083f};
 };
 
-struct Scene {
+/**
+ * One additional presentation surface created from an engine and a retained
+ * canvas. Native owns one operating-system swapchain, but preserving this
+ * identity lets the renderer give every registered surface scene its own
+ * viewport instead of flattening all cameras onto the primary surface.
+ * Copies share the disposal flag, matching the JavaScript object's identity.
+ */
+struct Surface {
     Engine* engine = nullptr;
+    UiElementHandle canvas{};
+    std::shared_ptr<bool> disposed = std::make_shared<bool>(false);
+};
+
+/** The mutable state shared by every native copy of one SceneContext. */
+struct SceneState {
+    Engine* engine = nullptr;
+    /** Canvas identity when this scene belongs to an auxiliary surface. */
+    std::optional<UiElementHandle> surface_canvas;
+    /** `disposeScene` is idempotent in the pinned scene lifecycle. */
+    bool disposed = false;
     /**
      * `enableMirroredMeshes` opted this scene into runtime winding
      * tracking. The pipeline-side half is installed process-wide upstream
@@ -4062,7 +4386,7 @@ struct Scene {
      * generated record.
      */
     ClusteredLightContainerHandle clustered_lights{};
-    std::vector<std::function<void(float)>> before_render;
+    SnapshotList<js::Callback<void(float)>> before_render;
     std::vector<std::function<void()>> disposables;
     std::vector<std::function<void(float)>> animation_seekers;
     /**
@@ -4101,6 +4425,125 @@ struct Scene {
 };
 
 /**
+ * A JavaScript SceneContext is an object identity, not a value aggregate.
+ *
+ * Generated code deliberately uses ordinary C++ value syntax for scene
+ * locals, record fields, callback captures, and array elements. The public
+ * references preserve that syntax while every copy points at the same state.
+ * Assignment reconstructs the lightweight wrapper so it rebinds those
+ * references instead of assigning through them into the previously named
+ * scene.
+ */
+struct Scene {
+    std::shared_ptr<SceneState> state;
+    Engine*& engine;
+    std::optional<UiElementHandle>& surface_canvas;
+    bool& disposed;
+    bool& mirrored_meshes;
+    Color4& clear_color;
+    CameraHandle& camera;
+    std::vector<MeshHandle>& meshes;
+    std::vector<LightHandle>& lights;
+    std::vector<TaskHandle>& tasks;
+    std::vector<ShadowGeneratorHandle>& pending_shadow_retirements;
+    std::vector<AnimationGroupHandle>& animation_groups;
+    std::vector<BillboardSystemHandle>& billboard_systems;
+    std::vector<Sprite2DLayerHandle>& depth_hosted_sprite_layers;
+    std::vector<SplatMeshHandle>& splat_meshes;
+    ClusteredLightContainerHandle& clustered_lights;
+    SnapshotList<js::Callback<void(float)>>& before_render;
+    std::vector<std::function<void()>>& disposables;
+    std::vector<std::function<void(float)>>& animation_seekers;
+    bool& seeks_animation_managers;
+    bool& seeks_vat;
+    std::vector<std::function<void()>>& deferred_builders;
+    EnvironmentState& environment;
+    float& fixed_delta_ms;
+    std::uint64_t& render_topology_version;
+    bool& topology_rebuild_pending;
+    std::uint32_t& material_family_mask;
+    bool& transmission_enabled;
+    float& fog_mode;
+    float& fog_density;
+    float& fog_start;
+    float& fog_end;
+    Color3& fog_color;
+    Vec4& clip_plane;
+
+    Scene()
+        : Scene(std::make_shared<SceneState>()) {}
+
+    Scene(const Scene& other)
+        : Scene(other.state) {}
+
+    Scene(Scene&& other) noexcept
+        : Scene(std::move(other.state)) {}
+
+    Scene& operator=(const Scene& other) {
+        if (this != &other) {
+            this->~Scene();
+            new (this) Scene(other);
+        }
+        return *this;
+    }
+
+    Scene& operator=(Scene&& other) noexcept {
+        if (this != &other) {
+            this->~Scene();
+            new (this) Scene(std::move(other));
+        }
+        return *this;
+    }
+
+    [[nodiscard]] bool shares_identity(const Scene& other) const noexcept {
+        return state == other.state;
+    }
+
+    /** Rebuild a lightweight Scene wrapper after locking shared state. */
+    [[nodiscard]] static Scene from_state(
+        std::shared_ptr<SceneState> shared) {
+        return Scene(std::move(shared));
+    }
+
+private:
+    explicit Scene(std::shared_ptr<SceneState> shared)
+        : state(std::move(shared)),
+          engine(state->engine),
+          surface_canvas(state->surface_canvas),
+          disposed(state->disposed),
+          mirrored_meshes(state->mirrored_meshes),
+          clear_color(state->clear_color),
+          camera(state->camera),
+          meshes(state->meshes),
+          lights(state->lights),
+          tasks(state->tasks),
+          pending_shadow_retirements(state->pending_shadow_retirements),
+          animation_groups(state->animation_groups),
+          billboard_systems(state->billboard_systems),
+          depth_hosted_sprite_layers(state->depth_hosted_sprite_layers),
+          splat_meshes(state->splat_meshes),
+          clustered_lights(state->clustered_lights),
+          before_render(state->before_render),
+          disposables(state->disposables),
+          animation_seekers(state->animation_seekers),
+          seeks_animation_managers(state->seeks_animation_managers),
+          seeks_vat(state->seeks_vat),
+          deferred_builders(state->deferred_builders),
+          environment(state->environment),
+          fixed_delta_ms(state->fixed_delta_ms),
+          render_topology_version(state->render_topology_version),
+          topology_rebuild_pending(state->topology_rebuild_pending),
+          material_family_mask(state->material_family_mask),
+          transmission_enabled(state->transmission_enabled),
+          fog_mode(state->fog_mode),
+          fog_density(state->fog_density),
+          fog_start(state->fog_start),
+          fog_end(state->fog_end),
+          fog_color(state->fog_color),
+          clip_plane(state->clip_plane) {}
+};
+
+/**
  * `UtilityLayer` (src/gizmo/utility-layer.ts): a second SceneContext over
  * the same engine, sharing the main scene's camera by reference and
  * carrying its own light so gizmo materials are lit independently of the
@@ -4109,8 +4552,42 @@ struct Scene {
  */
 struct UtilityLayerRecord {
     Scene scene;
-    Scene* main_scene = nullptr;
+    std::shared_ptr<Scene> main_scene;
 };
+
+/** One source canvas's gizmo dispatcher; proxies own independent instances. */
+struct PointerDragDispatcher {
+    Engine* engine = nullptr;
+    UtilityLayerHandle layer{};
+    GpuPickerHandle picker{};
+    std::vector<PointerDragHandle> drags;
+    PointerDragHandle active{};
+    PointerDragHandle hovered{};
+    Vec3d plane_normal{};
+    Vec3d plane_point{};
+    Vec3d last_point{};
+    Vec3d start_point{};
+    bool pick_pending = false;
+    std::function<void()> cleanup;
+};
+void pointer_drag_hover(Engine& engine, PointerDragHandle drag, bool hovered);
+
+inline bool pointer_drag_state(
+    const std::shared_ptr<PointerDragDispatcher>& state, unsigned int query) {
+    if (!state) return false;
+    if (query == 1u) return state->pick_pending;
+    return state->active.value != invalid_handle ||
+        (query == 2u && state->hovered.value != invalid_handle);
+}
+
+std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(
+    Engine&, UtilityLayerHandle, bool host_canvas);
+std::function<void()> register_pointer_drag(
+    const std::shared_ptr<PointerDragDispatcher>&, PointerDragHandle);
+js::Callback<void(js::BorrowedEvent)> pointer_drag_listener(
+    const std::shared_ptr<PointerDragDispatcher>&, unsigned int event);
+void set_pointer_drag_cleanup(
+    const std::shared_ptr<PointerDragDispatcher>&, std::function<void()>);
 
 /** A scene-less rendering context that owns only an ordered task graph. */
 struct FrameGraphContext {
@@ -4346,7 +4823,10 @@ struct DdsEnvironmentOptions {
 // options literal, so an omitted-argument arm would be a dead second
 // copy of the pin's defaults waiting for a caller to trust it.
 Engine create_engine(EngineOptions options);
+Surface create_surface(Engine& engine, UiElementHandle canvas);
+void dispose_surface(Surface& surface);
 Scene create_scene_context(Engine& engine);
+Scene create_scene_context(Surface& surface);
 FrameGraphContext create_frame_graph_context(Engine& engine);
 std::string asset_path(const std::string& relative_path);
 MeshHandle create_box(Engine& engine, BoxOptions options);
@@ -4423,6 +4903,27 @@ void set_thin_instances(
     Engine& engine,
     MeshHandle mesh,
     std::vector<float>& matrices,
+    double count);
+HierarchyInstancePoolHandle create_hierarchy_instance_pool(
+    Engine& engine,
+    AssetHandle root,
+    double capacity);
+double add_hierarchy_instance(
+    Engine& engine,
+    HierarchyInstancePoolHandle pool,
+    const std::vector<float>& matrix);
+void set_hierarchy_instance_matrix(
+    Engine& engine,
+    HierarchyInstancePoolHandle pool,
+    double index,
+    const std::vector<float>& matrix);
+void remove_hierarchy_instance(
+    Engine& engine,
+    HierarchyInstancePoolHandle pool,
+    double index);
+void set_hierarchy_instance_count(
+    Engine& engine,
+    HierarchyInstancePoolHandle pool,
     double count);
 void set_thin_instance_count(
     Engine& engine,
@@ -4622,6 +5123,20 @@ void set_shader_texture(
     MaterialHandle material,
     std::uint32_t slot,
     FileTexture texture);
+void set_shader_storage_buffer(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    StorageBufferHandle buffer);
+void set_shader_csm_texture(
+    Engine& engine,
+    MaterialHandle material,
+    std::uint32_t slot,
+    ShadowGeneratorHandle generator);
+void set_shadow_caster_material(
+    Engine& engine,
+    MaterialHandle material,
+    MaterialHandle caster);
 void set_shader_pixels_texture(
     Engine& engine,
     MaterialHandle material,
@@ -4817,6 +5332,7 @@ LightHandle create_spot_light(
 // lowered; the rest refuse at compile time (src/compiler/assignments.ts).
 void set_point_light_position(Engine& engine, LightHandle light, Vec3 position);
 void set_directional_light_position(Engine& engine, LightHandle light, Vec3 position);
+void set_directional_light_direction(Engine& engine, LightHandle light, Vec3 direction);
 // src/scene/transform-node.ts createTransformNode: a SceneNode with the
 // pinned factory's own TRS defaults. Its setters take the same shape the
 // light vector setters take -- the field write plus the version bump a
@@ -4831,19 +5347,23 @@ TransformNodeHandle create_transform_node(
 void set_transform_node_position(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3d position);
+    Vec3d position,
+    bool runtime_transform = false);
 void set_transform_node_scaling(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3 scaling);
+    Vec3 scaling,
+    bool runtime_transform = false);
 void set_transform_node_rotation(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3 rotation);
+    Vec3 rotation,
+    bool runtime_transform = false);
 void set_transform_node_rotation_quaternion(
     Engine& engine,
     TransformNodeHandle node,
-    Vec4 rotation);
+    Vec4 rotation,
+    bool runtime_transform = false);
 // `child.parent = node` drives the transform math; `node.children.push`
 // only fills the traversal list. Upstream keeps them apart in exactly this
 // way, so each is its own entry point.
@@ -4882,6 +5402,7 @@ void push_transform_node_child(
 UtilityLayerHandle create_utility_layer(Engine& engine, Scene& main_scene);
 void register_utility_layer(Engine& engine, UtilityLayerHandle layer);
 Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer);
+void dispose_utility_layer(Engine& engine, UtilityLayerHandle layer);
 CameraGizmoHandle create_camera_gizmo(
     Engine& engine,
     UtilityLayerHandle layer);
@@ -4940,6 +5461,10 @@ void set_edit_gizmo_local_coordinates(
     Engine& engine,
     EditGizmoHandle gizmo,
     bool use_local);
+bool pointer_drag_has_collider(
+    const Engine& engine,
+    PointerDragHandle drag,
+    MeshHandle mesh);
 // The three composites (`src/gizmo/composite-gizmos.ts`). Each builds its
 // sub-widgets through the four factories above with the axis, colour and
 // option values its own pinned body passes, so nothing about a composite
@@ -4967,6 +5492,10 @@ void set_composite_gizmo_local_coordinates(
     Engine& engine,
     CompositeGizmoHandle gizmo,
     bool use_local);
+void dispose_composite_gizmo(
+    Engine& engine,
+    CompositeGizmoHandle gizmo,
+    UtilityLayerHandle layer);
 // The bounding-box gizmo (`src/gizmo/bounding-box-gizmo.ts`). Its four
 // options are the members the pinned factory defaults through a `??`, and
 // each arrives as the pin's own optional so the default stays in the
@@ -4993,6 +5522,11 @@ void set_spot_light_direction(Engine& engine, LightHandle light, Vec3 direction)
 void set_spot_light_angle(Engine& engine, LightHandle light, double angle);
 CameraHandle create_arc_rotate_camera(Engine& engine, double alpha, double beta, double radius, Vec3d target);
 CameraHandle create_free_camera(Engine& engine, Vec3d position, Vec3d target);
+CameraHandle create_banked_free_camera(
+    Engine& engine,
+    Vec3d position,
+    Vec3d target,
+    Vec3d up);
 CameraHandle create_default_camera(Engine& engine, Scene& scene);
 // Returns the same camera so the caller can keep using it as the live
 // orthographic bounds object the pinned entry point hands back.
@@ -5167,6 +5701,7 @@ void add_to_scene(Scene& scene, MeshHandle mesh);
 void add_to_scene(Scene& scene, TransformNodeHandle node);
 void add_to_scene(Scene& scene, LightHandle light);
 void add_to_scene(Scene& scene, AssetHandle asset);
+void add_to_scene(Scene& scene, const SceneNodeHandle& node);
 void add_asset_entities(Scene& scene, AssetHandle asset);
 AssetHandle clone_asset_root(Engine& engine, AssetHandle asset);
 MeshHandle clone_mesh_node(Engine& engine, MeshHandle mesh);
@@ -5180,6 +5715,29 @@ void set_asset_root_rotation_component(
     AssetHandle asset,
     std::size_t component,
     float value);
+void set_asset_root_position(
+    Engine& engine,
+    AssetHandle asset,
+    Vec3 value);
+void set_asset_root_rotation(
+    Engine& engine,
+    AssetHandle asset,
+    Vec3 value);
+void reset_asset_root_scaling(Engine& engine, AssetHandle asset);
+
+// A retained SceneNode may be a mesh, a transform node, or an imported root.
+Vec3d scene_node_position(Engine& engine, const SceneNodeHandle& node);
+Vec3 scene_node_rotation(Engine& engine, const SceneNodeHandle& node);
+Vec3 scene_node_scaling(Engine& engine, const SceneNodeHandle& node);
+Vec4 scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node);
+void set_scene_node_position(Engine& engine, const SceneNodeHandle& node, Vec3d value, bool runtime_transform);
+void set_scene_node_rotation(Engine& engine, const SceneNodeHandle& node, Vec3 value, bool runtime_transform);
+void set_scene_node_scaling(Engine& engine, const SceneNodeHandle& node, Vec3 value, bool runtime_transform);
+void set_scene_node_rotation_quaternion(Engine& engine, const SceneNodeHandle& node, Vec4 value, bool runtime_transform);
+void set_scene_node_position_component(Engine& engine, const SceneNodeHandle& node, std::size_t component, double value, bool runtime_transform);
+void set_scene_node_rotation_component(Engine& engine, const SceneNodeHandle& node, std::size_t component, float value, bool runtime_transform);
+void set_scene_node_scaling_component(Engine& engine, const SceneNodeHandle& node, std::size_t component, float value, bool runtime_transform);
+void set_scene_node_rotation_quaternion_component(Engine& engine, const SceneNodeHandle& node, std::size_t component, float value, bool runtime_transform);
 void remove_from_scene(Scene& scene, MeshHandle mesh);
 void remove_from_scene(Scene& scene, LightHandle light);
 void on_before_render(
@@ -5815,6 +6373,7 @@ void sprite_renderer_before_update(
 
 void register_scene(Scene& scene);
 void unregister_scene(Scene& scene);
+void dispose_scene(Scene& scene);
 void rebuild_scene_renderables(Scene& scene);
 void on_frame_graph_update(
     FrameGraphContext& context,

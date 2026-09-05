@@ -98,6 +98,13 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     value: "number",
   },
   {
+    kind: "material",
+    property: "environmentIntensity",
+    collection: "materials",
+    field: "environment_intensity",
+    value: "number",
+  },
+  {
     // The pin's `uvScale: [number, number]`, which
     // `writeStandardUvTransformData` reads into the material's own UV
     // block. It is a pair of record fields because
@@ -367,7 +374,7 @@ const lightVectors: Readonly<Record<LightKind, readonly string[]>> = {
   // No reached scene writes a hemispheric direction.
   hemispheric: [],
   point: ["position"],
-  directional: ["position"],
+  directional: ["position", "direction"],
   spot: ["position", "direction"],
 };
 
@@ -455,6 +462,10 @@ export interface AssignmentContext extends DeterministicRandomContext {
   selectToneMapping(name: string, node: ts.Node): void;
   lookup(identifier: ts.Identifier): Value;
   compileValue(expression: ts.Expression): Value;
+  compileForDataSink(
+    expression: ts.Expression,
+    dataType: import("./data-types.js").DataType,
+  ): string;
   /**
    * Declares storage for a typed plain-data class field on its first
    * constructor assignment. Returns undefined for resource/record fields,
@@ -500,6 +511,7 @@ export interface AssignmentContext extends DeterministicRandomContext {
   isNativeUiValueExpression(expression: ts.Expression): boolean;
   isBrowserDomValue(expression: ts.Expression): boolean;
   emit(line: string): void;
+  allocateTemporaryCppName(label: string): string;
   /** The dirty entry appropriate to startup code or a live callback. */
   meshTransformDirtyEntry():
     | "mark_mesh_dirty"
@@ -583,26 +595,6 @@ function emitSceneLightListClear(
   }
   context.emit(`${owner.cpp}.lights.clear();`);
   return true;
-}
-
-/**
- * The three TRS vector properties a transform-component write names
- * (`node.position.x = ...`). One list serves the imported-root intercept,
- * the owner-path guard, and the generic component arm here — and, through
- * the exported membership test, the handle read path (`compiler.ts`), the
- * mesh `.set` guard (`statements.ts`), and the plain-data deferral
- * (`data-lowering.ts`) — so the vectors one of them discriminates on
- * cannot drift from the others'.
- */
-const trsVectorNames: readonly string[] = [
-  "position",
-  "rotation",
-  "rotationQuaternion",
-  "scaling",
-];
-
-export function isTrsVectorName(name: string): boolean {
-  return trsVectorNames.includes(name);
 }
 
 /** The lane a TRS component name selects; `undefined` off the axes. */
@@ -1117,6 +1109,20 @@ export function emitPropertyAssignment(
     context.eraseBrowserInstrumentation(expression.pos);
     return;
   }
+  if (
+    left.name.text === "hovering" ||
+    left.name.text === "enabled"
+  ) {
+    const drag = context.compileValue(left.expression);
+    if (drag.kind === "pointer-drag") {
+      context.emit(
+        `${context.requireEngine(drag, expression)}.edit_gizmos[` +
+          `${drag.cpp}.value].${left.name.text} ${operator} ` +
+          `${context.compileBoolean(expression.right)};`,
+      );
+      return;
+    }
+  }
   if (emitWriteOnlyNumberExpandoAssignment(context, expression, left)) {
     return;
   }
@@ -1195,7 +1201,14 @@ export function emitPropertyAssignment(
       ) {
         assigned = context.compileValue(right);
       }
-      if (assigned?.kind === "record" || assigned?.kind === "callback") {
+      if (
+        assigned?.kind === "record" ||
+        assigned?.kind === "callback" ||
+        (assigned?.kind === "data" &&
+          (assigned.dataType?.kind === "function" ||
+            (assigned.dataType?.kind === "optional" &&
+              assigned.dataType.inner.kind === "function")))
+      ) {
         owner.recordProperties ??= {};
         owner.recordProperties[left.name.text] = assigned;
         return;
@@ -1329,6 +1342,16 @@ export function emitPropertyAssignment(
     }
     const existing = fields[left.name.text];
     if (
+      (existing?.classStoredField || existing?.nativeLvalue) &&
+      existing.dataType &&
+      operator === "="
+    ) {
+      context.emit(
+        `${existing.cpp} = ${context.compileForDataSink(expression.right, existing.dataType)};`,
+      );
+      return;
+    }
+    if (
       existing &&
       operator === "=" &&
       context.emitOptionalResourceAssignment(expression, existing)
@@ -1374,10 +1397,10 @@ export function emitPropertyAssignment(
   // An imported TransformNode root is represented by an AssetHandle rather
   // than a data record. Intercept its nested TRS component before the broad
   // property-owner path tries to materialize `root.rotation` as a record.
-  if (
-    ts.isPropertyAccessExpression(left.expression) &&
-    isTrsVectorName(left.expression.name.text)
-  ) {
+  const trsVector = ts.isPropertyAccessExpression(left.expression)
+    ? sceneNodeTransformDescriptor(left.expression.name.text)
+    : undefined;
+  if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
     const root = context.compileValue(left.expression.expression);
     if (root.kind === "asset-root") {
       context.assertAssetRootWritable(root, expression);
@@ -1389,32 +1412,30 @@ export function emitPropertyAssignment(
           `Unsupported imported root axis '${left.name.text}'.`,
         );
       }
-      if (vector === "scaling") {
+      if (!trsVector.assetComponentSetter && vector === "scaling") {
         context.fail(
           left.expression,
           "An imported root currently exposes position and Y rotation; scaling requires a retained outer matrix.",
         );
       }
-      if (vector === "rotationQuaternion") {
+      if (!trsVector.assetComponentSetter && vector === "rotationQuaternion") {
         context.fail(
           left.expression,
           "An imported root currently exposes position and Y rotation; quaternion components require a retained outer matrix.",
         );
       }
+      if (!trsVector.assetComponentSetter) {
+        context.fail(
+          left.expression,
+          `An imported root has no '${vector}' component writer.`,
+        );
+      }
       requireSimpleAssignment(context, expression, `imported root ${vector}`);
       const engine = context.requireEngine(root, expression);
-      if (vector === "rotation") {
-        context.emit(
-          `bbl::set_asset_root_rotation_component(` +
-            `${engine}, ${root.cpp}, ${axis}u, ` +
-            `${context.compileNumber(expression.right)});`,
-        );
-        return;
-      }
       context.emit(
-        `bbl::set_asset_root_position_component(` +
+        `bbl::${trsVector.assetComponentSetter}(` +
           `${engine}, ${root.cpp}, ${axis}u, ` +
-          `${context.compileNumber(expression.right)});`,
+          `${context.compileNumber(expression.right, "float")});`,
       );
       return;
     }
@@ -1442,6 +1463,26 @@ export function emitPropertyAssignment(
       ? context.lookup(targetExpression)
       : context.compileValue(targetExpression);
     const property = left.name.text;
+
+    if (target.kind === "asset-root" && property === "_localMatrix") {
+      requireSimpleAssignment(context, expression, "imported root local matrix");
+      const value = context.unwrap(expression.right);
+      if (
+        !ts.isIdentifier(value) ||
+        value.text !== "undefined" ||
+        context.lookupOptional(value)
+      ) {
+        context.fail(
+          expression.right,
+          "An imported synthetic root only exposes clearing _localMatrix with undefined.",
+        );
+      }
+      context.assertAssetRootWritable(target, expression);
+      // loadGltf's public root is the synthetic TRS node. It never owns a
+      // raw glTF matrix in the flattened native representation, so clearing
+      // that optional override is observably a no-op here as it is upstream.
+      return;
+    }
 
     if (target.kind === "node-particle-system" && property === "buffer") {
       context.fail(
@@ -1950,6 +1991,13 @@ export function emitPropertyAssignment(
     if (target.kind === "material" && property === "diffuseTexture") {
       requireSimpleAssignment(context, expression, "material diffuseTexture");
       const texture = context.compileValue(expression.right);
+      // Standard composition reads texture PRESENCE from the material object
+      // at registration time. Keep that same fact on the compiler value so a
+      // plugin signature composes the material's actual feature word rather
+      // than the bare Standard defaults.
+      if (target.standardMaterialInput) {
+        target.standardMaterialInput.diffuseTexture = {};
+      }
       // A `createTexture2DFromPixels` texture is the second source
       // this slot takes. It is a C++ value rather than a handle, so
       // the record takes a copy and the local is recorded as spent:
@@ -2135,6 +2183,26 @@ export function emitPropertyAssignment(
                 expression.right,
                 recordField.collection === "cameras" ? "double" : "float",
               );
+      if (
+        target.standardMaterialInput &&
+        expression.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      ) {
+        if (recordField.property === "alpha") {
+          const alpha = staticNumberValue(context, expression.right);
+          if (alpha === undefined) delete target.standardMaterialInput.alpha;
+          else target.standardMaterialInput.alpha = alpha;
+        } else if (
+          recordField.property === "backFaceCulling" ||
+          recordField.property === "disableLighting"
+        ) {
+          if (value === "true" || value === "false") {
+            target.standardMaterialInput[recordField.property] =
+              value === "true";
+          } else {
+            delete target.standardMaterialInput[recordField.property];
+          }
+        }
+      }
       const stored = recordField.invert ? `!(${value})` : value;
       if (recordField.kind === "material" && recordField.value === "color3") {
         const bindings =
@@ -2322,10 +2390,7 @@ export function emitPropertyAssignment(
     return;
   }
 
-  if (
-    ts.isPropertyAccessExpression(left.expression) &&
-    isTrsVectorName(left.expression.name.text)
-  ) {
+  if (trsVector && ts.isPropertyAccessExpression(left.expression)) {
     // The owner is compiled rather than looked up, so a mesh read
     // out of the data model (a handle stored in a struct or array)
     // writes its transform exactly like a mesh local.
@@ -2378,39 +2443,8 @@ export function emitPropertyAssignment(
       );
       return;
     }
-    if (mesh.kind === "transform-node") {
-      const vectors = {
-        position: {
-          field: "position",
-          entry: "set_transform_node_position",
-          components: ["x", "y", "z"],
-          type: "bbl::Vec3d",
-          precision: "double" as const,
-        },
-        rotation: {
-          field: "rotation",
-          entry: "set_transform_node_rotation",
-          components: ["x", "y", "z"],
-          type: "bbl::Vec3",
-          precision: "float" as const,
-        },
-        rotationQuaternion: {
-          field: "rotation_quaternion",
-          entry: "set_transform_node_rotation_quaternion",
-          components: ["x", "y", "z", "w"],
-          type: "bbl::Vec4",
-          precision: "float" as const,
-        },
-        scaling: {
-          field: "scaling",
-          entry: "set_transform_node_scaling",
-          components: ["x", "y", "z"],
-          type: "bbl::Vec3",
-          precision: "float" as const,
-        },
-      } as const;
-      const vector = vectors[left.expression.name.text as keyof typeof vectors];
-      const component = vector.components[axis];
+    if (mesh.kind === "transform-node" || mesh.kind === "scene-node") {
+      const component = trsVector.components[axis];
       if (!component) {
         context.fail(
           left.name,
@@ -2418,26 +2452,60 @@ export function emitPropertyAssignment(
         );
       }
       const engine = context.requireEngine(mesh, expression);
-      const current =
+      const runtimeTransform =
+        context.meshTransformDirtyEntry() === "mark_mesh_runtime_transform";
+      if (mesh.kind === "scene-node") {
+        context.reachFeature("scene:node-transforms", expression);
+        const target = context.allocateTemporaryCppName(
+          "scene_node_transform_target",
+        );
+        context.emit(`const auto ${target} = ${mesh.cpp};`);
+        let previous: string | undefined;
+        if (operator !== "=") {
+          previous = context.allocateTemporaryCppName(
+            "scene_node_transform_component",
+          );
+          context.emit(
+            `const ${trsVector.precision} ${previous} = ` +
+              `bbl::scene_node_${trsVector.nativeField}(` +
+              `${engine}, ${target}).${component};`,
+          );
+        }
+        const right = context.compileNumber(
+          expression.right,
+          trsVector.precision,
+        );
+        const replacement = previous
+          ? `(${previous} ${operator.slice(0, -1)} ${right})`
+          : right;
+        context.emit(
+          `bbl::${trsVector.sceneNodeComponentSetter}(` +
+            `${engine}, ${target}, ${axis}u, ${replacement}, ` +
+            `${runtimeTransform});`,
+        );
+        return;
+      }
+      const vectorRead =
         `${engine}.transform_nodes[${mesh.cpp}.value].` +
-        `${vector.field}.${component}`;
+        trsVector.nativeField;
+      const current = `${vectorRead}.${component}`;
       const replacement =
         operator === "="
-          ? context.compileNumber(expression.right, vector.precision)
+          ? context.compileNumber(expression.right, trsVector.precision)
           : `(${current} ${operator.slice(0, -1)} ${context.compileNumber(
               expression.right,
-              vector.precision,
+              trsVector.precision,
             )})`;
       context.emit(
-        `bbl::${vector.entry}(${engine}, ${mesh.cpp}, ${vector.type}{` +
-          vector.components
+        `bbl::${trsVector.transformNodeSetter}(${engine}, ${mesh.cpp}, ${trsVector.cppType}{` +
+          trsVector.components
             .map((lane) =>
               lane === component
                 ? replacement
-                : `${engine}.transform_nodes[${mesh.cpp}.value].${vector.field}.${lane}`,
+                : `${vectorRead}.${lane}`,
             )
             .join(", ") +
-          `});`,
+          `}, ${runtimeTransform});`,
       );
       return;
     }
@@ -2479,9 +2547,8 @@ export function emitPropertyAssignment(
     } else {
       context.expectKind(mesh, "mesh", left.expression.expression);
     }
-    if (left.expression.name.text === "rotationQuaternion") {
-      const components = ["x", "y", "z", "w"];
-      const component = components[axis];
+    if (trsVector.meshSetter) {
+      const component = trsVector.components[axis];
       if (!component) {
         context.fail(
           left.name,
@@ -2490,40 +2557,38 @@ export function emitPropertyAssignment(
       }
       const engine = context.requireEngine(mesh, expression);
       const current =
-        `${engine}.meshes[${mesh.cpp}.value].rotation_quaternion.${component}`;
+        `${engine}.meshes[${mesh.cpp}.value].${trsVector.nativeField}.${component}`;
       const replacement =
         operator === "="
-          ? context.compileNumber(expression.right)
+          ? context.compileNumber(expression.right, trsVector.precision)
           : `(${current} ${operator.slice(0, -1)} ${context.compileNumber(
               expression.right,
+              trsVector.precision,
             )})`;
       context.emit(
-        `bbl::set_mesh_rotation_quaternion(${engine}, ${mesh.cpp}, bbl::Vec4{` +
-          components
+        `bbl::${trsVector.meshSetter}(${engine}, ${mesh.cpp}, ${trsVector.cppType}{` +
+          trsVector.components
             .map((lane) =>
               lane === component
                 ? replacement
-                : `${engine}.meshes[${mesh.cpp}.value].rotation_quaternion.${lane}`,
+                : `${engine}.meshes[${mesh.cpp}.value].${trsVector.nativeField}.${lane}`,
             )
             .join(", ") +
           `}, false);`,
       );
       return;
     }
-    const component = ["x", "y", "z"][axis]!;
+    const component = trsVector.components[axis]!;
     const engine = context.requireEngine(mesh, expression);
     // A mesh's translation is kept at the pin's own width, so the
     // component spelling writes it there too: narrowing here and
     // widening back into the field would round a large-world
     // coordinate to the float32 grid, which is the whole reason the
     // field is a double.
-    const wide =
-      record.collection === "meshes" &&
-      left.expression.name.text === "position";
     context.emit(
-      `${engine}.${record.collection}[${mesh.cpp}.value].${left.expression.name.text}.${component} ${operator} ${context.compileNumber(
+      `${engine}.${record.collection}[${mesh.cpp}.value].${trsVector.nativeField}.${component} ${operator} ${context.compileNumber(
         expression.right,
-        wide ? "double" : "float",
+        record.collection === "meshes" ? trsVector.precision : "float",
       )};`,
     );
     // Ordinary geometry bakes the full parent chain into its uploaded
@@ -2742,6 +2807,11 @@ import { postProcessEffect } from "../post-process-effects.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import { foldMaterialPluginList } from "./material-plugin.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
+import {
+  isTrsVectorName,
+  sceneNodeTransformDescriptor,
+} from "../scene-node-transform-descriptor.js";
+export { isTrsVectorName } from "../scene-node-transform-descriptor.js";
 import type {
   CompiledNodeParticles,
   Feature,

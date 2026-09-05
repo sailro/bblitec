@@ -5,6 +5,7 @@ import {
   lowerMat4MultiplyWriterCpp,
 } from "./pinned-function-lowerer.js";
 import { lowerMat4DecomposeFull } from "./pinned-mat4-decompose.js";
+import { sceneNodeTransformsSource } from "./scene-node-transforms.js";
 
 export class SceneLowerer {
   public constructor(private readonly context: LoweringContext) {}
@@ -24,6 +25,8 @@ export class SceneLowerer {
       vat?: boolean;
       /** The scene reaches `createTransformNode`. */
       transformNodes?: boolean;
+      /** A retained SceneNode union reaches a TRS read or write. */
+      sceneNodeTransforms?: boolean;
     } = {},
   ): LoweredSource {
     const modulePath = "src/scene/scene-core.ts";
@@ -579,23 +582,28 @@ void mark_transform_node_dirty(
 void set_transform_node_position(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3d position) {
+    Vec3d position,
+    bool runtime_transform) {
     engine.transform_nodes[node.value].position = position;
-    mark_transform_node_dirty(engine, node);
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
 }
 
 void set_transform_node_scaling(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3 scaling) {
+    Vec3 scaling,
+    bool runtime_transform) {
     engine.transform_nodes[node.value].scaling = scaling;
-    mark_transform_node_dirty(engine, node);
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
 }
 
 void set_transform_node_rotation(
     Engine& engine,
     TransformNodeHandle node,
-    Vec3 rotation) {
+    Vec3 rotation,
+    bool runtime_transform) {
     TransformNodeRecord& record = engine.transform_nodes[node.value];
     record.rotation = rotation;
     // The pinned Euler proxy writes its quaternion source of truth. The
@@ -603,17 +611,20 @@ void set_transform_node_rotation(
     // this flag is false; pinnedTrsComposition performs eulerToQuat from the
     // upstream function before the matrix write.
     record.has_rotation_quaternion = false;
-    mark_transform_node_dirty(engine, node);
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
 }
 
 void set_transform_node_rotation_quaternion(
     Engine& engine,
     TransformNodeHandle node,
-    Vec4 rotation) {
+    Vec4 rotation,
+    bool runtime_transform) {
     TransformNodeRecord& record = engine.transform_nodes[node.value];
     record.rotation_quaternion = rotation;
     record.has_rotation_quaternion = true;
-    mark_transform_node_dirty(engine, node);
+    if (runtime_transform) mark_transform_node_runtime_transform(engine, node);
+    else mark_transform_node_dirty(engine, node);
 }
 
 // The parent SETTER is the pin's own _addChild trigger: it registers the
@@ -829,15 +840,18 @@ void enable_mirrored_meshes(Scene& scene) {
     Engine& engine = *scene.engine;
     static_cast<void>(
         upstream::refresh_mirrored_meshes(scene, engine));
-    Scene* const watched = &scene;
-    scene.before_render.push_back([watched](float) {
-        Engine& owner = *watched->engine;
-        if (upstream::refresh_mirrored_meshes(*watched, owner)) {
+    std::weak_ptr<SceneState> watched_state = scene.state;
+    scene.before_render.push_back([watched_state](float) {
+        std::shared_ptr<SceneState> retained = watched_state.lock();
+        if (!retained) return;
+        Scene watched = Scene::from_state(std::move(retained));
+        Engine& owner = *watched.engine;
+        if (upstream::refresh_mirrored_meshes(watched, owner)) {
             // frontFace is baked into the pipeline object, so a flip goes
             // through a rebuild. The pin raises enqueueMaterialSwap for
             // it; here the render plan is where a pipeline is
             // chosen, and its membership version is what rebuilds it.
-            ++watched->render_topology_version;
+            ++watched.render_topology_version;
         }
     });
 }
@@ -1116,6 +1130,185 @@ void set_asset_root_parent(
         set_mesh_parent(engine, mesh, parent);
     }
 }
+
+namespace {
+
+HierarchyInstancePoolRecord& hierarchy_instance_pool(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle) {
+    if (handle.value >= engine.hierarchy_instance_pools.size()) {
+        throw std::runtime_error("Invalid hierarchy instance pool handle.");
+    }
+    return engine.hierarchy_instance_pools[handle.value];
+}
+
+std::size_t hierarchy_instance_index(
+    double value,
+    std::size_t limit,
+    const char* message) {
+    if (
+        !std::isfinite(value) || value < 0.0 ||
+        std::floor(value) != value || value >= static_cast<double>(limit)) {
+        throw std::runtime_error(message);
+    }
+    return static_cast<std::size_t>(value);
+}
+
+std::array<float, 16> hierarchy_instance_matrix(
+    const std::vector<float>& matrix) {
+    if (matrix.size() < 16) {
+        throw std::runtime_error(
+            "Hierarchy instance matrix requires sixteen values.");
+    }
+    std::array<float, 16> result{};
+    std::copy_n(matrix.data(), 16, result.data());
+    return result;
+}
+
+void write_hierarchy_instance_matrix(
+    Engine& engine,
+    HierarchyInstancePoolRecord& pool,
+    std::size_t index,
+    const std::array<float, 16>& root_matrix,
+    bool mark_dirty) {
+    for (const HierarchyInstancePoolBinding& binding : pool.bindings) {
+        MeshRecord& mesh = engine.meshes.at(binding.mesh.value);
+        mat4_multiply_into(
+            pool.scratch, 0, root_matrix, 0, binding.mesh_world, 0);
+        mat4_multiply_into(
+            mesh.instance_matrices.at(index), 0,
+            binding.mesh_world_inverse, 0, pool.scratch, 0);
+        if (mark_dirty) ++mesh.instance_version;
+    }
+}
+
+} // namespace
+
+// src/mesh/hierarchy-instance-pool.ts, preserving its fixed-capacity
+// per-descendant pools and meshWorld^-1 * rootMatrix * meshWorld expansion.
+HierarchyInstancePoolHandle create_hierarchy_instance_pool(
+    Engine& engine,
+    AssetHandle root_handle,
+    double capacity_value) {
+    if (
+        !std::isfinite(capacity_value) || capacity_value < 0.0 ||
+        std::floor(capacity_value) != capacity_value ||
+        capacity_value > static_cast<double>(
+            std::numeric_limits<std::uint32_t>::max())) {
+        throw std::runtime_error(
+            "createHierarchyInstancePool capacity must be a non-negative integer");
+    }
+    if (root_handle.value >= engine.assets.size()) {
+        throw std::runtime_error("Invalid imported root handle.");
+    }
+    HierarchyInstancePoolRecord pool;
+    pool.root = root_handle;
+    pool.capacity = static_cast<std::uint32_t>(capacity_value);
+    pool.meshes = engine.assets[root_handle.value].meshes;
+    if (pool.meshes.empty()) {
+        throw std::runtime_error(
+            "createHierarchyInstancePool requires at least one mesh in the source hierarchy");
+    }
+    pool.bindings.reserve(pool.meshes.size());
+    for (const MeshHandle handle : pool.meshes) {
+        MeshRecord& mesh = engine.meshes.at(handle.value);
+        if (mesh.thin_instanced) {
+            throw std::runtime_error(
+                "createHierarchyInstancePool source mesh already has thin instances");
+        }
+        const std::array<float, 16> mesh_world =
+            mesh.instance_parent_matrix;
+        const std::optional<std::array<float, 16>> inverse =
+            mat4_invert(mesh_world);
+        if (!inverse) {
+            throw std::runtime_error(
+                "createHierarchyInstancePool requires an invertible world matrix");
+        }
+        mesh.instance_matrices.resize(pool.capacity);
+        mesh.thin_instanced = true;
+        mesh.instance_count = 0;
+        mesh.instance_source = nullptr;
+        ++mesh.instance_version;
+        pool.bindings.push_back(HierarchyInstancePoolBinding{
+            handle, mesh_world, *inverse});
+    }
+    const HierarchyInstancePoolHandle handle{
+        static_cast<std::uint32_t>(engine.hierarchy_instance_pools.size())};
+    engine.hierarchy_instance_pools.push_back(std::move(pool));
+    return handle;
+}
+
+void set_hierarchy_instance_count(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    double count_value) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    if (
+        !std::isfinite(count_value) || count_value < 0.0 ||
+        std::floor(count_value) != count_value ||
+        count_value > static_cast<double>(pool.capacity)) {
+        throw std::runtime_error(
+            "setHierarchyInstanceCount count must be an integer within pool capacity");
+    }
+    pool.count = static_cast<std::uint32_t>(count_value);
+    for (const MeshHandle mesh_handle : pool.meshes) {
+        MeshRecord& mesh = engine.meshes.at(mesh_handle.value);
+        mesh.instance_count = pool.count;
+        ++mesh.instance_version;
+    }
+}
+
+double add_hierarchy_instance(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    const std::vector<float>& matrix) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    if (pool.count >= pool.capacity) {
+        throw std::runtime_error("addHierarchyInstance exceeded pool capacity");
+    }
+    const std::size_t index = pool.count;
+    write_hierarchy_instance_matrix(
+        engine, pool, index, hierarchy_instance_matrix(matrix), false);
+    set_hierarchy_instance_count(
+        engine, handle, static_cast<double>(index + 1));
+    return static_cast<double>(index);
+}
+
+void set_hierarchy_instance_matrix(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    double index_value,
+    const std::vector<float>& matrix) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    const std::size_t index = hierarchy_instance_index(
+        index_value, pool.count,
+        "setHierarchyInstanceMatrix index must reference an active hierarchy instance");
+    write_hierarchy_instance_matrix(
+        engine, pool, index, hierarchy_instance_matrix(matrix), true);
+}
+
+void remove_hierarchy_instance(
+    Engine& engine,
+    HierarchyInstancePoolHandle handle,
+    double index_value) {
+    HierarchyInstancePoolRecord& pool =
+        hierarchy_instance_pool(engine, handle);
+    const std::size_t index = hierarchy_instance_index(
+        index_value, pool.count,
+        "removeHierarchyInstance index must reference an active hierarchy instance");
+    const std::size_t last = pool.count - 1;
+    if (index != last) {
+        for (const MeshHandle mesh_handle : pool.meshes) {
+            MeshRecord& mesh = engine.meshes.at(mesh_handle.value);
+            mesh.instance_matrices[index] = mesh.instance_matrices[last];
+        }
+    }
+    set_hierarchy_instance_count(
+        engine, handle, static_cast<double>(last));
+}
 `
       : "";
     const geometryAccessSource = options.geometryAccess
@@ -1128,7 +1321,7 @@ std::vector<float> mesh_cpu_positions(
     MeshHandle mesh) {
     const ModelGeometry& geometry =
         engine.geometries.at(engine.meshes.at(mesh.value).geometry);
-    js::F32Array result;
+    std::vector<float> result;
     result.reserve(geometry.vertices.size() * 3);
     for (const ModelVertex& vertex : geometry.vertices) {
         result.push_back(vertex.position.x);
@@ -1143,7 +1336,7 @@ std::vector<float> mesh_cpu_normals(
     MeshHandle mesh) {
     const ModelGeometry& geometry =
         engine.geometries.at(engine.meshes.at(mesh.value).geometry);
-    js::F32Array result;
+    std::vector<float> result;
     result.reserve(geometry.vertices.size() * 3);
     for (const ModelVertex& vertex : geometry.vertices) {
         result.push_back(vertex.normal.x);
@@ -1158,7 +1351,7 @@ std::vector<float> mesh_cpu_uvs(
     MeshHandle mesh) {
     const ModelGeometry& geometry =
         engine.geometries.at(engine.meshes.at(mesh.value).geometry);
-    js::F32Array result;
+    std::vector<float> result;
     result.reserve(geometry.vertices.size() * 2);
     for (const ModelVertex& vertex : geometry.vertices) {
         result.push_back(vertex.uv.x);
@@ -1377,6 +1570,34 @@ Scene create_scene_context(Engine& engine) {
     return scene;
 }
 
+Surface create_surface(Engine& engine, UiElementHandle canvas) {
+    Surface surface;
+    surface.engine = &engine;
+    surface.canvas = canvas;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (canvas.value < engine.ui_elements.size()) {
+        engine.ui_elements[canvas.value].client_rect_requested = true;
+    }
+#endif
+    return surface;
+}
+
+void dispose_surface(Surface& surface) {
+    if (surface.disposed) {
+        *surface.disposed = true;
+    }
+}
+
+Scene create_scene_context(Surface& surface) {
+    if (!surface.engine || !surface.disposed || *surface.disposed) {
+        throw std::runtime_error(
+            "Cannot create a scene from a disposed surface.");
+    }
+    Scene scene = create_scene_context(*surface.engine);
+    scene.surface_canvas = surface.canvas;
+    return scene;
+}
+
 void add_to_scene(Scene& scene, MeshHandle mesh) {
     require_scene_engine(scene);
     if (mesh.value >= scene.engine->meshes.size()) {
@@ -1575,6 +1796,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
     AssetRecord clone;
     clone.root_position = source.root_position;
     clone.root_rotation = source.root_rotation;
+    clone.root_scaling_reset = source.root_scaling_reset;
     clone.clone_mesh_animation = clone_animation;
     clone.meshes.reserve(source_meshes.size());
     for (const MeshHandle source_mesh : source_meshes) {
@@ -1703,6 +1925,73 @@ void set_asset_root_rotation_component(
     }
 }
 
+void set_asset_root_position(
+    Engine& engine,
+    AssetHandle asset,
+    Vec3 value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const Vec3 delta{
+        value.x - root.root_position.x,
+        value.y - root.root_position.y,
+        value.z - root.root_position.z};
+    root.root_position = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        record.outer_position.x += delta.x;
+        record.outer_position.y += delta.y;
+        record.outer_position.z += delta.z;
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void set_asset_root_rotation(
+    Engine& engine,
+    AssetHandle asset,
+    Vec3 value) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    const Vec3 delta{
+        value.x - root.root_rotation.x,
+        value.y - root.root_rotation.y,
+        value.z - root.root_rotation.z};
+    root.root_rotation = value;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        record.outer_rotation.x += delta.x;
+        record.outer_rotation.y += delta.y;
+        record.outer_rotation.z += delta.z;
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
+void reset_asset_root_scaling(
+    Engine& engine,
+    AssetHandle asset) {
+    AssetRecord& root = asset_record(engine, asset.value);
+    if (root.root_scaling_reset) return;
+    root.root_scaling_reset = true;
+    for (const MeshHandle mesh : root.meshes) {
+        if (mesh.value >= engine.meshes.size()) {
+            throw std::runtime_error("Invalid mesh handle in imported root.");
+        }
+        MeshRecord& record = engine.meshes[mesh.value];
+        // load-gltf.ts creates the public synthetic root with scale (-1,1,1).
+        // Native glTF matrices fold that root convention into the leading X
+        // reflection. Replacing its scale with identity therefore removes the
+        // reflection by multiplying the recorded parent world on the left.
+        for (std::size_t column = 0; column < 4; ++column) {
+            record.instance_parent_matrix[column * 4] =
+                -record.instance_parent_matrix[column * 4];
+        }
+        mark_mesh_dirty(engine, mesh);
+    }
+}
+
 void add_to_scene(Scene& scene, AssetHandle asset) {
     require_scene_engine(scene);
     const AssetRecord& record =
@@ -1753,6 +2042,23 @@ void add_asset_entities(Scene& scene, AssetHandle asset) {
     if (record.animation_seek) {
         scene.animation_seekers.push_back(record.animation_seek);
     }
+}
+
+void add_to_scene(Scene& scene, const SceneNodeHandle& node) {
+    std::visit(
+        [&scene](const auto& concrete) {
+            using Handle = std::decay_t<decltype(concrete)>;
+            if constexpr (std::is_same_v<Handle, AssetHandle>) {
+                add_asset_entities(scene, concrete);
+            } else if constexpr (std::is_same_v<Handle, TransformNodeHandle>) {
+                ${options.transformNodes
+                  ? "add_to_scene(scene, concrete);"
+                  : 'throw std::runtime_error("No transform-node factory is reached by this scene.");'}
+            } else {
+                add_to_scene(scene, concrete);
+            }
+        },
+        node);
 }
 
 void on_before_render(
@@ -1896,6 +2202,13 @@ void set_canvas_cursor(Engine& engine, std::string cursor) {
 
 void focus_canvas(Engine& engine) {
     engine.canvas_focused = true;
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    // Canvas focus replaces DOM focus, just as button focus replaces canvas
+    // focus. Otherwise a stale button still reports activeElement and paints
+    // its focus-visible outline after the source has focused the canvas.
+    engine.ui_focused_element = {};
+    ++engine.ui_focus_revision;
+#endif
 }
 
 void request_pointer_lock(Engine& engine) {
@@ -1924,23 +2237,51 @@ void register_scene(Scene& scene) {
     }
     scene.deferred_builders.clear();
     scene.material_family_mask = scene_material_families(scene);
-    const auto found = std::find(
+    const auto found = std::find_if(
         scene.engine->registered_scenes.begin(),
         scene.engine->registered_scenes.end(),
-        &scene);
+        [&scene](const std::shared_ptr<Scene>& registered) {
+            return registered && registered->shares_identity(scene);
+        });
     if (found == scene.engine->registered_scenes.end()) {
-        scene.engine->registered_scenes.push_back(&scene);
+        scene.engine->registered_scenes.push_back(
+            std::make_shared<Scene>(scene));
     }
 }
 
 void unregister_scene(Scene& scene) {
     require_scene_engine(scene);
     scene.engine->registered_scenes.erase(
-        std::remove(
+        std::remove_if(
             scene.engine->registered_scenes.begin(),
             scene.engine->registered_scenes.end(),
-            &scene),
+            [&scene](const std::shared_ptr<Scene>& registered) {
+                return registered && registered->shares_identity(scene);
+            }),
         scene.engine->registered_scenes.end());
+}
+
+void dispose_scene(Scene& scene) {
+    if (scene.disposed) return;
+    scene.disposed = true;
+    unregister_scene(scene);
+    auto disposables = std::move(scene.disposables);
+    scene.disposables.clear();
+    for (const auto& dispose : disposables) {
+        dispose();
+    }
+    scene.meshes.clear();
+    scene.lights.clear();
+    scene.tasks.clear();
+    scene.pending_shadow_retirements.clear();
+    scene.animation_groups.clear();
+    scene.billboard_systems.clear();
+    scene.depth_hosted_sprite_layers.clear();
+    scene.splat_meshes.clear();
+    scene.before_render.clear();
+    scene.animation_seekers.clear();
+    scene.deferred_builders.clear();
+    scene.camera = {};
 }
 
 void rebuild_scene_renderables(Scene& scene) {
@@ -1996,6 +2337,7 @@ void enable_scene_transmission(Scene& scene) {
     scene.transmission_enabled = true;
 }
 ${fogSource}${clipPlaneSource}${meshDirtySource}${visibilitySource}${transformNodeSource}${mirroredSource}${parentingSource}${geometryAccessSource}
+${options.sceneNodeTransforms ? sceneNodeTransformsSource(options.transformNodes === true) : ""}
 } // namespace bbl
 `,
     };

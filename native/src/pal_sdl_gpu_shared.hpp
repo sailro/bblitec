@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_window.hpp"
 
 // SDL_GPU mechanics shared by the renderers that draw through it.
 //
@@ -35,6 +36,33 @@ namespace bbl::pal {
 
 [[noreturn]] inline void gpu_error(const char* operation) {
     throw std::runtime_error(std::string(operation) + ": " + SDL_GetError());
+}
+
+inline SDL_GPUTexture* create_frame_texture(
+    SDL_GPUDevice* device,
+    SDL_GPUTextureFormat format,
+    SDL_GPUSampleCount samples,
+    std::uint32_t width,
+    std::uint32_t height,
+    SDL_GPUTextureUsageFlags usage,
+    std::uint32_t layers = 1) {
+    SDL_GPUTextureCreateInfo info{};
+    // A layered attachment is an ARRAY texture: the cascaded shadow map is
+    // the reached one, and its receiver declares `texture_depth_2d_array`,
+    // so the texture type is what SDL_GPU resolves that register against.
+    info.type = layers > 1
+        ? SDL_GPU_TEXTURETYPE_2D_ARRAY
+        : SDL_GPU_TEXTURETYPE_2D;
+    info.format = format;
+    info.usage = usage;
+    info.width = width;
+    info.height = height;
+    info.layer_count_or_depth = layers;
+    info.num_levels = 1;
+    info.sample_count = samples;
+    SDL_GPUTexture* texture = SDL_CreateGPUTexture(device, &info);
+    if (!texture) gpu_error("SDL_CreateGPUTexture frame graph");
+    return texture;
 }
 
 inline void save_texture_png(
@@ -187,8 +215,6 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
         // `b2 mesh`, `b1 lights`, and appending pushed `material` where the
         // shader wanted `lights` -- 9.238 MAD, while an unlit fragment happened
         // to declare its two blocks in index order and so looked correct.
-        const std::size_t index =
-            static_cast<std::size_t>(std::stoul(reg.substr(1)));
         // `b` is a uniform slot and `t` a texture; `s` is the sampler paired
         // with the texture of the same index, which SDL_GPU binds together.
         // `r` is a storage buffer at its storage slot, which shares the SRV
@@ -199,6 +225,29 @@ inline PinnedStageSlots read_pinned_stage_slots(const std::string& base_name) {
                 ? &slots.textures
                 : reg[0] == 'r' ? &slots.storage : nullptr;
         if (!target) return;
+        // Sidecars are generated build artifacts, but a stale or malformed one
+        // must still fail in bounded space. In particular, `stoul("-4")`
+        // produces a huge unsigned value on Windows; resizing to that index
+        // used to consume the machine before startup could report the error.
+        constexpr std::size_t max_slot_index = 4096;
+        if (reg.size() < 2) {
+            throw std::runtime_error(
+                "Malformed shader slot '" + reg + "' in " + base_name + ".slots.");
+        }
+        std::size_t index = 0;
+        for (std::size_t cursor = 1; cursor < reg.size(); ++cursor) {
+            const char digit = reg[cursor];
+            if (digit < '0' || digit > '9') {
+                throw std::runtime_error(
+                    "Malformed shader slot '" + reg + "' in " + base_name + ".slots.");
+            }
+            index = index * 10 + static_cast<std::size_t>(digit - '0');
+            if (index > max_slot_index) {
+                throw std::runtime_error(
+                    "Shader slot '" + reg + "' is out of range in " +
+                    base_name + ".slots.");
+            }
+        }
         if (target->size() <= index) target->resize(index + 1);
         (*target)[index] = name;
     };
@@ -459,11 +508,13 @@ inline void create_sdl_gpu_device(
     const EngineOptions& engine_options,
     const SdlGpuDeviceOptions& options,
     SdlGpuDevice& state) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) gpu_error("SDL_Init");
-    state.window = SDL_CreateWindow(
-        engine_options.title.c_str(),
-        engine_options.width,
-        engine_options.height,
+    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+    init_flags |= SDL_INIT_GAMEPAD;
+#endif
+    if (!initialize_run_sdl(init_flags)) gpu_error("SDL_Init");
+    state.window = acquire_run_window(
+        engine_options,
         options.hidden_test_pass
             ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
             : SDL_WINDOW_RESIZABLE);

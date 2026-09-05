@@ -3066,6 +3066,171 @@
       ]
     },
     {
+      "id": "antigravity-racer",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer.ts",
+      "reference": {
+        "source": "reference/antigravity-racer/babylon-lite-golden.png",
+        "sha256": "ce32ce3b0e92d0169f1bc511ed9d31cc5e1bd0e08b28cda4666d6b3041af6eea"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer.ts",
+          "sha256": "113f6678a40b30f2a682e90622d36f4575180616dbb829b88dc15d57cd2c3dcb"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/assets.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/assets.ts",
+          "sha256": "cebc17d48ad86b35e7c0a68757bb94115046f15c3319c0c5b9f4f93bcfedd419"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/bjs-euler.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/bjs-euler.ts",
+          "sha256": "cfe6c92b1fa2abe5e25d740d593d98cbb77afdbc9b82b22519c7b9e058dffd47"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/camera-rig.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/camera-rig.ts",
+          "sha256": "dfcab0347f0abb795d9f9522ce40bad41313915e9d4c789c851f7561be2a9deb"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/constants.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/constants.ts",
+          "sha256": "800cf227c6fd36a34d0f960e74b663314a70db52648d35ad23e9aa94bc432bc2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/editor-pointer-drag.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/editor-pointer-drag.ts",
+          "sha256": "0ba577c17cc9aed69093d898712ed8641680c9333b1cfa02cb89441a4a99917c"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/editor.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/editor.ts",
+          "sha256": "52ac31827ffe91c767100b2575a035bf125766e90cb630ec551ef93ed46643bb"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/environment.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/environment.ts",
+          "sha256": "767dad38b115d4d888613708fe9aca7827ee00d942858eeb9e376edc5a156dcf"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/game.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/game.ts",
+          "sha256": "ac353c4b41f86c63a012848aeb94e9d1f3dba54f6b5d1a560d85e4324d44b090"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/gamepad-list-nav.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/gamepad-list-nav.ts",
+          "sha256": "ad0a965fa15ae2a533f79b95ad9bef1c2a259c5d154e071eb557b671bf8bb3fc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/hud.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/hud.ts",
+          "sha256": "c82a0ef1390082e5e67bbea759a19aa3c2d338e450183f241832bf1567193041"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/input.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/input.ts",
+          "sha256": "9852f8f4b0e9f55031f057d8a0f2649084bf2b5a3a14fbbb7002094c5019bf13"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/menu.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/menu.ts",
+          "sha256": "fc7fd1da968d9e3fbc47724fd6501c47e936042cbd9b6dedf22a11a11104dae6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/rocks.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/rocks.ts",
+          "sha256": "6b9a15e082f18c8b3d3318aa03556658b31b0acfea56758e9eb8edda8c6e09db"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/ship-fleet.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/ship-fleet.ts",
+          "sha256": "7a3ed6034a53e1bfe3399fb9f1bfb6819efc7af2b7d7226adf812eddf27adef6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/simulation.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/simulation.ts",
+          "sha256": "be026cf12988fded752a1468a80c4779d6f7644ff7263d71e369640f88703eaa"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/spawn.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/spawn.ts",
+          "sha256": "135c957a1e9ad985a31905a08fbaad26627619cff24dbe4daac16b4a3b71434f"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/terrain.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/terrain.ts",
+          "sha256": "98c508ebc1cb3c7fe40a9ebb1e5ca49f066640d2fc6c36ab38ec2ad2407282b2"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/track-material.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track-material.ts",
+          "sha256": "2449f44b8905316dd3d8003661cbdd1ef27ad4545e54649386f971e7f8d7c01b"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/track.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track.ts",
+          "sha256": "0a5ff3fdc01a524e4cea71710a6b28505bbf4e5379ef44e04ca9ce5cf68bc358"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/trail.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/trail.ts",
+          "sha256": "450464e2c426115568ad275d9cb5364751cd5a6ada2b97650461dadd3a8c74ed"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/antigravity-racer/world.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/world.ts",
+          "sha256": "e5157026f39f2ce997d6b1e30d41eafc240f36fa70a6b35aef317ad5b56bb745"
+        },
+        {
+          "upstreamPath": "lab/public/antigravity-racer/rhs-x.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/rhs-x.glb",
+          "sha256": "c1d078c1f893c0c5e6770df96a4a5c775cb3877b0c91ed24ebb069ad19e4d242"
+        },
+        {
+          "upstreamPath": "lab/public/antigravity-racer/rock.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/rock.glb",
+          "sha256": "ff308955b15c6ec66e25cd7f5b3ad0fbf2935bd32cfd4e89169b393429eed423"
+        },
+        {
+          "upstreamPath": "lab/public/antigravity-racer/track/boost-arrow.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track/boost-arrow.png",
+          "sha256": "33723ea7dcaa2b941b1f317b114114abd546a27d742b7febc84753ce637512bb"
+        },
+        {
+          "upstreamPath": "lab/public/antigravity-racer/track/road-curve.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track/road-curve.png",
+          "sha256": "5e30b9bec3ce6721a0b18b73cbc91830d1c43f250483858b1b811d8202670a59"
+        },
+        {
+          "upstreamPath": "lab/public/antigravity-racer/track/road-emissive.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track/road-emissive.png",
+          "sha256": "3fd47a02fac254d7eb2aa8b676d9b1f849b361522e1009309a6a1a37caf5b119"
+        },
+        {
+          "upstreamPath": "lab/public/antigravity-racer/track/road-straight.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/antigravity-racer/track/road-straight.png",
+          "sha256": "989bec979558bd31a8553439be162e45a1503baf4d5ddcd6bf56e073b8ec2866"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        }
+      ]
+    },
+    {
       "id": "littlest-tokyo",
       "entry": "corpus/babylon-lite/lab/lite/src/demos/littlest-tokyo.ts",
       "reference": {

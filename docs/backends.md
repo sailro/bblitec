@@ -180,6 +180,15 @@ the cost of first-frame compile time.
 
 ## Shared frame conductor
 
+The OS window is owned by the engine run (`pal_window.hpp`), outside the
+renderer-rebuild loop. Replacing registered scenes rebuilds their GPU resources
+and UI renderer without destroying the window or reinitializing SDL. Window
+identity, position, size, maximization and focus therefore persist across mode
+changes. Both backends and the scene-less drivers use this ownership boundary;
+normal exit and exception unwinding destroy the window and shut SDL down once.
+`BBLITE_RUNTIME_TRACE=1` reports window creation/reuse/destruction, including the
+SDL ID, native Windows handle and geometry, for focused lifecycle checks.
+
 Everything that decides *what* a measured run does is written once in
 `native/src/pal_gpu_shared.hpp` and consumed by both backends: `FrameOptions`
 parses the runtime flag matrix, `CaptureGate` decides when the run may stop

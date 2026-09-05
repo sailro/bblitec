@@ -260,6 +260,7 @@ export class BrowserErasure {
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
         const unwrapped = this.context.unwrap(expression);
+        if (this.context.isNativeUiValueExpression(unwrapped)) return false;
         // Scene-created DOM is not a browser object in the native program: it
         // is the input syntax for the retained UI IR. Keep this deliberately
         // narrower than general DOM support. Host-page lookups and arbitrary

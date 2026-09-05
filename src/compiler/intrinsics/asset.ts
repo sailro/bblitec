@@ -257,6 +257,23 @@ export function compileAssetIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "acquireTexture":
+        case "releaseTexture": {
+            context.expectArgumentCount(call, 1, 1);
+            const texture = context.compileValue(
+                call.arguments[0]!,
+            );
+            context.expectKind(
+                texture,
+                "texture",
+                call.arguments[0]!,
+            );
+            // The browser pool counts ownership of a standalone GPUTexture.
+            // Native retains the CPU texture record and lets each backend
+            // count its uploaded bindings, so the source-level top-up/drop
+            // has no additional native lifetime operation.
+            return { kind: "void", cpp: "" };
+        }
         case "getContainerMeshes": {
             context.expectArgumentCount(call, 1, 1);
             const container = context.compileValue(call.arguments[0]!);

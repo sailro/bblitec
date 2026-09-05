@@ -3,7 +3,7 @@
 # Same shape as build-labsound.ps1, build-tint.ps1 and build-dawn.ps1, and
 # for the same reason: vcpkg's rmlui port is neither at the revision the
 # backend-neutral UI recorder was validated against nor patched with the
-# two native/patches/rmlui-*.patch files, so the pin lives in
+# maintained native/patches/rmlui-*.patch files, so the pin lives in
 # upstream/rmlui.json and the library is built once from it instead of
 # being re-fetched and re-built inside every UI scene's build tree.
 #
@@ -205,7 +205,8 @@ Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
 # corrects and the measurement behind it.
 foreach ($patch in @(
     "rmlui-premultiplied-rounding.patch",
-    "rmlui-css-box-model.patch"
+    "rmlui-css-box-model.patch",
+    "rmlui-fractional-letter-spacing.patch"
 )) {
     & $CMake `
         "-DRMLUI_SOURCE_DIR=$source" `

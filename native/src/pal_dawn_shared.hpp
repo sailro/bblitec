@@ -1,4 +1,5 @@
 #pragma once
+#include "pal_window.hpp"
 
 // Dawn mechanics shared by the renderers that draw through it.
 //
@@ -296,13 +297,15 @@ inline void create_dawn_device(
     const EngineOptions& engine_options,
     const DawnDeviceOptions& options,
     DawnDevice& state) {
-    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+    SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
+#if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
+    init_flags |= SDL_INIT_GAMEPAD;
+#endif
+    if (!initialize_run_sdl(init_flags)) {
         dawn_error(std::string("SDL_Init: ") + SDL_GetError());
     }
-    state.window = SDL_CreateWindow(
-        engine_options.title.c_str(),
-        engine_options.width,
-        engine_options.height,
+    state.window = acquire_run_window(
+        engine_options,
         options.hidden_test_pass
             ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
             : SDL_WINDOW_RESIZABLE);

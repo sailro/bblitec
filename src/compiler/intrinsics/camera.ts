@@ -194,6 +194,23 @@ export function compileCameraIntrinsic(
             };
         }
 
+        case "createBankedFreeCamera": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.requireDefaultEngine(call);
+            context.reachFeature("camera:free", call);
+            return {
+                kind: "camera",
+                cpp:
+                    `bbl::create_banked_free_camera(` +
+                    `${engine}, ` +
+                    `${context.compileVec3(call.arguments[0]!, "double")}, ` +
+                    `${context.compileVec3(call.arguments[1]!, "double")}, ` +
+                    `${call.arguments[2] ? context.compileVec3(call.arguments[2]!, "double") : "bbl::Vec3d{0.0, 1.0, 0.0}"})`,
+                engineCpp: engine,
+                cameraKind: "free",
+            };
+        }
+
         case "enableOrthographicCamera": {
             // src/camera/orthographic.ts: the opt-in installs the
             // projector and hands back live bounds that stay reachable

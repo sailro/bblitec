@@ -24,10 +24,12 @@
 // The backend-neutral scissor clamp all four RmlUi consumers share.
 #include "pal_gpu_shared.hpp"
 #include "pal_sdl_gpu_shared.hpp"
+#include "pal_ui_backdrop_sdl.hpp"
 
 namespace bbl::pal {
 
 struct SpriteUiSdlResources {
+    UiBackdropSdlResources backdrop;
     SDL_GPUGraphicsPipeline* color_pipeline = nullptr;
     SDL_GPUGraphicsPipeline* texture_pipeline = nullptr;
     SDL_GPUSampler* sampler = nullptr;
@@ -127,7 +129,8 @@ inline SDL_GPUGraphicsPipeline* create_sprite_ui_sdl_pipeline(
     SDL_GPUDevice* device,
     SDL_GPUShader* vertex,
     SDL_GPUShader* fragment,
-    SDL_GPUTextureFormat format) {
+    SDL_GPUTextureFormat format,
+    bool additive = false) {
     SDL_GPUColorTargetDescription target{};
     target.format = format;
     target.blend_state.enable_blend = true;
@@ -136,9 +139,9 @@ inline SDL_GPUGraphicsPipeline* create_sprite_ui_sdl_pipeline(
     target.blend_state.src_color_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
     target.blend_state.src_alpha_blendfactor = SDL_GPU_BLENDFACTOR_ONE;
     target.blend_state.dst_color_blendfactor =
-        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        additive ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
     target.blend_state.dst_alpha_blendfactor =
-        SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
+        additive ? SDL_GPU_BLENDFACTOR_ONE : SDL_GPU_BLENDFACTOR_ONE_MINUS_SRC_ALPHA;
 
     const std::array<SDL_GPUVertexAttribute, 3> attributes{
         SDL_GPUVertexAttribute{
@@ -218,6 +221,24 @@ inline void create_sprite_ui_sdl_resources(
     }
 }
 
+inline void ensure_sprite_ui_sdl_backdrop_pipeline(
+    SDL_GPUDevice* device,
+    SpriteUiSdlResources& ui) {
+    if (ui.backdrop.pipeline) return;
+    SDL_GPUShader* vertex = create_sprite_ui_sdl_shader(
+        device, SpriteUiSdlShader::vertex);
+    SDL_GPUShader* texture = create_sprite_ui_sdl_shader(
+        device, SpriteUiSdlShader::texture_fragment);
+    ui.backdrop.pipeline = create_sprite_ui_sdl_pipeline(
+        device,
+        vertex,
+        texture,
+        SDL_GPU_TEXTUREFORMAT_R16G16B16A16_FLOAT,
+        true);
+    SDL_ReleaseGPUShader(device, vertex);
+    SDL_ReleaseGPUShader(device, texture);
+}
+
 inline void ensure_sprite_ui_sdl_buffer(
     SDL_GPUDevice* device,
     SDL_GPUBuffer*& buffer,
@@ -264,6 +285,9 @@ inline void render_sprite_ui_sdl_frame(
     const UiRenderFrame& frame) {
     if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
     create_sprite_ui_sdl_resources(device, target_format, ui);
+    if (!frame.backdrops.empty()) {
+        ensure_sprite_ui_sdl_backdrop_pipeline(device, ui);
+    }
 
     const std::uint32_t vertex_bytes = static_cast<std::uint32_t>(
         frame.vertices.size() * sizeof(UiRenderVertex));
@@ -359,6 +383,10 @@ inline void render_sprite_ui_sdl_frame(
         SDL_ReleaseGPUTransferBuffer(device, transfer);
     }
 
+    std::size_t draw_begin = 0;
+    for (std::size_t segment = 0; segment <= frame.backdrops.size(); ++segment) {
+    const std::size_t draw_end = segment < frame.backdrops.size()
+        ? frame.backdrops[segment].before_draw : frame.draws.size();
     SDL_GPUColorTargetInfo color_target{};
     color_target.texture = target;
     color_target.load_op = SDL_GPU_LOADOP_LOAD;
@@ -381,7 +409,8 @@ inline void render_sprite_ui_sdl_frame(
         command, 0, projection.data(), sizeof(projection));
     SDL_PushGPUVertexUniformData(
         command, 1, translation.data(), sizeof(translation));
-    for (const UiRenderDraw& draw : frame.draws) {
+    for (std::size_t draw_index = draw_begin; draw_index < draw_end; ++draw_index) {
+        const UiRenderDraw& draw = frame.draws[draw_index];
         const std::optional<UiScissorRect> scissor =
             clamped_ui_scissor(draw, frame.width, frame.height);
         if (!scissor) continue;
@@ -403,11 +432,19 @@ inline void render_sprite_ui_sdl_frame(
             pass, draw.index_count, 1, draw.first_index, 0, 0);
     }
     SDL_EndGPURenderPass(pass);
+    if (segment < frame.backdrops.size()) {
+        render_ui_backdrop_sdl(device, command, target, target_format,
+            ui.vertices, ui.indices, ui.sampler, ui.texture_pipeline,
+            ui.backdrop, frame, segment);
+    }
+    draw_begin = draw_end;
+    }
 }
 
 inline void release_sprite_ui_sdl_resources(
     SDL_GPUDevice* device,
     SpriteUiSdlResources& ui) {
+    ui.backdrop.release(device);
     for (const auto& [id, texture] : ui.textures) {
         static_cast<void>(id);
         SDL_ReleaseGPUTexture(device, texture);

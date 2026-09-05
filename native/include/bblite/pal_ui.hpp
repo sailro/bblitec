@@ -31,6 +31,15 @@ void ui_set_inner_rml(
     Engine& engine,
     UiElementHandle element,
     std::string markup);
+UiElementHandle ui_query_markup(
+    Engine& engine,
+    UiElementHandle owner,
+    std::uint32_t node_id,
+    std::string_view tag);
+std::string ui_get_attribute(
+    Engine& engine,
+    UiElementHandle element,
+    std::string_view name);
 std::string ui_escape_rml(std::string_view text);
 void ui_set_attribute(
     Engine& engine,
@@ -74,10 +83,16 @@ void ui_add_style_rule(
     bool hover,
     double max_width,
     std::string style);
-void ui_add_host_class_style(
+void ui_add_host_style_rule(
     Engine& engine,
-    std::string class_name,
-    std::string style);
+    UiStyleSelectorKind selector,
+    std::string primary,
+    std::string secondary,
+    std::string tag,
+    bool hover,
+    double max_width,
+    std::string style,
+    bool focus_visible = false);
 js::Array<UiElementHandle> ui_query_class(
     Engine& engine,
     UiElementHandle root,
@@ -97,6 +112,8 @@ void ui_on_click(
     std::function<void()> callback);
 /** Programmatic HTMLElement.click(), including reached default actions. */
 void ui_click(Engine& engine, UiElementHandle element);
+void ui_focus(Engine& engine, UiElementHandle element, bool visible = true);
+UiElementHandle ui_active_element(Engine& engine);
 #if defined(BBLITE_HAS_BROWSER_FILE) && BBLITE_HAS_BROWSER_FILE
 void ui_set_download_url(
     Engine& engine,
@@ -202,6 +219,32 @@ struct UiRenderDraw {
     bool nearest_sampling = false;
 };
 
+/** A backdrop snapshot and separable blur, ordered between ordinary UI draws. */
+struct UiBackdrop {
+    static constexpr std::uint32_t sample_index_count = 6;
+
+    std::uint32_t before_draw = 0;
+    std::int32_t left = 0;
+    std::int32_t top = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    std::uint32_t blur_width = 0;
+    std::uint32_t blur_height = 0;
+    std::uint32_t sample_index = 0;
+    std::uint32_t kernel_index_count = 0;
+    std::uint32_t composite_index_count = 0;
+
+    std::uint32_t horizontal_index() const {
+        return sample_index + sample_index_count;
+    }
+    std::uint32_t vertical_index() const {
+        return horizontal_index() + kernel_index_count;
+    }
+    std::uint32_t composite_index() const {
+        return vertical_index() + kernel_index_count;
+    }
+};
+
 /**
  * One self-contained RmlUi frame. GPU backends upload the aggregate geometry,
  * cache textures by id, and own all render-target/sample-count decisions.
@@ -213,6 +256,7 @@ struct UiRenderFrame {
     std::vector<std::uint32_t> indices;
     std::vector<UiRenderTexture> textures;
     std::vector<UiRenderDraw> draws;
+    std::vector<UiBackdrop> backdrops;
     /**
      * First index of the trailing full-frame quad the recorder appends after
      * the RmlUi draws. No entry in `draws` references it: the scene renderers

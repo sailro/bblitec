@@ -99,7 +99,7 @@ test("a scene freezes itself: setTimeout defers, stopEngine stops", () => {
     );
     // The zero-delay timeout is a deferred callback the conductor drains,
     // and the engine stop inside it survives; the canvas write does not.
-    assert.match(main, /bbl::defer_callback\(v_engine, \[&\]\(\) \{/);
+    assert.match(main, /bbl::defer_callback\(v_engine, \[=, &v_engine\]\(\) mutable \{/);
     assert.match(main, /bbl::stop_engine\(v_engine\)/);
     assert.doesNotMatch(main, /captureReady/);
     // The step the capture is pinned at is the query's own answer: the
@@ -117,7 +117,7 @@ test("a non-zero setTimeout delay uses the elapsed-time queue", () => {
     );
     assert.match(
         main,
-        /bbl::set_timeout\(v_engine, \[&\]\(\) \{\s*bbl::stop_engine\(v_engine\);\s*\}, 1000\)/,
+        /bbl::set_timeout\(v_engine, \[=, &v_engine\]\(\) mutable \{\s*bbl::stop_engine\(v_engine\);\s*\}, 1000\)/,
     );
 });
 

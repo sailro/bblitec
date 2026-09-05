@@ -3,6 +3,12 @@ import type { Value } from "./types.js";
 
 export interface PromiseLoweringContext {
     compileValue(expression: ts.Expression): Value;
+    compileCallbackWithValues(
+        declaration: ts.ArrowFunction | ts.FunctionExpression,
+        arguments_: readonly Value[],
+        callNode: ts.Node,
+        discardReturn?: boolean,
+    ): Value;
     emitStatement(statement: ts.Statement): void;
     emit(line: string): void;
     increaseIndent(): void;
@@ -58,7 +64,7 @@ export function compileImmediatePromise(
                 // Native array callbacks execute eagerly. By the time the
                 // vector reaches Promise.all every immediate promise in it
                 // has settled and all callback side effects have run.
-                return isDestructured(call)
+                return isPromiseResultUsed(call)
                     ? iterable
                     : { kind: "void", cpp: "" };
             }
@@ -79,7 +85,7 @@ export function compileImmediatePromise(
         // `loadEnvironment`, which the destructuring pattern skips with a
         // hole. So the elements are always compiled in order here; the only
         // question is whether their values have to outlive the call.
-        if (!isDestructured(call)) {
+        if (!isPromiseResultUsed(call)) {
             for (const element of argument.elements) {
                 emitValue(
                     context,
@@ -115,10 +121,10 @@ export function compileImmediatePromise(
         return compileImmediateCatch(context, call);
     }
     if (method !== "then") return undefined;
-    if (call.arguments.length !== 1) {
+    if (call.arguments.length < 1 || call.arguments.length > 2) {
         context.fail(
             call,
-            "Immediate promise then requires one callback.",
+            "Immediate promise then requires one fulfillment callback and an optional rejection callback.",
         );
     }
     const callback = call.arguments[0]!;
@@ -141,30 +147,62 @@ export function compileImmediatePromise(
             "Immediate promise callback accepts zero parameters or one identifier parameter.",
         );
     }
-    const value = context.compileValue(
-        call.expression.expression,
+    const rejection = call.arguments[1];
+    if (
+        rejection &&
+        ((!ts.isArrowFunction(rejection) &&
+            !ts.isFunctionExpression(rejection)) ||
+            rejection.parameters.length > 1 ||
+            (rejection.parameters.length === 1 &&
+                !ts.isIdentifier(rejection.parameters[0]!.name)))
+    ) {
+        context.fail(
+            rejection,
+            "Immediate promise rejection callback must be inline and accept zero parameters or one identifier parameter.",
+        );
+    }
+    const fulfilled = rejection
+        ? context.allocateTemporaryCppName("promise_fulfilled")
+        : undefined;
+    if (fulfilled) {
+        context.emit(`bool ${fulfilled} = false;`);
+        context.emit("try {");
+        context.increaseIndent();
+    }
+    let value = context.compileValue(call.expression.expression);
+    if (
+        value.kind !== "engine" &&
+        value.kind !== "void" &&
+        value.cpp.length > 0
+    ) {
+        const settled = context.allocateTemporaryCppName("promise_value");
+        context.emit(`auto ${settled} = ${value.cpp};`);
+        value = { ...value, cpp: settled };
+    } else if (value.kind === "void") {
+        emitValue(context, value);
+    }
+    if (fulfilled) {
+        context.emit(`${fulfilled} = true;`);
+    }
+    context.compileCallbackWithValues(
+        callback,
+        [value],
+        call,
+        true,
     );
-    context.pushScope(context.allocateBlockPrefix());
-    try {
-        const parameter = callback.parameters[0];
-        if (parameter) {
-            context.bindLocalValue(
-                parameter.name as ts.Identifier,
-                value,
-            );
-        }
-        if (ts.isBlock(callback.body)) {
-            for (const statement of callback.body.statements) {
-                context.emitStatement(statement);
-            }
-        } else {
-            emitValue(
-                context,
-                context.compileValue(callback.body),
-            );
-        }
-    } finally {
-        context.popScope();
+    if (rejection && fulfilled) {
+        context.decreaseIndent();
+        context.emit("} catch (...) {");
+        context.increaseIndent();
+        context.emit(`if (${fulfilled}) { throw; }`);
+        context.compileCallbackWithValues(
+            rejection as ts.ArrowFunction | ts.FunctionExpression,
+            [{ kind: "browser", cpp: "" }],
+            call,
+            true,
+        );
+        context.decreaseIndent();
+        context.emit("}");
     }
     return { kind: "void", cpp: "" };
 }
@@ -241,24 +279,24 @@ function compileImmediateCatch(
 }
 
 /**
- * Whether the awaited call's result is bound by an array pattern. A
- * `Promise.all` whose result is discarded keeps emitting its elements as bare
- * statements, which is what every scene reaching it before Scene 21 does.
+ * Whether the awaited call's result is consumed. A discarded `Promise.all`
+ * keeps emitting its elements as bare statements; a declaration, assignment,
+ * return, or argument keeps the eagerly settled tuple/vector value.
  */
-function isDestructured(call: ts.CallExpression): boolean {
+function isPromiseResultUsed(call: ts.CallExpression): boolean {
     let node: ts.Node = call;
     while (
         ts.isAwaitExpression(node.parent) ||
         ts.isParenthesizedExpression(node.parent) ||
         ts.isAsExpression(node.parent) ||
-        ts.isNonNullExpression(node.parent)
+        ts.isNonNullExpression(node.parent) ||
+        ts.isSatisfiesExpression(node.parent)
     ) {
         node = node.parent;
     }
-    return (
-        ts.isVariableDeclaration(node.parent) &&
-        node.parent.initializer === node &&
-        ts.isArrayBindingPattern(node.parent.name)
+    return !(
+        ts.isExpressionStatement(node.parent) ||
+        ts.isVoidExpression(node.parent)
     );
 }
 

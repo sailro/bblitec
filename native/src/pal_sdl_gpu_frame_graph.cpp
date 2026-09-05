@@ -162,8 +162,8 @@ void release(State& state) {
         SDL_ReleaseWindowFromGPUDevice(state.gpu.device, state.gpu.window);
     }
     if (state.gpu.device) SDL_DestroyGPUDevice(state.gpu.device);
-    if (state.gpu.window) SDL_DestroyWindow(state.gpu.window);
-    SDL_Quit();
+    if (state.gpu.window) release_run_window(state.gpu.window);
+    quit_run_sdl();
 }
 
 void build_graph(

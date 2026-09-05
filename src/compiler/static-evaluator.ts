@@ -1732,6 +1732,7 @@ export class StaticEvaluator {
                 ts.isTypeAssertionExpression(current) ||
                 ts.isParenthesizedExpression(current) ||
                 ts.isNonNullExpression(current) ||
+                ts.isSatisfiesExpression(current) ||
                 ts.isAwaitExpression(current)
             ) {
                 if (ts.isAwaitExpression(current)) {

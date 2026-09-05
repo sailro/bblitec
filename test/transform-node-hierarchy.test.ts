@@ -290,6 +290,26 @@ test("gizmo bounds traverse mixed transform-node children", () => {
     assert.match(source, /std::get<MeshHandle>\(child\)/);
 });
 
+test("emits only the editing gizmo builders reached by the scene", () => {
+    const source = new GizmoLowerer(
+        new LoweringContext(),
+        [
+            "gizmo:utility-layer",
+            "gizmo:axis-drag",
+            "gizmo:plane-drag",
+            "gizmo:position",
+        ],
+    ).lower().source;
+
+    assert.match(source, /create_axis_drag_gizmo\(/);
+    assert.match(source, /create_plane_drag_gizmo\(/);
+    assert.match(source, /create_position_gizmo\(/);
+    assert.doesNotMatch(source, /create_axis_scale_gizmo\(/);
+    assert.doesNotMatch(source, /create_plane_rotation_gizmo\(/);
+    assert.doesNotMatch(source, /create_polyhedron\(/);
+    assert.doesNotMatch(source, /create_torus\(/);
+});
+
 test("keeps the native mixed child union separate from mesh children", () => {
     const runtime = readFileSync(
         "native/include/bblite/runtime.hpp",

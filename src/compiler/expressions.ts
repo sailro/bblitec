@@ -62,6 +62,7 @@ import type {
     UserFunctionContext,
     UserFunctionLowerer,
 } from "./user-functions.js";
+import { tryResolveFunctionDeclaration } from "./user-functions.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -110,7 +111,8 @@ function hasNonNullAssertion(expression: ts.Expression): boolean {
         ts.isParenthesizedExpression(current) ||
         ts.isAsExpression(current) ||
         ts.isTypeAssertionExpression(current) ||
-        ts.isNonNullExpression(current)
+        ts.isNonNullExpression(current) ||
+        ts.isSatisfiesExpression(current)
     ) {
         if (ts.isNonNullExpression(current)) {
             return true;
@@ -158,6 +160,10 @@ export interface ExpressionContext
     compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value;
+    readResolvedProperty(
+        owner: Value,
+        expression: ts.PropertyAccessExpression,
+    ): Value | undefined;
     registerClassInstance(
         instance: Value,
         declaration: ts.ClassDeclaration,
@@ -275,6 +281,8 @@ export interface ExpressionContext
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeIteration(): boolean;
+    isInNativeFunctionBody(): boolean;
+    isLocalCallbackEvaluationRepeated(declaration: ts.Node): boolean;
     callbackEvaluationIdentity(): object | undefined;
 }
 
@@ -296,11 +304,10 @@ export class ExpressionLowerer {
         if (
             (ts.isAsExpression(expression) ||
                 ts.isTypeAssertionExpression(expression)) &&
-            ts.isTypeReferenceNode(expression.type) &&
-            ts.isIdentifier(expression.type.typeName) &&
-            this.context.symbols.importedName(
-                expression.type.typeName,
-            ) === "Mesh"
+            this.assertedTypeIncludesImportedName(
+                expression.type,
+                "Mesh",
+            )
         ) {
             const asserted = this.compileValue(expression.expression);
             if (asserted.kind === "picked-node") {
@@ -345,6 +352,14 @@ export class ExpressionLowerer {
             return { kind: "json-null", cpp: "" };
         }
 
+        if (ts.isVoidExpression(unwrapped)) {
+            const operand = this.compileValue(unwrapped.expression);
+            return {
+                kind: "void",
+                cpp: operand.cpp,
+            };
+        }
+
         if (
             ts.isArrowFunction(unwrapped) ||
             ts.isFunctionExpression(unwrapped)
@@ -366,7 +381,8 @@ export class ExpressionLowerer {
                     recordScopes: [
                         ...this.context.variableScopes,
                     ],
-                    ...(this.context.isInRuntimeIteration()
+                    ...(this.context.isInRuntimeIteration() ||
+                    this.context.isInNativeFunctionBody()
                         ? { repeatedCallbackEvaluation: true }
                         : {}),
                     ...(evaluationIdentity
@@ -501,6 +517,32 @@ export class ExpressionLowerer {
                 : undefined;
             if (constant) {
                 return constant;
+            }
+            const callback = tryResolveFunctionDeclaration(
+                this.context.checker,
+                unwrapped,
+            );
+            if (callback) {
+                return {
+                    kind: "callback",
+                    cpp: "",
+                    callbackDeclaration: callback,
+                    callbackRecordOwner: {
+                        kind: "record",
+                        cpp: "",
+                        recordScopes: [
+                            ...this.context.variableScopes,
+                        ],
+                        ...(this.context.isLocalCallbackEvaluationRepeated(
+                            callback,
+                        )
+                            ? {
+                                  repeatedCallbackEvaluation:
+                                      true as const,
+                              }
+                            : {}),
+                    },
+                };
             }
             return this.context.lookup(unwrapped);
         }
@@ -737,7 +779,36 @@ export class ExpressionLowerer {
                     owner,
                     unwrapped.argumentExpression,
                 );
-            if (dataElement) return dataElement;
+            if (dataElement) {
+                return assertedNonNull && dataElement.kind === "data"
+                    ? this.context.dataLowerer.narrowOptional(
+                          dataElement,
+                          expression,
+                          true,
+                      )
+                    : dataElement;
+            }
+            const key = this.compileValue(
+                unwrapped.argumentExpression,
+            );
+            if (key.staticString !== undefined) {
+                const property =
+                    ts.factory.createPropertyAccessExpression(
+                        unwrapped.expression,
+                        key.staticString,
+                    );
+                ts.setTextRange(property, unwrapped);
+                ts.setTextRange(
+                    property.name,
+                    unwrapped.argumentExpression,
+                );
+                const resolved =
+                    this.context.readResolvedProperty(
+                        owner,
+                        property,
+                    );
+                if (resolved) return resolved;
+            }
             if (owner.kind === "camera-world-matrix") {
                 const index = this.compileValue(
                     unwrapped.argumentExpression,
@@ -1082,6 +1153,27 @@ export class ExpressionLowerer {
             const value =
                 owner.tupleElements?.[staticIndex];
             if (!value) {
+                const resultType =
+                    this.context.checker.getTypeAtLocation(unwrapped);
+                const resultMembers =
+                    (resultType.flags & ts.TypeFlags.Union) !== 0
+                        ? (resultType as ts.UnionType).types
+                        : [resultType];
+                if (
+                    resultMembers.some(
+                        (member) =>
+                            (member.flags &
+                                (ts.TypeFlags.Undefined |
+                                    ts.TypeFlags.Null)) !==
+                            0,
+                    ) ||
+                    (ts.isBinaryExpression(unwrapped.parent) &&
+                        unwrapped.parent.left === unwrapped &&
+                        unwrapped.parent.operatorToken.kind ===
+                            ts.SyntaxKind.QuestionQuestionToken)
+                ) {
+                    return { kind: "json-null", cpp: "" };
+                }
                 this.context.fail(
                     unwrapped,
                     `Tuple index ${staticIndex} is out of range.`,
@@ -1121,6 +1213,11 @@ export class ExpressionLowerer {
                     cpp: this.context.cppString(moduleAsset),
                     staticString: moduleAsset,
                 };
+            }
+            if (
+                this.isNavigatorGetGamepadsCall(unwrapped)
+            ) {
+                return this.compileCall(unwrapped);
             }
             if (
                 this.context.isBrowserOnlyExpression(unwrapped)
@@ -1553,7 +1650,8 @@ export class ExpressionLowerer {
                           recordScopes: [
                               ...this.context.variableScopes,
                           ],
-                          ...(this.context.isInRuntimeIteration()
+                          ...(this.context.isInRuntimeIteration() ||
+                          this.context.isInNativeFunctionBody()
                               ? {
                                     repeatedCallbackEvaluation:
                                         true as const,
@@ -1836,6 +1934,32 @@ export class ExpressionLowerer {
         }
 
         this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
+    }
+
+    private assertedTypeIncludesImportedName(
+        type: ts.TypeNode,
+        importedName: string,
+    ): boolean {
+        if (ts.isParenthesizedTypeNode(type)) {
+            return this.assertedTypeIncludesImportedName(
+                type.type,
+                importedName,
+            );
+        }
+        if (ts.isUnionTypeNode(type)) {
+            return type.types.some((member) =>
+                this.assertedTypeIncludesImportedName(
+                    member,
+                    importedName,
+                ),
+            );
+        }
+        return (
+            ts.isTypeReferenceNode(type) &&
+            ts.isIdentifier(type.typeName) &&
+            this.context.symbols.importedName(type.typeName) ===
+                importedName
+        );
     }
 
     /**
@@ -2682,7 +2806,36 @@ export class ExpressionLowerer {
         );
     }
 
+    private isNavigatorGetGamepadsCall(call: ts.CallExpression): boolean {
+        const callee = this.context.unwrap(call.expression);
+        return (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "getGamepads" &&
+            ts.isIdentifier(callee.expression) &&
+            callee.expression.text === "navigator"
+        );
+    }
+
     private compileCall(call: ts.CallExpression): Value {
+        if (this.isNavigatorGetGamepadsCall(call)) {
+            this.context.expectArgumentCount(call, 0, 0);
+            const engine = this.context.requireDefaultEngine(call);
+            this.context.reachFeature("input:gamepad", call);
+            this.context.reachJsData();
+            return {
+                kind: "data",
+                cpp: `bbl::platform_gamepads(${engine})`,
+                dataType: {
+                    kind: "vector",
+                    element: {
+                        kind: "optional",
+                        inner: { kind: "handle", handle: "gamepad" },
+                    },
+                },
+                freshData: true,
+                engineCpp: engine,
+            };
+        }
         const browserFile = compileBrowserFileCall(this.context, call);
         if (browserFile) {
             return browserFile;
@@ -2810,6 +2963,36 @@ export class ExpressionLowerer {
                         )})`,
                     engineCpp,
                 };
+            }
+            if (callee.name.text === "call") {
+                const callable = this.compileValue(callee.expression);
+                if (
+                    callable.kind === "data" &&
+                    callable.dataType?.kind === "function"
+                ) {
+                    const functionType = callable.dataType;
+                    const supplied = call.arguments.slice(1);
+                    if (supplied.length !== functionType.parameters.length) {
+                        this.context.fail(
+                            call,
+                            `Function.call expected ${functionType.parameters.length} arguments after thisArg, received ${supplied.length}.`,
+                        );
+                    }
+                    const argumentsCpp = functionType.parameters.map(
+                        (type, index) =>
+                            this.context.dataLowerer.compileForSink(
+                                supplied[index]!,
+                                type,
+                            ),
+                    );
+                    const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
+                    return functionType.result
+                        ? this.context.dataLowerer.leafValue(
+                              cpp,
+                              functionType.result,
+                          )
+                        : { kind: "void", cpp };
+                }
             }
             if (
                 ts.isIdentifier(callee.expression) &&
@@ -3110,6 +3293,7 @@ export class ExpressionLowerer {
                 ts.isIdentifier(receiver) ||
                 receiver.kind === ts.SyntaxKind.ThisKeyword ||
                 ts.isPropertyAccessExpression(receiver) ||
+                ts.isElementAccessExpression(receiver) ||
                 ts.isConditionalExpression(receiver) ||
                 ts.isCallExpression(receiver)
             ) {
@@ -3136,19 +3320,15 @@ export class ExpressionLowerer {
                 // function does, by handing the identifier the literal
                 // wrote to the same resolver.
                 const recordMethod =
-                    instance?.kind === "record"
-                        ? instance.recordMethods?.[
-                              callee.name.text
-                          ]
-                        : undefined;
+                    instance?.recordMethods?.[
+                        callee.name.text
+                    ];
                 const recordCallback =
-                    instance?.kind === "record"
-                        ? instance.recordProperties?.[
-                              callee.name.text
-                          ]
-                        : undefined;
+                    instance?.recordProperties?.[
+                        callee.name.text
+                    ];
                 if (
-                    instance?.kind === "record" &&
+                    instance &&
                     call.questionDotToken &&
                     !recordMethod &&
                     !recordCallback
@@ -3294,6 +3474,131 @@ export class ExpressionLowerer {
                 this.context,
                 call,
                 callee,
+            );
+        }
+        if (ts.isCallExpression(callee)) {
+            const callable = this.compileValue(callee);
+            if (callable.kind === "callback") {
+                const native =
+                    this.context.userFunctions.compileNativeCallbackCall(
+                        this.context,
+                        call,
+                        callable,
+                    );
+                if (native) return native;
+                if (!callable.callbackDeclaration) {
+                    this.context.fail(
+                        callee,
+                        "Returned callback value is missing its declaration.",
+                    );
+                }
+                let declaration = callable.callbackDeclaration;
+                if (ts.isIdentifier(declaration)) {
+                    const definitions =
+                        this.context.symbols.valueSymbol(declaration)
+                            ?.declarations ?? [];
+                    const variable = definitions.find(
+                        (candidate): candidate is ts.VariableDeclaration =>
+                            ts.isVariableDeclaration(candidate) &&
+                            candidate.initializer !== undefined,
+                    );
+                    const initializer = variable?.initializer
+                        ? this.context.unwrap(variable.initializer)
+                        : undefined;
+                    if (
+                        initializer &&
+                        (ts.isArrowFunction(initializer) ||
+                            ts.isFunctionExpression(initializer))
+                    ) {
+                        declaration = initializer;
+                    }
+                }
+                const invoke = (): Value => {
+                    if (
+                        ts.isFunctionDeclaration(declaration)
+                    ) {
+                        if (!declaration.name) {
+                            this.context.fail(
+                                declaration,
+                                "Returned function declaration must be named.",
+                            );
+                        }
+                        return this.context.userFunctions.compile(
+                            this.context,
+                            call,
+                            declaration.name,
+                        )!;
+                    }
+                    return this.context.userFunctions.compileCallbackWithValues(
+                        this.context,
+                        declaration,
+                        call.arguments.map((argument) =>
+                            this.compileValue(argument),
+                        ),
+                        call,
+                    );
+                };
+                return callable.callbackRecordOwner
+                    ? this.context.withRecordScopes(
+                          callable.callbackRecordOwner,
+                          invoke,
+                      )
+                    : invoke();
+            }
+            if (
+                callable.kind === "data" &&
+                callable.dataType?.kind === "function"
+            ) {
+                const functionType = callable.dataType;
+                const argumentsCpp =
+                    this.context.dataLowerer.compileFunctionArguments(
+                        call,
+                        functionType,
+                    );
+                const cpp = `${callable.cpp}(${argumentsCpp.join(", ")})`;
+                return functionType.result
+                    ? this.context.dataLowerer.leafValue(
+                          cpp,
+                          functionType.result,
+                      )
+                    : { kind: "void", cpp };
+            }
+        }
+        if (ts.isElementAccessExpression(callee)) {
+            let callable = this.compileValue(call.expression);
+            if (
+                hasNonNullAssertion(call.expression) &&
+                callable.kind === "data"
+            ) {
+                callable = this.context.dataLowerer.narrowOptional(
+                    callable,
+                    call.expression,
+                    true,
+                );
+            }
+            if (
+                callable.kind === "data" &&
+                callable.dataType?.kind === "function"
+            ) {
+                const functionType = callable.dataType;
+                const argumentsCpp =
+                    this.context.dataLowerer.compileFunctionArguments(
+                        call,
+                        functionType,
+                    );
+                const cpp =
+                    `${callable.cpp}(${argumentsCpp.join(", ")})`;
+                return functionType.result
+                    ? this.context.dataLowerer.leafValue(
+                          cpp,
+                          functionType.result,
+                      )
+                    : { kind: "void", cpp };
+            }
+            this.context.fail(
+                callee,
+                `Indexed call target resolved to ${callable.kind}` +
+                    `${callable.dataType ? `:${callable.dataType.kind}` : ""}.`,
             );
         }
         // `parseFloat(<query text>)`: the same value browser-erasure already
@@ -3819,6 +4124,7 @@ export class ExpressionLowerer {
                     owner,
                 ],
                 call,
+                method === "forEach",
             ),
         );
         if (method === "forEach") {
@@ -3896,6 +4202,7 @@ export class ExpressionLowerer {
             | ts.FunctionExpression,
         arguments_: readonly Value[],
         call: ts.CallExpression,
+        discardReturn = false,
     ): Value {
         if (
             ts.isIdentifier(callback) ||
@@ -3909,6 +4216,7 @@ export class ExpressionLowerer {
                 callback,
                 arguments_,
                 call,
+                discardReturn,
             );
         }
         const tuple = arguments_[0];
@@ -4034,6 +4342,10 @@ export class ExpressionLowerer {
                 for (const statement of callback.body.statements) {
                     this.context.emitStatement(statement);
                 }
+                return { kind: "void", cpp: "" };
+            }
+            if (discardReturn) {
+                this.context.emitExpressionAsStatement(callback.body);
                 return { kind: "void", cpp: "" };
             }
             return this.context.compileValue(callback.body);

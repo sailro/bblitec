@@ -131,6 +131,8 @@ export class LineLowerer {
                 ? []
                 : [{ name: "lineColor", values: [...options.color] }],
             samplers: [],
+            samplerDeclarations: [],
+            storageBuffers: [],
             defines: [],
             needAlphaBlending,
             blendMode: "alpha",

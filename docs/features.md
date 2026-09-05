@@ -833,6 +833,18 @@ capturing dead stack storage.
 
 ### Cameras and input
 
+The reached `quatFromLookDirectionRH` helper activates `math:look-direction`.
+Its generated header lowers the pinned quaternion body and rotation-basis
+conversion, including the pin's degenerate-vector and `hypot_js` semantics;
+the native runtime does not maintain a second handwritten implementation.
+
+Reached `navigator.getGamepads()` polls SDL's standard controller mapping:
+four stick axes and seventeen button slots, including triggers. Every backend
+initializes gamepad support when reached. Menu D-pad/confirm and gameplay
+steering remain the unchanged application's logic, not PAL key emulation.
+The focused virtual-controller regression checks buttons, triggers, axes and
+disconnection without driving desktop input.
+
 ArcRotate and Free cameras, default framing, target assignment and reads,
 per-frame clamping of the reached properties, and the `enableOrthographicCamera`
 opt-in with its aspect-derived view volume. SDL provides the platform
@@ -2098,21 +2110,23 @@ convention instead, because a scale cube is not roll-symmetric. Every
 geometric constant travels as the pin's own expression over a live
 `thickness` and `tessellation` rather than as a folded number.
 
-**The drag half is not reached, and what only a drag can show is not
-built.** This runtime has no pointer-input contract, so
-`createPointerDrag`/`registerPointerDrag` bind nothing; the parts whose
-only consumer is that drag are therefore absent -- the invisible collider
-meshes that give a widget its pick region, the hover and disabled materials
-`setMeshesMaterial` installs from the drag callbacks, and the rotation
-gizmo's "camembert" sector quad. None of them is drawn before a pointer
-event upstream either. For the meshes generation asserts that against the
-pin -- each is hidden at build time in the pinned body, so an upstream
-change that made one show fails generation by name. The two extra materials
-carry no such assertion: the pinned body assigns neither to a mesh before a
-drag, so nothing references them and nothing is emitted. A widget's root is the
-transform node the camera and light gizmos already use, where the pin makes
-an invisible zero-height cylinder for the same purpose. Recorded as
-`display-only-editing-gizmo` in each scene's `fidelity.json`.
+Explicit `registerPointerDrag` now reaches `gizmo:pointer-drag` for position
+gizmos. Axis arrows retain their enlarged invisible hit areas; a hit in the
+utility scene starts a constrained axis/plane translation, with hover material
+and unregister cleanup. GPU pickers keep their originating scene identity,
+including overlay mesh buffers on both backends. Forwarding canvas proxies
+keep their source add/remove/emit methods and callback identities; they do not
+share the real canvas's dispatcher. Ray/plane intersection, axis projection and
+parent-space delta arithmetic are translated from pinned source. Native picking
+is synchronous, and the reached editor is single-pointer. Arbitrary drag
+observables, sibling-disable styling and scale/rotation interaction remain
+outside this slice; see `native-position-gizmo-pointer-drag` in fidelity output.
+
+Without explicit pointer registration, editing widgets retain the
+`display-only-editing-gizmo` adaptation: their hidden collider geometry and
+drag-only materials are omitted. Scale/rotation/bounding-box dragging remains
+display-only even in a composition that reaches position dragging. A widget's
+root is a transform node where the pin uses an invisible zero-height cylinder.
 
 The three COMPOSITES -- `createPositionGizmo`, `createRotationGizmo` and
 `createScaleGizmo` -- are folded from `src/gizmo/composite-gizmos.ts`
@@ -2125,7 +2139,7 @@ sub-widget handles plus how many leading entries the pin's own
 rotation, and every axis handle but the central uniform one for scale,
 which BJS keeps world-aligned. `wireCrossAxisDisable` is the one statement
 the emitted body drops: it subscribes drag observers that grey the sibling
-axes out, and pointer drag is not reached. The scale composite's uniform
+axes out; that sibling-disable styling is not yet reached. The scale composite's uniform
 handle is `buildScaleArrow`'s own `centered` arm -- a `createPolyhedron`
 octahedron at the gizmo origin with no tail and an identity root rotation --
 so a scale composite reaches one mesh family the single widget does not.
@@ -2143,20 +2157,14 @@ writes it only when its stored world axis has moved -- the same value
 either way, since the guard exists upstream to skip a write rather than to
 hold a different rotation.
 
-**`attachControl`'s camera-deferral options bag folds to nothing.** A
-composite scene passes `shouldHandlePointerDown`, `isExternalDragActive`
-and `isExternalPickPending` so the camera does not orbit while a gizmo is
-being pressed. All three of the pinned predicates behind them
-(`isGizmoInteracting`, `isGizmoDragging`, `isGizmoPickPending`) read a
-module-level dispatcher map that only `registerPointerDrag` fills, and this
-port reaches no pointer-drag registration -- so each returns `false` from
-the pinned body's own early return, and the bag leaves the pinned
-`attachControl` taking exactly the branches it takes with no options at
-all. Generation asserts both halves of that against
-`src/gizmo/pointer-drag.ts`: one writer for the map, one caller for the
-writer. A callback that is not one of those three predicates (optionally
-negated), or one that folds the other way, refuses by name rather than
-compiling a camera that ignores it.
+`attachControl`'s camera-deferral callbacks are live. Zero-argument
+`shouldHandlePointerDown`, `isExternalDragActive` and `isExternalPickPending`
+predicates are retained and queried by pointer controls. A recognized gizmo
+drag cancels orbit/pan and their pending inertia; a pending pick consumes
+movement without applying it, as the pin does. The returned detach function
+disables controls and releases these callbacks. Gizmo predicates query the
+dispatcher for the supplied canvas (or forwarding proxy), and report false
+when no dispatcher exists.
 
 Each factory's options bag refuses rather than being half-served: a light
 intensity or a `displayFrustum: false` would change what the generated unit

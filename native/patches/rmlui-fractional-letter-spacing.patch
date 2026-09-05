@@ -1,0 +1,54 @@
+diff --git a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+index 7be3327..b984dc0 100644
+--- a/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
++++ b/Source/Core/FontEngineDefault/FontFaceHandleDefault.cpp
+@@ -62,7 +62,7 @@ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingCo
+ 
+ 	bool has_set_size = false;
+ 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
+-	int width = 0;
++	float width = 0;
+ 	for (auto it_string = StringIteratorU8(string); it_string; ++it_string)
+ 	{
+ 		Character character = *it_string;
+@@ -77,12 +77,12 @@ int FontFaceHandleDefault::GetStringWidth(StringView string, const TextShapingCo
+ 
+ 		// Adjust the cursor for this character's advance.
+ 		width += glyph->advance;
+-		width += (int)text_shaping_context.letter_spacing;
++		width += text_shaping_context.letter_spacing;
+ 
+ 		prior_character = character;
+ 	}
+ 
+-	return Math::Max(width, 0);
++	return Math::RoundToInteger(Math::Max(width, 0.f));
+ }
+ 
+ int FontFaceHandleDefault::GenerateLayerConfiguration(const FontEffectList& font_effects)
+@@ -175,7 +175,7 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
+ 	RMLUI_ASSERT(layer_configuration_index < (int)layer_configurations.size());
+ 
+ 	int geometry_index = 0;
+-	int line_width = 0;
++	float line_width = 0;
+ 	bool has_set_size = false;
+ 	bool is_kerning_enabled = IsKerningEnabled(text_shaping_context);
+ 
+@@ -236,14 +236,14 @@ int FontFaceHandleDefault::GenerateString(RenderManager& render_manager, Texture
+ 			layer->GenerateGeometry(&mesh_list[geometry_index], character, Vector2f(position.x + line_width, position.y), glyph_color);
+ 
+ 			line_width += glyph->advance;
+-			line_width += (int)text_shaping_context.letter_spacing;
++			line_width += text_shaping_context.letter_spacing;
+ 			prior_character = character;
+ 		}
+ 
+ 		geometry_index += num_textures;
+ 	}
+ 
+-	return Math::Max(line_width, 0);
++	return Math::RoundToInteger(Math::Max(line_width, 0.f));
+ }
+ 
+ bool FontFaceHandleDefault::UpdateLayersOnDirty()

@@ -49,12 +49,25 @@ test("stores reached scene-disposal callbacks in the native scene contract", () 
     const runtime = source("native/include/bblite/runtime.hpp");
     assert.match(
         runtime,
-        /struct Scene \{[\s\S]{0,5000}std::vector<std::function<void\(\)>> disposables;/,
+        /struct SceneState \{[\s\S]{0,5000}std::vector<std::function<void\(\)>> disposables;/,
     );
     assert.match(
         runtime,
         /void on_scene_dispose\(\s*Scene& scene,\s*std::function<void\(\)> callback\);/,
     );
+});
+
+test("preserves SceneContext identity across native value copies", () => {
+    const runtime = source("native/include/bblite/runtime.hpp");
+    const scene = source("src/lowering/scene-lowerer.ts");
+    assert.match(runtime, /struct Scene \{\s+std::shared_ptr<SceneState> state;/);
+    assert.match(runtime, /Scene\(const Scene& other\)\s+: Scene\(other\.state\)/);
+    assert.match(
+        runtime,
+        /SnapshotList<std::shared_ptr<Scene>> registered_scenes;/,
+    );
+    assert.match(scene, /registered->shares_identity\(scene\)/);
+    assert.match(scene, /std::make_shared<Scene>\(scene\)/);
 });
 
 test("uses TypeScript semantic symbols instead of import-name text matching", () => {
@@ -165,8 +178,8 @@ test("keeps the lifted-text helpers and pinned operator spellings single-copy", 
     // shader-builtins-utility.ts (the callers keep only their own error
     // voices); the glTF expression renderer sources its operator spellings
     // and Math-call matching from pinned-operators.ts instead of restating
-    // the tables; assignments.ts spells its TRS discriminator and axis map
-    // once. A regrown copy is how these drifted before.
+    // the tables; the shared SceneNode descriptor owns the TRS discriminator,
+    // while assignments.ts owns its axis map. A regrown copy causes drift.
     const files = readdirSync("src", { recursive: true })
         .map((name) => `src/${String(name).replace(/\\/g, "/")}`)
         .filter((path) => path.endsWith(".ts"));
@@ -195,12 +208,16 @@ test("keeps the lifted-text helpers and pinned operator spellings single-copy", 
         1,
         "the TRS axis map must be spelled once in assignments.ts",
     );
-    assert.equal(
-        (assignments.match(/"position",\s*"rotation",\s*"rotationQuaternion",\s*"scaling"/g) ?? [])
-            .length,
-        1,
-        "the TRS vector list must be spelled once in assignments.ts",
+    assert.deepEqual(
+        files.filter((path) => source(path).includes("function isTrsVectorName(")),
+        ["src/scene-node-transform-descriptor.ts"],
+        "the TRS discriminator must use the shared SceneNode descriptor",
     );
+    assert.match(assignments, /sceneNodeTransformDescriptor\(left\.expression\.name\.text\)/);
+    const transforms = source("src/scene-node-transform-descriptor.ts");
+    for (const property of ["position", "rotation", "rotationQuaternion", "scaling"]) {
+        assert.equal(transforms.split(`sourceProperty: "${property}"`).length - 1, 1);
+    }
 });
 
 test("keeps handle-collection semantics in one module", () => {
@@ -1063,6 +1080,16 @@ test("forwards DOM-compatible application input through every native loop", () =
         /if \(down\) \{[\s\S]{0,100}mouse_buttons_ \|= mask;[\s\S]{0,120}mouse_buttons_ &= ~mask;/,
     );
     assert.match(events, /code == "WindowClose"/);
+    assert.match(events, /pointer_position\(code, "UiClick@"\)/);
+    assert.match(
+        events,
+        /SDL_EVENT_MOUSE_MOTION[\s\S]{0,700}SDL_EVENT_MOUSE_BUTTON_DOWN[\s\S]{0,500}SDL_EVENT_MOUSE_BUTTON_UP/,
+    );
+    assert.match(
+        events,
+        /Unable to queue deterministic pointer input/,
+    );
+    assert.match(events, /is_replayed_ui_event\(event\)/);
     assert.match(events, /event_code == "MouseLeftOutsideCanvas"/);
     assert.match(events, /event_code\.starts_with\("Ctrl\+"\)/);
     assert.match(events, /\.movement_x = 100\.0/);
@@ -1115,8 +1142,8 @@ test("forwards DOM-compatible application input through every native loop", () =
     );
     assert.equal(
         (events.match(/release_pointer_lock_on_escape\(/g) ?? []).length,
-        3,
-        "the helper definition plus replay and live-event calls stay in sync",
+        4,
+        "the helper definition plus replay, direct and UI-aware keyboard dispatch stay in sync",
     );
     assert.match(events, /SDL_EVENT_WINDOW_RESIZED/);
     assert.match(events, /SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED/);
@@ -1130,13 +1157,17 @@ test("forwards DOM-compatible application input through every native loop", () =
 
     // The shared drain carries the whole per-event contract — quit/close,
     // test-pass input filtering, an optional UI filter, the platform
-    // dispatch, the per-event dispatched hook, and one canvas-cursor
-    // refresh after a drain that dispatched anything — so a loop using
+    // dispatch, the per-event dispatched hook, and a canvas-cursor
+    // refresh after a propagated mouse event — so a loop using
     // it cannot hold a partial copy of that contract (the cursor arm was
     // once per-driver, and one driver forgot it).
     assert.match(
         events,
-        /inline void poll_platform_events\([\s\S]{0,320}SDL_PollEvent\(&event\)[\s\S]{0,160}SDL_EVENT_QUIT \|\|[\s\S]{0,100}SDL_EVENT_WINDOW_CLOSE_REQUESTED[\s\S]{0,100}running = false;[\s\S]{0,180}is_platform_input_event\(event\)[\s\S]{0,260}handle_platform_event\(event, engine\);\s*any_dispatched = true;\s*dispatched\(event\);\s*\}\s*if \(any_dispatched\) apply_canvas_cursor\(engine\);/,
+        /inline void poll_platform_events\([\s\S]{0,320}SDL_PollEvent\(&event\)[\s\S]{0,160}SDL_EVENT_QUIT \|\|[\s\S]{0,100}SDL_EVENT_WINDOW_CLOSE_REQUESTED[\s\S]{0,100}running = false;[\s\S]{0,180}is_platform_input_event\(event\) &&\s*!is_replayed_ui_event\(event\)/,
+    );
+    assert.match(
+        events,
+        /if \(!ui_filter\(event\)\) continue;\s*handle_platform_event\(event, engine\);\s*dispatched\(event\);\s*if \(event\.type == SDL_EVENT_MOUSE_MOTION \|\|[\s\S]{0,240}apply_canvas_cursor\(engine\);/,
     );
 
     // Every frame loop uses the shared helper — the two scene renderers
@@ -1329,6 +1360,28 @@ test("shares large texture payloads and preserves tuple reference identity", () 
     assert.match(data, /class Tuple \{/);
     assert.match(data, /std::shared_ptr<Storage> values_/);
     assert.match(data, /inline Tuple<N> clone_tuple/);
+    assert.match(data, /class TypedArray \{/);
+    assert.match(data, /std::shared_ptr<std::vector<T>> values_/);
+    assert.match(
+        data,
+        /ArrayBuffer\(const TypedArray<T>& values\)[\s\S]{0,160}external_owner_\(values\.storage\(\)\)/,
+    );
+});
+
+test("normalizes HTML named entities before retained markup reaches RmlUi", () => {
+    const ui = source("native/src/pal_ui_rml.cpp");
+
+    assert.match(ui, /normalize_html_entities_for_rml/);
+    assert.match(ui, /\{"&rsquo;", "\\xE2\\x80\\x99"\}/);
+    assert.match(ui, /\{"&mdash;", "\\xE2\\x80\\x94"\}/);
+    assert.equal(
+        (ui.match(/SetInnerRML\(\s*normalize_html_entities_for_rml\(/g) ?? [])
+            .length,
+        2,
+    );
+    // Raw text is escaped, not HTML-entity decoded; only its presentation
+    // selectors are normalized when a color-emoji span is needed.
+    assert.match(ui, /SetInnerRML\(ui_normalize_emoji_presentation\(ui_escape_rml\(text\)\)\)/);
 });
 
 test("reports zero delta on the fixed clock's first frame", () => {
@@ -1371,7 +1424,7 @@ test("runs post-start RAF callbacks only after the engine render", () => {
     assert.match(runtime, /post_render_animation_frame_callbacks/);
     assert.match(
         runtime,
-        /std::vector<std::function<void\(double\)>> animation_frame_callbacks/,
+        /SnapshotList<js::Callback<void\(double\)>> animation_frame_callbacks/,
     );
     assert.match(runtime, /animation_frame_once_callbacks/);
     assert.match(runtime, /double animation_frame_timestamp_ms = 0\.0;/);
@@ -1551,15 +1604,30 @@ test("reuploads dynamic thin-instance colors on both GPU backends", () => {
         source("native/src/pal_sdl_gpu.cpp"),
         source("native/src/pal_dawn.cpp"),
     ]) {
-        assert.match(
-            backend,
-            /instance_version !=[\s\S]{0,4600}instance_colors\.data\(\)/,
+        const dirtyCheck = backend.indexOf("instance_version !=");
+        const colorUpload = backend.indexOf(
+            "instance_colors.data()",
+            dirtyCheck,
         );
+        assert.ok(dirtyCheck >= 0 && colorUpload > dirtyCheck);
         assert.match(
             backend,
             /instance_colors\.resize\([\s\S]{0,180}instance_matrices\.size\(\) \* 4[\s\S]{0,80}1\.0f\);/,
         );
     }
+});
+
+test("uses active shader slots before cached SDL material textures", () => {
+    const backend = source("native/src/pal_sdl_gpu.cpp");
+    const slots = backend.indexOf(
+        "const auto& names = state.shader_fragment_slots[variant].textures;",
+    );
+    const empty = backend.indexOf("if (names.empty()) return;", slots);
+    const uploaded = backend.indexOf(
+        "const auto& uploaded = mesh_shader_textures(mesh);",
+        slots,
+    );
+    assert.ok(slots >= 0 && empty > slots && uploaded > empty);
 });
 
 test("recreates outgrown thin-instance buffers on both GPU backends", () => {
@@ -1748,6 +1816,29 @@ test("restores wheel-local glTF vertices before live quaternion writes", () => {
     assert.match(
         scene,
         /void set_mesh_rotation_quaternion\([\s\S]{0,800}record\.live_imported_transform[\s\S]{0,500}quaternion\.y = -quaternion\.y;[\s\S]{0,120}quaternion\.z = -quaternion\.z;/,
+    );
+});
+
+test("restores local glTF vertices for hierarchy instance pools", () => {
+    const loader = source("src/lowering/templates/gltf-loader-cpp.ts");
+    const shared = source("native/src/pal_gpu_shared.hpp");
+    const upstream = source("src/upstream-lower.ts");
+
+    assert.match(
+        upstream,
+        /dynamicThinInstances: features\.includes\(\s*"mesh:thin-instances-dynamic"/,
+    );
+    assert.match(
+        loader,
+        /retains_runtime_instance_vertices[\s\S]{0,300}retains_local_vertices[\s\S]{0,300}geometry\.bind_vertices\.resize/,
+    );
+    assert.match(
+        loader,
+        /flat_bind_vertices[\s\S]{0,900}geometry\.bind_vertices =\s*std::move\(flat_bind_vertices\)/,
+    );
+    assert.match(
+        shared,
+        /restores_runtime_instance_vertices =\s*mesh\.thin_instanced &&\s*geometry\.vertex_space == VertexSpace::world;[\s\S]{0,300}geometry\.bind_vertices/,
     );
 });
 

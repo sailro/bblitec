@@ -151,6 +151,7 @@ export interface HandleCollectionsContext
     readonly assetPayloads: ReadonlyMap<string, string>;
     readonly reachedNodeParticles: CompiledNodeParticles;
     unwrap(expression: ts.Expression): ts.Expression;
+    importedName(identifier: ts.Identifier): string | undefined;
     fail(node: ts.Node, message: string): never;
     compileValue(expression: ts.Expression): Value;
     compileCondition(expression: ts.Expression): string;
@@ -182,7 +183,7 @@ export interface HandleCollectionsContext
         minimum: number,
         maximum: number,
     ): void;
-    addSceneLight(light: Value, kind: LightKind): void;
+    addSceneLight(scene: Value, light: Value, kind: LightKind): void;
 }
 
 /**
@@ -385,6 +386,18 @@ export class HandleCollections {
         const bound = this.boundCollectionValue(expression);
         if (bound?.handleCollection) {
             return bound.handleCollection;
+        }
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            ts.isCallExpression(unwrapped) &&
+            ts.isIdentifier(unwrapped.expression) &&
+            this.context.importedName(unwrapped.expression) ===
+                "getContainerMeshes"
+        ) {
+            const value = this.context.compileValue(unwrapped);
+            return value.kind === "handle-collection"
+                ? value.handleCollection
+                : undefined;
         }
         return this.resolveExpressionTarget(expression)
             ?.target;
@@ -1064,7 +1077,7 @@ export class HandleCollections {
                 "A scene light is missing its generated light kind.",
             );
         }
-        this.context.addSceneLight(light, light.lightKind);
+        this.context.addSceneLight(scene, light, light.lightKind);
         return {
             kind: "void",
             cpp: `bbl::add_to_scene(${scene.cpp}, ${light.cpp})`,

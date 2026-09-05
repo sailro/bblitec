@@ -111,15 +111,51 @@ export function compileEngineIntrinsic(
                 ),
             );
 
+        case "createSurface": {
+            context.expectArgumentCount(call, 2, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const canvas = context.compileValue(call.arguments[1]!);
+            context.expectKind(canvas, "ui-element", call.arguments[1]!);
+            return {
+                kind: "surface",
+                cpp: `bbl::create_surface(${engine.cpp}, ${canvas.cpp})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
+        case "disposeSurface": {
+            context.expectArgumentCount(call, 1, 1);
+            const surface = context.compileValue(call.arguments[0]!);
+            context.expectKind(surface, "surface", call.arguments[0]!);
+            return {
+                kind: "void",
+                cpp: `bbl::dispose_surface(${surface.cpp})`,
+            };
+        }
+
+        case "enableSurfaceResizeObserver": {
+            context.expectArgumentCount(call, 1, 1);
+            const surface = context.compileValue(call.arguments[0]!);
+            context.expectKind(surface, "surface", call.arguments[0]!);
+            return {
+                kind: "callback",
+                cpp: "std::function<void()>{[]() {}}",
+                nativeCallbackParameterTypes: [],
+            };
+        }
+
         case "createSceneContext": {
             context.expectArgumentCount(call, 1, 2);
             const engine =
                 context.compileValue(call.arguments[0]!);
-            context.expectKind(
-                engine,
-                "engine",
-                call.arguments[0]!,
-            );
+            if (engine.kind !== "surface") {
+                context.expectKind(
+                    engine,
+                    "engine",
+                    call.arguments[0]!,
+                );
+            }
             return {
                 kind: "scene",
                 cpp: `bbl::create_scene_context(${engine.cpp})`,
@@ -127,6 +163,7 @@ export function compileEngineIntrinsic(
                     rotationSet: false,
                     hasTexturedSkybox: false,
                 },
+                sceneTopologyState: { lights: [] },
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
                 ...(engine.msaaSamples

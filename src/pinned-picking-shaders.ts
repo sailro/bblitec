@@ -24,6 +24,8 @@ import {
 
 /** The pinned module that builds the mesh half. */
 const meshShaderModule = "picking/picking-shader.js";
+/** The pinned module that builds the advanced thin-instance mesh half. */
+const advancedMeshShaderModule = "picking/picking-advanced-shader.js";
 /** The pinned module that builds the cloud half. */
 const cloudPipelineModule = "picking/gs-picking-pipeline.js";
 /** The pinned module that builds a billboard system's half. */
@@ -31,6 +33,14 @@ const billboardPipelineModule = "picking/billboard-pick-pipeline.js";
 
 interface MeshShaderExports {
     pickingShaderSource(options?: {
+        discardWgsl?: string;
+        storage?: readonly unknown[];
+        _vertexProjection?: unknown;
+    }): string;
+}
+
+interface AdvancedMeshShaderExports {
+    pickingThinInstanceShaderSource(options?: {
         discardWgsl?: string;
         storage?: readonly unknown[];
         _vertexProjection?: unknown;
@@ -97,6 +107,24 @@ export async function composeMeshPickingShader(): Promise<string> {
         meshShaderModule,
     );
     return pinned.pickingShaderSource({});
+}
+
+/**
+ * The mesh picking module for a thin-instanced candidate.
+ *
+ * `gpu-picker.ts` selects the advanced pipeline as soon as a candidate owns
+ * `thinInstances`; that pipeline calls this exact public builder with an empty
+ * options object for the no-filter, no-discard, affine arm. The resulting
+ * vertex stage composes `mesh.world * instances[instanceIndex]`, assigns one
+ * id per active row, and forwards the same fragment contract as the regular
+ * picker.
+ */
+export async function composeThinInstancePickingShader(): Promise<string> {
+    const pinned =
+        await importPinnedModule<AdvancedMeshShaderExports>(
+            advancedMeshShaderModule,
+        );
+    return pinned.pickingThinInstanceShaderSource({});
 }
 
 /**

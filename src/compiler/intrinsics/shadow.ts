@@ -20,6 +20,9 @@ export interface ShadowIntrinsicContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
+    compileF32ArrayCallback(expression: ts.Expression): string;
+    allocateTemporaryCppName(prefix: string): string;
+    emit(line: string): void;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -49,6 +52,7 @@ export interface ShadowIntrinsicContext
             | "csm-directional"
             | "esm-directional";
         lightIndex: number;
+        lightIdentity?: NonNullable<Value["lightIdentity"]>;
         esm?: {
             mapSize?: number;
             blurKernel?: number;
@@ -61,6 +65,7 @@ export interface ShadowIntrinsicContext
     ): void;
     shadowGeneratorHasRecordedCasters(generatorIndex: number): boolean;
     recordDynamicShadowCasters(generatorIndex: number): void;
+    recordDynamicShadowCastersForUnknownGenerator(): void;
     esmGeneratorOrdinal(): number;
 }
 
@@ -405,6 +410,9 @@ function compileShadowGeneratorFactory(
         // never alias the valid first light. addSceneLight patches this
         // sentinel before composition or manifest finalization.
         lightIndex: light.lightIdentity?.sceneLightIndex ?? -1,
+        ...(light.lightIdentity
+            ? { lightIdentity: light.lightIdentity }
+            : {}),
         ...(spec.kind === "esm-directional" ? { esm: sizes } : {}),
     });
     for (const feature of spec.features) {
@@ -436,6 +444,55 @@ export function compileShadowIntrinsic(
                 call,
                 shadowGeneratorFactories[importedName]!,
             );
+
+        case "getCsmReceiverTexture": {
+            context.expectArgumentCount(call, 1, 1);
+            const generator = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                generator,
+                "shadow-generator",
+                call.arguments[0]!,
+            );
+            if (generator.shadowGeneratorIndex === undefined) {
+                context.fail(
+                    call.arguments[0]!,
+                    "A CSM receiver texture requires a generator created in this scene.",
+                );
+            }
+            return {
+                kind: "texture",
+                cpp: generator.cpp,
+                engineCpp: context.requireEngine(generator, call),
+                isDepthTexture: true,
+                csmReceiverGeneratorIndex: generator.shadowGeneratorIndex,
+            };
+        }
+
+        case "onCsmReceiverUpdate": {
+            context.expectArgumentCount(call, 2, 2);
+            const generator = context.compileValue(call.arguments[0]!);
+            context.expectKind(
+                generator,
+                "shadow-generator",
+                call.arguments[0]!,
+            );
+            const callback = context.compileF32ArrayCallback(
+                call.arguments[1]!,
+            );
+            const disposer = context.allocateTemporaryCppName(
+                "csm_receiver_disposer",
+            );
+            context.emit(
+                `auto ${disposer} = bbl::on_csm_receiver_update(` +
+                    `${context.requireEngine(generator, call)}, ` +
+                    `${generator.cpp}, ${callback});`,
+            );
+            return {
+                kind: "callback",
+                cpp: disposer,
+                nativeCallbackParameterTypes: [],
+            };
+        }
 
         // Upstream this installs a bounds provider into a WeakMap and wraps
         // each caster in a proxy mesh whose boundMin/boundMax it rewrites
@@ -470,7 +527,12 @@ export function compileShadowIntrinsic(
                 "shadow-generator",
                 call.arguments[0]!,
             );
-            if (generator.shadowGeneratorIndex === undefined) {
+            const generatorIndex = generator.shadowGeneratorIndex;
+            const runtimeSelectedGenerator =
+                generatorIndex === undefined &&
+                generator.dataType?.kind === "handle" &&
+                generator.dataType.handle === "shadow-generator";
+            if (generatorIndex === undefined && !runtimeSelectedGenerator) {
                 context.fail(
                     call.arguments[0]!,
                     "This shadow generator was not created in this scene.",
@@ -499,9 +561,11 @@ export function compileShadowIntrinsic(
                 // composed caster-view universe. The first registration may
                 // itself be runtime-built (Break Meshes fills allPieces in a
                 // native loop), and later registrations filter that list.
-                context.recordDynamicShadowCasters(
-                    generator.shadowGeneratorIndex,
-                );
+                if (generatorIndex === undefined) {
+                    context.recordDynamicShadowCastersForUnknownGenerator();
+                } else {
+                    context.recordDynamicShadowCasters(generatorIndex);
+                }
                 context.reachFeature("material:no-color-view", call);
                 return {
                     kind: "void",
@@ -535,14 +599,16 @@ export function compileShadowIntrinsic(
                         "map; no reached scene registers one.",
                 );
             }
-            context.recordShadowCasters(
-                generator.shadowGeneratorIndex,
-                casters,
-            );
-            if (hasDynamicCaster) {
-                context.recordDynamicShadowCasters(
-                    generator.shadowGeneratorIndex,
+            if (generatorIndex === undefined) {
+                context.recordDynamicShadowCastersForUnknownGenerator();
+            } else {
+                context.recordShadowCasters(
+                    generatorIndex,
+                    casters,
                 );
+                if (hasDynamicCaster) {
+                    context.recordDynamicShadowCasters(generatorIndex);
+                }
             }
             // The caster pass draws each mesh through its material's own
             // no-colour view, which is the same composition arm scene 116

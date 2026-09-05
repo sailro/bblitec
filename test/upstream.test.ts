@@ -802,7 +802,7 @@ test("every light vector setter rebuilds its own kind's local matrix", () => {
             assert.ok(!sources[kind].includes(`void set_${kind}_light_`));
         }
     }
-    assert.equal(emitted, 4);
+    assert.equal(emitted, 5);
 });
 
 test("generates scene fog storage for the pinned fog UBO field set", () => {

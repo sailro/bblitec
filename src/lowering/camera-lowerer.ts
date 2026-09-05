@@ -302,10 +302,11 @@ std::array<CameraMatrixScalar, 16> ${gltfCameras ? "camera_local_matrix" : "came
         zx *= inverse_z;
         zy *= inverse_z;
         zz *= inverse_z;
-        // xAxis = cross(up, zAxis), against the pinned Vec3Up.
-        xx = ${this.context.doubleLiteral(upVector.y)} * zz - ${this.context.doubleLiteral(upVector.z)} * zy;
-        xy = ${this.context.doubleLiteral(upVector.z)} * zx - ${this.context.doubleLiteral(upVector.x)} * zz;
-        xz = ${this.context.doubleLiteral(upVector.x)} * zy - ${this.context.doubleLiteral(upVector.y)} * zx;
+        // xAxis = cross(up, zAxis). Free cameras retain the pinned Vec3Up;
+        // banked cameras carry the caller's live up vector in the same slot.
+        xx = camera.up_vector.y * zz - camera.up_vector.z * zy;
+        xy = camera.up_vector.z * zx - camera.up_vector.x * zz;
+        xz = camera.up_vector.x * zy - camera.up_vector.y * zx;
         x_length = std::sqrt(xx * xx + xy * xy + xz * xz);
     }
     if (x_length < ${this.context.doubleLiteral(degenerateEpsilon)}) {
@@ -371,6 +372,7 @@ CameraHandle create_arc_rotate_camera(
     camera.beta = beta;
     camera.radius = radius;
     camera.target = target;
+    camera.up_vector = Vec3d{${this.context.doubleLiteral(upVector.x)}, ${this.context.doubleLiteral(upVector.y)}, ${this.context.doubleLiteral(upVector.z)}};
     camera.fov = ${number("fov")};
     camera.near_plane = ${number("nearPlane")};
     camera.far_plane = ${number("farPlane")};
@@ -605,6 +607,16 @@ CameraHandle create_free_camera(
     engine.cameras.push_back(camera);
     return CameraHandle{
         static_cast<std::uint32_t>(engine.cameras.size() - 1)};
+}
+
+CameraHandle create_banked_free_camera(
+    Engine& engine,
+    Vec3d position,
+    Vec3d target,
+    Vec3d up) {
+    const CameraHandle camera = create_free_camera(engine, position, target);
+    engine.cameras[camera.value].up_vector = up;
+    return camera;
 }
 
 } // namespace bbl

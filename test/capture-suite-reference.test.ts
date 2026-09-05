@@ -110,6 +110,14 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
         hostUi: {
             sourcePath: "ui/app-host.json",
             classStyles: [{ className: "hud", style: "color: red" }],
+            styleRules: [
+                {
+                    kind: "class",
+                    primary: "entry",
+                    focusVisible: true,
+                    style: "outline: 2px solid cyan",
+                },
+            ],
             elements: [
                 {
                     tag: "div",
@@ -130,7 +138,7 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
                 `http://127.0.0.1:${address.port}/scene.html`,
             )
         ).text();
-        const bootstrapIndex = html.indexOf("hostUi.classStyles");
+        const bootstrapIndex = html.indexOf("const hostStyleSheet");
         const moduleIndex = html.indexOf('<script type="module"');
         assert.ok(bootstrapIndex >= 0, "host UI bootstrap script missing");
         assert.ok(moduleIndex >= 0, "scene module script missing");
@@ -141,7 +149,14 @@ test("serves the host UI bootstrap ahead of the scene module script", async () =
             bootstrapIndex < moduleIndex,
             "host UI must be served ahead of the scene module",
         );
-        assert.match(html, /"className":"hud"/);
+        assert.match(html, /\.hud\{color: red\}/);
+        // Legacy classStyles and generic selector flags share the same
+        // normalized sheet. Dropping focus-visible paints every button as
+        // selected in the reference.
+        assert.match(
+            html,
+            /\.entry:focus-visible\{outline: 2px solid cyan\}/,
+        );
     } finally {
         await new Promise<void>((done) => server.close(() => done()));
     }
