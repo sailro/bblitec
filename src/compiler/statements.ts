@@ -4052,22 +4052,40 @@ export class StatementLowerer {
         const node = context.compileValue(
             call.expression.expression.expression,
         );
-        if (node.kind !== "transform-node") {
+        if (node.kind !== "transform-node" && node.kind !== "mesh") {
             return false;
         }
         context.expectArgumentCount(call, 1, 1);
         const child = context.compileValue(call.arguments[0]!);
-        if (
-            child.kind !== "mesh" &&
-            child.kind !== "transform-node"
-        ) {
+        // MeshRecord::children is a mesh list -- the visibility cascade
+        // that walks it takes a MeshHandle -- while a transform node's is
+        // the pin's own mixed list. So what a receiver accepts is a
+        // question about the record that holds the list, and a transform
+        // node pushed under a mesh names a record this port does not have
+        // rather than a call it declines.
+        const accepted =
+            node.kind === "mesh"
+                ? ["mesh"]
+                : ["mesh", "transform-node"];
+        if (!accepted.includes(child.kind)) {
             context.fail(
                 call.arguments[0]!,
-                "TransformNode children.push supports exactly mesh and " +
-                    `transform-node values, received ${child.kind}.`,
+                `${node.kind === "mesh" ? "Mesh" : "TransformNode"} ` +
+                    "children.push supports exactly " +
+                    `${accepted.join(" and ")} values, ` +
+                    `received ${child.kind}.`,
             );
         }
         context.expectSameEngine(node, child, call);
+        if (node.kind === "mesh") {
+            context.reachFeature("mesh:parenting", call);
+            context.emit(
+                `bbl::push_mesh_child(` +
+                    `${context.requireEngine(node, call)}, ` +
+                    `${node.cpp}, ${child.cpp});`,
+            );
+            return true;
+        }
         context.emit(
             `bbl::push_transform_node_child(` +
                 `${context.requireEngine(node, call)}, ` +

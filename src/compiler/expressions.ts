@@ -1969,6 +1969,21 @@ export class ExpressionLowerer {
         if (this.context.isBrowserOnlyExpression(unwrapped)) {
             return this.compileBrowserValue(unwrapped);
         }
+        // `const camera = (scene.camera = createArcRotateCamera(...))`: an
+        // assignment is an expression in JavaScript, and its value is the
+        // value assigned. Emit the assignment through the ordinary
+        // statement path and then READ THE TARGET, rather than compiling
+        // the right-hand side a second time -- the right side is commonly
+        // a factory call, and compiling it twice would construct twice.
+        // A target this compiler cannot read back refuses by naming the
+        // target, which is the honest failure.
+        if (
+            ts.isBinaryExpression(unwrapped) &&
+            unwrapped.operatorToken.kind === ts.SyntaxKind.EqualsToken
+        ) {
+            this.context.emitExpressionAsStatement(unwrapped);
+            return this.context.compileValue(unwrapped.left);
+        }
 
         this.context.fail(unwrapped, `Unsupported value expression: ${ts.SyntaxKind[unwrapped.kind]}.`);
     }
@@ -2735,6 +2750,39 @@ export class ExpressionLowerer {
                     : value;
             whenTrue = asTupleData(whenTrue);
             whenFalse = asTupleData(whenFalse);
+        }
+        // A value that already MODELS absence, guarded and defaulted to
+        // `null`: `info.hit ? info.pickedMesh : null`. Upstream both arms
+        // are the one nullable reference the field is, and this port spells
+        // that reference as the value plus its own presence test -- so the
+        // guard is not a second native branch to select, it is another term
+        // of that test. `null` carries no native storage of its own, which
+        // is exactly why it cannot be selected as one, and conjoining the
+        // condition is what a JavaScript reader means by the whole
+        // expression. The condition is duplicated into the presence test
+        // the way the branch-selecting path below duplicates it; it is a
+        // read of the same record here.
+        const nullDefaulted = (
+            present: Value,
+            absent: Value,
+            found: string,
+        ): Value | undefined =>
+            absent.kind === "json-null" &&
+            absent.cpp.length === 0 &&
+            present.kind !== "json-null" &&
+            present.cpp.length > 0 &&
+            present.optionalFoundCpp !== undefined
+                ? {
+                      ...present,
+                      optionalFoundCpp:
+                          `(${found} && ${present.optionalFoundCpp})`,
+                  }
+                : undefined;
+        if (whenTrue.kind !== whenFalse.kind) {
+            const guarded =
+                nullDefaulted(whenTrue, whenFalse, condition) ??
+                nullDefaulted(whenFalse, whenTrue, `!(${condition})`);
+            if (guarded) return guarded;
         }
         if (
             whenTrue.kind !== whenFalse.kind ||

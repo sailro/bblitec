@@ -442,6 +442,8 @@ export interface AssignmentContext extends DeterministicRandomContext {
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
   recordUnknownSceneMaterialAssignment(): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
+  /** Marks a scene-code mesh as carrying a skeleton for its feature word. */
+  recordSceneMeshSkinned(meshIndex: number): void;
   recordToneMappingEnabledMutation(): void;
   /** The scene's node-particle program; a texture write lands on it. */
   readonly reachedNodeParticles: CompiledNodeParticles;
@@ -1996,6 +1998,42 @@ export function emitPropertyAssignment(
       return;
     }
 
+    if (target.kind === "mesh" && property === "skeleton") {
+      requireSimpleAssignment(context, expression, "mesh skeleton");
+      if (!target.directMorphCompatible) {
+        context.fail(
+          left.expression,
+          "A scene-authored skeleton requires a compiler-created mesh: " +
+            "the joint and weight streams are folded into that mesh's " +
+            "own vertices.",
+        );
+      }
+      if (target.sceneMeshIndex === undefined) {
+        context.fail(
+          left.expression,
+          "A scene-authored skeleton needs a mesh with a generation-known " +
+            "composition row: the pin composes its skinned vertex stage " +
+            "from MSH_HAS_SKELETON on that row, so a mesh created inside a " +
+            "runtime loop has no variant to select.",
+        );
+      }
+      const skeleton = context.compileValue(expression.right);
+      context.expectKind(skeleton, "scene-skeleton", expression.right);
+      context.expectSameEngine(target, skeleton, expression);
+      const engine = context.requireEngine(target, expression);
+      context.emit(
+        `bbl::attach_scene_skeleton(${engine}, ${target.cpp}, ` +
+          `${skeleton.cpp});`,
+      );
+      // The generation half of the same assignment: the pin's
+      // `_computeMeshFeatures` reads `mesh.skeleton` for MSH_HAS_SKELETON,
+      // and a scene-code mesh's feature word is derived from its recorded
+      // streams rather than from a glTF primitive.
+      context.recordSceneMeshSkinned(target.sceneMeshIndex);
+      context.reachFeature("mesh:skeleton", expression);
+      return;
+    }
+
     if (target.kind === "mesh" && property === "morphTargets") {
       requireSimpleAssignment(context, expression, "mesh morphTargets");
       if (!target.directMorphCompatible) {
@@ -2235,8 +2273,23 @@ export function emitPropertyAssignment(
         mesh ? "mesh parent" : "transform node parent",
       );
       const parent = context.compileValue(expression.right);
-      context.expectKind(parent, "transform-node", expression.right);
+      // Upstream `parent` is one nullable SceneNode field, so what may
+      // stand on its right is a question about the FIELD rather than about
+      // this call site: any node whose world matrix the child composes
+      // under. The two native handle tables are what split it into two
+      // lanes, and a MeshRecord keeps both -- so a mesh child accepts a
+      // mesh parent through the overload over the lane that holds it. A
+      // TransformNodeRecord keeps only the node lane, which is why a node
+      // hung under a mesh still refuses: it is a record the port does not
+      // have, not a call site it declines.
+      const meshParent = mesh && parent.kind === "mesh";
+      if (!meshParent) {
+        context.expectKind(parent, "transform-node", expression.right);
+      }
       context.expectSameEngine(target, parent, expression);
+      if (meshParent) {
+        context.reachFeature("mesh:parenting", expression);
+      }
       context.emit(
         `bbl::${
           mesh ? "set_mesh_transform_parent" : "set_transform_node_parent"

@@ -1461,11 +1461,18 @@ inline std::vector<GpuVertex> transformed_vertices(
     // far-from-origin translation into float32 before the eye-relative
     // subtraction could recover the remainder -- which is the whole point
     // of the mode.
+    // A scene-authored skeleton keeps local vertices for the third such
+    // reason: the pin skins in mesh-local space and composes
+    // `finalWorld = mesh.world * influence`, so baking the record's
+    // transform here would apply it before the bones instead of after
+    // them. A glTF skin needs no entry in this list -- the loader already
+    // leaves its record at rest and folds the mesh world into the palette.
     const MeshRecord& trs =
 #if BBLITE_FLOATING_ORIGIN
         identity_transform;
 #else
-        mesh.thin_instanced || mesh.gpu_world_transform
+        mesh.thin_instanced || mesh.gpu_world_transform ||
+                mesh.scene_skeleton
             ? identity_transform
             : mesh;
 #endif
@@ -2354,14 +2361,24 @@ inline bool pinned_record_instance_colored(const MeshRecord& record) {
     return !record.instance_colors.empty();
 }
 
+#endif
+
 /**
  * Whether a task's draw lists contain a draw the pinned path owns — a PBR
- * draw, or a Standard one now that both families run Babylon's own composed
- * stages. A geometry task with none writes no pinned blocks at all. It lives
- * here rather than in the backend that asks: SDL_GPU stopped needing it when
- * the depth convention collapsed and the matrix seam went with it, and the
- * question is the backends' shared one whenever either asks it again.
+ * draw, a Standard one now that both families run Babylon's own composed
+ * stages, or a node one in a build that composed geometry views. A geometry
+ * task with none writes no pinned blocks at all. It lives here rather than in
+ * the backend that asks: SDL_GPU stopped needing it when the depth convention
+ * collapsed and the matrix seam went with it, and the question is the
+ * backends' shared one whenever either asks it again.
+ *
+ * The node arm matters for the FRAME PROLOGUE rather than for any block this
+ * predicate's callers write: the task's scene block and its gpUniforms are
+ * written by whichever family writer runs first, so a task whose list is all
+ * node draws still has to reach one of them — which is also why this sits
+ * outside the two material families' guard rather than inside it.
  */
+#if BBLITE_PINNED_MATERIALS
 inline bool pinned_lists_have_pinned_draws(
     const upstream::RenderDrawLists& lists) {
     for (const upstream::RenderDrawList* list :
@@ -2370,6 +2387,10 @@ inline bool pinned_lists_have_pinned_draws(
             if (
                 draw.item.material_kind ==
                     upstream::RenderMaterialKind::pbr ||
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                draw.item.material_kind ==
+                    upstream::RenderMaterialKind::node ||
+#endif
                 draw.item.material_kind ==
                     upstream::RenderMaterialKind::standard) {
                 return true;
@@ -2378,9 +2399,6 @@ inline bool pinned_lists_have_pinned_draws(
     }
     return false;
 }
-#endif
-
-#if BBLITE_PINNED_MATERIALS
 
 /** The identity, for a skinned draw whose palette already carries everything,
  *  and for the two families whose vertices are baked with their world. */
@@ -2457,7 +2475,21 @@ inline std::array<float, 16> pinned_draw_world(
     const Scene& scene,
     const Engine& engine) {
     if (skeleton_draw) {
-        return draw_world(pinned_identity_world(), record, scene, engine);
+        // Both arms are the pin's own `finalWorld = mesh.world *
+        // influence`; what differs is which half carries the mesh world.
+        // The glTF pose pass folds `invMeshWorld` into every palette entry
+        // and leaves the record at rest, so its `mesh.world` is the
+        // identity. A scene that wrote its own bone matrices folded
+        // nothing, so its `mesh.world` is the record's live world -- read
+        // here rather than baked, because the scene may move the mesh
+        // between frames while the palette stays the bones alone.
+        return draw_world(
+            record.scene_skeleton
+                ? upstream::mesh_world_matrix(engine, record)
+                : pinned_identity_world(),
+            record,
+            scene,
+            engine);
     }
     if (world_from_palette) {
         return draw_world(record.bone_matrices[0], record, scene, engine);
@@ -2571,7 +2603,7 @@ inline constexpr std::size_t node_variant_slot(
     return variant * 2 + (caster ? 1 : 0);
 }
 
-inline std::size_t node_variant_slots() {
+inline std::size_t node_view_slots() {
     return upstream::node_variants.size() * 2;
 }
 
@@ -2592,7 +2624,7 @@ inline constexpr std::size_t node_variant_slot(
     return variant;
 }
 
-inline std::size_t node_variant_slots() {
+inline std::size_t node_view_slots() {
     return upstream::node_variants.size();
 }
 
@@ -2603,15 +2635,119 @@ inline constexpr std::size_t node_slot_variant(std::size_t slot) {
 inline constexpr bool node_slot_is_caster(std::size_t) { return false; }
 #endif
 
+/** No geometry view: what both PALs pass for a colour or caster draw, and
+ *  what the generated lookup returns for a pair it composed none for. Stated
+ *  outside the guard because every node draw site names it, and checked
+ *  against the generated spelling where that exists. */
+inline constexpr std::size_t no_node_geometry_variant = npos;
+
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+static_assert(
+    no_node_geometry_variant == upstream::node_no_geometry_variant,
+    "The PAL sentinel must be the generated table's own.");
+
+/**
+ * A graph's geometry-output views, continuing the same slot run.
+ *
+ * They are not a third view of the pair above: one graph composes ONE
+ * geometry module per task it is drawn in, so a geometry view is a
+ * `node_variants` row of its own after every graph's, and its slot is that
+ * row's -- with the caster half of the pair unused, because a geometry view
+ * never casts. Each backend's per-slot module, layout and `.slots` tables
+ * then serve all three kinds unchanged.
+ */
+inline std::size_t node_geometry_slot(std::size_t geometry_variant) {
+    return node_variant_slot(
+        upstream::node_geometry_entry(geometry_variant),
+        false);
+}
+
+/**
+ * The view one graph composed for one task, or a refusal naming both.
+ *
+ * A geometry task draws every mesh the scene admits and composition walks
+ * every task the scene registered, so a node draw reaching a task with no
+ * composed view is a generation gap rather than a scene mistake -- and it is
+ * the same gap on either backend, so the message is stated once here beside
+ * `require_geometry_target_count`.
+ */
+inline std::size_t require_node_geometry_variant(
+    std::size_t variant,
+    std::size_t geometry_task) {
+    const std::size_t geometry_variant =
+        upstream::node_geometry_variant_for(variant, geometry_task);
+    if (geometry_variant != no_node_geometry_variant) {
+        return geometry_variant;
+    }
+    throw std::runtime_error(
+        "node graph " + std::to_string(variant) +
+        " draws in geometry task " + std::to_string(geometry_task) +
+        " with no composed geometry view.");
+}
+#endif
+
+/**
+ * How many `node_variants` rows are graphs.
+ *
+ * The render plan's `shader_variant` names a GRAPH, so this rather than
+ * `node_variants.size()` is what an out-of-range plan item is refused
+ * against: the geometry views a scene composed continue the same table
+ * after every graph.
+ */
+inline std::size_t node_graph_count() {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    return upstream::node_graph_count;
+#else
+    return upstream::node_variants.size();
+#endif
+}
+
+/**
+ * The slot one node draw's resources live in.
+ *
+ * A geometry view is keyed by the composed view rather than by the graph --
+ * one graph drawn in two tasks composed two modules -- so the callers that
+ * know which view a draw is agree here rather than each spelling it out.
+ */
+inline std::size_t node_draw_slot(
+    std::size_t variant,
+    bool caster,
+    [[maybe_unused]] std::size_t geometry_variant) {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (geometry_variant != no_node_geometry_variant) {
+        return node_geometry_slot(geometry_variant);
+    }
+#endif
+    return node_variant_slot(variant, caster);
+}
+
+/** Every per-slot table both backends size: the colour and caster views of
+ *  every row `node_variants` carries, graphs and geometry views alike. */
+inline std::size_t node_variant_slots() {
+    return node_view_slots();
+}
+
+/**
+ * The compiled view one slot names.
+ *
+ * A graph's three modules are separate emits — the geometry one walks the
+ * graph again from its own terminal — so their vertex inputs, texture pairs
+ * and uniform blocks are separate ranges into the same tables, carried by
+ * separate rows of the one table. Both backends bind a draw from the row
+ * its slot names rather than from a per-view branch at every use.
+ */
+inline const upstream::NodeVariantEntry& node_slot_view(std::size_t slot) {
+    return upstream::node_variants[node_slot_variant(slot)];
+}
+
 /**
  * The two stems one slot's modules deploy under.
  *
- * Which of a graph's two compiled views a slot names decides both, so the
- * pair travels together rather than as a ternary per load site.
+ * Which of a graph's compiled views a slot names decides both, so the pair
+ * travels together rather than as a ternary per load site.
  */
 inline upstream::NodeVariantStems node_variant_stems(std::size_t slot) {
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[node_slot_variant(slot)];
+    const upstream::NodeVariantEntry& entry = node_slot_view(slot);
 #if BBLITE_NODE_SHADOWS
     if (node_slot_is_caster(slot)) {
         return {entry.caster.vertex_stem, entry.caster.fragment_stem};
@@ -5371,7 +5507,7 @@ inline void validate_render_plan_items(const upstream::RenderPlan& plan) {
         } else if (
             item.material_kind == upstream::RenderMaterialKind::node) {
 #if BBLITE_NODE_VARIANTS > 0
-            if (item.shader_variant >= upstream::node_variants.size()) {
+            if (item.shader_variant >= node_graph_count()) {
                 throw std::runtime_error(
                     "this node material graph was not composed.");
             }
@@ -5510,7 +5646,7 @@ inline GeometryTargetClasses geometry_target_classes(
  * The count assertion beside the list: a variant composed for N targets
  * over a task carrying M is the same generation bug on either backend,
  * so the refusal is stated once. `family` names the variant family the
- * caller resolves ("pinned" or "standard").
+ * caller resolves ("pinned", "standard" or "node").
  */
 inline void require_geometry_target_count(
     const GeometryTargetClasses& classes,

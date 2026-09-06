@@ -401,6 +401,7 @@ function familyInputs(): FeatureActivationInputs {
             alphaBlending: false,
             envBindings: null,
             morphBindings: null,
+            geometryViews: [],
         },
     };
     return {

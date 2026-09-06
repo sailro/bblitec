@@ -435,6 +435,14 @@ struct BoneHandle {
     std::uint32_t value = invalid_handle;
 };
 
+/**
+ * One skeleton a scene built with `createSkeleton`, distinct from the
+ * loader-built `SkeletonHandle` above: see `SceneSkeletonRecord`.
+ */
+struct SceneSkeletonHandle {
+    std::uint32_t value = invalid_handle;
+};
+
 /** One baked vertex-animation texture (`VatBakeResult`). */
 struct VatBake {
     std::uint32_t value = invalid_handle;
@@ -896,6 +904,11 @@ enum class PrimitiveKind {
 enum class CameraKind {
     arc_rotate,
     free,
+    // src/camera/geospatial-camera.ts: a camera that orbits a spherical
+    // planet centred at the world origin. Its eye is derived state like the
+    // free camera's -- the pin's own `position` -- rather than composed from
+    // alpha/beta/radius the way an ArcRotate's is.
+    geospatial,
 };
 
 enum class LightKind {
@@ -2134,6 +2147,20 @@ struct MeshRecord {
      */
     bool skinned = false;
     /**
+     * Whether this record's palette came from `createSkeleton` in scene
+     * code rather than from the glTF pose pass.
+     *
+     * The pin composes one thing for both -- `finalWorld = mesh.world *
+     * influence` -- but the loader folds `invMeshWorld` into every palette
+     * entry it writes and leaves the record's TRS at rest, so its draw
+     * passes the identity as `mesh.world`. A scene that writes its own
+     * bone matrices folds nothing: its palette is the bones alone and its
+     * mesh keeps its transform, so the draw passes the record's live world
+     * beside the palette and the CPU vertex bake leaves the vertices
+     * local. Both readers are in `pal_gpu_shared.hpp`.
+     */
+    bool scene_skeleton = false;
+    /**
      * `mesh.vat`. Set by `attachVat`, which also drops the live skeleton --
      * so a record carrying this one deforms from the baked texture and its
      * `bone_matrices` are no longer written or read.
@@ -3245,6 +3272,35 @@ struct LightRecord {
     ShadowGeneratorHandle shadow_generator{};
 };
 
+// `{ x, y }` as src/camera/geospatial-limits.ts holds the pitch-disable
+// scale: two JavaScript numbers, so two doubles.
+struct GeospatialScale {
+    double x = 0.0;
+    double y = 0.0;
+};
+
+/**
+ * `GeospatialLimits` (src/camera/geospatial-limits.ts): the bounds a
+ * geospatial camera clamps yaw, pitch and radius against.
+ *
+ * Every member is a JavaScript number the pinned `createGeospatialLimits`
+ * writes -- including the two yaw bounds, which default to -/+Infinity and
+ * which a double holds exactly -- so the record is left zero-initialised and
+ * the generated factory fills it from the pin's own literal.
+ * `pitch_disabled_radius_scale` is the pin's nullable `{ x, y }`: absent is
+ * the documented "full pitch at every radius" arm.
+ */
+struct GeospatialLimits {
+    double planet_radius = 0.0;
+    double radius_min = 0.0;
+    double radius_max = 0.0;
+    double pitch_min = 0.0;
+    double pitch_max = 0.0;
+    double yaw_min = 0.0;
+    double yaw_max = 0.0;
+    std::optional<GeospatialScale> pitch_disabled_radius_scale;
+};
+
 // Every scalar the pinned camera factories hold is a plain JavaScript
 // number, and `src/camera/camera.ts` reads them into the view and
 // projection writers in that precision. The record therefore keeps
@@ -3319,6 +3375,20 @@ struct CameraRecord {
      * `upstream::resolve_camera_viewport` resolves it to.
      */
     std::optional<NormalizedViewport> viewport;
+    /**
+     * Geospatial orientation (src/camera/geospatial-camera.ts). The pinned
+     * factory describes a pose by the anchored ECEF `center` it orbits plus
+     * `yaw`, `pitch` and `radius`, and derives `_lookAt` from them; the
+     * `radius`, `position` and `up_vector` above are the same fields the
+     * other two factories write, so only these four and the limits are new.
+     * `target` carries the pin's own `center3` (`position + _lookAt`), which
+     * is what its local-matrix writer looks towards.
+     */
+    Vec3d center{};
+    double yaw = 0.0;
+    double pitch = 0.0;
+    Vec3d look_at{};
+    GeospatialLimits limits;
 };
 
 struct Scene;
@@ -3374,6 +3444,41 @@ struct BoneRecord {
 struct SkeletonRecord {
     std::uint32_t asset = invalid_handle;
     std::vector<BoneHandle> bones;
+};
+
+/**
+ * A skeleton a scene authored in code (`skeleton/create-skeleton.ts`).
+ *
+ * Upstream this is a GPU resource -- the per-bone rgba32float palette
+ * texture plus the joint and weight vertex buffers -- shared by every mesh
+ * assigned it, and `updateSkeletonBoneMatrices` rewrites the one texture
+ * that all of them sample. Here the palette rides each attached mesh
+ * record, which is where both backends' upload already reads it from, so
+ * this record holds the shared per-vertex streams and the list of meshes
+ * that took them: a live update writes the store here and then every
+ * attached record, which is the one texture write upstream performs.
+ *
+ * It is deliberately NOT `SkeletonRecord` beside it: that one is the
+ * opt-in bone-control chunk's per-skin handle over a loaded glTF, whose
+ * bones are nodes of an asset hierarchy. These two never meet in one
+ * scene, and giving them one handle would let `getBoneByName` be asked
+ * for a joint this record does not have.
+ */
+struct SceneSkeletonRecord {
+    /** Four joint indices per vertex, as `createSkeleton` received them. */
+    std::vector<std::uint16_t> joints;
+    /** Four weights per vertex, in the same order. */
+    std::vector<float> weights;
+    std::uint32_t bone_count = 0;
+    /**
+     * The authored palette. Unlike the glTF pose pass's product this is
+     * exactly what the scene passed: the pin composes
+     * `finalWorld = mesh.world * influence`, and a scene that writes its
+     * own bone matrices keeps its mesh transform on the record.
+     */
+    std::vector<std::array<float, 16>> bone_matrices;
+    /** Every mesh `mesh.skeleton = ...` handed this skeleton. */
+    std::vector<MeshHandle> meshes;
 };
 
 struct AssetRecord {
@@ -4196,6 +4301,8 @@ struct Engine {
     /** The VAT payloads `bakeVat` produced, addressed by `VatBake`. */
     std::vector<VatBakeRecord> vat_bakes;
     std::vector<SkeletonRecord> skeletons;
+    /** The skeletons scene code built with `createSkeleton`. */
+    std::vector<SceneSkeletonRecord> scene_skeletons;
     std::vector<BoneRecord> bones;
     std::vector<RenderTargetRecord> render_targets;
     std::vector<FrameTaskRecord> frame_tasks;
@@ -4972,6 +5079,30 @@ struct CylinderOptions {
 };
 
 /**
+ * `CapsuleOptions`, as the reached slice resolves it.
+ *
+ * The opposite contract to every other builder's record. `createCapsuleData`
+ * resolves each option by TRUTHINESS (`options.height ? options.height : 1`)
+ * rather than by `??`, so an omitted option and an explicit zero are the
+ * same answer upstream. Zero is therefore what an option the scene did not
+ * name carries here, and the generated builder applies every default itself
+ * -- including the two that fall back to another resolved option rather
+ * than to a constant (`radius_top`/`radius_bottom` to `radius`, and each
+ * cap to `cap_subdivisions`).
+ */
+struct CapsuleOptions {
+    double height;
+    double radius;
+    double radius_top;
+    double radius_bottom;
+    double tessellation;
+    double subdivisions;
+    double cap_subdivisions;
+    double top_cap_subdivisions;
+    double bottom_cap_subdivisions;
+};
+
+/**
  * `DiscOptions`, as the reached slice resolves it.
  *
  * Every field is written by generation from the pinned factory's own `??`
@@ -5092,6 +5223,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options);
 MeshHandle create_torus_knot(Engine& engine, TorusKnotOptions options);
 MeshHandle create_disc(Engine& engine, DiscOptions options);
 MeshHandle create_cylinder(Engine& engine, CylinderOptions options);
+MeshHandle create_capsule(Engine& engine, CapsuleOptions options);
 MeshHandle create_polyhedron(Engine& engine, PolyhedronOptions options);
 MeshHandle create_ribbon(Engine& engine, RibbonOptions options);
 MeshHandle create_ribbon_mesh(
@@ -5256,6 +5388,23 @@ void set_bone_visible(
     SkeletonHandle skeleton,
     BoneHandle bone,
     bool visible);
+// The scene-authored skeleton surface (`src/skeleton/create-skeleton.ts`
+// and `src/skeleton/update-skeleton-bone-matrices.ts`), defined by the
+// generated `upstream/src/skeleton.cpp` when a scene reaches it.
+SceneSkeletonHandle create_scene_skeleton(
+    Engine& engine,
+    const std::vector<std::uint16_t>& joints,
+    const std::vector<float>& weights,
+    double bone_count,
+    const std::vector<float>& bone_data);
+void attach_scene_skeleton(
+    Engine& engine,
+    MeshHandle mesh,
+    SceneSkeletonHandle skeleton);
+void update_scene_skeleton_bone_matrices(
+    Engine& engine,
+    SceneSkeletonHandle skeleton,
+    const std::vector<float>& bone_data);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
 void load_environment(Scene& scene, EnvironmentOptions options);
 void add_dds_environment_background(
@@ -5611,6 +5760,22 @@ void set_mesh_transform_parent(
     Engine& engine,
     MeshHandle mesh,
     TransformNodeHandle parent);
+// The same write where the parent lane a MESH holds is the one taken.
+// Upstream `parent` is one nullable SceneNode field; mesh and transform-node
+// handles live in different native tables, so it becomes these two overloads
+// over the two lanes MeshRecord keeps. Generated under mesh:parenting, the
+// feature that owns the mesh parent lane, while the overload above is
+// generated with the transform-node factories.
+void set_mesh_transform_parent(
+    Engine& engine,
+    MeshHandle mesh,
+    MeshHandle parent);
+// `mesh.children.push(child)`, the traversal twin of
+// `push_transform_node_child`.
+void push_mesh_child(
+    Engine& engine,
+    MeshHandle mesh,
+    MeshHandle child);
 // The same setter one level up: a transform node hung under another one.
 // `transform_node_world` already composes the chain, and
 // `mark_transform_node_dirty` already recurses into `parented_nodes`; this

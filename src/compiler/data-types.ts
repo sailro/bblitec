@@ -45,6 +45,7 @@ export type HandleKind =
   | "texture"
   | "transform-node"
   | "skeleton"
+  | "scene-skeleton"
   | "bone"
   | "navigation-obstacle";
 
@@ -78,6 +79,7 @@ const handleCppTypes: Record<HandleKind, string> = {
   texture: "bbl::StoredTexture",
   "transform-node": "bbl::TransformNodeHandle",
   skeleton: "bbl::SkeletonHandle",
+  "scene-skeleton": "bbl::SceneSkeletonHandle",
   bone: "bbl::BoneHandle",
   "navigation-obstacle": "bbl::pal::NavObstacleHandle",
 };
@@ -123,6 +125,87 @@ const pinnedHandleTypes: Record<string, HandleKind> = {
   Bone: "bone",
   ObstacleHandle: "navigation-obstacle",
 };
+
+/**
+ * A pinned engine value that owns a native record but is NOT part of the
+ * plain-data model above.
+ *
+ * `HandleKind` is what a struct, a vector or a map may hold, and these are
+ * deliberately outside it: `fromTsType` declines them, so a gizmo still
+ * cannot travel inside data. What one of them does need is somewhere for a
+ * single name to hold it -- the storage between `let g: T | null = null`
+ * and the guarded assignment that fills it -- which is a narrower question
+ * than whether data can carry the value.
+ */
+type OpaqueEngineKind =
+  | "axis-drag-gizmo"
+  | "axis-scale-gizmo"
+  | "plane-drag-gizmo"
+  | "plane-rotation-gizmo"
+  | "position-gizmo"
+  | "rotation-gizmo"
+  | "scale-gizmo"
+  | "bounding-box-gizmo"
+  | "camera-gizmo"
+  | "light-gizmo";
+
+/**
+ * The pinned type name and the native record behind each of them.
+ *
+ * Every row is a trivially copyable record declared unconditionally in
+ * `runtime.hpp`, which is what lets one live in a `std::optional` without
+ * the declaring scene having reached the family that builds it yet: the
+ * declaration comes before the factory call it is waiting for.
+ */
+const opaqueEngineTypes: Record<
+  string,
+  { kind: OpaqueEngineKind; cppType: string }
+> = {
+  AxisDragGizmo: { kind: "axis-drag-gizmo", cppType: "bbl::EditGizmoHandle" },
+  AxisScaleGizmo: {
+    kind: "axis-scale-gizmo",
+    cppType: "bbl::EditGizmoHandle",
+  },
+  PlaneDragGizmo: {
+    kind: "plane-drag-gizmo",
+    cppType: "bbl::EditGizmoHandle",
+  },
+  PlaneRotationGizmo: {
+    kind: "plane-rotation-gizmo",
+    cppType: "bbl::EditGizmoHandle",
+  },
+  PositionGizmo: {
+    kind: "position-gizmo",
+    cppType: "bbl::CompositeGizmoHandle",
+  },
+  RotationGizmo: {
+    kind: "rotation-gizmo",
+    cppType: "bbl::CompositeGizmoHandle",
+  },
+  ScaleGizmo: { kind: "scale-gizmo", cppType: "bbl::CompositeGizmoHandle" },
+  BoundingBoxGizmo: {
+    kind: "bounding-box-gizmo",
+    cppType: "bbl::BoundingBoxGizmoHandle",
+  },
+  CameraGizmo: { kind: "camera-gizmo", cppType: "bbl::CameraGizmoHandle" },
+  LightGizmo: { kind: "light-gizmo", cppType: "bbl::LightGizmoHandle" },
+};
+
+/**
+ * Classify an opaque pinned engine value, gated on the pinned typings the
+ * same way `pinnedHandleKind` is, so a scene's own `interface CameraGizmo`
+ * is never mistaken for the engine one.
+ */
+export function opaqueEngineValue(
+  type: ts.Type,
+): { kind: OpaqueEngineKind; cppType: string } | undefined {
+  const symbol =
+    type.aliasSymbol && opaqueEngineTypes[type.aliasSymbol.name]
+      ? type.aliasSymbol
+      : type.symbol;
+  const entry = symbol ? opaqueEngineTypes[symbol.name] : undefined;
+  return entry && declaredInBabylonLite(symbol!) ? entry : undefined;
+}
 
 export type DataType =
   | { kind: "number" }

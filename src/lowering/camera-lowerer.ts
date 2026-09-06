@@ -147,6 +147,7 @@ export class CameraLowerer {
     public lowerArcRotateFactory(
         gltfCameras = false,
         highPrecisionMatrix = false,
+        geospatial = false,
     ): LoweredSource {
         const modulePath = "src/camera/arc-rotate.ts";
         const symbolName = "createArcRotateCamera";
@@ -251,7 +252,13 @@ Vec3d camera_position(const CameraRecord& camera);
 namespace bbl::upstream {
 
 Vec3d arc_rotate_eye_position(const CameraRecord& camera) {
-    if (camera.kind == CameraKind::free) return camera.position;
+    ${geospatial
+        ? `// Two of the three pinned factories hold the eye directly:
+    // createFreeCamera and createGeospatialCamera each keep position as
+    // their own state and look from it. Only the ArcRotate composes an
+    // eye from alpha/beta/radius about its target.
+    if (camera.kind != CameraKind::arc_rotate) return camera.position;`
+        : "if (camera.kind == CameraKind::free) return camera.position;"}
     const double cosine_alpha = std::cos(camera.alpha);
     const double sine_alpha = std::sin(camera.alpha);
     const double cosine_beta = std::cos(camera.beta);

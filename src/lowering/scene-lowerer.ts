@@ -1057,7 +1057,96 @@ void apply_preserved_parent_local(
     mark_mesh_dirty(engine, child);
 }
 
+void unregister_parented_mesh(
+    std::vector<MeshHandle>& registry,
+    MeshHandle mesh) {
+    registry.erase(
+        std::remove(registry.begin(), registry.end(), mesh),
+        registry.end());
+}
+
+void require_acyclic_mesh_parent(
+    const Engine& engine,
+    MeshHandle child,
+    MeshHandle parent) {
+    MeshHandle cursor = parent;
+    std::size_t depth = 0;
+    while (cursor.value < engine.meshes.size()) {
+        if (
+            cursor.value == child.value ||
+            depth++ >= engine.meshes.size()) {
+            throw std::runtime_error("Mesh parent cycle detected.");
+        }
+        cursor = engine.meshes[cursor.value].parent;
+    }
+}
+
 } // namespace
+
+// The bare \`child.parent = mesh\` write, for the parent lane a MESH holds.
+// Its transform-node twin is \`set_mesh_transform_parent\` beside the
+// transform-node factories, under that feature's own gate; the pin has one
+// nullable \`parent\` field and this port has two handle tables, so the two
+// entry points are what one field becomes. Like that twin this registers
+// the child for invalidation and leaves \`children\` alone -- upstream the
+// traversal list is filled by its own push -- and unlike \`set_mesh_parent\`
+// below it does not preserve the child's world, because the field write
+// upstream runs none of setParent's decomposition.
+void set_mesh_transform_parent(
+    Engine& engine,
+    MeshHandle mesh,
+    MeshHandle parent) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    if (parent.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh parent handle.");
+    }
+    require_acyclic_mesh_parent(engine, mesh, parent);
+    MeshRecord& record = engine.meshes[mesh.value];
+    if (
+        record.parent.value == parent.value &&
+        record.transform_parent.value >= engine.transform_nodes.size()) {
+        return;
+    }
+    if (record.transform_parent.value < engine.transform_nodes.size()) {
+        unregister_parented_mesh(
+            engine.transform_nodes[record.transform_parent.value]
+                .parented_meshes,
+            mesh);
+    }
+    if (record.parent.value < engine.meshes.size()) {
+        unregister_parented_mesh(
+            engine.meshes[record.parent.value].parented_meshes, mesh);
+    }
+    record.transform_parent = TransformNodeHandle{};
+    record.parent = parent;
+    mark_mesh_dirty(engine, mesh);
+    std::vector<MeshHandle>& new_children =
+        engine.meshes[parent.value].parented_meshes;
+    if (
+        std::find(new_children.begin(), new_children.end(), mesh) ==
+        new_children.end()) {
+        new_children.push_back(mesh);
+    }
+}
+
+// \`mesh.children.push(child)\`: the traversal half, the twin of
+// \`push_transform_node_child\`. MeshRecord::children is the list the
+// visibility cascade walks, and upstream a bare parent write never fills
+// it, so a scene that wants both performs both.
+void push_mesh_child(
+    Engine& engine,
+    MeshHandle mesh,
+    MeshHandle child) {
+    if (mesh.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh handle.");
+    }
+    if (child.value >= engine.meshes.size()) {
+        throw std::runtime_error("Invalid mesh child handle.");
+    }
+    engine.meshes[mesh.value].children.emplace_back(child);
+}
 
 // ${this.context.provenance("src/scene/set-parent.ts", "setParent")}
 void set_mesh_parent(

@@ -67,6 +67,11 @@ inline void handle_camera_pointer_event(
             return;
         }
         if (camera.external_pick_pending && camera.external_pick_pending()) return;
+        if (camera.kind == CameraKind::geospatial) {
+            // The pinned geospatial pointer input reaches its own
+            // accumulators, not the ArcRotate ones below.
+            return;
+        }
         if (camera.kind == CameraKind::free) {
             if (state.orbiting) {
                 upstream::apply_free_camera_pointer_rotation(
@@ -97,6 +102,13 @@ inline void handle_camera_pointer_event(
 
 inline void update_camera(CameraRecord& camera) {
     if (!camera.controls_enabled) {
+        return;
+    }
+    if (camera.kind == CameraKind::geospatial) {
+        // The pinned geospatial per-frame hook is its own module and the
+        // ArcRotate inertia below is not it; a geospatial camera integrates
+        // pan/rotation/zoom velocities against yaw, pitch, radius and centre
+        // instead of alpha/beta/target.
         return;
     }
     if (camera.kind != CameraKind::free) {

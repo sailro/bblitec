@@ -410,7 +410,12 @@ inline const char* primitive_name(PrimitiveKind kind) {
 }
 
 inline const char* camera_kind_name(CameraKind kind) {
-    return kind == CameraKind::free ? "free" : "arcRotate";
+    switch (kind) {
+        case CameraKind::arc_rotate: return "arcRotate";
+        case CameraKind::free: return "free";
+        case CameraKind::geospatial: return "geospatial";
+    }
+    return "unknown";
 }
 
 inline const char* light_kind_name(LightKind kind) {

@@ -868,6 +868,25 @@ export class BrowserErasure {
                       )
                     : undefined;
             }
+            if (
+                unwrapped.operatorToken.kind ===
+                ts.SyntaxKind.QuestionQuestionToken
+            ) {
+                // `??` selects on NULLISHNESS, not truthiness: `"" ?? x` is
+                // the empty string and `0 ?? x` is zero, where `||` would
+                // take the right operand for both. `null` is the union's
+                // only absent kind, standing for `null` and `undefined`
+                // alike, so the test is the kind rather than
+                // `browserTruthy`. An unfoldable left stays unfoldable.
+                if (left === undefined) {
+                    return undefined;
+                }
+                return left.kind === "null"
+                    ? this.evaluateBrowserValue(
+                          unwrapped.right,
+                      )
+                    : left;
+            }
             const numeric = new Map<
                 ts.SyntaxKind,
                 (a: number, b: number) => number

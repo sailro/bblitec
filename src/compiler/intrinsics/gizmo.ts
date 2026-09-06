@@ -452,7 +452,7 @@ function compileCompositeAttach(
         cpp:
             `bbl::attach_composite_gizmo_to_node(` +
             `${context.requireEngine(gizmo, call)}, ` +
-            `${gizmo.cpp}, ${node.cpp})`,
+            `${gizmo.cpp}, ${attachedNodeCpp(node)})`,
     };
 }
 
@@ -503,6 +503,25 @@ function compileCompositeDispose(
     };
 }
 
+/**
+ * The attached node, as a handle that survives an absent one.
+ *
+ * The pin detaches rather than throwing: `attach<X>GizmoToNode` assigns
+ * `gizmo.attachedNode = node` for a null node too, and the follow returns
+ * early on it (`gizmo-core.js`). The generated follow already implements
+ * that guard as `attached_node.value >= meshes.size()`, and a
+ * default-constructed handle carries `invalid_handle`, so passing the
+ * empty handle IS the detach. Dereferencing the optional instead throws
+ * `std::bad_optional_access` from inside the scene's own pointer
+ * callback -- a crash no static capture pose can reach, because the
+ * parity run never clicks.
+ */
+function attachedNodeCpp(node: Value): string {
+    return node.optionalFoundCpp === undefined
+        ? node.cpp
+        : `(${node.optionalFoundCpp} ? ${node.cpp} : bbl::MeshHandle{})`;
+}
+
 /** `attach<Widget>GizmoToNode(gizmo, node)`. */
 function compileEditGizmoAttach(
     context: GizmoIntrinsicContext,
@@ -520,7 +539,7 @@ function compileEditGizmoAttach(
         cpp:
             `bbl::attach_gizmo_to_node(` +
             `${context.requireEngine(gizmo, call)}, ` +
-            `${gizmo.cpp}, ${node.cpp})`,
+            `${gizmo.cpp}, ${attachedNodeCpp(node)})`,
     };
 }
 

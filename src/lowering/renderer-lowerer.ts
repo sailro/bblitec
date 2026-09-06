@@ -370,6 +370,14 @@ export class RendererLowerer {
         mirroredMeshes?: boolean;
         /** The scene reaches `createTransformNode`. */
         transformNodes?: boolean;
+        /**
+         * The scene composed a node-material geometry-output view.
+         *
+         * Only then does a geometry task's draw list admit the node family:
+         * a graph a task draws with no composed view has no module to draw
+         * with, so the list would carry a draw both PALs must refuse.
+         */
+        nodeGeometryViews?: boolean;
         orthographicCamera?: boolean;
         background?: boolean;
         shaderPrograms?: CompiledShaderProgram[];
@@ -1543,6 +1551,8 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
             mirroredMeshes?: boolean;
             /** The scene reaches `createTransformNode`. */
             transformNodes?: boolean;
+            /** The scene composed a node-material geometry-output view. */
+            nodeGeometryViews?: boolean;
         },
         inputs: {
             viewMatrixBody: string;
@@ -1919,6 +1929,13 @@ RenderDrawLists build_render_task_draw_lists(
                 items[index].material);
             if (
                 item.material_kind != RenderMaterialKind::pbr &&
+${options.nodeGeometryViews
+    ? `                // \`resolveMaterialFamily\` admits the node family to a
+                // geometry task beside the other two, and this scene
+                // composed a geometry view for every graph a task draws.
+                item.material_kind != RenderMaterialKind::node &&
+`
+    : ""}\
                 item.material_kind != RenderMaterialKind::standard) {
                 continue;
             }

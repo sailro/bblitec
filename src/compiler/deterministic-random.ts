@@ -18,6 +18,7 @@
 // that check, run once the whole entry has been walked.
 import ts from "typescript";
 import type { CompiledNodeParticles, Value } from "./types.js";
+import { transpileForBrowser } from "../typescript-transpile.js";
 
 export interface DeterministicRandomContext {
     readonly reachedNodeParticles: CompiledNodeParticles;
@@ -66,6 +67,66 @@ function refuseTypeSyntax(
 }
 
 /**
+ * The module-level function a seed factory call names, or a refusal.
+ *
+ * It must be a plain declaration with a body: the driver runs its text, so
+ * an overload, an ambient declaration or an imported binding with no source
+ * here has nothing to move.
+ */
+function seedFactoryDeclaration(
+    context: DeterministicRandomContext,
+    callee: ts.Identifier,
+    checker: ts.TypeChecker,
+): ts.FunctionDeclaration {
+    // A factory is normally imported from a shared module, so the identifier
+    // resolves to the import alias; the declaration is behind it.
+    const bound = checker.getSymbolAtLocation(callee);
+    const symbol =
+        bound && bound.flags & ts.SymbolFlags.Alias
+            ? checker.getAliasedSymbol(bound)
+            : bound;
+    const declaration = symbol?.valueDeclaration;
+    if (
+        !declaration ||
+        !ts.isFunctionDeclaration(declaration) ||
+        !declaration.body ||
+        !declaration.name
+    ) {
+        context.fail(
+            callee,
+            `A deterministic Math.random factory must be a function ` +
+                `declaration this compiler can read; '${callee.text}' is ` +
+                "not one.",
+        );
+    }
+    const factory = declaration as ts.FunctionDeclaration;
+    if (
+        factory.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.AsyncKeyword,
+        )
+    ) {
+        context.fail(
+            callee,
+            "A deterministic Math.random factory is not async; the driver " +
+                "installs the generator it returns.",
+        );
+    }
+    if (!factory.getSourceFile().fileName.endsWith(".ts")) {
+        context.fail(callee, "A deterministic Math.random factory needs its source.");
+    }
+    return factory;
+}
+
+/** A seed factory's declaration as the JavaScript the driver runs. */
+function seedFactoryJs(factory: ts.FunctionDeclaration): string {
+    // Modifiers precede `function`, and `export` would transpile into an
+    // assignment onto a module object the driver's scope does not have.
+    const text = factory.getText();
+    const bare = text.slice(text.indexOf("function"));
+    return transpileForBrowser(bare, "deterministic-seed.ts").trim();
+}
+
+/**
  * The locals an arrow closes over, in declaration order, each as the `let`
  * the driver re-declares.
  *
@@ -77,13 +138,23 @@ function refuseTypeSyntax(
  */
 function capturedDeclarations(
     context: DeterministicRandomContext,
-    arrow: ts.ArrowFunction,
+    arrow: ts.ArrowFunction | ts.FunctionDeclaration,
     checker: ts.TypeChecker,
 ): string[] {
     const captured: ts.VariableDeclaration[] = [];
     const declared = new Set<ts.Symbol>();
     const collectDeclared = (node: ts.Node): void => {
         if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+            const symbol = checker.getSymbolAtLocation(node.name);
+            if (symbol) declared.add(symbol);
+        }
+        // A factory's parameters are bound by the call, and its own name
+        // binds the declaration itself; neither is closed over.
+        if (ts.isParameter(node) && ts.isIdentifier(node.name)) {
+            const symbol = checker.getSymbolAtLocation(node.name);
+            if (symbol) declared.add(symbol);
+        }
+        if (ts.isFunctionDeclaration(node) && node.name) {
             const symbol = checker.getSymbolAtLocation(node.name);
             if (symbol) declared.add(symbol);
         }
@@ -174,10 +245,59 @@ export function emitDeterministicRandomInstall(
         context.reachedNodeParticles.steps.push({ op: "random-restore" });
         return true;
     }
+    // `Math.random = makeSeed()`: the generator comes from a module-level
+    // factory rather than an arrow written at the assignment. The factory
+    // holds the state the returned function steps, so what travels is the
+    // declaration plus the call -- the driver already re-declares captures
+    // in a scope of its own and returns an expression, so the factory goes
+    // in beside them and the call becomes that expression.
+    if (
+        ts.isCallExpression(expression.right) &&
+        ts.isIdentifier(expression.right.expression)
+    ) {
+        const factory = seedFactoryDeclaration(
+            context,
+            expression.right.expression,
+            checker,
+        );
+        const call = expression.right;
+        const args = call.arguments.map((argument) => {
+            if (
+                !ts.isNumericLiteral(argument) &&
+                !(
+                    ts.isPrefixUnaryExpression(argument) &&
+                    argument.operator === ts.SyntaxKind.MinusToken &&
+                    ts.isNumericLiteral(argument.operand)
+                )
+            ) {
+                context.fail(
+                    argument,
+                    "A deterministic Math.random factory takes numeric " +
+                        "literal arguments only; anything else is a value " +
+                        "this compiler would have to compute.",
+                );
+            }
+            return argument.getText();
+        });
+        context.reachedNodeParticles.steps.push({
+            op: "random",
+            declarations: [
+                ...capturedDeclarations(context, factory, checker),
+                // The pin annotates its own factory, and the driver runs
+                // JavaScript, so the declaration travels through the same
+                // transpile the other pinned-text drivers use rather than
+                // refusing the annotation the way a verbatim arrow must.
+                ...seedFactoryJs(factory).split("\n"),
+            ],
+            arrow: `${factory.name!.text}(${args.join(", ")})`,
+        });
+        return true;
+    }
     if (!ts.isArrowFunction(expression.right)) {
         context.fail(
             expression,
-            "Math.random is replaced by an arrow function or not at all.",
+            "Math.random is replaced by an arrow function, a call to a " +
+                "module-level factory returning one, or not at all.",
         );
     }
     if (context.reachedNodeParticles.sets.length === 0) {

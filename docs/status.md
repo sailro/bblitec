@@ -197,6 +197,7 @@ its cause.
 | 222 | <img src="images/scenes/scene222.png" alt="Scene 222 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Composite Gizmos |
 | 223 | <img src="images/scenes/scene223.png" alt="Scene 223 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Camera And Light Gizmos |
 | 224 | <img src="images/scenes/scene224.png" alt="Scene 224 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Bounding Box Gizmo |
+| 225 | <img src="images/scenes/scene225.png" alt="Scene 225 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Geospatial Camera; renders its pose, controls attach without input arms. |
 | 226 | <img src="images/scenes/scene226.png" alt="Scene 226 rendering" width="160"> | 0.001 / 0.003 | 0.001 / 0.003 | Gaussian Splatting glTF |
 | 229 | <img src="images/scenes/scene229.png" alt="Scene 229 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Without Indices |
 | 240 | <img src="images/scenes/scene240.png" alt="Scene 240 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Animated Triangle |
@@ -306,4 +307,6 @@ a project-owned gate when it reaches the same contract.
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |
 | shadow-pbr-only | <img src="images/scenes/regression-shadow-pbr-only.png" alt="PBR shadows without Standard rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Shadow Receiver Without Standard |
+| scene-skeleton | <img src="images/scenes/regression-scene-skeleton.png" alt="Scene-authored skeleton rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Scene-Authored Skeleton |
+| node-geometry-output | <img src="images/scenes/regression-node-geometry-output.png" alt="Node material geometry output rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Node Material Geometry Output |
 | timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Timer Callback Cells |

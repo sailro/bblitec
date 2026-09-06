@@ -32,7 +32,10 @@ import {
     shadowCapabilities,
 } from "./shadow-capabilities.js";
 import { variantBindings } from "./pinned-pbr-variant-cpp.js";
-import { nodeVariantsUseMorphStorage } from "./pinned-node-material-cpp.js";
+import {
+    nodeGeometryVariants,
+    nodeVariantsUseMorphStorage,
+} from "./pinned-node-material-cpp.js";
 import type { UpstreamEmitOptions } from "./upstream-lower.js";
 
 /** Where the inventory is written, beside the other upstream artifacts. */
@@ -263,6 +266,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "camera:free": {
         provenance:
             "src/camera/free-camera.ts + src/camera/free-camera-controls.ts",
+        consumers: CMAKE,
+    },
+    "camera:geospatial": {
+        provenance:
+            "src/camera/geospatial-camera.ts + src/camera/geospatial-limits.ts" +
+            " + src/camera/geospatial-camera-controls.ts",
         consumers: CMAKE,
     },
     "camera:orthographic": {
@@ -602,6 +611,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/create-cylinder.ts",
         consumers: CMAKE,
     },
+    "mesh:capsule": {
+        provenance: "src/mesh/create-capsule.ts",
+        consumers: CMAKE,
+    },
     "mesh:extrude": {
         provenance: "src/mesh/create-extrude.ts",
         consumers: CMAKE,
@@ -648,6 +661,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     },
     "mesh:vat-instances": {
         provenance: "src/vat/vat-baker.ts (setInstances)",
+        consumers: ["features.cmake", "render_capabilities.hpp"],
+    },
+    "mesh:skeleton": {
+        provenance:
+            "src/skeleton/create-skeleton.ts and " +
+            "src/skeleton/update-skeleton-bone-matrices.ts",
         consumers: ["features.cmake", "render_capabilities.hpp"],
     },
     "math:normalize-vec3": {
@@ -1312,6 +1331,8 @@ function capabilityRows(
         nodePcfCasters: nodePcfCasterCount,
     });
     const nodeVariantCount = nodeVariantList.length;
+    const nodeGeometryViewCount =
+        nodeGeometryVariants(nodeVariantList).length;
     const nodeMorphStorage = nodeVariantsUseMorphStorage(nodeVariantList);
     // The same derivation upstream-lower makes for the define: a composed
     // Standard variant binding the pin's 2D reflection pair.
@@ -1378,8 +1399,14 @@ function capabilityRows(
                     "scene-source morph targets need the deformation " +
                         "vertex layout",
                 ],
+                [
+                    has("mesh:skeleton"),
+                    "a scene-authored skeleton needs the deformation " +
+                        "vertex layout's joint and weight lanes",
+                ],
             ],
-            "no animated glTF assets and no scene-source morph targets",
+            "no animated glTF assets, no scene-source morph targets and no " +
+                "scene-authored skeleton",
             "native-architecture: upstream keys its skeleton module on " +
                 "skins + JOINTS_0 (src/loader-gltf/gltf-feature-registry.ts) " +
                 "and recomputes node worlds live; this port bakes static " +
@@ -2055,7 +2082,38 @@ function capabilityRows(
                 "deploys",
             ["render_capabilities.hpp", "variant table"],
         ),
-        // The two derived defines. `render_capabilities.hpp` states each as
+        checkedRow(
+            "BBLITE_NODE_GEOMETRY_VARIANTS",
+            "capability",
+            nodeGeometryViewCount > 0,
+            [
+                // A conjunction, like the two receiver families' rows: a
+                // geometry view is a THIRD module of a composed graph, and
+                // what reaches it is a geometry-renderer task drawing that
+                // graph. A scene with graphs and no task composes none, and
+                // so does a scene with a task and no graph.
+                [
+                    nodeVariantCount > 0 &&
+                        emit.geometryOutputTasks.length > 0,
+                    `${nodeGeometryViewCount} geometry view(s) composed ` +
+                        `from ${nodeVariantCount} node graph(s) over ` +
+                        `${emit.geometryOutputTasks.length} ` +
+                        "geometry-renderer task(s)",
+                ],
+            ],
+            nodeVariantCount > 0
+                ? "node graphs compose, but the scene registers no " +
+                    "geometry-renderer task"
+                : "no node materials compile graphs",
+            "the pin's own node geometry view " +
+                "(src/material/node/node-geometry-view.ts " +
+                "createNodeGeometryMaterialView, and " +
+                "node-geometry-renderable.ts ensureGeometryResources / " +
+                "ensureGeometryCompile), one module per (graph, task), " +
+                "emitted into node_variants.hpp beside the colour view",
+            ["render_capabilities.hpp", "variant table", "renderer plan"],
+        ),
+        // The three derived defines. `render_capabilities.hpp` states each as
         // a preprocessor expression over the three counts above; the rows
         // derive the same disjunctions from the same emit options, so the
         // inventory names which family switched the shared machinery on.
@@ -2097,6 +2155,30 @@ function capabilityRows(
                 "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0` " +
                 "gates the two material families' thin-instance arm and " +
                 "geometry contract, which a node graph does not reach",
+            ["render_capabilities.hpp"],
+        ),
+        row(
+            "BBLITE_GEOMETRY_TASK_FAMILIES",
+            "capability",
+            variantCount > 0 ||
+                standardVariantCount > 0 ||
+                nodeGeometryViewCount > 0,
+            variantCount > 0 ||
+                standardVariantCount > 0 ||
+                nodeGeometryViewCount > 0
+                ? "derived: a family with an MRT arm " +
+                    `(${[
+                        ...(variantCount > 0 ? ["PBR"] : []),
+                        ...(standardVariantCount > 0 ? ["Standard"] : []),
+                        ...(nodeGeometryViewCount > 0 ? ["node"] : []),
+                    ].join(", ")}) can draw into a geometry-output task`
+                : "no family composes a geometry-output arm",
+            "native-architecture: the derived define " +
+                "`BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 " +
+                "|| BBLITE_NODE_GEOMETRY_VARIANTS > 0` gates a geometry " +
+                "task's own frame state -- its view-projection and the " +
+                "gpUniforms block built from it -- which belongs to the " +
+                "task rather than to any one family",
             ["render_capabilities.hpp"],
         ),
     ];

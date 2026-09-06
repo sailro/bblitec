@@ -16,6 +16,7 @@
  * `setPbr*` entry points perform upstream.
  */
 import {
+    geometryAttachmentTypes,
     importPinnedModule,
 } from "./pinned-shader-composer.js";
 import {
@@ -476,7 +477,7 @@ export async function composePinnedPbrVariant(
         // `PBR2_GEOMETRY_OUTPUT` set and rewrites the fragment's return into
         // per-attachment writes. The active attachments are set around the
         // call exactly as `_setActivePbrGeometryAttachments` does.
-        const [geometry, types] = await Promise.all([
+        const [geometry] = await Promise.all([
             importPinnedModule<{
                 composePbrGeometryShader: (
                     composePbr: PinnedComposeFn,
@@ -500,19 +501,10 @@ export async function composePinnedPbrVariant(
                     _materialUboSpec: unknown;
                 };
             }>("material/pbr/pbr-geometry-output-shader.js"),
-            importPinnedModule<{
-                GeometryTextureType: Record<string, number>;
-            }>("frame-graph/geometry-types.js"),
         ]);
-        const attachments = options.geometry.attachments.map((name) => {
-            const value = types.GeometryTextureType[name];
-            if (value === undefined) {
-                throw new Error(
-                    `Unknown geometry texture type '${name}'.`,
-                );
-            }
-            return value;
-        });
+        const attachments = await geometryAttachmentTypes(
+            options.geometry.attachments,
+        );
         const previous = activeGeometryAttachments;
         activeGeometryAttachments = attachments;
         try {

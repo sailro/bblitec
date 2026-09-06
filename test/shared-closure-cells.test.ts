@@ -7,6 +7,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { collectReboundSymbols } from "../src/compiler/module-initializers.js";
+import { createCompilerProgram } from "../src/compiler/program.js";
+import { CompilerSymbols } from "../src/compiler/symbols.js";
 
 const sharedCell = (name: string, type: string, initial: string): RegExp =>
     new RegExp(`auto v_${name} = bbl::js::make_gc_shared<${type}>\\(${initial}\\);`);
@@ -248,4 +251,96 @@ test("an inline entry-level animation-frame callback borrows the entry scope", (
     `);
     assert.match(result.cpp, /double v_frames = 0\.0;/);
     assert.doesNotMatch(result.cpp, /make_gc_shared<double>/);
+});
+
+/**
+ * One walk answers "does this file rebind this name", for the declaration
+ * lowering's `identifierIsRebound` and for the module-state planner. The two
+ * ask deliberately different questions and the parameter is what keeps them
+ * apart: the planner counts `++`/`--`, because an incremented module-scope
+ * `let` is storage rather than a folded constant, and the declaration
+ * lowering does not. Merging the arm would change what every scene emits.
+ */
+const reboundNames = (
+    source: string,
+    countUpdateOperators: boolean,
+): string[] => {
+    const { checker, sourceFile } = createCompilerProgram(source, "input.ts");
+    return [
+        ...collectReboundSymbols(
+            sourceFile,
+            new CompilerSymbols(checker),
+            countUpdateOperators,
+        ),
+    ]
+        .map((symbol) => symbol.name)
+        .sort();
+};
+
+test("the shared rebound-name walk counts ++ and -- only when asked to", () => {
+    const source = `
+        let assigned = 0;
+        let compound = 0;
+        let postIncremented = 0;
+        let preDecremented = 0;
+        let readOnly = 0;
+        let memberWritten = { value: 0 };
+        function step(): void {
+            assigned = 1;
+            compound += readOnly;
+            postIncremented++;
+            --preDecremented;
+            memberWritten.value = 1;
+            memberWritten.value++;
+        }
+        step();
+    `;
+    assert.deepEqual(reboundNames(source, false), ["assigned", "compound"]);
+    assert.deepEqual(reboundNames(source, true), [
+        "assigned",
+        "compound",
+        "postIncremented",
+        "preDecremented",
+    ]);
+});
+
+/** The entry shape for the module-state half: a module-scope `let` a
+ *  function writes, with `main` as the entry so nothing else declares it. */
+const moduleStateEntry = (write: string): string => `
+    import { createEngine, createSceneContext, onBeforeRender } from "@babylonjs/lite";
+
+    let spawned = 0;
+
+    function spawn(): void {
+        ${write}
+    }
+
+    async function main(): Promise<void> {
+        const engine = await createEngine({});
+        const scene = createSceneContext(engine);
+        onBeforeRender(scene, () => {
+            spawn();
+            if (spawned > 3) {
+                spawn();
+            }
+        });
+    }
+    main();
+`;
+
+test("a module-scope let only incremented still gets storage before the entry runs", () => {
+    // The observable half of the planner's `++` arm: without it the name
+    // folds to its initializer and every read answers 0.
+    assert.match(
+        compileSource(moduleStateEntry("spawned++;")).cpp,
+        /double v_spawned = 0\.0;/,
+    );
+    assert.match(
+        compileSource(moduleStateEntry("spawned = spawned + 1;")).cpp,
+        /double v_spawned = 0\.0;/,
+    );
+    assert.doesNotMatch(
+        compileSource(moduleStateEntry("")).cpp,
+        /v_spawned/,
+    );
 });

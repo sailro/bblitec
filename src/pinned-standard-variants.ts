@@ -74,7 +74,10 @@ import {
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import {
+    geometryAttachmentTypes,
+    importPinnedModule,
+} from "./pinned-shader-composer.js";
 import {
     type MaterialPluginManifest,
     type MaterialPluginSamplerManifest,
@@ -601,7 +604,7 @@ export async function composePinnedStandardVariant(
         // before composing, rewrites the composed return into per-attachment
         // writes, and appends its own params fragment when an attachment
         // needs the gp UBO, velocity varyings or the local position.
-        const [geometry, types] = await Promise.all([
+        const [geometry] = await Promise.all([
             importPinnedModule<{
                 composeStandardGeometryShader: (
                     features: number,
@@ -613,19 +616,10 @@ export async function composePinnedStandardVariant(
                     sceneShader: unknown,
                 ) => ComposedStandardShader;
             }>("material/standard/standard-geometry-output-shader.js"),
-            importPinnedModule<{
-                GeometryTextureType: Record<string, number>;
-            }>("frame-graph/geometry-types.js"),
         ]);
-        const attachments = options.geometry.attachments.map((name) => {
-            const value = types.GeometryTextureType[name];
-            if (value === undefined) {
-                throw new Error(
-                    `Unknown geometry texture type '${name}'.`,
-                );
-            }
-            return value;
-        });
+        const attachments = await geometryAttachmentTypes(
+            options.geometry.attachments,
+        );
         const viewFeatures =
             (features & ~flags.MATERIAL_ALPHA_BLEND) | flags.GEOMETRY_OUTPUT |
             passFeatures;

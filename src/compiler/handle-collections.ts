@@ -247,6 +247,13 @@ export class HandleCollections {
     >();
 
     /**
+     * Containers already proven to be flattened by their own loader, by
+     * source. The proof reads the materialized document, and a scene
+     * flattens the same container at several call sites.
+     */
+    private readonly flattenedContainers = new Set<string>();
+
+    /**
      * Driver loops whose whole effect was folded into the collection
      * binding the declaration above them now carries.
      */
@@ -492,7 +499,68 @@ export class HandleCollections {
         if (!collection || !owner.asset) {
             return undefined;
         }
+        this.requireLoaderFlattenedContainer(owner.asset, call);
         return { target: collection, asset: owner.asset };
+    }
+
+    /**
+     * Proves that flattening this container's entity hierarchy yields the
+     * mesh record its generated loader already built — which is what every
+     * flatten spelling above is answered with.
+     *
+     * For a glTF container the loader walks the document's whole node tree,
+     * so every renderable under the container's one root entity has a
+     * record; the walk and the record name the same set by construction.
+     *
+     * A `.babylon` container is not one root. Its entities are
+     * `[...lights, ...rootMeshes, ...rootTransformNodes]`
+     * (`src/loader-babylon/load-babylon.ts`), and the pin's own flatten
+     * skips the lights and descends the rest — so what the walk collects is
+     * every visible geometry node of the file. The generated loader instead
+     * creates a record per submesh of the visible geometry nodes that
+     * declare no `parentId`, in document order: for a file whose nodes are
+     * all roots those are the same meshes in the same order, and for one
+     * that parents a node they are not — the walk would reach a mesh the
+     * record does not hold. The document is on disk at generation, so which
+     * of the two it is gets read rather than assumed, and the parented file
+     * refuses here instead of being answered with a short list.
+     *
+     * Any other container kind refuses: `AssetRecord::meshes` is filled by
+     * the loader that built the record, and only these two build one from
+     * an entity hierarchy.
+     */
+    private requireLoaderFlattenedContainer(
+        asset: CompileAsset,
+        node: ts.Node,
+    ): void {
+        if (asset.kind === "gltf") {
+            return;
+        }
+        if (asset.kind !== "babylon") {
+            this.context.fail(
+                node,
+                `Flattening a container's entities is lowered for a glTF or .babylon document, whose loader records every renderable it creates; '${asset.output}' is neither.`,
+            );
+        }
+        if (this.flattenedContainers.has(asset.source)) {
+            return;
+        }
+        const document = this.readAssetDocument(asset, node);
+        for (const mesh of asRecords(document.meshes)) {
+            if (mesh.isVisible === false) {
+                continue;
+            }
+            const parent = asString(mesh.parentId) ?? "";
+            if (parent !== "") {
+                this.context.fail(
+                    node,
+                    `Asset '${asset.output}' parents '${
+                        asString(mesh.name) ?? asString(mesh.id) ?? "a node"
+                    }' under '${parent}', and the generated .babylon loader creates records only for unparented nodes; the walk would collect a mesh the container does not hold.`,
+                );
+            }
+        }
+        this.flattenedContainers.add(asset.source);
     }
 
     /**
@@ -616,12 +684,13 @@ export class HandleCollections {
         const owner = this.context.compileValue(
             entities.expression,
         );
-        if (
-            owner.kind !== "asset" ||
-            owner.asset?.kind !== "gltf"
-        ) {
+        if (owner.kind !== "asset" || !owner.asset) {
             return undefined;
         }
+        this.requireLoaderFlattenedContainer(
+            owner.asset,
+            entities,
+        );
         this.foldedFlattenLoops.add(loop);
         return this.assetMeshCollection(
             owner,
@@ -779,9 +848,12 @@ export class HandleCollections {
      * one step. A body reaching an entity any other way fails on the
      * value's kind.
      *
-     * A `.babylon` container refuses: nothing reached iterates one, and
-     * its entity list carries lights beside the roots, so the fold would
-     * need its own proof.
+     * A `.babylon` container refuses: its entity list carries lights
+     * beside the roots, so one emitted body standing for every entity
+     * would need its own proof. The walk that only COLLECTS the
+     * renderables under those entities is a different construct and is
+     * answered above, for either container, by the loader's own mesh
+     * record.
      */
     public assetEntitiesIterationTarget(
         expression: ts.Expression,
@@ -802,7 +874,7 @@ export class HandleCollections {
         if (owner.asset?.kind !== "gltf") {
             this.context.fail(
                 unwrapped,
-                "Iterating entities is lowered for a glTF container, whose entities are one root node; another container's roots are not.",
+                "Iterating entities to use each one is lowered for a glTF container, whose entities are one root node; another container's roots are not. Collecting the renderables under them is lowered for either.",
             );
         }
         return {
@@ -1937,11 +2009,29 @@ export class HandleCollections {
         return members;
     }
 
-    /** The materialized document's JSON, from GLB or JSON glTF bytes. */
+    /**
+     * Documents already read, by source.
+     *
+     * A materialized asset does not change during a compile, and the same
+     * container is asked several different questions -- its cardinality,
+     * its members, whether its loader flattens it, and the two uniqueness
+     * proofs -- from five call sites. Reading and parsing per question
+     * costs a full decode of a file that reaches ten megabytes in this
+     * corpus, so the read is memoized here rather than behind each
+     * caller's own answer.
+     */
+    private readonly assetDocuments = new Map<string, JsonObject>();
+
+    /**
+     * The materialized document's JSON, from GLB, JSON glTF or `.babylon`
+     * bytes -- every container kind whose document generation reads.
+     */
     private readAssetDocument(
         asset: CompileAsset,
         node: ts.Node,
     ): JsonObject {
+        const memoized = this.assetDocuments.get(asset.source);
+        if (memoized !== undefined) return memoized;
         const inline = this.context.assetPayloads.get(
             asset.source,
         );
@@ -1954,7 +2044,7 @@ export class HandleCollections {
         } catch (error) {
             this.context.fail(
                 node,
-                `Resolving this find needs the materialized asset '${asset.output}': ${
+                `Resolving this read needs the materialized asset '${asset.output}': ${
                     error instanceof Error
                         ? error.message
                         : String(error)
@@ -1977,11 +2067,13 @@ export class HandleCollections {
             ) {
                 throw new Error("root is not an object");
             }
-            return parsed as JsonObject;
+            const document = parsed as JsonObject;
+            this.assetDocuments.set(asset.source, document);
+            return document;
         } catch (error) {
             this.context.fail(
                 node,
-                `Asset '${asset.output}' did not parse as a glTF document: ${
+                `Asset '${asset.output}' did not parse as a JSON document: ${
                     error instanceof Error
                         ? error.message
                         : String(error)

@@ -440,7 +440,7 @@ export function compileAssetIntrinsic(
                 "asset",
                 call.arguments[0]!,
             );
-            if (!container.asset) {
+            if (container.asset?.kind !== "gltf") {
                 context.fail(
                     call.arguments[0]!,
                     "selectVariant requires the container a glTF load returned.",
@@ -485,8 +485,23 @@ export function compileAssetIntrinsic(
                     call.arguments[1]!,
                 );
             if (call.arguments[2]) {
-                context.expectObjectLiteral(
-                    call.arguments[2],
+                // `maxMeshes` stops the pinned loader's node pass partway
+                // through, so the container it returns holds fewer meshes
+                // than the file declares -- and a scene reading the
+                // container's flattened renderables is answered with the
+                // record the generated loader built from every visible
+                // node. Accepting the option silently would hand that
+                // scene meshes the pin never loaded, so the two names the
+                // loader does take are named and anything else refuses.
+                validateObjectProperties(
+                    context,
+                    context.expectObjectLiteral(
+                        call.arguments[2],
+                    ),
+                    ["loadCamera", "loadTextures"],
+                    "loadBabylon takes loadCamera and loadTextures; " +
+                        "maxMeshes truncates the pinned loader's node " +
+                        "pass, which the generated loader does not.",
                 );
             }
             const asset = context.registerAsset(
@@ -505,6 +520,12 @@ export function compileAssetIntrinsic(
                     `${context.cppString(asset.output)}))`,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
+                // The container's own materialized document, as `loadGltf`
+                // carries it. It is what lets a later read ask this
+                // container -- rather than glTF containers in general --
+                // whether the generated loader's mesh record IS its
+                // flattened entity hierarchy.
+                asset,
             };
         }
 

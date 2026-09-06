@@ -7921,6 +7921,109 @@ test("folds browser query predicates inside a runtime condition", () => {
     assert.match(queried.cpp, /\.position\.x = 3\.0/);
 });
 
+test("an assignment used as a value constructs once and reads the target", () => {
+    // `const camera = (scene.camera = createArcRotateCamera(...))` is an
+    // assignment in expression position. Compiling the right-hand side a
+    // second time to produce the value would construct a second camera, so
+    // the value comes from reading the target back.
+    const result = compileSource(`
+        import {
+            createArcRotateCamera,
+            createEngine,
+            createSceneContext,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const camera = (scene.camera = createArcRotateCamera(
+                0,
+                1,
+                12,
+                { x: 0, y: 0, z: 0 },
+            ));
+            camera.radius = 6;
+        }
+    `);
+
+    assert.equal(
+        result.cpp.match(/create_arc_rotate_camera\(/g)?.length,
+        1,
+        "the camera factory must be emitted exactly once",
+    );
+    assert.match(result.cpp, /\.camera = bbl::create_arc_rotate_camera\(/);
+    assert.match(result.cpp, /auto v_camera = v_scene\.camera;/);
+    assert.match(result.cpp, /radius = 6\.0/);
+});
+
+test("folds a nullish-coalescing browser query default", () => {
+    const source = `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const seek = parseFloat(params.get("seekTime") ?? "");
+            if (!isNaN(seek) && seek > 0) {
+                box.position.x = 3;
+            }
+        }
+    `;
+
+    assert.doesNotMatch(compileSource(source).cpp, /\.position\.x = 3\.0/);
+    assert.match(
+        compileSource(source, { search: "?seekTime=0.5" }).cpp,
+        /\.position\.x = 3\.0/,
+    );
+});
+
+test("nullish coalescing selects on absence where || selects on falsity", () => {
+    // `??` takes its right operand only for null or undefined, so a present
+    // but empty parameter keeps the empty string. `||` takes the right
+    // operand for every falsy value, including that one -- compiling both
+    // against the same query is what distinguishes the two operators.
+    const withOperator = (operator: string): string => `
+        import {
+            createBox,
+            createEngine,
+        } from "@babylonjs/lite";
+
+        async function main() {
+            const engine = await createEngine({});
+            const box = createBox(engine);
+            const params = new URLSearchParams(window.location.search);
+            const mode = params.get("mode") ${operator} "fallback";
+            if (mode === "") {
+                box.position.x = 3;
+            }
+        }
+    `;
+
+    const present = { search: "?mode=" };
+    assert.match(
+        compileSource(withOperator("??"), present).cpp,
+        /\.position\.x = 3\.0/,
+    );
+    assert.doesNotMatch(
+        compileSource(withOperator("||"), present).cpp,
+        /\.position\.x = 3\.0/,
+    );
+    // An absent parameter is null, so both operators take the fallback.
+    const absent = { search: "?other=1" };
+    assert.doesNotMatch(
+        compileSource(withOperator("??"), absent).cpp,
+        /\.position\.x = 3\.0/,
+    );
+    assert.doesNotMatch(
+        compileSource(withOperator("||"), absent).cpp,
+        /\.position\.x = 3\.0/,
+    );
+});
+
 test("keeps a resolved browser number in a native counted loop", () => {
     const result = compileSource(
         `
@@ -14824,26 +14927,26 @@ test("compiles pinned scene 213 GridMaterial options", () => {
 });
 
 test("reports unsupported Babylon Lite APIs with source locations", () => {
-    // `createCapsule` stands in for the whole unreached surface: a pinned
-    // mesh factory this port has not lowered, named by the refusal rather
-    // than swallowed. It replaced `createTorusKnot` when that one shipped,
-    // so if it ever ships too, pick another unreached export instead of
-    // relaxing what the refusal has to say.
+    // `loadFont` stands in for the whole unreached surface: a pinned entry
+    // point this port has not lowered, named by the refusal rather than
+    // swallowed. It replaced `createCapsule` when that one shipped, which
+    // had replaced `createTorusKnot`, so if it ever ships too, pick another
+    // unreached export instead of relaxing what the refusal has to say.
     assert.throws(
         () =>
             compileSource(
-                `import { createCapsule, createEngine } from "@babylonjs/lite";
+                `import { loadFont, createEngine } from "@babylonjs/lite";
 async function main() {
     const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
     const engine = await createEngine(canvas);
-    createCapsule(engine);
+    loadFont("/fonts/Inter.ttf");
 }`,
                 { fileName: "unsupported.ts" },
             ),
         (error: unknown) => {
             assert.ok(error instanceof CompileError);
             assert.match(error.message, /^unsupported\.ts:5:5:/);
-            assert.match(error.message, /createCapsule/);
+            assert.match(error.message, /loadFont/);
             return true;
         },
     );
@@ -19649,5 +19752,271 @@ test("refuses a TypedArray.set source that is not a numeric sequence", () => {
                 }
             `),
         /Expected a compileable number/,
+    );
+});
+
+test("materializes entry-module state a main() scene rebinds", () => {
+    const result = compileSource(`
+        import {
+            addToScene,
+            createBox,
+            createEngine,
+            createSceneContext,
+            registerScene,
+            startEngine,
+        } from "@babylonjs/lite";
+
+        let curX = -2;
+        let unmoved = 5;
+
+        function place(
+            engine: Awaited<ReturnType<typeof createEngine>>,
+            scene: ReturnType<typeof createSceneContext>,
+        ): void {
+            const mesh = createBox(engine, 1);
+            mesh.position.set(curX, unmoved, 0);
+            addToScene(scene, mesh);
+            curX += 2;
+        }
+
+        async function main(): Promise<void> {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            curX = -2;
+            place(engine, scene);
+            place(engine, scene);
+            await registerScene(scene);
+            await startEngine(engine);
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /double v_curX = \(-2\.0\);/,
+        "the rebound module let owns one native slot, declared before the entry body",
+    );
+    assert.equal(
+        (result.cpp.match(/double v_curX = /g) ?? []).length,
+        1,
+        "declared once, not once per reader",
+    );
+    // Both inlined calls read the storage, so the second box stands where
+    // the first call left the cursor instead of folding back to -2.
+    assert.equal(
+        (result.cpp.match(/bbl::Vec3d\{v_curX, 5\.0, 0\.0\}/g) ?? []).length,
+        2,
+    );
+    assert.equal((result.cpp.match(/v_curX \+= 2\.0;/g) ?? []).length, 2);
+    // A module let nothing rebinds is still a folded constant: no storage.
+    assert.doesNotMatch(result.cpp, /v_unmoved/);
+});
+
+test("shares one cell for entry-module state a stored callback rebinds", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        let ticks = 0;
+
+        function bump(): void {
+            ticks += 1;
+        }
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            window.addEventListener("pointerdown", () => {
+                bump();
+            });
+            window.setTimeout(() => {
+                ticks = 100;
+            }, 500);
+            bump();
+        }
+
+        void main();
+    `);
+
+    assert.match(
+        result.cpp,
+        /auto v_ticks = bbl::js::make_gc_shared<double>\(0\.0\);/,
+    );
+    // Both retained callbacks capture the same cell, so neither runs
+    // against a by-value copy of the value the other last wrote.
+    assert.equal(
+        (result.cpp.match(/std::tuple\{v_ticks\}/g) ?? []).length,
+        2,
+    );
+    assert.match(result.cpp, /\(\*v_ticks\) = 100\.0;/);
+    assert.equal((result.cpp.match(/\(\*v_ticks\) \+= 1\.0;/g) ?? []).length, 2);
+});
+
+test("refuses entry-module state whose declaration is a binding pattern", () => {
+    // Destructuring declares no name the storage pass can materialize, so
+    // the read fails by name rather than reading a folded initializer the
+    // assignment has already replaced.
+    assert.throws(
+        () =>
+            compileSource(`
+                import { createEngine } from "@babylonjs/lite";
+
+                let [slot] = [3];
+
+                async function main(): Promise<void> {
+                    const engine = await createEngine({});
+                    slot = 7;
+                    engine.setHardwareScalingLevel(slot);
+                }
+
+                void main();
+            `),
+        /Unknown or unsupported variable 'slot'/,
+    );
+});
+
+test("carries an unnamed capsule option as the zero the pin reads as absent", () => {
+    // `createCapsuleData` resolves every option by truthiness
+    // (`options.height ? options.height : 1`), so an option the scene did
+    // not name and an explicit zero are the SAME answer upstream. The
+    // record therefore carries zero for an unnamed option and the emitted
+    // body supplies each default itself -- including the two that fall back
+    // to another resolved option rather than to a constant.
+    const named = compileSource(`
+        import { createCapsule, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createCapsule(engine, { height: 2, radius: 0.5 });
+        }
+        void main();
+    `);
+    assert.match(
+        named.cpp,
+        /bbl::CapsuleOptions\{2\.0, 0\.5, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0\}/,
+    );
+    const bare = compileSource(`
+        import { createCapsule, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createCapsule(engine);
+        }
+        void main();
+    `);
+    assert.match(
+        bare.cpp,
+        /bbl::CapsuleOptions\{0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0, 0\.0\}/,
+    );
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createCapsule, createEngine } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            createCapsule(engine, { height: 2, orientation: 1 });
+        }
+        void main();
+    `),
+        /Reached capsules name their height, radius/,
+    );
+});
+
+test("parents a mesh to the node lane its parent actually holds", () => {
+    // Upstream `parent` is one nullable SceneNode field; this port keeps two
+    // handle tables, and a MeshRecord carries both lanes -- so a mesh child
+    // takes a mesh parent through the overload over the lane that holds it,
+    // and the traversal list `children` is filled by its own push exactly as
+    // upstream fills it separately.
+    const parented = compileSource(`
+        import { addToScene, createCylinder, createEngine, createSceneContext, createSphere } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const cylinder = createCylinder(engine, { height: 2, diameter: 1 });
+            const marker = createSphere(engine, { diameter: 0.15 });
+            marker.parent = cylinder;
+            cylinder.children.push(marker);
+            addToScene(scene, cylinder);
+            addToScene(scene, marker);
+        }
+        void main();
+    `);
+    assert.match(
+        parented.cpp,
+        /bbl::set_mesh_transform_parent\(\w+, \w+, \w+\);/,
+    );
+    assert.match(parented.cpp, /bbl::push_mesh_child\(\w+, \w+, \w+\);/);
+    assert.ok(parented.manifest.features.includes("mesh:parenting"));
+    // A transform node hung under a MESH is a record this port does not
+    // have -- TransformNodeRecord keeps only the node lane -- so it still
+    // refuses rather than picking a lane.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createCylinder, createEngine, createTransformNode } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const cylinder = createCylinder(engine, { height: 2, diameter: 1 });
+            const node = createTransformNode("node");
+            node.parent = cylinder;
+        }
+        void main();
+    `),
+        /Expected transform-node, received mesh/,
+    );
+});
+
+test("a null-defaulted guard over a nullable pick conjoins its presence test", () => {
+    // `info.hit ? info.pickedMesh : null`. Upstream `pickedMesh` is one
+    // nullable reference -- `createEmptyPickingInfo` sets `hit: false` and
+    // `pickedMesh: null` together, and a contributor hit sets `hit` with a
+    // null mesh -- and this port spells that reference as the value plus
+    // its own presence test. So the guard is another term of that test,
+    // not a second native branch: `null` has no native storage to select.
+    const guarded = compileSource(`
+        import { createCylinder, createEngine, createGpuPicker, createSceneContext, pickAsync, registerScene } from "babylon-lite";
+        import type { Mesh } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const cylinder = createCylinder(engine, { height: 2, diameter: 1 });
+            const cylinders: Mesh[] = [cylinder];
+            await registerScene(scene);
+            const picker = createGpuPicker(scene);
+            canvas.addEventListener("pointerdown", async (e) => {
+                const info = await pickAsync(picker, e.offsetX, e.offsetY);
+                const picked = info.hit ? info.pickedMesh : null;
+                const target = picked && cylinders.includes(picked as Mesh) ? (picked as Mesh) : null;
+                canvas.dataset.picked = target ? "yes" : "no";
+            });
+        }
+        void main();
+    `);
+    assert.match(
+        guarded.cpp,
+        /\w+\.hit && \(\w+\.picked_kind != bbl::PickedNodeKind::none\)/,
+    );
+    // Two branches that BOTH carry native storage still have to match: the
+    // rule is about a value that already models absence, not about widening
+    // any pair a scene writes.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createCylinder, createEngine, createSceneContext } from "babylon-lite";
+        async function main() {
+            const canvas = document.getElementById("renderCanvas") as HTMLCanvasElement;
+            const engine = await createEngine(canvas);
+            const scene = createSceneContext(engine);
+            const cylinder = createCylinder(engine, { height: 2, diameter: 1 });
+            const chosen = canvas.clientWidth > 100 ? cylinder : scene;
+            engine.setHardwareScalingLevel(chosen ? 1 : 2);
+        }
+        void main();
+    `),
+        /Conditional expressions require matching native value branches/,
     );
 });

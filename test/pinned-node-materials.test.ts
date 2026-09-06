@@ -109,7 +109,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         ...nodeVariantStageStems(0),
         composed,
     };
-    const header = pinnedNodeVariantsHeader("test", [variant]);
+    const header = pinnedNodeVariantsHeader("test", [variant], []);
     assert.equal(
         nodeVariantsUseMorphStorage([variant]),
         true,
@@ -213,8 +213,8 @@ test("both native node paths bind per-mesh morph storage and its fallback", () =
     assert.match(sdl, /gpu_mesh\.morph_weights = state\.empty_morph_weights;/);
 
     const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
-    assert.match(dawn, /storage\(entry\.morph\.deltas_binding\);/);
-    assert.match(dawn, /storage\(entry\.morph\.weights_binding\);/);
+    assert.match(dawn, /storage\(view\.morph\.deltas_binding\);/);
+    assert.match(dawn, /storage\(view\.morph\.weights_binding\);/);
     assert.match(dawn, /deltas\.buffer = mesh\.morph_deltas;/);
     assert.match(dawn, /weights\.buffer = mesh\.morph_weights;/);
     assert.match(dawn, /mesh\.morph_deltas = state\.empty_morph_deltas;/);
@@ -239,9 +239,11 @@ test("carries the pin's alpha-combine state into the node variant", async () => 
     const graph = { ...(await corpusGraph(60)), forceAlphaBlending: true };
     const composed = await composeNodeMaterial(graph, "blended");
     assert.equal(composed.alphaBlending, true);
-    const header = pinnedNodeVariantsHeader("test", [
-        { index: 0, ...nodeVariantStageStems(0), composed },
-    ]);
+    const header = pinnedNodeVariantsHeader(
+        "test",
+        [{ index: 0, ...nodeVariantStageStems(0), composed }],
+        [],
+    );
     assert.match(
         header,
         /bool alpha_blending;/,
@@ -261,10 +263,13 @@ test("refuses a node alpha mode whose fixed-function state is not lowered", asyn
 });
 
 test("both node backends apply alpha-combine blending without depth writes", () => {
+    // A geometry view joins the same expression rather than forking it: the
+    // pin compiles that view at alpha mode 0 whatever the graph declares, so
+    // it is one more reason a node draw is opaque, not a second predicate.
     const sdl = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
     assert.match(
         sdl,
-        /const bool transparent = traits\.transparent && !shadow_pass && !caster;/,
+        /traits\.transparent && !shadow_pass && !caster && !geometry_view;/,
     );
     assert.match(
         sdl,
@@ -278,7 +283,7 @@ test("both node backends apply alpha-combine blending without depth writes", () 
     const dawn = readFileSync("native/src/pal_dawn.cpp", "utf8");
     assert.match(
         dawn,
-        /const bool transparent = traits\.transparent && !shadow_pass && !caster;/,
+        /traits\.transparent && !shadow_pass && !caster && !geometry_view;/,
     );
     assert.match(
         dawn,
@@ -295,9 +300,11 @@ test("emits the variant table and the pin's own mesh block", async () => {
         await corpusGraph(60),
         "scene60",
     );
-    const header = pinnedNodeVariantsHeader("test", [
-        { index: 0, ...nodeVariantStageStems(0), composed },
-    ]);
+    const header = pinnedNodeVariantsHeader(
+        "test",
+        [{ index: 0, ...nodeVariantStageStems(0), composed }],
+        [],
+    );
     assert.match(header, /node_variants\{\{/);
     assert.match(header, /"node-0\.vert", "node-0\.frag"/);
     // The mesh block is mirrored field for field, with the light-index array
@@ -323,10 +330,18 @@ test("refuses two graphs whose mesh blocks disagree", async () => {
     };
     assert.throws(
         () =>
-            pinnedNodeVariantsHeader("test", [
-                { index: 0, ...nodeVariantStageStems(0), composed },
-                { index: 1, ...nodeVariantStageStems(1), composed: widened },
-            ]),
+            pinnedNodeVariantsHeader(
+                "test",
+                [
+                    { index: 0, ...nodeVariantStageStems(0), composed },
+                    {
+                        index: 1,
+                        ...nodeVariantStageStems(1),
+                        composed: widened,
+                    },
+                ],
+                [],
+            ),
         /mesh block/,
     );
 });
