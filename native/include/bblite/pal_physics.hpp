@@ -184,6 +184,8 @@ struct PhysicsRaycastResult {
     std::array<double, 3> point{};
     std::array<double, 3> normal{};
     double distance = 0.0;
+    // The stable HP_Body identity, resolved through the querying world's bodies.
+    std::uint32_t body_identity = 0;
 };
 
 // --- World -----------------------------------------------------------

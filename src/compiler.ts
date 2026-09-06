@@ -19139,6 +19139,11 @@ class Compiler
     }
 
     public reachFeature(feature: Feature, site?: ts.Node): void {
+        if ((feature === "math:mat4-invert" && this.features.has("renderer:high-precision-matrix")) ||
+            (feature === "renderer:high-precision-matrix" && this.features.has("math:mat4-invert"))) {
+            this.fail(site ?? this.sourceFile,
+                "mat4Invert currently requires Float32 Mat4 storage; high-precision matrix allocation is not supported by this scene-code intrinsic.");
+        }
         // Every raw Web Audio node/asset feature is implemented by the same
         // engine PAL and can only be reached through one of its contexts.
         // Record that dependency even when the creating call lives in a

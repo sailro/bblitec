@@ -899,6 +899,12 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "Float32Array") {
       return { kind: "f32array" };
     }
+    if (isPinnedType(type, ["Mat4"])) {
+      // The reached native matrix producers own F32 storage. Keep the pin's
+      // opaque, numerically indexed interface through parameters and returns;
+      // ordinary data sinks still refuse incompatible F64 producers.
+      return { kind: "f32array" };
+    }
     if (type.symbol?.name === "Float64Array") {
       return { kind: "f64array" };
     }

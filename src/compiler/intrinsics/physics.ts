@@ -631,6 +631,17 @@ export function compilePhysicsIntrinsic(
         recordProperties: {
           hasHit: { kind: "boolean", cpp: `${result}.has_hit` },
           hitPoint: vec3Record(`${result}.hit_point`),
+          hitNormal: vec3Record(`${result}.hit_normal`),
+          hitDistance: { kind: "number", cpp: `${result}.hit_distance` },
+          body: {
+            kind: "data",
+            cpp: `${result}.body`,
+            dataType: {
+              kind: "optional",
+              inner: { kind: "handle", handle: "physics-body" },
+            },
+            ...(world.engineCpp === undefined ? {} : { engineCpp: world.engineCpp }),
+          },
         },
       };
     }

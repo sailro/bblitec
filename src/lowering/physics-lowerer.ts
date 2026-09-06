@@ -1747,6 +1747,29 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
 
   public lowerPhysics(): LoweredSource {
     this.assertPinnedContracts();
+    const queryModule = "src/physics/havok-queries.ts";
+    const raycast = this.context.functionDeclaration(queryModule, "physicsRaycast");
+    const distanceLowerer = new PinnedNumericLowerer(raycast.file, {
+      bindings: new Map<string, PinnedBinding>([
+        ["hitPos", { cpp: "hit.point", type: "f64-list" }],
+        ["from", { cpp: "from", type: "vec3" }],
+        ...["dx", "dy", "dz"].map((name) => [name, { cpp: name, type: "scalar" as const }] as const),
+      ]),
+      calls: pinnedNumericMathCalls(),
+    });
+    const distanceLocals = ["dx", "dy", "dz"].map((name) =>
+      `        const double ${name} = ${distanceLowerer.expression(this.context.variableInitializer(raycast.declaration, name))};`,
+    ).join("\n");
+    const distanceExpression = distanceLowerer.expression(this.context.propertyInitializer(
+      this.context.returnObject(raycast.declaration), "hitDistance",
+    ));
+    this.assertShapeContracts(
+      (symbol) => this.context.functionDeclaration(queryModule, symbol).declaration,
+      [
+        ["physicsRaycast", ["findBodyById(world, hitData[0][0])"]],
+        ["findBodyById", ["world._bodies", "bodies[i]!._hkBody[0] === hitBodyId"]],
+      ],
+    );
 
     const maxStepMs = this.maxStepMs();
     const floatingOriginRadius = this.floatingOriginRadius();
@@ -1931,6 +1954,10 @@ struct PhysicsWorld;
 
 struct PhysicsBody {
     pal::PhysicsBodyHandle handle{};
+    // Copies carry the same pinned object identity even after its live fields change.
+    [[nodiscard]] bool operator==(const PhysicsBody& other) const noexcept {
+        return handle.value == other.handle.value;
+    }
     std::weak_ptr<PhysicsWorld> owner;
     PhysicsNodeRef node{};
     PhysicsShape shape{};
@@ -2000,6 +2027,7 @@ struct PhysicsRaycastResult {
     Vec3d hit_point{};
     Vec3d hit_normal{};
     double hit_distance = 0.0;
+    js::Nullable<PhysicsBody> body{};
 };
 
 /**
@@ -2186,6 +2214,15 @@ void on_physics_collision(
     std::uint32_t collide_with);
 
 }  // namespace bbl::upstream
+
+namespace bbl::js {
+template <>
+struct ValueHash<upstream::PhysicsBody> {
+    [[nodiscard]] std::size_t operator()(const upstream::PhysicsBody& body) const noexcept {
+        return std::hash<std::uint32_t>{}(body.handle.value);
+    }
+};
+} // namespace bbl::js
 `;
 
     const source = `// ${this.context.provenance(havokModule, "_stepWorld")}
@@ -3097,11 +3134,26 @@ PhysicsRaycastResult physics_raycast(
         {to.x, to.y, to.z},
         membership,
         collide_with);
+    // src/physics/havok-queries.ts#findBodyById searches the tracked world
+    // list and returns the original body's identity, or null if it is absent.
+    js::Nullable<PhysicsBody> body;
+    double distance = 0.0;
+    if (hit.has_hit) {
+${distanceLocals}
+        distance = ${distanceExpression};
+        for (const PhysicsBody& candidate : world.bodies) {
+            if (candidate.handle.value == hit.body_identity) {
+                body = candidate;
+                break;
+            }
+        }
+    }
     return PhysicsRaycastResult{
         hit.has_hit,
         Vec3d{hit.point[0], hit.point[1], hit.point[2]},
         Vec3d{hit.normal[0], hit.normal[1], hit.normal[2]},
-        hit.distance,
+        distance,
+        body,
     };
 }
 

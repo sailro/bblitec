@@ -49,6 +49,7 @@ import { bakeCsg2Meshes, csg2BooleanNames, csg2MaterialSlotCount, type Csg2Solid
 export const nativeMeshDataIntrinsics: ReadonlySet<string> = new Set([
     "mat4Identity",
     "mat4Compose",
+    "mat4Invert",
     "setThinInstanceMatrix",
     "setThinInstanceColors",
     "setThinInstanceCount",
@@ -874,6 +875,17 @@ export function compileMeshIntrinsic(
                     `bbl::set_mesh_visible(` +
                     `${context.requireEngine(mesh, call)}, ${mesh.cpp}, ` +
                     `${context.compileCondition(call.arguments[1]!)})`,
+            };
+        }
+        case "mat4Invert": {
+            context.expectArgumentCount(call, 1, 1);
+            context.reachJsData();
+            context.reachFeature("math:mat4-invert", call);
+            return {
+                kind: "data",
+                cpp: `bbl::upstream::mat4_invert_array(${context.compileTypedArrayArgument(call.arguments[0]!, "f32array")})`,
+                dataType: { kind: "optional", inner: { kind: "f32array" } },
+                freshData: true,
             };
         }
         case "mat4Compose": {

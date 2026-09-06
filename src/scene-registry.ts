@@ -2037,6 +2037,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene103",
+        name: "Scene 103 - Physics Raycast Instance Picking",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene103.ts",
+        title: "Babylon Lite Native - Physics Raycast Instance Picking",
+        parity: {
+            referenceSearch: "?captureFrame=5",
+            maxFullMad: 0.025,
+            maxForegroundMad: 0.12,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "15" },
+        },
+    },
+    {
         id: "scene106",
         name: "Scene 106 - Physics Motion and Prestep Grid",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",

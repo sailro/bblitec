@@ -1113,6 +1113,8 @@ struct RenderDrawCommand {
 
 struct RenderDrawList {
     std::vector<RenderDrawCommand> commands;
+    // Transparent bindings survive a bare visibility write between frames.
+    std::vector<RenderDrawCommand> visibility_candidates;
 };
 
 struct RenderDrawLists {
@@ -1767,8 +1769,7 @@ void append_draw(
     std::uint32_t item_index,
     const RenderItem& item,
     const Engine& engine) {
-    // Tested HERE, at list build, because these lists are the pin's cached
-    // opaque render bundles: the renderable reads visible when a bundle
+    // Opaque lists are the pin's cached render bundles: visibility is read when a bundle
     // is RECORDED, and the two writers differ by design. setMeshVisible
     // bumps the visibility epoch, which the backends answer by re-running
     // this build -- a hide or show lands that frame. A bare visible
@@ -1777,9 +1778,6 @@ void append_draw(
     // Never filtered when choosing pick candidates (see pick_candidate
     // above): a hidden mesh stays a pick candidate, so it stays in the
     // plan and drops only from the lists.
-    if (!mesh_draws(engine.meshes[item.mesh.value])) {
-        return;
-    }
     RenderDrawCommand command;
     command.item_index = item_index;
     command.item = item;
@@ -1789,6 +1787,13 @@ void append_draw(
         item.transmissive
             ? result.transparent
             : result.opaque;
+    if (&list == &result.transparent) {
+        // render-task.ts drawList reads transparent visibility every frame.
+        list.visibility_candidates.push_back(command);
+    }
+    if (!mesh_draws(engine.meshes[item.mesh.value])) {
+        return;
+    }
     list.commands.push_back(command);
 }
 
@@ -1991,7 +1996,9 @@ void sort_transparent_draws(
     const CameraBasis basis = camera_basis(camera);
     const Vec3& eye = basis.eye;
     const Vec3& forward = basis.forward;
-    for (RenderDrawCommand& command : transparent.commands) {
+    auto& commands = transparent.visibility_candidates.empty()
+        ? transparent.commands : transparent.visibility_candidates;
+    for (RenderDrawCommand& command : commands) {
         if (command.item.mesh.value >= engine.meshes.size()) {
             command.sort_distance = 0.0f;
             continue;
@@ -2031,13 +2038,21 @@ void sort_transparent_draws(
         command.sort_distance = dot(delta, forward);
     }
     std::stable_sort(
-        transparent.commands.begin(),
-        transparent.commands.end(),
+        commands.begin(),
+        commands.end(),
         [](const RenderDrawCommand& left, const RenderDrawCommand& right) {
             return left.sort_distance > right.sort_distance ||
                 (left.sort_distance == right.sort_distance &&
                  left.item.order < right.item.order);
         });
+    if (!transparent.visibility_candidates.empty()) {
+        transparent.commands.clear();
+        for (const RenderDrawCommand& command : commands) {
+            if (mesh_draws(engine.meshes.at(command.item.mesh.value))) {
+                transparent.commands.push_back(command);
+            }
+        }
+    }
 }
 
 ${options.meshProfiles ? meshProfileBindingCpp(options.meshProfiles) : ""}\
@@ -4132,6 +4147,16 @@ ${pinnedFogInfosPacking()}    };
         // `lowerShaders`; 100/150/200 live in these rows), and the
         // cull/winding forks `render_pipeline_kind` enumerates.
         for (const [modulePath, marker, label] of [
+            [
+                "src/frame-graph/render-task.ts",
+                "draws += drawList(pass, task._transparentBindings, eng);",
+                "transparent draws execute each frame",
+            ],
+            [
+                "src/frame-graph/render-task.ts",
+                "if (mesh && mesh.visible === false) {",
+                "draw-time visibility predicate",
+            ],
             [
                 "src/material/pbr/pbr-renderable.ts",
                 "const isTransparent = (features2 & (PBR2_NO_COLOR_OUTPUT | PBR2_ESM_SHADOW_OUTPUT)) === 0 && (features & PBR_HAS_ALPHA_BLEND) !== 0;",

@@ -291,7 +291,10 @@ export function lowerMat4MultiplyWriterCpp(context: LoweringContext): string {
 }
 
 /** The pinned full 4x4 inverse, including its f32 allocation boundary. */
-export function lowerMat4InvertCpp(context: LoweringContext): string {
+export function lowerMat4InvertCpp(
+    context: LoweringContext,
+    options: { inline?: boolean; cppName?: string } = {},
+): string {
     const module = "src/math/mat4-invert.ts";
     const symbol = "mat4Invert";
     const { file, declaration } = context.functionDeclaration(
@@ -381,7 +384,7 @@ export function lowerMat4InvertCpp(context: LoweringContext): string {
         .flatMap((statement) => lowerer.statement(statement, "    "))
         .join("\n");
     return `// ${context.provenance(module, symbol)}
-std::optional<std::array<float, 16>> mat4_invert(
+${options.inline ? "inline " : ""}std::optional<std::array<float, 16>> ${options.cppName ?? "mat4_invert"}(
     const std::array<float, 16>& input) {
     std::array<float, 16> out{};
 ${body}
