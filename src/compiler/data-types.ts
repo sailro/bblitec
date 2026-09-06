@@ -870,12 +870,9 @@ export class DataTypeRegistry {
     ) {
       return { kind: "handle", handle: "audio-context" };
     }
-    if (
-      type.symbol?.name === "AudioEngine" &&
-      declaredInBabylonLite(type.symbol)
-    ) {
-      // AudioEngine carries compiler-owned context, buses, and nullable
-      // construction state; its public interface is not a plain-data record.
+    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid"])) {
+      // These interfaces carry compiler-owned identity, not plain-data
+      // storage: audio context/buses or a generation-only geometry plan.
       return undefined;
     }
     if (type.symbol && isDomElementType(type.symbol)) {

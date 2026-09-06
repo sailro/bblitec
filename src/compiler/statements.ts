@@ -1499,6 +1499,11 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
+        // Lower in source order so generation-only bindings and cleanup see
+        // the try body's effects. Native cleanup still precedes the captured
+        // body as a scope guard, covering early returns and exceptions.
+        const body = context.captureEmittedLines(() =>
+            this.emitTryBody(context, statement));
         const capturedFinally = statement.finallyBlock
             ? this.captureFinallyGuard(
                   context,
@@ -1521,6 +1526,17 @@ export class StatementLowerer {
             context.decreaseIndent();
             context.emit("});");
         }
+        for (const line of body) context.emit(line);
+        if (finallyGuard) {
+            context.decreaseIndent();
+            context.emit("}");
+        }
+    }
+
+    private emitTryBody(
+        context: StatementLoweringContext,
+        statement: ts.TryStatement,
+    ): void {
         if (statement.catchClause) {
             const catchDeclaration =
                 statement.catchClause.variableDeclaration;
@@ -1588,10 +1604,6 @@ export class StatementLowerer {
                 context.decreaseIndent();
             }
             context.emit("}");
-            if (finallyGuard) {
-                context.decreaseIndent();
-                context.emit("}");
-            }
             return;
         }
         if (!statement.finallyBlock) {
@@ -1601,22 +1613,14 @@ export class StatementLowerer {
                     "that erases to nothing.",
             );
         }
-        if (!finallyGuard) {
-            context.pushScope(context.allocateBlockPrefix());
-            try {
-                for (const child of statement.tryBlock.statements) {
-                    this.emit(context, child);
-                    if (this.terminatesAfterLowering(child)) break;
-                }
-            } finally {
-                context.popScope();
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            for (const child of statement.tryBlock.statements) {
+                this.emit(context, child);
+                if (this.terminatesAfterLowering(child)) break;
             }
-            return;
-        }
-        this.emitScopedBody(context, statement.tryBlock);
-        if (finallyGuard) {
-            context.decreaseIndent();
-            context.emit("}");
+        } finally {
+            context.popScope();
         }
     }
 

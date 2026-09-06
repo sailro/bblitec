@@ -17045,10 +17045,10 @@ class Compiler
      *
      * Only a record that exists at generation qualifies (`cpp` is empty),
      * because a native value would have needed storage at the declaration.
-     * And only an assignment the declaring function reaches unconditionally
+     * And only an assignment the declaring scope reaches unconditionally
      * on the way to the name's later reads -- through blocks and `try`
-     * bodies, never a callback, a branch or a loop -- because the binding
-     * is written once for the whole function rather than per path.
+     * bodies, never a nested callback, branch or loop. A declaration inside
+     * a statically expanded loop has its own binding on every iteration.
      */
     public bindPendingLet(identifier: ts.Identifier, value: Value): void {
         if (value.cpp !== "" || !isCompileTimeOnlyValue(value.kind)) {
@@ -17061,12 +17061,17 @@ class Compiler
         }
         const symbol = this.requireValueSymbol(identifier);
         const declaration = symbol.valueDeclaration;
-        const owningFunction = declaration
-            ? ts.findAncestor(declaration, ts.isFunctionLike)
+        const blockScoped = declaration && ts.isVariableDeclaration(declaration) &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.BlockScoped) !== 0;
+        const declaringScope = declaration
+            ? ts.findAncestor(declaration, (node) =>
+                  ts.isSourceFile(node) ||
+                  (blockScoped ? ts.isBlock(node) : ts.isFunctionLike(node)))
             : undefined;
         for (
             let node: ts.Node | undefined = identifier.parent;
-            node && node !== owningFunction;
+            node && node !== declaringScope;
             node = node.parent
         ) {
             if (
@@ -17082,7 +17087,7 @@ class Compiler
             this.fail(
                 identifier,
                 `'${identifier.text}' is assigned inside a ${ts.SyntaxKind[node.kind]}; ` +
-                    "an untyped 'let' binds only where its function reaches " +
+                    "an untyped 'let' binds only where its declaring scope reaches " +
                     "the assignment unconditionally.",
             );
         }
@@ -17091,7 +17096,13 @@ class Compiler
             this.fail(identifier, `Unable to resolve variable '${identifier.text}'.`);
         }
         this.describeNativeValue(value);
-        owner.set(symbol, { ...owner.get(symbol)!, value });
+        owner.set(symbol, { ...owner.get(symbol)!, value: {
+            ...value,
+            // A successful generation-only binding is a present object,
+            // including when its annotation still admits undefined.
+            optionalFoundCpp: value.optionalFoundCpp ??
+                (value.kind === "json-null" ? "false" : "true"),
+        } });
     }
 
     public rebindVariable(identifier: ts.Identifier, value: Value): void {
