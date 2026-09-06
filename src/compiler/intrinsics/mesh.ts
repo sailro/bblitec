@@ -469,7 +469,8 @@ function csgSourceCall(
         // A subtree starting at or after this argument can hold no
         // earlier occurrence, so the walk stops at the call.
         if (node.getStart(source) >= limit) return;
-        if (ts.isIdentifier(node) && context.symbols.valueSymbol(node) === symbol) {
+        if (ts.isIdentifier(node) && node.text === expression.text &&
+            context.symbols.valueSymbol(node) === symbol) {
             // Material writes cannot change retained geometry or the world
             // transform. Every other previous use still withdraws the proof.
             const property = node.parent;
@@ -605,11 +606,10 @@ export function compileMeshIntrinsic(
         case "csg2Intersect":
         case "csg2Add": {
             context.expectArgumentCount(call, 2, 2);
-            const op = csg2BooleanNames.find((name) => name === importedName)!;
             const left = requireCsg2Solid(context, call.arguments[0]!);
             const right = requireCsg2Solid(context, call.arguments[1]!);
             context.reachFeature("mesh:csg2", call);
-            return { kind: "csg2-solid", cpp: "", csg2Solid: { plan: { op, left, right }, disposed: false } };
+            return { kind: "csg2-solid", cpp: "", csg2Solid: { plan: { op: importedName, left, right }, disposed: false } };
         }
         case "disposeCsg2": {
             context.expectArgumentCount(call, 1, 1);

@@ -21,7 +21,7 @@ import {
     emitStructuralPropertyAssignment,
     type AssignmentContext,
 } from "./compiler/assignments.js";
-import { sceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
+import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
 import {
     registerAsset,
     registerUiImageAsset,
@@ -16851,27 +16851,13 @@ class Compiler
             if (owner.kind === "scene-node") {
                 this.reachFeature("scene:node-transforms", expression);
             }
-            const collection =
-                owner.kind === "mesh" ? "meshes" : "transform_nodes";
-            const vector = owner.kind === "scene-node"
-                ? `bbl::scene_node_${sceneNodeTransform.nativeField}(${engine}, ${owner.cpp})`
-                : `${engine}.${collection}[${owner.cpp}.value].${sceneNodeTransform.nativeField}`;
-            const component = (name: "x" | "y" | "z" | "w"): Value => ({
-                kind: "number",
-                cpp: `${vector}.${name}`,
-                dataType: { kind: "number" },
-                engineCpp: engine,
-                ...(owner.kind === "scene-node" ? { freshData: true } : {}),
-            });
+            const vectorOwner = { ...owner, engineCpp: engine };
             return {
                 kind: "record",
                 cpp: "",
-                sceneNodeVector: { owner: { ...owner, engineCpp: engine }, transform: sceneNodeTransform },
-                recordProperties: Object.fromEntries(
-                    sceneNodeTransform.components.map((name) => [
-                        name,
-                        component(name),
-                    ]),
+                sceneNodeVector: { owner: vectorOwner, transform: sceneNodeTransform },
+                recordProperties: this.sceneNodeVectorProperties(
+                    vectorOwner, sceneNodeTransform, owner.kind === "scene-node",
                 ),
             };
         }
@@ -17583,6 +17569,24 @@ class Compiler
             .some((property) => this.recordHasMutableContainer(property, seen));
     }
 
+    private sceneNodeVectorProperties(
+        owner: Value & { engineCpp: string },
+        transform: SceneNodeTransformDescriptor,
+        freshData = false,
+    ): Record<string, Value> {
+        const engine = owner.engineCpp;
+        const vector = owner.kind === "scene-node"
+            ? `bbl::scene_node_${transform.nativeField}(${engine}, ${owner.cpp})`
+            : `${engine}.${owner.kind === "mesh" ? "meshes" : "transform_nodes"}[${owner.cpp}.value].${transform.nativeField}`;
+        return Object.fromEntries(transform.components.map((name) => [name, {
+            kind: "number",
+            cpp: `${vector}.${name}`,
+            dataType: { kind: "number" },
+            engineCpp: engine,
+            ...(freshData ? { freshData: true } : {}),
+        } satisfies Value]));
+    }
+
     /** Retain the handle, so vector aliases survive arena growth and source rebinding. */
     private bindSceneNodeVector(value: Value): Value {
         const vector = value.sceneNodeVector;
@@ -17591,20 +17595,10 @@ class Compiler
         this.emit(`[[maybe_unused]] const auto ${cpp} = ${vector.owner.cpp};`);
         const owner = { ...vector.owner, cpp };
         this.describeNativeValue(owner);
-        const engine = owner.engineCpp;
-        const field = vector.transform.nativeField;
-        const source = owner.kind === "scene-node"
-            ? `bbl::scene_node_${field}(${engine}, ${cpp})`
-            : `${engine}.${owner.kind === "mesh" ? "meshes" : "transform_nodes"}[${cpp}.value].${field}`;
         return {
             ...value,
             sceneNodeVector: { ...vector, owner, bound: true },
-            recordProperties: Object.fromEntries(vector.transform.components.map((name) => [name, {
-                kind: "number",
-                cpp: `${source}.${name}`,
-                dataType: { kind: "number" },
-                engineCpp: engine,
-            } satisfies Value])),
+            recordProperties: this.sceneNodeVectorProperties(owner, vector.transform),
         };
     }
 

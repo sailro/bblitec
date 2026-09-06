@@ -56,13 +56,7 @@ function runScene(name: string, source: string, observer: string, physics = fals
 // The complete accepted program and its callback environments compile unchanged.
 // Runtime entry points observe control flow without creating a window or solver.
 namespace bbl {
-Engine create_engine(EngineOptions) { return {}; }
 Scene create_scene_context(Engine& engine) { Scene scene; scene.engine = &engine; return scene; }
-MeshHandle create_box(Engine& engine, BoxOptions) {
-    const auto index = static_cast<std::uint32_t>(engine.meshes.size());
-    engine.meshes.emplace_back();
-    return {index};
-}
 void mark_mesh_dirty(Engine&, MeshHandle) {}
 void mark_mesh_runtime_transform(Engine&, MeshHandle) {}
 }
@@ -72,6 +66,7 @@ ${observer}
     runNativeFixtureCompiler(nativeTools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
         `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", "/I", output, fixture,
+        "test/fixtures/js-callback/data-engine-stubs.cpp",
     ]);
     execFileSync(executable, { encoding: "utf8" });
 }

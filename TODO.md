@@ -22,9 +22,8 @@ implementation, follow the sizing/capture workflow in
   needs a refusal measured across the matrix. General render/update
   callbacks, escaping captures and dynamic-import/AOT promise dispatch need
   this common contract.
-- [ ] Extend discriminated unions, numeric-literal narrowing and
-  definitely-assigned locals across try/finally. A static nullable annotation
-  must not keep both branches live when its value is known.
+- [ ] Extend discriminated unions, numeric-literal narrowing and runtime
+  definitely-assigned locals across try/finally beyond generation-only bindings.
 - [ ] Carry runtime numeric width on values rather than in already-rendered
   C++ text; use the same sink conversion for inline returns and tuple lanes.
   Invalidate static parameter metadata after assignment. Compare generated

@@ -75,6 +75,10 @@ selected at both generated-source and dependency boundaries. See
 | Storage/files | Per-user localStorage, bounded Blob/object URLs, one-file open and download; [UI](ui.md#file-transfer-controls) owns controls |
 | UI | Supported retained DOM/CSS/Canvas2D operations; [UI](ui.md) owns their complete compatibility boundary |
 
+Pinned readonly literal enum exports remain values in native arrays. Physics
+motion and prestep arguments validate against the pin's parameter types before
+converting to native enums.
+
 This is not a complete typed user-code IR. Handle-dependent helper inlining,
 escape classification, generic bodies, resource loops and aliasing have
 limitations. The [runtime ownership contract](architecture.md#runtime-and-memory)
@@ -247,6 +251,9 @@ owns its mutable storage.
 
 Scene-created transform nodes, parenting, local/world transforms, visibility,
 supported imported-hierarchy walks and bounded cloning are represented.
+Retained `position`, `rotation` and `scaling` aliases preserve their owner's
+handle across arena growth and source-variable reassignment; vector setters
+reuse the normal transform mutation path.
 Imported roots and runtime TransformNode values still have distinct paths;
 full imported-root cloning/rotation/scaling and arbitrary hierarchy visitor
 effects remain unfinished.

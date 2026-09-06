@@ -1501,20 +1501,20 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
+        if (!statement.finallyBlock) {
+            this.emitTryBody(context, statement);
+            return;
+        }
         // Lower in source order so generation-only bindings and cleanup see
         // the try body's effects. Native cleanup still precedes the captured
         // body as a scope guard, covering early returns and exceptions.
         const beforeBody = context.nativeBindingCheckpoint();
         const body = context.captureEmittedLines(() =>
             this.emitTryBody(context, statement));
-        const capturedFinally = statement.finallyBlock
-            ? this.captureFinallyGuard(
-                  context,
-                  statement.finallyBlock,
-                  beforeBody,
-              )
-            : undefined;
-        const finallyGuard = capturedFinally?.length
+        const capturedFinally = this.captureFinallyGuard(
+            context, statement.finallyBlock, beforeBody,
+        );
+        const finallyGuard = capturedFinally.length
             ? capturedFinally
             : undefined;
         if (finallyGuard) {
