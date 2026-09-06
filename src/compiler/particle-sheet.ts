@@ -2,7 +2,7 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { AssignmentContext } from "./assignments.js";
 import type { Value } from "./types.js";
-import { compileStaticNumber, validateObjectProperties } from "./option-helpers.js";
+import { compileStaticNumber } from "./option-helpers.js";
 import { frozenParticleBuffer, requireParticleBakeWritable } from "./particle-buffer.js";
 
 /** The manually supplied sheet is native shared storage, independent of the baked graph. */
@@ -20,10 +20,23 @@ export function emitFrozenParticleSheetAssignment(
     if (!ts.isObjectLiteralExpression(object)) {
         context.fail(object, "A frozen particle sprite sheet is supplied as an object literal; replacing fields through a sheet-object alias is not lowered.");
     }
-    validateObjectProperties(context, object, ["cellWidth", "cellHeight", "cellIndex", "update"],
-        "A frozen particle sprite sheet carries cellWidth, cellHeight, cellIndex and a no-op update callback.");
+    const fields = new Map<string, ts.Expression>();
+    for (const property of object.properties) {
+        if ((!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) ||
+            ts.isComputedPropertyName(property.name)) {
+            context.fail(property, "A frozen particle sprite sheet requires named, non-computed fields.");
+        }
+        const name = context.propertyName(property.name);
+        if (!name || !["cellWidth", "cellHeight", "cellIndex", "update"].includes(name)) {
+            context.fail(property, "A frozen particle sprite sheet carries cellWidth, cellHeight, cellIndex and a no-op update callback.");
+        }
+        if (fields.has(name)) {
+            context.fail(property, `A frozen particle sprite sheet cannot repeat field '${name}'.`);
+        }
+        fields.set(name, ts.isPropertyAssignment(property) ? property.initializer : property.name);
+    }
     const field = (name: string): ts.Expression => {
-        const value = context.objectProperty(object, name);
+        const value = fields.get(name);
         if (!value) context.fail(object, `A frozen particle sprite sheet requires '${name}'.`);
         return value;
     };
