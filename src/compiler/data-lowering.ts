@@ -812,10 +812,14 @@ export class DataLowerer {
                 );
                 if (optional) return optional;
             }
-            return this.propertyRead(
-                owner,
-                unwrapped,
-            );
+            // A call can yield an intrinsic record or engine handle rather
+            // than native data. Its owner has already been evaluated, so
+            // continue through the shared property reader before declining
+            // the path and causing the caller to evaluate it again.
+            return this.propertyRead(owner, unwrapped) ??
+                (mode === "read"
+                    ? this.context.readResolvedProperty(owner, unwrapped)
+                    : undefined);
         }
         if (ts.isElementAccessExpression(unwrapped)) {
             // Static tables materialize only under runtime indices; static
