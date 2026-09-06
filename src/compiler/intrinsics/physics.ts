@@ -46,6 +46,7 @@ export interface PhysicsIntrinsicContext
   vec3FromRecord(value: Value, node: ts.Node, precision?: "float" | "double"): string;
   materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
   pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
+  readResolvedProperty(owner: Value, expression: ts.PropertyAccessExpression): Value | undefined;
   bindDataTuple(value: Value, arity: number, label?: string): string;
   expectSameEngine(left: Value, right: Value, node: ts.Node): void;
   expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
@@ -609,13 +610,19 @@ export function compilePhysicsIntrinsic(
       let collideWith = "0xffffffffu";
       let shouldHitTriggers = "false";
       if (call.arguments[3]) {
-        const options = context.expectObjectLiteral(call.arguments[3]);
+        const argument = context.unwrap(call.arguments[3]);
+        const options = context.expectObjectLiteral(argument);
         validateObjectProperties(
           context,
           options,
           ["membership", "collideWith", "shouldHitTriggers"],
           "A physics raycast option outside the reached filter slice.",
         );
+        // Resolution supplies the accepted shape, but an alias already ran
+        // its initializer. Read the captured object instead of running it again.
+        const captured = ts.isObjectLiteralExpression(argument)
+          ? undefined
+          : context.compileValue(argument);
         // Compile and pin each initializer before the next one can emit a
         // mutation. Object property order is observable independently of the
         // positional order of the generated native query's filter arguments.
@@ -624,16 +631,30 @@ export function compilePhysicsIntrinsic(
             ? property.initializer
             : (property as ts.ShorthandPropertyAssignment).name;
           const name = context.propertyName(property.name!);
-          if (name === "shouldHitTriggers") {
-            shouldHitTriggers = context.pinValueToTemporary({
-              kind: "boolean", cpp: context.compileBoolean(expression),
-            }, "ray_triggers").cpp;
+          const kind = name === "shouldHitTriggers" ? "boolean" : "number";
+          let cpp: string;
+          if (captured) {
+            const access = ts.factory.createPropertyAccessExpression(argument, name!);
+            // Native storage owns a snapshot even when initializer metadata
+            // still refers to another object's mutable property.
+            const { recordProperties: _initializerFields, ...stored } = captured;
+            const field = context.readResolvedProperty(captured.kind === "data" ? stored : captured, access);
+            if (!field) context.fail(argument, `Physics raycast option '${name}' is not a captured value.`);
+            context.expectKind(field, kind, argument);
+            if (captured.kind !== "data" &&
+                (kind === "boolean" ? field.staticBoolean : field.staticNumber) === undefined) {
+              context.fail(argument, "Physics raycast option aliases require stored scalar fields or generation-known values.");
+            }
+            cpp = field.cpp;
           } else {
-            const number = pinRayNumber(context, expression);
-            const mask = `static_cast<std::uint32_t>(${number})`;
-            if (name === "membership") membership = mask;
-            else collideWith = mask;
+            cpp = kind === "boolean"
+              ? context.compileBoolean(expression)
+              : context.compileNumber(expression, "double");
           }
+          const snapshot = context.pinValueToTemporary({ kind, cpp }, `ray_${name}`).cpp;
+          if (name === "shouldHitTriggers") shouldHitTriggers = snapshot;
+          else if (name === "membership") membership = `static_cast<std::uint32_t>(${snapshot})`;
+          else collideWith = `static_cast<std::uint32_t>(${snapshot})`;
         }
       }
       const result = context.allocateTemporaryCppName("physics_raycast");

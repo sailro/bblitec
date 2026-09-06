@@ -55,6 +55,31 @@ function mutateSpreadSource(): { enabled: boolean } { origin.y = 3000; mask = 7;
 if (!physicsRaycast(world, { ...origin }, target, {
     membership: mask, shouldHitTriggers: mutateSpreadSource().enabled,
 }).hasHit) throw new Error("spread snapshot ray failed");
+
+order = 0;
+function queryFromAlias(): void {
+    const query: { membership: number; shouldHitTriggers: boolean; collideWith: number } = {
+        membership: numberStep(1), shouldHitTriggers: triggerStep().enabled, collideWith: numberStep(3),
+    };
+    if (!physicsRaycast(world, { x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, query).hasHit)
+        throw new Error("aliased option ray failed");
+    if (!physicsRaycast(world, { x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, query).hasHit)
+        throw new Error("repeated aliased option ray failed");
+}
+queryFromAlias();
+if (order !== 153) throw new Error("aliased options reran their initializers");
+
+function querySnapshot(): void {
+    const flags = { enabled: true };
+    const query: { shouldHitTriggers: boolean } = { shouldHitTriggers: flags.enabled };
+    flags.enabled = false;
+    if (!physicsRaycast(world, { x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, query).hasHit)
+        throw new Error("stored alias snapshot ray failed");
+    const constantQuery = { membership: 4, shouldHitTriggers: true };
+    if (!physicsRaycast(world, { x: 0, y: 0, z: 5 }, { x: 0, y: 0, z: 0 }, constantQuery).hasHit)
+        throw new Error("constant alias ray failed");
+}
+querySnapshot();
 `;
 
 type ObservedRay = {
@@ -92,7 +117,23 @@ test("physics ray arguments compile with side effects and retained point objects
     assert.equal(rays[3]!.from.y, 2000);
     assert.equal(rays[4]!.from.y, 2000);
     assert.equal(rays[4]!.membership, 3);
+    assert.deepEqual(rays[5], rays[6]);
+    assert.equal(rays[5]!.membership, 1);
+    assert.equal(rays[5]!.collideWith, 3);
+    assert.equal(rays[5]!.shouldHitTriggers, true);
+    assert.equal(rays[7]!.shouldHitTriggers, true);
+    assert.equal(rays[8]!.membership, 4);
+    assert.equal(rays[8]!.shouldHitTriggers, true);
     assert.equal(compileSource(source).cpp.match(/bbl::upstream::physics_raycast\(/g)?.length, rays.length);
+});
+
+test("physics ray options refuse unmaterialized aliases instead of replaying dynamic initializers", () => {
+    const query = "const query: { membership: number; shouldHitTriggers: boolean; collideWith: number }";
+    assert.throws(() => compileSource(source.replace(query, "const query")),
+        /input\.ts:\d+:\d+: Physics raycast option aliases require stored scalar fields or generation-known values/);
+    assert.throws(() => compileSource(source.replace(
+        "const query: { shouldHitTriggers: boolean }", "const query")),
+        /input\.ts:\d+:\d+: Physics raycast option aliases require stored scalar fields or generation-known values/);
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
