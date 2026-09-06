@@ -3677,9 +3677,12 @@ test("evaluates object-literal setters in their captured scope", () => {
         const angle = driver.angle;
     `);
 
-    assert.match(result.cpp, /current = \([^;]+ \* 2\.0\)/);
+    // An accessor pair on a returned record literal is a stored callback
+    // pair, so the binding both close over is one shared cell.
+    assert.match(result.cpp, /auto v_fn\d+_current = bbl::js::make_gc_shared<double>\(0\.0\);/);
+    assert.match(result.cpp, /\(\*v_fn\d+_current\) = \([^;]+ \* 2\.0\)/);
     assert.match(result.cpp, /set_transform_node_rotation_quaternion/);
-    assert.match(result.cpp, /v_angle = .*current/);
+    assert.match(result.cpp, /v_angle = \(\*v_fn\d+_current\)/);
 });
 
 test("keeps an early return inside the invoked setter", () => {
@@ -17693,9 +17696,12 @@ test("registers pre-start application animation loops before rendering", () => {
     `);
 
     assert.match(result.cpp, /animation_frame_callbacks\.push_back/);
+    // `tick` is a kept value (handed to requestAnimationFrame by name), so
+    // the counter it writes is a shared cell the frame callback owns.
+    assert.match(result.cpp, /auto v_elapsed = bbl::js::make_gc_shared<double>\(0\.0\);/);
     assert.match(
         result.cpp,
-        /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(std::tuple\{std::ref\(v_elapsed\)\}, \[\]\(\[\[maybe_unused\]\] auto& \w+, \[\[maybe_unused\]\] double /,
+        /animation_frame_callbacks\.push_back\(bbl::js::make_closure\(std::tuple\{v_elapsed\}, \[\]\(\[\[maybe_unused\]\] auto& \w+, \[\[maybe_unused\]\] double /,
     );
     assert.doesNotMatch(
         result.cpp,
@@ -17733,13 +17739,15 @@ test("registers post-start application animation loops after rendering", () => {
         result.cpp,
         /post_render_animation_frame_callbacks\.push_back/,
     );
+    // `tick` is handed to requestAnimationFrame by name, so the bindings it
+    // writes are cells its closure environment owns past the continuation.
     assert.match(
         result.cpp,
-        /bbl::defer_start_continuation\([^]*static double v_\w*last = bbl::pal::performance_milliseconds\(\);/,
+        /bbl::defer_start_continuation\([^]*auto v_\w*last = bbl::js::make_gc_shared<double>\(bbl::pal::performance_milliseconds\(\)\);/,
     );
     assert.match(
         result.cpp,
-        /bbl::defer_start_continuation\([^]*static double v_\w*elapsed = 0\.0;/,
+        /bbl::defer_start_continuation\([^]*auto v_\w*elapsed = bbl::js::make_gc_shared<double>\(0\.0\);/,
     );
     assert.match(result.cpp, /v_\w*phase = 1\.0;/);
     assert.doesNotMatch(result.cpp, /static v_\w*phase = 1\.0;/);
@@ -17922,9 +17930,12 @@ test("lowers recurring browser timers onto the frame conductor", () => {
         main();
     `);
 
-    assert.match(result.cpp, /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{std::ref\(v_ticks\), std::ref\(v_timer\), std::ref\(v_engine\)\}, \[\]/);
-    assert.match(result.cpp, /v_\w*previous = v_\w*ticks/);
-    assert.match(result.cpp, /v_\w*ticks = \(v_\w*previous \+ 1\.0\)/);
+    // The interval retains `tick`, so the bindings it writes are shared
+    // cells the closure environment owns rather than borrowed locals.
+    assert.match(result.cpp, /auto v_ticks = bbl::js::make_gc_shared<double>\(0\.0\);/);
+    assert.match(result.cpp, /bbl::set_interval\(v_engine, bbl::js::make_closure\(std::tuple\{v_ticks, v_timer, std::ref\(v_engine\)\}, \[\]/);
+    assert.match(result.cpp, /v_\w*previous = \(\*v_\w*ticks\)/);
+    assert.match(result.cpp, /\(\*v_\w*ticks\) = \(v_\w*previous \+ 1\.0\)/);
     assert.match(result.cpp, /bbl::clear_interval\(v_engine,/);
     assert.doesNotMatch(result.cpp, /setInterval|clearInterval/);
 });
