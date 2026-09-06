@@ -122,6 +122,12 @@ pixel buffers. CSG plans execute the pinned CSG implementation under Node.
 Cache identity covers producer inputs and the relevant implementation. Browser
 rasterization and numerically fragile executed output are recorded adaptations.
 
+CSG2 executes the pinned Manifold WASM in Chromium and retains the pin's
+per-material partition names and slots. Initialization and solid disposal run
+at generation. Source solids currently require unchanged identity-transform
+box/sphere factories; preceding material assignments are supported. Runtime
+control of generation-only CSG2 operations refuses.
+
 ### Browser-produced textures
 
 A bounded scene function can own a canvas and call the pinned pixel/texture

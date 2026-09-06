@@ -43,12 +43,8 @@ implementation, follow the sizing/capture workflow in
 - [ ] Make probes non-emitting and transactional for compiler state as well as
   text; use typed optionality/receiver classification instead of compileValue
   probes. Consolidate alias resolution and loop-control subtree walks.
-- [ ] Generalize optional trailing out-parameters, enum values in native
-  arrays, vector setter aliases and nullable handle-like result records.
-- [ ] Validate warning-clean emission for a direct
-  `if (physicsRaycast(...).hasHit)` and a Vec3 literal inside a frame callback.
-  These forms need their own build regressions before their old probe reports
-  can be considered closed.
+- [ ] Generalize optional trailing out-parameters and nullable handle-like
+  result records.
 - [ ] Extend every/some and related shape predicates over generation-decoded
   tuple bindings, using the same static materialization boundary as arguments.
 - [ ] Extend typed WGSL parsing through reached const/function/loop forms and
@@ -165,7 +161,7 @@ implementation, follow the sizing/capture workflow in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 29 numbered scenes unregistered. Helper
+The current registry leaves these 27 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -175,10 +171,8 @@ modules without a numbered scene entry are not integration candidates.
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
 | 48 | Shape/material setters and full centre-of-mass behavior in Bullet |
 | 49 | Capsule builder plus the scene's physics/gizmo contracts |
-| 91 | CSG2 through pinned manifold WASM and per-material mesh creation |
 | 103 | PhysicsBody Map identity and segment-end raycasts; keep reference query |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
-| 106 | Enum data values and vector-set aliases; aggregate/prestep setters already exist |
 | 114 | Scene-authored skeleton, box-data result, nullable PickingInfo, barycentric reads and missing deformation pipeline arms |
 | 121 | Retained splat buffer views and live updateData |
 | 122 | SOG ZIP/WebP decode without an alpha-corrupting canvas round trip |

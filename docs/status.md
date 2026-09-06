@@ -104,6 +104,7 @@ its cause.
 | 88 | <img src="images/scenes/scene88.png" alt="Scene 88 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Loop Block |
 | 89 | <img src="images/scenes/scene89.png" alt="Scene 89 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NME Storage Blocks |
 | 90 | <img src="images/scenes/scene90.png" alt="Scene 90 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | CSG Operations |
+| 91 | <img src="images/scenes/scene91.png" alt="Scene 91 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | CSG2 Manifold Operations and Material Partitions |
 | 92 | <img src="images/scenes/scene92.png" alt="Scene 92 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Custom Shader |
 | 93 | <img src="images/scenes/scene93.png" alt="Scene 93 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite Palette Shader |
 | 94 | <img src="images/scenes/scene94.png" alt="Scene 94 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Billboard Custom Shader |
@@ -115,6 +116,7 @@ its cause.
 | 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value. |
 | 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value. |
 | 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Physics Raycast over Triangle-Soup Colliders |
+| 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.098 | 0.018 / 0.098 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |
 | 112 | <img src="images/scenes/scene112.png" alt="Scene 112 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Flight Helmet KTX2 |
