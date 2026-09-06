@@ -2175,10 +2175,17 @@ export class DataLowerer {
                 fieldType,
             );
         }
-        const index = this.context.compileNumber(
-            access.argumentExpression,
-            "double",
-        );
+        const ownedRead = owner.freshData && mode === "read" && dataType.kind !== "string";
+        let index = "";
+        const compileIndex = (): void => {
+            index = this.context.compileNumber(access.argumentExpression, "double");
+        };
+        const indexLines = ownedRead
+            ? this.context.captureEmittedLines(compileIndex)
+            : (compileIndex(), []);
+        const indexedOwner = ownedRead
+            ? this.context.allocateTemporaryCppName("indexed_owner")
+            : owner.cpp;
         this.context.reachJsData();
         const nativeIndex = `bbl::js::array_index(${index})`;
         if (dataType.kind === "string") {
@@ -2216,18 +2223,27 @@ export class DataLowerer {
                 this.staticGrowthIndex(access));
         const site = (): string =>
             this.context.cppString(this.indexSiteLabel(access));
-        const indexed =
+        const element =
             dataType.kind === "vector" && mode === "write"
                 ? proven
                     ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
                     : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
                 : proven
-                  ? `${owner.cpp}[${nativeIndex}]`
+                  ? `${indexedOwner}[${nativeIndex}]`
                   : mode === "write" &&
                       (isTypedArrayType(dataType) ||
                           dataType.kind === "tuple")
                     ? `bbl::js::array_store_checked(${owner.cpp}, ${index}, ${site()})`
-                    : `bbl::js::array_index_checked(${owner.cpp}, ${index}, ${site()})`;
+                    : `bbl::js::array_index_checked(${indexedOwner}, ${index}, ${site()})`;
+        // A fresh container is a native rvalue. Keep its owning wrapper alive
+        // for the checked read, and return the element by value so no reference
+        // escapes that wrapper. The expression stays behind its source guard;
+        // index preparation follows the owner evaluation, as in JavaScript.
+        const indexed = ownedRead
+            ? `([&]() { auto ${indexedOwner} = ${owner.cpp};\n` +
+                indexLines.map(line => `    ${line}\n`).join("") +
+                `    return ${element}; }())`
+            : element;
         if (
             isTypedArrayType(dataType)
         ) {
@@ -2257,6 +2273,9 @@ export class DataLowerer {
                     ),
                     ...(owner.readOnly
                         ? { readOnly: true as const }
+                        : {}),
+                    ...(ownedRead && passesByReference(this.context.dataTypes, dataType.element)
+                        ? { freshData: true as const }
                         : {}),
                 };
                 const candidates = owner.staticElementsOwner?.staticElements ?? owner.staticElements ??
