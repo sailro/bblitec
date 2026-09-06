@@ -43,7 +43,12 @@ import {
     pinnedNumericMathCalls,
 } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
-import { SPLAT_HARMONICS_SUFFIX } from "../compiler/assets.js";
+import {
+    SPLAT_CONTAINERS,
+    SPLAT_HARMONICS_SUFFIX,
+    type SplatContainer,
+    type SplatContainerKind,
+} from "../compiler/assets.js";
 
 const DATA_MODULE = "src/loader-splat/splat-data.ts";
 const SORT_MODULE = "src/loader-splat/splat-sort-core.ts";
@@ -61,12 +66,6 @@ const PIPELINE_MODULE =
 const SH_PIPELINE_MODULE =
     "src/mesh/GaussianSplatting/gaussian-splatting-pipeline-sh.ts";
 const BAKE_MODULE = "src/mesh/GaussianSplatting/gaussian-splatting-bake.ts";
-/**
- * The pin's second splat entry point. Its container parse runs at generation
- * like its sibling's, so the only thing left of it to lower is the TRS lane
- * it writes on the cloud it attached.
- */
-const SPZ_MODULE = "src/loader-splat/load-spz.ts";
 
 /**
  * The pinned splat texture views, in the record-field spelling the runtime
@@ -873,20 +872,22 @@ ${body}
     public lowerLoader(options: {
         retainRows: boolean;
         /**
-         * Whether the scene reached `loadSPZ`, which is what emits the
-         * second entry point below. It is the same feature the intrinsic
-         * reaches to emit the CALL, so the definition and the call it
-         * satisfies cannot disagree.
+         * The pinned container entry points this scene reached, each with the
+         * Euler rotation its loader wrote on the cloud it attached.
+         *
+         * MEMBERSHIP is reachedness: a kind is here exactly when the scene
+         * reached that loader, on the same feature the intrinsic reaches to
+         * emit the CALL, so the definition and the call it satisfies cannot
+         * disagree. The VALUE is the observation, made by running that loader
+         * at generation (`src/splat-packager.ts`) — a different half of
+         * generation answers it, so a reached call with no observation is
+         * `undefined` here and refuses below rather than emitting a restated
+         * constant.
          */
-        spzReached: boolean;
-        /**
-         * The Euler rotation that loader wrote on the cloud it attached,
-         * observed by running it at generation (`src/splat-packager.ts`).
-         * The two arrive separately because they are answered by different
-         * halves of generation, and a reached call with no observation
-         * refuses rather than emitting a restated constant.
-         */
-        spzRotation: readonly [number, number, number] | undefined;
+        containers: ReadonlyMap<
+            SplatContainerKind,
+            readonly [number, number, number] | undefined
+        >;
     }): LoweredSource {
         const symbolName = "attachParsedSplat";
         // Upstream retains every cloud's rows (`splatsData`); this port
@@ -952,9 +953,20 @@ ${body}
             this.shDegree > 0
                 ? "#include <bblite/upstream/splat_harmonics.hpp>\n"
                 : "";
-        const spz = options.spzReached
-            ? this.lowerSpzLoader(options.spzRotation)
-            : "";
+        // The pin's container entry points, each emitted where its own scene
+        // call reached it. One writer, because they differ only in which
+        // pinned loader answered the rotation -- the names of that loader,
+        // its module and the emitted entry point are its row's. The keys
+        // above are container kinds, which is what makes the lookup total.
+        const containers = [...options.containers].map(([kind, rotation]) => ({
+            container: SPLAT_CONTAINERS.get(kind)!,
+            rotation,
+        }));
+        const containerLoaders = containers
+            .map((entry) =>
+                this.lowerContainerLoader(entry.container, entry.rotation),
+            )
+            .join("");
         return {
             modulePath: "src/loader-splat/load-splat.ts",
             symbolName,
@@ -962,8 +974,13 @@ ${body}
             source: `// ${this.context.provenance(
                 "src/loader-splat/load-splat.ts",
                 symbolName,
-                options.spzReached
-                    ? `${SPZ_MODULE}#loadSPZ`
+                containers.length > 0
+                    ? containers
+                          .map(
+                              ({ container }) =>
+                                  `${container.module}#${container.loader}`,
+                          )
+                          .join(" and ")
                     : undefined,
             )}
 #include <bblite/pal.hpp>
@@ -1042,57 +1059,59 @@ SplatMeshHandle load_splat(Scene& scene, const std::string& path) {
 ${harmonics}    attach_gaussian_splatting_mesh(scene, handle);
     return handle;
 }
-${spz}
+${containerLoaders}
 } // namespace bbl
 `,
         };
     }
 
     /**
-     * `loadSPZ` minus the fetch and the parse, which is `load_splat` plus one
-     * lane.
+     * One container entry point minus the fetch and the parse, which is
+     * `load_splat` plus one lane.
      *
-     * The pin's second splat entry point differs from its first in three
-     * places, and generation has already answered two of them: the container
-     * is an SPZ rather than a PLY, which the packager settled by running that
-     * loader over the fetched bytes, and there is no shader-plugin parameter.
-     * What is left at run time is the third -- a half turn the loader writes
-     * on the cloud after attaching it -- and that value is OBSERVED from the
-     * same run rather than restated here, so a pin that moves it moves this
-     * emission with it.
+     * The pin's second and third splat entry points each differ from its
+     * first in three places, and generation has already answered two of them:
+     * the container is an SPZ or a SOG rather than a PLY, which the packager
+     * settled by running that loader over the fetched bytes, and there is no
+     * shader-plugin parameter. What is left at run time is the third -- a
+     * half turn the loader writes on the cloud after attaching it -- and that
+     * value is OBSERVED from the same run rather than restated here, so a pin
+     * that moves it moves this emission with it.
      *
      * The delegation is the contract worth asserting: this emits
      * `load_splat` for the attach, which is only faithful while the pinned
      * loader still ends on `attachParsedSplat`.
      */
-    private lowerSpzLoader(
+    private lowerContainerLoader(
+        container: SplatContainer,
         rotation: readonly [number, number, number] | undefined,
     ): string {
-        const { declaration } = this.declaration(SPZ_MODULE, "loadSPZ");
+        const { module, loader: symbol, entryPoint } = container;
+        const { declaration } = this.declaration(module, symbol);
         if (!this.context.hasCall(declaration, "attachParsedSplat")) {
             this.context.contractError(
                 declaration,
-                "Expected loadSPZ to attach through attachParsedSplat; the " +
-                    "generated load_spz delegates its build and registration " +
-                    "to load_splat, which is that call.",
+                `Expected ${symbol} to attach through attachParsedSplat; ` +
+                    `the generated ${entryPoint} delegates its build and ` +
+                    "registration to load_splat, which is that call.",
             );
         }
         if (rotation === undefined) {
             this.context.contractError(
                 declaration,
-                "This scene reached loadSPZ but no SPZ container was " +
-                    "packaged, so the rotation the pinned loader writes was " +
-                    "never observed; the emitted load_spz would be a " +
-                    "restatement rather than a port.",
+                `This scene reached ${symbol} but no container was ` +
+                    "packaged for it, so the rotation the pinned loader " +
+                    `writes was never observed; the emitted ${entryPoint} ` +
+                    "would be a restatement rather than a port.",
             );
         }
         const [x, y, z] = rotation;
         return `
-SplatMeshHandle load_spz(Scene& scene, const std::string& path) {
-    // The attach is what load_splat above performs: both entry points end on
-    // attachParsedSplat, and the container parse ran at generation for both.
+SplatMeshHandle ${entryPoint}(Scene& scene, const std::string& path) {
+    // The attach is what load_splat above performs: every entry point ends on
+    // attachParsedSplat, and the container parse ran at generation for each.
     const SplatMeshHandle handle = load_splat(scene, path);
-    // The one lane loadSPZ writes on the cloud it attached, observed by
+    // The one lane ${symbol} writes on the cloud it attached, observed by
     // running that loader at generation rather than restated here.
     scene.engine->splat_meshes[handle.value].rotation =
         Vec3{${this.context.floatLiteral(x)}, ${

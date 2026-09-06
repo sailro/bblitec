@@ -27,6 +27,7 @@ import {
 import type { CompilerSymbols } from "./symbols.js";
 import type {
     CompileAsset,
+    Feature,
     ResolvedCompileOptions,
     Value,
 } from "./types.js";
@@ -68,18 +69,94 @@ function basenameWithoutExtension(name: string): string {
 export const SPLAT_HARMONICS_SUFFIX = ".sh";
 
 /**
+ * One splat CONTAINER kind, as every site that touches it needs it.
+ *
+ * The pin's second and third splat entry points differ from `loadSplat` and
+ * from each other in a fixed handful of names: the loader a scene calls, the
+ * module declaring it, the feature that call reaches, the generated entry
+ * point it emits, and the module-local parser the loader reads its rows with.
+ * Those names travel together through four passes -- the intrinsic that
+ * registers the asset, the packaging that runs the loader, the CLI that reads
+ * the observed rotation back and records the adaptation, and the lowering that
+ * emits the definition -- so they are stated here once and each site reads a
+ * row instead of restating the pairing. A fourth container is then one row
+ * plus the loader body, rather than five edits that can disagree.
+ */
+export interface SplatContainer {
+    /** The asset kind this container packages under. */
+    readonly kind: Extract<CompileAsset["kind"], "spz" | "sog">;
+    /** The pinned entry point a scene calls. */
+    readonly loader: string;
+    /** The pinned module declaring it, repository-relative. */
+    readonly module: string;
+    /** The feature that call reaches, which gates the emitted definition. */
+    readonly feature: Feature;
+    /** The generated entry point the call emits and the lowering defines. */
+    readonly entryPoint: string;
+    /** The module-local parser that loader reads its rows with. */
+    readonly parser: string;
+}
+
+export type SplatContainerKind = SplatContainer["kind"];
+
+const SPLAT_CONTAINER_ROWS: readonly SplatContainer[] = [
+    {
+        kind: "spz",
+        loader: "loadSPZ",
+        module: "src/loader-splat/load-spz.ts",
+        feature: "loader:splat-spz",
+        entryPoint: "load_spz",
+        parser: "parseSpz",
+    },
+    {
+        kind: "sog",
+        loader: "loadSOG",
+        module: "src/loader-splat/load-sog.ts",
+        feature: "loader:splat-sog",
+        entryPoint: "load_sog",
+        parser: "parseSogDatas",
+    },
+];
+
+/**
+ * The container rows by the asset kind each packages under.
+ *
+ * Keyed by the whole asset-kind union rather than by the container kinds
+ * alone, so a site holding any packaged asset can ask whether it came out of
+ * a container and get `undefined` for a plain `.splat`; iterating `values()`
+ * hands back the narrow kind where a site needs it.
+ */
+export const SPLAT_CONTAINERS: ReadonlyMap<
+    CompileAsset["kind"],
+    SplatContainer
+> = new Map(SPLAT_CONTAINER_ROWS.map((row) => [row.kind, row]));
+
+/**
+ * The row one pinned loader's own name selects.
+ *
+ * The asset intrinsic switches on that name rather than on a kind, so it asks
+ * the table in that direction; every other site already holds a kind.
+ */
+export function splatContainerByLoader(
+    loader: string,
+): SplatContainer | undefined {
+    return SPLAT_CONTAINER_ROWS.find((row) => row.loader === loader);
+}
+
+/**
  * The asset kinds that package to the one splat row layout.
  *
- * Two kinds because the pin has two loaders and the call site picks one --
- * neither sniffs the other's container -- but one packaged form, so every
+ * Three kinds because the pin has three loaders and the call site picks one --
+ * none sniffs another's container -- but one packaged form, so every
  * question about the *output* (its name, the sidecar beside it, the feature
- * it joins) is asked of the set rather than of a kind. A third container
+ * it joins) is asked of the set rather than of a kind. A fourth container
  * that lands here without joining the set would package under its source
- * extension and be missed by both.
+ * extension and be missed by all, which is why the set is the container
+ * table plus the plain rows rather than a second hand-kept list.
  */
 export const SPLAT_ASSET_KINDS: ReadonlySet<CompileAsset["kind"]> = new Set([
     "splat",
-    "spz",
+    ...SPLAT_CONTAINERS.keys(),
 ]);
 
 export function registerAsset(
@@ -102,8 +179,8 @@ export function registerAsset(
         return existing;
     }
     // The registry key carries the kind but the packaged name does not, and
-    // the two splat kinds both package to `<stem>.splat` -- so one URL loaded
-    // through both entry points would register twice and materialize two
+    // every splat kind packages to `<stem>.splat` -- so one URL loaded
+    // through two entry points would register twice and materialize two
     // different byte sequences into one file, concurrently. No scene does
     // that; it refuses here rather than racing.
     if (SPLAT_ASSET_KINDS.has(kind)) {

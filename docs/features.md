@@ -376,10 +376,14 @@ remain checked structural adapters.
 
 The generated Babylon physics layer runs over Bullet through the Havok-shaped
 PAL seam. Reached bodies, primitive/convex/static-mesh shapes, forces/impulses,
-velocity/motion/prestep controls, aggregate options, masks, collisions,
-triggers, raycasts and floating-origin regions have supported paths.
-Constraints, character controllers, heightfields, full mass-property behavior
-and wider lifecycle controls remain incomplete. Dynamic concave meshes and
+velocity/motion/prestep controls, aggregate options, shape materials, an
+authored centre of mass, masks, collisions, triggers, raycasts and
+floating-origin regions have supported paths.
+Constraints, character controllers, heightfields, shape proximity/cast queries
+and wider lifecycle controls remain incomplete. Inertia and inertia-orientation
+mass-property overrides refuse: Havok's inertia term is per unit mass while the
+PAL's is the absolute tensor, and an omitted mass would leave Havok's
+volume-times-density value on the body. Dynamic concave meshes and
 non-Y-aligned capsule/cylinder segments refuse. Solver substitution is not
 pixel or trajectory equivalence; [fidelity](fidelity.md#physics-contract)
 defines the distinction.

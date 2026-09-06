@@ -152,13 +152,6 @@ struct PhysicsShapeState {
      * shape.
      */
     bool is_trigger = false;
-    /**
-     * Two constants of the shape that Bullet otherwise recomputes through a
-     * virtual bounding-sphere evaluation on every read: its share of a
-     * manifold's default breaking threshold, and its angular motion disc.
-     */
-    btScalar contact_breaking_threshold = 0;
-    btScalar motion_disc = 0;
 };
 
 namespace {
@@ -176,6 +169,27 @@ struct PhysicsBodyState {
     // Members destroy in reverse declaration order: the rigid body must die
     // before the motion state pointer it references.
     std::unique_ptr<btDefaultMotionState> motion_state;
+    /**
+     * The geometry this body wears when its centre of mass is not the
+     * shape's own. Bullet centres a collision shape on the body origin and
+     * integrates that origin as the centre of mass, so an authored centre
+     * moves the geometry the other way — which needs a per-body child
+     * transform the shared shape record cannot carry. Null for every body
+     * that keeps the shape's centre, and declared before `body` for the
+     * same reason `motion_state` is.
+     */
+    std::unique_ptr<btCompoundShape> mass_frame_shape;
+    /**
+     * Two constants of the geometry this body is wearing right now -- the
+     * compound above when there is one, the shared shape otherwise: its
+     * angular motion disc, and its share of a manifold's default breaking
+     * threshold. Bullet recomputes each through a virtual bounding-sphere
+     * evaluation on every read and both are read per pair per sub-step, so
+     * they are written by `set_body_collision_shape` -- the one writer of
+     * the body's collision shape -- rather than derived at each read.
+     */
+    btScalar motion_disc = 0;
+    btScalar contact_breaking_threshold = 0;
     std::unique_ptr<btRigidBody> body;
     btTransform node_from_body{btTransform::getIdentity()};
     std::uint32_t world = 0;
@@ -392,30 +406,50 @@ btVector3 gravity_of(const btRigidBody* body) {
                : btVector3(0, 0, 0);
 }
 
+/**
+ * The angular motion disc of the geometry an object actually wears.
+ *
+ * A body with an authored centre of mass wears its own compound around the
+ * shared shape, and that compound's disc is the wider one -- the geometry
+ * sits away from the origin the body spins about -- so the constant comes
+ * from the body rather than from the shape record. Both bounds here run per
+ * pair per sub-step, which is why each does exactly one body lookup and
+ * reads the constant `set_body_collision_shape` recorded rather than
+ * Bullet's virtual evaluation. An object no body owns -- nothing the worlds
+ * here build -- keeps the virtual read.
+ */
+btScalar object_motion_disc(const btCollisionObject* object) {
+    const PhysicsBodyState* entry = body_entry_of(object);
+    if (entry == nullptr) {
+        return object->getCollisionShape()->getAngularMotionDisc();
+    }
+    return entry->motion_disc;
+}
+
+/** The same, for a pair's share of the default breaking threshold. */
+btScalar object_breaking_threshold(const btCollisionObject* object) {
+    const PhysicsBodyState* entry = body_entry_of(object);
+    if (entry == nullptr) {
+        return object->getCollisionShape()->getContactBreakingThreshold(
+            gContactBreakingThreshold);
+    }
+    return entry->contact_breaking_threshold;
+}
+
 /** A bound on how fast any point of the object moves. */
 btScalar object_speed_bound(const btCollisionObject* object) {
     const btRigidBody* body = btRigidBody::upcast(object);
     if (body == nullptr || body->isStaticObject()) return 0;
-    const PhysicsShapeState* shape = shape_entry_of(object);
-    const btScalar motion_disc = shape != nullptr
-        ? shape->motion_disc
-        : object->getCollisionShape()->getAngularMotionDisc();
     return body->getLinearVelocity().length() +
-           body->getAngularVelocity().length() * motion_disc;
+           body->getAngularVelocity().length() * object_motion_disc(object);
 }
 
 /** The breaking threshold Bullet itself gives a manifold of the pair. */
 btScalar default_breaking_threshold(
     const btCollisionObject* a,
     const btCollisionObject* b) {
-    const auto threshold_of = [](const btCollisionObject* object) {
-        const PhysicsShapeState* shape = shape_entry_of(object);
-        return shape != nullptr
-            ? shape->contact_breaking_threshold
-            : object->getCollisionShape()->getContactBreakingThreshold(
-                  gContactBreakingThreshold);
-    };
-    return std::min(threshold_of(a), threshold_of(b));
+    return std::min(
+        object_breaking_threshold(a), object_breaking_threshold(b));
 }
 
 /**
@@ -462,6 +496,15 @@ btVector3 to_bt(std::array<double, 3> v) {
         static_cast<btScalar>(v[0]),
         static_cast<btScalar>(v[1]),
         static_cast<btScalar>(v[2]));
+}
+
+/** The same narrowing for the `(x, y, z, w)` the PAL carries rotations in. */
+btQuaternion to_bt(std::array<double, 4> v) {
+    return btQuaternion(
+        static_cast<btScalar>(v[0]),
+        static_cast<btScalar>(v[1]),
+        static_cast<btScalar>(v[2]),
+        static_cast<btScalar>(v[3]));
 }
 
 void clamp_vector_length(btVector3& value, btScalar maximum) {
@@ -851,20 +894,25 @@ void flush_pending_readds(PhysicsWorldState& world_entry) {
 void write_world_transform(
     PhysicsBodyState& entry,
     const PhysicsTransform& transform) {
-    const btQuaternion rotation(
-        static_cast<btScalar>(transform.rotation[0]),
-        static_cast<btScalar>(transform.rotation[1]),
-        static_cast<btScalar>(transform.rotation[2]),
-        static_cast<btScalar>(transform.rotation[3]));
-    btTransform world;
-    world.setRotation(rotation);
-    world.setOrigin(btVector3(
-        static_cast<btScalar>(transform.position[0]),
-        static_cast<btScalar>(transform.position[1]),
-        static_cast<btScalar>(transform.position[2])));
+    btTransform world(to_bt(transform.rotation), to_bt(transform.position));
     world *= entry.node_from_body;
     entry.body->setWorldTransform(world);
     entry.body->getMotionState()->setWorldTransform(world);
+}
+
+/** The other direction of that compose: the node pose a body holds now. */
+PhysicsTransform read_node_transform(const PhysicsBodyState& entry) {
+    btTransform transform;
+    entry.body->getMotionState()->getWorldTransform(transform);
+    // Bullet integrates its COM/principal-axis frame. The pin exposes the
+    // node frame, so remove the body-owned transform on the way back out.
+    const btTransform node = transform * entry.node_from_body.inverse();
+    const btVector3 origin = node.getOrigin();
+    const btQuaternion rotation = node.getRotation();
+    return PhysicsTransform{
+        {origin.x(), origin.y(), origin.z()},
+        {rotation.x(), rotation.y(), rotation.z(), rotation.w()},
+    };
 }
 
 btScalar combine(
@@ -1127,9 +1175,6 @@ PhysicsShapeHandle push_shape(
     entry.node_from_body = node_from_body;
     entry.mass_properties = mass_properties;
     entry.has_exact_mass_properties = has_exact_mass_properties;
-    entry.contact_breaking_threshold =
-        entry.shape->getContactBreakingThreshold(gContactBreakingThreshold);
-    entry.motion_disc = entry.shape->getAngularMotionDisc();
     return PhysicsShapeHandle{owned->identity, std::move(owned)};
 }
 
@@ -1759,6 +1804,38 @@ void physics_shape_set_trigger(PhysicsShapeHandle shape, bool is_trigger) {
 
 // --- Bodies ----------------------------------------------------------
 
+namespace {
+
+/**
+ * The one writer of a body's collision shape.
+ *
+ * `PhysicsBodyState::motion_disc` and `contact_breaking_threshold` are
+ * constants of whatever geometry the body wears, so the invariant is
+ * maintained here -- at the four places the geometry changes -- rather than
+ * re-derived by the per-pair, per-sub-step readers above.
+ */
+void set_body_collision_shape(
+    PhysicsBodyState& entry,
+    btCollisionShape* shape) {
+    entry.body->setCollisionShape(shape);
+    entry.motion_disc = shape->getAngularMotionDisc();
+    entry.contact_breaking_threshold =
+        shape->getContactBreakingThreshold(gContactBreakingThreshold);
+}
+
+/**
+ * Drop any per-body mass-frame compound and wear the shared shape itself.
+ * Both callers reach this the moment the body's centre of mass becomes the
+ * shape's own again: a new shape carries its own centre, and mass
+ * properties that author none ask for the shape's.
+ */
+void wear_shared_shape(PhysicsBodyState& entry) {
+    set_body_collision_shape(entry, entry.shape->shape.get());
+    entry.mass_frame_shape.reset();
+}
+
+} // namespace
+
 PhysicsBodyHandle physics_body_create() {
     auto owned = std::make_shared<PhysicsBodyState>();
     PhysicsBodyState& entry = *owned;
@@ -1770,6 +1847,9 @@ PhysicsBodyHandle physics_body_create() {
     btRigidBody::btRigidBodyConstructionInfo info(
         btScalar(0), entry.motion_state.get(), &placeholder);
     entry.body = std::make_unique<btRigidBody>(info);
+    // The placeholder is the first geometry the body wears, so it seeds the
+    // two constants the same writer maintains for every later one.
+    set_body_collision_shape(entry, &placeholder);
     // A fresh Havok body reports damping 0/0.1. Bullet defaults both channels
     // to zero, which leaves small convex shards spinning long after the
     // reference has allowed their contact island to sleep. The coefficient
@@ -1841,8 +1921,12 @@ void physics_body_set_motion_type(
     // The pin sets the motion type before the shape, so this arm catches a
     // LATER `setPhysicsBodyMotionType` that would set a mesh collider
     // moving; `physics_body_set_shape` catches the pin's own order.
+    // The body's own record rather than its collision shape: a body with
+    // an authored centre of mass wears a compound around the shape, and
+    // the guard has to see through it.
     reject_moving_triangle_mesh_shape(
-        *entry.body->getCollisionShape(), *entry.body);
+        entry.shape ? *entry.shape->shape : *entry.body->getCollisionShape(),
+        *entry.body);
     mark_body_dirty(entry);
 }
 
@@ -1852,17 +1936,23 @@ void physics_body_set_shape(
     PhysicsBodyState& entry = body_at(body);
     PhysicsShapeState& shape_entry = shape_at(shape);
     reject_moving_triangle_mesh_shape(*shape_entry.shape, *entry.body);
-    if (entry.shape != shape.ownership) {
+    const bool shape_changed = entry.shape != shape.ownership;
+    if (shape_changed) {
         shape_entry.users.push_back(&entry);
         if (auto world = entry.owner_world.lock()) {
             if (entry.shape && entry.shape->is_trigger) --world->trigger_body_count;
             if (shape_entry.is_trigger) ++world->trigger_body_count;
         }
         if (entry.shape) std::erase(entry.shape->users, &entry);
-        entry.body->setCollisionShape(shape_entry.shape.get());
         entry.shape = shape.ownership;
     }
     entry.node_from_body = shape_entry.node_from_body;
+    // A shape carries its own centre of mass, so attaching one drops the
+    // frame an earlier `setPhysicsBodyMassProperties` authored — the same
+    // reset Havok performs, and the reason the pin's own order writes the
+    // shape before the mass. Re-attaching the shape the body already wears
+    // is the second half of that reset, so both arms are the one call.
+    if (shape_changed || entry.mass_frame_shape) wear_shared_shape(entry);
     apply_trigger_flag(entry, shape_entry.is_trigger);
     // The pin writes the node transform before the shape, so the shape's
     // own centre offset was not known then. Re-apply it now.
@@ -1871,18 +1961,7 @@ void physics_body_set_shape(
 }
 
 PhysicsTransform physics_body_get_transform(PhysicsBodyHandle body) {
-    const PhysicsBodyState& entry = body_at(body);
-    btTransform transform;
-    entry.body->getMotionState()->getWorldTransform(transform);
-    // Bullet integrates its COM/principal-axis frame. The pin exposes the
-    // node frame, so remove the shape-owned transform on the way back out.
-    const btTransform node = transform * entry.node_from_body.inverse();
-    const btVector3 origin = node.getOrigin();
-    const btQuaternion rotation = node.getRotation();
-    return PhysicsTransform{
-        {origin.x(), origin.y(), origin.z()},
-        {rotation.x(), rotation.y(), rotation.z(), rotation.w()},
-    };
+    return read_node_transform(body_at(body));
 }
 
 void physics_body_set_transform(
@@ -1968,10 +2047,83 @@ PhysicsMassProperties physics_shape_build_mass_properties(
     return properties;
 }
 
+namespace {
+
+/**
+ * Give a body the centre-of-mass frame its mass properties ask for.
+ *
+ * Havok carries the centre of mass as a body-local point and leaves the
+ * shape where the node puts it. Bullet has no such point: the rigid body's
+ * transform IS its centre-of-mass frame and a collision shape is centred on
+ * that origin. So `node_from_body` — that frame in node-local space, which
+ * is what `physics_shape_build_mass_properties` reads a shape's own centre
+ * back out of — is the thing that moves here, and the geometry has to move
+ * the opposite way by the same transform to stay where the scene drew it.
+ * That opposite transform is a per-body compound child, because the shape
+ * record is shared by every body wearing it.
+ *
+ * A body whose properties still carry the shape's own centre and
+ * orientation takes the plain-shape path and changes nothing. Every body
+ * that never authors a centre is one: the aggregate and `setPhysicsBodyMass`
+ * both hand back exactly what the shape derived.
+ */
+void apply_body_mass_frame(
+    PhysicsBodyState& entry,
+    const PhysicsMassProperties& properties) {
+    if (!entry.shape) return;
+    const btTransform& shape_frame = entry.shape->node_from_body;
+    const btVector3 shape_center = shape_frame.getOrigin();
+    const btQuaternion shape_rotation = shape_frame.getRotation();
+    // Whether the properties still carry the shape's own frame, asked in the
+    // representation both sides already hold. Rebuilding a `btTransform`
+    // from the arrays and testing THAT against the shape's would compare a
+    // `btMatrix3x3 -> btQuaternion -> btMatrix3x3` round trip in the build's
+    // scalar type against the basis it came from, which only an identity
+    // basis reliably survives -- so a convex hull, whose frame is its
+    // rotated principal-axis frame, would take the compound path below for
+    // a centre no scene ever authored.
+    const bool centred =
+        properties.center_of_mass ==
+            std::array<double, 3>{
+                shape_center.x(), shape_center.y(), shape_center.z()} &&
+        properties.inertia_orientation ==
+            std::array<double, 4>{
+                shape_rotation.x(), shape_rotation.y(),
+                shape_rotation.z(), shape_rotation.w()};
+    const btTransform node_from_body =
+        centred ? shape_frame
+                : btTransform(
+                      to_bt(properties.inertia_orientation),
+                      to_bt(properties.center_of_mass));
+    const bool unchanged =
+        node_from_body.getOrigin() == entry.node_from_body.getOrigin() &&
+        node_from_body.getBasis() == entry.node_from_body.getBasis() &&
+        centred == !entry.mass_frame_shape;
+    if (unchanged) return;
+    // The node pose is the scene's and does not move; only the frame
+    // composed under it does, so it is read before the frame changes and
+    // written back after.
+    const PhysicsTransform node = read_node_transform(entry);
+    entry.node_from_body = node_from_body;
+    if (centred) {
+        wear_shared_shape(entry);
+    } else {
+        auto offset = std::make_unique<btCompoundShape>();
+        offset->addChildShape(
+            node_from_body.inverse() * shape_frame, entry.shape->shape.get());
+        set_body_collision_shape(entry, offset.get());
+        entry.mass_frame_shape = std::move(offset);
+    }
+    write_world_transform(entry, node);
+}
+
+} // namespace
+
 void physics_body_set_mass_properties(
     PhysicsBodyHandle body,
     const PhysicsMassProperties& properties) {
     PhysicsBodyState& entry = body_at(body);
+    apply_body_mass_frame(entry, properties);
     entry.body->setMassProps(
         static_cast<btScalar>(properties.mass),
         btVector3(

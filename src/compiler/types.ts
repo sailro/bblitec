@@ -940,6 +940,11 @@ export interface CompileAsset {
     // other's container -- and because that loader packages a rotation
     // beside the rows.
     | "spz"
+    // The same interchange rows again, out of the ZIP-of-WebPs container
+    // `loadSOG` reads. A third kind for the same two reasons the second is
+    // one: the call site selects the loader, and that loader packages a
+    // rotation beside the rows.
+    | "sog"
     // A Basis Universal texture, transcoded by the pin's own loader at
     // generation and packaged as the KTX1 container the runtime's one
     // compressed-texture reader takes.
@@ -2331,6 +2336,7 @@ export type Feature =
   | "loader:splat"
   | "loader:splat-bake"
   | "loader:splat-sh"
+  | "loader:splat-sog"
   | "loader:splat-spz"
   | "material:pbr"
   | "material:clearcoat"

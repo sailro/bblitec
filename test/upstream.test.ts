@@ -3071,6 +3071,38 @@ test("carries an SPZ container's harmonics to the sidecar", async () => {
     );
 });
 
+test("anchors the pinned SOG contracts the browser-run loader depends on", () => {
+    // `packageSog` runs the pinned loader in Chromium rather than in Node,
+    // and serves the recorder over one exact module path. Both decisions
+    // rest on facts in this file, and each one moving is a reason to
+    // re-decide rather than to keep launching a browser -- or, worse, to
+    // keep intercepting a path the loader no longer imports, which would
+    // build a real GPU mesh instead of recording one.
+    const source = new UpstreamSourceStore().getSource(
+        "src/loader-splat/load-sog.ts",
+    );
+    assert.match(source, /export async function loadSOG\(/);
+    // The import the suite server's virtual module shadows. Its SPELLING is
+    // what `pinnedBrowserModuleUrl("loader-splat/load-splat.js")` resolves
+    // to, so a moved sibling would leave the recorder unreached.
+    assert.match(
+        source,
+        /import \{ attachParsedSplat \} from "\.\/load-splat\.js";/,
+    );
+    // The reason the run is in a browser at all: the decode is a canvas
+    // round trip, which premultiplies, and the golden is a browser
+    // performing exactly this one.
+    assert.match(source, /await createImageBitmap\(blob\)/);
+    assert.match(
+        source,
+        /const imageData = ctx\.getImageData\(0, 0, width, height\);/,
+    );
+    // The lane the generated `load_sog` applies, observed rather than read
+    // from here -- anchored so a pin that stops writing one fails loudly
+    // instead of emitting a rotation nothing wrote.
+    assert.match(source, /mesh\.rotation\.x = Math\.PI;/);
+});
+
 test("anchors the pinned CSG contracts the executed solid depends on", () => {
     // There is no CSG page under the pinned clone's `docs/lite/architecture`,
     // so `src/mesh/csg.ts` is the whole specification and these are the

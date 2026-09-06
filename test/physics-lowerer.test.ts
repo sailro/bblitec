@@ -128,13 +128,19 @@ test("the aggregate keeps the pinned ordering mass derivation depends on", () =>
     // Scoped to the aggregate's own emitted body: the same call names occur
     // in the standalone entry points beside it, and a whole-file scan would
     // be satisfied by those instead.
+    //
+    // The aggregate calls those entry points where the pin calls them rather
+    // than restating their bodies, so the ordering the mass derivation
+    // depends on is observable as the call order: `set_physics_body_mass`
+    // reads its tensor from the shape the phase above wrote into the live
+    // record, and a mass phase moved ahead of the shape one would derive
+    // from a body that has none.
     const body = emittedBody("PhysicsAggregate create_physics_aggregate(");
     const order = [
         "create_physics_body(",
         "set_physics_body_shape(",
-        "pal::physics_shape_set_material(",
-        "pal::physics_shape_build_mass_properties(",
-        "pal::physics_body_set_mass_properties(",
+        "set_physics_shape_material(",
+        "set_physics_body_mass(",
     ];
     let cursor = -1;
     for (const marker of order) {
@@ -177,6 +183,39 @@ test("the material carries the pin's own per-channel combine modes", () => {
     assert.match(
         lowered.source,
         /pal::PhysicsMaterialCombine::minimum,\n *pal::PhysicsMaterialCombine::maximum,/,
+    );
+});
+
+test("the material setter settles the pin's own staticFriction default", () => {
+    // `staticFriction = friction` is a PARAMETER default, so an omitted
+    // fifth argument has to resolve inside the emitted setter -- the caller
+    // cannot compile the friction expression a second time without
+    // evaluating it twice. The aggregate is the reached caller that omits
+    // it, which is why one friction reaches both channels there.
+    const body = emittedBody("void set_physics_shape_material(");
+    assert.match(body, /static_friction \? \*static_friction : friction,/);
+});
+
+test("the mass-properties setter overrides only the terms it is given", () => {
+    // Every member of the pinned `PhysicsMassProperties` is an override of
+    // what the shape derived, so an absent centre has to leave the derived
+    // one standing rather than writing a zero.
+    const body = emittedBody("void set_physics_body_mass_properties(");
+    assert.match(
+        body,
+        /pal::physics_shape_build_mass_properties\(\n *live\.shape\.handle, overrides\.mass\)/,
+    );
+    assert.match(body, /properties\.mass = overrides\.mass;/);
+    assert.match(
+        body,
+        /if \(overrides\.center_of_mass\) \{[\s\S]*?properties\.center_of_mass = \{center\.x, center\.y, center\.z\};/,
+    );
+    // `inertia` and `inertiaOrientation` have no lane: Havok's inertia term
+    // is per unit mass and the PAL's is the absolute tensor, so the
+    // intrinsic refuses them rather than converting without an observer.
+    assert.match(
+        lowered.header,
+        /struct PhysicsMassPropertyOverrides \{\n    js::Nullable<Vec3d> center_of_mass\{\};\n    double mass = 0\.0;\n\};/,
     );
 });
 

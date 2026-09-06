@@ -970,6 +970,19 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
         "massProps[1] = mass",
       ],
     ],
+    [
+      // The two overrides the reached slice writes, by the array index
+      // each lands on. The emitted setter fills a named lane of
+      // `pal::PhysicsMassProperties` per index, so an upstream reorder of
+      // the tuple would silently write a centre into the mass.
+      "setPhysicsBodyMassProperties",
+      [
+        "buildMassProperties(world, body)",
+        "massProps[0] = [properties.centerOfMass.x, " +
+          "properties.centerOfMass.y, properties.centerOfMass.z]",
+        "massProps[1] = properties.mass",
+      ],
+    ],
   ];
 
   /** The calls each declaration must make, in this order. */
@@ -1540,11 +1553,13 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
    * `setPhysicsShapeMaterial`'s static-friction parameter defaults to the
    * dynamic one.
    *
-   * The emitted aggregate writes one friction into both channels, which
-   * is the pin's behaviour only because the caller passes four arguments
-   * and the fifth falls back. A pin that gave the static channel a
-   * default of its own would keep the array shape above and change the
-   * simulation, so the DEFAULT is what has to be read.
+   * The emitted setter resolves an absent static friction to the dynamic
+   * one, which is the pin's behaviour only because that is the parameter
+   * default -- and the aggregate, the reached caller that passes four
+   * arguments, is what makes one friction reach both channels. A pin that
+   * gave the static channel a default of its own would keep the array
+   * shape above and change the simulation, so the DEFAULT is what has to
+   * be read.
    */
   private assertStaticFrictionDefault(): void {
     const declaration = this.pinnedDeclaration("setPhysicsShapeMaterial");
@@ -1560,10 +1575,10 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
       this.context.contractError(
         parameter ?? declaration,
         "Expected setPhysicsShapeMaterial's staticFriction to " +
-          "default to friction. The generated aggregate writes " +
-          "one friction into both material channels because " +
-          "that default is what the pin's own four-argument " +
-          "call resolves to.",
+          "default to friction. The generated setter resolves an " +
+          "absent one that way, which is what puts a single " +
+          "friction into both material channels at the pin's own " +
+          "four-argument call sites.",
       );
     }
   }
@@ -1623,7 +1638,8 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     ],
     [
       "createPhysicsAggregate",
-      "create_physics_aggregate restates all four phases inline",
+      "create_physics_aggregate restates its four phases, calling the " +
+        "emitted shape and material setters where the pin calls them",
       [
         // const motionType = options.mass === 0 ? STATIC : DYNAMIC;
         "variable statement",
@@ -1671,13 +1687,37 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     ],
     [
       "setPhysicsShapeMaterial",
-      "the emitted aggregate restates the material write",
+      "the emitted set_physics_shape_material restates the material write",
       [
         // const combines = world._hknp.MaterialCombine;
         "variable statement",
         // the five-term material array
         "variable statement",
         // world._hknp.HP_Shape_SetMaterial(shape._hkShape, material);
+        "expression statement",
+      ],
+    ],
+    [
+      // The two overrides above are the ones the intrinsic accepts; the
+      // other two refuse there, so an ADDED arm here would be a member
+      // the intrinsic still accepts and the emitted setter drops.
+      "setPhysicsBodyMassProperties",
+      "set_physics_body_mass_properties restates the reached overrides",
+      [
+        // const massProps = buildMassProperties(world, body);
+        "variable statement",
+        // if (properties.centerOfMass)
+        "if statement",
+        // if (properties.mass !== undefined)
+        "if statement",
+        // if (properties.inertia) -- refused by the intrinsic
+        "if statement",
+        // if (properties.inertiaOrientation) -- refused by the intrinsic
+        "if statement",
+        // body._massPropertiesTransform?.(massProps) -- installed only by
+        // the unlowered `lockPhysicsBodyRotationAxes`, so a no-op here
+        "expression statement",
+        // hknp.HP_Body_SetMassProperties(body._hkBody, massProps);
         "expression statement",
       ],
     ],
@@ -1894,6 +1934,24 @@ ${shapeParameterLanes("options")}
      * default rather than a nullable this factory settles again.
      */
     bool start_asleep = false;
+};
+
+/**
+ * ${havokModule} \`PhysicsMassProperties\`, reached slice.
+ *
+ * Each member overrides one term of what the shape derives, so an absent
+ * lane keeps the derived one -- the pin's own \`if (properties.x)\` arms.
+ *
+ * \`inertia\` and \`inertiaOrientation\` have no lane and the intrinsic
+ * refuses them: Havok's inertia term is per unit mass and this PAL's is the
+ * absolute tensor, and no corpus scene writes either. \`mass\` is not a
+ * nullable for a related reason -- an omitted one leaves Havok's own
+ * volume-times-density mass on the body, which a solver taking a mass
+ * rather than a density derives no equivalent of.
+ */
+struct PhysicsMassPropertyOverrides {
+    js::Nullable<Vec3d> center_of_mass{};
+    double mass = 0.0;
 };
 
 /**
@@ -2172,6 +2230,16 @@ void set_physics_body_mass(
     PhysicsWorldHandle world,
     PhysicsBody body,
     double mass);
+void set_physics_body_mass_properties(
+    PhysicsWorldHandle world,
+    PhysicsBody body,
+    const PhysicsMassPropertyOverrides& properties);
+void set_physics_shape_material(
+    PhysicsWorldHandle world,
+    PhysicsShape shape,
+    double friction,
+    double restitution,
+    js::Nullable<double> static_friction);
 void set_physics_body_pre_step(
     PhysicsBody body,
     bool enabled);
@@ -2974,6 +3042,52 @@ void set_physics_body_mass(
     pal::physics_body_set_mass_properties(live.handle, properties);
 }
 
+void set_physics_body_mass_properties(
+    PhysicsWorldHandle handle,
+    PhysicsBody body,
+    const PhysicsMassPropertyOverrides& overrides) {
+    PhysicsWorld& world = physics_world_record(handle);
+    PhysicsBody& live = physics_body_record(world, body);
+    // \`buildMassProperties\`: the shape's own centre, tensor and
+    // principal-axis frame, which every override below replaces one term
+    // of. The mass reaches the build because Bullet derives a tensor from
+    // a mass where Havok derives one from a density and scales its own
+    // per-unit-mass term by the mass scalar afterwards -- the same
+    // absolute tensor, asked for the other way round.
+    pal::PhysicsMassProperties properties =
+        pal::physics_shape_build_mass_properties(
+            live.shape.handle, overrides.mass);
+    properties.mass = overrides.mass;
+    if (overrides.center_of_mass) {
+        const Vec3d& center = *overrides.center_of_mass;
+        properties.center_of_mass = {center.x, center.y, center.z};
+    }
+    pal::physics_body_set_mass_properties(live.handle, properties);
+}
+
+void set_physics_shape_material(
+    PhysicsWorldHandle handle,
+    PhysicsShape shape,
+    double friction,
+    double restitution,
+    js::Nullable<double> static_friction) {
+    // The world is read for the same reason the pin destructures it: a
+    // shape belongs to a live world, and a dead handle fails here.
+    static_cast<void>(physics_world_record(handle));
+    // The pin's own \`staticFriction = friction\` parameter default, and its
+    // combine mode per channel -- which travels as data rather than being
+    // re-decided by the linked solver.
+    pal::physics_shape_set_material(
+        shape.handle,
+        pal::PhysicsShapeMaterial{
+            static_friction ? *static_friction : friction,
+            friction,
+            restitution,
+            pal::PhysicsMaterialCombine::minimum,
+            pal::PhysicsMaterialCombine::maximum,
+        });
+}
+
 /**
  * The live record for a body whose world the caller was not handed.
  *
@@ -3336,34 +3450,22 @@ PhysicsAggregate create_physics_aggregate(
     // is the pin's and is observable: mass derives from the shape.
     set_physics_body_shape(handle, body, shape);
 
-    // \`setPhysicsShapeMaterial\`: the pin writes one friction into both
-    // channels and picks a combine mode per channel, which travels as data
-    // rather than being re-decided by the linked solver.
+    // \`setPhysicsShapeMaterial(world, shape, friction, restitution)\`: the
+    // pin's own four-argument call, so the fifth parameter takes its
+    // \`= friction\` default and one friction reaches both channels.
     const double friction = options.friction ? *options.friction
                                              : physics_default_friction;
     const double restitution = options.restitution ? *options.restitution
                                       : physics_default_restitution;
-    pal::physics_shape_set_material(
-        shape.handle,
-        pal::PhysicsShapeMaterial{
-            friction,
-            friction,
-            restitution,
-            pal::PhysicsMaterialCombine::minimum,
-            pal::PhysicsMaterialCombine::maximum,
-        });
+    set_physics_shape_material(
+        handle, shape, friction, restitution, js::Nullable<double>{});
 
-    // \`setPhysicsBodyMass\`: start from the shape-derived mass properties
-    // and override only the mass scalar. The branch is the pin's -- a
-    // shapeless body would take its isotropic fallback instead -- and the
-    // aggregate always has a shape by here, which is why only this arm is
-    // emitted.
+    // \`setPhysicsBodyMass(world, body, options.mass)\`, under the pin's own
+    // positive-mass gate. The setter reads its tensor from the shape the
+    // phase above wrote into the live record, which is why the pin orders
+    // the two this way.
     if (options.mass > 0.0) {
-        pal::PhysicsMassProperties properties =
-            pal::physics_shape_build_mass_properties(
-                shape.handle, options.mass);
-        properties.mass = options.mass;
-        pal::physics_body_set_mass_properties(body.handle, properties);
+        set_physics_body_mass(handle, body, options.mass);
     }
 
     return PhysicsAggregate{

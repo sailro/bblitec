@@ -4,7 +4,10 @@
  * construction remain live through the existing native mesh-data intrinsic.
  */
 import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
-import { createSuiteSceneServer } from "./capture-suite-reference.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserModuleUrl,
+} from "./capture-suite-reference.js";
 import { pageBase64Script, runPageGlobal } from "./browser-harness.js";
 import { runGenerationChild } from "./compiler/generation-child.js";
 import { LoweringContext } from "./lowering/context.js";
@@ -118,8 +121,8 @@ async function replayPlan(
 /** The exact driver source is also part of the persistent cache identity. */
 function csg2Driver(request: Csg2BakeRequest): string {
     return `
-import * as csg from "/node_modules/@babylonjs/lite/lib/mesh/csg2.js";
-import * as factories from "/node_modules/@babylonjs/lite/lib/mesh/mesh-factories.js";
+import * as csg from "${pinnedBrowserModuleUrl("mesh/csg2.js")}";
+import * as factories from "${pinnedBrowserModuleUrl("mesh/mesh-factories.js")}";
 ${pageBase64Script}
 window.__bakeCsg2 = () => (${replayPlan.toString()})(
     ${JSON.stringify(request)}, csg, factories,

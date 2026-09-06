@@ -263,6 +263,10 @@ Additional library-boundary contracts are:
 - Degenerate boxes expand below Bullet's margin and offset their centre. The
   chosen positive-face preservation is a known thin-ceiling limitation.
 - Convex hulls preserve centre of mass, inertia and principal-axis frame.
+- An authored centre of mass moves the body frame Bullet integrates and
+  offsets the collider by the same transform through a per-body compound
+  child, since Bullet centres a shape on the body origin while Havok carries
+  the centre as a separate body-local point.
 - Triangle-mesh backing storage outlives Bullet's shape; dynamic concave mesh
   bodies refuse.
 - Shape trigger flags propagate to body collision flags; overlap-set changes

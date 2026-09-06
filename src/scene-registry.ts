@@ -1392,6 +1392,39 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene122",
+        name: "Scene 122 - Gaussian Splatting SOG",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene122.ts",
+        title: "Babylon Lite Native - Gaussian Splatting SOG",
+        // The pin's third splat entry point, executed at generation: the
+        // ZIP container, the WebP planes and the half turn about X it
+        // writes on the cloud it attached. The same cloud scene 123
+        // packages, byte for byte the same 25,159,456 B of rows and
+        // 35,380,485 B of spherical harmonics at degree 3.
+        //
+        // The pinned decode is `createImageBitmap` -> `drawImage` ->
+        // `getImageData`, so the reference is the browser's decode,
+        // premultiplication and all, and the loader runs in the same
+        // Chromium the golden is captured from.
+        //
+        // From artifacts/parity/scene122/report-{gpu,dawn}.json:
+        //   SDL_GPU  full 0.0007414641, region 0.0007312409, max 2
+        //   Dawn     full 0.0006933594, region 0.0006828143, max 2
+        // 921,595 of 921,600 pixels within one count on both, over an
+        // 894,826-px mask. Thresholds match scene 123's: same cloud, same
+        // family multisample band.
+        //
+        // The gate OBSERVES the SOG arm rather than merely reaching it:
+        // emitting a zero rotation in place of the observed one measures
+        // 48.006 MAD at max 227, with 0.00% of region pixels exact.
+        parity: {
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.007,
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene123",
         name: "Scene 123 - Gaussian Splatting SPZ",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene123.ts",
@@ -2066,6 +2099,35 @@ const sceneInputs: readonly SceneInput[] = [
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "30" },
+        },
+    },
+    {
+        id: "scene48",
+        name: "Scene 48 - Physics Centre of Mass",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene48.ts",
+        title: "Babylon Lite Native - Physics Centre of Mass",
+        parity: {
+            // The scene reads `?capture` and freezes itself with
+            // `stopEngine` ten physics steps after the kick, so both sides
+            // take the same branch and stop at the same pose. Omitting it
+            // measures 0.701: the branch is false on both sides and the two
+            // runs stop at unrelated frames.
+            referenceSearch: "?capture",
+            // The kick is a 2000 ms `setTimeout`, so the pose is a
+            // wall-clock boundary rather than a frame index and needs the
+            // fixed frame clock plus a screenshot past the freeze. A bare
+            // frame against a real clock measures 0.930, mid-flight.
+            nativeEnvironment: adHocCaptureEnvironment(),
+            // MEASURED 0.060 full / 0.098 region on both backends,
+            // byte-identical between them, mid-topple. Havok drifts each
+            // box up to 0.085 units laterally over the ten kicked steps
+            // where Bullet does not: a contact-instant divergence, not
+            // settling, and not a renderer-fidelity value
+            // (docs/fidelity.md#physics-contract).
+            maxFullMad: 0.07,
+            maxForegroundMad: 0.11,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
         },
     },
     {

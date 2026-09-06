@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
+import {
+    SPLAT_CONTAINERS,
+    type SplatContainerKind,
+} from "./compiler/assets.js";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
@@ -415,16 +419,22 @@ export interface UpstreamEmitOptions {
      */
     splatSh?: PinnedSplatShModule;
     /**
-     * The Euler rotation the pinned `loadSPZ` writes on every cloud it
-     * attaches, observed by running that loader over this scene's container.
+     * The Euler rotation each pinned container loader writes on every cloud
+     * it attaches, observed by running that loader over this scene's own
+     * container and keyed by the asset kind it packaged.
      *
-     * Present exactly when a `loadSPZ` call registered an SPZ asset, which
-     * is what selects the generated `load_spz` beside `load_splat`: the
-     * rotation is the one thing the second entry point does that the first
-     * does not, and it is a value the pin wrote rather than one this port
-     * chose.
+     * A kind is present exactly when a container of it was packaged, which is
+     * what supplies the constant the matching generated entry point applies:
+     * that rotation is the one thing `load_spz` and `load_sog` do that
+     * `load_splat` does not, and it is a value the pin wrote rather than one
+     * this port chose. Keyed rather than one lane per loader because a scene
+     * reaching one must not apply the other's observation, and a scene
+     * reaching both carries two.
      */
-    splatSpzRotation?: readonly [number, number, number];
+    splatContainerRotations?: ReadonlyMap<
+        SplatContainerKind,
+        readonly [number, number, number]
+    >;
     /**
      * What each ESM shadow generator's own factory built, in reach order.
      *
@@ -1505,13 +1515,24 @@ ${wgsl}`,
                 "upstream/src/splat_loader.cpp",
                 splats.lowerLoader({
                     retainRows: bakesTransform,
-                    // The second entry point emits only where the scene
-                    // reached it, on the same feature the call site does --
-                    // the definition and the call it satisfies cannot
-                    // disagree. Its rotation comes from the packaging run,
-                    // and a reached call without one refuses there.
-                    spzReached: features.includes("loader:splat-spz"),
-                    spzRotation: options.splatSpzRotation,
+                    // The container entry points emit only where the scene
+                    // reached them, on the same feature each call site does
+                    // -- the definition and the call it satisfies cannot
+                    // disagree. So membership here IS reachedness. Each
+                    // rotation comes from that container's packaging run, and
+                    // a reached call without one refuses in the lowering.
+                    containers: new Map(
+                        [...SPLAT_CONTAINERS.values()]
+                            .filter((container) =>
+                                features.includes(container.feature),
+                            )
+                            .map((container) => [
+                                container.kind,
+                                options.splatContainerRotations?.get(
+                                    container.kind,
+                                ),
+                            ]),
+                    ),
                 }),
                 generated,
             );

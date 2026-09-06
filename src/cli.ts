@@ -104,8 +104,10 @@ import {
 } from "./pinned-splat-fragments.js";
 import {
     SPLAT_ASSET_KINDS,
+    SPLAT_CONTAINERS,
     SPLAT_HARMONICS_SUFFIX,
     assetRecord,
+    type SplatContainer,
 } from "./compiler/assets.js";
 import type {
     NodeParticleRegistrationEmit,
@@ -234,13 +236,13 @@ async function assetBytes(
 interface MaterializedAssetFacts {
     splatHarmonicDegree: number;
     /**
-     * The Euler rotation the pinned `loadSPZ` left on the cloud it attached,
-     * observed by running that loader rather than restated. Present only for
-     * an SPZ container -- the pin's `loadSOG` writes the same lane, so this
-     * is one of two rather than the only one, which is why the recorder that
-     * observes it is shared rather than local to the SPZ arm.
+     * The Euler rotation the pinned container loader left on the cloud it
+     * attached, observed by running that loader rather than restated.
+     * Present for the two containers whose loader writes one -- `loadSPZ`
+     * and `loadSOG` -- and read back beside the asset kind that produced it,
+     * which is what keeps the two entry points' observations apart.
      */
-    spzRotation?: readonly [number, number, number];
+    containerRotation?: readonly [number, number, number];
 }
 
 async function materializeAsset(
@@ -310,7 +312,7 @@ async function materializeAsset(
     }
 
     if (SPLAT_ASSET_KINDS.has(asset.kind)) {
-        const { packageSplat, packageSpz } = await import(
+        const { packageSplat, packageSog, packageSpz } = await import(
             "./splat-packager.js"
         );
         const bytes = await assetBytes(source, inputPath);
@@ -318,11 +320,13 @@ async function materializeAsset(
         // the facts rather than the packaged file, for the reason the
         // harmonics ride a sidecar: the row buffer is upstream's own `.splat`
         // layout and nothing may be appended to it.
-        const spz =
+        const container =
             asset.kind === "spz"
                 ? await packageSpz(bytes, source)
-                : undefined;
-        const packaged = spz ?? packageSplat(bytes);
+                : asset.kind === "sog"
+                  ? await packageSog(bytes)
+                  : undefined;
+        const packaged = container ?? packageSplat(bytes);
         // The rows alone, so a `.ply`, a `.splat` and an `.spz` of the same
         // cloud still package to identical bytes.
         writeFileSync(destination, packaged.rows);
@@ -334,7 +338,7 @@ async function materializeAsset(
         }
         return {
             splatHarmonicDegree: packaged.harmonics?.degree ?? 0,
-            ...(spz ? { spzRotation: spz.rotation } : {}),
+            ...(container ? { containerRotation: container.rotation } : {}),
         };
     }
 
@@ -639,26 +643,52 @@ async function main(): Promise<void> {
     const splatHarmonicDegree = [...splatHarmonicDegrees].find(
         (degree) => degree > 0,
     );
-    // The rotation the pinned `loadSPZ` writes on every cloud it attaches,
-    // observed once per SPZ container. Two containers cannot disagree -- it
-    // is a constant of the loader, not of the asset -- so a scene whose
-    // observations differ means the pin grew a per-container arm this port
-    // does not model, and refuses rather than emitting one of them.
-    const spzRotations = materializedFacts
-        .map((facts) => facts?.spzRotation)
-        .filter((rotation) => rotation !== undefined);
-    const distinctSpzRotations = new Set(
-        spzRotations.map((rotation) => rotation.join(",")),
-    );
-    if (distinctSpzRotations.size > 1) {
-        throw new Error(
-            "This scene's SPZ containers attach clouds at different " +
-                `rotations (${[...distinctSpzRotations].join("; ")}); the ` +
-                "pinned loadSPZ writes one, so a difference means it now " +
-                "forks on the container.",
+    // The rotation a pinned container loader writes on every cloud it
+    // attaches, observed once per container of that kind. Two containers one
+    // loader read cannot disagree -- it is a constant of the loader, not of
+    // the asset -- so a scene whose observations differ means the pin grew a
+    // per-container arm this port does not model, and refuses rather than
+    // emitting one of them. Asked per kind, because each loader is its own
+    // emitted entry point and one answer must not stand in for another's.
+    const containerRotation = (
+        container: SplatContainer,
+    ): readonly [number, number, number] | undefined => {
+        const observed = materializedFacts
+            .map((facts, index) =>
+                result.manifest.assets[index]?.kind === container.kind
+                    ? facts?.containerRotation
+                    : undefined,
+            )
+            .filter((rotation) => rotation !== undefined);
+        const distinct = new Set(
+            observed.map((rotation) => rotation.join(",")),
         );
-    }
-    const splatSpzRotation = spzRotations[0];
+        if (distinct.size > 1) {
+            throw new Error(
+                `This scene's ${container.kind.toUpperCase()} containers ` +
+                    `attach clouds at different rotations (${[
+                        ...distinct,
+                    ].join("; ")}); the pinned ${container.loader} writes ` +
+                    "one, so a difference means it now forks on the " +
+                    "container.",
+            );
+        }
+        return observed[0];
+    };
+    // Asked of every container the table knows, so a fourth arrives here with
+    // its row rather than with an edit. A kind is present exactly when a
+    // container of it was packaged, which is what the emitted entry point's
+    // constant comes from.
+    const splatContainerRotations = new Map(
+        [...SPLAT_CONTAINERS.values()].flatMap((container) => {
+            const rotation = containerRotation(container);
+            return rotation === undefined
+                ? []
+                : [[container.kind, rotation] as const];
+        }),
+    );
+    const splatSpzRotation = splatContainerRotations.get("spz");
+    const splatSogRotation = splatContainerRotations.get("sog");
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
     if (specializationFeatures.eightInfluenceSkinning) {
@@ -925,11 +955,14 @@ async function main(): Promise<void> {
             category: "asset-materialization",
             sourceSemantics:
                 // The parser that produced them, which is the container's
-                // answer rather than a fixed one: the compressed PLY and the
-                // SPZ both reach the SH pipeline through this same fork.
-                (splatAsset?.kind === "spz"
-                    ? "parseSpz"
-                    : "convertCompressedPlyToParsedSplat") +
+                // answer rather than a fixed one: the compressed PLY, the
+                // SPZ and the SOG all reach the SH pipeline through this
+                // same fork. A container names its own parser in its row;
+                // anything else got here through the plain PLY loader.
+                ((splatAsset === undefined
+                    ? undefined
+                    : SPLAT_CONTAINERS.get(splatAsset.kind)?.parser) ??
+                    "convertCompressedPlyToParsedSplat") +
                 " returns the 32-byte rows " +
                 "beside a flat spherical-harmonic byte stream, and " +
                 "attachParsedSplat hands both to the SH pipeline in one call.",
@@ -981,6 +1014,45 @@ async function main(): Promise<void> {
                 "scene 123 parity against the browser golden on both backends",
                 "the packaged rows and sidecar are what the pin's own " +
                     "loadSPZ handed attachParsedSplat",
+            ],
+        });
+    }
+    // The SOG container, pinned here for the same reason the SPZ one above
+    // is. It is a separate entry because its stand-ins are not the same: this
+    // loader's decode step is the BROWSER's, so the run happens there.
+    if (splatSogRotation !== undefined) {
+        result.manifest.adaptations.push({
+            id: "sog-loader-at-generation",
+            category: "asset-materialization",
+            sourceSemantics:
+                "loadSOG fetches the ZIP container, unzips it with the " +
+                "module-local unzipBuffer, reads meta.json, decodes each " +
+                "WebP by drawing an ImageBitmap into a 2D canvas and " +
+                "reading it back with getImageData, rebuilds the 32-byte " +
+                "rows and the flat spherical-harmonic stream with the " +
+                "module-local parseSogDatas, and writes a half turn about " +
+                "X on the cloud it attached.",
+            nativeSemantics:
+                "That whole loader runs at generation, in headless " +
+                "Chromium under the golden capture's own flags -- because " +
+                "its decode step is a canvas round trip, which " +
+                "premultiplies, and the browser reference the golden is " +
+                "captured from performs exactly that one. A substituted " +
+                "decoder would have to agree with Skia byte for byte, so " +
+                "none is introduced. Two boundaries are stood in for, the " +
+                "SPZ loader's two: fetch answers from the bytes the " +
+                "download cache holds, served on the page's own origin, " +
+                "and attachParsedSplat records instead of building a GPU " +
+                "mesh. The rows and harmonics then package exactly as " +
+                "every other splat container's do, and the rotation the " +
+                "loader wrote is observed from that run rather than " +
+                "restated -- the generated load_sog applies the observed " +
+                `${splatSogRotation.join(", ")}.`,
+            risk: "low",
+            validation: [
+                "scene 122 parity against the browser golden on both backends",
+                "the packaged rows and sidecar are what the pin's own " +
+                    "loadSOG handed attachParsedSplat",
             ],
         });
     }
@@ -1303,9 +1375,7 @@ async function main(): Promise<void> {
         ...(esmShadows.length > 0 ? { esmShadows } : {}),
         ...(splatShaderModule !== undefined ? { splatShaderModule } : {}),
         ...(splatSh !== undefined ? { splatSh } : {}),
-        ...(splatSpzRotation !== undefined
-            ? { splatSpzRotation }
-            : {}),
+        splatContainerRotations,
         pureSpriteVertex: result.manifest.pureSpriteVertex,
         plainSpriteLayer: result.manifest.plainSpriteLayer,
         plainBillboardSystem: result.manifest.plainBillboardSystem,

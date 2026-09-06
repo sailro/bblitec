@@ -27,8 +27,21 @@ import {
     importPinnedModuleUnasynced,
     installPinnedImportHook,
 } from "./pinned-shader-composer.js";
+import {
+    createSuiteSceneServer,
+    pinnedBrowserModuleUrl,
+} from "./capture-suite-reference.js";
+import {
+    pageBase64Script,
+    runPageGlobal,
+    screenshotCaptureBrowserArgs,
+} from "./browser-harness.js";
 import { javascriptModuleUrl } from "./data-url.js";
-import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
+import {
+    cachedBakeSync,
+    cachedJsonBake,
+    moduleIdentity,
+} from "./bake-cache.js";
 import {
     GAUSSIAN_SPLATTING_EXTENSION,
     type JsonRecord,
@@ -158,8 +171,8 @@ function unframeParsedSplat(framed: Uint8Array): PackagedSplat {
  * `loadSplat` takes: `isPlyCompressedOrSH` selects the chunked/SH parser the
  * pin dynamically imports, and either one yields the same 32-byte rows plus,
  * for the compressed container, a flat spherical-harmonic byte stream.
- * An `.spz` is a different pinned loader and goes to `packageSpz` below;
- * `.sog` still refuses, pending a ZIP and a WebP decoder.
+ * An `.spz` is a different pinned loader and goes to `packageSpz` below, and
+ * a `.sog` a third that goes to `packageSog`; neither container reaches here.
  */
 export function packageSplat(bytes: Uint8Array): PackagedSplat {
     // `assetBytes` hands back a freshly-allocated array, so the common case
@@ -219,62 +232,144 @@ interface RecordedAttach {
 }
 
 /**
- * The stand-in for `attachParsedSplat`, which both pinned loaders end on.
+ * The stand-in for `attachParsedSplat`, which every pinned loader ends on.
  *
  * It uploads textures and spawns a sort worker, neither of which exists
  * here. The redirect keeps the pin's own call — its arguments, and the TRS
  * its caller then writes, are what generation needs — and stands in only for
  * the GPU half the native runtime owns. One copy, because the glTF feature's
- * `_sceneSetup` and `loadSPZ` write the cloud's rotation the same way and a
- * second recorder is a second thing to keep in step.
+ * `_sceneSetup`, `loadSPZ` and `loadSOG` write the cloud's rotation the same
+ * way and a second recorder is a second thing to keep in step.
+ *
+ * The TEXT rather than a module, because the three callers are not all in one
+ * engine: the two Node runs import it as a `data:` URL through the wrapper
+ * below, and the browser run has the suite server hand it back at the pinned
+ * module's own path.
  */
+function attachParsedSplatRecorderSource(hook: string): string {
+    return [
+        "export function attachParsedSplat(scene, name, parsed, fragments) {",
+        "    const mesh = { rotation: { x: 0, y: 0, z: 0 } };",
+        `    globalThis[${JSON.stringify(hook)}](`,
+        "        { name, parsed, mesh, fragments });",
+        // A synchronous thenable, so the pin's own `.then` callback runs
+        // before this returns and the TRS it writes is observed.
+        "    return { then: (resolve) => resolve(mesh) };",
+        "}",
+    ].join("\n");
+}
+
 function attachParsedSplatRecorder(hook: string): string {
-    return javascriptModuleUrl(
-        [
-            "export function attachParsedSplat(scene, name, parsed, fragments) {",
-            "    const mesh = { rotation: { x: 0, y: 0, z: 0 } };",
-            `    globalThis[${JSON.stringify(hook)}](`,
-            "        { name, parsed, mesh, fragments });",
-            // A synchronous thenable, so the pin's own `.then` callback runs
-            // before this returns and the TRS it writes is observed.
-            "    return { then: (resolve) => resolve(mesh) };",
-            "}",
-        ].join("\n"),
-    );
+    return javascriptModuleUrl(attachParsedSplatRecorderSource(hook));
 }
 
 /**
- * One recorded attach checked against the slice this port carries out of a
- * pinned loader: the shader plugins it may not pass, and the one TRS lane
- * its caller may write.
+ * One attach as either engine observes it.
  *
- * Both pinned callers of `attachParsedSplat` observed here are checked the
- * same way, because both are the same claim — that everything the pin did
- * to the cloud after building it is the rotation this returns.
+ * Two of the three pinned callers of `attachParsedSplat` run here in Node,
+ * where the recorded object itself is in hand; the third runs in Chromium
+ * (`packageSog`), where only a serialized view of it crosses the page
+ * boundary. The CLAIMS are the same either way, so they are stated over this
+ * view and both engines answer them.
  */
-function recordedRotation(
-    entry: RecordedAttach,
+interface ObservedAttach {
+    /** The cloud's name, which only a refusal reads. */
+    name: string;
+    /** Whether the caller passed shader fragments. */
+    fragments: boolean;
+    /** Every lane written on the attached cloud, sorted. */
+    written: readonly string[];
+    rotation: readonly [number, number, number];
+}
+
+/**
+ * The Node side's projection of one recorded attach into that view.
+ *
+ * `undefined` is the "the loader attached nothing" case: the view it yields
+ * is never read, because the container count refusal below fires first.
+ */
+function observedAttach(entry: RecordedAttach | undefined): ObservedAttach {
+    return {
+        name: entry?.name ?? "",
+        fragments: entry?.fragments !== undefined,
+        written: entry ? Object.keys(entry.mesh).sort() : [],
+        rotation: entry
+            ? [
+                  entry.mesh.rotation.x,
+                  entry.mesh.rotation.y,
+                  entry.mesh.rotation.z,
+              ]
+            : [0, 0, 0],
+    };
+}
+
+function observedRotation(
+    observed: ObservedAttach,
     what: string,
 ): readonly [number, number, number] {
-    if (entry.fragments !== undefined) {
+    if (observed.fragments) {
         throw new Error(
-            `${what} attached '${entry.name}' with shader fragments; only ` +
-                "a loadSplat call names those, and the generated pipeline " +
-                "composes them from that call alone.",
+            `${what} attached '${observed.name}' with shader fragments; ` +
+                "only a loadSplat call names those, and the generated " +
+                "pipeline composes them from that call alone.",
         );
     }
-    const written = Object.keys(entry.mesh).sort();
-    if (written.length !== 1 || written[0] !== "rotation") {
+    if (
+        observed.written.length !== 1 ||
+        observed.written[0] !== "rotation"
+    ) {
         throw new Error(
-            `${what} wrote ${written.join(", ")} on the attached cloud; ` +
-                "this pass carries its rotation alone.",
+            `${what} wrote ${observed.written.join(", ")} on the attached ` +
+                "cloud; this pass carries its rotation alone.",
         );
     }
-    return [
-        entry.mesh.rotation.x,
-        entry.mesh.rotation.y,
-        entry.mesh.rotation.z,
-    ];
+    return observed.rotation;
+}
+
+/**
+ * One CONTAINER loader's attach: the same view plus the two claims only a
+ * whole-loader run can make.
+ *
+ * `loadSPZ` and `loadSOG` each answer for one container, so "exactly one
+ * cloud, and it is the one handed back" is part of what makes reading the
+ * TRS off it a port. The glTF feature's wiring attaches one cloud per GS
+ * primitive and returns none of them, so it carries neither claim and its
+ * caller reads `observedRotation` directly.
+ */
+interface ObservedContainerAttach extends ObservedAttach {
+    /** How many clouds the loader attached. */
+    attached: number;
+    /** Whether it returned the one it attached. */
+    returnedAttached: boolean;
+}
+
+/**
+ * The four contracts this port carries out of a pinned container loader,
+ * checked in one place for both engines.
+ *
+ * Node holds the recorded object and Chromium hands back a serialized view of
+ * it, but the CLAIMS are the same, and stating them twice is how the two
+ * would drift. The order is the order a failure is worth reading in: how many
+ * clouds, whether the returned one is that cloud, then what the loader did to
+ * it.
+ */
+function observedContainerRotation(
+    observed: ObservedContainerAttach,
+    what: string,
+): readonly [number, number, number] {
+    if (observed.attached !== 1) {
+        throw new Error(
+            `${what} attached ${observed.attached} cloud(s) for one ` +
+                "container; this port carries the one it returns.",
+        );
+    }
+    if (!observed.returnedAttached) {
+        throw new Error(
+            `${what} returned a cloud other than the one it attached; the ` +
+                "TRS this pass observes is written on the returned one.",
+        );
+    }
+    return observedRotation(observed, what);
 }
 
 const SPZ_MODULE = "loader-splat/load-spz.js";
@@ -284,9 +379,17 @@ interface PinnedSpzModule {
     loadSPZ?: (scene: unknown, url: string) => Promise<unknown>;
 }
 
-/** The pin's `loadSPZ` result, as generation reads it. */
-export interface PackagedSpz extends PackagedSplat {
-    /** The Euler rotation `loadSPZ` left on the cloud it attached. */
+/**
+ * A container loader's result, as generation reads it.
+ *
+ * Two of the pin's three splat entry points end by writing a TRS lane on the
+ * cloud they attached (`loadSPZ` and `loadSOG` both write a half turn about
+ * X), and neither packages anything else the plain rows do not carry — so one
+ * shape serves both and the CLI reads the rotation the same way whichever
+ * container answered.
+ */
+export interface PackagedSplatContainer extends PackagedSplat {
+    /** The Euler rotation the loader left on the cloud it attached. */
     rotation: readonly [number, number, number];
 }
 
@@ -302,18 +405,20 @@ export interface PackagedSpz extends PackagedSplat {
  * stood in for: `fetch` answers from the bytes the download cache already
  * holds, and `attachParsedSplat` records instead of building a GPU mesh.
  *
- * Not bake-cached, unlike the PLY parse beside it. Replaying bytes would
- * skip the four contracts below — that exactly one cloud was attached, that
- * the loader returned the one it attached, that it passed no shader
- * fragments, and that the only lane it wrote is the rotation — and those are
- * what make the rest of this a port rather than a guess. The inflate and
+ * Not bake-cached, unlike the PLY parse beside it. What there would be to
+ * cache is the packaged BYTES — this run hands back a live object graph, not
+ * a serialized capture the way `packageSog` below does — and replaying bytes
+ * would skip the four contracts it answers: that exactly one cloud was
+ * attached, that the loader returned the one it attached, that it passed no
+ * shader fragments, and that the only lane it wrote is the rotation. Those
+ * are what make the rest of this a port rather than a guess. The inflate and
  * parse cost about 280 ms on the reached container against a 19 ms cache
  * replay, which is what that buys.
  */
 export async function packageSpz(
     bytes: Uint8Array,
     url: string,
-): Promise<PackagedSpz> {
+): Promise<PackagedSplatContainer> {
     const recorded: RecordedAttach[] = [];
     const attach = installPinnedImportHook((entry: RecordedAttach) => {
         recorded.push(entry);
@@ -350,26 +455,167 @@ export async function packageSpz(
         attach.release();
         fetching?.release();
     }
-    if (recorded.length !== 1) {
-        throw new Error(
-            `Pinned loadSPZ attached ${recorded.length} cloud(s) for one ` +
-                "container; this port carries the one it returns.",
-        );
-    }
-    const entry = recorded[0]!;
-    if (mesh !== entry.mesh) {
-        throw new Error(
-            "Pinned loadSPZ returned a cloud other than the one it " +
-                "attached; the TRS this pass observes is written on the " +
-                "returned one.",
-        );
-    }
+    const entry = recorded[0];
+    // Read here rather than inside the recorder, because the pin's own
+    // `.then` callback runs on the way out of `loadSPZ` and the TRS it
+    // writes is only on the cloud afterwards. That is why each engine
+    // projects its own view of the attach and only the CLAIMS are shared.
+    const rotation = observedContainerRotation(
+        {
+            attached: recorded.length,
+            returnedAttached: entry !== undefined && mesh === entry.mesh,
+            ...observedAttach(entry),
+        },
+        "Pinned loadSPZ",
+    );
+    // `attached === 1` is what the first contract above refuses on, so the
+    // one recorded attach is in hand here.
+    const parsed = entry!.parsed;
     return {
-        rotation: recordedRotation(entry, "Pinned loadSPZ"),
+        rotation,
         ...packagedSplat(
-            new Uint8Array(entry.parsed.data),
-            entry.parsed.sh,
-            entry.parsed.shDegree ?? 0,
+            new Uint8Array(parsed.data),
+            parsed.sh,
+            parsed.shDegree ?? 0,
+        ),
+    };
+}
+
+const SOG_MODULE = "loader-splat/load-sog.js";
+const LOAD_SPLAT_MODULE = "loader-splat/load-splat.js";
+/** Where the page fetches the container from, on the loopback origin. */
+const SOG_SERVED_PATH = "/sog-source.sog";
+/** The page global the recorder announces each attach through. */
+const SOG_ATTACH_HOOK = "__bblitecSogAttach";
+/** The driver the page installs, awaited and called by `runPageGlobal`. */
+const SOG_PAGE_GLOBAL = "__bblitecPackageSog";
+
+/** What one `loadSOG` run hands back across the page boundary. */
+interface CapturedSog extends ObservedContainerAttach {
+    /** The 32-byte rows and the flat SH stream, base64 (see below). */
+    rowsBase64: string;
+    shBase64: string;
+    shDegree: number;
+}
+
+/**
+ * The page module: run the pinned loader, then hand back what it attached.
+ *
+ * Bytes cross as base64 for the reason `pageBase64Script` gives — a number
+ * per byte turns this cloud's 60 MB into minutes of JSON.
+ */
+function sogPageModule(): string {
+    return `import { loadSOG } from ${JSON.stringify(
+        pinnedBrowserModuleUrl(SOG_MODULE),
+    )};
+
+${pageBase64Script}
+window.${SOG_PAGE_GLOBAL} = async () => {
+    const recorded = [];
+    window[${JSON.stringify(SOG_ATTACH_HOOK)}] = (entry) => {
+        recorded.push(entry);
+    };
+    const mesh = await loadSOG(undefined, ${JSON.stringify(SOG_SERVED_PATH)});
+    const entry = recorded[recorded.length - 1];
+    const parsed = entry ? entry.parsed : { data: new ArrayBuffer(0) };
+    const sh = parsed.sh ? parsed.sh : new Uint8Array(0);
+    return {
+        attached: recorded.length,
+        returnedAttached: entry !== undefined && mesh === entry.mesh,
+        name: entry ? entry.name : "",
+        fragments: entry !== undefined && entry.fragments !== undefined,
+        written: entry ? Object.keys(entry.mesh).sort() : [],
+        rotation: entry
+            ? [entry.mesh.rotation.x, entry.mesh.rotation.y, entry.mesh.rotation.z]
+            : [0, 0, 0],
+        rowsBase64: bblBase64(new Uint8Array(parsed.data)),
+        shBase64: bblBase64(sh),
+        shDegree: parsed.shDegree ? parsed.shDegree : 0,
+    };
+};
+`;
+}
+
+/**
+ * Packages a SOG container by running the pin's own `loadSOG` in Chromium.
+ *
+ * The loader unzips the archive, reads `meta.json`, decodes each WebP and
+ * rebuilds the 32-byte rows plus the flat spherical-harmonic stream — and its
+ * decode step is `createImageBitmap` into a 2D canvas read back with
+ * `getImageData`. That round trip is the BROWSER's, premultiplication and
+ * all, and the reference golden is a browser running this same function: a
+ * substituted decoder would have to agree with Skia byte for byte to package
+ * what the golden drew. So this bake runs the loader where the golden runs it
+ * rather than standing in for the one step Node cannot perform, and Chromium
+ * answers the zip, the decode and the parse alike.
+ *
+ * Two boundaries are stood in for, the same two `packageSpz` stands in for:
+ * `fetch` answers from the download cache, served back on the loopback origin
+ * that hosts the page, and `attachParsedSplat` records instead of building a
+ * GPU mesh — through the same recorder text, served over the pinned module's
+ * own path so the pin's `load-sog.js` imports it unmodified.
+ *
+ * Bake-cached, unlike the whole-loader run `packageSpz` performs. What the
+ * cache stores is the CAPTURED OBJECT — the JSON that crossed the page
+ * boundary — not the packaged bytes, so a replay still answers the four
+ * contracts below from that object: exactly one cloud attached, the returned
+ * cloud is the attached one, no shader fragments, and the only lane written is
+ * the rotation. `basis-transcode.ts` caches its own browser capture on exactly
+ * that boundary, with its contract assertion after it.
+ *
+ * The trade it buys is a whole Chromium launch: the run is 1.65 s on the
+ * reached container (412 ms of it inside the loader) against a 126 ms replay
+ * of the 80.7 MB capture (77 ms read, 26 ms parse, 23 ms base64). Generation
+ * is keyed on `dist`, so every compiler edit regenerates this scene.
+ */
+export async function packageSog(
+    bytes: Uint8Array,
+): Promise<PackagedSplatContainer> {
+    // Deterministic in (container bytes, pin, browser) — the unzip, the WebP
+    // decode and the parse are all the browser's, which is why the browser
+    // identity joins the key.
+    const captured = await cachedJsonBake<CapturedSog>(
+        {
+            kind: "splat-sog",
+            version: "1",
+            module: moduleIdentity(import.meta.url),
+            browser: true,
+            parameters: {},
+            inputs: [bytes],
+        },
+        async () =>
+            (await runPageGlobal(
+                createSuiteSceneServer(sogPageModule(), {
+                    virtualAssets: { [SOG_SERVED_PATH]: bytes },
+                    // Ahead of the repository lookup, so the pinned loader's
+                    // own `./load-splat.js` import resolves to the recorder
+                    // without the package being touched.
+                    virtualModules: {
+                        [pinnedBrowserModuleUrl(LOAD_SPLAT_MODULE)]:
+                            attachParsedSplatRecorderSource(SOG_ATTACH_HOOK),
+                    },
+                }),
+                SOG_PAGE_GLOBAL,
+                {
+                    serverName: "SOG package server",
+                    browserRequirement:
+                        "Packaging a SOG container requires Chrome or Edge.",
+                    // The golden capture's flags, because this run reproduces
+                    // a decode the golden capture performs: the sRGB pin keeps
+                    // the canvas read-back independent of the host display
+                    // profile.
+                    browserArgs: screenshotCaptureBrowserArgs,
+                },
+            )) as CapturedSog,
+    );
+    return {
+        rotation: observedContainerRotation(captured, "Pinned loadSOG"),
+        // `Buffer.from(text, "base64")` already IS a Uint8Array; wrapping it
+        // copies all 60 MB of the reached cloud's rows a second time.
+        ...packagedSplat(
+            Buffer.from(captured.rowsBase64, "base64"),
+            Buffer.from(captured.shBase64, "base64"),
+            captured.shDegree,
         ),
     };
 }
@@ -523,8 +769,8 @@ function resolveRecordedSplat(
     return {
         name: entry.name,
         rows: new Uint8Array(entry.parsed.data),
-        rotation: recordedRotation(
-            entry,
+        rotation: observedRotation(
+            observedAttach(entry),
             `${label}: the pinned ${GAUSSIAN_SPLATTING_EXTENSION} scene wiring`,
         ),
     };

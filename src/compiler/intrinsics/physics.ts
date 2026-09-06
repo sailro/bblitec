@@ -58,6 +58,34 @@ export interface PhysicsIntrinsicContext
 }
 
 /**
+ * The `js::Nullable<double>` an optional numeric argument or option
+ * compiles to.
+ *
+ * An expression the scene did not write stays ABSENT rather than being
+ * substituted here: every one of these lanes has a pinned default -- a
+ * parameter initializer or a `??` -- which the generated setter settles, and
+ * compiling a stand-in would settle it a second time under a different name.
+ */
+function compileNullableNumber(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression | undefined,
+): string {
+  return expression
+    ? `bbl::js::Nullable<double>{${context.compileNumber(expression, "double")}}`
+    : "bbl::js::Nullable<double>{}";
+}
+
+/** The same, for an optional vector option. */
+function compileNullableVec3(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression | undefined,
+): string {
+  return expression
+    ? `bbl::js::Nullable<bbl::Vec3d>{${context.compileVec3(expression, "double")}}`
+    : "bbl::js::Nullable<bbl::Vec3d>{}";
+}
+
+/**
  * The shape types `createPrimitivePhysicsShapeHandle` answers for, by the
  * pinned `PhysicsShapeType` enumerator name. A `const enum` has no runtime
  * object to read, so the member a scene names is resolved here and the
@@ -473,6 +501,47 @@ export function compilePhysicsIntrinsic(
           `bbl::upstream::set_physics_body_mass(` +
           `${world.cpp}, ${body.cpp}, ` +
           `${context.compileNumber(call.arguments[2]!, "double")})`,
+      };
+    }
+
+    case "setPhysicsShapeMaterial": {
+      // `(world, shape, friction, restitution, staticFriction = friction)`.
+      // The fifth argument's default is the pin's own parameter
+      // initializer and is settled inside the generated setter, so an
+      // omitted one stays absent here rather than compiling the friction
+      // expression a second time under a different name.
+      context.expectArgumentCount(call, 4, 5);
+      const world = context.compileValue(call.arguments[0]!);
+      const shape = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(shape, "physics-shape", call.arguments[1]!);
+      context.expectSameEngine(world, shape, call);
+      const staticFriction =
+        compileNullableNumber(context, call.arguments[4]);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_shape_material(` +
+          `${world.cpp}, ${shape.cpp}, ` +
+          `${context.compileNumber(call.arguments[2]!, "double")}, ` +
+          `${context.compileNumber(call.arguments[3]!, "double")}, ` +
+          `${staticFriction})`,
+      };
+    }
+
+    case "setPhysicsBodyMassProperties": {
+      context.expectArgumentCount(call, 3, 3);
+      const world = context.compileValue(call.arguments[0]!);
+      const body = context.compileValue(call.arguments[1]!);
+      context.expectKind(world, "physics-world", call.arguments[0]!);
+      context.expectKind(body, "physics-body", call.arguments[1]!);
+      context.expectSameEngine(world, body, call);
+      return {
+        kind: "void",
+        cpp:
+          `bbl::upstream::set_physics_body_mass_properties(` +
+          `${world.cpp}, ${body.cpp}, ` +
+          `${compileMassProperties(context, call.arguments[2]!)})`,
       };
     }
 
@@ -969,6 +1038,59 @@ function compileBodyEnum(
 }
 
 /**
+ * The `PhysicsMassProperties` members the reached slice lowers.
+ *
+ * Every member is an override of the value Havok derives from the shape, so
+ * an omitted one stays absent and the generated setter keeps the derived
+ * term -- the same treatment the aggregate's friction and restitution get.
+ *
+ * `inertia` and `inertiaOrientation` are absent, and a scene naming one
+ * refuses rather than shipping a number in the wrong units. Havok's inertia
+ * term is PER UNIT MASS: two identical boxes handed the same tensor and the
+ * same angular impulse spin at 0.707 and 0.177 rad/s when only the mass
+ * scalar differs by four. `pal::PhysicsMassProperties::inertia` is the
+ * absolute tensor Bullet's `setMassProps` takes, and no corpus scene writes
+ * either member, so neither conversion has an observer.
+ */
+const MASS_PROPERTIES = ["centerOfMass", "mass"] as const;
+
+/**
+ * `setPhysicsBodyMassProperties`'s overrides, as the generated setter
+ * receives them.
+ *
+ * `mass` is required here although the pinned member is optional: an
+ * omitted one leaves the body wearing the mass Havok's own
+ * `HP_Shape_BuildMassProperties` derives from the shape's volume and its
+ * default density (measured 4000 for the 1x4x1 box the reached scene
+ * builds, i.e. 1000 kg/m3), and the PAL derives no equivalent -- Bullet
+ * asks for a mass rather than a density. A scene omitting it refuses.
+ */
+function compileMassProperties(
+  context: PhysicsIntrinsicContext,
+  expression: ts.Expression,
+): string {
+  const object = context.expectObjectLiteral(expression);
+  validateObjectProperties(
+    context,
+    object,
+    MASS_PROPERTIES,
+    "A physics mass property outside this prototype's reached slice " +
+      `(${MASS_PROPERTIES.join(", ")}). Havok's own inertia term is per ` +
+      "unit mass while the PAL's is the absolute tensor, and no corpus " +
+      "scene writes `inertia` or `inertiaOrientation`, so neither " +
+      "conversion has an observer.",
+  );
+  const mass = requiredObjectNumber(context, object, "mass", "double");
+  const center = compileNullableVec3(
+    context,
+    context.objectProperty(object, "centerOfMass"),
+  );
+  return (
+    `bbl::upstream::PhysicsMassPropertyOverrides{${center}, ${mass}}`
+  );
+}
+
+/**
  * The aggregate options a scene writes. `mass` is required by the pinned
  * interface and decides the motion type (`mass === 0` is STATIC); friction
  * and restitution default inside the generated factory, at the pin's own
@@ -990,12 +1112,8 @@ function compileAggregateOptions(
   // motion type, so it reads through the required helper the other
   // option families use.
   const mass = requiredObjectNumber(context, object, "mass", "double");
-  const optional = (name: string): string => {
-    const value = context.objectProperty(object, name);
-    return value
-      ? `bbl::js::Nullable<double>{${context.compileNumber(value, "double")}}`
-      : "bbl::js::Nullable<double>{}";
-  };
+  const optional = (name: string): string =>
+    compileNullableNumber(context, context.objectProperty(object, name));
   const shapeExpression = context.objectProperty(object, "shape");
   const shape = shapeExpression
     ? context.compileValue(shapeExpression)
