@@ -21,13 +21,17 @@ test("frozen sprite bridges keep sheet aliases live and preserve pinned buffer p
         angle: Float32Array; age: Float64Array;
     }
     interface System {
-        buffer: Buffer; updateSpeed: number;
+        buffer: Buffer; updateSpeed: number; blendMode: number;
         texture: { width: number; height: number } | null;
         _spriteSheet?: { cellWidth: number; cellHeight: number; cellIndex: Uint16Array; update(i: number): void };
     }
-    interface Bridge {
-        layer: { count: number; _instanceData: Float32Array; _savedSize: Float32Array };
+    interface Layer {
+        count: number; _instanceData: Float32Array; _savedSize: Float32Array;
+        opacity: number; visible: boolean; order: number;
+        view: { positionPx: [number, number]; zoom: number; rotation: number };
+        pivot: [number, number];
     }
+    interface Bridge { layer: Layer }
     const { createParticleSystem } = await importPinnedModule<{
         createParticleSystem(capacity: number): System;
     }>("particle/particle-system.js");
@@ -62,6 +66,34 @@ test("frozen sprite bridges keep sheet aliases live and preserve pinned buffer p
         assert.equal(bridge.layer.count, 1);
         return Array.from(bridge.layer._instanceData.slice(0, 13));
     });
+    const spriteApi = await importPinnedModule<{
+        clearSprite2DLayer(layer: Layer): void;
+        addSprite2DIndex(layer: Layer, props: { positionPx: [number, number]; sizePx: [number, number] }): number;
+        updateSprite2DIndex(layer: Layer, index: number, props: { visible: boolean }): void;
+    }>("sprite/sprite-2d.js");
+    spriteApi.clearSprite2DLayer(bridge.layer);
+    syncParticleSprite2DBridge(bridge);
+    assert.equal(bridge.layer.count, 1);
+    spriteApi.addSprite2DIndex(bridge.layer, { positionPx: [0, 0], sizePx: [12, 13] });
+    spriteApi.updateSprite2DIndex(bridge.layer, 0, { visible: false });
+    syncParticleSprite2DBridge(bridge);
+    assert.equal(bridge.layer.count, 1);
+    assert.deepEqual(Array.from(bridge.layer._instanceData.slice(0, 13)), snapshots[1]);
+    assert.deepEqual(Array.from(bridge.layer._savedSize.slice(2, 4)), [0, 0]);
+    const exactApi = await importPinnedModule<{
+        createParticleSprite2DBridgeWithBlendModes(system: System, mapping: typeof options): Bridge & { layers: Layer[] };
+        syncParticleSprite2DBridgeWithBlendModes(bridge: Bridge): void;
+    }>("particle/particle-sprite-2d-blend-modes.js");
+    system.blendMode = 4;
+    const exact = exactApi.createParticleSprite2DBridgeWithBlendModes(system, options);
+    exact.layer.opacity = 0.25;
+    exact.layer.visible = false;
+    exact.layer.order = 7;
+    exact.layer.view = { positionPx: [5, 6], zoom: 2, rotation: 0.5 };
+    exact.layer.pivot = [0.25, 0.75];
+    exactApi.syncParticleSprite2DBridgeWithBlendModes(exact);
+    const presentation = (layer: Layer) => [layer.opacity, layer.visible, layer.order, layer.view, layer.pivot];
+    assert.deepEqual(presentation(exact.layers[1]!), presentation(exact.layer));
     const entry: NodeParticleSystemEmit = {
         bake: {
             set: 0, system: 0, capacity: 3, blendMode: 2,
@@ -77,8 +109,13 @@ test("frozen sprite bridges keep sheet aliases live and preserve pinned buffer p
         exactBlend: false, textureAsset: "fixture.png",
     };
     const context = new LoweringContext();
-    const particle = new NodeParticleLowerer(context).lower([entry], [{
+    const particle = new NodeParticleLowerer(context).lower([
+        entry, { ...entry, bake: { ...entry.bake, system: 1, blendMode: 4 } },
+    ], [{
         systems: [{ set: 0, system: 0 }], exact: false, autoStart: false,
+        ...options, invertY: true, retainFrozen: true,
+    }, {
+        systems: [{ set: 0, system: 1 }], exact: true, autoStart: false,
         ...options, invertY: true, retainFrozen: true,
     }]);
     const sprite = new SpriteLowerer(context).lowerCore();

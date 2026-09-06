@@ -1369,9 +1369,7 @@ void write_bridge_sprites(
     Engine& engine,
     Sprite2DLayerHandle layer,
     const Sprite2DBridge& bridge,
-    const BakedSystem& system${retained ? ",\n    bool replace = false" : ""}) {
-${retained ? `    const FrozenSystem* retained = frozen_system(system.set_index, system.system_index);
-` : ""}\
+    const BakedSystem& system) {
     for (std::size_t i = 0; i < system.particle_count; ++i) {
         const BakedParticle& particle = system.particles[i];
         Sprite2DProps props;
@@ -1400,19 +1398,7 @@ ${retained ? `    const FrozenSystem* retained = frozen_system(system.set_index,
         props.has_rotation = true;
         props.color = particle.color;
         props.has_color = true;
-${retained ? `        if (retained) {
-            props.size_px = Vec2{
-                static_cast<float>(retained->sizes[i * 2] * bridge.pixels_per_unit),
-                static_cast<float>(retained->sizes[i * 2 + 1] * bridge.pixels_per_unit)};
-            if (retained->has_sheet) {
-                if (i >= retained->cells.size()) {
-                    throw std::runtime_error("Particle sprite-sheet cell index is undefined.");
-                }
-                props.frame = static_cast<float>(retained->cells[i]);
-            }
-        }
-        if (replace) update_sprite_2d_index(engine, layer, static_cast<double>(i), props);
-        else add_sprite_2d_index(engine, layer, props);` : "        add_sprite_2d_index(engine, layer, props);"}
+        add_sprite_2d_index(engine, layer, props);
     }
 }
 `
@@ -1588,6 +1574,17 @@ void register_node_particle_set_2d(
         const observed = systems.filter((entry) =>
             entry.bake.bufferColumns !== undefined || retainedKeys.has(nodeParticleKey(entry.bake)),
         );
+        const spriteFile = this.context.sourceFile("src/sprite/sprite-2d.ts");
+        const savedSizeFloats = this.context.numericValue(
+            this.context.moduleScopeConstant(spriteFile, "SAVED_SIZE_FLOATS_PER_SPRITE")!, spriteFile,
+        );
+        if (bindings.some((binding) => binding.retainFrozen && binding.exact)) {
+            const copy = this.context.functionDeclaration(sprite2dBlendModule, "copyLogicalState").declaration;
+            for (const field of ["opacity", "visible", "order", "view.positionPx[0]", "view.positionPx[1]",
+                "view.zoom", "view.rotation", "pivot[0]", "pivot[1]"]) {
+                this.context.expectShapeCount(copy, `target.${field} = source.${field}`, "exact bridge presentation copy");
+            }
+        }
         const number = (value: number): string => {
             if (Number.isNaN(value)) return "std::numeric_limits<double>::quiet_NaN()";
             if (value === Infinity) return "std::numeric_limits<double>::infinity()";
@@ -1640,37 +1637,107 @@ FrozenSystem* frozen_system(int set, int system) {
             registrar: retainedKeys.size === 0 ? "" : `
 constexpr bool retained_frozen_request[] = {${bindings.map((binding) => !!binding.retainFrozen).join(", ")}};
 
+void assert_frozen_bridge_ownership(const Sprite2DLayerRecord& layer) {
+    if (layer.next_sprite_id != 1u) {
+        throw std::runtime_error("A particle bridge-owned layer cannot use the Sprite2D Handle API.");
+    }
+}
+
+// syncParticleSprite2DBridge owns the complete packed range, even after an
+// Index API caller clears, appends, or hides slots between renderer updates.
+void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
+    const Sprite2DBridge& bridge, const BakedSystem& system) {
+    Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
+    assert_frozen_bridge_ownership(layer);
+    const FrozenSystem& state = *frozen_system(system.set_index, system.system_index);
+    const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
+    const std::size_t alive = system.particle_count;
+    const std::uint32_t previous_count = layer.count;
+    for (std::size_t i = 0; i < alive; ++i) {
+        const BakedParticle& particle = system.particles[i];
+        if (state.has_sheet && i >= state.cells.size()) {
+            throw std::runtime_error("Particle sprite-sheet cell index is undefined.");
+        }
+        const SpriteFrame& frame = atlas.frames[resolve_sprite_frame(atlas,
+            state.has_sheet ? static_cast<double>(state.cells[i]) : particle.frame)];
+        const std::size_t base = i * layer.instance_floats_per_sprite;
+        const std::size_t saved = i * ${savedSizeFloats}u;
+        const float width = static_cast<float>(state.sizes[i * 2] * bridge.pixels_per_unit);
+        const float height = static_cast<float>(state.sizes[i * 2 + 1] * bridge.pixels_per_unit);
+        auto& data = layer.instance_data;
+        data[base] = static_cast<float>(bridge.origin_x + static_cast<double>(particle.position.x) * bridge.pixels_per_unit);
+        data[base + 1] = static_cast<float>(bridge.origin_y + static_cast<double>(particle.position.y) * bridge.pixels_per_unit * bridge.y_sign);
+        data[base + 2] = width;
+        data[base + 3] = height;
+        data[base + 4] = frame.uv_min.x;
+        data[base + 5] = frame.uv_min.y;
+        data[base + 6] = frame.uv_max.x;
+        data[base + 7] = frame.uv_max.y;
+        data[base + 8] = static_cast<float>(static_cast<double>(particle.rotation) * bridge.y_sign);
+        data[base + 9] = particle.color.x;
+        data[base + 10] = particle.color.y;
+        data[base + 11] = particle.color.z;
+        data[base + 12] = particle.color.w;
+        layer.saved_size[saved] = width;
+        layer.saved_size[saved + 1] = height;
+    }
+    for (std::size_t i = alive; i < previous_count; ++i) {
+        layer.saved_size[i * ${savedSizeFloats}u] = 0;
+        layer.saved_size[i * ${savedSizeFloats}u + 1] = 0;
+    }
+    set_sprite_2d_count(layer, static_cast<std::uint32_t>(alive));
+    const std::size_t dirty_end = std::max<std::size_t>(previous_count, alive);
+    if (dirty_end > 0) mark_sprite_2d_dirty(layer, 0u, static_cast<std::uint32_t>(dirty_end));
+}
+
 // Simulation was measured to be the identity. The renderer still copies the
 // current sheet cells on every hook, including writes through another alias.
 void register_retained_frozen_node_particle_set_2d(
     Engine& engine, SpriteRendererHandle renderer, int request) {
-    using Layer = std::pair<const Sprite2DBridge*, Sprite2DLayerHandle>;
-    std::vector<Layer> layers;
+    struct Mapping {
+        const Sprite2DBridge* bridge;
+        Sprite2DLayerHandle primary;
+        std::optional<Sprite2DLayerHandle> secondary;
+    };
+    std::vector<Mapping> mappings;
     for (const Sprite2DBridge& bridge : sprite_2d_bridges) {
         if (bridge.request != request) continue;
         const BakedSystem& system = baked(bridge.set_index, bridge.system_index);
         const SpriteAtlasHandle atlas = particle_atlas(engine, bridge.set_index, bridge.system_index);
         Sprite2DLayerOptions options = bridge_layer_options(bridge, system);
         const Sprite2DLayerHandle layer = create_sprite_2d_layer(engine, atlas, options);
-        write_bridge_sprites(engine, layer, bridge, system);
-        layers.emplace_back(&bridge, layer);
+        sync_frozen_bridge(engine, layer, bridge, system);
+        Mapping mapping{&bridge, layer, {}};
         if (options.blend_mode.particle_passes == 2) {
             options.blend_mode = create_particle_blend(2);
             options.custom_shader = false;
             const Sprite2DLayerHandle second = create_sprite_2d_layer(engine, atlas, options);
-            write_bridge_sprites(engine, second, bridge, system);
-            layers.emplace_back(&bridge, second);
+            sync_frozen_bridge(engine, second, bridge, system);
+            mapping.secondary = second;
         }
+        mappings.push_back(mapping);
     }
-    for (const Layer& layer : layers) {
-        add_sprite_renderer_layer(engine, renderer, layer.second);
+    for (const Mapping& mapping : mappings) {
+        add_sprite_renderer_layer(engine, renderer, mapping.primary);
+        if (mapping.secondary) add_sprite_renderer_layer(engine, renderer, *mapping.secondary);
     }
     sprite_renderer_before_update(engine, renderer,
-        [&engine, layers = std::move(layers)](double) {
-            for (const Layer& layer : layers) {
-                const Sprite2DBridge& bridge = *layer.first;
-                write_bridge_sprites(engine, layer.second, bridge,
-                    baked(bridge.set_index, bridge.system_index), true);
+        [&engine, mappings = std::move(mappings)](double) {
+            for (const Mapping& mapping : mappings) {
+                if (mapping.secondary) assert_frozen_bridge_ownership(engine.sprite_layers[mapping.secondary->value]);
+                const Sprite2DBridge& bridge = *mapping.bridge;
+                const BakedSystem& system = baked(bridge.set_index, bridge.system_index);
+                sync_frozen_bridge(engine, mapping.primary, bridge, system);
+                if (mapping.secondary) {
+                    const Sprite2DLayerRecord& source = engine.sprite_layers[mapping.primary.value];
+                    Sprite2DLayerRecord& target = engine.sprite_layers[mapping.secondary->value];
+                    target.opacity = source.opacity;
+                    target.visible = source.visible;
+                    target.order = source.order;
+                    target.view = source.view;
+                    target.pivot = source.pivot;
+                    sync_frozen_bridge(engine, *mapping.secondary, bridge, system);
+                }
             }
         });
 }

@@ -55,9 +55,56 @@ int main() {
         assert(layer.saved_size[0] == expected[2] && layer.saved_size[1] == expected[3]);
     }
     assert(samples == 5);
+    clear_sprite_2d_layer(engine, record.layers[0]);
+    record.before_update[0](0);
+    assert(layer.count == 1);
+    Sprite2DProps extra;
+    extra.has_position_px = true;
+    extra.has_size_px = true;
+    extra.size_px = {12, 13};
+    add_sprite_2d_index(engine, record.layers[0], extra);
+    Sprite2DProps hidden;
+    hidden.has_visible = true;
+    hidden.visible = false;
+    update_sprite_2d_index(engine, record.layers[0], 0, hidden);
+    layer.dirty_sprite_begin = invalid_handle;
+    layer.dirty_sprite_end = 0;
+    const auto version = layer.version;
+    record.before_update[0](0);
+    assert(layer.count == 1 && layer.version == version + 1);
+    assert(layer.dirty_sprite_begin == 0 && layer.dirty_sprite_end == 2);
+    assert(layer.saved_size[2] == 0 && layer.saved_size[3] == 0);
+    assert(std::equal(expected_0.begin(), expected_0.end(), layer.instance_data.begin()));
     cells[0] = 2;
     bool refused = false;
     try { record.before_update[0](0); } catch (const std::runtime_error&) { refused = true; }
     assert(refused);
+    cells[0] = 0;
+    add_sprite_2d(engine, record.layers[0], extra);
+    refused = false;
+    try { record.before_update[0](0); } catch (const std::runtime_error&) { refused = true; }
+    assert(refused);
+
+    const auto exact_renderer = create_sprite_renderer(engine, {});
+    set_frozen_node_particle_sheet(0, 1, 64, 64, cells);
+    register_node_particle_set_2d(engine, exact_renderer, 1);
+    auto& exact = engine.sprite_renderers[exact_renderer.value];
+    assert(exact.layers.size() == 2 && exact.before_update.size() == 1);
+    auto& primary = engine.sprite_layers[exact.layers[0].value];
+    auto& secondary = engine.sprite_layers[exact.layers[1].value];
+    primary.opacity = 0.25f;
+    primary.visible = false;
+    primary.order = 7;
+    primary.view.position_px = {5, 6};
+    primary.view.zoom = 2;
+    primary.view.rotation = 0.5f;
+    primary.pivot = {0.25f, 0.75f};
+    exact.before_update[0](0);
+    assert(secondary.opacity == 0.25f && !secondary.visible && secondary.order == 7);
+    assert(secondary.view.position_px.x == 5 && secondary.view.position_px.y == 6);
+    assert(secondary.view.zoom == 2 && secondary.view.rotation == 0.5f);
+    assert(secondary.pivot.x == 0.25f && secondary.pivot.y == 0.75f);
+    assert(std::equal(expected_0.begin(), expected_0.end(), primary.instance_data.begin()));
+    assert(std::equal(expected_0.begin(), expected_0.end(), secondary.instance_data.begin()));
     std::cout << "frozen-bridge-check: ok\n";
 }
