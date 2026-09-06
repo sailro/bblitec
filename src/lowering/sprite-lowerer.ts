@@ -2303,7 +2303,6 @@ ${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
-#include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/sprite_layer.hpp>
 
 #include <algorithm>

@@ -473,7 +473,7 @@ inline void upload_dawn_billboard_pass(
     DawnBillboardPass& pass,
     const std::array<float, 16>& view_projection,
     const std::array<float, 16>& view,
-    float delta_ms) {
+    double delta_ms) {
     const BillboardSystemRecord& system =
         engine.billboard_systems[pass.system.value];
 
