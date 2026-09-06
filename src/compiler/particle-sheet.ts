@@ -63,7 +63,7 @@ export function emitFrozenParticleSheetAssignment(
     if (indices.dataType?.kind !== "u16array") {
         context.fail(field("cellIndex"), "Particle sprite-sheet cellIndex requires shared Uint16Array storage.");
     }
-    const request = frozenParticleBuffer(context, owner);
+    const request = frozenParticleBuffer(context, owner, expression);
     if (request.sheet) {
         context.fail(expression, "Replacing a frozen particle sprite-sheet object is not lowered; its shared cellIndex elements remain writable.");
     }

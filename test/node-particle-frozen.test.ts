@@ -88,6 +88,30 @@ test("unreached sprite-sheet callbacks, fields and ownership shapes refuse at so
     }
 });
 
+test("frozen snapshots refuse composed aliases in either reach order", () => {
+    const other = `const other = await buildNodeParticleSet(engine, buildScene, parseNodeParticleSource(createNpeSprite2DGraph(flareUrl)));`;
+    const sheet = `const cells = new Uint16Array(600); system._spriteSheet = { cellWidth:64, cellHeight:64, cellIndex:cells, update:()=>undefined };`;
+    for (const body of [
+        `set.systems.push(system); const x = set.systems[1]!.buffer.posX[0] ?? 0; system.buffer.posX[0] = 123;`,
+        `const buffer = system.buffer; const column = buffer.posX; set.systems.push(system); const x = column[0];`,
+        `const buffer = system.buffer; set.systems.push(system); const count = buffer.capacity;`,
+        `const x = system.buffer.posX[0]; set.systems.push(system);`,
+        `${other} other.systems.push(system); const x = system.buffer.posX[0];`,
+        `${other} other.systems.push(system); const x = other.systems[0]!.buffer.alive;`,
+        `${other} const x = system.buffer.posX[0]; other.systems.push(system);`,
+        `${other} const x = other.systems[0]!.buffer.age[0]; other.systems.push(system);`,
+        `${sheet} ${other} other.systems.push(system); ${registration.replace(", set,", ", other,")}`,
+        `${other} other.systems.push(system); ${sheet}`,
+    ]) {
+        assert.throws(() => compile(body), /scene300\.ts:\d+:\d+: .*([Ss]ystem-list composition|cannot be combined with system-list composition)/);
+    }
+    // Existing composition remains an ordered bake operation when no new
+    // native snapshot or shared sheet crosses the original-system boundary.
+    const result = compile(`${other} other.systems.push(system); ${registration.replace(", set,", ", other,")}`);
+    assert.ok(result.nodeParticles!.steps.some((step) => step.op === "push-system"));
+    assert.deepEqual(result.nodeParticles!.buffers, []);
+});
+
 test("pinned frozen bake preserves full-capacity typed columns and stable Float64 particle age", async () => {
     const result = compile(`
         const buffer = system.buffer;

@@ -1168,6 +1168,12 @@ export class HandleCollections {
                 "A pushed particle system comes from a built set.",
             );
         }
+        if (this.context.reachedNodeParticles.buffers.some((buffer) =>
+            buffer.set === set.nodeParticleSetIndex ||
+            buffer.set === system.nodeParticleSetIndex)) {
+            this.context.fail(call,
+                "System-list composition cannot follow native frozen particle buffer reads or sprite-sheet assignment; pushed systems share their original buffer identity.");
+        }
         this.context.reachedNodeParticles.steps.push({
             op: "push-system",
             set: set.nodeParticleSetIndex,

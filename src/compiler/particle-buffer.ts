@@ -25,9 +25,14 @@ export interface ParticleBufferContext extends PositiveIntegerContext {
 type BufferIdentity = { set: number; system: number };
 
 export function frozenParticleBuffer(
-    context: Pick<ParticleBufferContext, "reachedNodeParticles">,
+    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
     owner: BufferIdentity,
+    node: ts.Node,
 ): NodeParticleFrozenBufferRequest {
+    if (context.reachedNodeParticles.steps.some((step) => step.op === "push-system" &&
+        (step.set === owner.set || step.fromSet === owner.set))) {
+        context.fail(node, "Native frozen particle buffer reads and sprite sheets cannot be combined with system-list composition; pushed systems share their original buffer identity.");
+    }
     const previous = context.reachedNodeParticles.buffers.find(
         (entry) => entry.set === owner.set && entry.system === owner.system,
     );
@@ -79,7 +84,7 @@ export function readFrozenParticleProperty(
     }
     if ((owner.kind === "node-particle-buffer" && (name === "alive" || name === "capacity")) ||
         (owner.kind === "node-particle-column" && name === "length")) {
-        const request = frozenParticleBuffer(context, buffer);
+        const request = frozenParticleBuffer(context, buffer, node);
         const field = name === "alive" ? "alive" : "capacity";
         if (field === "alive") request.observed = true;
         return {
@@ -92,12 +97,13 @@ export function readFrozenParticleProperty(
 }
 
 export function readFrozenParticleElement(
-    context: Pick<ParticleBufferContext, "reachedNodeParticles">,
+    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
     owner: Value,
     indexCpp: string,
+    node: ts.Node,
 ): Value {
     const buffer = identity(owner)!;
-    const request = frozenParticleBuffer(context, buffer);
+    const request = frozenParticleBuffer(context, buffer, node);
     const column = owner.nodeParticleColumn!;
     if (!request.columns.includes(column)) request.columns.push(column);
     request.observed = true;

@@ -851,6 +851,7 @@ export class ExpressionLowerer {
                 return readFrozenParticleElement(
                     this.context, owner,
                     this.context.compileNumber(unwrapped.argumentExpression, "double"),
+                    unwrapped,
                 );
             }
             if (owner.kind === "node-particle-set") {
