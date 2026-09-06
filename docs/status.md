@@ -256,6 +256,7 @@ parity scene intentionally does not.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
+| Offscreen (Worker) | <img src="images/scenes/offscreen.png" alt="Offscreen main and worker views" width="160"> | $\color{#1a7f37}{\textsf{0.456}} / \color{#9a6700}{\textsf{0.576}}$ | $\color{#1a7f37}{\textsf{0.456}} / \color{#9a6700}{\textsf{0.576}}$ | Dedicated Worker realms; transferred canvases; retained blocking control. UI residual; canvas-only MAD: SDL_GPU 0.002 / 0.002, Dawn 0.001 / 0.002. |
 | Tetris | <img src="images/scenes/tetris.png" alt="Tetris rendering" width="160"> | $\color{#cf222e}{\textsf{1.204}} / \color{#cf222e}{\textsf{1.037}}$ | $\color{#cf222e}{\textsf{1.204}} / \color{#cf222e}{\textsf{1.037}}$ | Thin-instance game; audio; retained UI. UI residual; no-UI MAD: SDL_GPU 0.093 / 0.101, Dawn 0.093 / 0.101. |
 | Doom | <img src="images/scenes/doom.png" alt="Doom rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | WAD game; sprites; audio; retained UI. |
 | LibreQuake | <img src="images/scenes/quake.png" alt="LibreQuake rendering" width="160"> | 0.058 / 0.058 | 0.058 / 0.058 | BSP/WAD2/MDL game; audio; Canvas2D HUD. |

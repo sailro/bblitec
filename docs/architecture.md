@@ -107,6 +107,16 @@ container storage. The non-atomic reference count assumes scene code executes
 on the frame thread. GPU objects are backend-owned and released through their
 API's deferred-lifetime rules.
 
+Worker applications keep each generated module instance and its JavaScript
+identities on an owning realm thread. A separate OS thread owns the window,
+RmlUi layout and presentation. Native messages, document snapshots, dimensions
+and fenced GPU image leases cross those boundaries; engine records and
+`bbl::js::Ref` do not. Module-worker compilation, typed structured cloning and
+canvas transfer are implemented for the bounded
+[Worker service](#worker-service-design). The unchanged Offscreen application
+exercises these services; its published scene gates are still pending. See
+[backends](backends.md#experimental-offscreen-surfaces) for the GPU boundary.
+
 Managed records, containers and explicit callback environments expose owning
 edges to cycle collection at frame boundaries and generated-scope teardown.
 Acyclic identities still release immediately. Native opaque owners remain
@@ -129,6 +139,63 @@ capture expired stack state or own themselves indefinitely.
 The checked array/DataView/string surface and file-size caps define supported
 runtime bounds. A checked failure is an explicit adaptation where JavaScript
 would yield `undefined`; see fidelity.
+
+### Worker service design
+
+The service implements reusable dedicated module workers. Rendering is an
+optional consumer: computation workers need no Engine, SDL or GPU. Its AOT
+admission surface is bounded; compiling the Offscreen application does not
+establish complete browser Worker compatibility.
+
+The governing references are the HTML Standard's
+[Worker processing model](https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model),
+[event loops](https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model),
+[message ports](https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports),
+[structured serialization and transfer](https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer),
+and [OffscreenCanvas](https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface).
+The following table describes the implemented boundaries and remaining limits.
+
+| Boundary | Implementation | Limit or remaining acceptance work |
+| --- | --- | --- |
+| Execution | Each realm owns an Engine-independent task/microtask/timer loop. Native inboxes wake idle waits; animation callbacks run on their owning loop. | Only admitted APIs enter this scheduler; it is not a general browser event loop. |
+| Async control flow | Worker compilation uses typed coroutine activations and owner-loop promises. Engine creation, scene registration and first rendered frame preserve reached `await` continuations. | Broader Promise APIs and unhandled-rejection behavior need explicit admission and observing tests. |
+| Realm state | Entry factories create per-instance module bindings. Mutable JS runtime state and non-atomic identities remain in a scoped thread-local realm. | Native owners must not retain JS callbacks across realm boundaries; opaque callback lifetime review remains necessary. |
+| Compilation | Resolved Worker/URL constructors discover local module graphs and their provenance. Factories, assets and features are composed into one executable. | Graphics realms currently must have identical generated rendering products; heterogeneous product domains refuse. Classic workers and runtime-selected scripts are not admitted. |
+| Messaging | Sender serialization and receiver reconstruction preserve supported graph cycles, aliases and ordered delivery. Source callbacks execute on the receiver loop. | Codecs are typed and bounded, not the complete structured-clone type catalogue. MessagePort transfer and shared memory remain unsupported. |
+| Transfer | Canvas wrappers model placeholder creation, sender detachment and exclusive rendering-context ownership. Transfer validation precedes serialization; a canvas with a context cannot transfer. | Native rendering admits dimensions in [1, 16384]; this is a documented resource bound, not full browser allocation behavior. |
+| Shutdown | `close()` finishes the current callback/microtasks and discards later work. `terminate()` wakes inboxes and reaches cancellation checks in compiled busy loops; owner teardown releases suspended activations. | Blocking native operations require their own interruptible contract; arbitrary third-party work is not preemptible. |
+| Presentation and DOM | The OS host projects native document snapshots, composes registered GPU canvases through retained UI and forwards owned events. Source callbacks and resize messages stay in the application/worker realms. | The Window API subset requires a native host UI companion and includes canvas layout, callback-only ResizeObserver and resolution media-query notifications. Broader DOM/event contracts need admission. Full-page and canvas gates freeze each engine independently. |
+
+The Window supplies display-driven animation notifications to subscribed realm
+inboxes. Each busy realm coalesces pending notifications to one latest timestamp;
+it does not accumulate missed frames or execute a catch-up burst. Rendering
+requests another callback after yielding, separate from nested `setTimeout`
+clamping. This preserves frame-based source animation without a fixed 60 Hz
+timer or scene-specific angular correction. Ordinary worker-free renderers keep
+their existing swapchain pacing.
+
+The renderer's bounded GPU image pool and fence leases remain usable below
+these boundaries. Surface publication must not own the worker's lifetime or
+clock. JS messages may not adopt the pool's frame-dropping policy. A worker
+with no graphics must neither allocate a device nor wait for a presentation
+tick. Worker-free applications retain the existing compiled path, without new
+threads, cancellation checks, atomic JS reference counts or queue locks.
+
+The service must not interpret the demo's `init`, `resize`, `ready` or `error`
+payloads. In particular, `ready` is an application message, distinct from a
+Worker error event. The pinned `startEngine` resolves after its first
+`renderFrame`; an actual window presentation is a separate capture condition.
+The compositor may continue presenting worker output while the main realm is
+busy, but it must not execute the blocked realm's DOM callbacks on its behalf.
+
+Local module workers are the first AOT admission surface. SharedWorker,
+SharedArrayBuffer/Atomics, MessageChannel transfer, classic/importScripts and
+runtime-selected script loading each need explicit feature support; reaching
+an unimplemented form must produce a source-located refusal. This scope must
+not become a hardcoded assumption that a worker has one parent, one canvas or
+one renderer in the reusable event-loop and transport layers.
+
+The acceptance cases belong in [TODO](../TODO.md#p1--worker-service).
 
 ## Animation and deformation
 

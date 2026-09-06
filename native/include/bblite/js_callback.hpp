@@ -1,6 +1,9 @@
 #pragma once
 
 #include <bblite/js_gc.hpp>
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#include <bblite/js_realm_state.hpp>
+#endif
 
 #include <cstddef>
 #include <functional>
@@ -34,8 +37,12 @@ template <typename Environment, typename Invoke>
 }
 
 inline std::size_t next_callback_identity() {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    return realm_state.callback_identity++;
+#else
     static std::size_t next = std::numeric_limits<std::size_t>::max() / 2;
     return next++;
+#endif
 }
 
 /** A JavaScript function object: copies share identity and mutable captures. */
@@ -51,7 +58,8 @@ class Callback<R(Args...)> {
         F function;
         R call(Args... args) override { return function(std::forward<Args>(args)...); }
         bool present() const override {
-            if constexpr (requires { static_cast<bool>(function); }) return static_cast<bool>(function);
+            if constexpr (requires { function.operator bool(); }) return function.operator bool();
+            else if constexpr (std::is_pointer_v<F>) return function != nullptr;
             else return true;
         }
         void gc_trace(const TraceVisitor& visitor) const { visitor(function); }

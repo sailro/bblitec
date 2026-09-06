@@ -1500,6 +1500,8 @@ export async function runSceneParity(
     // toggles) would otherwise throw before the scene starts.
     const sharedCaptureOptions = {
         seededRandom: manifestUsesSeededRandom(compiledManifest),
+        ...(config.independentEngines === undefined ? {} : { independentEngines: config.independentEngines }),
+        ...(config.referenceHostPage === undefined ? {} : { hostPage: config.referenceHostPage }),
         ...(scene.nativeHostUi
             ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
             : {}),

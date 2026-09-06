@@ -8,6 +8,10 @@ export interface SceneParityDefinition {
      * this instead of a wall-clock settle.
      */
     referenceFrame?: number;
+    /** Number of independently frozen engine timelines, across any realms. */
+    independentEngines?: number;
+    /** Exact upstream host HTML used for the reference page. */
+    referenceHostPage?: string;
     /**
      * Offset the native screenshot gate from `referenceFrame`. This is for a
      * renderer boundary whose browser-side update becomes visible on the next
@@ -4211,6 +4215,27 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "offscreen",
+        name: "Offscreen (Worker)",
+        source: "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Offscreen (Worker)",
+        nativeHostUi: "ui/offscreen-host.json",
+        parity: {
+            referenceFrame: 180,
+            independentEngines: 2,
+            referenceHostPage: "corpus/babylon-lite/lab/lite/demo-offscreen.html",
+            // Full-page residual is the retained UI. Both canvas images differ
+            // by at most one channel count from the unchanged upstream page.
+            maxFullMad: 0.6,
+            maxForegroundMad: 0.75,
+            canvasThresholds: { maxFullMad: 0.005, maxForegroundMad: 0.005 },
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "tetris",
         name: "Tetris",
         source: "corpus/babylon-lite/lab/lite/src/demos/tetris.ts",
@@ -4602,6 +4627,7 @@ function derivedReferenceFrameEnvironment(
         nativeEnvironment: {
             ...parity.nativeEnvironment,
             BBLITE_SCREENSHOT_FRAME: String(nativeFrame),
+            ...(parity.independentEngines === undefined ? {} : { BBLITE_CAPTURE_ENGINE_FRAME: String(nativeFrame) }),
         },
     };
 }

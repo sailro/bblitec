@@ -4227,6 +4227,54 @@
           "sha256": "438ccab47cc44670e48ae2bb0d69ff000bdde2b152f61765c831dab63dc477d6"
         }
       ]
+    },
+    {
+      "id": "offscreen",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
+      "reference": {
+        "source": "reference/offscreen/babylon-lite-golden.png",
+        "sha256": "833c0eea47c596912e4a2e4e81e4c2af1962fc1eff5ab55e0e7a704f40ec91c2",
+        "capture": {
+          "frame": 180,
+          "independentEngines": 2,
+          "moduleSha256": "a069da253f7c203445af33a76ae55d1f6877581b038c371b00df1985ea88f36b",
+          "adapterSha256": "08ac42c387b1f9f5c50f4aa451e0ca088d768dfc6b3d775b1da2984d745e246a",
+          "hostPage": "corpus/babylon-lite/lab/lite/demo-offscreen.html",
+          "hostPageSha256": "a0180843b860626a60517c5c9336da092fa6bba790e85f553ac8bf1122e08764"
+        }
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/demo-offscreen.html",
+          "source": "corpus/babylon-lite/lab/lite/demo-offscreen.html",
+          "sha256": "a0180843b860626a60517c5c9336da092fa6bba790e85f553ac8bf1122e08764"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/offscreen-scene.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/offscreen-scene.ts",
+          "sha256": "0a504498be91953934d58585c0aaa8154091674af9eba2809829978cfe1916af"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/offscreen-worker.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/offscreen-worker.ts",
+          "sha256": "f4bd52612ac80a1fa14bb6a33f97d5bd1795efa6a7058667dbd74ba6ad15f495"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/offscreen.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
+          "sha256": "c2deeff945309217940d97c67aaf2c7e49933e5e6e22896a0864b1dace8edefc"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        }
+      ]
     }
   ]
 }

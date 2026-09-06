@@ -1172,6 +1172,14 @@ export interface NodeParticleManifest {
 }
 
 export type ValueKind =
+  | "worker"
+  | "worker-scope"
+  | "worker-resize-observer"
+  | "worker-media-query"
+  | "worker-message-event"
+  | "worker-error-event"
+  | "offscreen-canvas"
+  | "promise"
   | "animation-clip"
   | "animation-group"
   /**
@@ -1503,6 +1511,9 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
   return (
     kind === "tuple" ||
     kind === "record" ||
+    // A worker-global alias resolves to the current realm; it has no copyable
+    // native object and must not become a closure capture.
+    kind === "worker-scope" ||
     kind === "gpu-device" ||
     kind === "static-fetch-response" ||
     kind === "json-null" ||
@@ -1672,6 +1683,9 @@ export function commonResourceValue(value: Value, candidates: readonly Value[]):
 }
 
 export interface Value {
+  ownedEngineCpp?: string;
+  promiseResult?: Value;
+  promiseType?: string;
   kind: ValueKind;
   cpp: string;
   /** Owning cell for a mutable captured binding; cpp reads its current value. */
@@ -2535,9 +2549,18 @@ export type Feature =
    */
   | "data:json"
   /** Web Storage: the durable per-user key/value store behind `localStorage`. */
-  | "storage:local";
+  | "storage:local"
+  | "platform:workers"
+  | "platform:window";
+
+export interface WorkerCompilation {
+  namespace: string | undefined;
+  register(node: ts.NewExpression): string | undefined;
+  declarations(): string;
+}
 
 export interface ResolvedCompileOptions {
+  workers?: WorkerCompilation;
   fileName: string;
   title: string;
   width: number;

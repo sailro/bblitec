@@ -27,7 +27,7 @@
 
 namespace bbl {
 
-namespace pal { class AudioSession; }
+namespace pal { class AudioSession; class OffscreenRun; }
 
 namespace js {
 template <typename T>
@@ -147,7 +147,11 @@ class PlatformEventListeners;
 template <typename... Args>
 class PlatformEventListeners<void(Args...)> {
   public:
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    using Callback = js::Callback<void(Args...)>;
+#else
     using Callback = std::function<void(Args...)>;
+#endif
 
     void add(
         std::size_t identity,
@@ -189,7 +193,19 @@ class PlatformEventListeners<void(Args...)> {
 
     [[nodiscard]] bool empty() const noexcept { return entries_.empty(); }
 
-    void dispatch(Args... args) {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    void gc_trace(const js::TraceVisitor& visitor) const {
+        for (const Entry& entry : entries_) visitor(entry.callback);
+    }
+#endif
+
+      void dispatch(Args... args) {
+          dispatch_with([](Callback& callback, Args... values) { callback(values...); }, args...);
+      }
+
+      /** The owning event loop supplies exception reporting and callback cleanup. */
+      template <typename Invoke>
+      void dispatch_with(Invoke&& invoke, Args... args) {
         const std::size_t boundary = next_sequence_;
         ++dispatch_depth_;
         try {
@@ -200,7 +216,7 @@ class PlatformEventListeners<void(Args...)> {
                     entry.active = false;
                     needs_compaction_ = true;
                 }
-                entry.callback(args...);
+                  invoke(entry.callback, args...);
             }
         } catch (...) {
             --dispatch_depth_;
@@ -3631,6 +3647,8 @@ enum class UiStyleSelectorKind : std::uint8_t {
     IdDescendantClass,
     /** `tag.class`, the element's own tag gated on one of its classes. */
     TagClass,
+    /** `tag[attribute="identifier"]`, with a statically validated value. */
+    TagAttribute,
 };
 
 /**
@@ -3650,6 +3668,7 @@ struct UiStyleRule {
     double max_width = -1.0;
     bool hover = false;
     bool focus_visible = false;
+    bool active = false;
 };
 
 /**
@@ -3743,6 +3762,9 @@ struct UiElementRecord {
     UiClientRect client_rect{};
     bool client_rect_requested = false;
     std::optional<CanvasState> canvas;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    bool external_gpu_canvas = false;
+#endif
     bool attached_to_root = false;
 };
 
@@ -3991,6 +4013,9 @@ struct BoundingBoxGizmoRecord {
 };
 
 struct Engine {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    std::shared_ptr<pal::OffscreenRun> offscreen_run;
+#endif
     /** Generated subsystem state; callbacks hold weak references back to it. */
     std::vector<std::shared_ptr<void>> native_resource_owners;
     std::shared_ptr<pal::AudioSession> audio_session;

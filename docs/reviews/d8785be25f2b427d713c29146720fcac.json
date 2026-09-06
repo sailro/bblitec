@@ -1,0 +1,22 @@
+{
+  "angles": ["reuse", "simplification", "efficiency", "altitude"],
+  "findings": [
+    { "summary": "Made Worker own its Inbox directly, removing duplicate control state, allocation and termination atomics.", "applied": true },
+    { "summary": "Consolidated SDL renderer cleanup into one scope guard while preserving upload-resource destruction before device release.", "applied": true },
+    { "summary": "Removed the unused canvas-element clone value kind.", "applied": true },
+    { "summary": "Changed Window endpoint registration to weak references and pruned expired owners.", "applied": true },
+    { "summary": "Keep ResizeObservers registered only while actively observing and use factory-provided weak identity compatible with the GC allocator.", "applied": true },
+    { "summary": "Build document snapshots outside the presentation mutex.", "applied": true },
+    { "summary": "Check compositor frame capacity before recording UI, and retire completed Dawn leases before notifying producers.", "applied": true },
+    { "summary": "Bound canceled timer heap growth through threshold-based compaction.", "applied": true },
+    { "summary": "Sort structured-clone field metadata once and add lazy indexing only for wide objects, retaining linear lookup for small messages.", "applied": true },
+    { "summary": "Reuse unwrapExpression and rootIdentifier for Worker discovery and capture analysis.", "applied": true },
+    { "summary": "Reuse propertyName and validateObjectProperties for worker and asset options, including quoted keys.", "applied": true },
+    { "summary": "Reuse PlatformEventListeners for MediaQueryList listener identity and dispatch.", "applied": true },
+    { "summary": "Resolve borrowed canvas textures explicitly in the existing SDL and Dawn UI renderers without inserting them into owning texture caches; ordinary rendering compiles out the resolver.", "applied": true },
+    { "summary": "Remove the standalone proof host and its scheduler policy; OffscreenRun now owns only surface binding and publication, while the Window supplies animation notifications.", "applied": true },
+    { "summary": "Keep recorded UI frames by reference and copy them only for canvas-only capture filtering.", "applied": true },
+    { "summary": "Centralize browser capture package-entry routing in pinnedPackageSpecifiers.", "applied": true },
+    { "summary": "Replace obsolete prototype workflow documentation with the registered application and targeted interaction/cadence commands.", "applied": true }
+  ]
+}

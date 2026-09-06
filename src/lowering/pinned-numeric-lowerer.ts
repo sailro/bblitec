@@ -288,6 +288,8 @@ export interface PinnedBinding {
 }
 
 export interface PinnedNumericScope {
+    /** Unbounded platform inputs require the full JS ToInt32 conversion. */
+    checkedBitwiseCoercions?: boolean;
     /** Identifiers already bound when the body starts (parameters, locals). */
     bindings: Map<string, PinnedBinding>;
     /** Calls this body may make, as a C++ spelling per pinned callee. */
@@ -2853,7 +2855,7 @@ export class PinnedNumericLowerer {
                 const right = this.unwrap(node.right);
                 if (
                     ts.isNumericLiteral(right) &&
-                    Number(right.text) === 0
+                    Number(right.text) === 0 && !this.scope.checkedBitwiseCoercions
                 ) {
                     return (
                         `static_cast<double>(static_cast<std::int32_t>(` +

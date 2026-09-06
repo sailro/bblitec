@@ -141,7 +141,7 @@ test("keeps staged corpus files byte-identical to the pin", () => {
     for (const file of manifest.staged ?? []) {
         assert.match(
             file.upstreamPath,
-            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts)$/,
+            /^(?:LICENSE|lab\/lite\/src\/lite\/scene\d+(?:-debug)?\.ts|lab\/lite\/src\/demos\/(?:[\w-]+\/)*[\w-]+\.ts|lab\/lite\/demo-[\w-]+\.html)$/,
         );
         assert.equal(
             file.source,
@@ -272,6 +272,7 @@ test("keeps exact-source corpus references immutable", () => {
             scene.parity.referenceTimeSeconds,
             scene.parity.referenceAnimationGroups,
             scene.parity.referenceFrame,
+            scene.parity.independentEngines,
         );
         assert.equal(
             moduleDigest,

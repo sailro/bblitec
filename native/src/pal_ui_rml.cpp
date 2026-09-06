@@ -19,6 +19,9 @@
 #include <SDL3/SDL.h>
 #if BBLITE_HAS_IMAGE_DECODER
 #include <SDL3_image/SDL_image.h>
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#include <charconv>
+#endif
 #endif
 
 #include "RmlUi_Platform_SDL.h"
@@ -572,7 +575,8 @@ void ui_add_host_style_rule(
     bool hover,
     double max_width,
     std::string style,
-    bool focus_visible) {
+    bool focus_visible,
+    bool active) {
     if (primary.empty() || style.empty()) {
         throw std::runtime_error(
             "A native host UI style rule must have a target and declarations.");
@@ -585,7 +589,8 @@ void ui_add_host_style_rule(
         std::move(style),
         max_width,
         hover,
-        focus_visible});
+        focus_visible,
+        active});
     mark_ui_changed(engine);
 }
 
@@ -1674,6 +1679,10 @@ bool ui_style_rule_matches(
         return
             record.tag == rule.tag &&
             ui_record_has_class(record, rule.primary);
+    case UiStyleSelectorKind::TagAttribute: {
+        const auto attribute = record.attributes.find(rule.primary);
+        return record.tag == rule.tag && attribute != record.attributes.end() && attribute->second == rule.secondary;
+    }
     case UiStyleSelectorKind::ClassDescendantTag:
         if (record.tag != rule.tag) return false;
         break;
@@ -1720,18 +1729,22 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
     case UiStyleSelectorKind::TagClass:
         selector = rule.tag + "." + rule.primary;
         break;
+    case UiStyleSelectorKind::TagAttribute:
+        selector = rule.tag + "[" + rule.primary + "=\"" + rule.secondary + "\"]";
+        break;
     case UiStyleSelectorKind::IdDescendantClass:
         selector = "#" + rule.primary + " ." + rule.secondary;
         break;
     }
     if (rule.hover) selector += ":hover";
     if (rule.focus_visible) selector += ":focus-visible";
+    if (rule.active) selector += ":active";
     return selector;
 }
 
 std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
     std::uint32_t ids = 0;
-    std::uint32_t classes = (rule.hover ? 1u : 0u) + (rule.focus_visible ? 1u : 0u);
+    std::uint32_t classes = (rule.hover ? 1u : 0u) + (rule.focus_visible ? 1u : 0u) + (rule.active ? 1u : 0u);
     std::uint32_t tags = 0;
     switch (rule.selector) {
     case UiStyleSelectorKind::Class:
@@ -1745,6 +1758,7 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
         break;
     case UiStyleSelectorKind::ClassDescendantTag:
     case UiStyleSelectorKind::TagClass:
+    case UiStyleSelectorKind::TagAttribute:
         ++classes;
         ++tags;
         break;
@@ -2427,6 +2441,9 @@ public:
                     texture.width,
                     texture.height,
                     texture.rgba});
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+                frame.textures.back().external_canvas = texture.external_canvas;
+#endif
             }
         }
 
@@ -2507,6 +2524,23 @@ public:
     Rml::TextureHandle LoadTexture(
         Rml::Vector2i& texture_dimensions,
         const Rml::String& source) override {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        constexpr std::string_view prefix = "bbl-canvas://";
+        if (source.starts_with(prefix)) {
+            const auto suffix = std::string_view(source).substr(prefix.size());
+            std::uint32_t index = 0;
+            const auto parsed = std::from_chars(suffix.data(), suffix.data() + suffix.size(), index);
+            if (parsed.ec != std::errc{} || parsed.ptr != suffix.data() + suffix.size() || index == invalid_handle) {
+                throw std::runtime_error("Invalid native canvas texture identifier.");
+            }
+            auto texture = std::make_unique<Texture>();
+            texture->id = next_texture_id++;
+            texture->width = texture->height = 1;
+            texture->external_canvas = index;
+            texture_dimensions = {1, 1};
+            return reinterpret_cast<Rml::TextureHandle>(texture.release());
+        }
+#endif
 #if BBLITE_HAS_IMAGE_DECODER
         Rml::FileInterface* files = Rml::GetFileInterface();
         Rml::FileHandle file = files->Open(source);
@@ -2768,6 +2802,9 @@ private:
         std::uint32_t width = 0;
         std::uint32_t height = 0;
         std::shared_ptr<const std::vector<std::uint8_t>> rgba;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        std::uint32_t external_canvas = invalid_handle;
+#endif
     };
 
     struct RetainedCanvasTexture {
@@ -3157,6 +3194,8 @@ struct UiRmlRuntime {
                     IsPseudoClassSet("hover");
             if (
                 (rule.hover && !hovered) ||
+                (rule.active && !(handle.value < projected_elements.size() && projected_elements[handle.value].element &&
+                    projected_elements[handle.value].element->IsPseudoClassSet("active"))) ||
                 (rule.focus_visible && (!engine.ui_focus_visible || engine.ui_focused_element != handle)) ||
                 !style_rule_media_matches(rule) ||
                 !ui_style_rule_matches(engine, handle, rule)) {

@@ -92,7 +92,8 @@ void ui_add_host_style_rule(
     bool hover,
     double max_width,
     std::string style,
-    bool focus_visible = false);
+    bool focus_visible = false,
+    bool active = false);
 js::Array<UiElementHandle> ui_query_class(
     Engine& engine,
     UiElementHandle root,
@@ -206,6 +207,9 @@ struct UiRenderTexture {
     std::uint32_t width = 0;
     std::uint32_t height = 0;
     std::shared_ptr<const std::vector<std::uint8_t>> rgba;
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    std::uint32_t external_canvas = invalid_handle;
+#endif
 };
 
 struct UiRenderDraw {

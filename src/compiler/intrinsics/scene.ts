@@ -36,6 +36,7 @@ export interface SceneIntrinsicContext
      * deferred queue rather than emitted after a call that never returns.
      */
     markEngineStart(engineCpp: string, node: ts.Node): void;
+    compileAsyncEngineStart(engine: Value, node: ts.Node): Value | undefined;
     /** Add/remove a light in the compiler's current scene-topology model. */
     addSceneLight(scene: Value, light: Value, kind: LightKind): void;
     addDynamicSceneLight(): void;
@@ -480,6 +481,8 @@ export function compileSceneIntrinsic(
                 call.arguments[0]!,
             );
             context.reachFeature("backend:sdl", call);
+            const asynchronous = context.compileAsyncEngineStart(engine, call);
+            if (asynchronous) return asynchronous;
             // Upstream this returns to a continuation that runs alongside
             // the frames it just scheduled; here the call blocks, so the
             // statements after it are hoisted into the frame conductor's
@@ -492,6 +495,16 @@ export function compileSceneIntrinsic(
                 kind: "void",
                 cpp: `bbl::start_engine(${engine.cpp})`,
             };
+        }
+
+        case "setEngineSize": {
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            if (!engine.ownedEngineCpp) return context.fail(call, "Explicit engine size currently requires a realm-owned canvas.");
+            const width = context.compileNumber(call.arguments[1]!, "double");
+            const height = context.compileNumber(call.arguments[2]!, "double");
+            return { kind: "void", cpp: `bbl::set_engine_size(${engine.cpp}, ${width}, ${height})` };
         }
 
         // `stopEngine` is the pin's own end of the render loop, and the

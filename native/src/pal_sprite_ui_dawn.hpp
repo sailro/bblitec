@@ -12,6 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <type_traits>
 #include <unordered_map>
 
 // The backend-neutral scissor clamp all four RmlUi consumers share.
@@ -322,13 +323,15 @@ inline void ensure_sprite_ui_dawn_buffer(
     buffer = create_sprite_ui_dawn_buffer(device, usage, capacity);
 }
 
+template <typename ExternalTexture = std::nullptr_t>
 inline void render_sprite_ui_dawn_frame(
     DawnDevice& state,
     WGPUCommandEncoder encoder,
     WGPUTexture target_texture,
     WGPUTextureView target,
     SpriteUiDawnResources& ui,
-    const UiRenderFrame& frame) {
+    const UiRenderFrame& frame,
+    ExternalTexture external_texture = nullptr) {
     if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
     create_sprite_ui_dawn_resources(state, ui);
     if (!frame.backdrops.empty()) {
@@ -434,15 +437,19 @@ inline void render_sprite_ui_dawn_frame(
             static_cast<std::uint32_t>(scissor->width),
             static_cast<std::uint32_t>(scissor->height));
         if (draw.texture_id) {
-            const auto texture = ui.textures.find(draw.texture_id);
-            if (texture == ui.textures.end()) continue;
+            const auto owned = ui.textures.find(draw.texture_id);
+            const SpriteUiDawnTexture* texture = owned == ui.textures.end() ? nullptr : &owned->second;
+            if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                if (!texture) texture = external_texture(draw.texture_id);
+            }
+            if (!texture) continue;
             wgpuRenderPassEncoderSetPipeline(pass, ui.texture_pipeline);
             wgpuRenderPassEncoderSetBindGroup(
                 pass,
                 1,
                 draw.nearest_sampling
-                    ? texture->second.nearest_group
-                    : texture->second.group,
+                    ? texture->nearest_group
+                    : texture->group,
                 0,
                 nullptr);
         } else {

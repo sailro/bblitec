@@ -1161,9 +1161,13 @@ test("forwards DOM-compatible application input through every native loop", () =
     // refresh after a propagated mouse event — so a loop using
     // it cannot hold a partial copy of that contract (the cursor arm was
     // once per-driver, and one driver forgot it).
+    const eventDrain = events.match(
+        /inline void poll_platform_events\([\s\S]*?\n\}/,
+    )?.[0];
+    assert.ok(eventDrain, "the shared event drain is defined");
     assert.match(
-        events,
-        /inline void poll_platform_events\([\s\S]{0,320}SDL_PollEvent\(&event\)[\s\S]{0,160}SDL_EVENT_QUIT \|\|[\s\S]{0,100}SDL_EVENT_WINDOW_CLOSE_REQUESTED[\s\S]{0,100}running = false;[\s\S]{0,180}is_platform_input_event\(event\) &&\s*!is_replayed_ui_event\(event\)/,
+        eventDrain,
+        /while \(SDL_PollEvent\(&event\)\)[\s\S]{0,160}SDL_EVENT_QUIT \|\|[\s\S]{0,100}SDL_EVENT_WINDOW_CLOSE_REQUESTED[\s\S]{0,100}running = false;[\s\S]{0,180}is_platform_input_event\(event\) &&\s*!is_replayed_ui_event\(event\)/,
     );
     assert.match(
         events,

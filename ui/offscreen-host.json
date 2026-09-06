@@ -1,0 +1,49 @@
+{
+  "classStyles": [
+    { "className": "pane", "style": "position:relative;min-width:0;min-height:0;width:50%;height:100%;" },
+    { "className": "pane-label", "style": "position:absolute;left:50%;bottom:18px;transform:translateX(-50%);z-index:3;padding:6px 12px;border-radius:6px;background:rgba(0,0,0,0.5);color:#f4ece9;font:600 13px/1.2 system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;text-shadow:0 1px 2px #000;white-space:nowrap;display:flex;align-items:center;gap:8px;" },
+    { "className": "dot", "style": "width:9px;height:9px;border-radius:50%;" },
+    { "className": "pane-sub", "style": "font-weight:400;font-size:11px;color:#cfc4c0;" },
+    { "className": "block-control", "style": "position:fixed;left:50%;top:16px;transform:translateX(-50%);z-index:6;min-height:38px;padding:9px 18px;border:1px solid rgba(187,70,75,0.65);border-radius:8px;background:linear-gradient(180deg,#c75055,#9e3a3f);color:#fff;font:600 14px/1 system-ui,-apple-system,\"Segoe UI\",Roboto,sans-serif;cursor:pointer;box-shadow:0 4px 14px rgba(0,0,0,0.4);transition:background 0.15s ease,transform 0.05s ease;" }
+  ],
+  "styleRules": [
+    { "kind": "class-descendant-tag", "primary": "pane", "tag": "canvas", "style": "width:100%;height:100%;display:block;background:#141021;touch-action:none;" },
+    { "kind": "class", "primary": "block-control", "hover": true, "style": "background:linear-gradient(180deg,#d35e63,#ad4146);" },
+    { "kind": "class", "primary": "block-control", "active": true, "style": "transform:translateX(-50%) translateY(1px);" },
+    { "kind": "tag-attribute", "tag": "button", "primary": "data-active", "secondary": "true", "style": "background:linear-gradient(180deg,#bb464b,#7e2c30);border-color:#e07b80;box-shadow:0 0 0 1px rgba(224,123,128,0.5),0 4px 18px rgba(187,70,75,0.5);" },
+    { "kind": "id", "primary": "root", "maxWidth": 760, "style": "flex-direction:column;" },
+    { "kind": "class", "primary": "pane", "maxWidth": 760, "style": "width:100%;height:50%;" }
+  ],
+  "elements": [
+    {
+      "tag": "div",
+      "attributes": { "id": "root", "style": "position:fixed;inset:0;display:flex;gap:2px;background:#2a2342;" },
+      "children": [
+        {
+          "tag": "div", "attributes": { "class": "pane left" },
+          "children": [
+            { "tag": "canvas", "attributes": { "id": "renderCanvas" } },
+            { "tag": "div", "attributes": { "class": "pane-label", "style": "border:1px solid rgba(224,104,75,0.6);" }, "children": [
+              { "tag": "span", "attributes": { "class": "dot", "style": "background:#e0684b;" } },
+              { "tag": "span", "text": "Main thread" },
+              { "tag": "span", "text": "· Canvas", "attributes": { "class": "pane-sub" } }
+            ] }
+          ]
+        },
+        {
+          "tag": "div", "attributes": { "class": "pane right" },
+          "children": [
+            { "tag": "canvas", "attributes": { "id": "workerRenderCanvas" } },
+            { "tag": "div", "attributes": { "class": "pane-label", "style": "border:1px solid rgba(108,196,178,0.6);" }, "children": [
+              { "tag": "span", "attributes": { "class": "dot", "style": "background:#6cc4b2;" } },
+              { "tag": "span", "text": "Web Worker" },
+              { "tag": "span", "text": "· OffscreenCanvas", "attributes": { "class": "pane-sub" } }
+            ] }
+          ]
+        }
+      ]
+    },
+    { "tag": "button", "text": "🐌 Block the main thread", "attributes": { "id": "slowButton", "type": "button", "data-active": "false", "class": "block-control" } },
+    { "tag": "div", "attributes": { "id": "workerStatus", "aria-live": "polite", "style": "position:fixed;right:12px;top:18px;z-index:6;color:#f0a48c;font:600 12px system-ui,sans-serif;text-shadow:0 1px 2px #000;" } }
+  ]
+}

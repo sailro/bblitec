@@ -19,7 +19,7 @@ import {
 import type { CompileAsset, Value } from "./types.js";
 
 export interface StaticFetchContext {
-    readonly options: { fileName: string };
+    readonly options: { fileName: string; workers?: unknown };
     compileValue(expression: ts.Expression): Value;
     unwrap(expression: ts.Expression): ts.Expression;
     compileStringLiteral(expression: ts.Expression): string;
@@ -169,10 +169,7 @@ function compileDynamicCandidateFetch(
         nativeCompanionCaptures: { dynamicAssetPathCpp: selected.nativeCaptures ?? [] },
         dynamicAssetPathCpp:
             `([&](const std::string& key) -> std::string { ` +
-            `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
-            `auto found = paths.get(key); ` +
-            `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
-            `return bbl::asset_path(found.value()); })(${selected.cpp})`,
+            packagedAssetLookupBody(context, entries) + `})(${selected.cpp})`,
     };
 }
 
@@ -370,11 +367,22 @@ function compileDynamicDirectoryFetch(
         nativeCompanionCaptures: { dynamicAssetPathCpp: suffix.nativeCaptures ?? [] },
         dynamicAssetPathCpp:
             `([&](const std::string& key) -> std::string { ` +
-            `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
-            `auto found = paths.get(key); ` +
-            `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
-            `return bbl::asset_path(found.value()); })(${suffix.cpp})`,
+            packagedAssetLookupBody(context, entries) + `})(${suffix.cpp})`,
     };
+}
+
+function packagedAssetLookupBody(context: StaticFetchContext, entries: readonly string[]): string {
+    if (context.options.workers) {
+        // Immutable native literals may be shared across realms; a static JS
+        // Map would retain non-atomic JS ownership on multiple worker threads.
+        return `static constexpr std::array<std::pair<std::string_view, std::string_view>, ${entries.length}> paths{{${entries.join(", ")}}}; ` +
+            `for (const auto& [source, output] : paths) if (source == key) return bbl::asset_path(std::string(output)); ` +
+            `throw std::runtime_error("Unknown packaged asset: " + key); `;
+    }
+    return `static bbl::js::Map<std::string, std::string> paths{${entries.join(", ")}}; ` +
+        `auto found = paths.get(key); ` +
+        `if (!found.has_value()) throw std::runtime_error("Unknown packaged asset: " + key); ` +
+        `return bbl::asset_path(found.value()); `;
 }
 
 function listFiles(directory: string): string[] {

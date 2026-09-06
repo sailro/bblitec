@@ -1100,6 +1100,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "the ECMAScript Blob, URL object-URL, anchor download, and file-input objects -- host services with no pinned Babylon module",
         consumers: CMAKE,
     },
+    "platform:workers": {
+        provenance: "the HTML dedicated Worker, module graph, event loop and structured-clone host services",
+        consumers: CMAKE,
+    },
+    "platform:window": {
+        provenance: "the Window document, layout observers and native presentation host, independent of application and worker execution",
+        consumers: CMAKE,
+    },
     "ui:rml": {
         provenance:
             "scene-created document elements lowered to the retained native UI IR",

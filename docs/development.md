@@ -247,6 +247,42 @@ Compare core UI, SVG, audio and physics shapes as well as a visual-only scene.
 Installed dependency size, linked executable size and packaged payload size
 are separate measurements.
 
+## Worker application checks
+
+The registered `offscreen` scene compiles the unchanged pinned application,
+worker and shared builder. After normal development setup, build only this
+scene and run its targeted checks from the repository root:
+
+```powershell
+npm run scene -- process offscreen
+npm run scene -- parity offscreen --differential
+node tools/check-offscreen-window.mjs
+```
+
+The interaction script accepts an optional executable path. It replays held
+button presses through the application's own SDL event tape, checks worker
+progress during the source's repeated 200 ms busy work, main-view recovery,
+expanded-button centering, responsive resize to 700×560 and normal shutdown.
+It opens test-owned windows without controlling desktop input. Captures, traces
+and `window-check.json` go to `artifacts/offscreen-integration/`.
+`node tools/measure-offscreen-cadence.mjs` separately compares warm original
+Window/Worker RAF cadence with both native canvas sequences. It uses a visible
+test browser, then short sequential native runs, and writes `cadence.json`.
+The scene's unchanged per-frame camera increment converts those rates to
+angular speed; it is not a correction applied by the runtime.
+Launch the original controls normally with:
+
+```powershell
+$env:BBLITE_GPU_BACKEND = 'sdl_gpu' # or dawn
+& native/build-offscreen-release/bblite_native.exe
+```
+
+The RmlUi transform-key ownership patch is required for centering across a
+held press and text change. Rebuild that dependency with
+`pwsh -File tools/build-rmlui.ps1 -Jobs 1` when updating an older install.
+Native ownership and performance boundaries are in
+[backends](backends.md#offscreen-surfaces).
+
 ## Runtime switches
 
 | Variable | Purpose |
@@ -258,6 +294,8 @@ are separate measurements.
 | `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR` | Diagnostic payload overrides |
 | `BBLITE_CAPTURE_UI=0` | Canvas-only attribution |
 | `BBLITE_RUNTIME_TRACE=1`, `BBLITE_INPUT_REPLAY` | State trace and deterministic input tape |
+| `BBLITE_WINDOW_TRACE=1` | Worker Window presentation timestamps and per-canvas frame sequences, without verbose scene tracing |
+| `BBLITE_CAPTURE_ENGINE_FRAME=<index>` | Capture each independent engine at this zero-based rendered frame; retain all final images until Window capture |
 | `BBLITE_LOCAL_STORAGE_ROOT` | Isolated diagnostic storage |
 | `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Non-interactive file-dialog paths |
 

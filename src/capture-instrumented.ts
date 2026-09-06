@@ -380,6 +380,9 @@ export async function runInstrumentedCapture(
     options: InstrumentedCaptureOptions = {},
 ): Promise<void> {
     const scene = resolveScene(idOrSource);
+    if (scene.parity?.independentEngines !== undefined) {
+        throw new Error("Per-draw instrumented capture does not yet aggregate independent worker realms. Use the scene parity command for full-page and canvas comparisons.");
+    }
     const seekSeconds =
         options.seekSeconds ?? scene.parity?.referenceTimeSeconds;
     const animationGroups = scene.parity?.referenceAnimationGroups;

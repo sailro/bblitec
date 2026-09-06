@@ -4436,6 +4436,16 @@ inline FrameOptions read_frame_options() {
     options.frame_delta_ms = frame_delta.empty()
         ? 0.0
         : std::strtod(frame_delta.c_str(), nullptr);
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    // A worker renders into a leased canvas. The Window owns presentation,
+    // screenshots and process lifetime for all of its canvases together.
+    if (OffscreenRun::current()) {
+        options.screenshot_path.clear();
+        options.max_frames = 0;
+        options.benchmark_frames = 0;
+        options.benchmark_requested = false;
+    }
+#endif
     return options;
 }
 

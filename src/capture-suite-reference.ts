@@ -9,6 +9,7 @@ import {
     sep,
 } from "node:path";
 import type { NativeHostUi } from "./compiler/types.js";
+import { engineCaptureEntryUrl, engineFrameCaptureModule } from "./capture-engine-frames.js";
 import {
     nativeHostUiStyleRules,
     uiStyleSelector,
@@ -207,6 +208,7 @@ export function suiteBrowserModule(
     captureTimeSeconds?: number,
     captureAnimationGroups?: string[],
     fixedAnimationFrame?: number,
+    independentEngines?: number,
 ): string {
     const input = readFileSync(resolve(sourcePath), "utf8");
     const transformed = transform ? transform(input) : input;
@@ -237,7 +239,7 @@ export function suiteBrowserModule(
     await registerScene(scene);`,
           )
         : transformed;
-    const source = pinnedPackageSpecifiers(framed)
+    const source = pinnedPackageSpecifiers(framed, independentEngines === undefined ? pinnedBrowserEntryUrl : engineCaptureEntryUrl)
         .replaceAll(
             '"/brdf-lut.png"',
             `"https://raw.githubusercontent.com/BabylonJS/Babylon-Lite/${upstreamSource().readUpstreamPin().sourceVersion}/packages/babylon-lite/assets/brdf-lut.png"`,
@@ -248,7 +250,7 @@ export function suiteBrowserModule(
               "await startEngine(engine);",
               'await startEngine(engine); canvas.dataset.ready = "true";',
           );
-    const fixedFrameSource = fixedAnimationFrame === undefined
+    const fixedFrameSource = fixedAnimationFrame === undefined || independentEngines !== undefined
         ? readySource
         : markFixedEngineStart(readySource);
     return browserHarness().transpileForBrowser(fixedFrameSource, sourcePath);
@@ -268,6 +270,7 @@ export function suiteBrowserModuleDigest(
     captureTimeSeconds?: number,
     captureAnimationGroups?: string[],
     fixedAnimationFrame?: number,
+    independentEngines?: number,
 ): string {
     return createHash("sha256")
         .update(
@@ -277,6 +280,7 @@ export function suiteBrowserModuleDigest(
                 captureTimeSeconds,
                 captureAnimationGroups,
                 fixedAnimationFrame,
+                independentEngines,
             ),
         )
         .digest("hex");
@@ -296,7 +300,7 @@ export function suiteBrowserModuleDigest(
  * literal because the alternation has to be escaped for a regex. A test
  * asserts every name in that list is rewritten, so the two cannot drift.
  */
-export function pinnedPackageSpecifiers(source: string): string {
+export function pinnedPackageSpecifiers(source: string, entryUrl = pinnedBrowserEntryUrl): string {
     const { physicsEngineModulePackage } = compilerSymbols();
     return source
         .replace(
@@ -306,7 +310,7 @@ export function pinnedPackageSpecifiers(source: string): string {
                     ? `"/node_modules/@babylonjs/lite/lib${
                           subpath.endsWith(".js") ? subpath : `${subpath}.js`
                       }"`
-                    : `"${pinnedBrowserEntryUrl}"`,
+                    : `"${entryUrl}"`,
         )
         .replaceAll(
             `"${physicsEngineModulePackage}"`,
@@ -348,6 +352,10 @@ export interface SuiteCaptureOptions {
     sourcePath?: string;
     /** Freeze requestAnimationFrame at an exact positive native 60 Hz frame. */
     fixedAnimationFrame?: number;
+    /** Each engine freezes independently after this frame, in any realm. */
+    independentEngines?: number;
+    /** Immutable upstream HTML; replace its single bundled module URL only. */
+    hostPage?: string;
     /**
      * Extra modules served by path, ahead of the repository lookup. A
      * diagnostic that has to intercept a pinned entry point re-exports the
@@ -434,7 +442,7 @@ export function createSuiteSceneServer(
     const seedScript = options.seededRandom
         ? `<script>${seededRandomScript}</script>\n`
         : "";
-    const fixedFrameScript = options.fixedAnimationFrame === undefined
+    const fixedFrameScript = options.fixedAnimationFrame === undefined || options.independentEngines !== undefined
         ? ""
         : `<script>${fixedAnimationFrameScript(options.fixedAnimationFrame)}</script>\n`;
     const hostUiScript = options.hostUi
@@ -443,17 +451,41 @@ export function createSuiteSceneServer(
     const hideNonCanvasAtFixedFrame =
         options.fixedAnimationFrame !== undefined &&
         !captureUiEnabled();
-    const html = `<!doctype html><html><head><style>
+    let html = `<!doctype html><html><head><style>
 html,body,canvas{margin:0;width:1280px;height:720px;overflow:hidden;display:block}
 ${hideNonCanvasAtFixedFrame ? "body>:not(#renderCanvas){visibility:hidden!important}" : ""}
 </style></head><body><canvas id="renderCanvas" width="1280" height="720"></canvas>
 ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entryPath}"></script></body></html>`;
+    if (options.hostPage) {
+        const original = readFileSync(resolve(options.hostPage), "utf8");
+        const moduleScript = /<script\s+type="module"\s+src="[^"]+"\s*><\/script>/g;
+        if ([...original.matchAll(moduleScript)].length !== 1) throw new Error("Capture host page must have exactly one module entry.");
+        html = original.replace(moduleScript, `<script type="module" src="${entryPath}"></script>`)
+            .replace("<head>", `<head>${seedScript}${fixedFrameScript}`);
+    }
+    const capturedEngines = new Set<string>();
+    if (options.independentEngines !== undefined &&
+        (!Number.isSafeInteger(options.independentEngines) || options.independentEngines < 1 || options.fixedAnimationFrame === undefined)) {
+        throw new Error("Independent-engine capture requires a positive engine count and a fixed frame.");
+    }
     const pinnedAssets = new Map<
         string,
         { bytes: Uint8Array; contentType: string }
     >();
     return createServer(async (request, response) => {
         const url = new URL(request.url ?? "/", "http://127.0.0.1");
+        if (options.independentEngines !== undefined && url.pathname === engineCaptureEntryUrl) {
+            response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
+            response.end(engineFrameCaptureModule(options.fixedAnimationFrame!, pinnedBrowserEntryUrl));
+            return;
+        }
+        if (options.independentEngines !== undefined && url.pathname === "/__capture/engines") {
+            const id = url.searchParams.get("id");
+            if (request.method === "POST" && id) capturedEngines.add(id);
+            response.writeHead(200, { "Content-Type": "application/json" });
+            response.end(JSON.stringify({ completed: capturedEngines.size, expected: options.independentEngines }));
+            return;
+        }
         // Chromium asks for this on every page it opens. Without an arm it
         // falls all the way through to the pinned-asset fetch below, so each
         // capture pays a raw.githubusercontent.com round trip to be told the
@@ -496,12 +528,15 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
         // sprite scenes import `../_shared/sprite-atlas-image`), so the
         // sibling to compile is found either way.
         if (
+            url.pathname.endsWith(".ts") ||
             !existsSync(path) ||
             !statSync(path).isFile()
         ) {
-            const typescriptPath = url.pathname.endsWith(".js")
-                ? `${path.slice(0, -3)}.ts`
-                : `${path}.ts`;
+            const typescriptPath = url.pathname.endsWith(".ts")
+                ? path
+                : url.pathname.endsWith(".js")
+                  ? `${path.slice(0, -3)}.ts`
+                  : `${path}.ts`;
             if (
                 typescriptPath.startsWith(`${root}${sep}`) &&
                 existsSync(typescriptPath) &&
@@ -509,10 +544,11 @@ ${seedScript}${fixedFrameScript}${hostUiScript}<script type="module" src="${entr
             ) {
                 const sourceText = readFileSync(typescriptPath, "utf8");
                 const fixedFrameSource =
-                    options.fixedAnimationFrame === undefined
+                    options.fixedAnimationFrame === undefined || options.independentEngines !== undefined
                         ? sourceText
                         : markFixedEngineStart(sourceText);
-                const moduleText = pinnedPackageSpecifiers(fixedFrameSource);
+                const moduleText = pinnedPackageSpecifiers(fixedFrameSource,
+                    options.independentEngines === undefined ? pinnedBrowserEntryUrl : engineCaptureEntryUrl);
                 response.writeHead(200, { "Content-Type": "text/javascript; charset=utf-8" });
                 response.end(
                     browserHarness().transpileForBrowser(
@@ -808,6 +844,7 @@ export async function captureSuiteReference(
         captureTimeSeconds,
         captureAnimationGroups,
         options.fixedAnimationFrame,
+        options.independentEngines,
     );
     const server = createSuiteSceneServer(moduleSource, {
         ...options,
@@ -828,8 +865,16 @@ export async function captureSuiteReference(
                 origin,
                 captureTimeSeconds !== undefined,
                 options.search,
-                options.fixedAnimationFrame,
+                options.independentEngines === undefined ? options.fixedAnimationFrame : undefined,
             );
+            if (options.independentEngines !== undefined) {
+                await page.waitForFunction(async () => {
+                    const response = await fetch("/__capture/engines");
+                    const state: { completed: number; expected: number } = await response.json();
+                    if (state.completed > state.expected) throw new Error("More engines started than the capture declares.");
+                    return state.completed === state.expected;
+                }, undefined, { timeout: 60_000, polling: 50 });
+            }
             mkdirSync(resolve(referencePath, ".."), { recursive: true });
             if (captureUiEnabled()) {
                 if (options.fixedAnimationFrame !== undefined) {
@@ -847,6 +892,13 @@ export async function captureSuiteReference(
                 }
                 await page.screenshot({ path: referencePath });
             } else {
+                if (options.independentEngines !== undefined) {
+                    // Keep every canvas at its authored page position. Hidden
+                    // ancestors retain layout; visibility is restored on canvases.
+                    await page.addStyleTag({ content: "body *{visibility:hidden!important}body canvas{visibility:visible!important}html,body{background:#000!important}" });
+                    await page.screenshot({ path: referencePath });
+                    return;
+                }
                 await hideNonCanvasChrome(page);
                 await page
                     .locator("#renderCanvas")

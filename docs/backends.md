@@ -38,6 +38,44 @@ A performance claim needs a current build, adapter, dimensions, warmup and
 frame-count report. Do not carry historical single-scene timings as a general
 backend ranking.
 
+## Offscreen surfaces
+
+`platform:window` selects `BBLITE_OFFSCREEN_SURFACES`. A thread-bound
+`OffscreenRun` redirects the scene renderer to a native `OffscreenSurface`.
+The normal build compiles these branches out; it adds no mailbox, lock,
+texture copy or thread to existing applications.
+
+The host owns one device/queue and the OS window. Each producer owns its
+engine, scene, command encoders and renderer resources. A bounded pool of
+three GPU images per producer supplies a latest-frame mailbox. The presenter
+retains each image until its consumer fence completes, so producers cannot
+overwrite a texture being sampled. Presentation samples these textures on
+the GPU; diagnostic screenshots alone use readback. Worker applications receive
+display-paced animation notifications on each realm's event loop. Busy realms
+coalesce notifications while other realms continue. `OffscreenRun` owns the
+endpoint and publication; the realm scheduler owns animation timing.
+
+SDL configures shared device presentation settings once, before launching
+producers. Submissions stay on the thread that acquired their command buffer
+and use the device's ordered queue. See
+[SDL submission rules](https://wiki.libsdl.org/SDL3/SDL_SubmitGPUCommandBuffer).
+Dawn requests `ImplicitDeviceSynchronization` only for the shared host device;
+its API synchronization is required for this native sharing arrangement.
+Encoders remain private to their producer. See
+[Dawn threading feature](https://dawn.googlesource.com/dawn/+/refs/heads/main/docs/dawn/features/implicit_device_synchronization.md).
+
+Worker applications select the surface capability through `platform:window`.
+Their OS host composes canvas textures inside the retained document; source
+DOM callbacks run in the application realm. Dawn retires consumer fences again
+after presentation so completed leases are released before the next repaint
+notification. Keeping leases across that wait can unnecessarily exhaust the
+producer pool even when the GPU has finished.
+
+The native surface unit fixture checks ownership and bounded leases. The
+registered Offscreen application checks real Worker messaging, retained UI and
+both GPU backends. Two renderers and composition have their own GPU cost;
+preserving the default path does not establish a general performance claim.
+
 ## Shared frame conductor
 
 `native/src/pal_gpu_shared.hpp` owns backend-neutral frame options, clock,

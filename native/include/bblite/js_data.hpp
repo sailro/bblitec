@@ -561,6 +561,7 @@ class Array {
     [[nodiscard]] bool operator==(const Array& other) const {
         return values_ == other.values_;
     }
+    [[nodiscard]] const void* identity() const { return values_.get(); }
     void gc_trace(const TraceVisitor& visitor) const { visitor(values_); }
 
   private:
@@ -2000,7 +2001,11 @@ template <typename T>
 [[nodiscard]] inline T& missing_array_value() {
     // Re-defaulted on every miss so a stray write through one missed index
     // cannot persist into every later miss of the same element type.
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    T& slot = realm_scratch<T>();
+#else
     static T slot{};
+#endif
     slot = T{};
     return slot;
 }
@@ -2459,8 +2464,12 @@ inline void typed_array_set(
 // reference capture installs the identical generator before module load, so
 // both sides consume the same sequence (recorded as a fidelity adaptation).
 inline std::uint32_t& random_state() {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    return realm_state.random;
+#else
     static std::uint32_t state = 1u;
     return state;
+#endif
 }
 
 inline void seed_random(std::uint32_t seed) {

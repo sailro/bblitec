@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#include <bblite/pal_offscreen.hpp>
 #include <SDL3/SDL.h>
 
 #include "pal_runtime_trace.hpp"
@@ -80,6 +81,10 @@ class SdlWindowRun {
 };
 
 inline bool initialize_run_sdl(SDL_InitFlags flags) {
+    // Offscreen producers own no SDL video/event lifecycle. Their host must
+    // initialize it on the OS thread before starting them and join them before
+    // shutdown; a worker must never initialize video or call SDL_Quit.
+    if (OffscreenRun::current()) return (SDL_WasInit(flags) & flags) == flags;
     return active_window_run
         ? active_window_run->initialize(flags) : SDL_Init(flags);
 }
@@ -99,6 +104,7 @@ inline void release_run_window(SDL_Window* window) {
 }
 
 inline void quit_run_sdl() {
+    if (OffscreenRun::current()) return;
     if (!active_window_run) SDL_Quit();
 }
 

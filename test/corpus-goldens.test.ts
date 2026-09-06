@@ -6,6 +6,8 @@ import test from "node:test";
 import { scenes } from "../src/scene-registry.js";
 import { readBabylonLiteCorpus } from "../src/upstream-corpus.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
+import { suiteBrowserModuleDigest, pinnedBrowserEntryUrl } from "../src/capture-suite-reference.js";
+import { engineFrameCaptureModule } from "../src/capture-engine-frames.js";
 
 const manifest = readBabylonLiteCorpus();
 
@@ -72,5 +74,15 @@ test("keeps external golden applications byte-identical to their manifests", () 
         const scene = registered.find(({ id }) => id === application.id);
         assert.equal(scene?.source, application.entry);
         assert.equal(scene?.parity?.reference.path, application.reference.source);
+        const capture = application.reference.capture;
+        if (scene?.parity?.independentEngines !== undefined) {
+            assert.ok(capture, `${application.id} needs independent-engine capture provenance.`);
+            assert.equal(capture.frame, scene.parity.referenceFrame);
+            assert.equal(capture.independentEngines, scene.parity.independentEngines);
+            assert.equal(capture.hostPage, scene.parity.referenceHostPage);
+            assert.equal(capture.hostPageSha256, sha256(capture.hostPage));
+            assert.equal(capture.moduleSha256, suiteBrowserModuleDigest(scene.source, undefined, undefined, capture.frame, capture.independentEngines));
+            assert.equal(capture.adapterSha256, createHash("sha256").update(engineFrameCaptureModule(capture.frame, pinnedBrowserEntryUrl)).digest("hex"));
+        }
     }
 });

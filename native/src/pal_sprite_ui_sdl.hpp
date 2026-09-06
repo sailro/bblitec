@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <type_traits>
 #include <unordered_map>
 #include <vector>
 
@@ -276,13 +277,15 @@ inline SDL_GPUTransferBuffer* upload_sprite_ui_sdl_buffer(
     return transfer;
 }
 
+template <typename ExternalTexture = std::nullptr_t>
 inline void render_sprite_ui_sdl_frame(
     SDL_GPUDevice* device,
     SDL_GPUCommandBuffer* command,
     SDL_GPUTexture* target,
     SDL_GPUTextureFormat target_format,
     SpriteUiSdlResources& ui,
-    const UiRenderFrame& frame) {
+    const UiRenderFrame& frame,
+    ExternalTexture external_texture = nullptr) {
     if (frame.draws.empty() || frame.width == 0 || frame.height == 0) return;
     create_sprite_ui_sdl_resources(device, target_format, ui);
     if (!frame.backdrops.empty()) {
@@ -418,11 +421,15 @@ inline void render_sprite_ui_sdl_frame(
             scissor->left, scissor->top, scissor->width, scissor->height};
         SDL_SetGPUScissor(pass, &clip);
         if (draw.texture_id) {
-            const auto texture = ui.textures.find(draw.texture_id);
-            if (texture == ui.textures.end()) continue;
+            const auto owned = ui.textures.find(draw.texture_id);
+            SDL_GPUTexture* texture = owned == ui.textures.end() ? nullptr : owned->second;
+            if constexpr (!std::is_same_v<ExternalTexture, std::nullptr_t>) {
+                if (!texture) texture = external_texture(draw.texture_id);
+            }
+            if (!texture) continue;
             SDL_BindGPUGraphicsPipeline(pass, ui.texture_pipeline);
             const SDL_GPUTextureSamplerBinding texture_binding{
-                texture->second,
+                texture,
                 draw.nearest_sampling ? ui.nearest_sampler : ui.sampler};
             SDL_BindGPUFragmentSamplers(pass, 0, &texture_binding, 1);
         } else {

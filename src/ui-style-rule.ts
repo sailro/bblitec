@@ -33,6 +33,13 @@ const UI_STYLE_SELECTOR_DESCRIPTORS = {
         css: (rule: UiStyleSelectorShape) =>
             `${rule.tag ?? ""}.${rule.primary}`,
     },
+    "tag-attribute": {
+        cpp: "TagAttribute",
+        needsSecondary: true,
+        needsTag: true,
+        css: (rule: UiStyleSelectorShape) =>
+            `${rule.tag ?? ""}[${rule.primary}="${rule.secondary ?? ""}"]`,
+    },
     "id-descendant-class": {
         cpp: "IdDescendantClass",
         needsSecondary: true,
@@ -51,6 +58,7 @@ export interface UiStyleSelectorShape {
     tag?: string;
     hover?: boolean;
     focusVisible?: boolean;
+    active?: boolean;
 }
 
 /** A bounded structural selector imported from the browser host page. */
@@ -92,7 +100,8 @@ export function uiStyleSelector(rule: UiStyleSelectorShape): string {
     return (
         base +
         (rule.hover ? ":hover" : "") +
-        (rule.focusVisible ? ":focus-visible" : "")
+        (rule.focusVisible ? ":focus-visible" : "") +
+        (rule.active ? ":active" : "")
     );
 }
 

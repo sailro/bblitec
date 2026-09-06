@@ -127,6 +127,7 @@ function hasNonNullAssertion(expression: ts.Expression): boolean {
 export interface ExpressionContext
     extends PromiseLoweringContext,
         UserFunctionContext {
+    compileWorkerValue(expression: ts.Expression): Value | undefined;
     readonly checker: ts.TypeChecker;
     readonly evaluator: StaticEvaluator;
     /** The scene's node-particle program; a systems.push lands on it. */
@@ -2853,6 +2854,8 @@ export class ExpressionLowerer {
     }
 
     private compileCall(call: ts.CallExpression): Value {
+        const worker = this.context.compileWorkerValue(call);
+        if (worker) return worker;
         if (this.isNavigatorGetGamepadsCall(call)) {
             this.context.expectArgumentCount(call, 0, 0);
             const engine = this.context.requireDefaultEngine(call);

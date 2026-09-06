@@ -39,6 +39,8 @@ import {
 } from "./handle-collections.js";
 
 export interface StatementLoweringContext {
+    workerCheckpointCpp(): string | undefined;
+    workerAbortCpp(): string | undefined;
     readonly checker: ts.TypeChecker;
     readonly symbols: CompilerSymbols;
     readonly dataTypes: DataTypeRegistry;
@@ -140,6 +142,7 @@ export interface StatementLoweringContext {
     emitAssignment(expression: ts.BinaryExpression): void;
     compileValue(expression: ts.Expression): Value;
     emitDiscardedValue(value: Value): void;
+    emitAwaitExpression(expression: ts.Expression): boolean;
     compileCondition(expression: ts.Expression): string;
     isBrowserOnlyExpression(expression: ts.Expression): boolean;
     isDeferredCallbackCall(call: ts.CallExpression): boolean;
@@ -1527,6 +1530,8 @@ export class StatementLowerer {
                 `[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`,
             );
             context.increaseIndent();
+            const workerAbort = context.workerAbortCpp();
+            if (workerAbort) context.emit(`if (${workerAbort}) return;`);
             for (const line of finallyGuard) context.emit(line);
             context.decreaseIndent();
             context.emit("});");
@@ -1579,6 +1584,7 @@ export class StatementLowerer {
                 catchDeclaration && !erasedCatchBinding
                     ? context.allocateTemporaryCppName("caught_error")
                     : undefined;
+            if (context.workerCheckpointCpp()) context.emit("} catch (const bbl::pal::WorkerTerminated&) { throw;");
             context.emit(
                 catchCpp
                     ? `} catch (const std::exception& ${catchCpp}) {`
@@ -1857,7 +1863,7 @@ export class StatementLowerer {
                           context,
                           statement.condition,
                       )
-                    : "";
+                    : context.workerCheckpointCpp() ? `(${context.workerCheckpointCpp()}, true)` : "";
                 // The incrementor belongs in the for-header so `continue`
                 // reaches it, matching JavaScript loop semantics.
                 let header = "";
@@ -2260,6 +2266,8 @@ export class StatementLowerer {
                 condition = context.compileCondition(expression);
             }),
         );
+        const checkpoint = context.workerCheckpointCpp();
+        if (checkpoint) condition = `(${checkpoint}, ${condition})`;
         if (lines.length === 0) return condition;
         return `([&]() -> bool { ${lines.join(" ")} return ${condition}; }())`;
     }
@@ -3243,6 +3251,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         expression: ts.Expression,
     ): void {
+        if (context.emitAwaitExpression(expression)) return;
         const unwrapped = context.unwrap(expression);
         if (ts.isVoidExpression(unwrapped)) {
             const operand = context.unwrap(unwrapped.expression);

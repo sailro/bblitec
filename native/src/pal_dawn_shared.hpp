@@ -247,7 +247,39 @@ struct DawnDevice {
     std::string uncaptured_error;
 };
 
+#if BBLITE_OFFSCREEN_SURFACES
+class SharedDawnErrors {
+  public:
+    void report(std::string message) {
+        std::lock_guard lock(mutex_);
+        if (message_.empty()) message_ = std::move(message);
+    }
+    void check() const {
+        std::lock_guard lock(mutex_);
+        if (!message_.empty()) dawn_error(message_);
+    }
+  private:
+    mutable std::mutex mutex_;
+    std::string message_;
+};
+
+struct DawnOffscreenDevice final : OffscreenDevice {
+    explicit DawnOffscreenDevice(const DawnDevice& value)
+        : instance(value.instance), adapter(value.adapter), device(value.device),
+          queue(value.queue), surface_format(value.surface_format) {}
+    const WGPUInstance instance;
+    const WGPUAdapter adapter;
+    const WGPUDevice device;
+    const WGPUQueue queue;
+    const WGPUTextureFormat surface_format;
+};
+#endif
+
 struct DawnDeviceOptions {
+#if BBLITE_OFFSCREEN_SURFACES
+    SDL_Window* host_window = nullptr;
+    SharedDawnErrors* shared_errors = nullptr;
+#endif
     bool hidden_test_pass = false;
     /** Benchmarks present immediately; everything else keeps vsync. */
     bool immediate_present = false;
@@ -264,6 +296,13 @@ inline void configure_dawn_surface(
     DawnDevice& state,
     std::uint32_t width,
     std::uint32_t height) {
+#if BBLITE_OFFSCREEN_SURFACES
+    if (OffscreenRun::current()) {
+        state.surface_width = width;
+        state.surface_height = height;
+        return;
+    }
+#endif
     WGPUSurfaceConfiguration configuration =
         WGPU_SURFACE_CONFIGURATION_INIT;
     configuration.device = state.device;
@@ -300,6 +339,35 @@ inline void create_dawn_device(
     const EngineOptions& engine_options,
     const DawnDeviceOptions& options,
     DawnDevice& state) {
+#if BBLITE_OFFSCREEN_SURFACES
+    if (auto* run = OffscreenRun::current()) {
+        auto* shared = dynamic_cast<DawnOffscreenDevice*>(&run->device());
+        if (!shared) dawn_error("Offscreen surface does not own a Dawn device.");
+        if (!wgpuDeviceHasFeature(shared->device, WGPUFeatureName_ImplicitDeviceSynchronization)) {
+            dawn_error("Offscreen device was created without implicit device synchronization.");
+        }
+        WGPULimits limits = WGPU_LIMITS_INIT;
+        if (wgpuDeviceGetLimits(shared->device, &limits) != WGPUStatus_Success ||
+            options.max_vertex_attributes > limits.maxVertexAttributes ||
+            options.max_color_attachment_bytes_per_sample > limits.maxColorAttachmentBytesPerSample) {
+            dawn_error("Shared offscreen device limits do not satisfy this renderer.");
+        }
+        // Immutable device/queue handles may cross realms. Every engine's
+        // scene records and renderer resources remain on its owning thread.
+        state.instance = shared->instance;
+        state.adapter = shared->adapter;
+        state.device = shared->device;
+        state.queue = shared->queue;
+        wgpuInstanceAddRef(state.instance);
+        wgpuAdapterAddRef(state.adapter);
+        wgpuDeviceAddRef(state.device);
+        wgpuQueueAddRef(state.queue);
+        state.surface_format = shared->surface_format;
+        state.surface_width = static_cast<std::uint32_t>(engine_options.width);
+        state.surface_height = static_cast<std::uint32_t>(engine_options.height);
+        return;
+    }
+#endif
     SDL_InitFlags init_flags = SDL_INIT_VIDEO | SDL_INIT_EVENTS;
 #if defined(BBLITE_HAS_GAMEPAD) && BBLITE_HAS_GAMEPAD
     init_flags |= SDL_INIT_GAMEPAD;
@@ -307,7 +375,11 @@ inline void create_dawn_device(
     if (!initialize_run_sdl(init_flags)) {
         dawn_error(std::string("SDL_Init: ") + SDL_GetError());
     }
-    state.window = acquire_run_window(
+    state.window =
+#if BBLITE_OFFSCREEN_SURFACES
+        options.host_window ? options.host_window :
+#endif
+        acquire_run_window(
         engine_options,
         options.hidden_test_pass
             ? SDL_WINDOW_RESIZABLE | SDL_WINDOW_NOT_FOCUSABLE
@@ -419,7 +491,11 @@ inline void create_dawn_device(
     // `enable primitive_index` directive (attribution captures only), and
     // texture-compression-bc is what a KTX or transcoded Basis texture
     // uploads through.
+#if BBLITE_OFFSCREEN_SURFACES
+    std::array<WGPUFeatureName, 4> device_features{};
+#else
     std::array<WGPUFeatureName, 3> device_features{};
+#endif
     std::size_t device_feature_count = 0;
     for (const WGPUFeatureName feature : {
              WGPUFeatureName_Float32Filterable,
@@ -430,6 +506,16 @@ inline void create_dawn_device(
             device_features[device_feature_count++] = feature;
         }
     }
+#if BBLITE_OFFSCREEN_SURFACES
+    if (options.shared_errors) {
+        // A shared native device requires Dawn's explicit threading feature.
+        // Command encoders still belong exclusively to their creating thread.
+        if (!wgpuAdapterHasFeature(state.adapter, WGPUFeatureName_ImplicitDeviceSynchronization)) {
+            dawn_error("adapter lacks implicit device synchronization for offscreen producers.");
+        }
+        device_features[device_feature_count++] = WGPUFeatureName_ImplicitDeviceSynchronization;
+    }
+#endif
     device_descriptor.requiredFeatureCount = device_feature_count;
     device_descriptor.requiredFeatures = device_features.data();
     WGPULimits required_limits = WGPU_LIMITS_INIT;
@@ -481,6 +567,22 @@ inline void create_dawn_device(
         };
     device_descriptor.deviceLostCallbackInfo.userdata1 =
         &state.uncaptured_error;
+#if BBLITE_OFFSCREEN_SURFACES
+    if (options.shared_errors) {
+        device_descriptor.uncapturedErrorCallbackInfo.callback =
+            [](WGPUDevice const*, WGPUErrorType, WGPUStringView message, void* errors, void*) {
+                static_cast<SharedDawnErrors*>(errors)->report(view_text(message));
+            };
+        device_descriptor.uncapturedErrorCallbackInfo.userdata1 = options.shared_errors;
+        device_descriptor.deviceLostCallbackInfo.callback =
+            [](WGPUDevice const*, WGPUDeviceLostReason reason, WGPUStringView message, void* errors, void*) {
+                if (reason != WGPUDeviceLostReason_Destroyed) {
+                    static_cast<SharedDawnErrors*>(errors)->report("device lost: " + view_text(message));
+                }
+            };
+        device_descriptor.deviceLostCallbackInfo.userdata1 = options.shared_errors;
+    }
+#endif
     WGPURequestDeviceCallbackInfo device_callback =
         WGPU_REQUEST_DEVICE_CALLBACK_INFO_INIT;
     device_callback.mode = WGPUCallbackMode_WaitAnyOnly;

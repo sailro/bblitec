@@ -11,7 +11,7 @@
 #include <bblite/pal_gpu.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 #include <bblite/pal_ui.hpp>
 #endif
 
@@ -41,7 +41,10 @@
 
 #include "pal_camera_controls.hpp"
 #include "pal_dawn_shared.hpp"
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_OFFSCREEN_SURFACES
+#include "pal_dawn_offscreen.hpp"
+#endif
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 #include "pal_ui_backdrop_dawn.hpp"
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -627,7 +630,7 @@ struct DawnScreenSpaceTask {
 };
 #endif
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 using DawnUiTexture = UiDawnTexture;
 
 /** Dawn-owned realization of the backend-neutral RmlUi frame. */
@@ -750,7 +753,7 @@ struct DawnState : DawnDevice {
      * multisampled one.
      */
     std::uint32_t sample_count = 4;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     DawnUiResources ui;
 #endif
 #if BBLITE_HAS_BILLBOARDS
@@ -1608,7 +1611,7 @@ struct DawnState : DawnDevice {
 #if BBLITE_HAS_PICKING && BBLITE_GPU_INSTANCING
         release_thin_pick_groups();
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         ui.release();
 #endif
 #if BBLITE_HAS_PICKING
@@ -2203,7 +2206,7 @@ void sync_shader_storage_buffers(DawnState& state, const Engine& engine) {
     }
 }
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 WGPUShaderModule create_ui_dawn_module(DawnState& state) {
     static constexpr char source[] = R"wgsl(
 struct Screen {
@@ -9642,7 +9645,7 @@ WGPUBindGroup skybox_scene_group_over(
     return group;
 }
 
-bool run_dawn_engine(Engine& engine) {
+SceneRun run_dawn_engine(Engine& engine) {
     if (engine.registered_scenes.empty() || !engine.registered_scenes.front()) {
         throw std::runtime_error("Dawn renderer requires a registered scene.");
     }
@@ -9746,7 +9749,7 @@ bool run_dawn_engine(Engine& engine) {
 
     std::uint32_t width = state.surface_width;
     std::uint32_t height = state.surface_height;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     std::unique_ptr<UiRmlRuntime, decltype(&destroy_ui_rml_runtime)>
         ui_runtime(
             create_ui_rml_runtime(engine, state.window, width, height),
@@ -11346,7 +11349,7 @@ bool run_dawn_engine(Engine& engine) {
 
     const std::string screenshot_path =
         frame_options.screenshot_path;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     const bool capture_ui = frame_options.capture_ui;
 #endif
     const std::string id_buffer_path =
@@ -12089,8 +12092,15 @@ bool run_dawn_engine(Engine& engine) {
         if (hidden_test_pass) return;
         handle_camera_pointer_event(event, camera, pointer_state);
     };
+#if BBLITE_OFFSCREEN_SURFACES
+    auto* offscreen = OffscreenRun::current();
+    OffscreenImagePool<DawnOffscreenImage> offscreen_images;
+    if (offscreen && !screenshot_path.empty()) {
+        throw std::runtime_error("Capture offscreen output from its presentation host.");
+    }
+#endif
     while (captures.keep_running(running, frame)) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         poll_platform_events(
             engine,
             running,
@@ -12107,6 +12117,9 @@ bool run_dawn_engine(Engine& engine) {
             [](const SDL_Event&) { return true; },
             camera_pointer_hook);
 #endif
+#if BBLITE_OFFSCREEN_SURFACES
+        if (offscreen && !running) break;
+#endif
         input_replay.dispatch(frame, state.window, engine);
         if (request_renderer_restart_if_scene_set_changed(
                 engine, active_registered_scenes)) {
@@ -12118,6 +12131,15 @@ bool run_dawn_engine(Engine& engine) {
             height = state.surface_height;
             recreate_frame_targets();
         }
+#if BBLITE_OFFSCREEN_SURFACES
+        DawnOffscreenImage* offscreen_image = nullptr;
+        if (offscreen) {
+            offscreen_image = offscreen_images.acquire(width, height, *offscreen, [&](auto w, auto h) {
+                return std::make_shared<DawnOffscreenImage>(state.device, w, h);
+            });
+            if (!offscreen_image) { BBLITE_FRAME_YIELD(false); continue; }
+        }
+#endif
         // The benchmark bracket mirrors the SDL backend: frame CPU time
         // across the whole loop body -- scene callbacks and uploads, surface
         // acquire, submit and present -- under the immediate present mode
@@ -12142,7 +12164,7 @@ bool run_dawn_engine(Engine& engine) {
                 engine, active_registered_scenes)) {
             break;
         }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         // Browser layout observes DOM changes made by this turn's RAF
         // callbacks before painting the frame.
         update_ui_rml_runtime(*ui_runtime, width, height);
@@ -13557,6 +13579,12 @@ bool run_dawn_engine(Engine& engine) {
         const double written =
             cpu_profile ? monotonic_milliseconds() : 0.0;
         WGPUSurfaceTexture surface_texture = WGPU_SURFACE_TEXTURE_INIT;
+#if BBLITE_OFFSCREEN_SURFACES
+        if (offscreen_image) {
+            surface_texture.texture = offscreen_image->texture;
+            wgpuTextureAddRef(surface_texture.texture);
+        } else {
+#endif
         wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
         if (
             surface_texture.status !=
@@ -13565,6 +13593,9 @@ bool run_dawn_engine(Engine& engine) {
                 WGPUSurfaceGetCurrentTextureStatus_SuccessSuboptimal) {
             dawn_error("wgpuSurfaceGetCurrentTexture failed.");
         }
+#if BBLITE_OFFSCREEN_SURFACES
+        }
+#endif
         WGPUTextureView surface_view =
             wgpuTextureCreateView(surface_texture.texture, nullptr);
         const double acquired =
@@ -15733,7 +15764,7 @@ bool run_dawn_engine(Engine& engine) {
             capture_ready &&
             !captures.screenshot_saved &&
             !screenshot_path.empty();
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         const UiRenderFrame& ui_frame =
             record_ui_rml_frame(*ui_runtime, width, height);
         const bool ui_after_capture_copy = capture_frame && !capture_ui;
@@ -15828,7 +15859,7 @@ bool run_dawn_engine(Engine& engine) {
             captures.screenshot_saved = true;
         }
         if (readback) wgpuBufferRelease(readback);
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         if (ui_after_capture_copy) {
             // Complete the canvas-only readback before transitioning the
             // surface back to a render attachment for host UI. Encoding both
@@ -15876,6 +15907,10 @@ bool run_dawn_engine(Engine& engine) {
             captures.cluster_buffer_saved = true;
         }
 
+#if BBLITE_OFFSCREEN_SURFACES
+        if (offscreen) offscreen_images.publish(*offscreen);
+        else
+#endif
         wgpuSurfacePresent(state.surface);
         if (benchmark && frame >= benchmark_warmup) {
             benchmark_samples.push_back(
@@ -15927,9 +15962,10 @@ bool run_dawn_engine(Engine& engine) {
                 profile_transformed_meshes,
                 profile_transformed_vertices);
         }
+        BBLITE_FRAME_YIELD(true);
     }
     report_benchmark(benchmark_samples, "Dawn", "D3D12");
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     ui_runtime.reset();
 #endif
     // No catch arm: everything `~DawnState` and the unique_ptr UI runtime
@@ -15937,7 +15973,7 @@ bool run_dawn_engine(Engine& engine) {
     // either exit.
     release_run_window(state.window);
     state.window = nullptr;
-    return true;
+    BBLITE_RUN_RETURN(true);
 }
 
 } // namespace bbl::pal

@@ -142,6 +142,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
                 "tag",
                 "hover",
                 "focusVisible",
+                "active",
                 "maxWidth",
                 "style",
             ],
@@ -171,6 +172,9 @@ export function readNativeHostUi(path: string): NativeHostUi {
         if (item.focusVisible !== undefined && typeof item.focusVisible !== "boolean") {
             throw new Error(`${location}.focusVisible must be a boolean.`);
         }
+        if (item.active !== undefined && typeof item.active !== "boolean") {
+            throw new Error(`${location}.active must be a boolean.`);
+        }
         if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
             throw new Error(`${location}.maxWidth must be a number.`);
         }
@@ -184,6 +188,7 @@ export function readNativeHostUi(path: string): NativeHostUi {
             ...(item.tag !== undefined ? { tag: item.tag } : {}),
             ...(item.hover !== undefined ? { hover: item.hover } : {}),
             ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
+            ...(item.active !== undefined ? { active: item.active } : {}),
             ...(item.maxWidth !== undefined
                 ? { maxWidth: item.maxWidth }
                 : {}),

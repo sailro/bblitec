@@ -5,6 +5,7 @@
 // flags and sizes to statics at compile time. The intrinsic lowerer in
 // asset.ts calls these through its context.
 import type ts from "typescript";
+import { compileDynamicPackagedAsset, type StaticFetchContext } from "../static-fetch.js";
 import {
     compileOptionalStaticBoolean,
     type StaticBooleanContext,
@@ -15,7 +16,7 @@ import {
 } from "../option-helpers.js";
 
 export interface AssetOptionContext
-    extends ObjectValidationContext,
+    extends ObjectValidationContext, StaticFetchContext,
         PositiveIntegerContext,
         StaticBooleanContext {
     expectObjectLiteral(
@@ -46,6 +47,7 @@ export function compileEnvironmentOptions(
     skyboxUrl: string;
     skyboxSize: string;
     brdfUrl: string;
+    brdfPathCpp?: string;
     skipSkybox: boolean;
     skipGround: boolean;
 } {
@@ -67,6 +69,8 @@ export function compileEnvironmentOptions(
     const skyboxUrl = context.objectProperty(object, "skyboxUrl");
     const skyboxSize = context.objectProperty(object, "skyboxSize");
     const brdfUrl = context.objectProperty(object, "brdfUrl");
+    const brdfPathCpp = brdfUrl ? compileDynamicPackagedAsset(context, brdfUrl, "texture",
+        source => /\.(?:png|jpe?g|webp)(?:[?#]|$)/i.test(source))?.dynamicAssetPathCpp : undefined;
     // `skipSkybox` and `skipGround` decide whether `loadEnvironment`'s
     // deferred builder pushes a background renderable at all, so they are
     // read rather than tolerated: the solid-colour skybox is what a scene
@@ -88,7 +92,8 @@ export function compileEnvironmentOptions(
         // far plane to clip it, which shows as a straight-edged hole in
         // the background once the camera moves off the reference pose.
         skyboxSize: skyboxSize ? context.compileNumber(skyboxSize) : "0.0f",
-        brdfUrl: brdfUrl ? context.compileStringLiteral(brdfUrl) : "",
+        brdfUrl: brdfUrl && !brdfPathCpp ? context.compileStringLiteral(brdfUrl) : "",
+        ...(brdfPathCpp ? { brdfPathCpp } : {}),
         skipSkybox: skipFlag("skipSkybox"),
         skipGround: skipFlag("skipGround"),
     };
