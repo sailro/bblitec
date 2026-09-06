@@ -116,6 +116,7 @@ its cause.
 | 100 | <img src="images/scenes/scene100.png" alt="Scene 100 rendering" width="160"> | 0.003 / 0.006 | 0.003 / 0.006 | Scene 40 plus the collision event; the same solver delta, not a renderer-fidelity value. |
 | 101 | <img src="images/scenes/scene101.png" alt="Scene 101 rendering" width="160"> | 0.027 / 0.178 | 0.027 / 0.178 | Bullet/Havok trigger drop two elastic bounces in; the rebound rule's 0.2% compounding, not a renderer-fidelity value. |
 | 102 | <img src="images/scenes/scene102.png" alt="Scene 102 rendering" width="160"> | 0.003 / 0.125 | 0.003 / 0.125 | Physics Raycast over Triangle-Soup Colliders |
+| 103 | <img src="images/scenes/scene103.png" alt="Scene 103 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Physics Raycast Instance Picking; exact captureFrame=5 pose. |
 | 106 | <img src="images/scenes/scene106.png" alt="Scene 106 rendering" width="160"> | 0.018 / 0.098 | 0.018 / 0.098 | Physics Motion and Prestep Grid; Bullet/Havok geometry and solver residual at frame 20. |
 | 110 | <img src="images/scenes/scene110.png" alt="Scene 110 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Render Target Diffuse Texture |
 | 111 | <img src="images/scenes/scene111.png" alt="Scene 111 rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Scene-Wide Light UBO Stress |

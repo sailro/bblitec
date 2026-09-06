@@ -1478,16 +1478,28 @@ PhysicsRaycastResult physics_world_raycast(
     callback.m_collisionFilterGroup = static_cast<int>(membership);
     callback.m_collisionFilterMask = static_cast<int>(collide_with);
     world_at(world).world->rayTest(ray_from, ray_to, callback);
+    static const bool trace = std::getenv("BBLITE_TRACE_PHYSICS_RAYS") != nullptr;
+    if (trace) {
+        const PhysicsBodyState* body = callback.hasHit() ? body_entry_of(callback.m_collisionObject) : nullptr;
+        std::fprintf(stderr,
+            "[physics-ray] from=[%.17g,%.17g,%.17g] to=[%.17g,%.17g,%.17g] hit=%d body=%u point=[%.17g,%.17g,%.17g]\n",
+            from[0], from[1], from[2], to[0], to[1], to[2], callback.hasHit() ? 1 : 0,
+            body ? body->identity : 0,
+            callback.hasHit() ? static_cast<double>(callback.m_hitPointWorld.x()) : 0.0,
+            callback.hasHit() ? static_cast<double>(callback.m_hitPointWorld.y()) : 0.0,
+            callback.hasHit() ? static_cast<double>(callback.m_hitPointWorld.z()) : 0.0);
+    }
     if (!callback.hasHit()) {
         return {};
     }
     const btVector3& point = callback.m_hitPointWorld;
     const btVector3& normal = callback.m_hitNormalWorld;
+    const PhysicsBodyState* hit_body = body_entry_of(callback.m_collisionObject);
     return PhysicsRaycastResult{
         true,
         {point.x(), point.y(), point.z()},
         {normal.x(), normal.y(), normal.z()},
-        static_cast<double>((point - ray_from).length()),
+        hit_body ? hit_body->identity : 0,
     };
 }
 

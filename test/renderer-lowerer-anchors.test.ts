@@ -311,7 +311,7 @@ test("lifts the cubemap-skybox stages from the packaged pin", () => {
     );
 });
 
-test("filters the draw lists at build, the pin's bundle-record rule", () => {
+test("caches opaque visibility at build and retains transparent bindings", () => {
     // The lists are the pin's cached opaque render bundles: `visible` is
     // read when a bundle is RECORDED, so the filter sits at list build and
     // a visibility change lands by re-running the build. setMeshVisible
@@ -335,6 +335,8 @@ test("filters the draw lists at build, the pin's bundle-record rule", () => {
         appendDraw,
         /if \(!mesh_draws\(engine\.meshes\[item\.mesh\.value\]\)\) \{\s*\r?\n\s*return;/,
     );
+    assert.ok(appendDraw.indexOf("list.visibility_candidates.push_back(command)") <
+        appendDraw.indexOf("if (!mesh_draws("));
 });
 
 test("anchors the draw-list rules to the pinned bucket fork", () => {

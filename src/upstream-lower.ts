@@ -33,6 +33,7 @@ import { pinnedWorldTransformHeader } from "./lowering/pinned-world-transform.js
 import { pinnedTextureHeader } from "./lowering/pinned-texture.js";
 import { pinnedRgbdHeader } from "./lowering/pinned-rgbd.js";
 import { pinnedMatrixHeader } from "./lowering/pinned-matrix.js";
+import { pinnedMat4InvertHeader } from "./lowering/pinned-mat4-invert.js";
 import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-image-processing.js";
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
@@ -978,6 +979,12 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.tree.write(
                 "upstream/include/bblite/upstream/pinned_normalize_vec3.hpp",
                 pinnedNormalizeVec3Header(new LoweringContext(this.store)),
+            );
+        }
+        if (features.includes("math:mat4-invert")) {
+            this.tree.write(
+                "upstream/include/bblite/upstream/pinned_mat4_invert.hpp",
+                pinnedMat4InvertHeader(new LoweringContext(this.store)),
             );
         }
         // The public look-direction quaternion and the private basis fold it

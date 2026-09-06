@@ -2401,6 +2401,7 @@ export type Feature =
   // carrying the translated declaration is emitted only where one of the
   // two reaches it.
   | "math:normalize-vec3"
+  | "math:mat4-invert"
   // `src/math/quat-from-look-direction-rh.ts` and its rotation-basis helper,
   // translated together only when scene code calls the public function.
   | "math:look-direction"

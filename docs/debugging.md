@@ -177,6 +177,7 @@ its source, compiler, package, pose or native stamp changes.
 | `BBLITE_DEFORMATION_DUMP=<path>` | Full bone/morph dump on supported SDL paths |
 | `BBLITE_MSAA=1` | Single-sample isolation |
 | `BBLITE_RUNTIME_TRACE=1`, `BBLITE_RUNTIME_TRACE_INTERVAL=<n>` | Input/camera/topology/window traces |
+| `BBLITE_TRACE_PHYSICS_RAYS=1` | Native physics ray endpoints, hit body identity and hit point; selected at process startup |
 | `BBLITE_INPUT_REPLAY=<tape>` | Keyboard, mouse, UI and window-close events, one action per frame |
 | `BBLITE_UI_STYLE_TRACE=1` | Computed RmlUi styles/layout |
 | `BBLITE_PHYSICS_TRACE=1`, `BBLITE_CPU_PROFILE=1` | Solver trajectory and timing/counters |

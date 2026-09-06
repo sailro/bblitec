@@ -154,13 +154,13 @@ implementation, follow the sizing/capture workflow in
 | Particles | Live sets, moving-emitter replay, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. |
 | Navigation | Tiled-without-obstacles builds, additional queries/random state, sources and disposal not yet lowered. |
 | Physics | Constraints, character controllers/viewer, heightfield/capsule APIs, mass centre updates, disposal, shape rotation and remaining body/trigger options. Existing force/impulse/velocity/prestep controls are not missing. |
-| Physics fidelity | Segment-end raycast misses, first-substep gravity/landing residuals, speculative box contacts, fixed-clock timer boundary and double-precision solver evaluation need focused traces. |
+| Physics fidelity | First-substep gravity/landing residuals, speculative box contacts, fixed-clock timer boundary and double-precision solver evaluation need focused traces. |
 | Audio | Durable browser/native offline PCM gate; master-volume ramps and broader Babylon sound/bus/spatial/analysis/lifecycle APIs. |
 | UI/platform | General text input/forms, retained UI under other drivers, device loss, multiple surfaces and a renderer-independent Canvas2D-only driver. |
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 27 numbered scenes unregistered. Helper
+The current registry leaves these 26 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -170,7 +170,6 @@ modules without a numbered scene entry are not integration candidates.
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
 | 48 | Shape/material setters and full centre-of-mass behavior in Bullet |
 | 49 | Capsule builder plus the scene's physics/gizmo contracts |
-| 103 | PhysicsBody Map identity and segment-end raycasts; keep reference query |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
 | 114 | Scene-authored skeleton, box-data result, nullable PickingInfo, barycentric reads and missing deformation pipeline arms |
 | 121 | Retained splat buffer views and live updateData |

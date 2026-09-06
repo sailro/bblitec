@@ -648,6 +648,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/math/normalize-vec3.ts",
         consumers: CMAKE,
     },
+    "math:mat4-invert": {
+        provenance: "src/math/mat4-invert.ts",
+        consumers: CMAKE,
+    },
     "math:look-direction": {
         provenance:
             "src/math/quat-from-look-direction-rh.ts + " +

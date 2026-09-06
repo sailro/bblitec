@@ -863,6 +863,7 @@ export interface UserFunctionContext {
     ): string;
     dataValue(cpp: string, dataType: DataType): Value;
     emitStatement(statement: ts.Statement): void;
+    statementTerminatesAfterLowering(statement: ts.Statement): boolean;
     bindLocalValue(identifier: ts.Identifier, value: Value): void;
     bindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
     rebindCompileTimeValue(identifier: ts.Identifier, value: Value): void;
@@ -2340,12 +2341,19 @@ export class UserFunctionLowerer {
                 context.increaseIndent();
                 context.beginNativeFunctionBody(returnType);
                 try {
+                    let terminated = false;
                     for (const statement of ir.statements) {
                         context.emitStatement(statement);
+                        if (context.statementTerminatesAfterLowering(statement)) {
+                            terminated = true;
+                            break;
+                        }
                     }
-                    context.emit(
-                        'throw std::runtime_error("Native value function fell through without returning.");',
-                    );
+                    if (!terminated) {
+                        context.emit(
+                            'throw std::runtime_error("Native value function fell through without returning.");',
+                        );
+                    }
                 } finally {
                     context.endNativeFunctionBody();
                     context.decreaseIndent();
