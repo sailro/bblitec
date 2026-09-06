@@ -17,7 +17,7 @@ import type {
     ValueKind,
 } from "./types.js";
 import { lightVectorSetter } from "./assignments.js";
-import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import {
     staticIndexLoopShape,
     loopBoundMayChange,
@@ -3680,6 +3680,12 @@ export class StatementLowerer {
             return false;
         }
         const owner = call.expression.expression;
+        const alias = ts.isIdentifier(owner)
+            ? context.lookupOptional(owner)?.sceneNodeVector
+            : undefined;
+        if (alias) {
+            return this.emitSceneNodeVectorSet(context, call, alias.owner, alias.transform);
+        }
         if (!ts.isPropertyAccessExpression(owner)) {
             return false;
         }
@@ -3795,11 +3801,16 @@ export class StatementLowerer {
             return true;
         }
         const transform = sceneNodeTransformDescriptor(owner.name.text);
-        if (
-            (target.kind === "transform-node" ||
-                target.kind === "scene-node") &&
-            transform
-        ) {
+        return transform ? this.emitSceneNodeVectorSet(context, call, target, transform) : false;
+    }
+
+    private emitSceneNodeVectorSet(
+        context: StatementLoweringContext,
+        call: ts.CallExpression,
+        target: Value,
+        transform: SceneNodeTransformDescriptor,
+    ): boolean {
+        if (target.kind === "transform-node" || target.kind === "scene-node") {
             // A node's TRS lanes are the same ObservableVec3/ObservableQuat
             // a mesh's are -- upstream a TransformNode IS a SceneNode -- so
             // each write moves the field and marks the node's local matrix
@@ -3836,9 +3847,6 @@ export class StatementLowerer {
             return true;
         }
         if (target.kind !== "mesh") {
-            return false;
-        }
-        if (!transform) {
             return false;
         }
         const components = this.setCallComponents(

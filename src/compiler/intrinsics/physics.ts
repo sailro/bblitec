@@ -34,6 +34,7 @@ export interface PhysicsIntrinsicContext
     ObjectValidationContext,
     RequiredObjectNumberContext {
   readonly symbols: CompilerSymbols;
+  readonly checker: ts.TypeChecker;
   compileVec3(
     expression: ts.Expression,
     precision?: "float" | "double",
@@ -351,7 +352,7 @@ export function compilePhysicsIntrinsic(
         );
       }
       context.expectSameEngine(world, node, call);
-      const motion = expectMotionType(context, call.arguments[2]!);
+      const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
       const startsAsleep = call.arguments[3]
         ? context.compileBoolean(call.arguments[3])
         : "false";
@@ -361,7 +362,7 @@ export function compilePhysicsIntrinsic(
         cpp:
           `bbl::upstream::create_physics_body(` +
           `${world.cpp}, bbl::upstream::physics_node(${node.cpp}), ` +
-          `bbl::upstream::PhysicsMotionType::${motion}, ${startsAsleep})`,
+          `${motion}, ${startsAsleep})`,
         ...(node.engineCpp ? { engineCpp: node.engineCpp } : {}),
       };
     }
@@ -441,13 +442,13 @@ export function compilePhysicsIntrinsic(
       context.expectKind(world, "physics-world", call.arguments[0]!);
       context.expectKind(body, "physics-body", call.arguments[1]!);
       context.expectSameEngine(world, body, call);
-      const motion = expectMotionType(context, call.arguments[2]!);
+      const motion = compileBodyEnum(context, call, 2, "PhysicsMotionType");
       return {
         kind: "void",
         cpp:
           `bbl::upstream::set_physics_body_motion_type(` +
           `${world.cpp}, ${body.cpp}, ` +
-          `bbl::upstream::PhysicsMotionType::${motion})`,
+          `${motion})`,
       };
     }
 
@@ -510,8 +511,7 @@ export function compilePhysicsIntrinsic(
         kind: "void",
         cpp:
           `bbl::upstream::set_physics_body_prestep_type(` +
-          `${body.cpp}, bbl::upstream::PhysicsPrestepType::` +
-          `${expectPrestepType(context, call.arguments[1]!)})`,
+          `${body.cpp}, ${compileBodyEnum(context, call, 1, "PhysicsPrestepType")})`,
       };
     }
 
@@ -828,54 +828,31 @@ function expectShapeType(
   return member;
 }
 
-/**
- * A pinned enum member the caller lists as reached.
- *
- * `expectShapeType` above keeps a refusal of its own, because the shape
- * family has unreached members and its message names what each would need.
- * The body families refuse identically -- the member is not one this port
- * knows -- and refusing the same way twice is what this holds in one place.
- */
-function expectReachedEnumMember<Member extends string>(
+function compileBodyEnum(
   context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
-  enumName: string,
-  members: readonly Member[],
-): Member {
-  const member = pinnedEnumMemberName(context, expression, enumName);
-  if (!(members as readonly string[]).includes(member)) {
-    context.fail(expression, `Unknown ${enumName}.${member}.`);
+  call: ts.CallExpression,
+  index: number,
+  enumName: "PhysicsMotionType" | "PhysicsPrestepType",
+): string {
+  const expression = call.arguments[index]!;
+  const cppType = `bbl::upstream::${enumName}`;
+  // The public enum is a numeric-literal union. Preserve values in ordinary
+  // native arrays, and narrow only at the generated C++ enum boundary after
+  // checking the pin's actual parameter type (including non-null assertions).
+  const parameter = context.checker.getResolvedSignature(call)?.parameters[index];
+  const actual = context.checker.getTypeAtLocation(expression);
+  const expected = parameter && context.checker.getTypeOfSymbolAtLocation(parameter, call);
+  const members = actual.isUnion() ? actual.types : [actual];
+  if (!expected || !members.every((type) => type.isNumberLiteral()) ||
+      !context.checker.isTypeAssignableTo(actual, expected)) {
+    context.fail(expression, `Expected a value of the pinned ${enumName} enum.`);
   }
-  return member as Member;
-}
-
-function expectMotionType(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
-): "STATIC" | "ANIMATED" | "DYNAMIC" {
-  return expectReachedEnumMember(context, expression, "PhysicsMotionType", [
-    "STATIC",
-    "ANIMATED",
-    "DYNAMIC",
-  ] as const);
-}
-
-/**
- * The prestep type a scene names.
- *
- * All three members are reached: the emitted step already forks on
- * DISABLED and on ACTION, so refusing one here would refuse a body the
- * generated pre-step arm can already carry.
- */
-function expectPrestepType(
-  context: PhysicsIntrinsicContext,
-  expression: ts.Expression,
-): "DISABLED" | "TELEPORT" | "ACTION" {
-  return expectReachedEnumMember(context, expression, "PhysicsPrestepType", [
-    "DISABLED",
-    "TELEPORT",
-    "ACTION",
-  ] as const);
+  if (ts.isPropertyAccessExpression(expression) &&
+      ts.isIdentifier(expression.expression) &&
+      context.symbols.importedName(expression.expression) === enumName) {
+    return `${cppType}::${expression.name.text}`;
+  }
+  return `static_cast<${cppType}>(${context.compileNumber(expression, "double")})`;
 }
 
 /**

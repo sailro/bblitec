@@ -19,6 +19,7 @@ import type {
   NativeHostUiStyleSource,
 } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
+import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
 export type {
   NativeHostUiClassStyle,
@@ -2065,6 +2066,12 @@ export interface Value {
    */
   handleIdentity?: string;
   engineCpp?: string;
+  /** A node's observable transform object retains its owning handle. */
+  sceneNodeVector?: {
+    owner: Value & { engineCpp: string };
+    transform: SceneNodeTransformDescriptor;
+    bound?: true;
+  };
   geometryTask?: GeometryOutputTaskManifest;
   /**
    * Set on a `render-texture` or `render-target-texture` whose texture is

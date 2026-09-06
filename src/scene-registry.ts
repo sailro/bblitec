@@ -2037,6 +2037,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene106",
+        name: "Scene 106 - Physics Motion and Prestep Grid",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",
+        title: "Babylon Lite Native - Physics Motion and Prestep Grid",
+        parity: {
+            // The pinned scene's own visual contract captures physics step 20.
+            referenceSearch: "?captureFrame=20",
+            // Both backends measure 0.018 full / 0.098 foreground and
+            // render identically; the remaining motion is Bullet/Havok.
+            maxFullMad: 0.025,
+            maxForegroundMad: 0.12,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "30" },
+        },
+    },
+    {
         id: "scene272",
         name: "Scene 272 - Runtime Mesh Swap",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene272.ts",

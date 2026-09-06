@@ -2343,6 +2343,7 @@ class Compiler
             cppName,
         );
         let value = this.compileValue(declaration.initializer);
+        value = this.bindSceneNodeVector(value);
         if (forwardCallback) {
             this.completeForwardFunctionResult(
                 declaration,
@@ -9451,7 +9452,8 @@ class Compiler
     private enumMemberValue(
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const constant = this.checker.getConstantValue(expression);
+        const constant = this.checker.getConstantValue(expression) ??
+            this.symbols.pinnedConstantProperty(expression);
         if (typeof constant === "number") {
             return {
                 kind: "number",
@@ -13404,6 +13406,7 @@ class Compiler
             }
         }
         if (value.kind === "record") {
+            if (value.sceneNodeVector) this.useNativeValue(value.sceneNodeVector.owner, seen);
             for (const field of Object.values(value.recordProperties ?? {})) this.useNativeValue(field, seen);
         }
         if (value.kind === "tuple") {
@@ -16833,6 +16836,7 @@ class Compiler
             return {
                 kind: "record",
                 cpp: "",
+                sceneNodeVector: { owner: { ...owner, engineCpp: engine }, transform: sceneNodeTransform },
                 recordProperties: Object.fromEntries(
                     sceneNodeTransform.components.map((name) => [
                         name,
@@ -17549,6 +17553,31 @@ class Compiler
             .some((property) => this.recordHasMutableContainer(property, seen));
     }
 
+    /** Retain the handle, so vector aliases survive arena growth and source rebinding. */
+    private bindSceneNodeVector(value: Value): Value {
+        const vector = value.sceneNodeVector;
+        if (!vector || vector.bound) return value;
+        const cpp = this.allocateTemporaryCppName("vector_owner");
+        this.emit(`[[maybe_unused]] const auto ${cpp} = ${vector.owner.cpp};`);
+        const owner = { ...vector.owner, cpp };
+        this.describeNativeValue(owner);
+        const engine = owner.engineCpp;
+        const field = vector.transform.nativeField;
+        const source = owner.kind === "scene-node"
+            ? `bbl::scene_node_${field}(${engine}, ${cpp})`
+            : `${engine}.${owner.kind === "mesh" ? "meshes" : "transform_nodes"}[${cpp}.value].${field}`;
+        return {
+            ...value,
+            sceneNodeVector: { ...vector, owner, bound: true },
+            recordProperties: Object.fromEntries(vector.transform.components.map((name) => [name, {
+                kind: "number",
+                cpp: `${source}.${name}`,
+                dataType: { kind: "number" },
+                engineCpp: engine,
+            } satisfies Value])),
+        };
+    }
+
     /** Materialize mutable members when a compile-time record escapes. */
     private materializeRecordScalars(
         record: Value,
@@ -17556,6 +17585,9 @@ class Compiler
         preserveIdentity = false,
         node?: ts.Expression,
     ): Value {
+        if (record.sceneNodeVector) {
+            return this.bindSceneNodeVector(record);
+        }
         const stored = node && this.referenceRecordValue(record, node);
         if (stored) {
             // Choose the whole-object home before boxing individual fields.
