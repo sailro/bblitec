@@ -16,6 +16,7 @@
 // sees the WASM the browser loaded.
 import ts from "typescript";
 import type { CompilerSymbols } from "../symbols.js";
+import { isDataTuple, tupleComponents, type DataTypeRegistry } from "../data-types.js";
 import {
   pinnedEnumMemberName,
   validateObjectProperties,
@@ -35,11 +36,17 @@ export interface PhysicsIntrinsicContext
     RequiredObjectNumberContext {
   readonly symbols: CompilerSymbols;
   readonly checker: ts.TypeChecker;
+  readonly dataTypes: DataTypeRegistry;
+  unwrap(expression: ts.Expression): ts.Expression;
   compileVec3(
     expression: ts.Expression,
     precision?: "float" | "double",
   ): string;
   compileBoolean(expression: ts.Expression): string;
+  vec3FromRecord(value: Value, node: ts.Node, precision?: "float" | "double"): string;
+  materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
+  pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value;
+  bindDataTuple(value: Value, arity: number, label?: string): string;
   expectSameEngine(left: Value, right: Value, node: ts.Node): void;
   expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
   compileFrameCallback(expression: ts.Expression): string;
@@ -594,6 +601,10 @@ export function compilePhysicsIntrinsic(
       context.expectArgumentCount(call, 3, 4);
       const world = context.compileValue(call.arguments[0]!);
       context.expectKind(world, "physics-world", call.arguments[0]!);
+      const worldCpp = context.allocateTemporaryCppName("ray_world");
+      context.emit(`const auto ${worldCpp} = ${world.cpp};`);
+      const from = compileRayPointArgument(context, call.arguments[1]!);
+      const to = compileRayPointArgument(context, call.arguments[2]!);
       let membership = "0xffffffffu";
       let collideWith = "0xffffffffu";
       let shouldHitTriggers = "false";
@@ -605,23 +616,31 @@ export function compilePhysicsIntrinsic(
           ["membership", "collideWith", "shouldHitTriggers"],
           "A physics raycast option outside the reached filter slice.",
         );
-        const membershipExpression = context.objectProperty(options, "membership");
-        const collideExpression = context.objectProperty(options, "collideWith");
-        const triggers = context.objectProperty(options, "shouldHitTriggers");
-        if (triggers) shouldHitTriggers = context.compileBoolean(triggers);
-        if (membershipExpression) {
-          membership = `static_cast<std::uint32_t>(${context.compileNumber(membershipExpression, "double")})`;
-        }
-        if (collideExpression) {
-          collideWith = `static_cast<std::uint32_t>(${context.compileNumber(collideExpression, "double")})`;
+        // Compile and pin each initializer before the next one can emit a
+        // mutation. Object property order is observable independently of the
+        // positional order of the generated native query's filter arguments.
+        for (const property of options.properties) {
+          const expression = ts.isPropertyAssignment(property)
+            ? property.initializer
+            : (property as ts.ShorthandPropertyAssignment).name;
+          const name = context.propertyName(property.name!);
+          if (name === "shouldHitTriggers") {
+            shouldHitTriggers = context.pinValueToTemporary({
+              kind: "boolean", cpp: context.compileBoolean(expression),
+            }, "ray_triggers").cpp;
+          } else {
+            const number = pinRayNumber(context, expression);
+            const mask = `static_cast<std::uint32_t>(${number})`;
+            if (name === "membership") membership = mask;
+            else collideWith = mask;
+          }
         }
       }
       const result = context.allocateTemporaryCppName("physics_raycast");
       context.emit(
         `const bbl::upstream::PhysicsRaycastResult ${result} = ` +
-          `bbl::upstream::physics_raycast(${world.cpp}, ` +
-          `${context.compileVec3(call.arguments[1]!, "double")}, ` +
-          `${context.compileVec3(call.arguments[2]!, "double")}, ` +
+          `bbl::upstream::physics_raycast(${worldCpp}, ` +
+          `${from}, ${to}, ` +
           `${membership}, ${collideWith}, ${shouldHitTriggers});`,
       );
       return {
@@ -667,6 +686,66 @@ export function compilePhysicsIntrinsic(
     default:
       return undefined;
   }
+}
+
+function pinRayNumber(context: PhysicsIntrinsicContext, expression: ts.Expression): string {
+  return context.pinValueToTemporary({
+    kind: "number", cpp: context.compileNumber(expression, "double"),
+  }, "ray_number").cpp;
+}
+
+/**
+ * Argument evaluation creates a literal's scalar properties now, but retains
+ * an existing object's identity. Havok reads that object's coordinates inside
+ * physicsRaycast, after the options argument has finished mutating state.
+ */
+function compileRayPointArgument(context: PhysicsIntrinsicContext, expression: ts.Expression): string {
+  const point = context.unwrap(expression);
+  if (ts.isObjectLiteralExpression(point) &&
+      !(point.properties.length === 1 && ts.isSpreadAssignment(point.properties[0]!))) {
+    validateObjectProperties(context, point, ["x", "y", "z"],
+      "Physics ray point literals require numeric x, y and z properties.");
+    const lanes = new Map<string, string>();
+    for (const property of point.properties) {
+      const value = ts.isPropertyAssignment(property)
+        ? property.initializer
+        : (property as ts.ShorthandPropertyAssignment).name;
+      lanes.set(context.propertyName(property.name!)!, pinRayNumber(context, value));
+    }
+    if (["x", "y", "z"].some((axis) => !lanes.has(axis))) {
+      context.fail(point, "Physics ray point literals require x, y and z.");
+    }
+    return `bbl::Vec3d{${["x", "y", "z"].map((axis) => lanes.get(axis)).join(", ")}}`;
+  }
+  if (ts.isArrayLiteralExpression(point) && point.elements.length === 3) {
+    const lanes = point.elements.map((element) => pinRayNumber(context, element));
+    return `bbl::Vec3d{${lanes.join(", ")}}`;
+  }
+  if (ts.isObjectLiteralExpression(point) && ts.isSpreadAssignment(point.properties[0]!)) {
+    const temporary = context.allocateTemporaryCppName("ray_point");
+    context.emit(`const bbl::Vec3d ${temporary} = ${context.compileVec3(point, "double")};`);
+    return temporary;
+  }
+  let value = context.materializeEscapingValue(context.compileValue(point), "ray_point", point);
+  if (isDataTuple(value, 3)) {
+    // Tuple copies retain their shared element storage, just as reference
+    // structs retain their owner below; later alias writes stay visible.
+    const owner = context.bindDataTuple(value, 3, "ray_point");
+    return `bbl::Vec3d{${tupleComponents(owner, 3, "double").join(", ")}}`;
+  }
+  if (value.kind === "tuple" && value.tupleElements?.length === 3) {
+    value = { kind: "record", cpp: "", recordProperties:
+      Object.fromEntries(["x", "y", "z"].map((axis, index) => [axis, value.tupleElements![index]!])) };
+  }
+  if (value.kind === "data" && value.dataType?.kind === "struct") {
+    if (!context.dataTypes.isReferenceStruct(value.dataType.name)) {
+      context.fail(point, "Retained physics ray point objects require a native reference representation.");
+    }
+    const owner = context.allocateTemporaryCppName("ray_point_owner");
+    context.emit(`const auto ${owner} = ${value.cpp};`);
+    value = { ...value, cpp: owner };
+  }
+  return context.vec3FromRecord(value, point, "double");
 }
 
 /**
