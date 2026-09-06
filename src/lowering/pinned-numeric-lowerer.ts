@@ -2560,9 +2560,18 @@ export class PinnedNumericLowerer {
 
     private call(node: ts.CallExpression): string {
         const callee = node.expression;
-        const args = node.arguments.map((argument) =>
-            this.expression(argument),
-        );
+        // A lowered callee takes its numbers as double; a counted loop's
+        // `std::int64_t` index is the one binding that is not one yet.
+        const args = node.arguments.map((argument) => {
+            const text = this.expression(argument);
+            const unwrapped = this.unwrap(argument);
+            const bound = ts.isIdentifier(unwrapped)
+                ? this.scope.bindings.get(unwrapped.text)
+                : undefined;
+            return bound?.type === "index"
+                ? `static_cast<double>(${text})`
+                : text;
+        });
         // A whole call the caller spelled by its text: an instantiation of
         // a pinned helper over this body's own getters and scratch, which
         // keeps the pin's numeric arguments and drops the getters and

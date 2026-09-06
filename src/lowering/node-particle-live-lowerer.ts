@@ -260,16 +260,11 @@ function pinnedCalls(): Map<string, (args: readonly string[]) => string> {
 }
 
 /** `steps[s]!(i)` over the emitted step table, which takes the state first. */
-// Every installed step takes its particle index as a double; the pinned
-// simulation loop hands it the `std::int64_t` counter, so the argument is
-// converted where the JavaScript number would have been one already.
 const indexedCall: NonNullable<PinnedNumericScope["indexedCall"]> = (
     list,
     index,
     args,
-) => `${list.cpp}[static_cast<std::size_t>(${index})](state, ${args
-    .map((argument) => `static_cast<double>(${argument})`)
-    .join(", ")})`;
+) => `${list.cpp}[static_cast<std::size_t>(${index})](state, ${args.join(", ")})`;
 
 function recordDeclaration(cpp: string, type: RecordShapeType, initial: readonly number[]): string {
     return `${RECORD_SHAPES.get(type)!.storage} ${cpp}{${initial
