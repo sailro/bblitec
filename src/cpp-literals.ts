@@ -78,7 +78,8 @@ const VALUES_PER_LINE = 64;
 
 /**
  * A generation-time numeric stream as a C++ `static const` array, plus the
- * expression that hands it to a `std::vector` parameter.
+ * expression that hands it to a `std::vector` parameter, or an immutable
+ * `std::span` when the caller can retain the static storage directly.
  *
  * Baked bytes reach the generated program as data, and the shape matters:
  * a braced `std::vector` initializer of this size is one object-file
@@ -89,7 +90,7 @@ const VALUES_PER_LINE = 64;
  * the vector from its bounds at the call.
  *
  * An empty stream has no array to bound -- a zero-length C array is not
- * C++ -- so it answers with the empty vector and declares nothing.
+ * C++ -- so it answers with the empty vector or span and declares nothing.
  */
 export type CppArrayTableRegistrar = (
     symbol: string,
@@ -103,9 +104,13 @@ export function cppArrayDeclaration(
     values: ArrayLike<number>,
     spell: (value: number) => string,
     registerTable?: CppArrayTableRegistrar,
+    resultMode: "vector" | "span" = "vector",
 ): { readonly lines: readonly string[]; readonly expression: string } {
+    const resultType = resultMode === "span"
+        ? `std::span<const ${elementType}>`
+        : `std::vector<${elementType}>`;
     if (values.length === 0) {
-        return { lines: [], expression: `std::vector<${elementType}>{}` };
+        return { lines: [], expression: `${resultType}{}` };
     }
     // A baked stream repeats its values far more than it varies them --
     // scene 90's four arrays hold 358,016 floats over 10,148 distinct ones,
@@ -133,7 +138,9 @@ export function cppArrayDeclaration(
         const table = registerTable(symbol, elementType, spelled);
         return {
             lines: [],
-            expression: `std::vector<${elementType}>(${table}.begin(), ${table}.end())`,
+            expression: resultMode === "span"
+                ? `${resultType}(${table})`
+                : `${resultType}(${table}.begin(), ${table}.end())`,
         };
     }
     const lines = [`static const ${elementType} ${symbol}[] = {`];
@@ -147,9 +154,9 @@ export function cppArrayDeclaration(
     lines.push("};");
     return {
         lines,
-        expression:
-            `std::vector<${elementType}>(${symbol}, ` +
-            `${symbol} + ${values.length})`,
+        expression: resultMode === "span"
+            ? `${resultType}(${symbol})`
+            : `${resultType}(${symbol}, ${symbol} + ${values.length})`,
     };
 }
 

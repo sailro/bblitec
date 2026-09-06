@@ -111,12 +111,21 @@ test("frozen sprite bridges keep sheet aliases live and preserve pinned buffer p
     const context = new LoweringContext();
     const particle = new NodeParticleLowerer(context).lower([
         entry, { ...entry, bake: { ...entry.bake, system: 1, blendMode: 4 } },
+        { ...entry, bake: { ...entry.bake, system: 2, alive: 0,
+            positions: [], sizes: [], colors: [], rotations: [], bufferColumns: {} } },
+        { ...entry, bake: { ...entry.bake, system: 3 } },
     ], [{
         systems: [{ set: 0, system: 0 }], exact: false, autoStart: false,
         ...options, invertY: true, retainFrozen: true,
     }, {
         systems: [{ set: 0, system: 1 }], exact: true, autoStart: false,
         ...options, invertY: true, retainFrozen: true,
+    }, {
+        systems: [{ set: 0, system: 2 }], exact: false, autoStart: false,
+        ...options, invertY: true, retainFrozen: true,
+    }, {
+        systems: [{ set: 0, system: 3 }], exact: false, autoStart: false,
+        ...options, invertY: true,
     }]);
     const sprite = new SpriteLowerer(context).lowerCore();
     const output = resolve("artifacts/node-particle-frozen-bridge-check");

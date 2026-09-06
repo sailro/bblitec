@@ -153,6 +153,18 @@ their layout, blend and synchronization rules from pinned declarations. A
 registered frozen set is accepted only when the observed extra step leaves
 consumed columns unchanged.
 
+Frozen buffer and column aliases expose capacity, live count and full-capacity
+numeric reads, including double-precision ages. Initialization writes run in
+the ordered bake; later writes and simulation changes refuse once native code
+has observed the snapshot. A manually assigned sprite sheet retains shared
+`Uint16Array` cells: the Sprite2D renderer still synchronizes every frame and
+observes writes through aliases. Cell dimensions are captured when its atlas
+is built. Sheet-object replacement, effectful sheet callbacks and broader
+binding lifecycle/view options remain unsupported.
+Frozen snapshots require finite column values and currently refuse negative
+zero. Native buffer/sheet access combined with composed set membership also
+refuses until system aliases have a canonical identity across sets.
+
 A set a pure-2D binding takes without any scene step is live: the graph's
 block evaluators are partially evaluated at generation over the parsed graph,
 and the per-particle closures they install are translated to C++ from their
@@ -377,6 +389,11 @@ distance from the original origin. Returned bodies retain Map key identity.
 The default and explicit false `shouldHitTriggers` queries exclude triggers;
 true and runtime boolean values select the closest eligible body after both
 collision masks, using the current trigger flag.
+Ray arguments and option properties evaluate in source order. Scalar values
+are captured at evaluation; retained point objects keep their identity and
+expose coordinate changes made while evaluating later arguments.
+Captured option aliases use stored scalar fields or generation-known values;
+dynamic aliases without native field storage refuse explicitly.
 Scene 103 covers automatic instance lookup and default-query pointer picking;
 focused segment-end probes preserve the pin's exact and float-rounded misses.
 

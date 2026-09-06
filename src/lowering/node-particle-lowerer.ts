@@ -13,7 +13,7 @@
 // What the bake supplies is only the values: the particle columns, the
 // texture the graph loaded and the mode the system block set.
 import ts from "typescript";
-import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
+import { cppArrayDeclaration, doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
     blendFactorySymbol,
@@ -1106,7 +1106,7 @@ ${
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-${frozen ? "#include <limits>\n" : ""}\
+${frozen ? "#include <span>\n#include <string_view>\n" : ""}\
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1585,12 +1585,29 @@ void register_node_particle_set_2d(
                 this.context.expectShapeCount(copy, `target.${field} = source.${field}`, "exact bridge presentation copy");
             }
         }
-        const number = (value: number): string => {
-            if (Number.isNaN(value)) return "std::numeric_limits<double>::quiet_NaN()";
-            if (value === Infinity) return "std::numeric_limits<double>::infinity()";
-            if (value === -Infinity) return "-std::numeric_limits<double>::infinity()";
-            return Object.is(value, -0) ? "-0.0" : doubleLiteral(value);
+        const number = (value: number): string =>
+            Object.is(value, -0) ? "-0.0" : doubleLiteral(value);
+        const tables: string[] = [];
+        const stream = (symbol: string, values: readonly number[]): string => {
+            const declaration = cppArrayDeclaration(symbol, "double", values, number, undefined, "span");
+            tables.push(...declaration.lines);
+            return declaration.expression;
         };
+        const rows = observed.map(({ bake }) => {
+            const prefix = `frozen_${bake.set}_${bake.system}`;
+            const sizes = retainedKeys.has(nodeParticleKey(bake))
+                ? stream(`${prefix}_sizes`, bake.sizes)
+                : "std::span<const double>{}";
+            const columns = Object.entries(bake.bufferColumns ?? {}).map(([name, values]) =>
+                `    {${JSON.stringify(name)}, ${stream(`${prefix}_${name}`, values)}},`,
+            );
+            if (columns.length > 0) {
+                tables.push(`static const FrozenColumn ${prefix}_columns[] = {`, ...columns, "};");
+            }
+            return `    {${bake.set}, ${bake.system}, ${bake.texture!.width}, ${bake.texture!.height},
+        ${sizes},
+        ${columns.length > 0 ? `std::span<const FrozenColumn>(${prefix}_columns)` : "std::span<const FrozenColumn>{}"}, false, 0, 0, {}},`;
+        });
         return {
             header: `
 void set_frozen_node_particle_sheet(
@@ -1602,8 +1619,8 @@ bbl::js::Nullable<double> node_particle_frozen_column(
 `,
             state: `
 struct FrozenColumn {
-    const char* name;
-    std::vector<double> values;
+    std::string_view name;
+    std::span<const double> values;
 };
 
 struct FrozenSystem {
@@ -1611,20 +1628,17 @@ struct FrozenSystem {
     int system;
     double texture_width;
     double texture_height;
-    std::vector<double> sizes;
-    std::vector<FrozenColumn> columns;
+    std::span<const double> sizes;
+    std::span<const FrozenColumn> columns;
     bool has_sheet = false;
     double cell_width = 0;
     double cell_height = 0;
     bbl::js::U16Array cells;
 };
 
+${tables.join("\n")}
 FrozenSystem frozen_systems[] = {
-${observed.map(({ bake }) => `    {${bake.set}, ${bake.system}, ${bake.texture!.width}, ${bake.texture!.height},
-        {${bake.sizes.map(number).join(", ")}},
-        {${Object.entries(bake.bufferColumns ?? {}).map(([name, values]) =>
-            `{${JSON.stringify(name)}, {${values.map(number).join(", ")}}}`,
-        ).join(", ")}}, false, 0, 0, {}},`).join("\n")}
+${rows.join("\n")}
 };
 
 FrozenSystem* frozen_system(int set, int system) {
@@ -1646,10 +1660,9 @@ void assert_frozen_bridge_ownership(const Sprite2DLayerRecord& layer) {
 // syncParticleSprite2DBridge owns the complete packed range, even after an
 // Index API caller clears, appends, or hides slots between renderer updates.
 void sync_frozen_bridge(Engine& engine, Sprite2DLayerHandle handle,
-    const Sprite2DBridge& bridge, const BakedSystem& system) {
+    const Sprite2DBridge& bridge, const BakedSystem& system, const FrozenSystem& state) {
     Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
     assert_frozen_bridge_ownership(layer);
-    const FrozenSystem& state = *frozen_system(system.set_index, system.system_index);
     const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
     const std::size_t alive = system.particle_count;
     const std::uint32_t previous_count = layer.count;
@@ -1696,6 +1709,8 @@ void register_retained_frozen_node_particle_set_2d(
     Engine& engine, SpriteRendererHandle renderer, int request) {
     struct Mapping {
         const Sprite2DBridge* bridge;
+        const BakedSystem* system;
+        const FrozenSystem* state;
         Sprite2DLayerHandle primary;
         std::optional<Sprite2DLayerHandle> secondary;
     };
@@ -1703,16 +1718,17 @@ void register_retained_frozen_node_particle_set_2d(
     for (const Sprite2DBridge& bridge : sprite_2d_bridges) {
         if (bridge.request != request) continue;
         const BakedSystem& system = baked(bridge.set_index, bridge.system_index);
+        const FrozenSystem& state = *frozen_system(bridge.set_index, bridge.system_index);
         const SpriteAtlasHandle atlas = particle_atlas(engine, bridge.set_index, bridge.system_index);
         Sprite2DLayerOptions options = bridge_layer_options(bridge, system);
         const Sprite2DLayerHandle layer = create_sprite_2d_layer(engine, atlas, options);
-        sync_frozen_bridge(engine, layer, bridge, system);
-        Mapping mapping{&bridge, layer, {}};
+        sync_frozen_bridge(engine, layer, bridge, system, state);
+        Mapping mapping{&bridge, &system, &state, layer, {}};
         if (options.blend_mode.particle_passes == 2) {
             options.blend_mode = create_particle_blend(2);
             options.custom_shader = false;
             const Sprite2DLayerHandle second = create_sprite_2d_layer(engine, atlas, options);
-            sync_frozen_bridge(engine, second, bridge, system);
+            sync_frozen_bridge(engine, second, bridge, system, state);
             mapping.secondary = second;
         }
         mappings.push_back(mapping);
@@ -1726,8 +1742,7 @@ void register_retained_frozen_node_particle_set_2d(
             for (const Mapping& mapping : mappings) {
                 if (mapping.secondary) assert_frozen_bridge_ownership(engine.sprite_layers[mapping.secondary->value]);
                 const Sprite2DBridge& bridge = *mapping.bridge;
-                const BakedSystem& system = baked(bridge.set_index, bridge.system_index);
-                sync_frozen_bridge(engine, mapping.primary, bridge, system);
+                sync_frozen_bridge(engine, mapping.primary, bridge, *mapping.system, *mapping.state);
                 if (mapping.secondary) {
                     const Sprite2DLayerRecord& source = engine.sprite_layers[mapping.primary.value];
                     Sprite2DLayerRecord& target = engine.sprite_layers[mapping.secondary->value];
@@ -1736,7 +1751,7 @@ void register_retained_frozen_node_particle_set_2d(
                     target.order = source.order;
                     target.view = source.view;
                     target.pivot = source.pivot;
-                    sync_frozen_bridge(engine, *mapping.secondary, bridge, system);
+                    sync_frozen_bridge(engine, *mapping.secondary, bridge, *mapping.system, *mapping.state);
                 }
             }
         });
@@ -1764,9 +1779,10 @@ double node_particle_frozen_alive(int set, int system) {
 bbl::js::Nullable<double> node_particle_frozen_column(
     int set, int system, const char* column, double index) {
     const FrozenSystem* state = frozen_system(set, system);
-    if (!state || !std::isfinite(index) || index < 0 || std::floor(index) != index) return {};
+    if (!state) return {};
+    const std::string_view name(column);
     for (const FrozenColumn& candidate : state->columns) {
-        if (candidate.name == std::string(column) && index < static_cast<double>(candidate.values.size())) {
+        if (candidate.name == name && bbl::js::array_has_index(candidate.values, index)) {
             return candidate.values[static_cast<std::size_t>(index)];
         }
     }

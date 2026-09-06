@@ -151,7 +151,7 @@ implementation, follow the sizing/capture workflow in
 | Shadows | Thin-instance CSM caster bounds, unsupported generator options/live receive toggles, task-camera facade and caster-specific composition. Recheck morph-bound numeric width and CSM array sizes against pinned declarations. |
 | Lines | Runtime-computed point lists, createLines/dashed lines, colour updates, material compare and per-instance colour setters outside the reached slice. |
 | Thin instances | Dynamic draw-count fast path, culling/LOD controls and actual GPU culler; measure a sufficiently large changing pool. |
-| Particles | Live sets, moving-emitter replay, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. |
+| Particles | Broader live sets, moving-emitter replay, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. Native frozen buffer/sheet access across composed sets still needs canonical system identity. |
 | Navigation | Tiled-without-obstacles builds, additional queries/random state, sources and disposal not yet lowered. |
 | Physics | Constraints, character controllers/viewer, heightfield/capsule APIs, mass centre updates, disposal, shape rotation and remaining body/trigger options. Existing force/impulse/velocity/prestep controls are not missing. |
 | Physics fidelity | First-substep gravity/landing residuals, speculative box contacts, fixed-clock timer boundary and double-precision solver evaluation need focused traces. |
@@ -160,7 +160,7 @@ implementation, follow the sizing/capture workflow in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 26 numbered scenes unregistered. Helper
+The current registry leaves these 25 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -185,7 +185,6 @@ modules without a numbered scene entry are not integration candidates.
 | 241 | glTF anisotropy, diffuse transmission/translucency, specular textures and animation-pointer inputs |
 | 261 | TAA composite output identity/input tasks, history uniforms and camera projection jitter; compact its frame yields |
 | 275 | Font loading and 3D text |
-| 300 | Sprite-sheet state on a live system, frozen particle-buffer reads and fixture data shapes |
 | 302 | Definite assignment, provider/matrix step replay, shared seed factory, nested startEngine and capture narrowing |
 | 304 | FlowGraph runtimes and glTF interactivity |
 

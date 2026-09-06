@@ -620,9 +620,15 @@ export function compilePhysicsIntrinsic(
         );
         // Resolution supplies the accepted shape, but an alias already ran
         // its initializer. Read the captured object instead of running it again.
-        const captured = ts.isObjectLiteralExpression(argument)
+        let captured = ts.isObjectLiteralExpression(argument)
           ? undefined
           : context.compileValue(argument);
+        if (captured?.kind === "data") {
+          // Native storage owns a snapshot even when initializer metadata
+          // still refers to another object's mutable property.
+          const { recordProperties: _initializerFields, ...stored } = captured;
+          captured = stored;
+        }
         // Compile and pin each initializer before the next one can emit a
         // mutation. Object property order is observable independently of the
         // positional order of the generated native query's filter arguments.
@@ -635,10 +641,7 @@ export function compilePhysicsIntrinsic(
           let cpp: string;
           if (captured) {
             const access = ts.factory.createPropertyAccessExpression(argument, name!);
-            // Native storage owns a snapshot even when initializer metadata
-            // still refers to another object's mutable property.
-            const { recordProperties: _initializerFields, ...stored } = captured;
-            const field = context.readResolvedProperty(captured.kind === "data" ? stored : captured, access);
+            const field = context.readResolvedProperty(captured, access);
             if (!field) context.fail(argument, `Physics raycast option '${name}' is not a captured value.`);
             context.expectKind(field, kind, argument);
             if (captured.kind !== "data" &&

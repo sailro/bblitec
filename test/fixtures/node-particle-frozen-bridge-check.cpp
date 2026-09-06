@@ -36,6 +36,9 @@ int main() {
     assert(node_particle_frozen_alive(0, 0) == 1);
     assert(node_particle_frozen_column(0, 0, "age", 0).value() == 0.3673999999999999);
     assert(node_particle_frozen_column(0, 0, "age", 2).value() == 0.123456789012345);
+    assert(node_particle_frozen_column(0, 0, "age", -0.0).value() == 0.3673999999999999);
+    assert(!node_particle_frozen_column(0, 0, "unobserved", 0).has_value());
+    assert(!node_particle_frozen_column(0, 99, "age", 0).has_value());
     for (double index : {-1.0, 0.5, 3.0, std::numeric_limits<double>::infinity(),
             std::numeric_limits<double>::quiet_NaN()}) {
         assert(!node_particle_frozen_column(0, 0, "age", index).has_value());
@@ -106,5 +109,15 @@ int main() {
     assert(secondary.pivot.x == 0.25f && secondary.pivot.y == 0.75f);
     assert(std::equal(expected_0.begin(), expected_0.end(), primary.instance_data.begin()));
     assert(std::equal(expected_0.begin(), expected_0.end(), secondary.instance_data.begin()));
+
+    const auto empty_renderer = create_sprite_renderer(engine, {});
+    register_node_particle_set_2d(engine, empty_renderer, 2);
+    const auto& empty = engine.sprite_renderers[empty_renderer.value];
+    assert(empty.layers.size() == 1 && empty.before_update.size() == 1);
+    empty.before_update[0](0);
+    assert(engine.sprite_layers[empty.layers[0].value].count == 0);
+    assert(node_particle_frozen_alive(0, 2) == 0);
+    assert(!node_particle_frozen_column(0, 2, "age", 0).has_value());
+    assert(node_particle_frozen_column(0, 3, "age", 2).value() == 0.123456789012345);
     std::cout << "frozen-bridge-check: ok\n";
 }
