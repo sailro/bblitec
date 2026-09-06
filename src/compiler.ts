@@ -1956,9 +1956,19 @@ class Compiler
                 parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
                 parent.right === node
             ) {
+                // A property of the program's own data keeps the function;
+                // a library global's (`Math.random = () => ...`, which a
+                // bake moves to generation) does not.
+                let root: ts.Expression = parent.left;
+                while (
+                    ts.isPropertyAccessExpression(root) ||
+                    ts.isElementAccessExpression(root)
+                ) {
+                    root = root.expression;
+                }
                 return (
-                    ts.isPropertyAccessExpression(parent.left) ||
-                    ts.isElementAccessExpression(parent.left)
+                    root !== parent.left &&
+                    !(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root))
                 );
             }
             return ts.isArrayLiteralExpression(parent);
