@@ -151,6 +151,7 @@ inline WGPUBuffer dawn_sprite_uniform_buffer(
 inline DawnSpriteAtlasBinding create_dawn_sprite_atlas_binding(
     WGPUDevice device,
     WGPUQueue queue,
+    DawnMipGenerator& mips,
     const Engine& engine,
     SpriteAtlasHandle handle,
     const std::vector<WGPUTexture>& render_textures,
@@ -163,13 +164,27 @@ inline DawnSpriteAtlasBinding create_dawn_sprite_atlas_binding(
         binding.view = render_texture_views[atlas.render_texture.value];
         binding.owns_texture = false;
     } else {
+        // The chain is the record's own `mip_maps`: off for
+        // `loadSpriteAtlas`, on for the atlas a node-particle texture block
+        // builds through `loadTexture2D`, whose trilinear sampler the layer
+        // binds -- so a minified sprite samples the level the browser does.
+        // `loadTexture2D` fills the chain at upload, with the pinned blit.
+        const std::uint32_t mip_levels = atlas_mip_levels(atlas);
         binding.texture = upload_dawn_rgba_texture(
             device,
             queue,
             atlas.rgba.data(),
             atlas.rgba.size(),
             atlas.width,
-            atlas.height);
+            atlas.height,
+            mip_levels);
+        generate_mipmaps(
+            device,
+            queue,
+            mips,
+            binding.texture,
+            WGPUTextureFormat_RGBA8Unorm,
+            mip_levels);
         binding.view = wgpuTextureCreateView(binding.texture, nullptr);
     }
     binding.sampler = create_texture_sampler(device, atlas.sampler);
@@ -191,6 +206,7 @@ inline void release_dawn_sprite_atlas_binding(
 inline DawnSpriteAtlasBinding& ensure_dawn_sprite_atlas_binding(
     WGPUDevice device,
     WGPUQueue queue,
+    DawnMipGenerator& mips,
     const Engine& engine,
     SpriteAtlasHandle handle,
     const std::vector<WGPUTexture>& render_textures,
@@ -206,6 +222,7 @@ inline DawnSpriteAtlasBinding& ensure_dawn_sprite_atlas_binding(
     bindings.push_back(create_dawn_sprite_atlas_binding(
         device,
         queue,
+        mips,
         engine,
         handle,
         render_textures,
@@ -617,6 +634,7 @@ inline void release_dawn_sprite_pass_layers(DawnSpritePass& pass) {
 inline void rebuild_dawn_sprite_pass_layers(
     WGPUDevice device,
     WGPUQueue queue,
+    DawnMipGenerator& mips,
     Engine& engine,
     DawnSpritePass& pass,
     const std::vector<WGPUTexture>& render_textures,
@@ -646,6 +664,7 @@ inline void rebuild_dawn_sprite_pass_layers(
             ensure_dawn_sprite_atlas_binding(
                 device,
                 queue,
+                mips,
                 engine,
                 layer.atlas,
                 render_textures,
@@ -687,6 +706,7 @@ inline void rebuild_dawn_sprite_pass_layers(
 inline void sync_dawn_sprite_pass_layers(
     WGPUDevice device,
     WGPUQueue queue,
+    DawnMipGenerator& mips,
     Engine& engine,
     DawnSpritePass& pass,
     const std::vector<WGPUTexture>& render_textures,
@@ -697,6 +717,7 @@ inline void sync_dawn_sprite_pass_layers(
         rebuild_dawn_sprite_pass_layers(
             device,
             queue,
+            mips,
             engine,
             pass,
             render_textures,
@@ -726,6 +747,7 @@ inline void sync_dawn_sprite_pass_layers(
 inline DawnSpritePass create_dawn_sprite_pass(
     WGPUDevice device,
     WGPUQueue queue,
+    DawnMipGenerator& mips,
     Engine& engine,
     SpriteRendererHandle renderer_handle,
     const std::vector<WGPUTexture>& render_textures,
@@ -762,6 +784,7 @@ inline DawnSpritePass create_dawn_sprite_pass(
     rebuild_dawn_sprite_pass_layers(
         device,
         queue,
+        mips,
         engine,
         pass,
         render_textures,
@@ -946,6 +969,7 @@ inline void record_dawn_sprite_pass(
 inline DawnSceneSpritePass create_dawn_scene_sprite_pass(
     WGPUDevice device,
     WGPUQueue queue,
+    DawnMipGenerator& mips,
     Engine& engine,
     const std::vector<Sprite2DLayerHandle>& handles,
     const std::vector<WGPUTexture>& render_textures,
@@ -996,6 +1020,7 @@ inline DawnSceneSpritePass create_dawn_scene_sprite_pass(
             ensure_dawn_sprite_atlas_binding(
                 device,
                 queue,
+                mips,
                 engine,
                 layer.atlas,
                 render_textures,

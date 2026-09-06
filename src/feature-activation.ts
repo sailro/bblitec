@@ -1067,6 +1067,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/frame-graph/post-process-task.ts",
         consumers: CMAKE,
     },
+    "renderer:screen-space": {
+        provenance:
+            "src/post-process/screen-space-contact-shadows.ts and " +
+            "src/post-process/screen-space-global-illumination.ts",
+        consumers: CMAKE,
+    },
     "renderer:high-precision-matrix": {
         provenance: "src/math/_matrix-allocator.ts",
         consumers: CMAKE,

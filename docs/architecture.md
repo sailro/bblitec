@@ -62,6 +62,10 @@ Use `LoweringContext` for pinned declarations, expressions, diagnostics and
 statement inventories. Reuse `lowerPinnedFunction` for supported bodies and
 the shared UBO writer lowerer for buffer writes. Contract assertions detect
 the shapes they inspect; they do not prove an entire restated body equivalent.
+The pinned numeric translator names a callee's result shape through separate
+sets (matrix, list, tuple, record and typed call shapes) rather than one, and
+its `vec3Literal` hook predates the record-literal hook its newer callers use;
+a body whose callee's shape no set names fails at the call.
 
 Static custom WGSL uses the tokenizer/parser and `ShaderIrProgram` where the
 supported grammar applies. Reflected strict-source paths remain for grammar

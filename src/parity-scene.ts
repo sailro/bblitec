@@ -15,6 +15,7 @@ import {
     captureSuiteReference,
     captureUiEnabled,
 } from "./capture-suite-reference.js";
+import { readNativeHostUi } from "./native-host-ui.js";
 import type { RenderItemSpecialization } from "./asset-specializer.js";
 import {
     comparePayload,
@@ -1492,6 +1493,20 @@ export async function runSceneParity(
         reference,
         recaptureReference,
     );
+    // What both browser captures share: the seeded-random stub, the
+    // companion DOM and the registry's pose search. The DOM is present in
+    // a canvas-only capture too -- the harness hides it from the canvas
+    // screenshot, and a page script that binds to it (the screen-space
+    // toggles) would otherwise throw before the scene starts.
+    const sharedCaptureOptions = {
+        seededRandom: manifestUsesSeededRandom(compiledManifest),
+        ...(scene.nativeHostUi
+            ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
+            : {}),
+        ...(config.referenceSearch !== undefined
+            ? { search: config.referenceSearch }
+            : {}),
+    };
     await captureSuiteReference(
         scene.source,
         reference,
@@ -1500,19 +1515,9 @@ export async function runSceneParity(
         seek ?? config.referenceTimeSeconds,
         config.referenceAnimationGroups,
         {
-            seededRandom: manifestUsesSeededRandom(compiledManifest),
-            ...(captureUi && scene.nativeHostUi
-                ? {
-                      hostUi: JSON.parse(
-                          readFileSync(resolve(scene.nativeHostUi), "utf8"),
-                      ),
-                  }
-                : {}),
+            ...sharedCaptureOptions,
             ...(browserReferenceFrame !== undefined
                 ? { fixedAnimationFrame: browserReferenceFrame }
-                : {}),
-            ...(config.referenceSearch !== undefined
-                ? { search: config.referenceSearch }
                 : {}),
         },
     );
@@ -1686,10 +1691,11 @@ export async function runSceneParity(
             scene.id,
         );
         mkdirSync(canvasDirectory, { recursive: true });
-        // The reference reproduces the attribution run exactly — no host
-        // UI (the canvas screenshot excludes the page), at the pose that
-        // run derives (`referenceFrame` when the registry declares one;
-        // tetris settles onto its ad-hoc native frame) — and follows the
+        // The reference reproduces the attribution run exactly — the
+        // companion DOM present but hidden, the canvas screenshot
+        // excluding the page, at the pose that run derives
+        // (`referenceFrame` when the registry declares one; tetris
+        // settles onto its ad-hoc native frame) — and follows the
         // committed golden's lifecycle: captured when missing,
         // recaptured only with --recapture-reference.
         const canvasReference = resolve(
@@ -1705,13 +1711,9 @@ export async function runSceneParity(
                 config.referenceTimeSeconds,
                 config.referenceAnimationGroups,
                 {
-                    seededRandom:
-                        manifestUsesSeededRandom(compiledManifest),
+                    ...sharedCaptureOptions,
                     ...(config.referenceFrame !== undefined
                         ? { fixedAnimationFrame: config.referenceFrame }
-                        : {}),
-                    ...(config.referenceSearch !== undefined
-                        ? { search: config.referenceSearch }
                         : {}),
                 },
             ),

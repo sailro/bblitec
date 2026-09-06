@@ -48,6 +48,7 @@ import {
     type SceneDefinition,
 } from "./scene-registry.js";
 import { readUpstreamPin } from "./upstream-source.js";
+import { readNativeHostUi } from "./native-host-ui.js";
 
 /**
  * The pinned package a capture rendered through, as the sidecar records it.
@@ -423,15 +424,8 @@ export async function runInstrumentedCapture(
             // carries. Served in the HTML ahead of the module script,
             // after the init-script hooks are installed — the injection
             // cannot disturb hook timing.
-            ...(captureUi && scene.nativeHostUi
-                ? {
-                      hostUi: JSON.parse(
-                          readFileSync(
-                              resolve(scene.nativeHostUi),
-                              "utf8",
-                          ),
-                      ),
-                  }
+            ...(scene.nativeHostUi
+                ? { hostUi: readNativeHostUi(scene.nativeHostUi) }
                 : {}),
         },
     );

@@ -21,8 +21,10 @@ import ts from "typescript";
 import { doubleLiteral } from "../cpp-literals.js";
 import type { LoweringContext } from "./context.js";
 import {
+    absentBinding,
     type PinnedBinding,
     PinnedNumericLowerer,
+    type PinnedNumericScope,
 } from "./pinned-numeric-lowerer.js";
 
 /** One pinned parameter: its pinned name, its annotation, its C++ name. */
@@ -445,8 +447,44 @@ export function lowerPinnedFunction(
          * body cannot read them -- only the `calls` the caller bound can.
          */
         leadingParameters?: readonly string[];
+        /** See `PinnedNumericScope.indexedCall`. */
+        indexedCall?: PinnedNumericScope["indexedCall"];
+        /** See `PinnedNumericScope.callShapes`. */
+        callShapes?: PinnedNumericScope["callShapes"];
+        /** See `PinnedNumericScope.recordLiteral`. */
+        recordLiteral?: PinnedNumericScope["recordLiteral"];
     },
 ): string {
+    const parts = lowerPinnedFunctionParts(
+        context,
+        modulePath,
+        symbolName,
+        parameters,
+        options,
+    );
+    return (
+        `// ${parts.provenance}\n` +
+        (options.templateParameters
+            ? `template <${options.templateParameters.join(", ")}>\n`
+            : "") +
+        `${options.inline ? "inline " : ""}${parts.declaration} {\n` +
+        `${parts.body}\n}`
+    );
+}
+
+/**
+ * The same lowering as its parts -- the provenance line, the declaration
+ * (`<return type> <name>(<parameters>)`) and the body -- for a caller that
+ * emits the prototype ahead of the definition, as a translation unit with
+ * mutually calling functions has to.
+ */
+export function lowerPinnedFunctionParts(
+    context: LoweringContext,
+    modulePath: string,
+    symbolName: string,
+    parameters: readonly PinnedFunctionParameter[],
+    options: Parameters<typeof lowerPinnedFunction>[4],
+): { provenance: string; declaration: string; body: string } {
     const { file, declaration } = context.functionDeclaration(
         modulePath,
         symbolName,
@@ -502,11 +540,7 @@ export function lowerPinnedFunction(
                         "slice supplies none.",
                 );
             }
-            bindings.set(spec.pinned, {
-                cpp: "false",
-                type: "bool",
-                staticallyAbsent: true,
-            });
+            bindings.set(spec.pinned, absentBinding());
             return;
         }
         bindings.set(
@@ -559,6 +593,11 @@ export function lowerPinnedFunction(
             : {}),
         ...(options.booleanAnd ? { booleanAnd: true } : {}),
         ...(options.booleanOr ? { booleanOr: true } : {}),
+        ...(options.indexedCall ? { indexedCall: options.indexedCall } : {}),
+        ...(options.callShapes ? { callShapes: options.callShapes } : {}),
+        ...(options.recordLiteral
+            ? { recordLiteral: options.recordLiteral }
+            : {}),
         ...(options.returns === "void"
             ? {}
             : {
@@ -580,19 +619,16 @@ export function lowerPinnedFunction(
                   },
               }),
     });
-    const body = declaration.body!.statements
-        .flatMap((statement) => lowerer.statement(statement, "    "))
+    const body = lowerer
+        .statements(declaration.body!.statements, "    ")
         .join("\n");
     const returnType = typeof options.returns === "string"
         ? options.returns
         : options.returns.type;
-    return (
-        `// ${context.provenance(modulePath, symbolName)}\n` +
-        (options.templateParameters
-            ? `template <${options.templateParameters.join(", ")}>\n`
-            : "") +
-        `${options.inline ? "inline " : ""}${returnType} ` +
-        `${options.cppName}(\n    ${signature.join(",\n    ")}) {\n` +
-        `${body}\n}`
-    );
+    return {
+        provenance: context.provenance(modulePath, symbolName),
+        declaration:
+            `${returnType} ${options.cppName}(\n    ${signature.join(",\n    ")})`,
+        body,
+    };
 }

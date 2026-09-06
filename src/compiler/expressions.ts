@@ -265,6 +265,10 @@ export interface ExpressionContext
         call: ts.CallExpression,
         callee: ts.Identifier,
     ): Value | undefined;
+    compileExecutedUrlFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined;
     compileStaticFetchMethod(
         call: ts.CallExpression,
         owner: Value,
@@ -874,6 +878,34 @@ export class ExpressionLowerer {
                     ...(owner.engineCpp
                         ? { engineCpp: owner.engineCpp }
                         : {}),
+                };
+            }
+            if (
+                owner.kind === "node-particle-2d-binding" &&
+                owner.nodeParticleLive
+            ) {
+                // `binding.bridges[k]`: one bridge of a live binding. How
+                // many bridges the binding has is the graph's system
+                // count, which the bake reports; the generated registrar
+                // throws for an index it has no mapping for.
+                const slot = this.compileValue(unwrapped.argumentExpression);
+                if (
+                    slot.kind !== "number" ||
+                    slot.staticNumber === undefined ||
+                    !Number.isInteger(slot.staticNumber) ||
+                    slot.staticNumber < 0
+                ) {
+                    this.context.fail(
+                        unwrapped.argumentExpression,
+                        "A pure-2D binding's bridges are indexed by a static " +
+                            "non-negative integer.",
+                    );
+                }
+                return {
+                    ...owner,
+                    kind: "node-particle-2d-bridge",
+                    nodeParticleBridgeIndex: slot.staticNumber,
+                    nodeParticleSystemIndex: slot.staticNumber,
                 };
             }
             if (owner.kind === "record") {
@@ -3895,6 +3927,14 @@ export class ExpressionLowerer {
             this.context.compileBrowserTextureFunctionCall(call, callee);
         if (browserTextures) {
             return browserTextures;
+        }
+        // The same gate for a producer that hands its canvas to no pinned
+        // factory at all and returns the object URL instead: the URL is a
+        // graph factory's argument, and the bake driver produces it.
+        const executedUrl =
+            this.context.compileExecutedUrlFunctionCall(call, callee);
+        if (executedUrl) {
+            return executedUrl;
         }
         const userFunction = this.context.userFunctions.compile(
             this.context,

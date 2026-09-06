@@ -2678,9 +2678,8 @@ void fo_step_world(PhysicsWorld& world, double dt) {
     const double step_ms =
         world.fixed_delta_ms > 0.0
             ? world.fixed_delta_ms
-            : (world.scene != nullptr &&
-               static_cast<double>(world.scene->fixed_delta_ms) > 0.0
-                   ? static_cast<double>(world.scene->fixed_delta_ms)
+            : (world.scene != nullptr && world.scene->fixed_delta_ms > 0.0
+                   ? world.scene->fixed_delta_ms
                    : world.engine_delta_ms);
     if (!std::isfinite(step_ms) || step_ms <= 0.0) {
         return 0.0;

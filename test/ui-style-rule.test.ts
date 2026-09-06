@@ -54,4 +54,14 @@ test("selector descriptors share validation, CSS, and C++ spellings", () => {
         uiStyleSelectorCppKind("id-descendant-class"),
         "IdDescendantClass",
     );
+    assert.equal(isUiStyleSelectorKind("tag-class"), true);
+    assert.equal(
+        uiStyleSelector({
+            kind: "tag-class",
+            primary: "disabled",
+            tag: "button",
+        }),
+        "button.disabled",
+    );
+    assert.equal(uiStyleSelectorCppKind("tag-class"), "TagClass");
 });

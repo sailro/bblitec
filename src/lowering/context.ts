@@ -332,6 +332,10 @@ export class LoweringContext {
         modulePath: string,
         functionName: string,
         propertyName: string,
+        // A caller lowering the ONE writer a factory builds asks for
+        // uniqueness: a second literal carrying the same name would
+        // otherwise be lowered or skipped by declaration order alone.
+        options: { unique?: boolean } = {},
     ): {
         file: ts.SourceFile;
         declaration: ts.FunctionLikeDeclarationBase & { body: ts.Block };
@@ -340,11 +344,10 @@ export class LoweringContext {
             modulePath,
             functionName,
         );
-        let found:
-            | (ts.FunctionLikeDeclarationBase & { body: ts.Block })
-            | undefined;
+        const found: (ts.FunctionLikeDeclarationBase & { body: ts.Block })[] =
+            [];
         const visit = (node: ts.Node): void => {
-            if (found !== undefined) return;
+            if (found.length > 0 && !options.unique) return;
             if (
                 (ts.isPropertyAssignment(node) ||
                     ts.isMethodDeclaration(node)) &&
@@ -359,23 +362,26 @@ export class LoweringContext {
                         ? node.initializer
                         : undefined;
                 if (candidate?.body && ts.isBlock(candidate.body)) {
-                    found = candidate as ts.FunctionLikeDeclarationBase & {
-                        body: ts.Block;
-                    };
+                    found.push(
+                        candidate as ts.FunctionLikeDeclarationBase & {
+                            body: ts.Block;
+                        },
+                    );
                     return;
                 }
             }
             ts.forEachChild(node, visit);
         };
         visit(declaration);
-        if (!found) {
+        if (found.length === 0 || (options.unique && found.length > 1)) {
             this.contractError(
                 declaration,
                 `Expected '${functionName}' to build an object carrying ` +
-                    `'${propertyName}' as a function with a body.`,
+                    `${options.unique ? "exactly one " : ""}'${propertyName}' ` +
+                    "as a function with a body.",
             );
         }
-        return { file, declaration: found };
+        return { file, declaration: found[0]! };
     }
 
     public objectInitializer(
@@ -689,7 +695,7 @@ export class LoweringContext {
     }
 
     public hasCall(
-        declaration: ts.FunctionDeclaration,
+        declaration: ts.Node,
         calleeName: string,
     ): boolean {
         return this.hasNode(

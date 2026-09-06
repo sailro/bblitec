@@ -47,6 +47,7 @@ import {
 } from "./compiler/browser-file.js";
 import { browserGeneratedString } from "./compiler/browser-generated-string.js";
 import { compileBrowserTextureFunctionCall } from "./compiler/browser-texture-function.js";
+import { compileExecutedUrlFunctionCall } from "./compiler/executed-url-function.js";
 import { bakeFetchedCanvasAtlas } from "./compiler/fetched-canvas-atlas.js";
 import {
     compileEnvironmentOptions,
@@ -61,6 +62,11 @@ import {
     type CompiledPostProcessComposite,
     type CompiledPostProcessTask,
 } from "./compiler/intrinsics/post-process-options.js";
+import {
+    compileScreenSpaceTaskOptions,
+    type CompiledScreenSpaceTask,
+} from "./compiler/intrinsics/screen-space-options.js";
+import { screenSpaceFacts } from "./pinned-screen-space.js";
 import {
     compileRenderTargetOptions,
     type CompiledRenderTargetOptions,
@@ -227,6 +233,7 @@ import type {
     LightKind,
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
+    ScreenSpaceTaskManifest,
     ResolvedCompileOptions,
     NativeHostUiElement,
     SceneMeshManifest,
@@ -689,6 +696,7 @@ class Compiler
     public readonly geometryOutputTasks: GeometryOutputTaskManifest[] = [];
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
+    public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
     private readonly sceneMaterialGltfAssetsBefore: number[] = [];
     private readonly sceneMeshes: SceneMeshManifest[] = [];
@@ -930,6 +938,7 @@ class Compiler
                 geometryOutputTasks: this.geometryOutputTasks,
                 postProcessTasks: this.postProcessTasks,
                 postProcessComposites: this.postProcessComposites,
+                screenSpaceTasks: this.screenSpaceTasks,
                 adaptations: compileAdaptations(this, features),
                 scenePbrMaterials: this.scenePbrMaterials.map(
                     (material, index) => ({
@@ -1176,11 +1185,17 @@ class Compiler
             return false;
         }
         const id = this.unwrap(call.arguments[0]!);
-        return (
-            (ts.isStringLiteral(id) ||
-                ts.isNoSubstitutionTemplateLiteral(id)) &&
-            this.nativeHostUiIds().has(id.text)
-        );
+        // A literal, or an inlined helper's parameter bound to one: a
+        // demo's `bindToggle(buttonId, ...)` looks its button up by the
+        // literal every call site passes, which the inlined binding still
+        // carries as a static string.
+        const text =
+            ts.isStringLiteral(id) || ts.isNoSubstitutionTemplateLiteral(id)
+                ? id.text
+                : ts.isIdentifier(id)
+                  ? this.lookupIdentifierValue(id)?.staticString
+                  : undefined;
+        return text !== undefined && this.nativeHostUiIds().has(text);
     }
 
     /**
@@ -1796,12 +1811,60 @@ class Compiler
             owner = owner.parent;
         }
         if (owner.parent) owner = owner.parent;
-        let captured = this.sharedClosureSymbols.get(owner);
-        if (!captured) {
-            captured = this.collectSharedClosureSymbols(owner);
+        return this.sharedClosureSymbolsFor(owner)?.has(symbol) ?? false;
+    }
+
+    /** Owners under analysis: a helper reached through its own call adds nothing. */
+    private readonly sharedClosureAnalysisInProgress = new Set<ts.Node>();
+
+    private sharedClosureSymbolsFor(
+        owner: ts.Node,
+    ): ReadonlySet<ts.Symbol> | undefined {
+        const cached = this.sharedClosureSymbols.get(owner);
+        if (cached) return cached;
+        if (this.sharedClosureAnalysisInProgress.has(owner)) return undefined;
+        this.sharedClosureAnalysisInProgress.add(owner);
+        try {
+            const captured = this.collectSharedClosureSymbols(owner);
             this.sharedClosureSymbols.set(owner, captured);
+            return captured;
+        } finally {
+            this.sharedClosureAnalysisInProgress.delete(owner);
         }
-        return captured.has(symbol);
+    }
+
+    /**
+     * A callback passed to a local helper is stored when the helper invokes
+     * that parameter from one of its own retained callbacks: the
+     * screen-space demo's `bindToggle(id, label, initial, update)` calls
+     * `update` from its click listener, so the argument closes over the
+     * caller's bindings exactly as an inline listener would.
+     */
+    private isStoredArgumentCallback(node: ts.Node): boolean {
+        if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) {
+            return false;
+        }
+        const call = node.parent;
+        if (!call || !ts.isCallExpression(call)) return false;
+        const index = call.arguments.indexOf(node);
+        if (index < 0) return false;
+        const callee = this.unwrap(call.expression);
+        if (!ts.isIdentifier(callee)) return false;
+        const target = resolveFunctionDeclaration(
+            this.checker,
+            callee,
+            (site, message) => this.fail(site, message),
+        );
+        if (!target || target.getSourceFile() !== node.getSourceFile()) {
+            return false;
+        }
+        const parameter = target.parameters[index];
+        if (!parameter || !ts.isIdentifier(parameter.name)) return false;
+        const symbol = this.symbols.valueSymbol(parameter.name);
+        return (
+            !!symbol &&
+            (this.sharedClosureSymbolsFor(target)?.has(symbol) ?? false)
+        );
     }
 
     private collectSharedClosureSymbols(
@@ -1859,6 +1922,9 @@ class Compiler
 
         const localFunctions = new Map<ts.Symbol, ts.FunctionLikeDeclaration>();
         const storedCallbackRoots: ts.FunctionLikeDeclaration[] = [];
+        // The inline arrows stored through a retained listener or a helper
+        // that retains its parameter, as found once below.
+        const inlineStoredCallbacks = new Set<ts.Node>();
         const collectFunctionGraph = (node: ts.Node): void => {
             if (ts.isFunctionDeclaration(node) && node.name) {
                 const symbol = this.symbols.valueSymbol(node.name);
@@ -1885,6 +1951,21 @@ class Compiler
                 node.parent.expression === node
             ) {
                 storedCallbackRoots.push(node);
+            } else if (
+                node !== owner &&
+                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
+                ((ts.isCallExpression(node.parent) &&
+                    node.parent.arguments[1] === node &&
+                    isRetainedEventRegistration(node.parent)) ||
+                    this.isStoredArgumentCallback(node))
+            ) {
+                // A local function called from a retained listener, or from
+                // a callback a helper retains, runs from that stored callback
+                // and closes over the same bindings. The walk below tests
+                // the same nodes, so they are remembered rather than
+                // re-derived through the callee analysis.
+                storedCallbackRoots.push(node);
+                inlineStoredCallbacks.add(node);
             }
             ts.forEachChild(node, collectFunctionGraph);
         };
@@ -1950,12 +2031,6 @@ class Compiler
                 ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
                     ts.isPropertyAssignment(node.parent) &&
                     ts.isObjectLiteralExpression(node.parent.parent));
-            const retainedEventCallback =
-                node !== owner &&
-                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                ts.isCallExpression(node.parent) &&
-                node.parent.arguments[1] === node &&
-                isRetainedEventRegistration(node.parent);
             const returnedCallback =
                 node !== owner &&
                 (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
@@ -1965,7 +2040,7 @@ class Compiler
                 insideStoredRecordCallback ||
                 storedRecordCallback ||
                 storedLocalCallback ||
-                retainedEventCallback ||
+                inlineStoredCallbacks.has(node) ||
                 returnedCallback;
             if (inside && ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
@@ -2081,10 +2156,16 @@ class Compiler
                 this.reachJson();
             }
             if (!dataType) {
-                this.fail(
-                    declaration,
-                    `Variable '${sourceName}' needs a native data type before it can be assigned.`,
-                );
+                // `let set;` -- no initializer and no native type: the
+                // value is whatever the first assignment binds, and for a
+                // compile-time record (a node-particle binding built inside
+                // a `try`) nothing native exists to declare here. The
+                // assignment decides; see `bindPendingLet`.
+                this.defineVariable(declaration.name, {
+                    kind: "pending-let",
+                    cpp: "",
+                });
+                return;
             }
             if (dataType.kind === "borrowed-platform-event") {
                 this.fail(
@@ -2255,7 +2336,14 @@ class Compiler
             // preserve an empty `context` as an empty `current`. Dereferencing
             // here engaged the copy with an indeterminate handle before the
             // copied source guard could run.
-            const initializerCpp = value.optionalStorageCpp ?? value.cpp;
+            //
+            // A handle a search produced carries its presence beside it
+            // (`optionalFoundCpp`): `const found = meshes.find(...)` is
+            // empty when nothing matched, and copying the bare handle would
+            // hand a later guard an indeterminate one -- the pin's
+            // `undefined` -- as present.
+            const initializerCpp =
+                value.optionalStorageCpp ?? this.optionalResourceCpp(value);
             this.emit(
                 sharedClosureStorage
                     ? `auto ${cppName} = bbl::js::make_gc_shared<std::optional<${nullableResource.cppType}>>(${initializerCpp});`
@@ -2290,9 +2378,15 @@ class Compiler
                 this.staticConstants.delete(symbol);
             }
         }
-        if (value.kind === "node-particle-2d-binding") {
+        if (
+            value.kind === "node-particle-2d-binding" ||
+            value.kind === "node-particle-2d-bridge" ||
+            value.kind === "executed-url"
+        ) {
             // Nothing native to bind: the registrar already ran, and the
-            // binding exists so instrumentation can report it.
+            // binding exists so instrumentation can report it -- or, for a
+            // live one, so its bridges can be named. A URL the bake driver
+            // produces is likewise a generation-time name.
             this.defineVariable(declaration.name, value);
             return;
         }
@@ -6117,7 +6211,7 @@ class Compiler
             const message =
                 `Retained stylesheet selector '${selector}' is not ` +
                 "lowered: the reviewed sheet surface is exact '.class' and " +
-                "'#id' rules, '.classA.classB', statically-proven " +
+                "'#id' rules, '.classA.classB', 'tag.class', statically-proven " +
                 "'.ancestor tag' (optionally ':hover'), '#id .class', " +
                 "'@media (max-width:Npx)', and '@keyframes' blocks.";
             if (site) this.fail(site, message);
@@ -6247,60 +6341,9 @@ class Compiler
                     site,
                 );
                 for (const selector of selectors) {
-                    const idDescendant = selector.match(
-                        /^#([A-Za-z_][A-Za-z0-9_-]*)\s+\.([A-Za-z_][A-Za-z0-9_-]*)$/,
-                    );
-                    const classDescendantTag = selector.match(
-                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\s+([a-z][a-z0-9-]*)(:hover)?$/i,
-                    );
-                    const compound = selector.match(
-                        /^\.([A-Za-z_][A-Za-z0-9_-]*)\.([A-Za-z_][A-Za-z0-9_-]*)$/,
-                    );
-                    const exact = selector.match(
-                        /^([.#])([A-Za-z_][A-Za-z0-9_-]*)$/,
-                    );
-                    if (
-                        !idDescendant &&
-                        !classDescendantTag &&
-                        !compound &&
-                        !exact
-                    ) {
+                    const rule =
+                        Compiler.parseUiSelector(selector, style) ??
                         refuseSelector(selector);
-                    }
-                    const rule: LoweredUiStyleRule = idDescendant
-                        ? {
-                              kind: "id-descendant-class",
-                              primary: idDescendant[1]!,
-                              secondary: idDescendant[2]!,
-                              hover: false,
-                              style,
-                              selector,
-                          }
-                        : classDescendantTag
-                          ? {
-                                kind: "class-descendant-tag",
-                                primary: classDescendantTag[1]!,
-                                tag: classDescendantTag[2]!.toLowerCase(),
-                                hover: classDescendantTag[3] !== undefined,
-                                style,
-                                selector,
-                            }
-                          : compound
-                            ? {
-                                  kind: "compound-class",
-                                  primary: compound[1]!,
-                                  secondary: compound[2]!,
-                                  hover: false,
-                                  style,
-                                  selector,
-                              }
-                            : {
-                                  kind: exact![1] === "#" ? "id" : "class",
-                                  primary: exact![2]!,
-                                  hover: false,
-                                  style,
-                                  selector,
-                              };
                     if (inheritedMaxWidth !== undefined) {
                         rule.maxWidth = inheritedMaxWidth;
                     }
@@ -6379,10 +6422,89 @@ class Compiler
                 return (
                     classes.has(rule.primary) && classes.has(rule.secondary!)
                 );
+            case "tag-class":
+                return element.tag === rule.tag && classes.has(rule.primary);
             case "class-descendant-tag":
             case "id-descendant-class":
                 return false;
         }
+    }
+
+    /**
+     * The bounded stylesheet selector grammar, one pattern per kind in the
+     * order they are tried; the first match builds the rule and no match is
+     * the caller's refusal.
+     */
+    private static parseUiSelector(
+        selector: string,
+        style: string,
+    ): LoweredUiStyleRule | undefined {
+        const identifier = "[A-Za-z_][A-Za-z0-9_-]*";
+        const tag = "[a-z][a-z0-9-]*";
+        const forms: readonly (readonly [
+            RegExp,
+            (match: RegExpMatchArray) => LoweredUiStyleRule,
+        ])[] = [
+            [
+                new RegExp(`^#(${identifier})\\s+\\.(${identifier})$`),
+                (match) => ({
+                    kind: "id-descendant-class",
+                    primary: match[1]!,
+                    secondary: match[2]!,
+                    hover: false,
+                    style,
+                    selector,
+                }),
+            ],
+            [
+                new RegExp(`^\\.(${identifier})\\s+(${tag})(:hover)?$`, "i"),
+                (match) => ({
+                    kind: "class-descendant-tag",
+                    primary: match[1]!,
+                    tag: match[2]!.toLowerCase(),
+                    hover: match[3] !== undefined,
+                    style,
+                    selector,
+                }),
+            ],
+            [
+                new RegExp(`^\\.(${identifier})\\.(${identifier})$`),
+                (match) => ({
+                    kind: "compound-class",
+                    primary: match[1]!,
+                    secondary: match[2]!,
+                    hover: false,
+                    style,
+                    selector,
+                }),
+            ],
+            [
+                new RegExp(`^(${tag})\\.(${identifier})$`, "i"),
+                (match) => ({
+                    kind: "tag-class",
+                    primary: match[2]!,
+                    tag: match[1]!.toLowerCase(),
+                    hover: false,
+                    style,
+                    selector,
+                }),
+            ],
+            [
+                new RegExp(`^([.#])(${identifier})$`),
+                (match) => ({
+                    kind: match[1] === "#" ? "id" : "class",
+                    primary: match[2]!,
+                    hover: false,
+                    style,
+                    selector,
+                }),
+            ],
+        ];
+        for (const [pattern, build] of forms) {
+            const match = selector.match(pattern);
+            if (match) return build(match);
+        }
+        return undefined;
     }
 
     private uiRuleMatchesDirect(
@@ -6414,6 +6536,7 @@ class Compiler
             case "compound-class":
                 return (2 + hover) * 0x100;
             case "class-descendant-tag":
+            case "tag-class":
                 return (1 + hover) * 0x100 + 1;
             case "id-descendant-class":
                 return 0x10000 + (1 + hover) * 0x100;
@@ -6526,6 +6649,11 @@ class Compiler
                     element.mutableClasses.has(rule.primary) ||
                     element.mutableClasses.has(rule.secondary!)
                 );
+            case "tag-class":
+                return (
+                    element.tag === rule.tag &&
+                    element.mutableClasses.has(rule.primary)
+                );
             case "class-descendant-tag":
                 return this.uiStaticAncestors(id).some((ancestor) =>
                     ancestor.mutableClasses.has(rule.primary),
@@ -6542,6 +6670,7 @@ class Compiler
         switch (rule.kind) {
             case "class":
             case "class-descendant-tag":
+            case "tag-class":
                 return rule.primary === className;
             case "compound-class":
                 return (
@@ -6577,6 +6706,7 @@ class Compiler
                         ))
                 );
             case "class-descendant-tag":
+            case "tag-class":
                 return rule.primary === className && child.tag === rule.tag;
             case "id-descendant-class":
                 return (
@@ -6609,6 +6739,8 @@ class Compiler
                 case "class":
                 case "compound-class":
                     return sameTarget;
+                case "tag-class":
+                    return sameTarget && element.tag === rule.tag;
                 case "class-descendant-tag":
                     return targetIsAncestor && element.tag === rule.tag;
                 case "id-descendant-class":
@@ -6635,6 +6767,7 @@ class Compiler
             case "class":
             case "compound-class":
             case "class-descendant-tag":
+            case "tag-class":
                 return false;
         }
     }
@@ -9610,6 +9743,19 @@ class Compiler
             intrinsic,
             expression,
             compositeIndex,
+        );
+    }
+
+    public compileScreenSpaceTaskOptions(
+        intrinsic: string,
+        expression: ts.Expression,
+        taskIndex: number,
+    ): CompiledScreenSpaceTask {
+        return compileScreenSpaceTaskOptions(
+            this,
+            intrinsic,
+            expression,
+            taskIndex,
         );
     }
 
@@ -13468,6 +13614,22 @@ class Compiler
             : source};`);
     }
 
+    /**
+     * A nullable local's storage from a maybe-absent handle. A nullable
+     * handle property is represented by the invalid native handle, while
+     * local nullable storage is std::optional; that optional must not be
+     * engaged with the sentinel, or the next guarded read would index a
+     * collection with invalid_handle. The producer's presence test, when it
+     * has one, decides between the value and an empty optional, for the
+     * declaration and the assignment alike.
+     */
+    private optionalResourceCpp(value: Value): string {
+        return value.optionalFoundCpp !== undefined &&
+            value.optionalFoundCpp !== "true"
+            ? `(${value.optionalFoundCpp} ? std::optional{${value.cpp}} : std::nullopt)`
+            : value.cpp;
+    }
+
     public assignOptionalResourceValue(
         target: Value,
         value: Value,
@@ -13499,19 +13661,7 @@ class Compiler
                 `Nullable ${target.kind} assignment received ${value.kind}.`,
             );
         }
-        if (value.optionalFoundCpp !== undefined) {
-            // A nullable handle property is represented by the invalid native
-            // handle, while local nullable storage is std::optional. Do not
-            // engage that optional with the sentinel: the next guarded read
-            // would then index a collection with invalid_handle.
-            this.emit(`if (${value.optionalFoundCpp}) {`);
-            this.emit(`    ${storage} = ${value.cpp};`);
-            this.emit("} else {");
-            this.emit(`    ${storage}.reset();`);
-            this.emit("}");
-        } else {
-            this.emit(`${storage} = ${value.cpp};`);
-        }
+        this.emit(`${storage} = ${this.optionalResourceCpp(value)};`);
         this.assignAudioMainBus(target, value, node);
         if (value.engineCpp !== undefined) {
             target.engineCpp = value.engineCpp;
@@ -13848,6 +13998,13 @@ class Compiler
         return compileBrowserTextureFunctionCall(this, call, callee);
     }
 
+    public compileExecutedUrlFunctionCall(
+        call: ts.CallExpression,
+        callee: ts.Identifier,
+    ): Value | undefined {
+        return compileExecutedUrlFunctionCall(this, call, callee);
+    }
+
     public registerSpriteAtlasAsset(expression: ts.Expression): string {
         return registerSpriteAtlasAsset(this, expression);
     }
@@ -14152,7 +14309,8 @@ class Compiler
             if (
                 bound &&
                 bound.kind !== "browser" &&
-                bound.kind !== "node-particle-2d-binding"
+                (bound.kind !== "node-particle-2d-binding" ||
+                    bound.nodeParticleLive)
             ) {
                 // A local function can bridge DOM setup and return an ordinary
                 // native record. Once that record is bound, its data fields do
@@ -16356,6 +16514,46 @@ class Compiler
                 return dataProperty;
             }
         }
+        // A live pure-2D binding's bridges, and the one path scene code
+        // reads through one: `bridge.system.buffer.alive`, the simulated
+        // count the generated registrar keeps. `bridges` is the pin's own
+        // array, read as the binding again so the element access that
+        // follows names one bridge by index -- the same shape
+        // `set.systems[k]` takes.
+        if (
+            owner.kind === "node-particle-2d-binding" &&
+            expression.name.text === "bridges" &&
+            owner.nodeParticleLive
+        ) {
+            return owner;
+        }
+        if (
+            owner.kind === "node-particle-2d-bridge" &&
+            expression.name.text === "system"
+        ) {
+            return { ...owner, kind: "node-particle-system" };
+        }
+        if (
+            owner.kind === "node-particle-system" &&
+            expression.name.text === "buffer" &&
+            owner.nodeParticleLive
+        ) {
+            return { ...owner, kind: "node-particle-buffer" };
+        }
+        if (
+            owner.kind === "node-particle-buffer" &&
+            expression.name.text === "alive" &&
+            owner.nodeParticleLive
+        ) {
+            return {
+                kind: "number",
+                cpp:
+                    "bbl::upstream::node_particle_2d_alive(" +
+                    `${owner.nodeParticleRequestIndex!}, ` +
+                    `${owner.nodeParticleBridgeIndex!})`,
+                dataType: { kind: "number" },
+            };
+        }
         // The same table the general property path reads. Keeping a
         // second copy here is what made `camera.ortho.halfHeight`
         // resolve in an expression but not in a numeric context: the
@@ -16641,6 +16839,24 @@ class Compiler
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }
+        if (owner.kind === "task" && owner.screenSpaceTask) {
+            // The pin publishes three targets on a screen-space task: its
+            // output (the composite's, or the stable effect target when it
+            // composes nothing) and the stable target under the effect's
+            // own name. All three are record fields the factory resolved.
+            const fields: Readonly<Record<string, string>> = {
+                outputTexture: "output_target",
+                [screenSpaceFacts(owner.screenSpaceTask.intrinsic).stableTexture]:
+                    "stable",
+            };
+            const field = fields[expression.name.text];
+            if (field === undefined) return undefined;
+            return {
+                kind: "render-target",
+                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].screen_space.${field}`,
+                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
+            };
+        }
         return undefined;
     }
 
@@ -16796,6 +17012,62 @@ class Compiler
      * identity does not describe, so the next outer read fails by name
      * instead of stamping the wrong mesh.
      */
+    /**
+     * The first assignment to a `let` declared without a type or an
+     * initializer: it binds the name to a compile-time record, in the
+     * scope that declared it.
+     *
+     * Only a record that exists at generation qualifies (`cpp` is empty),
+     * because a native value would have needed storage at the declaration.
+     * And only an assignment the declaring function reaches unconditionally
+     * on the way to the name's later reads -- through blocks and `try`
+     * bodies, never a callback, a branch or a loop -- because the binding
+     * is written once for the whole function rather than per path.
+     */
+    public bindPendingLet(identifier: ts.Identifier, value: Value): void {
+        if (value.cpp !== "" || !isCompileTimeOnlyValue(value.kind)) {
+            this.fail(
+                identifier,
+                `Variable '${identifier.text}' needs a native data type ` +
+                    "before it can be assigned; only a compile-time record " +
+                    `(received ${value.kind}) can bind an untyped 'let'.`,
+            );
+        }
+        const symbol = this.requireValueSymbol(identifier);
+        const declaration = symbol.valueDeclaration;
+        const owningFunction = declaration
+            ? ts.findAncestor(declaration, ts.isFunctionLike)
+            : undefined;
+        for (
+            let node: ts.Node | undefined = identifier.parent;
+            node && node !== owningFunction;
+            node = node.parent
+        ) {
+            if (
+                ts.isBlock(node) ||
+                ts.isTryStatement(node) ||
+                ts.isExpressionStatement(node) ||
+                ts.isBinaryExpression(node) ||
+                ts.isParenthesizedExpression(node) ||
+                ts.isSourceFile(node)
+            ) {
+                continue;
+            }
+            this.fail(
+                identifier,
+                `'${identifier.text}' is assigned inside a ${ts.SyntaxKind[node.kind]}; ` +
+                    "an untyped 'let' binds only where its function reaches " +
+                    "the assignment unconditionally.",
+            );
+        }
+        const owner = this.bindingScope(symbol);
+        if (!owner) {
+            this.fail(identifier, `Unable to resolve variable '${identifier.text}'.`);
+        }
+        this.describeNativeValue(value);
+        owner.set(symbol, { ...owner.get(symbol)!, value });
+    }
+
     public rebindVariable(identifier: ts.Identifier, value: Value): void {
         const symbol = this.requireValueSymbol(identifier);
         // The same innermost-first walk `lookup` takes, so a rebind and a
@@ -18896,6 +19168,10 @@ class Compiler
         this.postProcessComposites.push(manifest);
     }
 
+    public recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void {
+        this.screenSpaceTasks.push(manifest);
+    }
+
     public requireDefaultScene(node: ts.Node): Value {
         const scenes = this.visibleValues().filter(
             (value) => value.kind === "scene",
@@ -19183,6 +19459,7 @@ class Compiler
             audioSessionReached: this.audioSessionReached,
             throwReached: this.throwReached,
             postProcessCompositeCount: this.postProcessComposites.length,
+            screenSpaceTaskCount: this.screenSpaceTasks.length,
             renderDataPreamble: () => this.dataTypes.renderPreamble(),
             nativeFunctionPrototypes: this.nativeFunctionPrototypes,
             nativeFunctionDefinitions: this.nativeFunctionDefinitions,

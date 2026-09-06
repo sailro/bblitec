@@ -691,6 +691,12 @@ struct GpuRenderTarget {
     std::uint32_t height = 0;
     /** What its colour attachment resolved to, for a target that follows it. */
     SDL_GPUTextureFormat color_format = SDL_GPU_TEXTUREFORMAT_INVALID;
+    /**
+     * Which build of the frame graph created these textures, numbered per
+     * target: the identity a screen-space effect compares its bound
+     * textures by (`ScreenSpaceFrameInputs`). Zero until first created.
+     */
+    std::uint32_t allocation = 0;
 };
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -744,6 +750,26 @@ struct GpuPostProcessTask {
     std::vector<int> texture_sources;
     /** The effect's uniform block, sized once and refilled per frame. */
     std::vector<float> uniform_data;
+};
+#endif
+
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+/**
+ * A screen-space producer or temporal resolve: the pin's own dedicated
+ * pipeline (`ensureProducerPipeline`, `ensurePipeline`), built from the
+ * deployed stage the generated table names and shared by every task that
+ * draws the same stage.
+ */
+struct GpuScreenSpaceProgram {
+    std::uint32_t stage = 0;
+    OwnedSdlPipeline pipeline;
+    PinnedStageSlots vertex_slots;
+    PinnedStageSlots fragment_slots;
+    /**
+     * Which frame-graph texture each fragment sampler slot reads, resolved
+     * once from the sidecar's names against the stage's binding table.
+     */
+    std::vector<upstream::ScreenSpaceTextureRole> fragment_roles;
 };
 #endif
 
@@ -1111,6 +1137,8 @@ struct GpuState {
         shared_plugin_material_textures;
 #endif
     std::vector<GpuRenderTarget> render_targets;
+    /** The last `GpuRenderTarget::allocation` handed out. */
+    std::uint32_t render_target_allocations = 0;
     std::vector<GpuGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
     // Per frame task, one entry per pass it records.
@@ -1125,6 +1153,13 @@ struct GpuState {
     // and no mip filtering.
     SDL_GPUSampler* post_process_bilinear_sampler = nullptr;
     SDL_GPUSampler* post_process_nearest_sampler = nullptr;
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+    /**
+     * The distinct producer/resolve stages the screen-space tasks draw,
+     * kept for the device's lifetime.
+     */
+    std::vector<GpuScreenSpaceProgram> screen_space_programs;
 #endif
     GpuBackground background;
     GpuSkybox skybox;
@@ -4932,8 +4967,12 @@ SDL_GPUTextureFormat texture_format(TextureFormatClass format) {
     switch (format) {
         case TextureFormatClass::rgba8_unorm:
             return SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM;
+        case TextureFormatClass::r8_unorm:
+            return SDL_GPU_TEXTUREFORMAT_R8_UNORM;
         case TextureFormatClass::r16_float:
             return SDL_GPU_TEXTUREFORMAT_R16_FLOAT;
+        case TextureFormatClass::rg16_float:
+            return SDL_GPU_TEXTUREFORMAT_R16G16_FLOAT;
         case TextureFormatClass::r32_float:
             return SDL_GPU_TEXTUREFORMAT_R32_FLOAT;
         case TextureFormatClass::rgba16_float:
@@ -5044,12 +5083,12 @@ void create_frame_graph_textures(
         if (record.scale_source.value != invalid_handle) {
             const GpuRenderTarget& scale_source =
                 state.render_targets[record.scale_source.value];
-            target.width = scaled_target_extent(
+            const ScaledExtents scaled = scaled_target_extents(
+                record,
                 scale_source.width,
-                record.width_ratio);
-            target.height = scaled_target_extent(
-                scale_source.height,
-                record.height_ratio);
+                scale_source.height);
+            target.width = scaled.width;
+            target.height = scaled.height;
         }
         // The swapchain owns no texture here -- its view is acquired per
         // frame -- but a target that follows it still needs its format.
@@ -5057,6 +5096,7 @@ void create_frame_graph_textures(
             target.color_format = surface_format;
             continue;
         }
+        target.allocation = ++state.render_target_allocations;
         const SDL_GPUSampleCount samples =
             task_sample_count(state, record.samples);
         // "The source's format" is what a composite's intermediate asks for
@@ -5128,7 +5168,13 @@ void create_frame_graph_textures(
     // before a frame starts and its entries own vectors worth not moving.
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
         const FrameTaskRecord& task = engine.frame_tasks[index];
-        if (task.kind != FrameTaskKind::post_process) continue;
+        // A screen-space task's history copy and composite are ordinary
+        // passes in the same list, recorded by the same pass path.
+        if (
+            task.kind != FrameTaskKind::post_process &&
+            task.kind != FrameTaskKind::screen_space) {
+            continue;
+        }
         if (
             state.post_process_tasks[index].size() <
             task.post_process.passes.size()) {
@@ -5467,6 +5513,12 @@ void release(GpuState& state) {
     release_ui_sdl_resources(state);
 #endif
     release_frame_graph_textures(state);
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+    // The screen-space programs key only the generated stage table's
+    // formats, so they outlive every frame-graph rebuild and go with the
+    // device.
+    state.screen_space_programs.clear();
+#endif
     for (GpuState::StorageBuffer& storage : state.storage_buffers) {
         if (storage.buffer) {
             SDL_ReleaseGPUBuffer(state.device, storage.buffer);
@@ -6145,6 +6197,270 @@ void record_post_process_pass(
         SDL_DrawGPUPrimitives(present_pass, 3, 1, 0, 0);
         SDL_EndGPURenderPass(present_pass);
         capture_texture = state.post_process_present;
+    }
+}
+#endif
+
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+/** Builds the entry `screen_space_program` below found missing. */
+GpuScreenSpaceProgram build_screen_space_program(
+    GpuState& state,
+    std::uint32_t stage) {
+    const upstream::ScreenSpaceShaderInfo& info =
+        upstream::screen_space_shader_infos.at(stage);
+    GpuScreenSpaceProgram program;
+    program.stage = stage;
+    const std::string vertex_name = std::string(info.stem) + ".vert";
+    const std::string fragment_name = std::string(info.stem) + ".frag";
+    program.vertex_slots = read_pinned_stage_slots(vertex_name);
+    program.fragment_slots = read_pinned_stage_slots(fragment_name);
+    auto vertex_shader = load_shader(
+        state.device,
+        vertex_name.c_str(),
+        SDL_GPU_SHADERSTAGE_VERTEX,
+        static_cast<Uint32>(program.vertex_slots.textures.size()),
+        static_cast<Uint32>(program.vertex_slots.uniforms.size()),
+        info.vertex_entry);
+    auto fragment_shader = load_shader(
+        state.device,
+        fragment_name.c_str(),
+        SDL_GPU_SHADERSTAGE_FRAGMENT,
+        static_cast<Uint32>(program.fragment_slots.textures.size()),
+        static_cast<Uint32>(program.fragment_slots.uniforms.size()),
+        info.fragment_entry);
+    // The pin builds each stage against its own single-sample target
+    // format with no blend and a triangle list (`ensureProducerPipeline`).
+    SDL_GPUColorTargetDescription target{};
+    target.format = texture_format(info.target_format);
+    SDL_GPUGraphicsPipelineCreateInfo pipeline_info{};
+    pipeline_info.vertex_shader = vertex_shader.get();
+    pipeline_info.fragment_shader = fragment_shader.get();
+    pipeline_info.primitive_type = SDL_GPU_PRIMITIVETYPE_TRIANGLELIST;
+    pipeline_info.rasterizer_state.fill_mode = SDL_GPU_FILLMODE_FILL;
+    pipeline_info.rasterizer_state.cull_mode = SDL_GPU_CULLMODE_NONE;
+    pipeline_info.multisample_state.sample_count = SDL_GPU_SAMPLECOUNT_1;
+    pipeline_info.target_info.color_target_descriptions = &target;
+    pipeline_info.target_info.num_color_targets = 1;
+    program.pipeline = OwnedSdlPipeline{
+        SDL_CreateGPUGraphicsPipeline(state.device, &pipeline_info),
+        {state.device}};
+    if (!program.pipeline) {
+        gpu_error("SDL_CreateGPUGraphicsPipeline screen-space");
+    }
+    // The sidecar names the fragment textures the compaction kept, in slot
+    // order; each is matched to the pin's own binding once here, so the
+    // frame path indexes roles rather than comparing names.
+    if (program.fragment_slots.textures.size() > max_post_process_textures) {
+        throw std::runtime_error("A screen-space stage exceeds 8 textures.");
+    }
+    for (const std::string& name : program.fragment_slots.textures) {
+        const upstream::ScreenSpaceStageBinding* declared = nullptr;
+        for (std::size_t index = 0; index < info.binding_count; ++index) {
+            if (name == info.bindings[index].name) {
+                declared = &info.bindings[index];
+                break;
+            }
+        }
+        if (!declared) {
+            throw std::runtime_error(
+                "Screen-space stage declares a texture the pin did not "
+                "bind: " + name);
+        }
+        program.fragment_roles.push_back(declared->role);
+    }
+    return program;
+}
+
+std::size_t screen_space_program(GpuState& state, std::uint32_t stage) {
+    return find_or_create_program(
+        state.screen_space_programs,
+        [&](const GpuScreenSpaceProgram& program) {
+            return program.stage == stage;
+        },
+        [&] { return build_screen_space_program(state, stage); });
+}
+
+/**
+ * The texture a stage binding reads, by the role the pin bound there: the
+ * depth attachment itself (a depth-only view in the pin, the depth texture's
+ * own SRV here), the lit source colour, or one of the task's owned targets.
+ */
+SDL_GPUTexture* screen_space_binding_texture(
+    GpuState& state,
+    const ScreenSpaceTaskOptions& task,
+    upstream::ScreenSpaceTextureRole role) {
+    switch (role) {
+        case upstream::ScreenSpaceTextureRole::depth:
+            return state.render_targets.at(task.depth.value).depth;
+        case upstream::ScreenSpaceTextureRole::source_color:
+            return state.render_targets.at(task.source.value).sampled_color;
+        case upstream::ScreenSpaceTextureRole::raw:
+            return state.render_targets.at(task.raw.value).sampled_color;
+        case upstream::ScreenSpaceTextureRole::history:
+            return state.render_targets.at(task.history.value).sampled_color;
+        default:
+            throw std::runtime_error(
+                "A screen-space stage binds a texture role this backend "
+                "does not serve.");
+    }
+}
+
+/**
+ * A pass over one temporal target, cleared to zero: what every dedicated
+ * stage draws into and what the identity clear leaves empty.
+ */
+SDL_GPURenderPass* begin_screen_space_pass(
+    SDL_GPUCommandBuffer* command,
+    SDL_GPUTexture* target) {
+    SDL_GPUColorTargetInfo color{};
+    color.texture = target;
+    color.load_op = SDL_GPU_LOADOP_CLEAR;
+    color.clear_color = SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
+    color.store_op = SDL_GPU_STOREOP_STORE;
+    return SDL_BeginGPURenderPass(command, &color, 1, nullptr);
+}
+
+/**
+ * One dedicated stage: the pin's clear-and-draw over a fullscreen triangle,
+ * with the block pushed as the stage's one uniform and every texture the
+ * compaction kept bound by the role its program resolved for the slot. The
+ * pin binds one bilinear sampler wherever it samples; each SRV here pairs
+ * with it.
+ */
+void record_screen_space_stage(
+    GpuState& state,
+    const ScreenSpaceTaskOptions& task,
+    std::size_t program_index,
+    SDL_GPUCommandBuffer* command,
+    SDL_GPUTexture* target,
+    const float* uniforms) {
+    const GpuScreenSpaceProgram& program =
+        state.screen_space_programs[program_index];
+    const upstream::ScreenSpaceShaderInfo& info =
+        upstream::screen_space_shader_infos[program.stage];
+    if (!program.vertex_slots.uniforms.empty()) {
+        SDL_PushGPUVertexUniformData(
+            command,
+            0,
+            uniforms,
+            static_cast<Uint32>(info.uniform_bytes));
+    }
+    if (!program.fragment_slots.uniforms.empty()) {
+        SDL_PushGPUFragmentUniformData(
+            command,
+            0,
+            uniforms,
+            static_cast<Uint32>(info.uniform_bytes));
+    }
+    SDL_GPURenderPass* pass = begin_screen_space_pass(command, target);
+    SDL_BindGPUGraphicsPipeline(pass, program.pipeline.get());
+    std::array<SDL_GPUTextureSamplerBinding, max_post_process_textures>
+        bindings{};
+    for (std::size_t slot = 0; slot < program.fragment_roles.size(); ++slot) {
+        bindings[slot] = SDL_GPUTextureSamplerBinding{
+            screen_space_binding_texture(
+                state,
+                task,
+                program.fragment_roles[slot]),
+            state.post_process_bilinear_sampler};
+    }
+    if (!program.fragment_roles.empty()) {
+        SDL_BindGPUFragmentSamplers(
+            pass,
+            0,
+            bindings.data(),
+            static_cast<Uint32>(program.fragment_roles.size()));
+    }
+    SDL_DrawGPUPrimitives(pass, 3, 1, 0, 0);
+    SDL_EndGPURenderPass(pass);
+}
+
+/** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
+void clear_screen_space_target(
+    SDL_GPUCommandBuffer* command,
+    SDL_GPUTexture* texture) {
+    SDL_EndGPURenderPass(begin_screen_space_pass(command, texture));
+}
+
+/**
+ * One screen-space task, in the pin's own `execute` order: the generated
+ * frame function samples the task's live settings and advances its temporal
+ * state, and what it decided is encoded here -- the identity clear on the
+ * enabled-to-disabled transition or a singular view-projection inverse,
+ * then producer, resolve and history copy when the effect runs, then the
+ * composite whenever the task has one.
+ */
+template <typename SourceTexture, typename TargetTexture>
+void record_screen_space_task(
+    GpuState& state,
+    Engine& engine,
+    TaskHandle handle,
+    SDL_GPUCommandBuffer* command,
+    SDL_GPUTexture* swapchain,
+    SDL_GPUTextureFormat swapchain_format,
+    std::uint32_t width,
+    std::uint32_t height,
+    SDL_GPUTexture*& capture_texture,
+    SourceTexture source_texture,
+    TargetTexture target_texture) {
+    FrameTaskRecord& record = engine.frame_tasks[handle.value];
+    const ScreenSpaceTaskOptions& task = record.screen_space;
+    const GpuRenderTarget& raw = state.render_targets.at(task.raw.value);
+    const GpuRenderTarget& stable =
+        state.render_targets.at(task.stable.value);
+    const GpuRenderTarget& history =
+        state.render_targets.at(task.history.value);
+    const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
+        engine,
+        handle,
+        screen_space_frame_inputs(state.render_targets, task));
+    if (decision.clear_identity) {
+        clear_screen_space_target(command, stable.color);
+        clear_screen_space_target(command, history.color);
+    }
+    if (decision.run_effect) {
+        record_screen_space_stage(
+            state,
+            task,
+            screen_space_program(state, task.producer_shader),
+            command,
+            raw.color,
+            decision.producer_uniforms.data());
+        record_screen_space_stage(
+            state,
+            task,
+            screen_space_program(state, task.resolve_shader),
+            command,
+            stable.color,
+            decision.temporal_uniforms.data());
+        record_post_process_pass(
+            state,
+            engine,
+            handle,
+            command,
+            swapchain,
+            swapchain_format,
+            width,
+            height,
+            0,
+            capture_texture,
+            source_texture,
+            target_texture);
+    }
+    if (record.post_process.passes.size() > 1) {
+        record_post_process_pass(
+            state,
+            engine,
+            handle,
+            command,
+            swapchain,
+            swapchain_format,
+            width,
+            height,
+            1,
+            capture_texture,
+            source_texture,
+            target_texture);
     }
 }
 #endif
@@ -9092,7 +9408,7 @@ bool run_gpu_engine(Engine& engine) {
                 cpu_profile ? monotonic_milliseconds() : 0.0;
             // Only an animated billboard pass reads it, so the frame's own
             // delta is unused in a build that reaches no billboards.
-            [[maybe_unused]] const float delta_ms =
+            [[maybe_unused]] const double delta_ms =
                 advance_frame(
                     engine,
                     scene,
@@ -11479,6 +11795,23 @@ bool run_gpu_engine(Engine& engine) {
                                 source_texture,
                                 target_texture);
                         }
+                        continue;
+                    }
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+                    if (task.kind == FrameTaskKind::screen_space) {
+                        record_screen_space_task(
+                            state,
+                            engine,
+                            handle,
+                            command,
+                            swapchain,
+                            swapchain_format,
+                            width,
+                            height,
+                            capture_texture,
+                            source_texture,
+                            target_texture);
                         continue;
                     }
 #endif

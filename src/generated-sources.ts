@@ -164,6 +164,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["renderer:post-process"],
     },
     {
+        source: "upstream/src/frame_graph_screen_space.cpp",
+        features: ["renderer:screen-space"],
+    },
+    {
         source: "upstream/src/material_pbr.cpp",
         features: ["material:pbr"],
     },

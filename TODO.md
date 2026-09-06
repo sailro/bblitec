@@ -192,7 +192,7 @@ modules without a numbered scene entry are not integration candidates.
 | 241 | glTF anisotropy, diffuse transmission/translucency, specular textures and animation-pointer inputs |
 | 261 | TAA composite output identity/input tasks, history uniforms and camera projection jitter; compact its frame yields |
 | 275 | Font loading and 3D text |
-| 300 | Executed blob atlas into graph arguments, sprite-sheet state, particle-buffer reads and fixture data shapes |
+| 300 | Sprite-sheet state on a live system, frozen particle-buffer reads and fixture data shapes |
 | 302 | Definite assignment, provider/matrix step replay, shared seed factory, nested startEngine and capture narrowing |
 | 304 | FlowGraph runtimes and glTF interactivity |
 

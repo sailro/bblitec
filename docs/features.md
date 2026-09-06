@@ -132,12 +132,37 @@ separate retained surface.
 
 ### Node particles
 
-Generation runs the pinned parser, normalizer, builder and simulation, then
-bakes a frozen particle state. Billboard and Sprite2D bridges derive their
-layout, blend and synchronization rules from pinned declarations. A registered
-set is accepted only when the observed extra step leaves consumed columns
-unchanged. Moving emitters, general live simulation and several graph/texture
-input shapes remain outside this slice.
+A set the scene steps or freezes before its first frame is baked: generation
+runs the pinned parser, normalizer, builder and simulation in Chromium and
+bakes the particle state they produced. Billboard and Sprite2D bridges derive
+their layout, blend and synchronization rules from pinned declarations. A
+registered frozen set is accepted only when the observed extra step leaves
+consumed columns unchanged.
+
+A set a pure-2D binding takes without any scene step is live: the graph's
+block evaluators are partially evaluated at generation over the parsed graph,
+and the per-particle closures they install are translated to C++ from their
+own bodies, together with the pinned simulation loop, creation-slot order,
+lock caching and death clamp. The executed pin still builds the set in the
+bake driver, and what it reports about that build (installed slots, step
+count, settings, traversal order) is checked against the evaluation. Random
+draws are the pinned generator's on both sides. Covered evaluators: System
+(static emit rate), CreateParticle, world Box shape, UpdatePosition,
+UpdateColor, TextureSource, Input (constants, Position, Age, Lifetime, Color,
+ScaledDirection, ScaledColorStep), Random (None, PerParticle, PerSystem),
+compact Math, Lerp and Converter. Variant evaluators (once-per-particle
+random, aliased math, connected emit rate, local shapes, sprite sheets),
+moving emitters and the billboard registrar over a live set remain outside
+this slice, and the two-pass MultiplyAdd blend refuses on a live layer.
+
+Three pinned bodies are restated and asserted rather than translated: the
+variant-selection predicate (the build-time evaluator has no
+`Array.prototype.find` or `String.prototype.endsWith`), the swap-remove over
+the buffer's column list (three element widths in one list) and the Sprite2D
+bridge sync (template-literal throws and `Number.isFinite`). The bake ships
+the parsed graph once per bridge, a live set's atlas row rides the frozen
+system table, and an origin write finds its mapping by request and bridge at
+run time; no reached scene measures a change to any of these.
 
 ## Shader pipeline
 
@@ -291,7 +316,10 @@ compute/indirect path; the native fallback draws active instances.
 Sprite2D layers, standalone renderers, offscreen targets, depth-hosted layers,
 billboards, atlas-frame factories, sprite animation, custom fragments and
 renderer Y-sort have supported paths. Per-layer/system options select pinned
-shader and blend arms. Handle-object APIs, mixed-family transparent ordering,
+shader and blend arms. A layer's atlas carries the pinned loader's own mip
+decision on both backends: none for `loadSpriteAtlas`, the full chain with the
+trilinear sampler for a texture a node-particle graph loaded through
+`loadTexture2D`. Handle-object APIs, mixed-family transparent ordering,
 coverage gamma and several picking combinations remain incomplete.
 
 ## Picking
@@ -361,8 +389,18 @@ contracts are shared across backends.
 
 Reached leaf effects and composites execute pinned factories at generation.
 Their writers, target relationships and parameters drive live native passes.
-Source-relative intermediate sizes follow resize. Temporal accumulation such
-as TAA needs additional history, camera-jitter and composite-output contracts.
+Source-relative intermediate sizes follow resize.
+
+### Screen-space effects
+
+Screen-space contact shadows and one-bounce global illumination run the pin's
+producer and temporal-resolve pipelines over a single-sample colour/depth
+target, reading its depth attachment through a depth-only view. Generation
+runs each factory to obtain its modules, layouts and pass order and lowers the
+temporal state machine and uniform packing from the pinned bodies; the live
+settings, the enabled toggle and a light's own direction are sampled every
+frame. The history copy and composite are ordinary post-process passes. TAA
+still needs camera-jitter and composite-output contracts.
 
 ### Fullscreen effects
 

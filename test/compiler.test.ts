@@ -4328,6 +4328,48 @@ test("shares auto-rotate state across UI, pointer, and frame callbacks", () => {
     assert.match(result.cpp, new RegExp(`if \\(\\(\\*${storage[1]}\\)\\)`));
 });
 
+test("shares a let assigned by a callback a helper invokes from its click listener", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+        function bindToggle(id: string, initial: boolean, update: (enabled: boolean) => void): void {
+            const button = document.getElementById(id) as HTMLButtonElement;
+            let enabled = initial;
+            const refresh = (): void => {
+                button.textContent = enabled ? "On" : "Off";
+                update(enabled);
+            };
+            button.addEventListener("click", () => {
+                enabled = !enabled;
+                refresh();
+            });
+            refresh();
+        }
+        await createEngine({});
+        let autoOrbit = false;
+        let turns = 0;
+        requestAnimationFrame(() => {
+            if (autoOrbit) turns += 1;
+        });
+        bindToggle("toggleOrbit", false, (enabled) => {
+            autoOrbit = enabled;
+        });
+    `);
+
+    // The frame callback and the inlined click listener must dereference
+    // one cell: a by-value copy in the listener would leave the frame
+    // callback reading the initial value forever.
+    const storage = result.cpp.match(
+        /auto (v_autoOrbit) = bbl::js::make_gc_shared<bool>\(false\);/,
+    );
+    assert.ok(storage);
+    assert.match(
+        result.cpp,
+        new RegExp(`\\(\\*${storage[1]}\\) = v_fn\\d+_enabled;`),
+    );
+    assert.match(result.cpp, new RegExp(`if \\(\\(\\*${storage[1]}\\)\\)`));
+    assert.doesNotMatch(result.cpp, /std::ref\(v_autoOrbit\)/);
+});
+
 test("shares pointer press coordinates with the release callback", () => {
     const result = compileSource(`
         import { createEngine } from "@babylonjs/lite";
@@ -7961,6 +8003,82 @@ test("erases optional DOM-local writes without dropping adjacent native state", 
     assert.doesNotMatch(
         result.cpp,
         /button|textContent|setAttribute|aria-pressed/,
+    );
+});
+
+test("lowers a tag.class sheet selector beside its tag-descendant base rule", () => {
+    const result = compileSource(`
+        import { createEngine } from "@babylonjs/lite";
+
+        async function main(): Promise<void> {
+            await createEngine({});
+            const style = document.createElement("style");
+            style.textContent =
+                ".controls button { color: #f5f7ff; } button.disabled { color: #929bb2; }";
+            document.head.appendChild(style);
+            const controls = document.createElement("div");
+            controls.className = "controls";
+            const button = document.createElement("button");
+            controls.appendChild(button);
+            document.body.appendChild(controls);
+            button.classList.toggle("disabled", true);
+        }
+
+        void main();
+    `);
+
+    // The tag/class compound carries the class-plus-tag specificity of the
+    // base rule, so the later disabled rule wins by source order as in the
+    // browser cascade.
+    assert.match(
+        result.cpp,
+        /UiStyleSelectorKind::ClassDescendantTag,\s*"controls",\s*"",\s*"button",\s*false/,
+    );
+    assert.match(
+        result.cpp,
+        /UiStyleSelectorKind::TagClass,\s*"disabled",\s*"",\s*"button",\s*false/,
+    );
+    assert.match(result.cpp, /ui_toggle_class[^\n]*"disabled", true/);
+});
+
+test("accepts a tag.class host companion rule", () => {
+    const result = compileSource(
+        `
+            import { createEngine, startEngine } from "@babylonjs/lite";
+
+            async function main(): Promise<void> {
+                const engine = await createEngine({});
+                const button = document.getElementById("toggle") as HTMLButtonElement;
+                button.classList.toggle("disabled", true);
+                await startEngine(engine);
+            }
+
+            void main();
+        `,
+        {
+            nativeHostUi: {
+                sourcePath: "ui/test-host.json",
+                styleRules: [
+                    {
+                        kind: "tag-class",
+                        tag: "button",
+                        primary: "disabled",
+                        style: "color:#929bb2;",
+                    },
+                ],
+                elements: [
+                    {
+                        tag: "button",
+                        attributes: { id: "toggle" },
+                    },
+                ],
+            },
+        },
+    );
+
+    assert.match(
+        result.cpp,
+        /ui_add_host_style_rule[^\n]*UiStyleSelectorKind::TagClass[^\n]*"disabled"[^\n]*"button"[^\n]*"color:#929bb2;"/,
     );
 });
 
@@ -12400,9 +12518,12 @@ test("reads mesh.parent as the nullable handle setParent owns", () => {
     `);
 
     assert.match(result.cpp, /\.parent\.value != bbl::invalid_handle/);
+    // The optional local takes the parent only when the handle is present;
+    // an absent parent leaves it empty rather than engaging it with the
+    // invalid-handle sentinel.
     assert.match(
         result.cpp,
-        /if \([^\n]*\.parent\.value != bbl::invalid_handle[^\n]*\) \{[\s\S]{0,180}v_current = [^;]*\.parent;[\s\S]{0,100}v_current\.reset\(\);/,
+        /v_current = \(\([^\n]*\.parent\.value != bbl::invalid_handle\) \? std::optional\{[^\n]*\.parent\} : std::nullopt\);/,
     );
 });
 

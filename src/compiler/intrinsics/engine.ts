@@ -7,10 +7,13 @@ import type {
     GeometryOutputTaskManifest,
     PostProcessCompositeManifest,
     PostProcessTaskManifest,
+    ScreenSpaceTaskManifest,
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledRenderTargetOptions } from "./engine-options.js";
+import type { CompiledScreenSpaceTask } from "./screen-space-options.js";
+import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
 interface CompiledGeometryTask {
@@ -74,8 +77,15 @@ export interface EngineIntrinsicContext
     recordPostProcessComposite(
         manifest: PostProcessCompositeManifest,
     ): void;
+    compileScreenSpaceTaskOptions(
+        intrinsic: string,
+        expression: ts.Expression,
+        taskIndex: number,
+    ): CompiledScreenSpaceTask;
+    recordScreenSpaceTask(manifest: ScreenSpaceTaskManifest): void;
     readonly postProcessTasks: readonly PostProcessTaskManifest[];
     readonly postProcessComposites: readonly PostProcessCompositeManifest[];
+    readonly screenSpaceTasks: readonly ScreenSpaceTaskManifest[];
     compileSceneDefaultRenderTask(
         expression: ts.Expression | undefined,
     ): boolean;
@@ -367,12 +377,90 @@ export function compileEngineIntrinsic(
         }
 
         default:
+            if (isScreenSpaceIntrinsic(importedName)) {
+                return compileScreenSpaceIntrinsic(
+                    context,
+                    importedName,
+                    call,
+                );
+            }
             return compilePostProcessIntrinsic(
                 context,
                 importedName,
                 call,
             );
     }
+}
+
+/**
+ * A screen-space effect task. The pin builds it over the scene's own
+ * camera math and two ordinary post-process passes, so it reaches the scene
+ * renderer and the post-process family beside its own; a call with no scene
+ * has no camera to reconstruct depth through and is refused.
+ */
+/**
+ * The `(config, engine, scene?)` tail every frame-graph task factory takes:
+ * the engine compiled and checked, the scene compiled and matched to it
+ * when given, and the renderer or the bare frame graph reached accordingly.
+ * A factory whose frame function reads the scene renderer requires the
+ * scene and names why.
+ */
+function compileTaskEngineAndScene(
+    context: EngineIntrinsicContext,
+    importedName: string,
+    call: ts.CallExpression,
+    sceneRequired?: string,
+): Value {
+    context.expectArgumentCount(call, 2, 3);
+    const engine = context.compileValue(call.arguments[1]!);
+    context.expectKind(engine, "engine", call.arguments[1]!);
+    if (!call.arguments[2] && sceneRequired) {
+        context.fail(
+            call,
+            `${importedName} without a scene is not supported: ${sceneRequired}`,
+        );
+    }
+    const scene = call.arguments[2]
+        ? context.compileValue(call.arguments[2])
+        : undefined;
+    if (scene) {
+        context.expectKind(scene, "scene", call.arguments[2]!);
+        context.expectSameEngine(engine, scene, call);
+        reachRenderer(context, call);
+    } else {
+        context.reachFeature("renderer:frame-graph", call);
+    }
+    context.reachFeature("frame-graph:resources", call);
+    context.reachFeature("renderer:post-process", call);
+    return engine;
+}
+
+function compileScreenSpaceIntrinsic(
+    context: EngineIntrinsicContext,
+    importedName: string,
+    call: ts.CallExpression,
+): Value {
+    const engine = compileTaskEngineAndScene(
+        context,
+        importedName,
+        call,
+        "the frame function reads the scene renderer's camera matrices.",
+    );
+    context.reachFeature("renderer:screen-space", call);
+    const compiled = context.compileScreenSpaceTaskOptions(
+        importedName,
+        call.arguments[0]!,
+        context.screenSpaceTasks.length,
+    );
+    context.recordScreenSpaceTask(compiled.manifest);
+    return {
+        kind: "task",
+        cpp:
+            `bbl::create_screen_space_task_${compiled.manifest.taskIndex}(` +
+            `${engine.cpp}, ${compiled.argumentsCpp})`,
+        engineCpp: engine.engineCpp ?? engine.cpp,
+        screenSpaceTask: compiled.manifest,
+    };
 }
 
 /**
@@ -402,23 +490,7 @@ function compilePostProcessIntrinsic(
                 "point.",
         );
     }
-    context.expectArgumentCount(call, 2, 3);
-    const engine = context.compileValue(call.arguments[1]!);
-    context.expectKind(engine, "engine", call.arguments[1]!);
-    const scene = call.arguments[2]
-        ? context.compileValue(call.arguments[2])
-        : undefined;
-    if (scene) {
-        context.expectKind(scene, "scene", call.arguments[2]!);
-        context.expectSameEngine(engine, scene, call);
-    }
-    if (scene) {
-        reachRenderer(context, call);
-    } else {
-        context.reachFeature("renderer:frame-graph", call);
-    }
-    context.reachFeature("frame-graph:resources", call);
-    context.reachFeature("renderer:post-process", call);
+    const engine = compileTaskEngineAndScene(context, importedName, call);
     if (composite) {
         const built = context.compilePostProcessCompositeOptions(
             importedName,

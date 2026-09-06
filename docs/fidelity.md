@@ -31,6 +31,7 @@ families include:
 | --- | --- |
 | AOT/browser | Assets materialize during compilation; supported promises settle synchronously; reference queries fold; bounded browser instrumentation erases |
 | Executed producers | Chromium produces atlas pixels, fragile computed buffers, prefiltered assets and frozen particles; output can depend on the compiling browser |
+| Frame time | The fixed-step clock and the sprite renderer's per-frame hook carry the browser's double delta; scene and frame-graph callbacks receive the engine API's float |
 | Plain-data model | Native storage/aliasing, checked access and sparse initialization differ from unrestricted JavaScript |
 | Skinning | A loaded eight-influence skin retains four influences |
 | GPU culling | Reached thin-instance culling can use the pin's all-active-instance fallback without its compute/indirect optimization |
@@ -212,6 +213,21 @@ application tasks follow explicit lists. Post-process modules come from the
 pin and uniform writers from their ASTs. Composite ownership must follow the
 actual task/output graph; assuming the final pass is always the public output
 is insufficient for temporal effects.
+
+A screen-space effect invalidates its temporal history on the pin's reset
+events: first allocation, owned-target reallocation, a source or depth
+texture identity change, a reset version change, the disabled-to-enabled
+transition and a singular view-projection inverse; camera motion keeps
+history. Native texture identity is the
+backend's allocation of a target's textures, so a frame-graph rebuild that
+recreates unchanged-size targets invalidates history where the browser's
+retained textures would not. Owned targets round their scaled extents by the
+pin's own rule, distinct from a composite intermediate's floor. SDL_GPU
+reconstructs depth from its device-preferred sampled depth format; Dawn keeps
+the browser's `depth24plus-stencil8`. The producer and resolve passes clear
+their targets before the fullscreen draw as the pin's recorded `loadOp` does,
+although the draw covers every texel; SDL_GPU could discard them instead, a
+departure from the recorded pass this port does not take.
 
 ## Picking contract
 

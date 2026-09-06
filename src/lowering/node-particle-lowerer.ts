@@ -13,7 +13,7 @@
 // What the bake supplies is only the values: the particle columns, the
 // texture the graph loaded and the mode the system block set.
 import ts from "typescript";
-import { floatLiteral } from "../cpp-literals.js";
+import { doubleLiteral, floatLiteral } from "../cpp-literals.js";
 import { LoweredSource, LoweringContext } from "./context.js";
 import {
     blendFactorySymbol,
@@ -31,6 +31,11 @@ import {
 } from "./pinned-material-defaults.js";
 import { pixelsTextureOptionsCpp } from "../pinned-address-modes.js";
 import type { NodeParticleSystemBake } from "../pinned-node-particle.js";
+import {
+    type LiveGraph,
+    type LiveSystemFacts,
+    NodeParticleLiveLowerer,
+} from "./node-particle-live-lowerer.js";
 import type {
     CompileAsset,
     PixelsTextureSource,
@@ -70,6 +75,14 @@ export interface NodeParticleSystemEmit {
      * caller owns the manifest it belongs to.
      */
     asset?: CompileAsset;
+    /**
+     * A LIVE system: the scene never stepped or froze it, and the pure-2D
+     * registrar animates it every frame. The bake row above then carries
+     * only what the atlas builder reads (the texture and its size); the
+     * simulation is lowered from the graph and checked against the facts
+     * the executed pin reported about its own build.
+     */
+    live?: { graph: LiveGraph; facts: LiveSystemFacts };
 }
 
 /**
@@ -91,6 +104,12 @@ export interface NodeParticleRegistrationEmit {
 export interface NodeParticleSprite2DEmit
     extends NodeParticleRegistrationEmit {
     exact: boolean;
+    /**
+     * `options.autoStart ?? true`: whether the registrar starts each
+     * system. The frozen registrar replays it in the driver; the live one
+     * calls the system's own start.
+     */
+    autoStart: boolean;
     pixelsPerUnit: number;
     originPx: readonly [number, number];
     invertY: boolean;
@@ -720,6 +739,28 @@ export class NodeParticleLowerer {
         local("width", "buffer.size[i]! * buffer.scaleX[i]! * pixelsPerUnit");
         local("height", "buffer.size[i]! * buffer.scaleY[i]! * pixelsPerUnit");
         local("ySign", "bridge.invertY ? -1 : 1");
+        local(
+            "frameIndex",
+            "resolveSpriteFrame(layer.atlas, cellIndex ? cellIndex[i]! : 0)",
+        );
+        // The tail the live sync restates around the same writes: the
+        // saved sizes over the live range, cleared over the range that
+        // died, then the count and the dirty mark.
+        local("dirtyEnd", "Math.max(previousCount, alive)");
+        for (const [shape, label] of [
+            ["savedSize[savedBase] = width", "saved width"],
+            ["savedSize[savedBase + 1] = height", "saved height"],
+            ["savedSize[savedBase] = 0", "saved clear width"],
+            ["savedSize[savedBase + 1] = 0", "saved clear height"],
+            ["_setSprite2DCount(layer, alive)", "count"],
+            ["_markSprite2DDirty(layer, 0, dirtyEnd)", "dirty mark"],
+        ] as const) {
+            this.context.expectShapeCount(
+                declaration,
+                shape,
+                `pure-2D bridge ${label}`,
+            );
+        }
     }
 
     /**
@@ -933,6 +974,28 @@ export class NodeParticleLowerer {
         if (sprite2d.some((binding) => binding.exact)) {
             this.assertSprite2dExactRules();
         }
+        // The live half: every system a live binding walks is lowered from
+        // its graph, and the registrar for such a binding is the pin's own
+        // per-frame animate-and-sync rather than a one-time fill.
+        const liveSystems = systems.filter((entry) => entry.live);
+        const liveRequests = new Set<number>();
+        sprite2d.forEach((binding, request) => {
+            const walked = binding.systems.map(nodeParticleKey);
+            const live = walked.filter((key) =>
+                liveSystems.some((entry) => nodeParticleKey(entry.bake) === key),
+            );
+            if (live.length === 0) return;
+            if (live.length !== walked.length) {
+                throw new Error(
+                    "A pure-2D node-particle binding walks both live and " +
+                        `frozen systems; the registrar takes one kind.${refusalSite}`,
+                );
+            }
+            liveRequests.add(request);
+        });
+        const live = liveSystems.length > 0
+            ? this.liveSectionCpp(liveSystems, sprite2d, liveRequests)
+            : undefined;
         // Which halves of the family this scene reaches. The two render
         // targets are exclusive per system, so a system a pure-2D binding
         // took draws no billboard — and a scene of nothing but bridges
@@ -1012,7 +1075,7 @@ void register_node_particle_set_2d(
     SpriteRendererHandle renderer,
     int request);
 `
-}
+}${live?.header ?? ""}
 }  // namespace bbl::upstream
 `,
             source: `// ${provenance}
@@ -1032,8 +1095,10 @@ ${
 }#include <bblite/upstream/node_particles.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1256,6 +1321,29 @@ ${
         ? ""
         : `
 /**
+ * The layer options a bridge builds its layer with. The bridge owns
+ * capacity, depth, blend and pivot; only the presentation fields come from
+ * the caller, and an unnamed one keeps the layer factory's own default.
+ * Modes 3 and 4 draw the pin's own Multiply fragment on the primary layer;
+ * mode 4's second layer keeps the stock one.
+ */
+Sprite2DLayerOptions bridge_layer_options(
+    const Sprite2DBridge& bridge,
+    const BakedSystem& system) {
+    Sprite2DLayerOptions options;
+    options.capacity = static_cast<float>(system.capacity);
+    options.blend_mode = bridge.exact
+        ? create_particle_blend(system.blend_mode)
+        : sprite_2d_blend_for_mode(system.blend_mode);
+    if (bridge.has_opacity) options.opacity = bridge.opacity;
+    if (bridge.has_visible) options.visible = bridge.visible;
+    if (bridge.has_order) options.order = bridge.order;
+    options.pivot = Vec2{${bakedFloatLiteral(sprite2dPivot[0])}, ${bakedFloatLiteral(sprite2dPivot[1])}};
+    options.custom_shader = options.blend_mode.particle_passes >= 1;
+    return options;
+}
+
+/**
  * syncParticleSprite2DBridge over the baked buffer: NPE world XY mapped into
  * Sprite2D pixels, one sprite per live particle, in buffer order. The
  * mapping's terms are asserted against the pin's own packed writes.
@@ -1297,7 +1385,7 @@ void write_bridge_sprites(
     }
 }
 `
-}
+}${live?.anonymous ?? ""}
 }  // namespace
 
 ${
@@ -1414,28 +1502,23 @@ void register_node_particle_set(
 void register_node_particle_set_2d(
     Engine& engine,
     SpriteRendererHandle renderer,
-    int request) {
+    int request) {${
+        live
+            ? `
+    if (live_request[request]) {
+        register_live_node_particle_set_2d(engine, renderer, request);
+        return;
+    }`
+            : ""
+    }
     for (const Sprite2DBridge& bridge : sprite_2d_bridges) {
         if (bridge.request != request) continue;
         const BakedSystem& system =
             baked(bridge.set_index, bridge.system_index);
         const SpriteAtlasHandle atlas =
             particle_atlas(engine, bridge.set_index, bridge.system_index);
-        Sprite2DLayerOptions options;
-        options.capacity = static_cast<float>(system.capacity);
-        // The bridge owns capacity, depth, blend and pivot; only the four
-        // presentation fields come from the caller, and an unnamed one keeps
-        // the layer factory's own default.
-        options.blend_mode = bridge.exact
-            ? create_particle_blend(system.blend_mode)
-            : sprite_2d_blend_for_mode(system.blend_mode);
-        if (bridge.has_opacity) options.opacity = bridge.opacity;
-        if (bridge.has_visible) options.visible = bridge.visible;
-        if (bridge.has_order) options.order = bridge.order;
-        options.pivot = Vec2{${bakedFloatLiteral(sprite2dPivot[0])}, ${bakedFloatLiteral(sprite2dPivot[1])}};
-        // Modes 3 and 4 draw the pin's own Multiply fragment on the primary
-        // layer; mode 4's second layer keeps the stock one.
-        options.custom_shader = options.blend_mode.particle_passes >= 1;
+        const Sprite2DLayerOptions options =
+            bridge_layer_options(bridge, system);
         const Sprite2DLayerHandle layer =
             create_sprite_2d_layer(engine, atlas, options);
         write_bridge_sprites(engine, layer, bridge, system);
@@ -1451,10 +1534,333 @@ void register_node_particle_set_2d(
     }
 }
 `
-}
+}${live?.publicFunctions ?? ""}
 }  // namespace bbl::upstream
 `,
         };
+    }
+
+    /**
+     * The live half of the pure-2D registrar.
+     *
+     * Each live system's simulation is lowered by
+     * `NodeParticleLiveLowerer` into its own namespace; what this emits
+     * around it is `registerNodeParticleSet2D`'s own sequence -- build and
+     * sync every bridge, attach every layer, start every system, push one
+     * hook that animates and re-synchronizes each frame -- and the two
+     * accessors scene code reaches on a bridge: its `originPx`, which the
+     * demo moves per frame, and its system's live count. The sync is
+     * `syncParticleSprite2DBridge` over the simulated columns instead of a
+     * baked table: the same thirteen writes, saved sizes, count and dirty
+     * range `assertSprite2dSyncRules` checks against the pin.
+     */
+    private liveSectionCpp(
+        liveSystems: readonly NodeParticleSystemEmit[],
+        sprite2d: readonly NodeParticleSprite2DEmit[],
+        liveRequests: ReadonlySet<number>,
+    ): { header: string; anonymous: string; publicFunctions: string } {
+        this.assertLiveRules();
+        const lowerer = new NodeParticleLiveLowerer(this.context);
+        const lowered = new Map(
+            liveSystems.map((entry) => [
+                nodeParticleKey(entry.bake),
+                lowerer.lowerSystem(entry.live!.graph, entry.live!.facts),
+            ]),
+        );
+        // One mapping row per bridge of a live binding, naming its row in
+        // the bridge table; both tables list the bindings' systems in the
+        // same nesting order, so the bridge row is the running count.
+        const rows: string[] = [];
+        let bridgeRow = 0;
+        sprite2d.forEach((binding, request) => {
+            binding.systems.forEach((entry, bridge) => {
+                if (liveRequests.has(request)) {
+                    const system = lowered.get(nodeParticleKey(entry));
+                    if (!system) {
+                        throw new Error(
+                            `No live lowering for node-particle system ${nodeParticleKey(entry)}.`,
+                        );
+                    }
+                    const ops = `LiveOps<${system.namespace}::state>`;
+                    rows.push(
+                        `    {&sprite_2d_bridges[${bridgeRow}], ${bridge}, ` +
+                            `${binding.autoStart}, ${binding.originPx[0]}, ` +
+                            `${binding.originPx[1]}, {}, &${ops}::animate, ` +
+                            `&${ops}::sync, &${ops}::start, &${ops}::alive},`,
+                    );
+                }
+                bridgeRow += 1;
+            });
+        });
+        const sprite2dFile = this.context.sourceFile(sprite2dModule);
+        const frameMs = doubleLiteral(
+            this.context.numericValue(
+                this.context.moduleScopeConstant(sprite2dFile, "FRAME_MS")!,
+                sprite2dFile,
+            ),
+        );
+        const spriteFile = this.context.sourceFile("src/sprite/sprite-2d.ts");
+        const savedSizeFloats = this.context.numericValue(
+            this.context.moduleScopeConstant(
+                spriteFile,
+                "SAVED_SIZE_FLOATS_PER_SPRITE",
+            )!,
+            spriteFile,
+        );
+        return {
+            header: `
+/**
+ * \`bridge.originPx[axis] = value\` on a live pure-2D binding's bridge: the
+ * mapping the per-frame sync reads, moved by scene code.
+ */
+void set_node_particle_2d_origin(
+    int request,
+    int bridge,
+    int axis,
+    double value);
+
+/** \`bridge.system.buffer.alive\` on a live pure-2D binding's bridge. */
+double node_particle_2d_alive(int request, int bridge);
+`,
+            anonymous: `
+${lowerer.sharedSource()}
+
+${[...lowered.values()].map((system) => system.source).join("\n\n")}
+
+/**
+ * One live bridge, as the pin's ParticleSprite2DBridge record keeps it: its
+ * row in the bridge table for the fixed mapping, the origin as its own pair
+ * because that is what a scene moves per frame, the layer once built, and
+ * the four operations on the system it simulates.
+ */
+struct LiveMapping {
+    const Sprite2DBridge* row;
+    int bridge;
+    bool auto_start;
+    double origin_x;
+    double origin_y;
+    Sprite2DLayerHandle layer;
+    void (*animate)(double ratio);
+    void (*sync)(Engine& engine, const LiveMapping& mapping);
+    void (*start)();
+    double (*alive)();
+};
+
+// registerNodeParticleSet2D's hook: \`deltaMs > 0 ? deltaMs / FRAME_MS : 1\`.
+constexpr double live_frame_ms = ${frameMs};
+
+/**
+ * syncParticleSprite2DBridge over a simulated buffer: the same packed
+ * writes the frozen bridge fills once, performed every frame over the live
+ * range, then the count and the dirty range the pin marks.
+ */
+template <typename State>
+void sync_live_bridge(
+    Engine& engine,
+    const LiveMapping& mapping,
+    const State& state) {
+    Sprite2DLayerRecord& layer = engine.sprite_layers[mapping.layer.value];
+    const SpriteAtlasRecord& atlas = engine.sprite_atlases[layer.atlas.value];
+    const double pixels_per_unit = mapping.row->pixels_per_unit;
+    const double origin_x = mapping.origin_x;
+    const double origin_y = mapping.origin_y;
+    const double y_sign = mapping.row->y_sign;
+    const std::size_t alive = static_cast<std::size_t>(state.alive);
+    const std::uint32_t previous_count = layer.count;
+    const std::size_t stride = layer.instance_floats_per_sprite;
+    std::vector<float>& data = layer.instance_data;
+    std::vector<float>& saved_size = layer.saved_size;
+    // A live system carries no sprite sheet, so every particle draws
+    // frame 0 of the full-texture grid.
+    const SpriteFrame& frame =
+        atlas.frames[resolve_sprite_frame(atlas, 0.0)];
+    for (std::size_t i = 0; i < alive; ++i) {
+        const std::size_t base = i * stride;
+        const std::size_t saved_base = i * ${savedSizeFloats}u;
+        const double width =
+            static_cast<double>(state.size[i]) *
+            static_cast<double>(state.scale_x[i]) * pixels_per_unit;
+        const double height =
+            static_cast<double>(state.size[i]) *
+            static_cast<double>(state.scale_y[i]) * pixels_per_unit;
+        data[base] = static_cast<float>(
+            origin_x + static_cast<double>(state.pos_x[i]) * pixels_per_unit);
+        data[base + 1] = static_cast<float>(
+            origin_y +
+            static_cast<double>(state.pos_y[i]) * pixels_per_unit * y_sign);
+        data[base + 2] = static_cast<float>(width);
+        data[base + 3] = static_cast<float>(height);
+        data[base + 4] = frame.uv_min.x;
+        data[base + 5] = frame.uv_min.y;
+        data[base + 6] = frame.uv_max.x;
+        data[base + 7] = frame.uv_max.y;
+        data[base + 8] = static_cast<float>(
+            static_cast<double>(state.angle[i]) * y_sign);
+        data[base + 9] = state.color_r[i];
+        data[base + 10] = state.color_g[i];
+        data[base + 11] = state.color_b[i];
+        data[base + 12] = state.color_a[i];
+        saved_size[saved_base] = static_cast<float>(width);
+        saved_size[saved_base + 1] = static_cast<float>(height);
+    }
+    for (std::size_t i = alive; i < previous_count; ++i) {
+        const std::size_t saved_base = i * ${savedSizeFloats}u;
+        saved_size[saved_base] = 0.0f;
+        saved_size[saved_base + 1] = 0.0f;
+    }
+    set_sprite_2d_count(layer, static_cast<std::uint32_t>(alive));
+    const std::size_t dirty_end = std::max<std::size_t>(previous_count, alive);
+    if (dirty_end > 0) {
+        mark_sprite_2d_dirty(layer, 0u, static_cast<std::uint32_t>(dirty_end));
+    }
+}
+
+/**
+ * The four operations of one lowered system over its own state; the
+ * system's namespace supplies the functions through the state's type.
+ */
+template <auto& state>
+struct LiveOps {
+    static void animate(double ratio) { animate_particle_system(state, ratio); }
+    static void sync(Engine& engine, const LiveMapping& mapping) {
+        sync_live_bridge(engine, mapping, state);
+    }
+    static void start() { start_particle_system(state); }
+    static double alive() { return state.alive; }
+};
+
+LiveMapping live_mappings[] = {
+${rows.join("\n")}
+};
+
+// Which requests the live registrar owns; the frozen fill takes the rest.
+constexpr bool live_request[] = {${sprite2d
+                .map((_, request) => liveRequests.has(request))
+                .join(", ")}};
+
+LiveMapping& live_mapping(int request, int bridge) {
+    for (LiveMapping& mapping : live_mappings) {
+        if (mapping.row->request == request && mapping.bridge == bridge) {
+            return mapping;
+        }
+    }
+    throw std::runtime_error("No live pure-2D bridge for this binding.");
+}
+
+/**
+ * registerNodeParticleSet2D over a live set, in the pin's own order: every
+ * bridge built and synced, every layer attached, every system started when
+ * autoStart holds, and one hook on the renderer that animates and
+ * re-synchronizes each bridge with the frame's ratio.
+ */
+void register_live_node_particle_set_2d(
+    Engine& engine,
+    SpriteRendererHandle renderer,
+    int request) {
+    for (LiveMapping& mapping : live_mappings) {
+        const Sprite2DBridge& row = *mapping.row;
+        if (row.request != request) continue;
+        const BakedSystem& system = baked(row.set_index, row.system_index);
+        const Sprite2DLayerOptions options = bridge_layer_options(row, system);
+        if (options.blend_mode.particle_passes == 2) {
+            throw std::runtime_error(
+                "A live pure-2D binding does not draw the two-pass MultiplyAdd mode.");
+        }
+        mapping.layer = create_sprite_2d_layer(
+            engine,
+            particle_atlas(engine, row.set_index, row.system_index),
+            options);
+        mapping.sync(engine, mapping);
+    }
+    for (const LiveMapping& mapping : live_mappings) {
+        if (mapping.row->request != request) continue;
+        add_sprite_renderer_layer(engine, renderer, mapping.layer);
+    }
+    for (const LiveMapping& mapping : live_mappings) {
+        if (mapping.row->request == request && mapping.auto_start) {
+            mapping.start();
+        }
+    }
+    sprite_renderer_before_update(
+        engine,
+        renderer,
+        [&engine, request](double delta_ms) {
+            const double ratio = delta_ms > 0
+                ? delta_ms / live_frame_ms
+                : 1.0;
+            for (LiveMapping& mapping : live_mappings) {
+                if (mapping.row->request != request) continue;
+                mapping.animate(ratio);
+                mapping.sync(engine, mapping);
+            }
+        });
+}
+`,
+            publicFunctions: `
+void set_node_particle_2d_origin(
+    int request,
+    int bridge,
+    int axis,
+    double value) {
+    LiveMapping& mapping = live_mapping(request, bridge);
+    (axis == 0 ? mapping.origin_x : mapping.origin_y) = value;
+}
+
+double node_particle_2d_alive(int request, int bridge) {
+    return live_mapping(request, bridge).alive();
+}
+`,
+        };
+    }
+
+    /**
+     * What the live registrar restates of `registerNodeParticleSet2D`,
+     * asserted against the pin: the hook's ratio and its animate-then-sync
+     * body, the one sync before attachment, the attach, the start and the
+     * hook push.
+     */
+    private assertLiveRules(): void {
+        const registrar = this.context.functionDeclaration(
+            sprite2dModule,
+            "registerNodeParticleSet2D",
+        ).declaration;
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(registrar, "ratio"),
+            "deltaMs > 0 ? deltaMs / FRAME_MS : 1",
+            "registerNodeParticleSet2D hook ratio",
+        );
+        const hook = this.context.variableInitializer(registrar, "hook");
+        this.context.expectShapeCount(
+            hook,
+            "animateParticleSystem(bridge.system, ratio)",
+            "registerNodeParticleSet2D hook animate",
+        );
+        this.context.expectShapeCount(
+            hook,
+            "syncParticleSprite2DBridge(bridge)",
+            "registerNodeParticleSet2D hook sync",
+        );
+        this.context.expectShapeCount(
+            registrar,
+            "syncParticleSprite2DBridge(bridge)",
+            "registerNodeParticleSet2D sync calls",
+            2,
+        );
+        this.context.expectShapeCount(
+            registrar,
+            "addSpriteRendererLayer(renderer, bridge.layer)",
+            "registerNodeParticleSet2D attach",
+        );
+        this.context.expectShapeCount(
+            registrar,
+            "startParticleSystem(bridge.system)",
+            "registerNodeParticleSet2D start",
+        );
+        this.context.expectShapeCount(
+            registrar,
+            "renderer._beforeUpdate.push(hook)",
+            "registerNodeParticleSet2D hook push",
+        );
     }
 
     /**
@@ -1473,8 +1879,8 @@ void register_node_particle_set_2d(
         // which animates and re-synchronizes. Both are the identity only for
         // a system the scene froze, and that is measured rather than argued:
         // the driver stepped this system once more and compared every column
-        // the sync reads.
-        if (perFrameStep) {
+        // the sync reads. A live system runs that callback for real.
+        if (perFrameStep && !entry.live) {
             if (entry.bake.updateSpeed !== 0) {
                 throw new Error(
                     "A registered node-particle set animates its systems " +

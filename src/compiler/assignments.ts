@@ -786,6 +786,51 @@ function emitPostProcessOptionAssignment(
   return true;
 }
 
+/**
+ * Writes a screen-space task's live settings.
+ *
+ * The pin samples `task.enabled`, `task.intensity` and its siblings inside
+ * every `execute`, so a scene toggling an effect or tuning it writes the
+ * record field the generated frame function reads. The tint triple is the
+ * one setting written whole rather than as a number; no reached scene does,
+ * so it refuses by name.
+ */
+function emitScreenSpaceSettingAssignment(
+  context: AssignmentContext,
+  expression: ts.BinaryExpression,
+  left: ts.PropertyAccessExpression,
+  owner: Value,
+): boolean {
+  if (owner.kind !== "task" || !owner.screenSpaceTask) {
+    return false;
+  }
+  const setting = left.name.text;
+  const record = `${context.requireEngine(owner, expression)}.frame_tasks[${
+    owner.cpp
+  }.value].screen_space`;
+  requireSimpleAssignment(context, expression, "screen-space setting");
+  if (setting === "enabled") {
+    context.emit(
+      `${record}.enabled = ${context.compileBoolean(expression.right)};`,
+    );
+    return true;
+  }
+  if (!SCREEN_SPACE_SCALAR_SETTINGS.includes(setting)) {
+    context.fail(
+      left,
+      `Screen-space task '${owner.screenSpaceTask.intrinsic}' has no ` +
+        `settable scalar '${setting}'.`,
+    );
+  }
+  context.emit(
+    `${record}.${nativeSettingName(setting)} = ${context.compileNumber(
+      expression.right,
+      "double",
+    )};`,
+  );
+  return true;
+}
+
 /** Writes the mutable view fields exposed by `Sprite2DLayer.view`. */
 function emitSpriteLayerViewAssignment(
   context: AssignmentContext,
@@ -999,6 +1044,56 @@ function failClassFieldRebind(
   );
 }
 
+/**
+ * `bridge.originPx[axis] = value` on a live pure-2D bridge: the mapping the
+ * generated registrar's per-frame sync reads, which upstream keeps as a
+ * mutable pair on the bridge record for exactly this use.
+ */
+function emitBridgeOriginWrite(
+  context: AssignmentContext,
+  expression: ts.BinaryExpression,
+): boolean {
+  const left = context.unwrap(expression.left);
+  if (!ts.isElementAccessExpression(left)) return false;
+  const origin = context.unwrap(left.expression);
+  if (
+    !ts.isPropertyAccessExpression(origin) ||
+    origin.name.text !== "originPx"
+  ) {
+    return false;
+  }
+  const owner = context.resolveRecordValue(origin.expression) ??
+    (ts.isIdentifier(context.unwrap(origin.expression))
+      ? context.lookupOptional(context.unwrap(origin.expression) as ts.Identifier)
+      : undefined);
+  if (owner?.kind !== "node-particle-2d-bridge") return false;
+  if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    context.fail(
+      expression.operatorToken,
+      "A bridge origin takes a plain assignment.",
+    );
+  }
+  const axis = context.compileValue(left.argumentExpression);
+  if (
+    axis.kind !== "number" ||
+    (axis.staticNumber !== 0 && axis.staticNumber !== 1)
+  ) {
+    context.fail(
+      left.argumentExpression,
+      "A bridge origin has two components, indexed 0 and 1.",
+    );
+  }
+  const value = context.compileValue(expression.right);
+  context.expectKind(value, "number", expression.right);
+  context.emit(
+    "bbl::upstream::set_node_particle_2d_origin(" +
+      `${owner.nodeParticleRequestIndex!}, ` +
+      `${owner.nodeParticleBridgeIndex!}, ${axis.staticNumber}, ` +
+      `${value.cpp});`,
+  );
+  return true;
+}
+
 export function emitPropertyAssignment(
   context: AssignmentContext,
   expression: ts.BinaryExpression,
@@ -1007,6 +1102,9 @@ export function emitPropertyAssignment(
   // recorded as a step rather than emitted -- and it is an ELEMENT
   // access, which the property gate below would refuse first.
   if (emitParticleBufferWrite(context, expression)) {
+    return;
+  }
+  if (emitBridgeOriginWrite(context, expression)) {
     return;
   }
   if (emitSpriteLayerViewAssignment(context, expression)) {
@@ -1226,6 +1324,17 @@ export function emitPropertyAssignment(
   if (
     ts.isIdentifier(left.expression) &&
     emitPostProcessOptionAssignment(
+      context,
+      expression,
+      left,
+      context.lookup(left.expression),
+    )
+  ) {
+    return;
+  }
+  if (
+    ts.isIdentifier(left.expression) &&
+    emitScreenSpaceSettingAssignment(
       context,
       expression,
       left,
@@ -2816,6 +2925,10 @@ import { noteCameraRecordWrite } from "./intrinsics/camera.js";
 import { cameraRecordField } from "./properties.js";
 import { compileRenderTextureValue } from "./intrinsics/engine-options.js";
 import { postProcessEffect } from "../post-process-effects.js";
+import {
+  SCREEN_SPACE_SCALAR_SETTINGS,
+  nativeSettingName,
+} from "../pinned-screen-space.js";
 import { toneMappingExportNames } from "../pinned-tone-mapping.js";
 import { foldMaterialPluginList } from "./material-plugin.js";
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";

@@ -50,6 +50,8 @@ bool run_sprite_dawn_engine(Engine& engine) {
     }
 
     DawnDevice state;
+    // The pinned mip generator, for an atlas the loader gave a chain.
+    DawnMipGenerator mips;
     std::vector<DawnSpritePass> passes;
     std::vector<WGPUTexture> render_textures;
     std::vector<WGPUTextureView> render_texture_views;
@@ -66,6 +68,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         for (DawnSpritePass& pass : passes) {
             release_dawn_sprite_pass(pass);
         }
+        release_dawn_mip_generator(mips);
         for (WGPUTextureView view : render_texture_views) {
             if (view) wgpuTextureViewRelease(view);
         }
@@ -157,6 +160,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 passes.push_back(create_dawn_sprite_pass(
                     state.device,
                     state.queue,
+                    mips,
                     engine,
                     handle,
                     render_textures,
@@ -206,7 +210,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 height = state.surface_height;
             }
             input_replay.dispatch(frame, state.window, engine);
-            const float delta_ms = advance_frame(
+            const double delta_ms = advance_frame(
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);
@@ -243,6 +247,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 sync_dawn_sprite_pass_layers(
                     state.device,
                     state.queue,
+                    mips,
                     engine,
                     pass,
                     render_textures,

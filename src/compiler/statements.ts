@@ -58,6 +58,7 @@ export interface StatementLoweringContext {
     emitDataAssignment(
         expression: ts.BinaryExpression,
     ): boolean;
+    bindPendingLet(identifier: ts.Identifier, value: Value): void;
     emitOptionalResourceAssignment(
         expression: ts.BinaryExpression,
         target: Value,
@@ -3268,6 +3269,15 @@ export class StatementLowerer {
                     return;
                 }
                 const rightExpression = context.unwrap(unwrapped.right);
+                if (target.kind === "pending-let" && operator === "=") {
+                    // `let set;` bound by its first assignment: a
+                    // compile-time record, in the declaring scope.
+                    context.bindPendingLet(
+                        unwrapped.left,
+                        context.compileValue(unwrapped.right),
+                    );
+                    return;
+                }
                 if (
                     target.kind === "number" &&
                     operator === "=" &&

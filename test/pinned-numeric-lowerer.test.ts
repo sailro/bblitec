@@ -23,7 +23,17 @@ import {
 function lower(
     source: string,
     bindings: Iterable<[string, PinnedBinding]> = [],
-    extra: Partial<Pick<PinnedNumericScope, "calls" | "tupleCalls" | "recordCalls" | "methods" | "vec3Literal">> = {},
+    extra: Partial<
+        Pick<
+            PinnedNumericScope,
+            | "calls"
+            | "tupleCalls"
+            | "recordCalls"
+            | "methods"
+            | "vec3Literal"
+            | "returnValue"
+        >
+    > = {},
 ): string {
     const file = ts.createSourceFile(
         "pinned.ts",
@@ -38,10 +48,11 @@ function lower(
         ...(extra.recordCalls ? { recordCalls: extra.recordCalls } : {}),
         ...(extra.methods ? { methods: extra.methods } : {}),
         ...(extra.vec3Literal ? { vec3Literal: extra.vec3Literal } : {}),
+        ...(extra.returnValue ? { returnValue: extra.returnValue } : {}),
     });
-    return file.statements
-        .flatMap((statement) => lowerer.statement(statement, ""))
-        .join("\n");
+    // The statement list, as a lowered body is: a statement after one that
+    // definitely returns is not translated.
+    return lowerer.statements(file.statements, "").join("\n");
 }
 
 test("loop and branch locals preserve outer bindings and avoid native shadowing", () => {
@@ -239,8 +250,63 @@ test("refuses an identifier with no binding", () => {
 
 test("refuses a statement kind it does not translate", () => {
     assert.throws(
-        () => lower("switch (1) { default: break; }"),
+        () => lower("do { } while (1);"),
         /Unsupported pinned statement/,
+    );
+});
+
+test("folds a switch over a static discriminant to its selected clause", () => {
+    const emitted = lower(
+        "switch (mode) { case 0: value = 1; break; case 1: case 2: value = 2; break; default: value = 3; }",
+        [
+            ["mode", { cpp: "2.0", type: "scalar", staticNumber: 2 }],
+            ["value", { cpp: "value", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /value = 2\.0;/);
+    assert.doesNotMatch(emitted, /value = 1\.0|value = 3\.0|switch|if \(/);
+});
+
+test("lowers a switch over a run-time discriminant to strict-equality arms", () => {
+    const emitted = lower(
+        "switch (mode) { case 0: value = 1; break; case 4: value = 2; break; default: value = 3; }",
+        [
+            ["mode", { cpp: "mode", type: "scalar" }],
+            ["value", { cpp: "value", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /if \(mode == 0\.0\) \{\s*value = 1\.0;\s*\} else if \(mode == 4\.0\) \{\s*value = 2\.0;\s*\} else \{\s*value = 3\.0;\s*\}/);
+});
+
+test("folds a shape test over a record the caller fixed", () => {
+    const emitted = lower(
+        'if (typeof v === "number") { out = v; } else if ("z" in v) { out = v.z; } else { out = v.x; }',
+        [
+            ["v", { cpp: "v", type: "vec3" }],
+            ["out", { cpp: "out", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /out = v\.z;/);
+    assert.doesNotMatch(emitted, /out = v;|out = v\.x;|typeof|if \(/);
+});
+
+test("stops a block at a statically selected returning arm", () => {
+    const emitted = lower(
+        'if (typeof v === "number") { return v; } const w = v.r; return w;',
+        [["v", { cpp: "v", type: "scalar" }]],
+        { returnValue: (expression) => (expression ? "value" : "") },
+    );
+    assert.match(emitted, /return value;/);
+    assert.doesNotMatch(emitted, /v\.r/);
+});
+
+test("lowers the pin's signed shift as ToInt32 arithmetic", () => {
+    const emitted = lower("const count = emission >> 0;", [
+        ["emission", { cpp: "emission", type: "scalar" }],
+    ]);
+    assert.match(
+        emitted,
+        /bbl::js::to_int32\(emission\) >> \(bbl::js::to_int32\(0\.0\) & 31\)/,
     );
 });
 
@@ -433,4 +499,24 @@ test("narrows both sides of a bit test the way ToInt32 does", () => {
         [["i", { cpp: "i", type: "scalar" }]],
     );
     assert.match(emitted, /bbl::js::bitwise_and\(i, 4\.0\)/);
+});
+
+// The ribbon builder grows a record list from a record local and from a
+// row of another record list. The push arm reads the record's C++ spelling
+// off `recordValue`, which answers with a typed binding; the whole binding
+// once reached the emitted text as `[object Object]`, which no unit test
+// covered and every ribbon scene's native build found.
+test("pushes a record onto a record list by its C++ spelling", () => {
+    const emitted = lower(
+        "ar1.push(pt); ar1.push(path[i]);",
+        [
+            ["ar1", { cpp: "ar1", type: "vec3-list" }],
+            ["pt", { cpp: "pt", type: "vec3" }],
+            ["path", { cpp: "path", type: "vec3-list" }],
+            ["i", { cpp: "i", type: "scalar" }],
+        ],
+    );
+    assert.match(emitted, /ar1\.push_back\(pt\);/);
+    assert.match(emitted, /ar1\.push_back\(path\[[^\]]*i[^\]]*\]\);/);
+    assert.doesNotMatch(emitted, /object Object/);
 });

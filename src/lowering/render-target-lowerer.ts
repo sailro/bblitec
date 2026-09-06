@@ -131,6 +131,7 @@ RenderTargetHandle create_render_target(
         // One, unless a cascaded shadow generator asked for one depth layer
         // per cascade.
         options.depth_layers == 0 ? 1u : options.depth_layers,
+        options.scale_rounding,
     });
     return RenderTargetHandle{
         static_cast<std::uint32_t>(engine.render_targets.size() - 1)};

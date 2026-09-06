@@ -23,6 +23,7 @@
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <map>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -545,6 +546,170 @@ inline WGPUShaderModule load_wgsl_module(
         dawn_error("wgpuDeviceCreateShaderModule " + base_name);
     }
     return module;
+}
+
+/**
+ * The pinned mip generator (`src/texture/generate-mipmaps.ts`): one blit
+ * pipeline per format over the deployed `mip-blit` stages, sampling each
+ * level from the one above with the bilinear sampler.
+ *
+ * It lives at the device level rather than on the scene driver's state
+ * because two drivers build atlases the pinned `loadTexture2D` gave a mip
+ * chain: the scene renderer's billboard passes, and the pure-2D sprite
+ * driver's layers over a node-particle texture.
+ */
+struct DawnMipGenerator {
+    WGPUShaderModule vertex_module = nullptr;
+    WGPUShaderModule fragment_module = nullptr;
+    WGPUSampler sampler = nullptr;
+    std::map<WGPUTextureFormat, WGPURenderPipeline> pipelines;
+};
+
+inline void release_dawn_mip_generator(DawnMipGenerator& mips) {
+    for (auto& [format, pipeline] : mips.pipelines) {
+        if (pipeline) wgpuRenderPipelineRelease(pipeline);
+    }
+    mips.pipelines.clear();
+    if (mips.sampler) wgpuSamplerRelease(mips.sampler);
+    if (mips.fragment_module) wgpuShaderModuleRelease(mips.fragment_module);
+    if (mips.vertex_module) wgpuShaderModuleRelease(mips.vertex_module);
+    mips.sampler = nullptr;
+    mips.fragment_module = nullptr;
+    mips.vertex_module = nullptr;
+}
+
+inline WGPURenderPipeline mip_pipeline_for(
+    WGPUDevice device,
+    DawnMipGenerator& mips,
+    WGPUTextureFormat format) {
+    const auto existing = mips.pipelines.find(format);
+    if (existing != mips.pipelines.end()) return existing->second;
+    if (!mips.vertex_module) {
+        mips.vertex_module = load_wgsl_module(device, "mip-blit.vert");
+        mips.fragment_module = load_wgsl_module(device, "mip-blit.frag");
+        // The pinned generator samples with the bilinear sampler:
+        // linear filters and WebGPU-default clamp addressing.
+        WGPUSamplerDescriptor sampler_descriptor =
+            WGPU_SAMPLER_DESCRIPTOR_INIT;
+        sampler_descriptor.magFilter = WGPUFilterMode_Linear;
+        sampler_descriptor.minFilter = WGPUFilterMode_Linear;
+        mips.sampler = wgpuDeviceCreateSampler(device, &sampler_descriptor);
+    }
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.vertex.module = mips.vertex_module;
+    descriptor.vertex.entryPoint = string_view("mainVertex");
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = format;
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = mips.fragment_module;
+    fragment.entryPoint = string_view("mainFragment");
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    descriptor.fragment = &fragment;
+    WGPURenderPipeline pipeline =
+        wgpuDeviceCreateRenderPipeline(device, &descriptor);
+    if (!pipeline) dawn_error("mip blit pipeline creation failed.");
+    mips.pipelines[format] = pipeline;
+    return pipeline;
+}
+
+// The pinned generator blits one face at a time for cube textures
+// (recordMipmaps' optional layer): views become single-layer 2D. The
+// record variant encodes into a caller-owned encoder (the pinned
+// recordMipmaps) so mid-frame chains stay ordered with the frame.
+inline void record_mipmaps(
+    WGPUDevice device,
+    DawnMipGenerator& mips,
+    WGPUCommandEncoder encoder,
+    WGPUTexture texture,
+    WGPUTextureFormat format,
+    std::uint32_t mip_count,
+    std::int32_t face = -1) {
+    if (mip_count <= 1) return;
+    WGPURenderPipeline pipeline = mip_pipeline_for(device, mips, format);
+    WGPUBindGroupLayout layout =
+        wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
+    for (std::uint32_t level = 1; level < mip_count; ++level) {
+        WGPUTextureViewDescriptor source_descriptor =
+            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        source_descriptor.baseMipLevel = level - 1;
+        source_descriptor.mipLevelCount = 1;
+        WGPUTextureViewDescriptor target_descriptor =
+            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+        target_descriptor.baseMipLevel = level;
+        target_descriptor.mipLevelCount = 1;
+        if (face >= 0) {
+            source_descriptor.dimension = WGPUTextureViewDimension_2D;
+            source_descriptor.baseArrayLayer =
+                static_cast<std::uint32_t>(face);
+            source_descriptor.arrayLayerCount = 1;
+            target_descriptor.dimension = WGPUTextureViewDimension_2D;
+            target_descriptor.baseArrayLayer =
+                static_cast<std::uint32_t>(face);
+            target_descriptor.arrayLayerCount = 1;
+        }
+        WGPUTextureView source =
+            wgpuTextureCreateView(texture, &source_descriptor);
+        WGPUTextureView target =
+            wgpuTextureCreateView(texture, &target_descriptor);
+
+        std::array<WGPUBindGroupEntry, 2> entries{};
+        entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[0].binding = 0;
+        entries[0].textureView = source;
+        entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
+        entries[1].binding = 1;
+        entries[1].sampler = mips.sampler;
+        WGPUBindGroupDescriptor bind_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        bind_descriptor.layout = layout;
+        bind_descriptor.entryCount = entries.size();
+        bind_descriptor.entries = entries.data();
+        WGPUBindGroup bind_group =
+            wgpuDeviceCreateBindGroup(device, &bind_descriptor);
+
+        WGPURenderPassColorAttachment color_attachment =
+            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+        color_attachment.view = target;
+        color_attachment.loadOp = WGPULoadOp_Clear;
+        color_attachment.storeOp = WGPUStoreOp_Store;
+        WGPURenderPassDescriptor pass_descriptor =
+            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+        pass_descriptor.colorAttachmentCount = 1;
+        pass_descriptor.colorAttachments = &color_attachment;
+        WGPURenderPassEncoder pass =
+            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+        wgpuRenderPassEncoderSetPipeline(pass, pipeline);
+        wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
+        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+        wgpuRenderPassEncoderEnd(pass);
+        wgpuRenderPassEncoderRelease(pass);
+        wgpuBindGroupRelease(bind_group);
+        wgpuTextureViewRelease(target);
+        wgpuTextureViewRelease(source);
+    }
+    wgpuBindGroupLayoutRelease(layout);
+}
+
+/** The whole chain in one submitted encoder, for a texture uploaded once. */
+inline void generate_mipmaps(
+    WGPUDevice device,
+    WGPUQueue queue,
+    DawnMipGenerator& mips,
+    WGPUTexture texture,
+    WGPUTextureFormat format,
+    std::uint32_t mip_count,
+    std::int32_t face = -1) {
+    if (mip_count <= 1) return;
+    WGPUCommandEncoder encoder =
+        wgpuDeviceCreateCommandEncoder(device, nullptr);
+    record_mipmaps(device, mips, encoder, texture, format, mip_count, face);
+    WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, nullptr);
+    wgpuQueueSubmit(queue, 1, &command);
+    wgpuCommandBufferRelease(command);
+    wgpuCommandEncoderRelease(encoder);
 }
 
 /**

@@ -217,6 +217,7 @@ export const featureSources: Record<Feature, string[]> = {
     "renderer:clip-plane": [],
     "renderer:geometry-output": [],
     "renderer:post-process": [],
+    "renderer:screen-space": [],
     "renderer:high-precision-matrix": [],
     "renderer:floating-origin": [],
     // Dialogs, selected-path reads, and atomic downloads are isolated in
@@ -326,6 +327,7 @@ export interface MainCppProjection {
     audioSessionReached?: boolean;
     throwReached: boolean;
     postProcessCompositeCount: number;
+    screenSpaceTaskCount: number;
     renderDataPreamble: () => string;
     nativeFunctionPrototypes: readonly string[];
     nativeFunctionDefinitions: readonly string[];
@@ -344,6 +346,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         jsRandomReached,
         throwReached,
         postProcessCompositeCount,
+        screenSpaceTaskCount,
         renderDataPreamble,
         nativeFunctionPrototypes,
         nativeFunctionDefinitions,
@@ -443,11 +446,15 @@ export function renderMainCpp(projection: MainCppProjection): string {
             ? "#include <bblite/js_voxel_file.hpp>\n"
             : "");
     // A composite's factory is generated, so the scene calls it by a name
-    // only its own generated header declares.
+    // only its own generated header declares; a screen-space task's is the
+    // same shape under its own header.
     const postProcessInclude =
-        postProcessCompositeCount > 0
+        (postProcessCompositeCount > 0
             ? "#include <bblite/upstream/frame_graph_post_process.hpp>\n"
-            : "";
+            : "") +
+        (screenSpaceTaskCount > 0
+            ? "#include <bblite/upstream/frame_graph_screen_space.hpp>\n"
+            : "");
     const preambleSections: string[] = [];
     if (staticNativeDeclarations.length > 0) {
         preambleSections.push(

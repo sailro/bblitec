@@ -26,6 +26,13 @@ const UI_STYLE_SELECTOR_DESCRIPTORS = {
         css: (rule: UiStyleSelectorShape) =>
             `.${rule.primary} ${rule.tag ?? ""}`,
     },
+    "tag-class": {
+        cpp: "TagClass",
+        needsSecondary: false,
+        needsTag: true,
+        css: (rule: UiStyleSelectorShape) =>
+            `${rule.tag ?? ""}.${rule.primary}`,
+    },
     "id-descendant-class": {
         cpp: "IdDescendantClass",
         needsSecondary: true,

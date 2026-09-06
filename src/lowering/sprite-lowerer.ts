@@ -2398,6 +2398,20 @@ void populate_grid_sprite_atlas_frames(
 
 } // namespace
 
+// sprite-2d.ts _setSprite2DCount / _markSprite2DDirty: the pin exports these
+// two internals for the pure-2D particle bridge, which owns a layer's whole
+// live range and writes it without going through add/update.
+void set_sprite_2d_count(Sprite2DLayerRecord& layer, std::uint32_t count) {
+    layer.count = count;
+}
+
+void mark_sprite_2d_dirty(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t lo,
+    std::uint32_t hi) {
+    touch_sprite_instances(layer, lo, hi);
+}
+
 // sprite-2d-uvscroll.ts ensureWide: widen a layer from the narrow base
 // layout to the uvOffset layout, re-striding the sprites already written.
 // The offset slots default to zero, and the attribute the pipeline pushes
@@ -3344,7 +3358,7 @@ void register_sprite_renderer(
 void sprite_renderer_before_update(
     Engine& engine,
     SpriteRendererHandle renderer,
-    std::function<void(float)> callback) {
+    std::function<void(double)> callback) {
     engine.sprite_renderers[renderer.value].before_update.push_back(
         std::move(callback));
 }

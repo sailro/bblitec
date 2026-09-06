@@ -1389,9 +1389,11 @@ test("reports zero delta on the fixed clock's first frame", () => {
     const shared = source("native/src/pal_gpu_shared.hpp");
 
     assert.match(shared, /const bool first_frame = previous_ == 0\.0;/);
+    // A double: the sprite renderer's hook divides the delta by the pin's
+    // frame period, and the browser's own fixed step is a double.
     assert.match(
         shared,
-        /fixed_delta_ms > 0\.0f && !first_frame\s*\? fixed_delta_ms\s*:\s*measured/,
+        /fixed_delta_ms > 0\.0 && !first_frame\s*\? fixed_delta_ms\s*:\s*measured/,
     );
 });
 

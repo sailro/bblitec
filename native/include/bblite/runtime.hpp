@@ -1017,13 +1017,32 @@ struct PixelViewport {
  * albedo pack into rgba8, VIEW_DEPTH keeps full float precision, the
  * normalized and screenspace depths take r16 -- as does any attachment whose
  * description asks for it -- and every other lane is rgba16. A post-process
- * composite names its own instead: the circle-of-confusion map is r16.
+ * composite names its own instead: the circle-of-confusion map is r16. The
+ * screen-space effects name theirs too: a contact-shadow producer writes
+ * `r8unorm` occlusion and its temporal history keeps `rg16float`, value in
+ * `.r` and view distance in `.g` (`screen-space-temporal.ts`).
  */
 enum class TextureFormatClass {
     rgba8_unorm,
+    r8_unorm,
     r16_float,
+    rg16_float,
     r32_float,
     rgba16_float,
+};
+
+/**
+ * How a target sized as a fraction of another rounds that fraction.
+ *
+ * A post-process composite's intermediate takes the pin's
+ * `max(1, floor(extent * ratio))`; a screen-space effect's owned targets take
+ * `computeScreenSpaceScaledSize`, which rounds to nearest. Both are the pin's
+ * own arithmetic, so the record names which one and the backend calls the
+ * generated rule rather than restating either.
+ */
+enum class ScaleRounding {
+    floor,
+    round,
 };
 
 struct RenderTargetOptions {
@@ -1050,6 +1069,8 @@ struct RenderTargetOptions {
     bool shadow_map = false;
     /** See `RenderTargetRecord::depth_layers`. */
     std::uint32_t depth_layers = 1;
+    /** See `RenderTargetRecord::scale_rounding`. */
+    ScaleRounding scale_rounding = ScaleRounding::floor;
 };
 
 enum class RenderTextureSource {
@@ -1257,10 +1278,156 @@ struct EffectTaskOptions {
     Color4 clear_color{};
 };
 
+/** Which of the pin's two screen-space producers a task runs. */
+enum class ScreenSpaceEffectKind {
+    contact_shadows,
+    global_illumination,
+};
+
+/**
+ * The pin's `lightDirection`, which the contact-shadow task keeps by
+ * reference and normalizes every frame. A scene that passed a light's own
+ * `direction` reads that record live; one that passed a literal keeps the
+ * value.
+ */
+struct ScreenSpaceLightDirection {
+    LightHandle light{};
+    Vec3d value{};
+};
+
+/**
+ * The closure state one screen-space task carries between frames: the
+ * pin's `execute` locals (`firstFrame`, `lastEnabled`, `accumulatedSamples`,
+ * `phaseIndex`, ...) and the temporal owner's previous matrices. Written
+ * only by the generated frame function lowered from those bodies.
+ */
+struct ScreenSpaceTemporalState {
+    bool first_frame = true;
+    bool pending_reallocation = false;
+    /**
+     * The pin's `lastEnabled` starts `undefined`, which every read treats
+     * as false (`if (lastEnabled)`, `!lastEnabled`), so false is its value.
+     */
+    bool last_enabled = false;
+    /**
+     * The pin's `lastResetVersion` starts `undefined`, and `resetVersion
+     * !== undefined` is true -- an empty optional compares unequal to any
+     * number the same way.
+     */
+    std::optional<double> last_reset_version;
+    double accumulated_samples = 1.0;
+    double phase_index = 0.0;
+    bool prev_inv_view_proj_null = false;
+    std::array<float, 16> prev_view_proj{};
+    std::array<float, 16> prev_view{};
+    /** The `_depthTexture` / `_colorTexture` identities the pin remembers. */
+    std::uint32_t last_depth_allocation = 0;
+    std::uint32_t last_color_allocation = 0;
+    /** The owned targets' identities the pin's `record` compared sizes by. */
+    std::uint32_t seen_raw_allocation = 0;
+    std::uint32_t seen_stable_allocation = 0;
+    std::uint32_t seen_history_allocation = 0;
+};
+
+/**
+ * A screen-space contact-shadow or global-illumination task
+ * (`screen-space-contact-shadows.ts`, `screen-space-global-illumination.ts`).
+ *
+ * The pin builds two dedicated pipelines -- a producer that raymarches the
+ * depth attachment through a depth-only view, and the shared temporal
+ * resolve -- and two ordinary post-process passes, the history copy and the
+ * optional composite. The ordinary passes live in the owning
+ * `FrameTaskRecord::post_process`; this record holds what the pin keeps on
+ * the task object itself: its settings, its owned targets and its temporal
+ * state. Settings marked live are sampled every frame, as the pin samples
+ * `task.*` inside `execute`.
+ */
+struct ScreenSpaceTaskOptions {
+    std::string name;
+    ScreenSpaceEffectKind kind = ScreenSpaceEffectKind::contact_shadows;
+    RenderTargetHandle source{};
+    /** `config.depthTexture ?? sourceTexture`. */
+    RenderTargetHandle depth{};
+    /** The composite's target, or an invalid handle for the pass's own. */
+    RenderTargetHandle target{};
+    CameraHandle camera{};
+    ScreenSpaceLightDirection light_direction{};
+    /** The pin's clamped `params`, fixed at creation. */
+    double resolution_scale = 1.0;
+    double temporal_samples = 32.0;
+    /** Live settings shared by both kinds. */
+    bool enabled = true;
+    double intensity = 0.0;
+    double step_count = 0.0;
+    double thickness = 0.0;
+    double bias = 0.0;
+    double temporal_weight = 0.0;
+    double reset_version = 0.0;
+    /** Live contact-shadow settings. */
+    std::array<double, 3> tint{};
+    double max_distance = 0.0;
+    double normal_bias = 0.0;
+    double spatial_radius = 0.0;
+    /** Live global-illumination settings. */
+    double ray_count = 0.0;
+    double ray_length = 0.0;
+    double fade_start = 0.0;
+    double fade_end = 0.0;
+    double edge_fade = 0.0;
+    double color_bleed_gain = 0.0;
+    double color_bleed_max = 0.0;
+    /** The deployed producer and resolve stages, by generated table index. */
+    std::uint32_t producer_shader = 0;
+    std::uint32_t resolve_shader = 0;
+    /** The targets the task owns, created and sized from `depth`. */
+    RenderTargetHandle raw{};
+    RenderTargetHandle stable{};
+    RenderTargetHandle history{};
+    /** `composite ? composite.outputTexture : owner.stableTexture`. */
+    RenderTargetHandle output_target{};
+    ScreenSpaceTemporalState state{};
+};
+
+/**
+ * What a backend tells the generated frame function about this frame.
+ *
+ * The allocation ids stand in for the `GPUTexture` identities the pin
+ * compares: a backend numbers each target's textures when it creates them,
+ * so a rebuilt source, depth or owned target reads as a different object
+ * exactly where the pin's `identityChanged` would. Zero means never built.
+ */
+struct ScreenSpaceFrameInputs {
+    std::uint32_t depth_width = 0;
+    std::uint32_t depth_height = 0;
+    std::uint32_t effect_width = 0;
+    std::uint32_t effect_height = 0;
+    std::uint32_t depth_allocation = 0;
+    std::uint32_t color_allocation = 0;
+    std::uint32_t raw_allocation = 0;
+    std::uint32_t stable_allocation = 0;
+    std::uint32_t history_allocation = 0;
+};
+
+/**
+ * What the generated frame function decided, which the backend encodes in
+ * the pin's own order: the identity clear (both temporal targets zeroed
+ * once on the enabled-to-disabled transition or a singular view-projection
+ * inverse), then the producer, resolve and history-copy passes when the
+ * effect runs, then the composite pass whenever the task has one. The two
+ * blocks are sized by the pin's constants, which generation asserts.
+ */
+struct ScreenSpaceFrameDecision {
+    bool clear_identity = false;
+    bool run_effect = false;
+    std::array<float, 48> producer_uniforms{};
+    std::array<float, 72> temporal_uniforms{};
+};
+
 enum class FrameTaskKind {
     render,
     geometry,
     copy,
+    screen_space,
     post_process,
     effect,
 };
@@ -1302,6 +1469,8 @@ struct RenderTargetRecord {
      * no pass borrows a depth it would then have to not release.
      */
     std::uint32_t depth_layers = 1;
+    /** Which pinned rounding sizes this target from `scale_source`. */
+    ScaleRounding scale_rounding = ScaleRounding::floor;
 };
 
 struct FrameTaskRecord {
@@ -1310,8 +1479,14 @@ struct FrameTaskRecord {
     std::vector<RenderTaskMesh> render_meshes;
     GeometryTaskOptions geometry;
     CopyTaskOptions copy;
+    /**
+     * A post-process task's passes; also a screen-space task's two ordinary
+     * passes, the history copy at index 0 and the composite at index 1 when
+     * the task composes (`ScreenSpaceTaskOptions`).
+     */
     PostProcessTaskOptions post_process;
     EffectTaskOptions effect;
+    ScreenSpaceTaskOptions screen_space;
 };
 
 struct RenderTargetTexture {
@@ -2435,13 +2610,14 @@ struct SpriteRendererRecord {
     // runs, with the frame's delta, before it asserts its layers and
     // uploads them. Both the pure-2D node-particle bridges and application
     // code push onto this list, so it is the renderer's own per-frame step
-    // rather than the scene's.
-    std::vector<std::function<void(float)>> before_update;
+    // rather than the scene's. The delta is the browser's double: the
+    // particle bridge divides it by the pin's frame period.
+    std::vector<std::function<void(double)>> before_update;
     // The list the frame is iterating. A hook may push another, and
     // upstream iterates the array it entered with, so the run reads a copy
     // -- kept here rather than made fresh each frame, which reuses the
     // capacity after the first one.
-    std::vector<std::function<void(float)>> before_update_running;
+    std::vector<std::function<void(double)>> before_update_running;
 };
 
 /**
@@ -3453,6 +3629,8 @@ enum class UiStyleSelectorKind : std::uint8_t {
     CompoundClass,
     ClassDescendantTag,
     IdDescendantClass,
+    /** `tag.class`, the element's own tag gated on one of its classes. */
+    TagClass,
 };
 
 /**
@@ -4411,7 +4589,7 @@ struct SceneState {
     bool seeks_vat = false;
     std::vector<js::Callback<void()>> deferred_builders;
     EnvironmentState environment;
-    float fixed_delta_ms = 0.0f;
+    double fixed_delta_ms = 0.0;
     /** Mesh, light, or shadow changes that require renderer state rebuild. */
     std::uint64_t render_topology_version = 0;
     /** A light/shadow topology mutation awaiting registration or rebuild. */
@@ -4476,7 +4654,7 @@ struct Scene {
     bool& seeks_vat;
     std::vector<js::Callback<void()>>& deferred_builders;
     EnvironmentState& environment;
-    float& fixed_delta_ms;
+    double& fixed_delta_ms;
     std::uint64_t& render_topology_version;
     bool& topology_rebuild_pending;
     std::uint32_t& material_family_mask;
@@ -5586,6 +5764,15 @@ TaskHandle create_post_process_task(
     Engine& engine,
     PostProcessTaskOptions options);
 void update_post_process_uniforms(Engine& engine, TaskHandle task);
+/**
+ * Resolves one pass's `output_target`: the caller's target, or one made from
+ * the source's own descriptor at a single sample (the pin's
+ * `prepareOutputTarget`). Shared by the post-process and screen-space task
+ * factories, which build the same pass.
+ */
+void resolve_post_process_pass_output(
+    Engine& engine,
+    PostProcessPassOptions& pass);
 RenderTextureRef render_target_texture(RenderTargetHandle target);
 RenderTextureRef geometry_task_texture(
     TaskHandle task,
@@ -6397,7 +6584,17 @@ void register_sprite_renderer(
 void sprite_renderer_before_update(
     Engine& engine,
     SpriteRendererHandle renderer,
-    std::function<void(float)> callback);
+    std::function<void(double)> callback);
+/**
+ * sprite-2d.ts `_setSprite2DCount` / `_markSprite2DDirty`: the two
+ * internals the pure-2D particle bridge writes a layer's whole live range
+ * through, exported by the pin for exactly that caller.
+ */
+void set_sprite_2d_count(Sprite2DLayerRecord& layer, std::uint32_t count);
+void mark_sprite_2d_dirty(
+    Sprite2DLayerRecord& layer,
+    std::uint32_t lo,
+    std::uint32_t hi);
 
 void register_scene(Scene& scene);
 void unregister_scene(Scene& scene);

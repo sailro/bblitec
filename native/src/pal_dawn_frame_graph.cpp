@@ -82,8 +82,12 @@ WGPUTextureFormat texture_format(TextureFormatClass format) {
     switch (format) {
         case TextureFormatClass::rgba8_unorm:
             return WGPUTextureFormat_RGBA8Unorm;
+        case TextureFormatClass::r8_unorm:
+            return WGPUTextureFormat_R8Unorm;
         case TextureFormatClass::r16_float:
             return WGPUTextureFormat_R16Float;
+        case TextureFormatClass::rg16_float:
+            return WGPUTextureFormat_RG16Float;
         case TextureFormatClass::r32_float:
             return WGPUTextureFormat_R32Float;
         case TextureFormatClass::rgba16_float:
@@ -192,8 +196,10 @@ void build_graph(
         target.height = record.height > 0 ? record.height : height;
         if (record.scale_source.value != invalid_handle) {
             const Target& source = state.targets.at(record.scale_source.value);
-            target.width = scaled_target_extent(source.width, record.width_ratio);
-            target.height = scaled_target_extent(source.height, record.height_ratio);
+            const ScaledExtents scaled =
+                scaled_target_extents(record, source.width, source.height);
+            target.width = scaled.width;
+            target.height = scaled.height;
         }
         if (record.swapchain) {
             target.format = state.surface_format;
