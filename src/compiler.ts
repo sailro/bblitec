@@ -8674,9 +8674,15 @@ class Compiler
         } finally {
             this.nativeDependencyStack.pop();
         }
+        // CSG values retain materialized geometry plans, not the native mesh
+        // handles read while producing them. A later consumer can therefore
+        // use the plan from a hoisted cleanup without capturing those locals.
+        const geometryPlan = value.kind === "csg-solid" || value.kind === "csg2-solid";
         const retained = new Set(value.nativeCaptures);
-        for (const binding of dependencies) {
-            if (binding.sequence <= boundary) retained.add(binding);
+        if (!geometryPlan) {
+            for (const binding of dependencies) {
+                if (binding.sequence <= boundary) retained.add(binding);
+            }
         }
         if (retained.size && !this.nativeStoredValues.has(value)) value.nativeCaptures = [...retained];
         this.useNativeValue(value);
@@ -13359,6 +13365,30 @@ class Compiler
         const binding = { name, borrowed, allowReference, sequence: ++this.nextNativeBindingSequence };
         this.nativeBindings.set(name, binding);
         return binding;
+    }
+
+    public nativeBindingCheckpoint(): number {
+        return this.nextNativeBindingSequence;
+    }
+
+    public captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[] {
+        const beforeGuard = this.nextNativeBindingSequence;
+        const dependencies = new Set<NativeCaptureBinding>();
+        this.nativeDependencyStack.push(dependencies);
+        let lines: string[];
+        try {
+            lines = this.captureEmittedLines(emitBody);
+        } finally {
+            this.nativeDependencyStack.pop();
+        }
+        for (const binding of dependencies) {
+            if (binding.sequence > beforeBody && binding.sequence <= beforeGuard) {
+                this.fail(site,
+                    `A hoisted finally guard cannot reference native local '${binding.name}' ` +
+                    "declared inside its try/catch body; declare retained native state before the try.");
+            }
+        }
+        return lines;
     }
 
     private describeNativeValue(value: Value): void {

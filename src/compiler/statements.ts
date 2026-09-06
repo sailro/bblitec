@@ -116,6 +116,8 @@ export interface StatementLoweringContext {
         | "mark_mesh_dirty"
         | "mark_mesh_runtime_transform";
     captureEmittedLines(emitBody: () => void): string[];
+    nativeBindingCheckpoint(): number;
+    captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[];
     /**
      * Runs a shape probe, keeping what it emitted only when it answers.
      * A probe that resolves a call compiles it, so one that declines has
@@ -1502,12 +1504,14 @@ export class StatementLowerer {
         // Lower in source order so generation-only bindings and cleanup see
         // the try body's effects. Native cleanup still precedes the captured
         // body as a scope guard, covering early returns and exceptions.
+        const beforeBody = context.nativeBindingCheckpoint();
         const body = context.captureEmittedLines(() =>
             this.emitTryBody(context, statement));
         const capturedFinally = statement.finallyBlock
             ? this.captureFinallyGuard(
                   context,
                   statement.finallyBlock,
+                  beforeBody,
               )
             : undefined;
         const finallyGuard = capturedFinally?.length
@@ -1617,7 +1621,7 @@ export class StatementLowerer {
         try {
             for (const child of statement.tryBlock.statements) {
                 this.emit(context, child);
-                if (this.terminatesAfterLowering(child)) break;
+                if (this.terminatesAfterLowering(child) || this.staticIterationCompleted()) break;
             }
         } finally {
             context.popScope();
@@ -1681,16 +1685,27 @@ export class StatementLowerer {
     private captureFinallyGuard(
         context: StatementLoweringContext,
         block: ts.Block,
+        beforeBody: number,
     ): string[] {
+        // A pending break/continue leaves the try only after every cleanup
+        // statement runs. An abrupt cleanup completion can replace it.
+        const completions = this.staticIterationCompletions.map(frame => ({
+            frame, completion: frame.completion,
+        }));
+        for (const { frame } of completions) frame.completion = "normal";
         context.pushScope(context.allocateBlockPrefix());
         try {
-            return context.captureEmittedLines(() => {
+            return context.captureHoistedLines(() => {
                 for (const statement of block.statements) {
                     this.emit(context, statement);
+                    if (this.terminatesAfterLowering(statement) || this.staticIterationCompleted()) break;
                 }
-            });
+            }, beforeBody, block);
         } finally {
             context.popScope();
+            for (const { frame, completion } of completions) {
+                if (frame.completion === "normal") frame.completion = completion;
+            }
         }
     }
 
