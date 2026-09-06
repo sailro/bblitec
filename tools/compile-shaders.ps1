@@ -911,6 +911,14 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     throw "Tint HLSL generation failed for $($source.FullName)."
                 }
                 $reflectionText = $reflection -join [Environment]::NewLine
+                # Diagnostics include the input path, which is not part of the
+                # content-addressed key. Keep their locations and text, but use
+                # one source label even when identical WGSL has different names.
+                $reflectionText = [regex]::Replace(
+                    $reflectionText,
+                    "(?m)^$([regex]::Escape($source.FullName))(?=:\d+:\d+ )",
+                    "source.wgsl"
+                )
                 $pendingReflection = "$outputBase.pending-reflection"
                 $reflectionText | Set-Content $pendingReflection
                 Move-IfDifferent $pendingReflection "$outputBase.tint-reflection.txt"

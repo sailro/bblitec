@@ -83,8 +83,6 @@ implementation, follow the sizing/capture workflow in
   write; a generic material handle must not accept an unrelated Standard setter.
 - [ ] Derive post-process option kinds from pinned config declarations, not
   the scene's chosen field names.
-- [ ] Normalize reflection sidecar source paths so shader-cache replay does
-  not depend on which scene populated the cache first.
 - [ ] Cache SPZ payloads with observed rotation and assert that a scene-wide
   rotation cannot hide a version-conditional write. Add a same-cloud
   PLY/SPLAT packaging equivalence fixture and shared output-collision policy.

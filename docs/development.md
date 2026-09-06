@@ -147,6 +147,9 @@ entry/profile, target, transformation script and participating compiler binaries
 The outer stage checkpoint must include the same dependencies before skipping
 the compiler. Changed or missing products invalidate reuse. Build after shader
 changes to deploy the new payload. Set `TINT_PATH` and `DXC_PATH` for overrides.
+Cached Tint reflection diagnostics use `source.wgsl` for the input file while
+retaining line/column locations and warning text. This label refers to the
+module declared in the scene's `composition.json`, independent of cache fill order.
 
 ## Native builds
 
