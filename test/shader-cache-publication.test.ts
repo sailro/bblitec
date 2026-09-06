@@ -45,6 +45,8 @@ test("Tint cache reflection is independent of source path and fill order", { ski
             assert.match(reflection, /^source\.wgsl:4:\d+ warning: code is unreachable/m);
             assert.match(reflection, /\[3\]\[0\]:/);
             assert.match(reflection, /resource_type = UniformBuffer/);
+            assert.ok(reflection.indexOf("warning:") < reflection.indexOf("[3][0]:"),
+                "diagnostics precede inspector output independently of process stream timing");
             assert.ok(!reflection.includes(root));
             results.push(artifacts);
         }
