@@ -104,6 +104,8 @@ export interface NodeParticleRegistrationEmit {
 export interface NodeParticleSprite2DEmit
     extends NodeParticleRegistrationEmit {
     exact: boolean;
+    /** Frozen simulation whose shared sprite-sheet cells remain live. */
+    retainFrozen?: true;
     /**
      * `options.autoStart ?? true`: whether the registrar starts each
      * system. The frozen registrar replays it in the driver; the live one
@@ -996,6 +998,11 @@ export class NodeParticleLowerer {
         const live = liveSystems.length > 0
             ? this.liveSectionCpp(liveSystems, sprite2d, liveRequests)
             : undefined;
+        const retained = sprite2d.some((binding) => binding.retainFrozen);
+        const frozen = retained || systems.some((entry) => entry.bake.bufferColumns !== undefined)
+            ? this.frozenSectionCpp(systems, sprite2d)
+            : undefined;
+        if (retained) this.assertLiveRules();
         // Which halves of the family this scene reaches. The two render
         // targets are exclusive per system, so a system a pure-2D binding
         // took draws no billboard — and a scene of nothing but bridges
@@ -1016,6 +1023,7 @@ export class NodeParticleLowerer {
 
 // ${provenance}
 #include <bblite/runtime.hpp>
+${frozen ? "#include <bblite/js_data.hpp>\n" : ""}\
 
 namespace bbl::upstream {
 
@@ -1075,7 +1083,7 @@ void register_node_particle_set_2d(
     SpriteRendererHandle renderer,
     int request);
 `
-}${live?.header ?? ""}
+}${live?.header ?? ""}${frozen?.header ?? ""}
 }  // namespace bbl::upstream
 `,
             source: `// ${provenance}
@@ -1098,6 +1106,7 @@ ${
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+${frozen ? "#include <limits>\n" : ""}\
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -1219,6 +1228,7 @@ ${systems.map(particleRowsCpp).join("\n\n")}
 const BakedSystem baked_systems[] = {
 ${systems.map(bakedSystemRowCpp).join("\n")}
 };
+${frozen?.state ?? ""}\
 ${
     !registered
         ? ""
@@ -1295,6 +1305,14 @@ SpriteAtlasHandle particle_atlas(
     int set_index,
     int system_index) {
     const BakedSystem& system = baked(set_index, system_index);
+${frozen ? `    const FrozenSystem* retained = frozen_system(set_index, system_index);
+    const double cell_width = retained && retained->has_sheet
+        ? (retained->cell_width > 0 ? retained->cell_width : retained->texture_width)
+        : system.cell_width_px;
+    const double cell_height = retained && retained->has_sheet
+        ? (retained->cell_height > 0 ? retained->cell_height : retained->texture_height)
+        : system.cell_height_px;
+` : ""}\
 ${systems
     .filter((entry) => entry.texturePixels)
     .map(
@@ -1303,16 +1321,16 @@ ${systems
         return grid_atlas_from_pixels(
             engine,
             ${pixelsTextureCpp(entry.texturePixels!)},
-            system.cell_width_px,
-            system.cell_height_px);
+            ${frozen ? "cell_width" : "system.cell_width_px"},
+            ${frozen ? "cell_height" : "system.cell_height_px"});
     }`,
     )
     .join("\n")}
     return load_particle_atlas(
         engine,
         asset_path(system.texture_asset),
-        system.cell_width_px,
-        system.cell_height_px);
+        ${frozen ? "cell_width" : "system.cell_width_px"},
+        ${frozen ? "cell_height" : "system.cell_height_px"});
 }
 
 ${
@@ -1351,7 +1369,9 @@ void write_bridge_sprites(
     Engine& engine,
     Sprite2DLayerHandle layer,
     const Sprite2DBridge& bridge,
-    const BakedSystem& system) {
+    const BakedSystem& system${retained ? ",\n    bool replace = false" : ""}) {
+${retained ? `    const FrozenSystem* retained = frozen_system(system.set_index, system.system_index);
+` : ""}\
     for (std::size_t i = 0; i < system.particle_count; ++i) {
         const BakedParticle& particle = system.particles[i];
         Sprite2DProps props;
@@ -1380,11 +1400,23 @@ void write_bridge_sprites(
         props.has_rotation = true;
         props.color = particle.color;
         props.has_color = true;
-        add_sprite_2d_index(engine, layer, props);
+${retained ? `        if (retained) {
+            props.size_px = Vec2{
+                static_cast<float>(retained->sizes[i * 2] * bridge.pixels_per_unit),
+                static_cast<float>(retained->sizes[i * 2 + 1] * bridge.pixels_per_unit)};
+            if (retained->has_sheet) {
+                if (i >= retained->cells.size()) {
+                    throw std::runtime_error("Particle sprite-sheet cell index is undefined.");
+                }
+                props.frame = static_cast<float>(retained->cells[i]);
+            }
+        }
+        if (replace) update_sprite_2d_index(engine, layer, static_cast<double>(i), props);
+        else add_sprite_2d_index(engine, layer, props);` : "        add_sprite_2d_index(engine, layer, props);"}
     }
 }
 `
-}${live?.anonymous ?? ""}
+}${live?.anonymous ?? ""}${frozen?.registrar ?? ""}
 }  // namespace
 
 ${
@@ -1502,6 +1534,14 @@ void register_node_particle_set_2d(
     Engine& engine,
     SpriteRendererHandle renderer,
     int request) {${
+        retained
+            ? `
+    if (retained_frozen_request[request]) {
+        register_retained_frozen_node_particle_set_2d(engine, renderer, request);
+        return;
+    }`
+            : ""
+    }${
         live
             ? `
     if (live_request[request]) {
@@ -1533,8 +1573,138 @@ void register_node_particle_set_2d(
     }
 }
 `
-}${live?.publicFunctions ?? ""}
+}${live?.publicFunctions ?? ""}${frozen?.publicFunctions ?? ""}
 }  // namespace bbl::upstream
+`,
+        };
+    }
+
+    /** Frozen buffer observations and the retained sheet the renderer reads. */
+    private frozenSectionCpp(
+        systems: readonly NodeParticleSystemEmit[],
+        bindings: readonly NodeParticleSprite2DEmit[],
+    ): { header: string; state: string; registrar: string; publicFunctions: string } {
+        const retainedKeys = expandedSystems(bindings.filter((binding) => binding.retainFrozen));
+        const observed = systems.filter((entry) =>
+            entry.bake.bufferColumns !== undefined || retainedKeys.has(nodeParticleKey(entry.bake)),
+        );
+        const number = (value: number): string => {
+            if (Number.isNaN(value)) return "std::numeric_limits<double>::quiet_NaN()";
+            if (value === Infinity) return "std::numeric_limits<double>::infinity()";
+            if (value === -Infinity) return "-std::numeric_limits<double>::infinity()";
+            return Object.is(value, -0) ? "-0.0" : doubleLiteral(value);
+        };
+        return {
+            header: `
+void set_frozen_node_particle_sheet(
+    int set, int system, double width, double height, bbl::js::U16Array cells);
+double node_particle_frozen_capacity(int set, int system);
+double node_particle_frozen_alive(int set, int system);
+bbl::js::Nullable<double> node_particle_frozen_column(
+    int set, int system, const char* column, double index);
+`,
+            state: `
+struct FrozenColumn {
+    const char* name;
+    std::vector<double> values;
+};
+
+struct FrozenSystem {
+    int set;
+    int system;
+    double texture_width;
+    double texture_height;
+    std::vector<double> sizes;
+    std::vector<FrozenColumn> columns;
+    bool has_sheet = false;
+    double cell_width = 0;
+    double cell_height = 0;
+    bbl::js::U16Array cells;
+};
+
+FrozenSystem frozen_systems[] = {
+${observed.map(({ bake }) => `    {${bake.set}, ${bake.system}, ${bake.texture!.width}, ${bake.texture!.height},
+        {${bake.sizes.map(number).join(", ")}},
+        {${Object.entries(bake.bufferColumns ?? {}).map(([name, values]) =>
+            `{${JSON.stringify(name)}, {${values.map(number).join(", ")}}}`,
+        ).join(", ")}}, false, 0, 0, {}},`).join("\n")}
+};
+
+FrozenSystem* frozen_system(int set, int system) {
+    for (FrozenSystem& candidate : frozen_systems) {
+        if (candidate.set == set && candidate.system == system) return &candidate;
+    }
+    return nullptr;
+}
+`,
+            registrar: retainedKeys.size === 0 ? "" : `
+constexpr bool retained_frozen_request[] = {${bindings.map((binding) => !!binding.retainFrozen).join(", ")}};
+
+// Simulation was measured to be the identity. The renderer still copies the
+// current sheet cells on every hook, including writes through another alias.
+void register_retained_frozen_node_particle_set_2d(
+    Engine& engine, SpriteRendererHandle renderer, int request) {
+    using Layer = std::pair<const Sprite2DBridge*, Sprite2DLayerHandle>;
+    std::vector<Layer> layers;
+    for (const Sprite2DBridge& bridge : sprite_2d_bridges) {
+        if (bridge.request != request) continue;
+        const BakedSystem& system = baked(bridge.set_index, bridge.system_index);
+        const SpriteAtlasHandle atlas = particle_atlas(engine, bridge.set_index, bridge.system_index);
+        Sprite2DLayerOptions options = bridge_layer_options(bridge, system);
+        const Sprite2DLayerHandle layer = create_sprite_2d_layer(engine, atlas, options);
+        write_bridge_sprites(engine, layer, bridge, system);
+        layers.emplace_back(&bridge, layer);
+        if (options.blend_mode.particle_passes == 2) {
+            options.blend_mode = create_particle_blend(2);
+            options.custom_shader = false;
+            const Sprite2DLayerHandle second = create_sprite_2d_layer(engine, atlas, options);
+            write_bridge_sprites(engine, second, bridge, system);
+            layers.emplace_back(&bridge, second);
+        }
+    }
+    for (const Layer& layer : layers) {
+        add_sprite_renderer_layer(engine, renderer, layer.second);
+    }
+    sprite_renderer_before_update(engine, renderer,
+        [&engine, layers = std::move(layers)](double) {
+            for (const Layer& layer : layers) {
+                const Sprite2DBridge& bridge = *layer.first;
+                write_bridge_sprites(engine, layer.second, bridge,
+                    baked(bridge.set_index, bridge.system_index), true);
+            }
+        });
+}
+`,
+            publicFunctions: `
+void set_frozen_node_particle_sheet(
+    int set, int system, double width, double height, bbl::js::U16Array cells) {
+    FrozenSystem* state = frozen_system(set, system);
+    if (!state) throw std::runtime_error("No observed frozen particle buffer.");
+    state->has_sheet = true;
+    state->cell_width = width;
+    state->cell_height = height;
+    state->cells = std::move(cells);
+}
+
+double node_particle_frozen_capacity(int set, int system) {
+    return baked(set, system).capacity;
+}
+
+double node_particle_frozen_alive(int set, int system) {
+    return static_cast<double>(baked(set, system).particle_count);
+}
+
+bbl::js::Nullable<double> node_particle_frozen_column(
+    int set, int system, const char* column, double index) {
+    const FrozenSystem* state = frozen_system(set, system);
+    if (!state || !std::isfinite(index) || index < 0 || std::floor(index) != index) return {};
+    for (const FrozenColumn& candidate : state->columns) {
+        if (candidate.name == std::string(column) && index < static_cast<double>(candidate.values.size())) {
+            return candidate.values[static_cast<std::size_t>(index)];
+        }
+    }
+    return {};
+}
 `,
         };
     }
