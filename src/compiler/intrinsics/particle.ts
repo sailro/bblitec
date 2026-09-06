@@ -32,6 +32,7 @@ import {
     compileStaticNumber,
     notJson,
     staticJsonValue,
+    staticNumberPair,
     staticVec3Value,
     validateObjectProperties,
     type ObjectValidationContext,
@@ -293,28 +294,14 @@ function sprite2dOptions(
     }
     const origin = context.objectProperty(options, "originPx");
     if (origin) {
-        const unwrapped = context.unwrap(origin);
-        if (
-            !ts.isArrayLiteralExpression(unwrapped) ||
-            unwrapped.elements.length !== 2
-        ) {
+        const pair = staticNumberPair(context, origin);
+        if (!pair) {
             context.fail(
                 origin,
-                "originPx is a two-element array literal.",
+                "originPx must be a static two-element number tuple.",
             );
         }
-        resolved.originPx = [
-            compileStaticNumber(
-                context,
-                unwrapped.elements[0]!,
-                "originPx x",
-            ),
-            compileStaticNumber(
-                context,
-                unwrapped.elements[1]!,
-                "originPx y",
-            ),
-        ];
+        resolved.originPx = pair;
     }
     const layer = context.objectProperty(options, "layer");
     if (!layer) return resolved;

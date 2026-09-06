@@ -3342,12 +3342,25 @@ class Compiler
         )
             ? staticHandleEntries.map(({ value }) => value)
             : undefined;
+        // Native numeric tuples retain generation facts on the same snapshot
+        // that array writes and escaping aliases already invalidate.
+        const staticTupleNumbers = annotated.kind === "tuple" &&
+            ts.isArrayLiteralExpression(initializer)
+            ? initializer.elements.map((element) => staticNumberValue(this, element))
+            : undefined;
+        const staticTupleElements: Value[] | undefined = staticTupleNumbers?.every(
+            (value): value is number => value !== undefined,
+        ) ? staticTupleNumbers.map((value, index) => ({
+            kind: "number",
+            cpp: `${cppName}[${index}]`,
+            staticNumber: value,
+        })) : undefined;
         const staticElements =
             annotated.kind === "vector" &&
             ts.isArrayLiteralExpression(initializer) &&
             initializer.elements.length === 0
                 ? []
-                : staticHandleElements;
+                : staticHandleElements ?? staticTupleElements;
         this.reachJsData();
         const spreadTarget =
             annotated.kind === "struct"
