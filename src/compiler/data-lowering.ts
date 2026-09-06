@@ -805,7 +805,7 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
-            if (unwrapped.questionDotToken) {
+            if (ts.isPropertyAccessChain(unwrapped)) {
                 const optional = this.optionalPropertyRead(
                     owner,
                     unwrapped,
@@ -977,7 +977,10 @@ export class DataLowerer {
             return undefined;
         }
 
-        const selected = read(presentOwner);
+        let selected: Value | undefined;
+        const selectedLines = this.context.captureEmittedLines(() => {
+            selected = read(presentOwner);
+        });
         if (!selected) {
             // The owner can also be an optional engine handle. Its declared
             // property surface, rather than the plain-data model, owns that
@@ -1020,6 +1023,25 @@ export class DataLowerer {
         const combinedPresent = selectedPresent
             ? `(${present} && ${selectedPresent})`
             : present;
+        const impure = selected.impure;
+        const optionalResult = (type: DataType, selectedCpp: string, empty: string): Value => {
+            const cppType = this.context.dataTypes.cppType(type);
+            if (selectedLines.length === 0 && !impure) {
+                return this.leafValue(`(${combinedPresent} ? ${selectedCpp} : ${empty})`, type);
+            }
+            // Getter lowering may emit an inlined method body. Both those
+            // statements and the result expression belong to the present
+            // branch, and the condition must not evaluate them twice.
+            const result = this.context.allocateTemporaryCppName("optional_result");
+            const resultCpp = selectedPresent
+                ? `(${selectedPresent} ? ${selectedCpp} : ${empty})`
+                : selectedCpp;
+            this.context.emit(`const ${cppType} ${result} = ([&]() -> ${cppType} {\n` +
+                `    if (!(${present})) return ${empty};\n` +
+                selectedLines.map(line => `    ${line}\n`).join("") +
+                `    return ${resultCpp};\n}());`);
+            return this.leafValue(result, type);
+        };
         if (
             selectedType.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(
@@ -1029,9 +1051,10 @@ export class DataLowerer {
             const cppType = this.context.dataTypes.cppType(
                 selectedType,
             );
-            return this.leafValue(
-                `(${combinedPresent} ? ${selected.cpp} : ${cppType}{})`,
+            return optionalResult(
                 selectedType,
+                selected.cpp,
+                `${cppType}{}`,
             );
         }
         const resultType: DataType =
@@ -1056,13 +1079,7 @@ export class DataLowerer {
         const cppType =
             this.context.dataTypes.cppType(resultType);
         this.context.reachJsData();
-        return {
-            kind: "data",
-            cpp:
-                `(${combinedPresent} ? ${cppType}{${selectedCpp}} : ` +
-                `${cppType}{std::nullopt})`,
-            dataType: resultType,
-        };
+        return optionalResult(resultType, `${cppType}{${selectedCpp}}`, `${cppType}{std::nullopt}`);
     }
 
     private optionalPropertyRead(

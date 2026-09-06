@@ -9382,21 +9382,7 @@ class Compiler
                         `class: ${owner.classDeclaration?.name?.text ?? "none"}).`,
                 );
             }
-            const ownerPresent =
-                owner.optionalFoundCpp ??
-                (expression.questionDotToken &&
-                owner.dataType?.kind === "struct" &&
-                this.dataTypes.isReferenceStruct(owner.dataType.name)
-                    ? `static_cast<bool>(${owner.cpp})`
-                    : undefined);
-            if (ownerPresent === undefined) {
-                return value;
-            }
-            const present =
-                value.optionalFoundCpp === undefined
-                    ? ownerPresent
-                    : `(${ownerPresent} && ${value.optionalFoundCpp})`;
-            return { ...value, optionalFoundCpp: present };
+            return this.propertyWithOwnerPresence(owner, value, expression);
         }
         // `baked.clips`: the bake's own row map. It carries the bake and
         // nothing else, so the name lookup that follows is the native row
@@ -9437,17 +9423,9 @@ class Compiler
         }
         const resolved = this.readOwnerProperty(owner, expression);
         if (resolved) {
-            if (
-                expression.questionDotToken &&
-                owner.optionalFoundCpp !== undefined
-            ) {
-                const present =
-                    resolved.optionalFoundCpp === undefined
-                        ? owner.optionalFoundCpp
-                        : `(${owner.optionalFoundCpp} && ${resolved.optionalFoundCpp})`;
-                return { ...resolved, optionalFoundCpp: present };
-            }
-            return resolved;
+            return expression.questionDotToken
+                ? this.propertyWithOwnerPresence(owner, resolved, expression)
+                : resolved;
         }
         return this.fail(
             expression,
@@ -12745,7 +12723,10 @@ class Compiler
             // identity in classInstances is not a reliable dispatch guard.
             this.defineThis(owner);
             try {
-                return this.compileValue(expression);
+                // A getter is an evaluation, even when its return happens
+                // to lower to a field read. Optional chains must consume it
+                // once and keep any nested method calls behind their guard.
+                return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
             }
@@ -16506,10 +16487,24 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        return this.readOwnerProperty(
-            this.classLowerer.hydrate(owner) ?? owner,
-            expression,
-        );
+        const hydrated = this.classLowerer.hydrate(owner) ?? owner;
+        const value = this.readOwnerProperty(hydrated, expression);
+        return value && (hydrated.kind === "record" || expression.questionDotToken)
+            ? this.propertyWithOwnerPresence(hydrated, value, expression)
+            : value;
+    }
+
+    private propertyWithOwnerPresence(owner: Value, value: Value, expression: ts.PropertyAccessExpression): Value {
+        const ownerPresent = owner.optionalFoundCpp ??
+            (expression.questionDotToken && owner.dataType?.kind === "struct" &&
+                this.dataTypes.isReferenceStruct(owner.dataType.name)
+                ? `static_cast<bool>(${owner.cpp})`
+                : undefined);
+        if (ownerPresent === undefined) return value;
+        const present = value.optionalFoundCpp === undefined
+            ? ownerPresent
+            : `(${ownerPresent} && ${value.optionalFoundCpp})`;
+        return { ...value, optionalFoundCpp: present };
     }
 
     /**

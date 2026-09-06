@@ -11,12 +11,13 @@ export const nativeFixtureVcpkgRoot = resolve(
     "artifacts/vcpkg-installed/development-full/x64-windows",
 );
 
-export function optionalNativeFixtureTools():
+/** Header-only fixtures can opt out of the installed-library prerequisite. */
+export function optionalNativeFixtureTools(requireVcpkg = true):
     | WindowsBuildTools
     | undefined {
     if (
         process.platform !== "win32" ||
-        !existsSync(nativeFixtureVcpkgRoot)
+        (requireVcpkg && !existsSync(nativeFixtureVcpkgRoot))
     ) {
         return undefined;
     }

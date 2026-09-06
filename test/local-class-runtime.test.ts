@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
+import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 /**
  * The demand-driven runtime representation of a local class.
@@ -188,6 +192,58 @@ test("inlines a method on an instance read back out of a container", () => {
         /for \(auto&& (v_\w+) : v_\w+\) \{\s*if \(!\(\(static_cast<bool>\(\1\) && \1->_destroyed\)\)\)/,
     );
     assert.match(result.cpp, /\w+->_size\[bbl::js::array_index\(0\.0\)\]/);
+});
+
+const nativeTools = optionalNativeFixtureTools(false);
+test("optional class getters skip absent receivers and evaluate present false/true results once", { skip: !nativeTools }, () => {
+    const result = compileSource(`
+        class Item {
+            enabled = true;
+            state = { enabled: true };
+            reads = 0;
+            get active(): boolean { return this.read(); }
+            get inline(): boolean { return ++this.reads > 0 && this.enabled; }
+            get snapshot(): { enabled: boolean } { return this.state; }
+            private read(): boolean { this.reads += 1; return this.enabled; }
+        }
+        interface Slot { item: Item; }
+        const slots = new Map<string, Slot>();
+        const items = new Map<string, Item>();
+        const active = new Item();
+        const inactive = new Item();
+        inactive.enabled = false;
+        inactive.state.enabled = false;
+        slots.set("active", { item: active });
+        slots.set("inactive", { item: inactive });
+        items.set("active", active);
+        items.set("inactive", inactive);
+        let hits = 0;
+        for (const key of ["missing", "active", "inactive"]) {
+            const slot = slots.get(key);
+            const item = items.get(key);
+            if (slot?.item.active) hits++;
+            if (item?.active) hits++;
+            if (item?.inline) hits++;
+            if (item?.snapshot.enabled) hits++;
+        }
+        if (hits !== 4) throw new Error("optional getter truthiness");
+        if (active.reads !== 3 || inactive.reads !== 3) throw new Error("optional getter evaluation count");
+        const owners: Item[] = [active, inactive];
+        for (const owner of owners) {
+            if (owner.active) hits++;
+        }
+        if (hits !== 5 || active.reads !== 4 || inactive.reads !== 4) throw new Error("container getter evaluation");
+    `);
+    const output = resolve("artifacts/optional-class-getters");
+    mkdirSync(output, { recursive: true });
+    const source = join(output, "check.cpp");
+    const executable = join(output, "check.exe");
+    writeFileSync(source, result.cpp);
+    runNativeFixtureCompiler(nativeTools!, [
+        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", source,
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
 });
 
 test("keeps object identity and null on stored instances", () => {
