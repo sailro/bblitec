@@ -424,6 +424,7 @@ export function lightScalarSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
+  isRuntimeResourceConstruction(): boolean;
   readonly checker: ts.TypeChecker;
   readonly dataTypes: import("./data-types.js").DataTypeRegistry;
   /** Which material a scene-code mesh was assigned, by its mesh index. */
@@ -644,6 +645,7 @@ function emitNodeParticleScalarAssignment(
       "This particle system did not come from a built " + "node-particle set.",
     );
   }
+  requireParticleBakeWritable(context, { set, system }, expression);
   const value = staticNumberValue(context, expression.right);
   if (value === undefined) {
     context.fail(
@@ -1595,6 +1597,10 @@ export function emitPropertyAssignment(
       return;
     }
 
+    if (target.kind === "node-particle-system" && property === "_spriteSheet") {
+      emitFrozenParticleSheetAssignment(context, expression, target);
+      return;
+    }
     if (target.kind === "node-particle-system" && property === "buffer") {
       context.fail(
         left,
@@ -2914,7 +2920,8 @@ import ts from "typescript";
 import { emitAudioPropertyAssignment } from "./audio-surface.js";
 import { TEXTURE_UV_PROPERTIES } from "../lowering/standard-uv-transform-lowerer.js";
 import { requireGroupSource } from "./intrinsics/animation.js";
-import { emitParticleBufferWrite } from "./particle-buffer.js";
+import { emitParticleBufferWrite, requireParticleBakeWritable } from "./particle-buffer.js";
+import { emitFrozenParticleSheetAssignment } from "./particle-sheet.js";
 import { staticNumberValue } from "./option-helpers.js";
 import { stringLiteral } from "../cpp-literals.js";
 import {

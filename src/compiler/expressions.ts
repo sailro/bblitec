@@ -44,6 +44,7 @@ import {
     type PromiseLoweringContext,
 } from "./promises.js";
 import { staticNumberValue } from "./option-helpers.js";
+import { readFrozenParticleElement } from "./particle-buffer.js";
 import type { StaticEvaluator } from "./static-evaluator.js";
 import type { CompilerSymbols } from "./symbols.js";
 import type {
@@ -845,6 +846,12 @@ export class ExpressionLowerer {
                         ? { engineCpp: owner.engineCpp }
                         : {}),
                 };
+            }
+            if (owner.kind === "node-particle-column") {
+                return readFrozenParticleElement(
+                    this.context, owner,
+                    this.context.compileNumber(unwrapped.argumentExpression, "double"),
+                );
             }
             if (owner.kind === "node-particle-set") {
                 const slot = this.compileValue(

@@ -532,6 +532,7 @@ async function bakeNodeParticleSystems(
             pixelsPerUnit: request.pixelsPerUnit,
             originPx: request.originPx,
             invertY: request.invertY,
+            ...(request.retainFrozen ? { retainFrozen: true as const } : {}),
             ...(request.opacity === undefined
                 ? {}
                 : { opacity: request.opacity }),

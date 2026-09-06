@@ -288,6 +288,7 @@ import {
     isDeterministicRandomRead,
 } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
+import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
 import {
     physicsEventInfoType,
     physicsEventInfoValue,
@@ -645,6 +646,7 @@ class Compiler
         registrations: [],
         textures: [],
         sprite2d: [],
+        buffers: [],
     };
     /**
      * Pixels-texture locals already handed to a material slot.
@@ -16568,6 +16570,10 @@ class Compiler
                 return dataProperty;
             }
         }
+        const frozenParticleProperty = readFrozenParticleProperty(
+            this, owner, expression.name.text, expression,
+        );
+        if (frozenParticleProperty) return frozenParticleProperty;
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own

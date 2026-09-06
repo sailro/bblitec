@@ -108,6 +108,7 @@ export interface StatementLoweringContext {
         | undefined;
     activeInlineWrapper(): boolean;
     trackResourceLoopEarlyReturn(condition: ts.Expression): void;
+    isRuntimeResourceConstruction(): boolean;
     emitNativeReturn(
         statement: ts.ReturnStatement,
     ): void;

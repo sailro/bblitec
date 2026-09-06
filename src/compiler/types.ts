@@ -6,6 +6,8 @@ import type {
   NodeParticleBuilder,
   NodeParticleCamera,
   NodeParticleGraphSource,
+  NodeParticleColumn,
+  NodeParticleFrozenBufferRequest,
   NodeParticleRegistration,
   NodeParticleSetRequest,
   NodeParticleSprite2DRequest,
@@ -886,6 +888,7 @@ export interface CompiledNodeParticles extends Omit<
   /** Every pure-2D bridge registration, in reach order. */
   sprite2d: NodeParticleSprite2DRequest[];
   steps: NodeParticleStep[];
+  buffers: NodeParticleFrozenBufferRequest[];
 }
 
 /**
@@ -1218,6 +1221,7 @@ export type ValueKind =
    * one read is its live count.
    */
   | "node-particle-buffer"
+  | "node-particle-column"
   /**
    * `let x;` with no type: a name whose value is the compile-time record
    * its first assignment binds (`let set; try { set = await build(...) }`).
@@ -1536,7 +1540,9 @@ export function isNodeParticleValue(kind: ValueKind): boolean {
   return (
     kind === "node-particle-graph" ||
     kind === "node-particle-set" ||
-    kind === "node-particle-system"
+    kind === "node-particle-system" ||
+    kind === "node-particle-buffer" ||
+    kind === "node-particle-column"
   );
 }
 
@@ -1993,6 +1999,7 @@ export interface Value {
    * the generated registrar's mapping through them.
    */
   nodeParticleLive?: true;
+  nodeParticleColumn?: NodeParticleColumn;
   /** For an `executed-url`: the module and export the driver runs. */
   executedUrl?: { module: string; exportName: string };
   /**
