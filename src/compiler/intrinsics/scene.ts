@@ -1,5 +1,5 @@
 import ts from "typescript";
-import type { LightKind, Value } from "../types.js";
+import type { DefaultRenderTaskEmission, LightKind, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 import {
     type CameraDeferralContext,
@@ -44,7 +44,7 @@ export interface SceneIntrinsicContext
     ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,
-    ): string | undefined;
+    ): DefaultRenderTaskEmission;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -215,14 +215,15 @@ export function compileSceneIntrinsic(
             const defaultTask = scene.kind === "scene"
                 ? context.ensureDefaultRenderTask(scene, call)
                 : undefined;
+            const sceneCpp = defaultTask?.sceneCpp ?? scene.cpp;
             const taskCall =
                 importedName === "addTaskAtStart"
-                    ? `bbl::add_task_at_start(${scene.cpp}, ${task.cpp})`
-                    : `bbl::add_task(${scene.cpp}, ${task.cpp})`;
+                    ? `bbl::add_task_at_start(${sceneCpp}, ${task.cpp})`
+                    : `bbl::add_task(${sceneCpp}, ${task.cpp})`;
             return {
                 kind: "void",
                 cpp: defaultTask
-                    ? `${defaultTask};\n        ${taskCall}`
+                    ? `${defaultTask.setup};\n        ${taskCall}`
                     : taskCall,
             };
         }

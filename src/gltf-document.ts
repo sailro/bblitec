@@ -72,6 +72,16 @@ export const primitiveRecords = (document: JsonRecord): JsonRecord[] =>
         asRecords(mesh.primitives),
     );
 
+/** Mesh instances follow the loader's node order, not the mesh-definition count. */
+export function instantiatedPrimitiveRecords(document: JsonRecord): JsonRecord[] {
+    const meshes = Array.isArray(document.meshes) ? document.meshes : [];
+    return asRecords(document.nodes).flatMap((node) => {
+        const index = asIndex(node.mesh);
+        const mesh = index === undefined ? undefined : asObject(meshes[index]);
+        return mesh ? asRecords(mesh.primitives) : [];
+    });
+}
+
 /**
  * Whether one primitive is a Gaussian-splat primitive, by the pin's own
  * test.

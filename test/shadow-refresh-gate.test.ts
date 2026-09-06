@@ -152,15 +152,15 @@ test("fits CSM casters to every active non-degenerate thin instance", () => {
         shared,
         /generator\.filter == ShadowFilter::csm_directional &&\s*record\.thin_instanced && active_instances > 0/,
     );
-    assert.match(shared, /if \(linear_magnitude < 1e-9\) continue;/);
     assert.match(shared, /caster\.instance = instance;\s*caster\.has_instance = true;\s*casters\.push_back\(caster\);/);
     assert.doesNotMatch(shared, /A thin-instanced mesh is a caster/);
 
     const header = pinnedShadowHeader(new LoweringContext());
     assert.match(header, /std::array<float, 16> instance\{\};\s*bool has_instance = false;/);
+    assert.match(header, /inline bool csm_instance_contributes\(/);
     assert.match(
         header,
-        /const double instance_x = caster\.has_instance[\s\S]{0,900}caster\.world\[0\] \* instance_x/,
+        /csm-shadow-task-hooks\.ts#_thinInstanceWorldAabb[\s\S]*const double ix =[\s\S]*const double wx = [^\n]*\* ix/,
     );
 });
 

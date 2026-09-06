@@ -31,6 +31,7 @@ import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import { glbDocument } from "./gltf-document.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
+import type { MeshProfileTable } from "./lowering/resource-profiles.js";
 import {
     assertArmsCovered,
     composeGltfMaterials,
@@ -180,6 +181,7 @@ export interface ComposedScenePipeline {
      * the mesh receives. Both halves of the pin's own key.
      */
     renderableMeshFeatures: number[];
+    meshProfiles: MeshProfileTable | undefined;
     pinnedVariants: readonly PinnedVariantManifestEntry[];
     runtimeMeshFeatures: number | undefined;
     standardComposition: StandardSceneComposition | undefined;
@@ -1210,6 +1212,10 @@ export async function composeScenePipeline({
             composed,
         });
     }
+    const runtimeProfileRows = new Set(
+        result.manifest.sceneMeshes.flatMap((mesh, index) =>
+            mesh.runtimeInstances ? [sceneMeshRows[index]!] : []),
+    );
     return {
         lightKinds,
         toneMappingStates,
@@ -1218,6 +1224,14 @@ export async function composeScenePipeline({
         materialIndexBase: totalAssetMaterials,
         casterViewCount,
         renderableMeshFeatures,
+        meshProfiles: runtimeProfileRows.size > 0
+            ? {
+                sceneRows: sceneMeshRows,
+                staticRows: renderableMeshFeatures.map((_, row) => row).filter((row) =>
+                    !runtimeProfileRows.has(row)),
+                rowCount: renderableMeshFeatures.length,
+            }
+            : undefined,
         pinnedVariants,
         runtimeMeshFeatures,
         standardComposition,

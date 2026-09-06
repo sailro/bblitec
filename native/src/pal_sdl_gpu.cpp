@@ -8097,6 +8097,8 @@ bool run_gpu_engine(Engine& engine) {
             depth_target.texture = state.pick_targets.depth;
             depth_target.load_op = SDL_GPU_LOADOP_CLEAR;
             depth_target.store_op = SDL_GPU_STOREOP_DONT_CARE;
+            depth_target.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE;
+            depth_target.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE;
             depth_target.clear_depth = 0.0f;
             depth_target.cycle = true;
 

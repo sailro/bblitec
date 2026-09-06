@@ -7,6 +7,7 @@ import {
     tupleComponents,
     type DataIterationElement,
     type DataType,
+    type DataTypeRegistry,
 } from "./data-types.js";
 import type {
     CompileAsset,
@@ -17,6 +18,16 @@ import type {
 } from "./types.js";
 import { lightVectorSetter } from "./assignments.js";
 import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import {
+    staticIndexLoopShape,
+    loopBoundMayChange,
+    walkReachedLoopNodes,
+    type ParameterizedResourceLoop,
+    type ResourceLoop,
+} from "./resource-loops.js";
+import type { CompilerSymbols } from "./symbols.js";
+import { writesThroughTrackedRoot } from "./user-functions.js";
+import { staticNumberValue } from "./option-helpers.js";
 // The handle-collection concept owns the collection targets, the loop
 // frame, and the recursive imported-mesh walk proof; the emitters here are
 // the statement layer over the same resolutions.
@@ -28,6 +39,9 @@ import {
 } from "./handle-collections.js";
 
 export interface StatementLoweringContext {
+    readonly checker: ts.TypeChecker;
+    readonly symbols: CompilerSymbols;
+    readonly dataTypes: DataTypeRegistry;
     /** The scene node-particle program; a buffer guard lands on it. */
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** The handle-collection concept: every collection operation. */
@@ -58,6 +72,7 @@ export interface StatementLoweringContext {
     ): boolean;
     dataIterationTarget(
         expression: ts.Expression,
+        knownTuple?: Value,
     ):
         | {
               container: Value;
@@ -91,6 +106,7 @@ export interface StatementLoweringContext {
         | "void"
         | undefined;
     activeInlineWrapper(): boolean;
+    trackResourceLoopEarlyReturn(condition: ts.Expression): void;
     emitNativeReturn(
         statement: ts.ReturnStatement,
     ): void;
@@ -138,6 +154,7 @@ export interface StatementLoweringContext {
     probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined;
+    constArrayLiteral(expression: ts.Expression): ts.ArrayLiteralExpression | undefined;
     bindLocalValue(
         identifier: ts.Identifier,
         value: Value,
@@ -212,6 +229,17 @@ export interface StatementLoweringContext {
     eraseBrowserInstrumentation(position: number): void;
     /** Whether a loop body reaches pinned scene construction at generation. */
     requiresStaticIteration(statement: ts.Statement): boolean;
+    requiresStaticDataIteration(statement: ts.Statement): boolean;
+    emitNativeDataIteration<T>(statement: ts.Statement, emitBody: () => T): T;
+    knownCollectionCardinality(expression: ts.Expression): number | undefined;
+    runtimeCollectionCardinality(expression: ts.Expression): number | undefined;
+    parameterizedResourceLoop(statement: ResourceLoop, knownIterations?: number): ParameterizedResourceLoop | undefined;
+    emitParameterizedResourceLoop(
+        statement: ResourceLoop,
+        iterations: number,
+        emitBody: () => void,
+    ): void;
+    isInParameterizedResourceLoop(statement?: ts.IterationStatement): boolean;
     snapshotAliasState(): Map<string, string>;
     restoreAliasState(snapshot: Map<string, string>): void;
     enterRuntimeControlFlow(): void;
@@ -219,7 +247,7 @@ export interface StatementLoweringContext {
     isInRuntimeControlFlow(): boolean;
     enterRuntimeIteration(): void;
     leaveRuntimeIteration(): void;
-    enterStaticIteration(): void;
+    enterStaticIteration(statement: ts.IterationStatement): void;
     leaveStaticIteration(): void;
     emit(line: string): void;
     rebindVariable(
@@ -254,7 +282,7 @@ export interface StatementLoweringContext {
  */
 function frameYieldInsideLoop(
     node: ts.Node,
-    unrolled: readonly ts.IterationStatement[],
+    unrolled: readonly { iteration: ts.IterationStatement }[],
 ): boolean {
     for (
         let parent: ts.Node | undefined = node.parent;
@@ -268,7 +296,7 @@ function frameYieldInsideLoop(
             ts.isForInStatement(parent) ||
             ts.isDoStatement(parent)
         ) {
-            if (!unrolled.includes(parent)) return true;
+            if (!unrolled.some(({ iteration }) => iteration === parent)) return true;
         }
     }
     return false;
@@ -367,22 +395,15 @@ function replaceHandleToken(line: string, token: string): string {
 // still run at generation: emitting such a body once inside C++ would record
 // one AOT effect for many runtime iterations.
 const MAX_STATIC_INDEX_ITERATIONS = 32;
-const MAX_REQUIRED_STATIC_INDEX_ITERATIONS = 4096;
 // A data-only nest can contain individually small loops whose Cartesian
 // product is still large. Keep the outer layers native once that product
 // exceeds the largest established static nest (16 * 16 * 4), so large
 // voxel/grid walks do not duplicate their native inner body hundreds of
 // times during compilation.
 const MAX_DATA_STATIC_INDEX_NEST_PRODUCT = 1024;
-// The per-loop caps above compose multiplicatively in a nest, and the
-// generation-known-tuple `for...of` has no cap at all, so the emitted-text
-// budget is the PRODUCT of every enclosing static unroll. Past this product
-// the unrollers first run every iteration exactly as before — the
-// generation-time effects of an unrolled body (handle facts, scene records,
-// tuple growth) are the AOT model and must all still happen — and then fold
-// the EMITTED TEXT into one native loop when the iterations' captured lines
-// prove uniform. A body whose lines are not uniform keeps its unrolled
-// emission byte for byte; nothing under this budget ever refuses.
+// Try a native body before expanding a resource nest past this threshold.
+// The residual static paths also have a compilation-wide hard limit, owned by
+// StaticExpansionBudget; the product is only an optimization threshold.
 const MAX_STATIC_UNROLL_PRODUCT = 256;
 // Stands for the folded iteration's own handle spelling inside captured
 // lines while they are compared and re-emitted. U+0001 cannot appear in
@@ -462,7 +483,10 @@ export class StatementLowerer {
     private readonly loweredTerminators = new WeakSet<ts.Statement>();
     private readonly labels: Array<{ source: string; target: string }> = [];
     /** Source loops whose current iteration is being emitted statically. */
-    private readonly staticUnrolledIterations: ts.IterationStatement[] = [];
+    private readonly staticIterationCompletions: Array<{
+        iteration: ts.IterationStatement;
+        completion: "normal" | "break" | "continue";
+    }> = [];
     /**
      * The running product of enclosing static unroll counts. Each unroller
      * pushes its own count multiplied in, so a nested loop reads the number
@@ -491,9 +515,8 @@ export class StatementLowerer {
     }
 
     /**
-     * Whether unrolling `iterations` more bodies here exceeds the emitted-
-     * text budget. Exceeding it never refuses; it only licenses the
-     * capture-and-fold attempt, whose fallback is today's emission.
+     * Whether unrolling `iterations` more bodies warrants a capture-and-fold
+     * attempt. The separate compilation-wide budget bounds its fallback.
      */
     private exceedsStaticUnrollBudget(iterations: number): boolean {
         return (
@@ -501,6 +524,37 @@ export class StatementLowerer {
             iterations * this.staticUnrollProduct() >
                 MAX_STATIC_UNROLL_PRODUCT
         );
+    }
+
+    private preferNativeDataIteration(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        iterations: number,
+    ): boolean {
+        if (iterations < 2 || context.requiresStaticDataIteration(statement.statement)) return false;
+        if (iterations > MAX_STATIC_INDEX_ITERATIONS || this.exceedsStaticUnrollBudget(iterations)) return true;
+        const allowance = MAX_STATIC_UNROLL_PRODUCT / (iterations * this.staticUnrollProduct());
+        let nodes = 0;
+        walkReachedLoopNodes(context, statement.statement, () => ++nodes <= allowance);
+        return nodes > allowance;
+    }
+
+    private plainIterationData(context: StatementLoweringContext, value: Value): boolean {
+        if (value.kind === "number" || value.kind === "boolean" ||
+            value.kind === "string" || value.kind === "json-null") return true;
+        if (value.kind === "tuple") {
+            return value.tupleElements?.every((entry) => this.plainIterationData(context, entry)) === true;
+        }
+        if (value.kind === "record") {
+            return value.recordProperties !== undefined &&
+                Object.values(value.recordProperties).every((entry) => this.plainIterationData(context, entry)) &&
+                Object.keys(value.recordMethods ?? {}).length === 0 &&
+                Object.keys(value.recordGetters ?? {}).length === 0 &&
+                Object.keys(value.recordSetters ?? {}).length === 0;
+        }
+        return value.kind === "data" && value.dataType !== undefined &&
+            !context.dataTypes.carriesHandle(value.dataType) &&
+            !context.dataTypes.carriesFunction(value.dataType);
     }
 
     /** Re-emits captured unrolled iterations exactly as they were emitted. */
@@ -568,10 +622,13 @@ export class StatementLowerer {
     private inRuntimeIteration<T>(
         context: StatementLoweringContext,
         emitBody: () => T,
+        iteration?: ts.IterationStatement,
     ): T {
         context.enterRuntimeIteration();
         try {
-            return emitBody();
+            return iteration && !context.isInParameterizedResourceLoop(iteration)
+                ? context.emitNativeDataIteration(iteration, emitBody)
+                : emitBody();
         } finally {
             context.leaveRuntimeIteration();
         }
@@ -581,17 +638,37 @@ export class StatementLowerer {
     private continueTargetsStaticIteration(
         statement: ts.ContinueStatement,
     ): boolean {
-        for (
-            let parent: ts.Node | undefined = statement.parent;
-            parent;
-            parent = parent.parent
-        ) {
-            if (ts.isFunctionLike(parent)) return false;
+        return this.staticIterationForControl(statement) !== undefined;
+    }
+
+    private staticIterationForControl(
+        statement: ts.BreakStatement | ts.ContinueStatement,
+    ): (typeof this.staticIterationCompletions)[number] | undefined {
+        for (let parent: ts.Node | undefined = statement.parent; parent; parent = parent.parent) {
+            if (ts.isFunctionLike(parent)) return undefined;
+            if (ts.isBreakStatement(statement) && ts.isSwitchStatement(parent)) return undefined;
             if (ts.isIterationStatement(parent, false)) {
-                return this.staticUnrolledIterations.includes(parent);
+                return this.staticIterationCompletions.find(
+                    ({ iteration }) => iteration === parent,
+                );
             }
         }
-        return false;
+        return undefined;
+    }
+
+    private completeStaticIteration(
+        statement: ts.BreakStatement | ts.ContinueStatement,
+    ): boolean {
+        const frame = this.staticIterationForControl(statement);
+        if (!frame) return false;
+        frame.completion = ts.isBreakStatement(statement) ? "break" : "continue";
+        return true;
+    }
+
+    private staticIterationCompleted(): boolean {
+        return this.staticIterationCompletions.some(
+            ({ completion }) => completion !== "normal",
+        );
     }
 
     /** Whether a subtree can continue one of the active static loops. */
@@ -703,6 +780,7 @@ export class StatementLowerer {
                 context.emit(`goto ${label.target};`);
                 return;
             }
+            if (this.completeStaticIteration(statement)) return;
             context.emit("break;");
             return;
         }
@@ -713,9 +791,7 @@ export class StatementLowerer {
                     "Labeled continue is not supported; use a labeled break or an unlabeled continue.",
                 );
             }
-            if (this.continueTargetsStaticIteration(statement)) {
-                return;
-            }
+            if (this.completeStaticIteration(statement)) return;
             context.emit("continue;");
             return;
         }
@@ -795,6 +871,48 @@ export class StatementLowerer {
         statement: ts.Statement,
     ): boolean {
         return enclosingLoopControl(statement) !== undefined;
+    }
+
+    private hasStaticLoopExits(
+        context: StatementLoweringContext,
+        body: ts.Statement,
+        bindings: ReadonlySet<ts.Symbol>,
+    ): boolean {
+        const constant = (expression: ts.Expression, seen = new Set<ts.Symbol>()): boolean => {
+            const node = context.unwrap(expression);
+            if (ts.isIdentifier(node)) {
+                const symbol = context.symbols.valueSymbol(node);
+                if (!symbol || seen.has(symbol)) return false;
+                if (bindings.has(symbol)) return true;
+                const value = context.lookupOptional(node);
+                if (value?.parameterBinding) return false;
+                if (value?.staticNumber !== undefined || value?.staticString !== undefined ||
+                    value?.staticBoolean !== undefined) return true;
+                const resolved = context.resolveStaticExpression(node);
+                return resolved !== node && constant(resolved, new Set([...seen, symbol]));
+            }
+            if (ts.isLiteralExpression(node) || node.kind === ts.SyntaxKind.TrueKeyword ||
+                node.kind === ts.SyntaxKind.FalseKeyword || node.kind === ts.SyntaxKind.NullKeyword) return true;
+            if (ts.isBinaryExpression(node) && node.operatorToken.kind < ts.SyntaxKind.FirstAssignment) {
+                return constant(node.left, seen) && constant(node.right, seen);
+            }
+            return ts.isPrefixUnaryExpression(node) &&
+                node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken &&
+                constant(node.operand, seen);
+        };
+        let settled = true;
+        const visit = (node: ts.Node): void => {
+            if (!settled || ts.isFunctionLike(node) || ts.isIterationStatement(node, false)) return;
+            if ((ts.isBreakStatement(node) || ts.isContinueStatement(node)) && node.label) settled = false;
+            if (ts.isIfStatement(node) &&
+                (this.bindsEnclosingLoop(node.thenStatement) ||
+                    (node.elseStatement && this.bindsEnclosingLoop(node.elseStatement))) &&
+                !constant(node.expression)) settled = false;
+            if (ts.isSwitchStatement(node)) settled = false;
+            ts.forEachChild(node, visit);
+        };
+        visit(body);
+        return settled;
     }
 
     /** Whether the enclosing-loop control includes a break, not only continue. */
@@ -1174,6 +1292,27 @@ export class StatementLowerer {
                 statement.expression,
                 "A continue in a statically unrolled loop requires a generation-known condition.",
             );
+        }
+        if (this.staticIterationCompletions.length > 0) {
+            const control =
+                enclosingLoopControl(statement.thenStatement) ??
+                (statement.elseStatement && enclosingLoopControl(statement.elseStatement));
+            if (control && ts.isBreakStatement(control) &&
+                this.staticIterationForControl(control)) {
+                context.fail(
+                    statement.expression,
+                    "A break in a statically unrolled resource loop requires a generation-known condition.",
+                );
+            }
+            const returns = (node: ts.Node): boolean => {
+                if (ts.isFunctionLike(node)) return false;
+                return ts.isReturnStatement(node) ||
+                    (ts.forEachChild(node, returns) ?? false);
+            };
+            if (returns(statement.thenStatement) ||
+                (statement.elseStatement && returns(statement.elseStatement))) {
+                context.trackResourceLoopEarlyReturn(statement.expression);
+            }
         }
         context.emit(`if (${condition}) {`);
         // Alias invalidation is path-sensitive: a branch that always
@@ -1614,14 +1753,58 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForStatement,
     ): void {
+        const plan = context.parameterizedResourceLoop(statement);
         if (
-            !this.bindsEnclosingLoop(
+            plan &&
+            (plan.expansion * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT ||
+                context.isInParameterizedResourceLoop())
+        ) {
+            context.emitParameterizedResourceLoop(statement, plan.iterations, () =>
+                this.emitRuntimeFor(context, statement),
+            );
+            return;
+        }
+        const resourceLoop = context.requiresStaticIteration(statement.statement);
+        const needsSpecialization = resourceLoop && context.requiresStaticDataIteration(statement.statement);
+        const shape = staticIndexLoopShape(context.symbols, statement);
+        const indexSymbol = shape && context.symbols.valueSymbol(shape.indexBinding);
+        const staticExits = resourceLoop && indexSymbol !== undefined &&
+            this.hasStaticLoopExits(context, statement.statement, new Set([indexSymbol]));
+        if (needsSpecialization) {
+            const checkExits = (node: ts.Node): void => {
+                if (ts.isFunctionLike(node)) return;
+                if (ts.isReturnStatement(node)) {
+                    context.fail(
+                        node,
+                        "A return from a resource loop changes its composition count; " +
+                            "move the return outside the construction loop.",
+                    );
+                }
+                if ((ts.isBreakStatement(node) || ts.isContinueStatement(node)) && node.label) {
+                    context.fail(
+                        node,
+                        "A labeled resource-loop exit cannot preserve static composition order.",
+                    );
+                }
+                ts.forEachChild(node, checkExits);
+            };
+            checkExits(statement.statement);
+        }
+        if (
+            (!this.bindsEnclosingLoop(
                 statement.statement,
-            ) &&
-            this.emitStaticIndexFor(context, statement)
+            ) || needsSpecialization || staticExits) &&
+            this.emitStaticIndexFor(context, statement, this.bindsEnclosingLoop(statement.statement) && staticExits)
         ) {
             return;
         }
+        this.emitRuntimeFor(context, statement);
+    }
+
+    private emitRuntimeFor(
+        context: StatementLoweringContext,
+        statement: ts.ForStatement,
+    ): void {
         context.emit("{");
         context.increaseIndent();
         context.pushScope(
@@ -1702,7 +1885,7 @@ export class StatementLowerer {
                 }
                 context.decreaseIndent();
                 context.emit("}");
-            });
+            }, statement);
         } finally {
             context.popScope();
             context.decreaseIndent();
@@ -1728,10 +1911,14 @@ export class StatementLowerer {
         iteration: ts.IterationStatement,
         body: ts.Statement,
         bind: () => void,
-    ): void {
+    ): "normal" | "break" | "continue" {
         context.pushScope(context.allocateBlockPrefix());
-        this.staticUnrolledIterations.push(iteration);
-        context.enterStaticIteration();
+        const completion: {
+            iteration: ts.IterationStatement;
+            completion: "normal" | "break" | "continue";
+        } = { iteration, completion: "normal" };
+        this.staticIterationCompletions.push(completion);
+        context.enterStaticIteration(iteration);
         try {
             bind();
             const statements = ts.isBlock(body)
@@ -1739,35 +1926,53 @@ export class StatementLowerer {
                 : [body];
             for (const nested of statements) {
                 this.emit(context, nested);
-                if (this.terminatesAfterLowering(nested)) break;
+                if (this.terminatesAfterLowering(nested) || this.staticIterationCompleted()) break;
             }
         } finally {
             context.leaveStaticIteration();
-            this.staticUnrolledIterations.pop();
+            this.staticIterationCompletions.pop();
             context.popScope();
         }
+        return completion.completion;
     }
 
     private emitStaticIndexFor(
         context: StatementLoweringContext,
         statement: ts.ForStatement,
+        staticControl = false,
     ): boolean {
-        const shape = this.staticIndexLoopShape(statement);
+        const shape = staticIndexLoopShape(context.symbols, statement);
         if (!shape) return false;
         const { indexBinding, start, end: endExpression } = shape;
-        const indexName = indexBinding.text;
+        const indexSymbol = context.symbols.valueSymbol(indexBinding);
+        const reachesResource = context.requiresStaticIteration(statement.statement);
+        let requiresStaticIteration =
+            staticControl || context.requiresStaticDataIteration(statement.statement) ||
+            containsFrameYield(context, statement.statement);
         const length = context.compileValue(endExpression);
+        const bound = context.unwrap(endExpression);
+        const cardinality = reachesResource && ts.isPropertyAccessExpression(bound) &&
+            bound.name.text === "length"
+            ? context.knownCollectionCardinality(bound.expression)
+            : undefined;
+        const end = length.staticNumber ?? cardinality ?? staticNumberValue(context, endExpression);
         if (
             length.kind !== "number" ||
-            length.staticNumber === undefined ||
-            !Number.isInteger(length.staticNumber) ||
-            length.staticNumber < 0
+            end === undefined ||
+            !Number.isSafeInteger(end)
         ) {
             return false;
         }
-        const requiresStaticIteration =
-            context.requiresStaticIteration(statement.statement) ||
-            containsFrameYield(context, statement.statement);
+        requiresStaticIteration ||= reachesResource && !context.isInRuntimeControlFlow() &&
+            end - start <= MAX_STATIC_INDEX_ITERATIONS;
+        if (requiresStaticIteration &&
+            loopBoundMayChange(context, statement.statement, endExpression)) {
+            context.fail(
+                endExpression,
+                "A static resource loop requires an invariant bound; " +
+                    "the body or a called helper can change this bound.",
+            );
+        }
         // Once an enclosing runtime branch or loop owns execution, a
         // data-only counted loop gains nothing from generation-time
         // unrolling. Keeping it native also prevents small inner grid walks
@@ -1779,54 +1984,22 @@ export class StatementLowerer {
             return false;
         }
         if (
-            length.staticNumber > MAX_STATIC_INDEX_ITERATIONS &&
+            end > MAX_STATIC_INDEX_ITERATIONS &&
             !requiresStaticIteration
         ) {
             return false;
         }
-        if (
-            length.staticNumber > MAX_REQUIRED_STATIC_INDEX_ITERATIONS
-        ) {
-            context.fail(
-                endExpression,
-                "A loop that reaches pinned scene construction must be " +
-                    "statically iterated, but its count is too large.",
-            );
-        }
         let indexMutation: ts.Node | undefined;
-        const findIndexMutation = (node: ts.Node): void => {
-            if (indexMutation) {
-                return;
-            }
-            if (
-                ts.isBinaryExpression(node) &&
-                ts.isIdentifier(node.left) &&
-                node.left.text === indexName &&
-                [
-                    ts.SyntaxKind.EqualsToken,
-                    ts.SyntaxKind.PlusEqualsToken,
-                    ts.SyntaxKind.MinusEqualsToken,
-                ].includes(node.operatorToken.kind)
-            ) {
+        walkReachedLoopNodes(context, statement.statement, (node) => {
+            if (indexMutation) return false;
+            if (writesThroughTrackedRoot(node, (target) =>
+                ts.isIdentifier(target) &&
+                context.symbols.valueSymbol(target) === indexSymbol,
+            )) {
                 indexMutation = node;
-                return;
+                return false;
             }
-            if (
-                (ts.isPostfixUnaryExpression(node) ||
-                    ts.isPrefixUnaryExpression(node)) &&
-                [
-                    ts.SyntaxKind.PlusPlusToken,
-                    ts.SyntaxKind.MinusMinusToken,
-                ].includes(node.operator) &&
-                ts.isIdentifier(node.operand) &&
-                node.operand.text === indexName
-            ) {
-                indexMutation = node;
-                return;
-            }
-            ts.forEachChild(node, findIndexMutation);
-        };
-        findIndexMutation(statement.statement);
+        });
         if (indexMutation) {
             context.fail(
                 indexMutation,
@@ -1835,7 +2008,7 @@ export class StatementLowerer {
         }
         const iterations = Math.max(
             0,
-            length.staticNumber - start,
+            end - start,
         );
         if (
             !requiresStaticIteration &&
@@ -1847,8 +2020,8 @@ export class StatementLowerer {
         ) {
             return false;
         }
-        const emitIndexIteration = (index: number): void => {
-            this.emitUnrolledIteration(
+        const emitIndexIteration = (index: number): "normal" | "break" | "continue" => {
+            return this.emitUnrolledIteration(
                 context,
                 statement,
                 statement.statement,
@@ -1872,63 +2045,16 @@ export class StatementLowerer {
             );
             return true;
         }
-        const end = length.staticNumber;
         this.withStaticUnrollProduct(iterations, () => {
             for (
                 let index = start;
                 index < end;
                 index += 1
             ) {
-                emitIndexIteration(index);
+                if (emitIndexIteration(index) === "break") break;
             }
         });
         return true;
-    }
-
-    /** The exact counted-loop form supported by the static index unroller. */
-    private staticIndexLoopShape(
-        statement: ts.ForStatement,
-    ):
-        | {
-              indexBinding: ts.Identifier;
-              start: number;
-              end: ts.Expression;
-          }
-        | undefined {
-        if (
-            !statement.initializer ||
-            !ts.isVariableDeclarationList(statement.initializer) ||
-            statement.initializer.declarations.length !== 1 ||
-            !statement.condition ||
-            !statement.incrementor
-        ) {
-            return undefined;
-        }
-        const declaration = statement.initializer.declarations[0]!;
-        if (
-            !ts.isIdentifier(declaration.name) ||
-            !declaration.initializer ||
-            !ts.isNumericLiteral(declaration.initializer) ||
-            !ts.isBinaryExpression(statement.condition) ||
-            statement.condition.operatorToken.kind !==
-                ts.SyntaxKind.LessThanToken ||
-            !ts.isIdentifier(statement.condition.left) ||
-            statement.condition.left.text !== declaration.name.text ||
-            !ts.isPostfixUnaryExpression(statement.incrementor) ||
-            statement.incrementor.operator !==
-                ts.SyntaxKind.PlusPlusToken ||
-            !ts.isIdentifier(statement.incrementor.operand) ||
-            statement.incrementor.operand.text !== declaration.name.text
-        ) {
-            return undefined;
-        }
-        const start = Number(declaration.initializer.text);
-        if (!Number.isInteger(start) || start < 0) return undefined;
-        return {
-            indexBinding: declaration.name,
-            start,
-            end: statement.condition.right,
-        };
     }
 
     /**
@@ -1947,7 +2073,7 @@ export class StatementLowerer {
         const visit = (node: ts.Node, product: number): void => {
             if (exceeded || ts.isFunctionLike(node)) return;
             if (ts.isForStatement(node)) {
-                const shape = this.staticIndexLoopShape(node);
+                const shape = staticIndexLoopShape(context.symbols, node);
                 if (shape) {
                     const resolved = context.resolveStaticExpression(
                         shape.end,
@@ -2075,7 +2201,7 @@ export class StatementLowerer {
                 ),
             );
             context.emit("}");
-        });
+        }, statement);
     }
 
     private emitDo(
@@ -2096,7 +2222,7 @@ export class StatementLowerer {
                     statement.expression,
                 )});`,
             );
-        });
+        }, statement);
     }
 
     /**
@@ -2145,6 +2271,26 @@ export class StatementLowerer {
                 declaration,
                 "for...of bindings cannot carry initializers.",
             );
+        }
+        const runtimeCardinality = context.runtimeCollectionCardinality(statement.expression);
+        if (runtimeCardinality === 0) return;
+        const plan = context.parameterizedResourceLoop(statement);
+        if (
+            plan &&
+            (plan.expansion * this.staticUnrollProduct() > MAX_STATIC_UNROLL_PRODUCT ||
+                runtimeCardinality !== undefined ||
+                context.isInParameterizedResourceLoop())
+        ) {
+            let emitted = false;
+            context.emitParameterizedResourceLoop(statement, plan.iterations, () => {
+                emitted = this.emitRuntimeForOf(context, statement, declaration);
+            });
+            if (emitted || plan.iterations === 0) return;
+        }
+        if (context.requiresStaticIteration(statement.statement) &&
+            this.bindsEnclosingLoop(statement.statement) &&
+            this.emitStaticResourceExitForOf(context, statement, declaration)) {
+            return;
         }
         // The engine-collection paths answer first: their expressions are
         // property reads (or a `?? []` over one), which the static probe
@@ -2257,8 +2403,22 @@ export class StatementLowerer {
         const values = context.expectStaticArrayLiteral(
             statement.expression,
         );
+        const compiled = this.preferNativeDataIteration(context, statement, values.elements.length)
+            ? values.elements.map((element) => context.compileValue(element))
+            : undefined;
+        if (compiled?.every((value) => this.plainIterationData(context, value)) &&
+            context.emitNativeDataIteration(statement, () =>
+                this.emitRuntimeForOf(context, statement, declaration, {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: compiled,
+                }),
+            )) {
+            return;
+        }
         const emitElementIteration = (
             element: ts.Expression,
+            index: number,
         ): void => {
             this.emitUnrolledIteration(
                 context,
@@ -2268,7 +2428,7 @@ export class StatementLowerer {
                     this.bindStaticIterationValue(
                         context,
                         declaration.name,
-                        context.compileValue(element),
+                        compiled?.[index] ?? context.compileValue(element),
                     );
                 },
             );
@@ -2293,6 +2453,7 @@ export class StatementLowerer {
                 (at) =>
                     emitElementIteration(
                         values.elements[at]!,
+                        at,
                     ),
             );
             return;
@@ -2300,11 +2461,65 @@ export class StatementLowerer {
         this.withStaticUnrollProduct(
             values.elements.length,
             () => {
-                for (const element of values.elements) {
-                    emitElementIteration(element);
+                for (const [index, element] of values.elements.entries()) {
+                    emitElementIteration(element, index);
                 }
             },
         );
+    }
+
+    private emitStaticResourceExitForOf(
+        context: StatementLoweringContext,
+        statement: ts.ForOfStatement,
+        declaration: ts.VariableDeclaration,
+    ): boolean {
+        const bindingSymbol = ts.isIdentifier(declaration.name)
+            ? context.symbols.valueSymbol(declaration.name)
+            : undefined;
+        if (!context.requiresStaticDataIteration(statement.statement) &&
+            (!bindingSymbol || !this.hasStaticLoopExits(context, statement.statement, new Set([bindingSymbol])))) {
+            return false;
+        }
+        const expression = context.resolveStaticExpression(statement.expression);
+        const literal = ts.isArrayLiteralExpression(expression)
+            ? expression
+            : context.constArrayLiteral(expression);
+        const binding = ts.isIdentifier(expression)
+            ? context.lookupOptional(expression)
+            : undefined;
+        const bound = binding?.tupleElements ??
+            binding?.staticElementsOwner?.staticElements ?? binding?.staticElements;
+        if (!literal && !bound) return false;
+        if (literal?.elements.some((element) => ts.isSpreadElement(element) ||
+            ts.isOmittedExpression(element))) return false;
+        const values = bound ?? literal!.elements.map((element) => context.compileValue(element));
+        const settled = (value: Value): boolean =>
+            value.staticNumber !== undefined || value.staticString !== undefined ||
+            value.staticBoolean !== undefined || value.kind === "json-null" ||
+            (isHandleKind(value.kind) && cppIdentifierPattern.test(value.cpp)) ||
+            (value.kind === "tuple" && value.tupleElements?.every(settled) === true) ||
+            (value.kind === "record" && value.cpp.length === 0 &&
+                value.recordProperties !== undefined &&
+                Object.keys(value.recordMethods ?? {}).length === 0 &&
+                Object.keys(value.recordGetters ?? {}).length === 0 &&
+                Object.keys(value.recordSetters ?? {}).length === 0 &&
+                Object.values(value.recordProperties).every(settled));
+        if (!values.every(settled)) {
+            context.fail(
+                statement.expression,
+                "A static resource-loop exit requires settled iteration values.",
+            );
+        }
+        this.withStaticUnrollProduct(values.length, () => {
+            for (const value of values) {
+                const completion = this.emitUnrolledIteration(
+                    context, statement, statement.statement,
+                    () => this.bindStaticIterationValue(context, declaration.name, value),
+                );
+                if (completion === "break") break;
+            }
+        });
+        return true;
     }
 
     /**
@@ -2370,7 +2585,7 @@ export class StatementLowerer {
                             branch.elseStatement!,
                         );
                     });
-                });
+                }, statement);
             },
         );
         return true;
@@ -2513,6 +2728,17 @@ export class StatementLowerer {
         );
         if (!elements) {
             return false;
+        }
+        if (this.preferNativeDataIteration(context, statement, elements.length) &&
+            elements.every((value) => this.plainIterationData(context, value)) &&
+            context.emitNativeDataIteration(statement, () =>
+                this.emitRuntimeForOf(context, statement, declaration, {
+                    kind: "tuple",
+                    cpp: "",
+                    tupleElements: [...elements],
+                }),
+            )) {
+            return true;
         }
         if (this.bindsEnclosingLoop(statement.statement)) {
             if (
@@ -2827,21 +3053,26 @@ export class StatementLowerer {
                 `Iterating ${target.property} requires an identifier binding.`,
             );
         }
-        emitHandleCollectionLoop(
-            context,
-            target,
-            declaration.name,
+        const binding = declaration.name;
+        const emitBody = (): void => emitHandleCollectionLoop(
+            context, target, binding,
             (loopContext) => {
                 this.inRuntimeIteration(loopContext, () => {
                     this.inRuntimeControlFlow(loopContext, () => {
-                        for (const nested of bodyStatements(statement)) {
-                            this.emit(loopContext, nested);
-                        }
+                        for (const nested of bodyStatements(statement)) this.emit(loopContext, nested);
                     });
-                });
-            },
-            extraBinding,
+                }, statement);
+            }, extraBinding,
         );
+        const repeatable = context.parameterizedResourceLoop(statement, 1);
+        const count = repeatable
+            ? context.handleCollections.collectionCardinality(target, statement.expression)
+            : undefined;
+        if (count !== undefined) {
+            context.emitParameterizedResourceLoop(statement, count, emitBody);
+        } else {
+            emitBody();
+        }
     }
 
     private emitHandleCollectionForOf(
@@ -2873,12 +3104,50 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.ForOfStatement,
         declaration: ts.VariableDeclaration,
+        knownTuple?: Value,
     ): boolean {
         const target = context.dataIterationTarget(
             statement.expression,
+            knownTuple,
         );
         if (!target) {
             return false;
+        }
+        const count = context.runtimeCollectionCardinality(statement.expression);
+        if (!context.isInParameterizedResourceLoop(statement) &&
+            count !== undefined &&
+            (context.requiresStaticDataIteration(statement.statement) ||
+                (count === 1 && context.requiresStaticIteration(statement.statement))) &&
+            (!context.isInRuntimeControlFlow() || context.isInParameterizedResourceLoop())) {
+            if (loopBoundMayChange(context, statement.statement, statement.expression)) {
+                context.fail(statement.expression, "A statically expanded resource iteration requires an unchanged array size.");
+            }
+            const range = context.allocateTemporaryCppName("resource_range");
+            context.emit(`const auto ${range} = ${target.container.cpp};`);
+            const iterator = context.allocateTemporaryCppName("resource_iterator");
+            context.emit(`auto ${iterator} = ${range}.begin();`);
+            this.withStaticUnrollProduct(count, () => {
+                for (let index = 0; index < count; ++index) {
+                    const completed = this.emitUnrolledIteration(
+                        context,
+                        statement,
+                        statement.statement,
+                        () => {
+                            const member = context.allocateTemporaryCppName("resource_member");
+                            context.emit(`[[maybe_unused]] auto ${member} = *${iterator};`);
+                            context.emit(`++${iterator};`);
+                            context.bindDataIterationVariable(
+                                declaration.name, member, target.element, target.template,
+                            );
+                        },
+                    );
+                    if (context.knownCollectionCardinality(statement.expression) !== count) {
+                        context.fail(statement.expression, "A statically expanded resource iteration cannot resize its array.");
+                    }
+                    if (completed === "break") break;
+                }
+            });
+            return true;
         }
         const item =
             context.allocateTemporaryCppName("item");
@@ -2904,7 +3173,7 @@ export class StatementLowerer {
                             this.emit(context, nested);
                         }
                     });
-                });
+                }, statement);
             } finally {
                 context.popScope();
             }
@@ -2936,7 +3205,7 @@ export class StatementLowerer {
                 : [statement];
             for (const nested of statements) {
                 this.emit(context, nested);
-                if (this.terminatesAfterLowering(nested)) break;
+                if (this.terminatesAfterLowering(nested) || this.staticIterationCompleted()) break;
             }
         } finally {
             context.popScope();
@@ -3131,7 +3400,7 @@ export class StatementLowerer {
             return;
         }
         if (
-            ts.isPostfixUnaryExpression(unwrapped) &&
+            (ts.isPostfixUnaryExpression(unwrapped) || ts.isPrefixUnaryExpression(unwrapped)) &&
             [
                 ts.SyntaxKind.PlusPlusToken,
                 ts.SyntaxKind.MinusMinusToken,
@@ -3146,12 +3415,17 @@ export class StatementLowerer {
                     "number",
                     unwrapped.operand,
                 );
-                context.emit(
-                    `${target.cpp}${unwrapped.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--"};`,
-                );
+                const operator = unwrapped.operator === ts.SyntaxKind.PlusPlusToken ? "++" : "--";
+                context.emit(ts.isPrefixUnaryExpression(unwrapped)
+                    ? `${operator}${target.cpp};`
+                    : `${target.cpp}${operator};`);
                 return;
             }
-            if (context.emitDataPostfix(unwrapped)) {
+            if (ts.isPostfixUnaryExpression(unwrapped) && context.emitDataPostfix(unwrapped)) {
+                return;
+            }
+            if (ts.isPrefixUnaryExpression(unwrapped)) {
+                context.emitDiscardedValue(context.compileValue(unwrapped));
                 return;
             }
         }
@@ -3212,7 +3486,7 @@ export class StatementLowerer {
             if (
                 frameYieldInsideLoop(
                     unwrapped,
-                    this.staticUnrolledIterations,
+                    this.staticIterationCompletions,
                 )
             ) {
                 context.fail(
@@ -3279,7 +3553,7 @@ export class StatementLowerer {
             if (
                 frameYieldInsideLoop(
                     unwrapped,
-                    this.staticUnrolledIterations,
+                    this.staticIterationCompletions,
                 )
             ) {
                 context.fail(

@@ -1,5 +1,6 @@
 import ts from "typescript";
 import type {
+    DefaultRenderTaskEmission,
     Feature,
     ShadowCasterMeshManifest,
     Value,
@@ -43,7 +44,7 @@ export interface ShadowIntrinsicContext
     ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,
-    ): string | undefined;
+    ): DefaultRenderTaskEmission;
     fail(node: ts.Node, message: string): never;
     recordShadowGenerator(entry: {
         kind:
@@ -647,14 +648,10 @@ export function compileShadowIntrinsic(
             // frame graph -- the same thing `addTask` says by materializing
             // the default render task before adding to it.
             const defaultTask = context.ensureDefaultRenderTask(scene, call);
-            const registerCall =
-                `bbl::register_scene_with_shadow_support(${scene.cpp})`;
             return {
                 kind: "void",
-                cpp: defaultTask
-                    ? `${defaultTask};
-        ${registerCall}`
-                    : registerCall,
+                cpp: `${defaultTask.setup};\n` +
+                    `        bbl::register_scene_with_shadow_support(${defaultTask.sceneCpp})`,
             };
         }
 

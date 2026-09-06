@@ -60,6 +60,8 @@ import {
     asRecords,
     asString,
     glbJsonText,
+    instantiatedPrimitiveRecords,
+    isGaussianSplatPrimitive,
     type JsonObject,
 } from "../gltf-document.js";
 // The same reader the material arms key their skinned mesh features by, so
@@ -225,6 +227,19 @@ interface HandleCollectionMember {
 }
 
 export class HandleCollections {
+    private readonly meshCardinalities = new Map<string, number>();
+
+    public collectionCardinality(target: HandleCollectionTarget, node: ts.Node): number | undefined {
+        const asset = target.asset;
+        if (target.property !== "meshes" || target.elementKind !== "mesh" || asset?.kind !== "gltf") return undefined;
+        const cached = this.meshCardinalities.get(asset.source);
+        if (cached !== undefined) return cached;
+        const primitives = instantiatedPrimitiveRecords(this.readAssetDocument(asset, node));
+        if (primitives.some(isGaussianSplatPrimitive)) return undefined;
+        this.meshCardinalities.set(asset.source, primitives.length);
+        return primitives.length;
+    }
+
     /** Members per asset source, decoded once per compile. */
     private readonly membersBySource = new Map<
         string,
@@ -1007,6 +1022,9 @@ export class HandleCollections {
                 ts.isElementAccessExpression(unwrapped)
               ? this.context.compileValue(unwrapped)
               : undefined;
+        if ((value?.collectionCardinality ?? value?.staticElementsOwner?.collectionCardinality)?.untrackedAliases) {
+            return undefined;
+        }
         return value?.kind === "tuple"
             ? value.tupleElements
             : value?.staticElementsOwner?.staticElements ??

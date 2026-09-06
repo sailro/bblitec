@@ -149,10 +149,11 @@ factories provide their shader text/layouts. Packaged literals are lifted,
 and supported builders are AST-folded. Custom source uses typed shader IR where
 supported and a strict reflected path elsewhere.
 
-One handwritten shared vertex stage remains for specialized diagnostic,
-depth/background paths. Skybox specialization also retains text rewriting.
-These are audited maintenance debts, not proof that all shaders are derived
-automatically.
+The specialized diagnostic/depth/background vertex stage projects the pinned
+PBR template and shared deformation/instance fragments through typed shader IR
+onto its PAL transport. Skybox declaration, binding and fog specialization also
+uses typed IR. [Fidelity](fidelity.md#shader-contract) records the retained
+transport adaptations.
 
 ### Stage 2: compiling WGSL for the device
 
@@ -194,8 +195,22 @@ The `.babylon` parented/geometry-less-node surface remains incomplete.
 Reached primitives, mesh data, ribbons/extrusion/polyhedra, line systems, CSG,
 thin instances and transform mutations are supported within their intrinsic
 option sets. Runtime geometry/source arrays follow the data model; builder
-presence does not imply every option or update form. User-written resource
-loops may still expand heavily; see the active audit.
+presence does not imply every option or update form.
+
+Proved fixed-composition counted/for-of loops over supported primitive and
+Standard-material construction emit native loops while retaining creation-order
+composition records. Runtime-safe mesh, Standard and ShaderMaterial construction
+with unknown counts uses explicit call-site profiles rather than pretending one
+profile means one allocation. Existing material pools can be selected natively
+with conservative variants. Ordinal-dependent PBR/glTF creation after an unknown
+material-allocation count, and unbounded specialization changes, refuse.
+Across one compilation, static loop expansion
+is limited to 4,096 iterations and 1 MiB of captured emission, including failed
+probes. Parameterized resource loops additionally cap each mesh/material
+composition table at 65,536 records.
+Immutable baked numeric streams use deduplicated namespace tables rather than
+expanding literal data inside loop bodies; each native array construction still
+owns its mutable storage.
 
 ## Scene hierarchy
 
@@ -233,6 +248,9 @@ types and comparison mode, plus declared storage buffers and their reached
 create/update/dispose/bind operations. Custom uniform declarations and the
 supported system-matrix list drive generated writers; wider fixed-function
 options and system values still refuse.
+Live scene-local ShaderMaterial choices retain every candidate's instancing
+requirements. Multiple candidates require a known mesh composition profile;
+incompatible instance layouts for one program still refuse.
 
 ### Node materials
 
@@ -290,8 +308,9 @@ Viewport and unsupported multi-contributor cases refuse at their boundary.
 Display, editing and bounding-box gizmos share a generated utility-layer path.
 Supported pointer registrations enable position-edit behavior; display-only
 gizmos do not imply interaction. Retargeting and shape-specific options retain
-explicit limits. Several widget builders remain transcribed and are tracked
-as lowering debt.
+explicit limits. Geometry, follow scaling and bounds arithmetic are lowered
+from pinned source. Native resource creation, lifecycle and scene traversal
+remain checked structural adapters.
 
 ## Physics
 
@@ -320,8 +339,8 @@ receiver/caster families, array layers, blur and morph-bound refresh.
 Imported/runtime mesh collections can select supported receiver states, but
 the source `receiveShadows` assignment still requires a static supported value.
 A false assignment does not provide a general live variant toggle.
-CSM fitting remains structurally transcribed; thin-instance CSM bounds and
-generator options beyond the accepted sets remain unfinished.
+CSM fitting and packing derive from the pinned ASTs; wider thin-instance caster
+contracts and generator options beyond the accepted sets remain unfinished.
 
 ## Navigation
 

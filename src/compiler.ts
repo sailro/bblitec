@@ -108,6 +108,7 @@ import {
 import {
     selectedStaticExpression,
     selectedStaticNumberValue,
+    staticNumberValue,
     validateObjectProperties,
 } from "./compiler/option-helpers.js";
 import {
@@ -151,6 +152,7 @@ import {
 } from "./compiler/data-lowering.js";
 import {
     DataTypeRegistry,
+    dataTypesEqual,
     doubleLiteral as dataDoubleLiteral,
     isHandleKind,
     isTypedArrayType,
@@ -214,6 +216,8 @@ import type {
     CompileAsset,
     CompileOptions,
     CompileResult,
+    CollectionCardinality,
+    DefaultRenderTaskEmission,
     CompiledNodeMaterial,
     CompiledNodeParticles,
     CompiledShaderProgram,
@@ -259,7 +263,16 @@ export type {
 } from "./compiler/types.js";
 import { isCompileTimeOnlyValue } from "./compiler/types.js";
 import { ClosureCaptures, nativeCompanionKeys, renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./compiler/closure-captures.js";
-import { runtimeOnlyIntrinsics } from "./compiler/intrinsics/registry.js";
+import {
+    parameterizedResourceLoop,
+    requiresStaticLoopIteration,
+    requiresStaticDataIteration,
+    runtimeProfileConstructionIntrinsics,
+    walkReachedLoopNodes,
+    type ParameterizedResourceLoop,
+    type ResourceLoop,
+} from "./compiler/resource-loops.js";
+import { StaticExpansionBudget } from "./compiler/static-expansion.js";
 import type { ClusteredContainerState } from "./compiler/types.js";
 import { ClassLowerer } from "./compiler/classes.js";
 import { shaderMaterialPrograms } from "./shader-material-programs.js";
@@ -375,6 +388,20 @@ type PlatformEventTarget = "window" | "document" | "canvas";
 interface PlatformEventDescriptor {
     channel: string;
     parameter: "none" | "keyboard" | "mouse" | "visibility";
+}
+interface ResourceConstructionState {
+    counters: number[];
+    lightIdentities: NonNullable<Value["lightIdentity"]>[];
+}
+interface ResourceConstructionCheckpoint {
+    state: ResourceConstructionState;
+    callbackDepth: number;
+}
+function resourceConstructionStatesEqual(left: ResourceConstructionState, right: ResourceConstructionState): boolean {
+    return left.counters.length === right.counters.length &&
+        left.counters.every((value, index) => value === right.counters[index]) &&
+        left.lightIdentities.length === right.lightIdentities.length &&
+        left.lightIdentities.every((value, index) => value === right.lightIdentities[index]);
 }
 const PLATFORM_EVENT_DESCRIPTORS: Readonly<
     Record<
@@ -566,6 +593,13 @@ class Compiler
           }
         | { kind: "inline"; wrapped: boolean }
     > = [];
+    private readonly resourceLoopReturns = new WeakMap<object, {
+        condition: ts.Expression;
+        checkpoint: ResourceConstructionCheckpoint;
+    }>();
+    private readonly resourceConstructionCheckpoints = new Set<ResourceConstructionCheckpoint>();
+    private readonly deferredResourceCaptureDepths = new Set<number>();
+    private readonly collectionCardinalities = new Set<CollectionCardinality>();
     public jsDataReached = false;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     public imageDecodeReached = false;
@@ -722,6 +756,10 @@ class Compiler
      *  it can actually draw on. */
     private readonly scenePbrMaterialMeshes = new Map<number, Set<number>>();
     private readonly scenePbrMaterialsWithUnknownMesh = new Set<number>();
+    private unknownSceneMaterialAssignment = false;
+    private readonly runtimeMaterialProfiles = new Set<number>();
+    private runtimeMeshProfileCount = 0;
+    private readonly runtimeShaderProfiles = new Set<number>();
     private reachedPlainSpriteLayer = false;
     /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
     private reachedPureSpriteVertex = false;
@@ -809,6 +847,14 @@ class Compiler
             this.jsRandomReached,
             this.sourceFile,
         );
+        if (this.unknownSceneMaterialAssignment) {
+            if (this.features.has("material:standard")) {
+                for (const mesh of this.sceneMeshes) mesh.standardMaterial = true;
+            }
+            // A runtime material choice can make an otherwise-known caster
+            // PBR. Its views must use the existing unknown-caster product.
+            for (const generator of this.shadowGenerators) generator.dynamicCasters = true;
+        }
         // After the whole entry, because the mesh a shader material ends up
         // on is what decides its instanced form and either may come first.
         this.settleShaderThinInstances();
@@ -838,8 +884,10 @@ class Compiler
         // The manifest and CMake projection of the same table the upstream
         // lowerer emits from, so a feature's sources are declared once.
         const generatedSources = reachedGeneratedSources(features);
+        const cpp = this.renderCpp(features);
+        this.staticExpansionBudget.assertWithinBudget();
         return {
-            cpp: this.renderCpp(features),
+            cpp,
             cmake: this.renderCmake(features, runtimeSources, generatedSources),
             assetPayloads: this.assetPayloads,
             ...(this.reachedNodeParticles.sets.length > 0
@@ -889,7 +937,7 @@ class Compiler
                         sceneMeshIndices: [
                             ...(this.scenePbrMaterialMeshes.get(index) ?? []),
                         ].sort((left, right) => left - right),
-                        ...(this.scenePbrMaterialsWithUnknownMesh.has(index)
+                        ...(this.unknownSceneMaterialAssignment || this.scenePbrMaterialsWithUnknownMesh.has(index)
                             ? { unknownSceneMesh: true as const }
                             : {}),
                     }),
@@ -901,6 +949,9 @@ class Compiler
                 sceneMaterialCount: this.sceneMaterials.count,
                 sceneMaterialGltfAssetsBefore:
                     this.sceneMaterialGltfAssetsBefore,
+                ...(this.runtimeMaterialProfiles.size > 0
+                    ? { runtimeMaterialProfiles: [...this.runtimeMaterialProfiles] }
+                    : {}),
                 sceneMeshes: this.sceneMeshes,
                 sceneLightKinds: this.sceneLights.map(({ kind }) => kind),
                 dynamicSceneLights: this.dynamicSceneLights,
@@ -2328,6 +2379,10 @@ class Compiler
                 narrowed.dataType.kind === "arraybuffer" ||
                 narrowed.dataType.kind === "dataview" ||
                 isTypedArrayType(narrowed.dataType);
+            // These copies own their references; another wrapper's resize or
+            // rebind cannot invalidate them like an interior C++ reference.
+            const ownsSharedStorage = wrapperCopiesIdentity &&
+                !narrowed.borrowedData && !narrowed.nativeVectorData;
             const optionalFoundCpp =
                 narrowed.optionalFoundCpp === undefined
                     ? undefined
@@ -2366,12 +2421,12 @@ class Compiler
                     `[[maybe_unused]] const bool ${optionalFoundCpp} = static_cast<bool>(${boundCpp});`,
                 );
             }
-            if (aliases) {
+            if (aliases && !ownsSharedStorage) {
                 this.dataLowerer.registerAlias(cppName, narrowed.cpp);
             } else {
                 this.dataLowerer.registerLocal(
                     boundCpp,
-                    constructs || referenceStruct || narrowed.freshData
+                    constructs || referenceStruct || narrowed.freshData || ownsSharedStorage
                         ? "owned"
                         : "copy",
                 );
@@ -2402,6 +2457,12 @@ class Compiler
                               narrowed.staticElements,
                           staticElementsOwner,
                       }
+                    : {}),
+                ...(!narrowed.freshData && narrowed.collectionCardinality
+                    ? { collectionCardinality: narrowed.collectionCardinality }
+                    : {}),
+                ...(!narrowed.freshData && narrowed.runtimeElementTemplate
+                    ? { runtimeElementTemplate: narrowed.runtimeElementTemplate }
                     : {}),
                 ...(narrowed.recordProperties
                     ? {
@@ -3359,15 +3420,41 @@ class Compiler
      * storage even when nothing resizes), a mutating array method, the
      * array escaping into any call argument, and assignment through an
      * element or to the binding itself. Only a direct rebind
-     * (`const b = arr`) creates an alias.
+     * (`const b = arr` or `b = arr`) creates an alias.
      */
     private inferredArrayIsMutated(identifier: ts.Identifier): boolean {
         return aliasedMutationScan(
             identifier,
             (name) => this.symbols.valueSymbol(name),
             {
-                aliasingInitializer: (initializer, scan) =>
-                    scan.namesAlias(this.unwrap(initializer)),
+                aliasingInitializer: (initializer, scan) => {
+                    const value = this.unwrap(initializer);
+                    if (scan.namesAlias(value)) return true;
+                    const callee = ts.isCallExpression(value) ? this.unwrap(value.expression) : undefined;
+                    const called = ts.isCallExpression(value)
+                        ? callee && ts.isIdentifier(callee)
+                            ? tryResolveFunctionDeclaration(this.checker, callee)
+                            : this.checker.getResolvedSignature(value)?.declaration
+                        : ts.isPropertyAccessExpression(value)
+                            ? this.checker.getSymbolAtLocation(value.name)?.declarations?.find(ts.isGetAccessorDeclaration)
+                            : undefined;
+                    if ((!isSupportedFunction(called) && !(called && ts.isGetAccessorDeclaration(called))) ||
+                        !called.body) return false;
+                    const returnsArrayAlias = (expression: ts.Expression): boolean => {
+                        if (!scan.containsAlias(expression)) return false;
+                        const type = this.checker.getTypeAtLocation(expression);
+                        return this.checker.isArrayType(type) || this.checker.isTupleType(type);
+                    };
+                    if (!ts.isBlock(called.body)) return returnsArrayAlias(called.body);
+                    let aliases = false;
+                    walkReachedLoopNodes(this, called.body, (node) => {
+                        if (aliases) return false;
+                        if (ts.isReturnStatement(node) && node.expression) {
+                            aliases = returnsArrayAlias(node.expression);
+                        }
+                    });
+                    return aliases;
+                },
                 mutates: (node, scan) => {
                     if (
                         ts.isElementAccessExpression(node) &&
@@ -3805,6 +3892,9 @@ class Compiler
                     fieldValue.staticElementsOwner =
                         staticField.staticElementsOwner ?? staticField;
                 }
+                if (aliases && staticField?.collectionCardinality) {
+                    fieldValue.collectionCardinality = staticField.collectionCardinality;
+                }
                 this.defineVariable(name, fieldValue);
                 if (aliases) {
                     this.dataLowerer.registerAlias(cppName, fieldCpp);
@@ -4113,22 +4203,133 @@ class Compiler
             : undefined;
     }
 
+    private recordCollectionAssignment(
+        target: Value,
+        source: ts.Expression,
+        destination: ts.Expression | undefined,
+        kind: "vector" | "map" | "set",
+    ): void {
+        const left = destination && this.unwrap(destination);
+        const binding = left && ts.isIdentifier(left) ? this.lookupOptional(left) : undefined;
+        const previous = binding ?? target;
+        const previousState = previous.collectionCardinality ?? previous.staticElementsOwner?.collectionCardinality;
+        const sourceValue = this.collectionMetadataValue(source);
+        const sourceState = sourceValue?.collectionCardinality ?? sourceValue?.staticElementsOwner?.collectionCardinality;
+        const right = this.unwrap(source);
+        const nativeConstructor = ts.isNewExpression(right) &&
+            ts.isIdentifier(right.expression) && this.isDefaultLibraryIdentifier(right.expression);
+        const fresh = kind === "vector"
+            ? ts.isArrayLiteralExpression(right) ||
+                (nativeConstructor && right.expression.text === "Array")
+            : nativeConstructor && right.expression.text === (kind === "map" ? "Map" : "Set");
+        const literalCount = ts.isArrayLiteralExpression(right)
+            ? this.knownCollectionCardinality(right)
+            : undefined;
+        const definite = !this.isInRuntimeControlFlow() && !this.isInRuntimeIteration() &&
+            this.frameCallbackDepth === 0 && !this.isInNativeFunctionBody() &&
+            !previous.sharedStorageCpp;
+        const template = sourceValue?.runtimeElementTemplate;
+        const sourceElements = sourceValue?.staticElementsOwner?.staticElements ?? sourceValue?.staticElements;
+        const sourceOwner = sourceValue?.staticElementsOwner ?? sourceValue;
+        if (binding && sourceState && previousState === sourceState) {
+            target.collectionCardinality = sourceState;
+            binding.collectionCardinality = sourceState;
+            return;
+        }
+        if (sourceValue?.kind === "tuple" && !fresh) {
+            this.fail(source, "Assigning an array alias requires native collection storage.");
+        }
+        let tainted = false;
+        const taint = (state: CollectionCardinality | undefined): void => {
+            if (!state) return;
+            tainted = true;
+            state.untrackedAliases = true;
+            state.count = undefined;
+            delete state.keys;
+        };
+        if (!definite) taint(previousState);
+        if (!sourceState && !fresh) {
+            for (const state of this.collectionCardinalities) {
+                if (state.kind === (kind === "vector" ? "array" : "keyed")) taint(state);
+            }
+        } else if (!definite || !binding) {
+            taint(sourceState);
+        }
+        if (tainted) {
+            this.visitScopedValues((value) => {
+                const state = value.collectionCardinality ?? value.staticElementsOwner?.collectionCardinality;
+                if (state?.untrackedAliases) {
+                    delete value.staticElements;
+                    delete value.staticElementsOwner;
+                    delete value.runtimeElementTemplate;
+                }
+            });
+        }
+        const owner = previous.staticElementsOwner ?? previous;
+        if (owner === previous || owner === target) this.invalidateStaticElements(previous, true);
+        for (const value of new Set([target, previous])) {
+            delete value.staticElements;
+            delete value.staticElementsOwner;
+            delete value.runtimeElementTemplate;
+            delete value.collectionCardinality;
+        }
+        let state: CollectionCardinality;
+        if (definite && binding && sourceState) {
+            state = sourceState;
+            if (!state.untrackedAliases && sourceElements && sourceOwner) {
+                binding.staticElements = sourceElements;
+                binding.staticElementsOwner = sourceOwner;
+            }
+            if (!state.untrackedAliases && template) binding.runtimeElementTemplate = template;
+        } else {
+            let count: number | undefined;
+            if (definite && binding && fresh) {
+                if (ts.isArrayLiteralExpression(right)) {
+                    count = literalCount;
+                } else if (ts.isNewExpression(right)) {
+                    const arguments_ = right.arguments ?? [];
+                    if (arguments_.length === 0) count = 0;
+                    else if (kind === "vector" && arguments_.length === 1) {
+                        const length = staticNumberValue(this, arguments_[0]!);
+                        if (length !== undefined && Number.isSafeInteger(length) && length >= 0) count = length;
+                    }
+                }
+            }
+            state = {
+                kind: kind === "vector" ? "array" : "keyed",
+                count,
+                ...(kind !== "vector" && count === 0 ? { keys: new Set<string | number | boolean>() } : {}),
+                createdIn: [...this.parameterizedResourceIterations],
+                varyingIn: new Set(),
+                ...(!definite || !binding || !fresh ? { untrackedAliases: true as const } : {}),
+            };
+        }
+        this.collectionCardinalities.add(state);
+        target.collectionCardinality = state;
+        if (binding) binding.collectionCardinality = state;
+    }
+
     public recordDataAssignmentMetadata(
         target: Value,
         source: ts.Expression,
-    ): void {
+        destination?: ts.Expression,
+    ): boolean {
         const dataType = target.dataType;
         const storedType =
             dataType?.kind === "optional" ? dataType.inner : dataType;
+        if (storedType?.kind === "vector" || storedType?.kind === "map" || storedType?.kind === "set") {
+            this.recordCollectionAssignment(target, source, destination, storedType.kind);
+            return true;
+        }
         if (
             storedType?.kind !== "handle" ||
             storedType.handle !== "ui-element"
         ) {
-            return;
+            return false;
         }
         const tag =
             this.uiCreationTag(source) ?? this.uiCreatedElementTag(source);
-        if (!tag) return;
+        if (!tag) return false;
         const creation = this.uiCreationCall(source);
         const staticId = creation
             ? this.uiStaticIdsByCreation.get(creation)
@@ -4156,6 +4357,7 @@ class Compiler
         if (staticId !== undefined) {
             target.uiStaticId = staticId;
         }
+        return false;
     }
 
     /** Whether an expression is already known to produce retained UI state. */
@@ -8385,9 +8587,10 @@ class Compiler
      * resolution at once — so the array case stays here, behind its own
      * write scan: a list a scene mutates answers nothing.
      */
-    private constArrayLiteral(
+    public constArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
+        if (this.collectionMetadataValue(expression)?.collectionCardinality?.untrackedAliases) return undefined;
         const unwrapped = this.unwrap(expression);
         if (!ts.isIdentifier(unwrapped)) return undefined;
         const declarations =
@@ -9133,7 +9336,40 @@ class Compiler
         importedName: string,
         call: ts.CallExpression,
     ): Value | undefined {
-        return compileRegisteredIntrinsic(this, importedName, call);
+        if (this.runtimeMaterialProfiles.size > 0 &&
+            (importedName === "createPbrMaterial" || importedName === "loadGltf")) {
+            this.fail(call, "Runtime material construction leaves no generation-known physical material slot for a later PBR material or glTF load.");
+        }
+        if ((importedName === "createPbrMaterial" || importedName === "loadGltf") &&
+            this.isRuntimeResourceConstruction() &&
+            (this.frameCallbackDepth > 0 || this.isInRuntimeControlFlow())) {
+            this.fail(call, "Runtime resource construction requires a generation-known iteration count for PBR material slots and glTF load order.");
+        }
+        const profile = runtimeProfileConstructionIntrinsics.has(importedName) &&
+            this.isRuntimeResourceConstruction();
+        const firstMaterial = this.sceneMaterials.count;
+        const firstShader = this.reachedShaderPrograms.length;
+        const value = compileRegisteredIntrinsic(this, importedName, call);
+        if (!profile || !value) return value;
+        for (let index = firstMaterial; index < this.sceneMaterials.count; ++index) {
+            this.runtimeMaterialProfiles.add(index);
+        }
+        for (let index = firstShader; index < this.reachedShaderPrograms.length; ++index) {
+            this.runtimeShaderProfiles.add(index);
+        }
+        if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
+            const index = value.sceneMeshIndex;
+            this.sceneMeshes[index]!.runtimeInstances = true;
+            ++this.runtimeMeshProfileCount;
+            value.sceneMeshProfileIndex = index;
+            delete value.sceneMeshIndex;
+            value.cpp = `bbl::upstream::bind_scene_mesh_profile(${this.requireEngine(value, call)}, ${value.cpp}, ${index}u)`;
+        }
+        return value;
+    }
+
+    public isRuntimeResourceConstruction(): boolean {
+        return !this.definiteCollectionMutation();
     }
 
     /**
@@ -10560,6 +10796,15 @@ class Compiler
     private runtimeControlFlowDepth = 0;
     /** Native loop expressions/bodies currently being lowered. */
     private runtimeIterationDepth = 0;
+    private readonly parameterizedResourceIterations: Array<{
+        statement: ResourceLoop;
+        iterations: number;
+        controlDepth: number;
+        iterationDepth: number;
+    }> = [];
+    private readonly staticExpansionBudget = new StaticExpansionBudget(
+        (node, message) => this.fail(node, message),
+    );
     /** Per-iteration scope keys while a loop is being statically emitted. */
     private readonly staticCallbackEvaluationIdentities: object[] = [];
 
@@ -11837,6 +12082,7 @@ class Compiler
     public probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
+        if (this.collectionMetadataValue(expression)?.collectionCardinality?.untrackedAliases) return undefined;
         // A list a scene selects between with a generation-known condition
         // is still a static list. Scene 140 writes both of its option
         // arrays that way -- `sg ? [sg] : undefined` for the shadow lights
@@ -12086,7 +12332,8 @@ class Compiler
         );
     }
 
-    public enterStaticIteration(): void {
+    public enterStaticIteration(statement: ts.IterationStatement): void {
+        this.staticExpansionBudget.enter(statement);
         this.staticCallbackEvaluationIdentities.push(
             this.variableScopes.at(-1)!,
         );
@@ -12094,6 +12341,79 @@ class Compiler
 
     public leaveStaticIteration(): void {
         this.staticCallbackEvaluationIdentities.pop();
+        this.staticExpansionBudget.leave();
+    }
+
+    public isInParameterizedResourceLoop(statement?: ts.IterationStatement): boolean {
+        return statement
+            ? this.parameterizedResourceIterations.some((frame) => frame.statement === statement)
+            : this.parameterizedResourceIterations.length > 0;
+    }
+
+    public parameterizedResourceLoop(
+        statement: ResourceLoop,
+        knownIterations?: number,
+    ): ParameterizedResourceLoop | undefined {
+        if (this.isInRuntimeControlFlow() && !this.isInParameterizedResourceLoop()) {
+            return undefined;
+        }
+        if (!this.requiresStaticIteration(statement.statement)) return undefined;
+        return parameterizedResourceLoop(this, statement, knownIterations);
+    }
+
+    /**
+     * Construction executes natively. Only the closed composition sequence is
+     * repeated, in creation order, for the existing per-renderable tables.
+     */
+    public emitParameterizedResourceLoop(
+        statement: ResourceLoop,
+        iterations: number,
+        emitBody: () => void,
+    ): void {
+        if (iterations === 0) return;
+        const firstMesh = this.sceneMeshes.length;
+        const firstMaterial = this.sceneMaterials.count;
+        this.parameterizedResourceIterations.push({
+            statement,
+            iterations,
+            controlDepth: this.runtimeControlFlowDepth,
+            iterationDepth: this.runtimeIterationDepth,
+        });
+        try {
+            emitBody();
+        } finally {
+            this.parameterizedResourceIterations.pop();
+        }
+        const meshes = this.sceneMeshes.slice(firstMesh);
+        const materials = this.sceneMaterialGltfAssetsBefore.slice(firstMaterial);
+        if (meshes.length === 0 && materials.length === 0) return;
+        const totalMeshes = firstMesh + meshes.length * iterations;
+        const totalMaterials = firstMaterial + materials.length * iterations;
+        this.staticExpansionBudget.checkComposition(statement, totalMeshes, totalMaterials);
+        for (let iteration = 1; iteration < iterations; ++iteration) {
+            for (const [offset, mesh] of meshes.entries()) {
+                const source = firstMesh + offset;
+                const index = this.sceneMeshes.length;
+                this.sceneMeshes.push({ ...mesh });
+                const material = this.sceneMeshMaterials.get(source);
+                if (material) {
+                    this.recordSceneMeshMaterial(index, {
+                        ...material,
+                        standardMaterial: mesh.standardMaterial === true,
+                        standardMaterialPluginIndex: mesh.standardMaterialPluginIndex,
+                        sceneShaderVariant: mesh.shaderVariant,
+                        sceneShaderVariants: mesh.shaderVariants,
+                    });
+                }
+                if (this.shadowReceiverMeshes.has(source)) {
+                    this.shadowReceiverMeshes.add(index);
+                }
+            }
+            for (const loadCount of materials) {
+                this.sceneMaterialGltfAssetsBefore.push(loadCount);
+                this.sceneMaterials.recordSceneMaterialSlot();
+            }
+        }
     }
 
     public callbackEvaluationIdentity(): object | undefined {
@@ -12856,7 +13176,7 @@ class Compiler
     }
 
     public endNativeFunctionBody(): void {
-        this.returnFrames.pop();
+        this.validateResourceLoopReturn(this.returnFrames.pop());
     }
 
     public registerNativeBinding(name: string, borrowed = false, allowReference = false): NativeCaptureBinding {
@@ -12926,10 +13246,20 @@ class Compiler
         const capture = new ClosureCaptures(
             this.allocateTemporaryCppName("environment"), this.nextNativeBindingSequence, byReference);
         this.managedCaptures.push(capture);
+        const deferred = this.frameCallbackDepth > 0 &&
+            !this.deferredResourceCaptureDepths.has(this.frameCallbackDepth)
+            ? this.checkpointResourceConstruction()
+            : undefined;
+        if (deferred) this.deferredResourceCaptureDepths.add(deferred.callbackDepth);
         let lines: string[];
         try {
             lines = this.captureEmittedLines(emitBody);
         } finally {
+            if (deferred) {
+                this.deferredResourceCaptureDepths.delete(deferred.callbackDepth);
+                this.resourceConstructionCheckpoints.delete(deferred);
+                this.excludeDeferredResourceConstruction(deferred);
+            }
             this.managedCaptures.pop();
         }
         return {
@@ -12952,7 +13282,86 @@ class Compiler
     }
 
     public endInlineFrame(): void {
-        this.returnFrames.pop();
+        this.validateResourceLoopReturn(this.returnFrames.pop());
+    }
+
+    /**
+     * Feature/fact writes such as thin-instance updates are not construction.
+     * Only changes to generation-owned ordinals or baked work make a helper's
+     * runtime return invalidate the surrounding static iteration count.
+     */
+    private resourceConstructionState(): ResourceConstructionState {
+        return { counters: [
+            this.sceneMeshes.length - this.runtimeMeshProfileCount,
+            this.sceneMaterials.count - this.runtimeMaterialProfiles.size,
+            this.shadowGenerators.length,
+            // Packaged files are deduplicated inputs, not runtime allocation
+            // ordinals. Closed-directory discovery can happen inside a loop.
+            this.currentGltfAssetCount(),
+            this.reachedShaderPrograms.length - this.runtimeShaderProfiles.size,
+            this.reachedNodeMaterials.length,
+            this.reachedEffects_.length,
+            this.geometryOutputTasks.length,
+            this.postProcessTasks.length,
+            this.postProcessComposites.length,
+            this.sceneSpriteCustomShaders.length,
+            this.reachedNodeParticles.steps.length,
+            this.reachedNodeParticles.registrations.length,
+            this.reachedNodeParticles.textures.length,
+            this.reachedNodeParticles.sprite2d.length,
+            // Construction/bake entries are append-only during lowering.
+            // Their counts detect changes without rehashing immutable graphs.
+            this.reachedNodeParticles.sets.length,
+            this.reachedNodeParticles.billboards.length,
+        ], lightIdentities: this.sceneLights.map(({ identity }) => identity) };
+    }
+
+    private checkpointResourceConstruction(): ResourceConstructionCheckpoint {
+        const checkpoint = {
+            state: this.resourceConstructionState(),
+            callbackDepth: this.frameCallbackDepth,
+        };
+        this.resourceConstructionCheckpoints.add(checkpoint);
+        return checkpoint;
+    }
+
+    /** Compiling a retained callback does not execute its construction in the enclosing loop. */
+    private excludeDeferredResourceConstruction(before: ResourceConstructionCheckpoint): void {
+        const after = this.resourceConstructionState();
+        const removed = new Set(before.state.lightIdentities.filter((value) => !after.lightIdentities.includes(value)));
+        const added = after.lightIdentities.filter((value) => !before.state.lightIdentities.includes(value));
+        for (const checkpoint of this.resourceConstructionCheckpoints) {
+            if (checkpoint.callbackDepth >= before.callbackDepth) continue;
+            for (const [index, baseline] of checkpoint.state.counters.entries()) {
+                checkpoint.state.counters[index] = baseline + after.counters[index]! - before.state.counters[index]!;
+            }
+            checkpoint.state.lightIdentities = checkpoint.state.lightIdentities.filter((value) => !removed.has(value));
+            checkpoint.state.lightIdentities.push(...added);
+        }
+    }
+
+    public trackResourceLoopEarlyReturn(condition: ts.Expression): void {
+        const frame = this.returnFrames.at(-1);
+        if (frame && !this.resourceLoopReturns.has(frame)) {
+            this.resourceLoopReturns.set(frame, {
+                condition,
+                checkpoint: this.checkpointResourceConstruction(),
+            });
+        }
+    }
+
+    private validateResourceLoopReturn(frame: object | undefined): void {
+        const guard = frame && this.resourceLoopReturns.get(frame);
+        if (!guard) return;
+        this.resourceConstructionCheckpoints.delete(guard.checkpoint);
+        const state = this.resourceConstructionState();
+        if (!resourceConstructionStatesEqual(state, guard.checkpoint.state)) {
+            this.fail(
+                guard.condition,
+                "A resource-construction helper's early return requires a " +
+                    "generation-known condition inside a static loop.",
+            );
+        }
     }
 
     public activeNativeReturnType(): DataType | "void" | undefined {
@@ -13224,14 +13633,37 @@ class Compiler
         return true;
     }
 
-    public dataIterationTarget(expression: ts.Expression):
+    public dataIterationTarget(expression: ts.Expression, knownTuple?: Value):
         | {
               container: Value;
               element: DataIterationElement;
               template?: Value;
           }
         | undefined {
-        return this.dataLowerer.iterationTarget(expression);
+        return this.dataLowerer.iterationTarget(expression, knownTuple);
+    }
+
+    public requiresStaticDataIteration(statement: ts.Statement): boolean {
+        return requiresStaticDataIteration(this, statement);
+    }
+
+    public emitNativeDataIteration<T>(statement: ts.Statement, emitBody: () => T): T {
+        const checkpoint = this.checkpointResourceConstruction();
+        let emitted: T;
+        try {
+            emitted = emitBody();
+        } finally {
+            this.resourceConstructionCheckpoints.delete(checkpoint);
+        }
+        const after = this.resourceConstructionState();
+        if (!resourceConstructionStatesEqual(checkpoint.state, after)) {
+            this.fail(
+                statement,
+                "Runtime resource construction requires a generation-known iteration count " +
+                    "and representable specialization; a native data loop cannot record just one construction.",
+            );
+        }
+        return emitted;
     }
 
     public dataValue(cpp: string, dataType: DataType): Value {
@@ -16410,6 +16842,32 @@ class Compiler
     }
 
     public defineVariable(identifier: ts.Identifier, value: Value): void {
+        if (value.kind === "data" && (value.dataType?.kind === "vector" ||
+            value.dataType?.kind === "map" || value.dataType?.kind === "set")) {
+            const owner = value.staticElementsOwner ?? value;
+            const declaration = identifier.parent;
+            const initializer = ts.isVariableDeclaration(declaration) && declaration.initializer
+                ? this.unwrap(declaration.initializer)
+                : undefined;
+            const keyed = value.dataType.kind !== "vector";
+            const emptyKeys = keyed && initializer &&
+                ((ts.isNewExpression(initializer) && (initializer.arguments?.length ?? 0) === 0) ||
+                    (ts.isObjectLiteralExpression(initializer) && initializer.properties.length === 0));
+            const count = emptyKeys ? 0 : owner.staticElements?.length ??
+                (initializer && ts.isArrayLiteralExpression(initializer) &&
+                    !initializer.elements.some(ts.isSpreadElement)
+                    ? initializer.elements.length
+                    : undefined);
+            value.collectionCardinality = owner.collectionCardinality ?? value.collectionCardinality ?? {
+                kind: keyed ? "keyed" : "array",
+                count,
+                ...(emptyKeys ? { keys: new Set<string | number | boolean>() } : {}),
+                createdIn: [...this.parameterizedResourceIterations],
+                varyingIn: new Set(),
+            };
+            owner.collectionCardinality = value.collectionCardinality;
+            this.collectionCardinalities.add(value.collectionCardinality);
+        }
         this.bindAudioMainBusStorage(value);
         this.describeNativeValue(value);
         const symbol = this.requireValueSymbol(identifier);
@@ -16518,6 +16976,19 @@ class Compiler
         argument: ts.Expression,
     ): Value {
         let dataType = this.dataLowerer.dataTypeAt(identifier);
+        const parameter = identifier.parent;
+        if (dataType?.kind === "number" && ts.isParameter(parameter) &&
+            isSupportedFunction(parameter.parent) &&
+            parameterIsReadOnly(this.checker, parameter.parent, identifier)) {
+            const value = this.compileValue(argument);
+            const cpp = this.dataLowerer.compileKnownValueForSink(value, dataType, argument);
+            return {
+                ...this.dataLowerer.leafValue(cpp, dataType),
+                ...(value.staticNumber !== undefined && !value.parameterBinding
+                    ? { staticNumber: value.staticNumber }
+                    : {}),
+            };
+        }
         if (dataType?.kind === "struct") {
             dataType = this.dataTypes.markStoredObjectReferences(dataType);
         }
@@ -16559,17 +17030,22 @@ class Compiler
             }
         }
         const unwrapped = this.unwrap(argument);
+        const collection = dataType.kind === "vector" || dataType.kind === "map" || dataType.kind === "set";
+        const structural = dataType.kind === "struct" ||
+            (dataType.kind === "vector" && dataType.element.kind === "struct");
         if (
-            (dataType.kind === "struct" ||
-                (dataType.kind === "vector" &&
-                    dataType.element.kind === "struct")) &&
-            (ts.isIdentifier(unwrapped) ||
+            collection ||
+            (structural && (ts.isIdentifier(unwrapped) ||
                 ts.isPropertyAccessExpression(unwrapped) ||
-                ts.isElementAccessExpression(unwrapped))
+                ts.isElementAccessExpression(unwrapped)))
         ) {
             const actual = this.compileValue(unwrapped);
+            if (collection && actual.kind === "data" && actual.dataType &&
+                dataTypesEqual(actual.dataType, dataType)) {
+                return actual;
+            }
             if (
-                actual.kind === "record" &&
+                structural && actual.kind === "record" &&
                 this.dataTypes.carriesHandle(dataType)
             ) {
                 // The caller holds a compile-time record of engine handles.
@@ -16594,6 +17070,10 @@ class Compiler
                 // writes a subset of fields shares the caller's JavaScript
                 // object instead of projecting and copying it.
                 return actual;
+            }
+            if (collection) {
+                const cpp = this.dataLowerer.compileKnownValueForSink(actual, dataType, argument);
+                return this.dataLowerer.leafValue(cpp, dataType);
             }
         }
         const cpp = this.dataLowerer.compileForSink(argument, dataType);
@@ -17264,14 +17744,20 @@ class Compiler
     }
 
     /** Invalidate one native array's complete snapshot through all aliases. */
-    public invalidateStaticElements(value: Value): void {
+    public invalidateStaticElements(value: Value, preserveCardinality = false): void {
         const owner = value.staticElementsOwner ?? value;
         const elements = owner.staticElements ?? value.staticElements;
+        const cardinality = owner.collectionCardinality ?? value.collectionCardinality;
+        if (cardinality && !preserveCardinality) {
+            cardinality.count = undefined;
+            delete cardinality.keys;
+        }
         const invalidate = (candidate: Value): void => {
             if (
                 candidate === value ||
                 candidate === owner ||
                 candidate.staticElementsOwner === owner ||
+                (cardinality !== undefined && candidate.collectionCardinality === cardinality) ||
                 (elements !== undefined &&
                     candidate.staticElements === elements)
             ) {
@@ -17279,6 +17765,7 @@ class Compiler
                     candidate.runtimeElementTemplate =
                         owner.runtimeElementTemplate;
                 }
+                if (cardinality) candidate.collectionCardinality = cardinality;
                 delete candidate.staticElements;
                 delete candidate.staticElementsOwner;
             }
@@ -17286,6 +17773,134 @@ class Compiler
         this.visitScopedValues(invalidate);
         invalidate(value);
         invalidate(owner);
+    }
+
+    private collectionMetadataValue(expression: ts.Expression): Value | undefined {
+        const node = this.unwrap(expression);
+        if (ts.isIdentifier(node)) return this.lookupOptional(node);
+        if (node.kind === ts.SyntaxKind.ThisKeyword) return this.activeThis();
+        if (ts.isPropertyAccessExpression(node)) {
+            const owner = this.collectionMetadataValue(node.expression);
+            if (!owner?.recordGetters?.[node.name.text]) return owner?.recordProperties?.[node.name.text];
+        }
+        return undefined;
+    }
+
+    public knownCollectionCardinality(expression: ts.Expression): number | undefined {
+        const carried = this.collectionMetadataValue(expression);
+        const carriedState = carried?.collectionCardinality ?? carried?.staticElementsOwner?.collectionCardinality;
+        if (carriedState) {
+            return carriedState.untrackedAliases ||
+                this.parameterizedResourceIterations.some((frame) => carriedState.varyingIn.has(frame))
+                ? undefined
+                : carriedState.count;
+        }
+        const node = this.unwrap(this.resolveStaticExpression(expression));
+        if (ts.isArrayLiteralExpression(node)) {
+            let count = 0;
+            for (const element of node.elements) {
+                if (!ts.isSpreadElement(element)) { count++; continue; }
+                const spread = this.knownCollectionCardinality(element.expression);
+                if (spread === undefined) return undefined;
+                count += spread;
+            }
+            return count;
+        }
+        const value = this.collectionMetadataValue(node);
+        const state = value?.collectionCardinality ?? value?.staticElementsOwner?.collectionCardinality;
+        if (state) {
+            return state.untrackedAliases ||
+                this.parameterizedResourceIterations.some((frame) => state.varyingIn.has(frame))
+                ? undefined
+                : state.count;
+        }
+        return (value?.tupleElements ??
+            value?.staticElementsOwner?.staticElements ?? value?.staticElements)?.length;
+    }
+
+    /** A known size whose members no longer have individual static aliases. */
+    public runtimeCollectionCardinality(expression: ts.Expression): number | undefined {
+        const value = this.collectionMetadataValue(expression);
+        return value && !value.tupleElements &&
+            !(value.staticElementsOwner?.staticElements ?? value.staticElements)
+            ? this.knownCollectionCardinality(expression)
+            : undefined;
+    }
+
+    private definiteCollectionMutation(): boolean {
+        const frame = this.parameterizedResourceIterations.at(-1);
+        const definite = frame
+            ? this.runtimeControlFlowDepth === frame.controlDepth + 1 &&
+                this.runtimeIterationDepth === frame.iterationDepth + 1
+            : this.runtimeControlFlowDepth === 0 && this.runtimeIterationDepth === 0;
+        return definite && this.frameCallbackDepth === 0 &&
+            (frame !== undefined || !this.isInNativeFunctionBody()) &&
+            !this.returnFrames.some((current) => this.resourceLoopReturns.has(current));
+    }
+
+    public recordArrayPush(value: Value, added: number | undefined): boolean {
+        const owner = value.staticElementsOwner ?? value;
+        const state = owner.collectionCardinality ?? value.collectionCardinality;
+        if (state) value.collectionCardinality = state;
+        if (added === undefined || !this.definiteCollectionMutation() || state?.untrackedAliases) {
+            if (state) {
+                state.count = undefined;
+                if (this.frameCallbackDepth > 0 ||
+                    (!this.parameterizedResourceIterations.length && this.isInNativeFunctionBody())) {
+                    state.untrackedAliases = true;
+                }
+            }
+            return false;
+        }
+        if (!state) return true;
+        let repetitions = 1;
+        for (const current of this.parameterizedResourceIterations) {
+            if (state.createdIn.includes(current)) continue;
+            repetitions *= current.iterations;
+            if (added !== 0 && current.iterations > 1) state.varyingIn.add(current);
+        }
+        if (state.count !== undefined) {
+            const count = state.count + added * repetitions;
+            state.count = Number.isSafeInteger(count) ? count : undefined;
+        }
+        return true;
+    }
+
+    public recordCollectionKey(value: Value, key: Value, removed = false): void {
+        const state = value.collectionCardinality;
+        if (!state || state.kind !== "keyed") return;
+        const scalar = key.staticNumber ?? key.staticString ?? key.staticBoolean;
+        if (scalar === undefined || !this.definiteCollectionMutation() || state.untrackedAliases) {
+            state.count = undefined;
+            delete state.keys;
+            if (this.frameCallbackDepth > 0 ||
+                (!this.parameterizedResourceIterations.length && this.isInNativeFunctionBody())) {
+                state.untrackedAliases = true;
+            }
+            return;
+        }
+        if (!state.keys) return;
+        const changed = removed ? state.keys.has(scalar) : !state.keys.has(scalar);
+        if (removed) state.keys.delete(scalar);
+        else state.keys.add(scalar);
+        state.count = state.keys.size;
+        if (changed) {
+            for (const current of this.parameterizedResourceIterations) {
+                if (!state.createdIn.includes(current) && current.iterations > 1) state.varyingIn.add(current);
+            }
+        }
+    }
+
+    public recordCollectionClear(value: Value): void {
+        const state = value.collectionCardinality;
+        if (!state || state.kind !== "keyed") return;
+        if (this.definiteCollectionMutation() && !state.untrackedAliases) {
+            state.keys = new Set();
+            state.count = 0;
+        } else {
+            delete state.keys;
+            state.count = undefined;
+        }
     }
 
     /** Invalidate one native map/object snapshot through all shared aliases. */
@@ -17776,6 +18391,7 @@ class Compiler
             standardMaterial: boolean;
             standardMaterialPluginIndex?: number | undefined;
             sceneShaderVariant?: string | undefined;
+            sceneShaderVariants?: readonly string[] | undefined;
         },
     ): void {
         this.sceneMeshMaterials.set(meshIndex, {
@@ -17792,9 +18408,23 @@ class Compiler
                 }
             }
         }
-        if (material.sceneShaderVariant !== undefined) {
-            const mesh = this.sceneMeshes[meshIndex];
-            if (mesh) mesh.shaderVariant = material.sceneShaderVariant;
+        const shaderMesh = this.sceneMeshes[meshIndex];
+        if (shaderMesh) {
+            if (this.isInRuntimeControlFlow()) {
+                const variants = new Set([
+                    ...(shaderMesh.shaderVariant === undefined ? [] : [shaderMesh.shaderVariant]),
+                    ...(shaderMesh.shaderVariants ?? []),
+                    ...(material.sceneShaderVariant === undefined ? [] : [material.sceneShaderVariant]),
+                    ...(material.sceneShaderVariants ?? []),
+                ]);
+                delete shaderMesh.shaderVariant;
+                if (variants.size > 0) shaderMesh.shaderVariants = [...variants].sort();
+            } else {
+                if (material.sceneShaderVariant === undefined) delete shaderMesh.shaderVariant;
+                else shaderMesh.shaderVariant = material.sceneShaderVariant;
+                if (material.sceneShaderVariants === undefined) delete shaderMesh.shaderVariants;
+                else shaderMesh.shaderVariants = material.sceneShaderVariants;
+            }
         }
         if (material.pbrMaterial !== null) {
             const meshes =
@@ -17809,6 +18439,10 @@ class Compiler
      *  scene-mesh row (for example an imported collection element). */
     public recordUnknownSceneMeshMaterial(materialIndex: number): void {
         this.scenePbrMaterialsWithUnknownMesh.add(materialIndex);
+    }
+
+    public recordUnknownSceneMaterialAssignment(): void {
+        this.unknownSceneMaterialAssignment = true;
     }
 
     public recordSceneMeshAssetPbrMaterial(meshIndex: number): void {
@@ -18184,50 +18818,47 @@ class Compiler
     public ensureDefaultRenderTask(
         scene: Value,
         node: ts.Node,
-    ): string | undefined {
-        if (!scene.defaultRenderTask || scene.defaultRenderTaskEmitted) {
-            return undefined;
-        }
-        scene.defaultRenderTaskEmitted = true;
-        this.defaultRenderTaskAdapted = true;
-        const engine = this.requireEngine(scene, node);
+    ): DefaultRenderTaskEmission {
         this.reachFeature("renderer:scene", node);
         this.reachFeature("renderer:geometry-output", node);
         this.reachFeature("frame-graph:resources", node);
-        const target = this.allocateTemporaryCppName("default_target");
-        const resolveTarget = this.allocateTemporaryCppName("default_resolve");
-        const renderTask = this.allocateTemporaryCppName("default_render_task");
-        const resolveTask = this.allocateTemporaryCppName(
-            "default_resolve_task",
-        );
-        const presentTask = this.allocateTemporaryCppName(
-            "default_present_task",
-        );
-        return (
-            `auto ${target} = bbl::create_render_target(${engine}, ` +
-            `bbl::RenderTargetOptions{${scene.msaaSamples ?? 4}u, true, true, false, 0u, 0u});\n` +
-            `        auto ${resolveTarget} = bbl::create_render_target(${engine}, ` +
-            `bbl::RenderTargetOptions{1u, true, false, false, 0u, 0u});\n` +
-            `        auto ${renderTask} = bbl::create_render_task(${engine}, ${scene.cpp}, ` +
-            `bbl::RenderTaskOptions{"default-render-task", ` +
-            `${target}, ` +
-            `${scene.cpp}.clear_color, true, ` +
-            `bbl::CameraHandle{}, false, true, true, true});\n` +
-            `        bbl::add_task(${scene.cpp}, ${renderTask});\n` +
-            `        auto ${resolveTask} = bbl::create_copy_to_texture_task(${engine}, ${scene.cpp}, ` +
-            `bbl::CopyTaskOptions{"default-resolve", ` +
-            `bbl::render_target_texture(${target}), ` +
-            `bbl::RenderTargetHandle{}, ${resolveTarget}, false, ` +
-            `bbl::NormalizedViewport{}});\n` +
-            `        bbl::add_task(${scene.cpp}, ${resolveTask});\n` +
-            `        auto ${presentTask} = bbl::create_copy_to_texture_task(${engine}, ${scene.cpp}, ` +
-            `bbl::CopyTaskOptions{"default-present", ` +
-            `bbl::render_target_texture(${resolveTarget}), ` +
-            `bbl::swapchain_render_target(${engine}), ` +
-            `bbl::RenderTargetHandle{}, false, ` +
-            `bbl::NormalizedViewport{}});\n` +
-            `        bbl::add_task(${scene.cpp}, ${presentTask})`
-        );
+        if (!this.defaultRenderTaskAdapted) {
+            this.registerNativeFunction(
+                "void bbl_ensure_default_render_task(bbl::Scene& scene);",
+                [
+                    "void bbl_ensure_default_render_task(bbl::Scene& scene) {",
+                    '    if (!scene.engine) throw std::runtime_error("A scene render task requires its owning engine.");',
+                    "    if (scene.state->default_render_task && !scene.state->default_render_task_created) {",
+                    "        auto& engine = *scene.engine;",
+                    "        auto target = bbl::create_render_target(engine, " +
+                        "bbl::RenderTargetOptions{scene.state->default_render_task_samples, true, true, false, 0u, 0u});",
+                    "        auto resolve_target = bbl::create_render_target(engine, " +
+                        "bbl::RenderTargetOptions{1u, true, false, false, 0u, 0u});",
+                    "        auto render_task = bbl::create_render_task(engine, scene, " +
+                        'bbl::RenderTaskOptions{"default-render-task", target, scene.clear_color, true, ' +
+                        "bbl::CameraHandle{}, false, true, true, true});",
+                    "        bbl::add_task(scene, render_task);",
+                    "        auto resolve_task = bbl::create_copy_to_texture_task(engine, scene, " +
+                        'bbl::CopyTaskOptions{"default-resolve", bbl::render_target_texture(target), ' +
+                        "bbl::RenderTargetHandle{}, resolve_target, false, bbl::NormalizedViewport{}});",
+                    "        bbl::add_task(scene, resolve_task);",
+                    "        auto present_task = bbl::create_copy_to_texture_task(engine, scene, " +
+                        'bbl::CopyTaskOptions{"default-present", bbl::render_target_texture(resolve_target), ' +
+                        "bbl::swapchain_render_target(engine), bbl::RenderTargetHandle{}, false, bbl::NormalizedViewport{}});",
+                    "        bbl::add_task(scene, present_task);",
+                    "        scene.state->default_render_task_created = true;",
+                    "    }",
+                    "}",
+                ],
+            );
+            this.defaultRenderTaskAdapted = true;
+        }
+        const sceneCpp = this.allocateTemporaryCppName("default_scene");
+        return {
+            sceneCpp,
+            setup: `auto ${sceneCpp} = ${scene.cpp};\n` +
+                `        bblscene::bbl_ensure_default_render_task(${sceneCpp})`,
+        };
     }
 
     public importedName(identifier: ts.Identifier): string | undefined {
@@ -18242,58 +18873,7 @@ class Compiler
      * change whether the enclosing loop must be statically iterated.
      */
     public requiresStaticIteration(statement: ts.Statement): boolean {
-        const visitedFunctions = new Set<ts.Node>();
-        let required = false;
-        const visitFunction = (node: ts.Node): void => {
-            if (visitedFunctions.has(node)) return;
-            visitedFunctions.add(node);
-            if (
-                (ts.isFunctionDeclaration(node) ||
-                    ts.isFunctionExpression(node) ||
-                    ts.isArrowFunction(node) ||
-                    ts.isMethodDeclaration(node)) &&
-                node.body
-            ) {
-                visit(node.body);
-            }
-        };
-        const visit = (node: ts.Node): void => {
-            if (required) return;
-            if (ts.isCallExpression(node)) {
-                const callee = this.unwrap(node.expression);
-                if (ts.isIdentifier(callee)) {
-                    const imported = this.symbols.importedName(callee);
-                    if (
-                        imported !== undefined &&
-                        !runtimeOnlyIntrinsics.has(imported)
-                    ) {
-                        required = true;
-                        return;
-                    }
-                    if (imported !== undefined) return;
-                    for (const declaration of this.symbols.valueSymbol(callee)
-                        ?.declarations ?? []) {
-                        if (ts.isVariableDeclaration(declaration)) {
-                            const initializer = declaration.initializer;
-                            if (
-                                initializer &&
-                                (ts.isFunctionExpression(initializer) ||
-                                    ts.isArrowFunction(initializer))
-                            ) {
-                                visitFunction(initializer);
-                            }
-                        } else {
-                            visitFunction(declaration);
-                        }
-                    }
-                }
-            }
-            ts.forEachChild(node, (child) => {
-                if (!ts.isFunctionLike(child)) visit(child);
-            });
-        };
-        visit(statement);
-        return required;
+        return requiresStaticLoopIteration(this, statement);
     }
 
     public eraseBrowserInstrumentation(position: number): void {
@@ -18361,7 +18941,9 @@ class Compiler
     }
 
     public emit(line: string): void {
-        this.body.push(`${"    ".repeat(this.indentLevel)}${line}`);
+        const emitted = `${"    ".repeat(this.indentLevel)}${line}`;
+        this.staticExpansionBudget.emit(emitted);
+        this.body.push(emitted);
     }
 
     /**
@@ -18596,6 +19178,7 @@ class Compiler
             features,
             jsDataReached: this.jsDataReached,
             imageDecodeReached: this.imageDecodeReached,
+            runtimeMeshProfiles: this.runtimeMeshProfileCount > 0,
             jsRandomReached: this.jsRandomReached,
             audioSessionReached: this.audioSessionReached,
             throwReached: this.throwReached,

@@ -91,11 +91,18 @@ const VALUES_PER_LINE = 64;
  * An empty stream has no array to bound -- a zero-length C array is not
  * C++ -- so it answers with the empty vector and declares nothing.
  */
+export type CppArrayTableRegistrar = (
+    symbol: string,
+    elementType: string,
+    elements: string[],
+) => string;
+
 export function cppArrayDeclaration(
     symbol: string,
     elementType: string,
     values: ArrayLike<number>,
     spell: (value: number) => string,
+    registerTable?: CppArrayTableRegistrar,
 ): { readonly lines: readonly string[]; readonly expression: string } {
     if (values.length === 0) {
         return { lines: [], expression: `std::vector<${elementType}>{}` };
@@ -122,6 +129,13 @@ export function cppArrayDeclaration(
         }
         return text;
     });
+    if (registerTable) {
+        const table = registerTable(symbol, elementType, spelled);
+        return {
+            lines: [],
+            expression: `std::vector<${elementType}>(${table}.begin(), ${table}.end())`,
+        };
+    }
     const lines = [`static const ${elementType} ${symbol}[] = {`];
     for (let start = 0; start < spelled.length; start += VALUES_PER_LINE) {
         lines.push(

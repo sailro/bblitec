@@ -1,0 +1,342 @@
+Native allocation-failure handling at the pinned Recast/Detour revision.
+Implicit vector growth throws std::bad_alloc; reserve retains its bool result.
+Partial elements, contours, navigation tiles and query pools remain destructible.
+Invalid query reinitialization is rejected before mutating existing ownership.
+
+--- a/Recast/Include/RecastAlloc.h
++++ b/Recast/Include/RecastAlloc.h
+@@ -23,6 +23,7 @@
+ 
+ #include <stdlib.h>
+ #include <stdint.h>
++#include <new>
+ 
+ /// Provides hint values to the memory allocator on how long the
+ /// memory is expected to be used.
+@@ -96,7 +97,8 @@
+ ///  * Uses rcAlloc()/rcFree() to handle storage.
+ ///  * No support for a custom allocator.
+ ///  * Uses signed size instead of size_t to avoid warnings in for loops: "for (int i = 0; i < foo.size(); i++)"
+-///  * Omits methods of limited utility: insert/erase, (bad performance), at (we don't use exceptions), operator=.
++///  * Omits methods of limited utility: insert/erase (bad performance), at, operator=.
++///  * Allocation failure returns false from reserve() and throws std::bad_alloc from implicit growth.
+ ///  * assign() and the pre-sizing constructor follow C++11 semantics -- they don't construct a temporary if no value is provided.
+ ///  * push_back() and resize() support adding values from the current vector. Range-based constructors and assign(begin, end) do not.
+ ///  * No specialization for bool.
+@@ -172,7 +174,12 @@
+ 	if (count <= m_cap) {
+ 		return true;
+ 	}
+-	T* new_data = allocate_and_copy(count);
++	T* new_data;
++	try {
++		new_data = allocate_and_copy(count);
++	} catch (const std::bad_alloc&) {
++		return false;
++	}
+ 	if (!new_data) {
+ 	  return false;
+ 	}
+@@ -187,31 +194,52 @@
+ 	rcAssert(RC_SIZE_MAX / static_cast<rcSizeType>(sizeof(T)) >= size);
+ 	T* new_data = static_cast<T*>(rcAlloc(sizeof(T) * size, H));
+ 	if (new_data) {
+-		copy_range(new_data, m_data, m_data + m_size);
++		try {
++			copy_range(new_data, m_data, m_data + m_size);
++		} catch (...) {
++			rcFree(new_data);
++			throw;
++		}
+ 	}
+ 	return new_data;
+ }
+ template <typename T, rcAllocHint H>
+ void rcVectorBase<T, H>::assign(const T* begin, const T* end) {
+-	clear();
+-	reserve(end - begin);
+-	m_size = end - begin;
+-	copy_range(m_data, begin, end);
++	const rcSizeType size = end - begin;
++	if (size > m_cap) {
++		rcVectorBase<T, H> replacement;
++		if (!replacement.reserve(size)) throw std::bad_alloc();
++		copy_range(replacement.m_data, begin, end);
++		replacement.m_size = size;
++		swap(replacement);
++	} else {
++		clear();
++		copy_range(m_data, begin, end);
++		m_size = size;
++	}
+ }
+ template <typename T, rcAllocHint H>
+ void rcVectorBase<T, H>::push_back(const T& value) {
+ 	// rcLikely increases performance by ~50% on BM_rcVector_PushPreallocated,
+ 	// and by ~2-5% on BM_rcVector_Push.
+ 	if (rcLikely(m_size < m_cap)) {
+-		construct(m_data + m_size++, value);
++		construct(m_data + m_size, value);
++		m_size++;
+ 		return;
+ 	}
+ 
+ 	const rcSizeType new_cap = get_new_capacity(m_cap + 1);
+ 	T* data = allocate_and_copy(new_cap);
++	if (!data) throw std::bad_alloc();
+ 	// construct between allocate and destroy+free in case value is
+ 	// in this vector.
+-	construct(data + m_size, value);
++	try {
++		construct(data + m_size, value);
++	} catch (...) {
++		for (rcSizeType i = 0; i < m_size; ++i) data[i].~T();
++		rcFree(data);
++		throw;
++	}
+ 	destroy_range(0, m_size);
+ 	m_size++;
+ 	m_cap = new_cap;
+@@ -243,12 +271,19 @@
+ 		} else {
+ 			const rcSizeType new_cap = get_new_capacity(size);
+ 			T* new_data = allocate_and_copy(new_cap);
++			if (!new_data) throw std::bad_alloc();
+ 			// We defer deconstructing/freeing old data until after constructing
+ 			// new elements in case "value" is there.
+-			if (value) {
+-				construct_range(new_data + m_size, new_data + size, *value);
+-			} else {
+-				construct_range(new_data + m_size, new_data + size);
++			try {
++				if (value) {
++					construct_range(new_data + m_size, new_data + size, *value);
++				} else {
++					construct_range(new_data + m_size, new_data + size);
++				}
++			} catch (...) {
++				for (rcSizeType i = 0; i < m_size; ++i) new_data[i].~T();
++				rcFree(new_data);
++				throw;
+ 			}
+ 			destroy_range(0, m_size);
+ 			rcFree(m_data);
+@@ -276,22 +311,34 @@
+ // static
+ template <typename T, rcAllocHint H>
+ void rcVectorBase<T, H>::construct_range(T* begin, T* end) {
+-	for (T* p = begin; p < end; p++) {
+-		construct(p);
++	T* p = begin;
++	try {
++		for (; p < end; p++) construct(p);
++	} catch (...) {
++		while (p != begin) (--p)->~T();
++		throw;
+ 	}
+ }
+ // static
+ template <typename T, rcAllocHint H>
+ void rcVectorBase<T, H>::construct_range(T* begin, T* end, const T& value) {
+-	for (T* p = begin; p < end; p++) {
+-		construct(p, value);
++	T* p = begin;
++	try {
++		for (; p < end; p++) construct(p, value);
++	} catch (...) {
++		while (p != begin) (--p)->~T();
++		throw;
+ 	}
+ }
+ // static
+ template <typename T, rcAllocHint H>
+ void rcVectorBase<T, H>::copy_range(T* dst, const T* begin, const T* end) {
+-	for (rcSizeType i = 0 ; i < end - begin; i++) {
+-		construct(dst + i, begin[i]);
++	rcSizeType i = 0;
++	try {
++		for (; i < end - begin; i++) construct(dst + i, begin[i]);
++	} catch (...) {
++		while (i > 0) dst[--i].~T();
++		throw;
+ 	}
+ }
+ template <typename T, rcAllocHint H>
+--- a/Recast/Source/RecastContour.cpp
++++ b/Recast/Source/RecastContour.cpp
+@@ -944,6 +944,7 @@ bool rcBuildContours(rcContext* ctx, const rcCompactHeightfield& chf,
+ 						const int oldMax = maxContours;
+ 						maxContours *= 2;
+ 						rcContour* newConts = (rcContour*)rcAlloc(sizeof(rcContour)*maxContours, RC_ALLOC_PERM);
++						if (!newConts) return false;
+ 						for (int j = 0; j < cset.nconts; ++j)
+ 						{
+ 							newConts[j] = cset.conts[j];
+@@ -958,6 +959,7 @@ bool rcBuildContours(rcContext* ctx, const rcCompactHeightfield& chf,
+ 					}
+ 					
+ 					rcContour* cont = &cset.conts[cset.nconts++];
++					memset(cont, 0, sizeof(rcContour));
+ 					
+ 					cont->nverts = simplified.size()/4;
+ 					cont->verts = (int*)rcAlloc(sizeof(int)*cont->nverts*4, RC_ALLOC_PERM);
+--- a/Detour/Include/DetourNode.h
++++ b/Detour/Include/DetourNode.h
+@@ -85,6 +85,7 @@ public:
+ 			sizeof(dtNodeIndex)*m_hashSize;
+ 	}
+ 	
++	inline bool isValid() const { return m_nodes && m_next && m_first; }
+ 	inline int getMaxNodes() const { return m_maxNodes; }
+ 	
+ 	inline int getHashSize() const { return m_hashSize; }
+@@ -149,6 +150,7 @@ public:
+ 		sizeof(dtNode*) * (m_capacity + 1);
+ 	}
+ 	
++	inline bool isValid() const { return m_heap != 0; }
+ 	inline int getCapacity() const { return m_capacity; }
+ 	
+ private:
+--- a/Detour/Source/DetourNode.cpp
++++ b/Detour/Source/DetourNode.cpp
+@@ -65,9 +65,7 @@ dtNodePool::dtNodePool(int maxNodes, int hashSize) :
+ 	m_next = (dtNodeIndex*)dtAlloc(sizeof(dtNodeIndex)*m_maxNodes, DT_ALLOC_PERM);
+ 	m_first = (dtNodeIndex*)dtAlloc(sizeof(dtNodeIndex)*hashSize, DT_ALLOC_PERM);
+ 
+-	dtAssert(m_nodes);
+-	dtAssert(m_next);
+-	dtAssert(m_first);
++	if (!isValid()) return;
+ 
+ 	memset(m_first, 0xff, sizeof(dtNodeIndex)*m_hashSize);
+ 	memset(m_next, 0xff, sizeof(dtNodeIndex)*m_maxNodes);
+@@ -161,7 +159,6 @@ dtNodeQueue::dtNodeQueue(int n) :
+ 	dtAssert(m_capacity > 0);
+ 	
+ 	m_heap = (dtNode**)dtAlloc(sizeof(dtNode*)*(m_capacity+1), DT_ALLOC_PERM);
+-	dtAssert(m_heap);
+ }
+ 
+ dtNodeQueue::~dtNodeQueue()
+--- a/Detour/Source/DetourNavMesh.cpp
++++ b/Detour/Source/DetourNavMesh.cpp
+@@ -208,7 +208,7 @@ dtNavMesh::dtNavMesh() :
+ 
+ dtNavMesh::~dtNavMesh()
+ {
+-	for (int i = 0; i < m_maxTiles; ++i)
++	for (int i = 0; m_tiles && i < m_maxTiles; ++i)
+ 	{
+ 		if (m_tiles[i].flags & DT_TILE_FREE_DATA)
+ 		{
+@@ -237,10 +237,10 @@ dtStatus dtNavMesh::init(const dtNavMeshParams* params)
+ 	m_tiles = (dtMeshTile*)dtAlloc(sizeof(dtMeshTile)*m_maxTiles, DT_ALLOC_PERM);
+ 	if (!m_tiles)
+ 		return DT_FAILURE | DT_OUT_OF_MEMORY;
++	memset(m_tiles, 0, sizeof(dtMeshTile)*m_maxTiles);
+ 	m_posLookup = (dtMeshTile**)dtAlloc(sizeof(dtMeshTile*)*m_tileLutSize, DT_ALLOC_PERM);
+ 	if (!m_posLookup)
+ 		return DT_FAILURE | DT_OUT_OF_MEMORY;
+-	memset(m_tiles, 0, sizeof(dtMeshTile)*m_maxTiles);
+ 	memset(m_posLookup, 0, sizeof(dtMeshTile*)*m_tileLutSize);
+ 	m_nextFree = 0;
+ 	for (int i = m_maxTiles-1; i >= 0; --i)
+--- a/Detour/Source/DetourNavMeshBuilder.cpp
++++ b/Detour/Source/DetourNavMeshBuilder.cpp
+@@ -173,6 +173,7 @@ static int createBVTree(dtNavMeshCreateParams* params, dtBVNode* nodes, int /*nn
+ 	// Build tree
+ 	float quantFactor = 1 / params->cs;
+ 	BVItem* items = (BVItem*)dtAlloc(sizeof(BVItem)*params->polyCount, DT_ALLOC_TEMP);
++	if (!items) return 0;
+ 	for (int i = 0; i < params->polyCount; i++)
+ 	{
+ 		BVItem& it = items[i];
+@@ -624,7 +625,12 @@ bool dtCreateNavMeshData(dtNavMeshCreateParams* params, unsigned char** outData,
+ 	// Store and create BVtree.
+ 	if (params->buildBvTree)
+ 	{
+-		createBVTree(params, navBvtree, 2*params->polyCount);
++		if (!createBVTree(params, navBvtree, 2*params->polyCount))
++		{
++			dtFree(data);
++			dtFree(offMeshConClass);
++			return false;
++		}
+ 	}
+ 	
+ 	// Store Off-Mesh connections.
+--- a/Detour/Source/DetourNavMeshQuery.cpp
++++ b/Detour/Source/DetourNavMeshQuery.cpp
+@@ -170,12 +170,12 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
+ /// This function can be used multiple times.
+ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
+ {
+-	if (maxNodes > DT_NULL_IDX || maxNodes > (1 << DT_NODE_PARENT_BITS) - 1)
++	if (!nav || maxNodes <= 0 || maxNodes > DT_NULL_IDX || maxNodes > (1 << DT_NODE_PARENT_BITS) - 1)
+ 		return DT_FAILURE | DT_INVALID_PARAM;
+ 
+ 	m_nav = nav;
+ 	
+-	if (!m_nodePool || m_nodePool->getMaxNodes() < maxNodes)
++	if (!m_nodePool || !m_nodePool->isValid() || m_nodePool->getMaxNodes() < maxNodes)
+ 	{
+ 		if (m_nodePool)
+ 		{
+@@ -183,8 +183,10 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
+ 			dtFree(m_nodePool);
+ 			m_nodePool = 0;
+ 		}
+-		m_nodePool = new (dtAlloc(sizeof(dtNodePool), DT_ALLOC_PERM)) dtNodePool(maxNodes, dtNextPow2(maxNodes/4));
+-		if (!m_nodePool)
++		void* memory = dtAlloc(sizeof(dtNodePool), DT_ALLOC_PERM);
++		if (!memory) return DT_FAILURE | DT_OUT_OF_MEMORY;
++		m_nodePool = new (memory) dtNodePool(maxNodes, dtMax(1u, dtNextPow2(maxNodes/4)));
++		if (!m_nodePool->isValid())
+ 			return DT_FAILURE | DT_OUT_OF_MEMORY;
+ 	}
+ 	else
+@@ -192,10 +194,18 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
+ 		m_nodePool->clear();
+ 	}
+ 	
+-	if (!m_tinyNodePool)
++	if (!m_tinyNodePool || !m_tinyNodePool->isValid())
+ 	{
+-		m_tinyNodePool = new (dtAlloc(sizeof(dtNodePool), DT_ALLOC_PERM)) dtNodePool(64, 32);
+-		if (!m_tinyNodePool)
++		if (m_tinyNodePool)
++		{
++			m_tinyNodePool->~dtNodePool();
++			dtFree(m_tinyNodePool);
++			m_tinyNodePool = 0;
++		}
++		void* memory = dtAlloc(sizeof(dtNodePool), DT_ALLOC_PERM);
++		if (!memory) return DT_FAILURE | DT_OUT_OF_MEMORY;
++		m_tinyNodePool = new (memory) dtNodePool(64, 32);
++		if (!m_tinyNodePool->isValid())
+ 			return DT_FAILURE | DT_OUT_OF_MEMORY;
+ 	}
+ 	else
+@@ -203,7 +213,7 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
+ 		m_tinyNodePool->clear();
+ 	}
+ 	
+-	if (!m_openList || m_openList->getCapacity() < maxNodes)
++	if (!m_openList || !m_openList->isValid() || m_openList->getCapacity() < maxNodes)
+ 	{
+ 		if (m_openList)
+ 		{
+@@ -211,8 +221,10 @@ dtStatus dtNavMeshQuery::init(const dtNavMesh* nav, const int maxNodes)
+ 			dtFree(m_openList);
+ 			m_openList = 0;
+ 		}
+-		m_openList = new (dtAlloc(sizeof(dtNodeQueue), DT_ALLOC_PERM)) dtNodeQueue(maxNodes);
+-		if (!m_openList)
++		void* memory = dtAlloc(sizeof(dtNodeQueue), DT_ALLOC_PERM);
++		if (!memory) return DT_FAILURE | DT_OUT_OF_MEMORY;
++		m_openList = new (memory) dtNodeQueue(maxNodes);
++		if (!m_openList->isValid())
+ 			return DT_FAILURE | DT_OUT_OF_MEMORY;
+ 	}
+ 	else

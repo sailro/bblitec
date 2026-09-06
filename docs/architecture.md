@@ -147,6 +147,11 @@ EffectRenderers and scene-less frame graphs have dedicated drivers. Their
 feature gates must remove unused translation units and generated headers.
 The window outlives a renderer rebuild, preserving size, focus and identity.
 
+Default render-task configuration and creation state belong to shared scene
+identity, including scenes carried through runtime collections. One generated
+helper materializes the render/resolve/present graph once per enabled scene,
+using that scene's owning engine and sample count.
+
 Live topology and buffer updates must be safe for in-flight work. Some rebuild
 paths synchronize; dynamic uploads need not globally idle the GPU. Capture
 deferral is governed by the bounded shared capture gate. Do not infer one

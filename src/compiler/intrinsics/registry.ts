@@ -40,6 +40,7 @@ import {
 } from "./material.js";
 import {
     compileMeshIntrinsic,
+    nativeMeshDataIntrinsics,
     type MeshIntrinsicContext,
 } from "./mesh.js";
 import {
@@ -126,6 +127,20 @@ export interface IntrinsicContext
  */
 export const runtimeOnlyIntrinsics: ReadonlySet<string> = new Set([
     ...runtimeOnlyClusteredLightIntrinsics,
+]);
+
+/** Repeated data work still uses its normal lowerer to record stream facts. */
+export const nativeDataIterationIntrinsics: ReadonlySet<string> = new Set([
+    ...runtimeOnlyIntrinsics,
+    ...nativeMeshDataIntrinsics,
+    // These operations update native instances or closed bindings; their
+    // ordinary lowerers still validate options and record reached features.
+    "addSprite2DIndex", "addSprite2D", "updateSprite2DIndex", "updateSprite2D",
+    "clearSprite2DLayer", "removeSprite2D",
+    "createPhysicsAggregate", "setPhysicsShapeFilterMembershipMask",
+    "setParent", "markMeshDirty", "setMeshVisible", "setSubtreeVisible",
+    "createStorageBuffer", "setShaderStorageBuffer", "updateStorageBuffer", "disposeStorageBuffer",
+    "setShaderUniform", "setShaderFloat", "setShaderVector3", "setShaderTexture",
 ]);
 
 type IntrinsicCompiler = (

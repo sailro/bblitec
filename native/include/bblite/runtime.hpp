@@ -4360,6 +4360,9 @@ struct Surface {
 /** The mutable state shared by every native copy of one SceneContext. */
 struct SceneState {
     Engine* engine = nullptr;
+    bool default_render_task = true;
+    bool default_render_task_created = false;
+    std::uint32_t default_render_task_samples = 4;
     /** Canvas identity when this scene belongs to an auxiliary surface. */
     std::optional<UiElementHandle> surface_canvas;
     /** `disposeScene` is idempotent in the pinned scene lifecycle. */
@@ -4559,6 +4562,12 @@ private:
           fog_color(state->fog_color),
           clip_plane(state->clip_plane) {}
 };
+
+inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uint32_t samples) {
+    scene.state->default_render_task = enabled;
+    scene.state->default_render_task_samples = samples;
+    return scene;
+}
 
 /**
  * `UtilityLayer` (src/gizmo/utility-layer.ts): a second SceneContext over

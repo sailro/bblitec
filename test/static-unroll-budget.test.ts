@@ -7,8 +7,8 @@ import { compileSource } from "../src/compiler.js";
 // generation-known tuple `for...of`, and the identical-body repeat loop for
 // a nested static index loop. Both arms run every iteration exactly as the
 // unrolled emission does — the generation-time effects are the AOT model —
-// and fold only the emitted text, so the fallback in every test here is
-// byte-for-byte today's unrolled output.
+// and fold only the emitted text. These fixtures stay below the separate
+// compilation-wide hard limit.
 
 /** A scene growing a tuple of bound box handles, with a caller-shaped tail. */
 function meshTupleScene(count: number, tail: string): string {
@@ -26,10 +26,9 @@ function meshTupleScene(count: number, tail: string): string {
             const engine = await createEngine({});
             const scene = createSceneContext(engine);
             const meshes: Mesh[] = [];
-            for (let i = 0; i < ${count}; i++) {
-                const box = createBox(engine);
-                meshes.push(box);
-            }
+            ${Array.from({ length: count }, (_, index) =>
+                `const box${index} = createBox(engine); meshes.push(box${index});`,
+            ).join("\n")}
             ${tail}
         }
     `;
@@ -63,7 +62,7 @@ test("folds a large handle-tuple for...of into a static table and one native loo
     );
     assert.match(
         result.cpp,
-        /\{\n\s*v_block\d+_box, v_block\d+_box, /,
+        /\{\n\s*v_box0, v_box1, /,
     );
     assert.match(
         result.cpp,
@@ -109,9 +108,7 @@ test("an element spelled as its creation call keeps the unrolled bytes", () => {
             const engine = await createEngine({});
             const scene = createSceneContext(engine);
             const meshes: Mesh[] = [];
-            for (let i = 0; i < 300; i++) {
-                meshes.push(createBox(engine));
-            }
+            ${"meshes.push(createBox(engine));\n".repeat(300)}
             onBeforeRender(scene, () => {
                 for (const m of meshes) {
                     m.rotation.y += 0.01;

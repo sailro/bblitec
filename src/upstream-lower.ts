@@ -37,6 +37,7 @@ import { pinnedInverseImageProcessingHeader } from "./lowering/pinned-inverse-im
 import { pinnedNormalizeVec3Header } from "./lowering/pinned-normalize-vec3.js";
 import { pinnedLookDirectionHeader } from "./lowering/pinned-look-direction.js";
 import { RendererLowerer } from "./lowering/renderer-lowerer.js";
+import type { MeshProfileTable } from "./lowering/resource-profiles.js";
 import { BillboardLowerer } from "./lowering/billboard-lowerer.js";
 import {
     NodeParticleLowerer,
@@ -507,6 +508,7 @@ export interface UpstreamEmitOptions {
     pinnedMaterialCount?: number;
     /** The mesh attribute bits per runtime mesh handle, creation-ordered. */
     renderableMeshFeatures?: readonly number[];
+    meshProfiles?: MeshProfileTable;
     /**
      * Whether those bits carry the pin's own skeleton bit anywhere, so a
      * composed skeleton stage exists and the palette rides its per-bone
@@ -1804,6 +1806,7 @@ ${wgsl}`,
             this.writeSource(
                 "upstream/src/renderer_plan.cpp",
                 renderer.lowerRenderPlan({
+                    ...(options.meshProfiles ? { meshProfiles: options.meshProfiles } : {}),
                     floatingOrigin: features.includes(
                         "renderer:floating-origin",
                     ),

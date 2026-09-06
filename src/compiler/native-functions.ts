@@ -29,6 +29,7 @@ export interface NativeFunctionContext {
     ): Value | undefined;
     compileValue(expression: ts.Expression): Value;
     useNativeValue(value: Value): void;
+    invalidateStaticElements(value: Value): void;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -141,7 +142,7 @@ function valueIsPlainLeaf(
     for (const key of keys) {
         if (key === "dataType" || key === "nativeLvalue" ||
             key === "sharedStorageCpp" || key === "nativeCaptures" ||
-            key === "nativeCompanionCaptures") continue;
+            key === "nativeCompanionCaptures" || key === "collectionCardinality") continue;
         if (actualRecord[key] !== expectedRecord[key]) {
             return false;
         }
@@ -544,7 +545,7 @@ export class NativeFunctionLowerer {
         if (!properties) {
             return undefined;
         }
-        const fieldArguments: string[] = [];
+        const fieldValues: Value[] = [];
         for (const field of signature.fields) {
             const bound = properties[field.name];
             if (
@@ -563,9 +564,17 @@ export class NativeFunctionLowerer {
                 return undefined;
             }
             this.context.useNativeValue(bound);
-            fieldArguments.push(bound.cpp);
+            fieldValues.push(bound);
         }
-        return fieldArguments;
+        for (const value of fieldValues) this.invalidateMutableCollection(value);
+        return fieldValues.map((value) => value.cpp);
+    }
+
+    private invalidateMutableCollection(value: Value): void {
+        const cardinality = value.collectionCardinality ?? value.staticElementsOwner?.collectionCardinality;
+        if (!cardinality && !value.staticElements && !value.staticElementsOwner) return;
+        if (cardinality) cardinality.untrackedAliases = true;
+        this.context.invalidateStaticElements(value);
     }
 
     /**
@@ -705,6 +714,7 @@ export class NativeFunctionLowerer {
                     `By-reference data arguments require a matching addressable local or path; received ${value?.kind ?? "no value"} ${value?.dataType ? JSON.stringify(value.dataType) : "without a data type"}, expected ${JSON.stringify(dataType)}.`,
                 );
             }
+            this.invalidateMutableCollection(value);
             return value.cpp;
         }
         // The sink materializes when the argument's type is not exactly

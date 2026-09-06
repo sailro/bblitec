@@ -11,7 +11,7 @@ import {
 } from "./data-types.js";
 import type { DataLowerer } from "./data-lowering.js";
 import { isJsonValue } from "./json-bridge.js";
-import type { Value } from "./types.js";
+import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
 
 /**
  * `Array.isArray(value)` over the data model. Parsed JSON remains dynamic;
@@ -622,7 +622,12 @@ export function compileDataMethodCall(
         };
     }
     if (snapshotInvalidatingMethods.has(method)) {
-        lowerer.invalidateStaticElements(narrowed);
+        lowerer.invalidateStaticElements(
+            narrowed,
+            method === "reverse" || method === "fill" || method === "copyWithin" ||
+                ((method === "set" || method === "delete") &&
+                    (narrowed.dataType?.kind === "map" || narrowed.dataType?.kind === "set")),
+        );
     }
     const dataType =
         narrowed.dataType ??
@@ -691,6 +696,7 @@ export function compileDataMethodCall(
                     "Map.clear expects no arguments.",
                 );
             }
+            lowerer.context.recordCollectionClear(narrowed);
             if (lowerer.context.isInRuntimeControlFlow()) {
                 lowerer.context.invalidateRecordProperties(narrowed);
             } else if (narrowed.recordProperties) {
@@ -730,6 +736,7 @@ export function compileDataMethodCall(
                 };
             }
             if (method === "delete") {
+                lowerer.context.recordCollectionKey(narrowed, keyValue, true);
                 if (lowerer.context.isInRuntimeControlFlow()) {
                     lowerer.context.invalidateRecordProperties(narrowed);
                 } else if (
@@ -812,6 +819,7 @@ export function compileDataMethodCall(
             const assignedValue = lowerer.context.compileValue(
                 call.arguments[1]!,
             );
+            lowerer.context.recordCollectionKey(narrowed, keyValue);
             if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.key)) {
                 lowerer.context.refuseBorrowedPlatformEventEscape(
                     keyValue,
@@ -855,6 +863,7 @@ export function compileDataMethodCall(
                 kind: "data",
                 cpp: `${narrowed.cpp}.set(${key}, ${value})`,
                 dataType,
+                ...(narrowed.collectionCardinality ? { collectionCardinality: narrowed.collectionCardinality } : {}),
                 ...(narrowed.recordProperties
                     ? {
                           recordProperties:
@@ -897,6 +906,7 @@ export function compileDataMethodCall(
                     "Set.clear expects no arguments.",
                 );
             }
+            lowerer.context.recordCollectionClear(narrowed);
             return {
                 kind: "void",
                 cpp: `${narrowed.cpp}.clear()`,
@@ -909,10 +919,9 @@ export function compileDataMethodCall(
                     `Set.${method} expects exactly one value.`,
                 );
             }
-            const value = lowerer.compileForSink(
-                call.arguments[0]!,
-                dataType.element,
-            );
+            const member = lowerer.context.compileValue(call.arguments[0]!);
+            const value = lowerer.compileKnownValueForSink(member, dataType.element, call.arguments[0]!);
+            if (method === "delete") lowerer.context.recordCollectionKey(narrowed, member, true);
             return {
                 kind: "boolean",
                 cpp:
@@ -931,15 +940,17 @@ export function compileDataMethodCall(
                     "Set.add expects exactly one value.",
                 );
             }
-            const value = lowerer.compileForRetainedSink(
-                call.arguments[0]!,
-                dataType.element,
-                "Set.add",
-            );
+            const member = lowerer.context.compileValue(call.arguments[0]!);
+            if (lowerer.context.dataTypes.carriesBorrowedPlatformEvent(dataType.element)) {
+                lowerer.context.refuseBorrowedPlatformEventEscape(member, call.arguments[0]!, "Set.add");
+            }
+            const value = lowerer.compileKnownValueForSink(member, dataType.element, call.arguments[0]!);
+            lowerer.context.recordCollectionKey(narrowed, member);
             return {
                 kind: "data",
                 cpp: `${narrowed.cpp}.add(${value})`,
                 dataType,
+                ...(narrowed.collectionCardinality ? { collectionCardinality: narrowed.collectionCardinality } : {}),
             };
         }
         lowerer.context.fail(
@@ -2081,6 +2092,15 @@ export function compileDataMethodCall(
                       lowerer.context.compileValue(argument),
                   )
                 : undefined;
+        let added: number | undefined = 0;
+        for (const argument of call.arguments) {
+            const count = ts.isSpreadElement(argument)
+                ? lowerer.context.knownCollectionCardinality(argument.expression)
+                : 1;
+            if (count === undefined) { added = undefined; break; }
+            added += count;
+        }
+        const knownPush = lowerer.context.recordArrayPush(narrowed, added);
         // A snapshot consumed by a later static iteration must be
         // path-complete. Intrinsics record their own generation-time reach
         // while the pushed arguments are compiled, so handles created behind
@@ -2088,7 +2108,7 @@ export function compileDataMethodCall(
         // Keeping one there would leak its block-local C++ name into code
         // emitted after the branch.
         if (
-            !lowerer.context.isInRuntimeControlFlow() &&
+            knownPush && !lowerer.context.isInRuntimeControlFlow() &&
             staticElements &&
             pushedValues?.every(
                 (value) =>
@@ -2122,15 +2142,30 @@ export function compileDataMethodCall(
                     narrowed.staticElementsOwner ?? narrowed;
                 snapshotOwner.runtimeElementTemplate ??=
                     staticElements?.[0] ?? pushedValues[0]!;
+                if (pushedHandleKind === "mesh") {
+                    const candidates = [
+                        snapshotOwner.runtimeElementTemplate,
+                        ...(staticElements ?? []),
+                        ...pushedValues,
+                    ];
+                    snapshotOwner.runtimeElementTemplate = commonResourceValue(
+                        runtimeMeshValue(snapshotOwner.runtimeElementTemplate), candidates,
+                    );
+                } else if (pushedHandleKind === "material") {
+                    snapshotOwner.runtimeElementTemplate = commonResourceValue(
+                        snapshotOwner.runtimeElementTemplate,
+                        [snapshotOwner.runtimeElementTemplate, ...(staticElements ?? []), ...pushedValues],
+                    );
+                }
             }
-            lowerer.invalidateStaticElements(narrowed);
+            lowerer.invalidateStaticElements(narrowed, true);
             // `compileDataPath(..., "write")` may return a leaf wrapper
             // around an identifier binding. Invalidate the binding too;
             // otherwise a later for-of still sees the initializer's
             // stale static snapshot (notably `[]`) and erases a spread
             // append of a loaded asset's meshes.
             if (dynamicOwner) {
-                lowerer.invalidateStaticElements(dynamicOwner);
+                lowerer.invalidateStaticElements(dynamicOwner, true);
             }
         }
         const pushes = call.arguments.map((argument, index) => {

@@ -8,6 +8,7 @@
 // never touched a subsystem carries no entry for it.
 import type { CompileAdaptation } from "../fidelity.js";
 import { pixelsSourcePrefix } from "../executed-module-assets.js";
+import { bakedDirectionMinimumLength } from "../lowering/pinned-vertex-normalization.js";
 import type {
     CompileAsset,
     CompiledShaderProgram,
@@ -762,6 +763,22 @@ export function compileAdaptations(
             nativeSemantics: "The compiler emits native-specialized WGSL; pinned Tint produces the target-selected HLSL or MSL source, register normalization and DXC produce the selected SDL-compatible DXIL or SPIR-V artifact, and SDL_GPU selects the native backend.",
             risk: "high",
             validation: ["upstream formula marker tests", "renderer-fidelity.json", "CPU/GPU visual parity"],
+        });
+        adaptations.push({
+            id: "guarded-cpu-vertex-normalization",
+            category: "rendering",
+            sourceSemantics: "Material vertex shaders normalize their normal/tangent directions with WGSL f32 arithmetic.",
+            nativeSemantics: `The CPU vertex bake projects the pinned normalization through typed WGSL lowering after its world transform, retaining f32 intermediates and division. It returns zero unless the length is strictly above ${bakedDirectionMinimumLength}; this guard is a native adaptation, not the JavaScript tuple/object normalizer's epsilon or fallback.`,
+            risk: "medium",
+            validation: ["compiled normalization bit-pattern and threshold checks", "both-backend scene parity"],
+        });
+        adaptations.push({
+            id: "shared-material-vertex-transport",
+            category: "rendering",
+            sourceSemantics: "Pinned material composers combine mesh worlds and optional skeleton, morph and instance resources in their vertex stages.",
+            nativeSemantics: "The shared diagnostic/depth/background stage projects those computations through typed shader IR onto pre-baked worlds and fixed PAL bindings. Enabled deformation uses four bone influences in a 64-matrix uniform palette and either two-target attributes or the pinned storage-morph payload. The attribute path retains tangent deltas and a pre-morph bitangent; colour materials keep their own pinned composers.",
+            risk: "medium",
+            validation: ["executed-pin vertex transport and arithmetic-drift tests", "six Tint vertex permutations", "both-backend depth/background/deformation gates"],
         });
     }
     if (features.includes("renderer:transmission")) {

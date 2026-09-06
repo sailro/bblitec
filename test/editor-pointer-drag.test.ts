@@ -136,6 +136,16 @@ test("overlay GPU picking uses the picker scene in both backends", () => {
     }
 });
 
+test("cycling SDL picking depth discards the unused stencil attachment", () => {
+    const backend = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const target = backend.match(/depth_target\.texture = state\.pick_targets\.depth;[\s\S]*?SDL_BeginGPURenderPass\(/)?.[0];
+    assert.ok(target);
+    assert.match(target, /depth_target\.cycle = true/);
+    assert.match(target, /depth_target\.load_op = SDL_GPU_LOADOP_CLEAR/);
+    assert.match(target, /depth_target\.stencil_load_op = SDL_GPU_LOADOP_DONT_CARE/);
+    assert.match(target, /depth_target\.stencil_store_op = SDL_GPU_STOREOP_DONT_CARE/);
+});
+
 const nativeTools = optionalNativeFixtureTools();
 test("borrowed pointer identity and camera deferral survive drag and release", {
     skip: !nativeTools || !existsSync("generated/antigravity-racer/upstream/include/bblite/upstream/camera_controls.hpp"),

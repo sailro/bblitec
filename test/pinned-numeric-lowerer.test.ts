@@ -17,21 +17,13 @@ import ts from "typescript";
 import {
     PinnedNumericLowerer,
     type PinnedBinding,
+    type PinnedNumericScope,
 } from "../src/lowering/pinned-numeric-lowerer.js";
 
 function lower(
     source: string,
     bindings: Iterable<[string, PinnedBinding]> = [],
-    extra: Partial<{
-        calls: ReadonlyMap<string, (args: readonly string[]) => string>;
-        tupleCalls: ReadonlyMap<string, number>;
-        recordCalls: ReadonlyMap<string, readonly string[]>;
-        methods: ReadonlyMap<
-            string,
-            (receiver: string, args: readonly string[]) => string
-        >;
-        vec3Literal: (x: string, y: string, z: string) => string;
-    }> = {},
+    extra: Partial<Pick<PinnedNumericScope, "calls" | "tupleCalls" | "recordCalls" | "methods" | "vec3Literal">> = {},
 ): string {
     const file = ts.createSourceFile(
         "pinned.ts",
@@ -60,6 +52,32 @@ test("loop and branch locals preserve outer bindings and avoid native shadowing"
     assert.match(cpp, /double p_1 = 9.0/);
     assert.match(cpp, /\{\n    double p_1 = 4.0;/);
     assert.match(cpp, /p \+= pi_1;$/);
+});
+
+test("shared statement lowering handles continue and ordered scalar assignment chains", () => {
+    const cpp = lower("let a = 0; let b = 0; let c = 0; a = b = c = next(); for (let i = 0; i < 2; i++) { if (i === 1) continue; a += i; }",
+        [], { calls: new Map([["next", () => "next_value()"]]) });
+    assert.match(cpp, /c = next_value\(\);\nb = c;\na = b;/);
+    assert.equal(cpp.match(/next_value\(\)/g)?.length, 1);
+    assert.match(cpp, /continue;/);
+    assert.throws(() => lower("continue outer;"), /Unsupported pinned statement/);
+    assert.throws(() => lower("values[0] = a = 1;", [
+        ["values", { cpp: "values", type: "f32" }], ["a", { cpp: "a", type: "scalar" }],
+    ]), /scalar chained assignment targets/);
+});
+
+test("method dispatch receives binding identity through aliases and element access", () => {
+    const values: PinnedBinding = { cpp: "renamed_native_carrier", type: "scalar", absentCpp: "false" };
+    const functions = new Map([[values, "place_anchor"]]);
+    const cpp = lower("const alias = values; alias[0].place(1); values[1].place(2);", [["values", values]], {
+        methods: new Map([["place", (receiver, args, binding) => {
+            const fn = functions.get(binding);
+            assert.ok(fn, "dispatch must use the original binding, not a native-name prefix");
+            return `${fn}(${receiver}, ${args.join(", ")})`;
+        }]]),
+    });
+    assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(0\.0\)\], 1\.0\)/);
+    assert.match(cpp, /place_anchor\(renamed_native_carrier\[static_cast<std::size_t>\(1\.0\)\], 2\.0\)/);
 });
 
 test("caller substitutions can name later local declarations", () => {

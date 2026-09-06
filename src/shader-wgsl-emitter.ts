@@ -3,6 +3,7 @@ import { shaderSystemUniformType } from "./shader-ir.js";
 import type {
     ShaderEntryPoint,
     ShaderExpression,
+    ShaderFunction,
     ShaderIrProgram,
     ShaderStage,
     ShaderStatement,
@@ -23,6 +24,8 @@ function emitExpression(expression: ShaderExpression): string {
             return `${expression.type}(${expression.arguments
                 .map(emitExpression)
                 .join(", ")})`;
+        case "index":
+            return `${emitExpression(expression.expression)}[${emitExpression(expression.index)}]`;
         case "member":
             return `(${emitExpression(expression.expression)}).${expression.member}`;
         case "number":
@@ -40,9 +43,7 @@ function emitStatements(
     for (const statement of statements) {
         switch (statement.kind) {
             case "assign":
-                lines.push(
-                    `${indent}${emitExpression(statement.target)} = ${emitExpression(statement.value)};`,
-                );
+                lines.push(`${indent}${emitAssignment(statement)};`);
                 break;
             case "discard":
                 lines.push(`${indent}discard;`);
@@ -57,10 +58,16 @@ function emitStatements(
                     `${indent}}`,
                 );
                 break;
-            case "let":
+            case "for":
                 lines.push(
-                    `${indent}let ${statement.name} = ${emitExpression(statement.value)};`,
+                    `${indent}for (${emitVariable(statement.initializer)}; ${emitExpression(statement.condition)}; ${emitAssignment(statement.update)}) {`,
+                    ...emitStatements(statement.statements, `${indent}    `),
+                    `${indent}}`,
                 );
+                break;
+            case "let":
+            case "var":
+                lines.push(`${indent}${emitVariable(statement)};`);
                 break;
             case "return":
                 lines.push(
@@ -70,14 +77,29 @@ function emitStatements(
             case "expression":
                 lines.push(`${indent}${emitExpression(statement.value)};`);
                 break;
-            case "var":
-                lines.push(
-                    `${indent}var ${statement.name}${statement.type ? `: ${statement.type}` : ""}${statement.value ? ` = ${emitExpression(statement.value)}` : ""};`,
-                );
-                break;
         }
     }
     return lines;
+}
+
+function emitVariable(statement: Extract<ShaderStatement, { kind: "var" | "let" }>): string {
+    return `${statement.kind} ${statement.name}${statement.type ? `: ${statement.type}` : ""}${statement.value ? ` = ${emitExpression(statement.value)}` : ""}`;
+}
+
+function emitAssignment(statement: Extract<ShaderStatement, { kind: "assign" }>): string {
+    return `${emitExpression(statement.target)} = ${emitExpression(statement.value)}`;
+}
+
+export function emitWgslStatements(statements: ShaderStatement[], indent = "    "): string {
+    return emitStatements(statements, indent).join("\n");
+}
+
+export function emitWgslFunction(fn: ShaderFunction): string {
+    return [
+        `fn ${fn.name}(${fn.parameters.map(parameter => `${parameter.name}: ${parameter.type}`).join(", ")}) -> ${fn.returnType} {`,
+        ...emitStatements(fn.statements, "    "),
+        "}",
+    ].join("\n");
 }
 
 function emitStruct(structure: ShaderStruct): string {

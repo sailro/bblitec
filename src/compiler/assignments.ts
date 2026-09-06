@@ -435,9 +435,11 @@ export interface AssignmentContext extends DeterministicRandomContext {
       standardMaterial: boolean;
       standardMaterialPluginIndex?: number | undefined;
       sceneShaderVariant?: string | undefined;
+      sceneShaderVariants?: readonly string[] | undefined;
     },
   ): void;
   recordUnknownSceneMeshMaterial(materialIndex: number): void;
+  recordUnknownSceneMaterialAssignment(): void;
   recordSceneMeshAssetPbrMaterial(meshIndex: number): void;
   recordToneMappingEnabledMutation(): void;
   /** The scene's node-particle program; a texture write lands on it. */
@@ -1831,8 +1833,12 @@ export function emitPropertyAssignment(
       // name its casters before assigning their materials -- which is
       // why the mesh's own Value does not carry the graph: this map is
       // the one producer of the pair.
-      if (target.sceneMeshIndex !== undefined) {
-        context.recordSceneMeshMaterial(target.sceneMeshIndex, {
+      const meshProfile = target.sceneMeshIndex ?? target.sceneMeshProfileIndex;
+      if (meshProfile === undefined && (material.possibleSceneShaderVariants?.length ?? 0) > 1) {
+        context.fail(expression, "A runtime ShaderMaterial choice requires a known mesh composition profile.");
+      }
+      if (meshProfile !== undefined) {
+        context.recordSceneMeshMaterial(meshProfile, {
           pbrMaterial: material.scenePbrMaterialIndex ?? null,
           nodeMaterial: material.nodeMaterialIndex ?? null,
           standardMaterial: material.standardMaterial === true,
@@ -1841,12 +1847,18 @@ export function emitPropertyAssignment(
           // Only a scene-local program: the other families that carry a
           // variant settle their own instanced form from their options.
           sceneShaderVariant: material.sceneShaderVariant,
+          sceneShaderVariants: material.possibleSceneShaderVariants,
         });
         if (material.assetPbrMaterial) {
-          context.recordSceneMeshAssetPbrMaterial(target.sceneMeshIndex);
+          context.recordSceneMeshAssetPbrMaterial(meshProfile);
         }
-      } else if (material.scenePbrMaterialIndex !== undefined) {
+      }
+      if (target.sceneMeshIndex === undefined && material.scenePbrMaterialIndex !== undefined) {
         context.recordUnknownSceneMeshMaterial(material.scenePbrMaterialIndex);
+      }
+      if (material.scenePbrMaterialIndex === undefined && !material.standardMaterial &&
+          material.nodeMaterialIndex === undefined && material.shaderVariant === undefined) {
+        context.recordUnknownSceneMaterialAssignment();
       }
       return;
     }

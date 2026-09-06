@@ -1082,20 +1082,6 @@ inline DeformationUniforms build_deformation_uniforms(
 // `upstream/pinned_world_transform.hpp`, where both geometry loaders share
 // the same single emission.
 
-inline Vec3 normalize_vec3(Vec3 value) {
-    const float length = std::sqrt(
-        value.x * value.x +
-        value.y * value.y +
-        value.z * value.z);
-    return length > 0.000001f
-        ? Vec3{
-              value.x / length,
-              value.y / length,
-              value.z / length,
-          }
-        : Vec3{};
-}
-
 #if BBLITE_HAS_PICKING
 // GPU picking's backend-independent half: the two shears the pin computes
 // per pick, and the id encoding both attachments agree on. The pin puts
@@ -1516,11 +1502,11 @@ inline std::vector<GpuVertex> transformed_vertices(
         // the arithmetic the GPU would have run on the same bytes.
         const Vec3 position =
             upstream::transform_position(world, vertex.position);
-        const Vec3 normal = normalize_vec3(
+        const Vec3 normal = upstream::normalize_baked_direction(
             upstream::transform_direction(world, normal_vertex.normal));
         // `T_local` is the tangent's xyz; its `w` is the handedness the
         // bitangent reads and travels unchanged.
-        const Vec3 tangent = normalize_vec3(
+        const Vec3 tangent = upstream::normalize_baked_direction(
             upstream::transform_direction(
                 world,
                 Vec3{
@@ -2737,17 +2723,7 @@ inline void fitted_shadow_casters(
             for (std::size_t index = 0; index < active_instances; ++index) {
                 const std::array<float, 16>& instance =
                     record.instance_matrices[index];
-                const double linear_magnitude =
-                    std::abs(static_cast<double>(instance[0])) +
-                    std::abs(static_cast<double>(instance[1])) +
-                    std::abs(static_cast<double>(instance[2])) +
-                    std::abs(static_cast<double>(instance[4])) +
-                    std::abs(static_cast<double>(instance[5])) +
-                    std::abs(static_cast<double>(instance[6])) +
-                    std::abs(static_cast<double>(instance[8])) +
-                    std::abs(static_cast<double>(instance[9])) +
-                    std::abs(static_cast<double>(instance[10]));
-                if (linear_magnitude < 1e-9) continue;
+                if (!upstream::csm_instance_contributes(instance)) continue;
                 caster.instance = instance;
                 caster.has_instance = true;
                 casters.push_back(caster);
