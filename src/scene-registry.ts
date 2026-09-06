@@ -2043,8 +2043,9 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Physics Raycast Instance Picking",
         parity: {
             referenceSearch: "?captureFrame=5",
-            maxFullMad: 0.025,
-            maxForegroundMad: 0.12,
+            // The exact automated pose is pixel-exact on both backends.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
             backgroundThreshold: 30,
             nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "15" },

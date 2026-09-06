@@ -79,6 +79,10 @@ Pinned readonly literal enum exports remain values in native arrays. Physics
 motion and prestep arguments validate against the pin's parameter types before
 converting to native enums.
 
+Scene-facing `mat4Invert` reuses the pinned inverse and returns nullable fresh
+Float32 storage. Singular matrices return null; Float64 inputs and high-precision
+matrix allocation combinations refuse with source locations.
+
 This is not a complete typed user-code IR. Handle-dependent helper inlining,
 escape classification, generic bodies, resource loops and aliasing have
 limitations. The [runtime ownership contract](architecture.md#runtime-and-memory)
@@ -254,6 +258,9 @@ supported imported-hierarchy walks and bounded cloning are represented.
 Retained `position`, `rotation` and `scaling` aliases preserve their owner's
 handle across arena growth and source-variable reassignment; vector setters
 reuse the normal transform mutation path.
+Bare visibility writes are read each frame for transparent and transmissive
+draws, including meshes hidden when lists were built. Opaque cached lists retain
+their deferred bare-write behavior; `setMeshVisible` invalidates those lists.
 Imported roots and runtime TransformNode values still have distinct paths;
 full imported-root cloning/rotation/scaling and arbitrary hierarchy visitor
 effects remain unfinished.
@@ -364,6 +371,13 @@ and wider lifecycle controls remain incomplete. Dynamic concave meshes and
 non-Y-aligned capsule/cylinder segments refuse. Solver substitution is not
 pixel or trajectory equivalence; [fidelity](fidelity.md#physics-contract)
 defines the distinction.
+
+Raycasts expose nullable body identity, hit point/normal and the pin's double
+distance from the original origin. Returned bodies retain Map key identity.
+Scene 103 covers automatic instance lookup and default-query pointer picking;
+focused segment-end probes preserve the pin's exact and float-rounded misses.
+Raycast trigger exclusion remains a confirmed limitation tracked as
+[A30](../audit.md#subsequent-review-findings).
 
 ## Audio
 
