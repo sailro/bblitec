@@ -1156,7 +1156,6 @@ if(BBLITE_PCH)
         <bblite/pal.hpp>
         <bblite/pal_image.hpp>
         <bblite/runtime.hpp>
-        <bblite/ts_runtime.hpp>
         <SDL3/SDL.h>
         <chrono>
         <cstdio>
@@ -1173,6 +1172,16 @@ if(BBLITE_PCH)
     endif()
     if(BBLITE_BACKEND_DAWN)
         list(APPEND BBLITE_PCH_HEADERS <webgpu/webgpu.h>)
+    endif()
+    # The JSON runtime rides the same gate as its nlohmann include path: a
+    # unit that includes it without reaching JSON must fail here as it
+    # does in the static shipping tree, not compile through the PCH.
+    if(
+        "loader:gltf" IN_LIST BBLITE_RUNTIME_FEATURES OR
+        "loader:babylon" IN_LIST BBLITE_RUNTIME_FEATURES OR
+        "data:json" IN_LIST BBLITE_RUNTIME_FEATURES
+    )
+        list(APPEND BBLITE_PCH_HEADERS <bblite/ts_runtime.hpp>)
     endif()
     target_precompile_headers(bblite_native PRIVATE ${BBLITE_PCH_HEADERS})
 endif()

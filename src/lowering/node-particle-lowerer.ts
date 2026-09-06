@@ -1081,7 +1081,6 @@ void register_node_particle_set_2d(
             source: `// ${provenance}
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
-#include <bblite/ts_runtime.hpp>
 ${
     billboard
         ? `#include <bblite/upstream/billboard_system.hpp>

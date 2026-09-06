@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import {
     mkdirSync,
+    readdirSync,
     readFileSync,
     rmSync,
 } from "node:fs";
@@ -405,6 +406,26 @@ test("the JSON runtime is included only by the scenes that reach it", () => {
     // record's, which is why neither side is a sorted associative map.
     assert.match(runtime, /nlohmann::ordered_json::parse/);
     assert.match(runtime, /using Object = std::vector<Entry>;/);
+    // ts_runtime.hpp includes nlohmann's header unconditionally, and the
+    // static shipping tree carries that include directory only behind the
+    // loader:gltf, loader:babylon and data:json gate; an emitted unit that
+    // includes it without parsing JSON fails only there, never under the
+    // development precompiled header. The glTF loader is the one owner.
+    const lowering = resolve("src/lowering");
+    const includers = readdirSync(lowering, { recursive: true })
+        .map(String)
+        .filter((entry) => entry.endsWith(".ts"))
+        .filter((entry) =>
+            readFileSync(resolve(lowering, entry), "utf8").includes(
+                "ts_runtime.hpp",
+            ),
+        )
+        .map((entry) => entry.replace(/\\/g, "/"))
+        .sort();
+    assert.deepEqual(includers, [
+        "gltf/loader.ts",
+        "templates/gltf-loader-cpp.ts",
+    ]);
 });
 
 /**

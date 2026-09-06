@@ -2300,10 +2300,10 @@ ${blendFactoriesCpp(blends, "sprite", "sprite-blend.ts")}
 } // namespace bbl
 `,
             source: `// ${provenance}
+#include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_image.hpp>
 #include <bblite/runtime.hpp>
-#include <bblite/ts_runtime.hpp>
 #include <bblite/upstream/sprite_layer.hpp>
 
 #include <algorithm>
@@ -2533,7 +2533,7 @@ SpriteAtlasHandle create_grid_sprite_atlas(
     GridSpriteAtlasOptions options) {
     SpriteAtlasRecord atlas;
     pal::DecodedImage image =
-        pal::decode_image(ts::ArrayBuffer(texture.data.bytes));
+        pal::decode_image(js::ArrayBuffer(texture.data.bytes));
     if (texture.data.premultiply_alpha) {
         pal::premultiply_image_alpha(image);
     }

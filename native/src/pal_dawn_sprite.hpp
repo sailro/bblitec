@@ -804,7 +804,7 @@ inline void upload_dawn_sprite_layer(
     DawnSpriteLayer& gpu,
     std::uint32_t width,
     std::uint32_t height,
-    float delta_ms) {
+    double delta_ms) {
     Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
     // sprite-renderable.ts uploadLayer returns here before FX, texture,
     // instance or UBO work. A hidden custom layer pauses its clock.
@@ -898,7 +898,7 @@ inline void upload_dawn_sprite_pass(
     DawnSpritePass& pass,
     std::uint32_t width,
     std::uint32_t height,
-    float delta_ms) {
+    double delta_ms) {
     const SpriteRendererRecord& renderer =
         engine.sprite_renderers[pass.renderer.value];
     for (std::size_t index = 0; index < renderer.layers.size(); ++index) {
@@ -1108,7 +1108,7 @@ inline void upload_dawn_scene_sprite_pass(
     DawnSceneSpritePass& pass,
     std::uint32_t width,
     std::uint32_t height,
-    float delta_ms) {
+    double delta_ms) {
     sync_dawn_scene_sprite_pass_pipelines(
         device, queue, engine, pass);
     for (std::size_t index = 0; index < pass.handles.size(); ++index) {

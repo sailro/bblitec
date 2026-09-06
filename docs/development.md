@@ -232,6 +232,11 @@ backend and matching dependency directories. For example:
 & $env:CMAKE_COMMAND --build native/build-scene1-min-sdl --config Release --parallel
 ```
 
+Before packaging, build one sprite scene and one audio scene with
+`--compiler msvc` or as minimal trees: clang-cl does not report MSVC's
+narrowing warnings, and the development precompiled header can satisfy an
+include the static tree lacks.
+
 Attribute sizes with `node tools/map-size-report.mjs <executable.map>`.
 Compare core UI, SVG, audio and physics shapes as well as a visual-only scene.
 Installed dependency size, linked executable size and packaged payload size

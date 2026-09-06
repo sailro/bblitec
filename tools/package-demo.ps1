@@ -212,12 +212,11 @@ if (Test-Path $assetSource) {
     Copy-Item (Join-Path $assetSource "*") $assets -Recurse
 }
 
-# The runtime reads only its compiled backend's shader formats:
-# The portable Windows launcher below pins SDL_GPU to D3D12, so SDL_GPU loads
-# offline .dxil plus the .slots
-# sidecars naming each pinned variant's register order (the PAL binds by
-# that file, never by the WGSL); Dawn compiles the .native.wgsl text
-# in-process. Text intermediates (.hlsl, .msl, reflection dumps, tool
+# The runtime reads only its compiled backend's shader formats: the trimmed
+# SDL carries only the Direct3D 12 driver, so SDL_GPU loads offline .dxil
+# plus the .slots sidecars naming each pinned variant's register order (the
+# PAL binds by that file, never by the WGSL); Dawn compiles the .native.wgsl
+# text in-process. Text intermediates (.hlsl, .msl, reflection dumps, tool
 # manifests) are development artifacts.
 $shaderPatterns = switch ($backend) {
     "SDL_GPU" { @("*.dxil", "*.slots") }
@@ -342,23 +341,6 @@ if ($backend -eq "DAWN") {
 # region above closed over native/vcpkg.json: a new linkable dependency
 # fails the suite until its notice entry lands between these markers.
 
-$primaryLines = @(
-    "@echo off",
-    "setlocal"
-)
-if ($backend -eq "SDL_GPU") {
-    $primaryLines += 'set "SDL_GPU_DRIVER=direct3d12"'
-}
-$primaryLines += @(
-    "`"%~dp0$exeName`" > `"%~dp0bblitec-$Scene.log`" 2>&1",
-    'set "RESULT=%ERRORLEVEL%"',
-    "type `"%~dp0bblitec-$Scene.log`"",
-    'if not "%RESULT%"=="0" pause',
-    "exit /b %RESULT%"
-)
-$primaryLines -join "`r`n" |
-    Set-Content (Join-Path $packageDirectory "run-$Scene.cmd") -Encoding Ascii
-
 $backendDescription = switch ($backend) {
     "SDL_GPU" { "SDL_GPU over Direct3D 12 with offline-compiled shaders" }
     "DAWN" { "Dawn (Chrome's WebGPU) over Direct3D 12, compiling WGSL at startup" }
@@ -395,7 +377,7 @@ bblitec $Scene shipping demo (Windows x64)
 Backend: $backendDescription
 
 Run:
-  Double-click run-$Scene.cmd.
+  Double-click $exeName. Its console window shows startup errors.
 
 Controls:
   Scene-defined keyboard and pointer input remains available to the demo.
@@ -407,7 +389,6 @@ Troubleshooting:
   - Requires Windows 10/11 and a Direct3D 12 GPU. bblitec renders only
     on a GPU; there is no software path, so a device that cannot be
     brought up is an error rather than a slower picture.
-  - bblitec-$Scene.log records startup errors.
   - Keep the assets and shaders directories beside the executable.$fxcNote
 
 $($fidelitySection)Compiler source:

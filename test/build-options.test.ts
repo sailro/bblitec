@@ -233,7 +233,11 @@ test("shipping packages require the trimmed static build", () => {
         script.indexOf("$shaderPatterns ="),
         script.indexOf("$shaderFiles ="),
     );
-    assert.match(script, /SDL_GPU_DRIVER=direct3d12/);
+    // The package is the executable alone: the trimmed SDL carries only the
+    // Direct3D 12 driver, so no launcher pins one, and the console window
+    // is the log.
+    assert.doesNotMatch(script, /SDL_GPU_DRIVER|run-\$Scene\.cmd|\.log/);
+    assert.match(script, /Double-click \$exeName/);
     assert.match(patterns, /\*\.dxil/);
     assert.doesNotMatch(patterns, /\*\.spv/);
     assert.match(script, /VCPKG_INSTALLED_DIR/);

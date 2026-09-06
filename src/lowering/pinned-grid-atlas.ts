@@ -28,7 +28,7 @@ export function decodeAtlasImageCpp(): string {
     const std::vector<std::uint8_t> file_bytes =
         pal::read_binary_file(path);
     const pal::DecodedImage image =
-        pal::decode_image(ts::ArrayBuffer(file_bytes));
+        pal::decode_image(js::ArrayBuffer(file_bytes));
     atlas.rgba = image.rgba;
     atlas.width = static_cast<std::uint32_t>(image.width);
     atlas.height = static_cast<std::uint32_t>(image.height);`;

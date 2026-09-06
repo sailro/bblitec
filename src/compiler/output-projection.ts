@@ -432,7 +432,9 @@ export function renderMainCpp(projection: MainCppProjection): string {
         ? "#include <bblite/upstream/pinned_look_direction.hpp>\n"
         : "";
     const jsDataInclude =
-        (jsDataReached ? "#include <bblite/js_data.hpp>\n" : "") +
+        (jsDataReached || jsRandomReached
+            ? "#include <bblite/js_data.hpp>\n"
+            : "") +
         (features.includes("data:json")
             ? "#include <bblite/js_json.hpp>\n"
             : "") +

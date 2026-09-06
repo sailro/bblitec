@@ -4161,13 +4161,13 @@ const sceneInputs: readonly SceneInput[] = [
         title: "Babylon Lite Native - Platformer",
         parity: {
             referenceFrame: 180,
-            // Measured 0.984 / 0.984 SDL_GPU and 0.981 / 0.981 Dawn; the
+            // Measured 0.773 / 0.773 SDL_GPU and 0.770 / 0.770 Dawn; the
             // residual is text rasterization (docs/ui.md).
             maxFullMad: 1.05,
             maxForegroundMad: 1.05,
-            // Canvas-only lane: 0.013 / 0.013 SDL_GPU and 0.010 / 0.010
-            // Dawn (docs/status.md row note); the canvas-golden era's own
-            // enforced pair.
+            // Canvas-only lane: 0.004 / 0.004 SDL_GPU and 0.000 / 0.000
+            // Dawn (docs/status.md row note); the sprite HUD's effect clock
+            // carries the exact double delta.
             canvasThresholds: { maxFullMad: 0.05, maxForegroundMad: 0.05 },
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,

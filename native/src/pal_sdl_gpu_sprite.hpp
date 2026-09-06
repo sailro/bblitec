@@ -619,7 +619,7 @@ inline void upload_sprite_layer_gpu(
     Engine& engine,
     Sprite2DLayerHandle handle,
     SpriteLayerGpu& gpu,
-    float delta_ms,
+    double delta_ms,
     GpuBufferUploadBatch& buffer_uploads) {
     Sprite2DLayerRecord& layer = engine.sprite_layers[handle.value];
     // sprite-renderable.ts uploadLayer returns here before FX, texture,
@@ -703,7 +703,7 @@ inline void upload_sprite_pass(
     SDL_GPUDevice* device,
     Engine& engine,
     SpritePass& pass,
-    float delta_ms,
+    double delta_ms,
     GpuBufferUploadBatch& buffer_uploads) {
     sync_sprite_pass_pipelines(device, engine, pass);
     const SpriteRendererRecord& renderer =
@@ -848,7 +848,7 @@ inline void upload_scene_sprite_pass(
     SDL_GPUDevice* device,
     Engine& engine,
     SceneSpritePass& pass,
-    float delta_ms,
+    double delta_ms,
     GpuBufferUploadBatch& buffer_uploads) {
     bool rebuild_pipelines = false;
     for (std::size_t index = 0; index < pass.handles.size(); ++index) {

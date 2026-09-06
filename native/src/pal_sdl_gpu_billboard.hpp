@@ -309,7 +309,7 @@ inline void upload_billboard_pass(
     Engine& engine,
     BillboardPass& pass,
     const std::array<float, 16>& view,
-    float delta_ms) {
+    double delta_ms) {
     const BillboardSystemRecord& system =
         engine.billboard_systems[pass.system.value];
     // The pin advances the clock in `_update`, before and regardless of
