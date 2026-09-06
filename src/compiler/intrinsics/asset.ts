@@ -6,6 +6,7 @@ import type {
     Value,
 } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import { splatContainerByLoader } from "../assets.js";
 import { compressedTextureUrl } from "../compressed-texture.js";
 import { isSplatFragmentExport } from "../../pinned-splat-fragments.js";
 import {
@@ -353,29 +354,42 @@ export function compileAssetIntrinsic(
             };
         }
 
-        case "loadSPZ": {
-            // `loadSPZ(scene, url)`. The pin's second splat entry point:
-            // the same cloud model out of a gzipped SPZ container, with no
-            // shader-plugin parameter and a half turn about X written on the
-            // cloud it attaches. Generation runs that whole loader over the
-            // fetched bytes (`src/splat-packager.ts`), so what is left here
-            // is the same registration `loadSplat` performs.
+        case "loadSPZ":
+        case "loadSOG": {
+            // `loadSPZ(scene, url)` and `loadSOG(scene, url)`, the pin's
+            // second and third splat entry points. Each takes a different
+            // container -- SPZ is a gzip stream the loader inflates through
+            // `DecompressionStream`, SOG a ZIP of WebPs it unzips and decodes
+            // through a canvas -- and each ends by writing a half turn about X
+            // on the cloud it attached. Neither takes the shader-plugin
+            // parameter `loadSplat` does.
+            //
+            // Generation runs whichever loader the call names over the
+            // fetched bytes (`src/splat-packager.ts`), the SOG one in the
+            // browser its decode belongs to, so what is left at either call is
+            // the same registration `loadSplat` performs. It is written once:
+            // the container row (`SPLAT_CONTAINERS`) carries the three names
+            // the two calls differ in.
+            //
+            // The two labels above are that table's own loader names, which
+            // is what makes the lookup total.
+            const container = splatContainerByLoader(importedName)!;
             context.expectArgumentCount(call, 2, 2);
             const scene = context.compileValue(call.arguments[0]!);
             context.expectKind(scene, "scene", call.arguments[0]!);
             const source = context.compileStringLiteral(call.arguments[1]!);
-            const asset = context.registerAsset(source, "spz");
+            const asset = context.registerAsset(source, container.kind);
             context.reachFeature("loader:splat", call);
-            // The second entry point's own feature, reached at the call the
-            // way `loader:splat-bake` is: it selects the emitted `load_spz`,
-            // so the call below and the definition it names have one gate
+            // The entry point's own feature, reached at the call the way
+            // `loader:splat-bake` is: it selects the emitted entry point
+            // below, so the call and the definition it names have one gate
             // rather than two that could disagree.
-            context.reachFeature("loader:splat-spz", call);
+            context.reachFeature(container.feature, call);
             context.reachFeature("renderer:scene", call);
             return {
                 kind: "splat-mesh",
                 cpp:
-                    `bbl::load_spz(${scene.cpp}, ` +
+                    `bbl::${container.entryPoint}(${scene.cpp}, ` +
                     `bbl::asset_path(` +
                     `${context.cppString(asset.output)}))`,
                 engineCpp: context.requireEngine(scene, call.arguments[0]!),

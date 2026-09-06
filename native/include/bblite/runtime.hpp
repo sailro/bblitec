@@ -6325,11 +6325,13 @@ SplatMeshHandle create_gaussian_splatting_mesh(
     std::vector<std::uint8_t> rows);
 void attach_gaussian_splatting_mesh(Scene& scene, SplatMeshHandle splat);
 SplatMeshHandle load_splat(Scene& scene, const std::string& path);
-// `loadSPZ`, the pin's second splat entry point. Its container is parsed at
-// generation exactly as `loadSplat`'s is, so what is left of it here is
-// `load_splat` plus the one lane it writes on the cloud it attached. Defined
-// by the generated splat loader only for a scene that reached it.
+// `loadSPZ` and `loadSOG`, the pin's second and third splat entry points.
+// Each container is loaded at generation exactly as `loadSplat`'s is, so what
+// is left of either here is `load_splat` plus the one lane it writes on the
+// cloud it attached. Each is defined by the generated splat loader only for a
+// scene that reached it.
 SplatMeshHandle load_spz(Scene& scene, const std::string& path);
+SplatMeshHandle load_sog(Scene& scene, const std::string& path);
 // Bakes a cloud's own world matrix into its rows, rebuilds its geometry and
 // resets its TRS. Defined by the generated splat bake, which a scene reaches
 // through `bakeCurrentTransformIntoVertices`.

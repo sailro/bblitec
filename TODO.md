@@ -136,56 +136,54 @@ implementation, follow the sizing/capture workflow in
 | Cameras | Explicit off-center orthographic bounds, disable/restore behavior and wider environment combinations. Camera upperRadiusLimit sizing is implemented; add an observing gate rather than reimplement it. |
 | Imported hierarchy | Full root clone/rotation/scaling, imported light/camera descendants and morph clone weights. Give imported roots a consistent native node representation and preserve clone-of-clone outer transforms. |
 | Rotation | Replace separate Euler/quaternion lanes with the pinned proxy model; lower quaternion-to-Euler conversion and measure mixed writes. |
-| Direct morph | Multiple targets and one shared weights object attached to several meshes. |
+| Direct morph | Multiple targets and one shared weights object attached to several meshes. Scene-code morph targets under a PBR material compose no morph variant and render the bind pose without refusing: a scene-authored mesh's feature word comes from a synthetic primitive carrying no targets, and PBR's runtime mesh bits carry only thin-instance arms. Standard has the arm. Refusing precisely needs the material-family lane below. |
 | PBR | Remaining metallic-reflectance options, textured environment rotation, local cubemap blending and unimplemented asset extension fields. |
 | Standard UV | Material uvOffset, lightmap legacyFlipV and rebuild semantics beyond the reached fixed transform. |
 | Textures | Remaining depth/geometry texture-view assignments and explicit per-texture encoding paths; do not conflate supported colour views with other aspects. |
-| Node material | Geometry MRT, delegating blockLoader, loaded-material texture handles and live scalar inputs. Alpha-combine graphs are already supported; wider alpha modes still need contracts. |
+| Node material | Geometry MRT, delegating blockLoader, loaded-material texture handles and live scalar inputs. Alpha-combine graphs are already supported; wider alpha modes still need contracts. A node material drawn by a geometry-renderer task builds a single-target pipeline for a multi-attachment pass and is not refused; the refusal belongs where the mesh and task are paired, not on the feature pair. |
 | Plugin | Uniform writers/UBO layouts, priority/defines/runtime enable state and PBR sampler plugins. Trim dead Standard arms using actual material usage counts. |
 | Shader material | Remaining uniform APIs/system values and depth/blend/stencil/plugin options outside the reached sets. Typed 2D/array/comparison samplers and storage creation/update/dispose/binding already exist. Preserve material depthCompare explicitly. |
 | Effects | Wider binding descriptors/textures, custom vertex and renderer update callbacks, disposal and unregister operations. |
 | Sprites | Coverage gamma, handle-object methods, append-atlas forms and mixed-family transparent depth ordering. Atlas-from-frames is already implemented. |
 | Billboards | Cutout, floating-origin and mixed splat contributors in picking; preserve one registration-ordered contributor list. |
 | Picking | Raw skeletons, morph-only/basic deformation, thin-instance/VAT ids, filter/discard/ignore, remaining PickingInfo fields/nullable returns and multiple clouds. Basic/detailed picking and getPickedNormal are implemented. |
-| Splats | Shared splatsData buffer identity, Float32Array-over-ArrayBuffer views, live updateData/upload/versioning, lossless SOG WebP decode and per-cloud plugin sets. F32Array is already a typed-array wrapper; verify its constructor/view semantics rather than assuming vector ownership. |
+| Splats | Shared splatsData buffer identity, Float32Array-over-ArrayBuffer views, live updateData/upload/versioning and per-cloud plugin sets. `TypedArray<T>` owns a `shared_ptr<vector<T>>` with no buffer, offset or length, and `U8Array` is the only view class; its owning conversion carries typed arrays into vector entry points across generated scenes, so a Float32Array view is a runtime-wide change. |
 | Shadows | Thin-instance CSM caster bounds, unsupported generator options/live receive toggles, task-camera facade and caster-specific composition. Recheck morph-bound numeric width and CSM array sizes against pinned declarations. |
 | Lines | Runtime-computed point lists, createLines/dashed lines, colour updates, material compare and per-instance colour setters outside the reached slice. |
 | Thin instances | Dynamic draw-count fast path, culling/LOD controls and actual GPU culler; measure a sufficiently large changing pool. |
 | Particles | Broader live sets, moving-emitter replay, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. Native frozen buffer/sheet access across composed sets still needs canonical system identity. |
 | Navigation | Tiled-without-obstacles builds, additional queries/random state, sources and disposal not yet lowered. |
-| Physics | Constraints, character controllers/viewer, heightfield/capsule APIs, mass centre updates, disposal, shape rotation and remaining body/trigger options. Existing force/impulse/velocity/prestep controls are not missing. |
+| Physics | Constraints, character controllers/viewer, heightfield/capsule APIs, disposal, shape rotation and remaining body/trigger options. Existing force/impulse/velocity/prestep and authored centre-of-mass controls are not missing. Havok's inertia term is per unit mass while `PhysicsMassProperties::inertia` is absolute, so explicit inertia and inertia orientation are refused rather than converted. Constraints are a new divergence class: the stepping contract covers contacts only, and `LINEAR_DISTANCE` has no Bullet equivalent. |
 | Physics fidelity | First-substep gravity/landing residuals, speculative box contacts, fixed-clock timer boundary and double-precision solver evaluation need focused traces. |
 | Audio | Durable browser/native offline PCM gate; master-volume ramps and broader Babylon sound/bus/spatial/analysis/lifecycle APIs. |
 | UI/platform | General text input/forms, retained UI under other drivers, device loss, multiple surfaces and a renderer-independent Canvas2D-only driver. |
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 25 numbered scenes unregistered. Helper
+The current registry leaves these 23 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
 | --- | --- |
 | 41 | Non-glTF container entity traversal and physics scene construction |
-| 46 | Module mutable state and physics constraints/axis limits |
+| 46 | Module-scope mutable state, a `createPhysicsConstraint` intrinsic over all six pinned types, and a Bullet constraint layer. Three contracts; the third is a new divergence class, since `LINEAR_DISTANCE` has no Bullet equivalent. |
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
-| 48 | Shape/material setters and full centre-of-mass behavior in Bullet |
-| 49 | Capsule builder plus the scene's physics/gizmo contracts |
+| 49 | A `createCapsule` builder, a mesh parented to a mesh, `shapeProximity`/`shapeCast` over Bullet closest-point and convex-sweep entry points, and a conditional mixing a picked node with null. Four contracts. |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
-| 114 | Scene-authored skeleton, box-data result, nullable PickingInfo, barycentric reads and missing deformation pipeline arms |
-| 121 | Retained splat buffer views and live updateData |
-| 122 | SOG ZIP/WebP decode without an alpha-corrupting canvas round trip |
-| 149 | Node geometry emitter/inputs, material texture reads and MRT draws on both backends |
+| 114 | A PBR morph arm and skeleton bit for scene-code geometry, a scene-authored skeleton, `createBoxData` as a data result, nullable `PickingInfo`, barycentric reads, and the pin's morph-only and basic deform-picking arms on both backends. Eight contracts; the skeleton half is shared with 231, over the existing PBR bone palette. |
+| 121 | Splat rows as a scene-readable buffer and live `updateData` re-upload in both PALs, over a typed array that is a view rather than an owner. Five contracts; the view change is runtime-wide, not scene-local. |
+| 149 | Delegating `blockLoader`, live node-material input handles, loaded-material reads, runtime per-material construction, and the node family's own geometry-view composition and MRT draw arm in both PALs. Seven contracts. |
 | 153 | Canvas2D-only driver, fillRect, plain-data animation targets and update loop |
 | 164 | GPU device-loss lifecycle |
 | 180, 181 | Text subsystem plus live text controls/input |
-| 186 | Tuple flatten and PBR local cubemap probes |
-| 225 | Geospatial camera/control surface |
+| 186 | Tuple flatten, live PBR `ormTexture`/`directIntensity` writes, and the PBR local-cubemap extension, which needs cube-array textures in both PALs and a 64 KB uniform block SDL_GPU pushes rather than binds. Three contracts, the third a subsystem. |
+| 225 | Geospatial camera kind, orientation math, world-matrix arm and `setGeospatialOrientation` render the frame; the control surface is the live writer of the orbit state, and its drag-pan, zoom-to-cursor and pinch arms need a picking ray off the inverse view-projection. Five contracts. The capture needs no input contract: the control tick is a no-op at zero input. |
 | 227, 228 | Multiple surfaces and swapchains |
-| 231 | Scene-authored Standard skeleton, vertex-alpha bucket, UV offset and optional out-parameters |
-| 241 | glTF anisotropy, diffuse transmission/translucency, specular textures and animation-pointer inputs |
-| 261 | TAA composite output identity/input tasks, history uniforms and camera projection jitter; compact its frame yields |
+| 231 | An optional out-parameter, `uvOffset`, a mesh-driven vertex-alpha transparent bucket, and the scene-authored Standard skeleton: `createSkeleton`, `mesh.skeleton`, live palette upload, `enableStandardSkeleton` and a Standard skinned draw arm in both PALs. Nine contracts; the skeleton cluster is shared with 114. |
+| 241 | glTF anisotropy and diffuse transmission with their texture arms, specular textures onto the reflectance slots, five texture-transform pointer slots, and the metallic-roughness pointer the pin ignores rather than applies. Five contracts; no other corpus asset reaches anisotropy or diffuse transmission. |
+| 261 | Composite output identity, a source render-task reference as a descriptor option, a live blend-factor writer, a per-frame task execute hook, and camera projection jitter over a persistent per-task scene UBO. Five contracts. The last two have no refusal: with only the first three, generation succeeds and the scene renders unjittered and unblended. |
 | 275 | Font loading and 3D text |
-| 302 | Definite assignment, provider/matrix step replay, shared seed factory, nested startEngine and capture narrowing |
+| 302 | Nullish coalescing in the browser-value evaluator, a primed self-rearming frame callback, a module-factory seeded `Math.random`, a `<=` counted-loop shape, a user function's statically-known numeric return surviving inlining, and the moving-emitter provider with its per-step world matrix. Six contracts, all generation-side. |
 | 304 | FlowGraph runtimes and glTF interactivity |
 
 - [ ] Investigate the shared shark-pose residual in scenes 11/152 with a

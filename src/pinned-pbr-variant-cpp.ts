@@ -654,6 +654,54 @@ export function pinnedShadowBindingRow(
     );
 }
 
+/**
+ * The layout kind of a `texture_*` binding, by its exact declared spelling.
+ *
+ * A prefix test answers for a whole family: `texture_cube` also matches
+ * `texture_cube_array<f32>`, `texture_depth` also matches
+ * `texture_depth_cube`, and a trailing `texture_` catch-all takes
+ * `texture_3d`, `texture_storage_2d` and `texture_external` onto a 2D lane.
+ * Each of those binds through the wrong view dimension with nothing
+ * reporting it, so the reached spellings are matched whole and anything
+ * else is refused where the declaration is still named.
+ */
+function textureBindingKind(
+    type: string,
+    name: string,
+    sampled: boolean,
+): VariantBinding["kind"] {
+    switch (type) {
+        case "texture_cube<f32>":
+            return "textureCube";
+        // A cascaded receiver's map: the same depth sample type as
+        // `texture_depth_2d`, bound through a layered view whose layer the
+        // fragment selects per cascade.
+        case "texture_depth_2d_array":
+            return "textureDepth2dArray";
+        case "texture_depth_2d":
+            return "textureDepth2d";
+        // An integer texture is `textureLoad`ed by construction -- WebGPU
+        // has no sampler for one -- and its sample type is its own, which
+        // the layout has to say rather than assume unfilterable float. The
+        // clustered slice and tile-mask textures are the reached pair.
+        case "texture_2d<u32>":
+            return "texture2dUint";
+        // The image-processing resolve reads its source unsampled, so it
+        // takes the load lane the same way an unsampled `texture_2d` does.
+        case "texture_multisampled_2d<f32>":
+        case "texture_2d<f32>":
+            return sampled ? "texture2d" : "texture2dLoad";
+        default:
+            throw new Error(
+                `Binding '${name}' declares ${type}, which this port does ` +
+                    "not lower. A composed variant reaches texture_2d<f32>, " +
+                    "texture_2d<u32>, texture_cube<f32>, texture_depth_2d, " +
+                    "texture_depth_2d_array and " +
+                    "texture_multisampled_2d<f32>.",
+            );
+    }
+}
+
 export function variantBindings(
     vertexWgsl: string,
     fragmentWgsl: string,
@@ -692,24 +740,8 @@ export function variantBindings(
                 ? (group !== 1 || Number(match[1]) > 1
                     ? "uniformBuffer"
                     : undefined)
-                : type.startsWith("texture_cube")
-                ? "textureCube"
-                // A cascaded receiver's map is `texture_depth_2d_array`:
-                // the same depth sample type, bound through a layered view
-                // whose layer the fragment selects per cascade.
-                : type === "texture_depth_2d_array"
-                ? "textureDepth2dArray"
-                : type.startsWith("texture_depth")
-                ? "textureDepth2d"
-                // An integer texture is `textureLoad`ed by construction --
-                // WebGPU has no sampler for one -- and its sample type is
-                // its own, which the layout has to say rather than assume
-                // unfilterable float. The clustered slice and tile-mask
-                // textures are the reached pair.
-                : /^texture_2d<u32>/.test(type)
-                ? "texture2dUint"
                 : type.startsWith("texture_")
-                ? (sampled ? "texture2d" : "texture2dLoad")
+                ? textureBindingKind(type, name, sampled)
                 : type === "sampler_comparison"
                 ? "samplerComparison"
                 : type === "sampler"

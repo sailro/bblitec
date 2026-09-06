@@ -172,6 +172,20 @@ export const pinnedBrowserEntryUrl =
     "/node_modules/@babylonjs/lite/lib/index.js";
 
 /**
+ * The served URL of one pinned SUB-module, by its lib-relative path.
+ *
+ * A driver that imports the package index gets `pinnedBrowserEntryUrl`
+ * above; one that reaches past it -- for a loader, a factory or a mesh
+ * module the index does not re-export -- needs the same origin and the same
+ * lib root with a different tail. That derivation is written here for the
+ * reason the entry URL is: the suite server decides where the package is
+ * served, and a driver retyping the prefix would drift from it silently.
+ */
+export function pinnedBrowserModuleUrl(relativePath: string): string {
+    return pinnedBrowserEntryUrl.replace(/index\.js$/, relativePath);
+}
+
+/**
  * The scene source as the reference capture runs it: transpiled for the
  * browser, with the pinned package and asset URLs rewritten, and — for a
  * scene pinned to a pose — the seek the registry describes injected

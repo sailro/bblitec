@@ -404,6 +404,12 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "#bakeCurrentTransformIntoVertices",
         consumers: CMAKE,
     },
+    "loader:splat-sog": {
+        provenance:
+            "src/loader-splat/load-sog.ts#loadSOG + " +
+            "src/loader-splat/zip-parser.ts#unzipBuffer",
+        consumers: CMAKE,
+    },
     "loader:splat-spz": {
         provenance: "src/loader-splat/load-spz.ts#loadSPZ",
         consumers: CMAKE,
@@ -2918,9 +2924,10 @@ function refusalRows(
                 : "no splat assets to check",
             "src/loader-splat/splat-data.ts: a compressed or " +
                 "spherical-harmonic PLY needs the pin's second parser and " +
-                "its own SH pipeline, and a .sog/.spz needs a ZIP/gzip " +
-                "decoder before either. The packager refuses each rather " +
-                "than emitting a row buffer the renderer would draw wrong " +
+                "its own SH pipeline, and a .spz/.sog its own pinned " +
+                "loader, run at generation. The packager refuses anything " +
+                "else rather than emitting a row buffer the renderer would " +
+                "draw wrong " +
                 "(src/splat-packager.ts), and holds the same tripwire over " +
                 "a KHR_gaussian_splatting cloud the pinned feature hands " +
                 "back with SH coefficients — which its degree-0 conversion " +

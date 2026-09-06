@@ -12,6 +12,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
     materialTextureSlotsHeader,
+    variantBindings,
     type MaterialTextureSlotFeatures,
 } from "../src/pinned-pbr-variant-cpp.js";
 import { metallicReflectanceCapabilityDefines } from "../src/upstream-lower.js";
@@ -352,5 +353,66 @@ test("the emission is deterministic", () => {
     assert.equal(
         materialTextureSlotsHeader(features, [], "test"),
         materialTextureSlotsHeader(features, [], "test"),
+    );
+});
+
+test("an unlowered texture type is refused, not bound as a near neighbour", () => {
+    // Each of these matched a prefix arm and reflected as the wrong view
+    // dimension with nothing reporting it: the array forms as their
+    // non-array counterparts, and everything else through the trailing
+    // `texture_` catch-all onto a 2D lane.
+    for (const type of [
+        "texture_cube_array<f32>",
+        "texture_2d_array<f32>",
+        "texture_depth_cube",
+        "texture_depth_multisampled_2d",
+        "texture_3d<f32>",
+        "texture_1d<f32>",
+        "texture_storage_2d<rgba8unorm,write>",
+        "texture_external",
+    ]) {
+        assert.throws(
+            () =>
+                variantBindings(
+                    "@fragment fn main() {}",
+                    `@group(1) @binding(3) var probes : ${type};`,
+                ),
+            // The message names the declared type; a storage texture's own
+            // spelling arrives truncated at its comma, because the binding
+            // pattern's character class stops there.
+            (error: unknown) =>
+                error instanceof Error &&
+                error.message.startsWith(
+                    `Binding 'probes' declares ${type.split(",")[0]}`,
+                ) &&
+                error.message.includes("which this port does not lower"),
+            type,
+        );
+    }
+});
+
+test("the reached array texture and the plain kinds still reflect", () => {
+    // The cascaded receiver's map is the one array form a composed variant
+    // reaches; the refusal above must not touch it or the plain kinds.
+    const cascaded = variantBindings(
+        "@fragment fn main() {}",
+        "@group(1) @binding(7) var shadowMap : texture_depth_2d_array;",
+    );
+    assert.deepEqual(
+        cascaded.map(({ binding, name, kind }) => [binding, name, kind]),
+        [[7, "shadowMap", "textureDepth2dArray"]],
+    );
+    const plain = variantBindings(
+        "@fragment fn main() {}",
+        "@group(1) @binding(0) var albedo : texture_2d<f32>;\n" +
+            "@group(1) @binding(1) var env : texture_cube<f32>;\n" +
+            "let c = textureSample(albedo, s, uv) + textureSample(env, s, d);",
+    );
+    assert.deepEqual(
+        plain.map(({ name, kind }) => [name, kind]),
+        [
+            ["albedo", "texture2d"],
+            ["env", "textureCube"],
+        ],
     );
 });
