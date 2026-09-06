@@ -6,6 +6,7 @@ import type { CompileAsset, Value } from "../types.js";
 import type { CompilerSymbols } from "../symbols.js";
 import type { DataTypeRegistry } from "../data-types.js";
 import type { IntrinsicCallContext } from "./context.js";
+import type { AssignmentContext } from "../assignments.js";
 import {
     staticNumberValue,
     validateObjectProperties,
@@ -38,6 +39,7 @@ import {
     type CsgSolidPlan,
     type CsgSourceMesh,
 } from "../../pinned-csg.js";
+import { bakeCsg2Meshes, csg2BooleanNames, type Csg2SolidPlan } from "../../pinned-csg2.js";
 
 /**
  * Native math and instance-buffer work: these may record reached stream facts,
@@ -60,6 +62,7 @@ export interface MeshIntrinsicContext
         ObjectValidationContext,
         PositiveIntegerContext {
     readonly dataTypes: DataTypeRegistry;
+    recordSceneMeshMaterial: AssignmentContext["recordSceneMeshMaterial"];
     compileBoxOptions(
         expression: ts.Expression,
     ): [string, string, string];
@@ -459,13 +462,23 @@ function csgSourceCall(
     if (!ts.isIdentifier(expression)) return undefined;
     const source = expression.getSourceFile();
     const limit = expression.getStart(source);
+    const symbol = context.symbols.valueSymbol(expression);
+    if (!symbol) return undefined;
     const earlier: ts.Identifier[] = [];
     const visit = (node: ts.Node): void => {
         // A subtree starting at or after this argument can hold no
         // earlier occurrence, so the walk stops at the call.
         if (node.getStart(source) >= limit) return;
-        if (ts.isIdentifier(node) && node.text === expression.text) {
-            earlier.push(node);
+        if (ts.isIdentifier(node) && context.symbols.valueSymbol(node) === symbol) {
+            // Material writes cannot change retained geometry or the world
+            // transform. Every other previous use still withdraws the proof.
+            const property = node.parent;
+            const assignment = property?.parent;
+            if (!(ts.isPropertyAccessExpression(property) && property.expression === node &&
+                property.name.text === "material" && ts.isBinaryExpression(assignment) &&
+                assignment.left === property && assignment.operatorToken.kind === ts.SyntaxKind.EqualsToken)) {
+                earlier.push(node);
+            }
         }
         node.forEachChild(visit);
     };
@@ -537,12 +550,111 @@ function requireCsgSolid(
     return value.csgSolid;
 }
 
+const initializedCsg2Contexts = new WeakSet<MeshIntrinsicContext>();
+
+function requireCsg2Solid(context: MeshIntrinsicContext, argument: ts.Expression): Csg2SolidPlan {
+    const value = context.compileValue(argument);
+    context.expectKind(value, "csg2-solid", argument);
+    if (!value.csg2Solid || value.csg2Solid.disposed) {
+        context.fail(argument, "CSG2 requires a live generation-known solid; this solid is absent or disposed.");
+    }
+    return value.csg2Solid.plan;
+}
+
 export function compileMeshIntrinsic(
     context: MeshIntrinsicContext,
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "initializeCsg2Async": {
+            context.expectArgumentCount(call, 0, 0);
+            initializedCsg2Contexts.add(context);
+            context.reachFeature("mesh:csg2", call);
+            return { kind: "void", cpp: "" };
+        }
+        case "isCsg2Ready": {
+            context.expectArgumentCount(call, 0, 0);
+            const ready = initializedCsg2Contexts.has(context);
+            return { kind: "boolean", cpp: String(ready), staticBoolean: ready };
+        }
+        case "createCsg2FromMesh": {
+            context.expectArgumentCount(call, 1, 2);
+            if (!initializedCsg2Contexts.has(context)) context.fail(call, "CSG2 requires initializeCsg2Async before creating a solid.");
+            const mesh = context.compileValue(call.arguments[0]!);
+            context.expectKind(mesh, "mesh", call.arguments[0]!);
+            const builder = csgSourceCall(context, call.arguments[0]!);
+            const source = builder && csgSourceFromCall(context, builder);
+            if (!source) context.fail(call.arguments[0]!, "createCsg2FromMesh requires an unchanged identity-transform createBox/createSphere with generation-known options; only preceding material assignments are permitted.");
+            const materialSlot = call.arguments[1] ? staticNumberValue(context, context.unwrap(call.arguments[1])) : 0;
+            if (materialSlot === undefined || !Number.isInteger(materialSlot) || materialSlot < 0 || materialSlot >= 65536) {
+                context.fail(call.arguments[1] ?? call, "A CSG2 material slot must be a generation-known integer in [0, 65535].");
+            }
+            context.reachFeature("mesh:csg2", call);
+            return { kind: "csg2-solid", cpp: "", csg2Solid: { plan: { op: "from-mesh", source, materialSlot }, disposed: false } };
+        }
+        case "csg2Subtract":
+        case "csg2Intersect":
+        case "csg2Add": {
+            context.expectArgumentCount(call, 2, 2);
+            const op = csg2BooleanNames.find((name) => name === importedName)!;
+            const left = requireCsg2Solid(context, call.arguments[0]!);
+            const right = requireCsg2Solid(context, call.arguments[1]!);
+            context.reachFeature("mesh:csg2", call);
+            return { kind: "csg2-solid", cpp: "", csg2Solid: { plan: { op, left, right }, disposed: false } };
+        }
+        case "disposeCsg2": {
+            context.expectArgumentCount(call, 1, 1);
+            const value = context.compileValue(call.arguments[0]!);
+            context.expectKind(value, "csg2-solid", call.arguments[0]!);
+            if (!value.csg2Solid) context.fail(call, "CSG2 disposal requires a generation-known solid.");
+            value.csg2Solid.disposed = true;
+            context.reachFeature("mesh:csg2", call);
+            return { kind: "void", cpp: "" };
+        }
+        case "createMeshFromCsg2":
+        case "createMeshesFromCsg2": {
+            const partitioned = importedName === "createMeshesFromCsg2";
+            context.expectArgumentCount(call, partitioned ? 3 : 2, partitioned ? 4 : 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const plan = requireCsg2Solid(context, call.arguments[1]!);
+            const materials = partitioned ? context.handleCollections.staticHandleList(call.arguments[2]!) : undefined;
+            if (partitioned && !materials) context.fail(call.arguments[2]!, "CSG2 material partitioning requires a generation-known material list.");
+            for (const material of materials ?? []) {
+                context.expectKind(material.value, "material", material.node);
+                context.expectSameEngine(engine, material.value, material.node);
+                if (!material.value.standardMaterial) context.fail(material.node, "CSG2 material partitioning currently requires Standard materials.");
+            }
+            const nameArgument = call.arguments[partitioned ? 3 : 2];
+            const name = nameArgument ? context.compileValue(nameArgument).staticString : "csg2";
+            if (name === undefined) context.fail(nameArgument ?? call, "A CSG2 output name must be generation-known.");
+            const baked = bakeCsg2Meshes({ plan, name, ...(materials ? { materialCount: materials.length } : {}) });
+            const meshes: Value[] = [];
+            for (const output of baked) {
+                const prefix = context.allocateTemporaryCppName("csg2_geometry");
+                const geometry = csgGeometryDeclarations(prefix, output.geometry, (symbol, type, elements) =>
+                    `bblscene::${context.dataTypes.registerSharedConstantArray(symbol, type, elements)}`);
+                const sceneMeshIndex = context.recordSceneMesh("from-data", { hasUv2: false, hasTangents: false, hasColors: false });
+                const cpp = context.allocateTemporaryCppName("csg2_mesh");
+                context.emit(`auto ${cpp} = bbl::create_mesh_from_data(${engine.cpp}, ${context.cppString(output.name)}, ${geometry.positions}, ${geometry.normals}, ${geometry.indices}, ${geometry.uvs}, {}, {}, {});`);
+                const material = output.materialSlot === undefined ? undefined : materials?.[output.materialSlot]?.value;
+                if (partitioned && !material) context.fail(call, "The pinned CSG2 output named an absent material slot.");
+                if (material) {
+                    context.emit(`${engine.cpp}.meshes[${cpp}.value].material = ${material.cpp};`);
+                    context.recordSceneMeshMaterial(sceneMeshIndex, {
+                        pbrMaterial: null, nodeMaterial: null, standardMaterial: true,
+                        standardMaterialPluginIndex: material.standardMaterialPluginIndex,
+                    });
+                }
+                meshes.push({ kind: "mesh", cpp, sceneMeshIndex, engineCpp: engine.engineCpp ?? engine.cpp,
+                    directMorphCompatible: true, ...(material ? { standardMaterial: true, standardMaterialPluginIndex: material.standardMaterialPluginIndex } : {}) });
+            }
+            context.reachJsData();
+            context.reachFeature("mesh:csg2", call);
+            context.reachFeature("mesh:from-data", call);
+            return partitioned ? { kind: "tuple", cpp: "", tupleElements: meshes } : meshes[0]!;
+        }
         case "quatFromLookDirectionRH": {
             context.expectArgumentCount(call, 2, 2);
             context.reachFeature("math:look-direction", call);
