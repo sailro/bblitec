@@ -4807,12 +4807,11 @@ export class DataLowerer {
         }
         // A conditional selects between two values of the sink's own
         // type, so each branch lowers for the same sink and the choice
-        // stays where the source wrote it. Numbers and booleans are left
-        // alone: their own compilers already lower a conditional, and
-        // routing them here would change what every existing scene emits.
+        // stays where the source wrote it. Booleans keep their condition
+        // compiler's surface. Numeric callers
+        // use this same sink so branch preparation is guarded consistently.
         if (
             ts.isConditionalExpression(unwrapped) &&
-            dataType.kind !== "number" &&
             dataType.kind !== "boolean"
         ) {
             const condition = this.context.compileCondition(

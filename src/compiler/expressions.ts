@@ -1335,6 +1335,16 @@ export class ExpressionLowerer {
                 this.context.dataLowerer.dataTypeAt(
                     unwrapped,
                 );
+            if (conditionalType?.kind === "number") {
+                // The common sink keeps all branch preparation inside the
+                // selected arm, including optional Map.get temporaries.
+                return this.context.dataValue(
+                    this.inRuntimeControlFlow(() =>
+                        this.context.dataLowerer.compileForSink(unwrapped, conditionalType),
+                    ),
+                    conditionalType,
+                );
+            }
             if (conditionalType?.kind === "optional") {
                 const objectIdentity =
                     conditionalType.inner.kind === "struct"

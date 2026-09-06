@@ -806,27 +806,7 @@ export class StaticEvaluator {
                 : value.cpp;
         }
         if (ts.isConditionalExpression(unwrapped)) {
-            const condition = this.compileCondition(
-                unwrapped.condition,
-            );
-            if (condition === "true" || condition === "false") {
-                return this.compileNumber(
-                    condition === "true"
-                        ? unwrapped.whenTrue
-                        : unwrapped.whenFalse,
-                    precision,
-                );
-            }
-            const compiled = `(${condition} ? ${this.compileNumber(
-                unwrapped.whenTrue,
-                "double",
-            )} : ${this.compileNumber(
-                unwrapped.whenFalse,
-                "double",
-            )})`;
-            return precision === "float"
-                ? `static_cast<float>(${compiled})`
-                : compiled;
+            return this.castNumber(this.resolveValue(unwrapped), precision);
         }
         if (ts.isIdentifier(unwrapped)) {
             const value = this.lookup(unwrapped);
