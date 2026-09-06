@@ -864,6 +864,7 @@ export function compileMaterialIntrinsic(
 
         case "createShaderMaterial": {
             const materialSlot = context.recordSceneMaterialSlot();
+            const runtimeProfile = context.isRuntimeResourceConstruction();
             context.expectArgumentCount(call, 1, 1);
             const engine =
                 context.requireDefaultEngine(call);
@@ -873,10 +874,10 @@ export function compileMaterialIntrinsic(
                 );
             context.reachFeature("material:shader", call);
             context.reachFeature("renderer:scene", call);
-            let materialCpp =
-                `bbl::remember_scene_material(${engine}, ` +
-                `${materialSlot}u, ` +
-                `bbl::create_shader_material(${engine}, ${variant.id}u))`;
+            const creation = `bbl::create_shader_material(${engine}, ${variant.id}u)`;
+            let materialCpp = runtimeProfile
+                ? creation
+                : `bbl::remember_scene_material(${engine}, ${materialSlot}u, ${creation})`;
             if (variant.dynamicUniforms?.length) {
                 const material = context.allocateTemporaryCppName(
                     "shader_material",
@@ -897,7 +898,7 @@ export function compileMaterialIntrinsic(
                 engineCpp: engine,
                 shaderVariant: variant.name,
                 sceneShaderVariant: variant.name,
-                sceneMaterialSlot: materialSlot,
+                ...(runtimeProfile ? {} : { sceneMaterialSlot: materialSlot }),
             };
         }
 

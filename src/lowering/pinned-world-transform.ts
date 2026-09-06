@@ -1,43 +1,24 @@
 /**
- * The float world-basis application and the mirrored-basis determinant,
- * emitted once into a header every scene carries.
- *
- * Three consumers apply a world matrix to loaded geometry on the CPU: the
- * PAL's vertex bake (`pal_gpu_shared.hpp`), the glTF loader's node bake and
- * the `.babylon` loader's pivot bake. All three had hand-typed the same two
- * multiplies, term for term, and the glTF loader had also hand-typed the
- * upper-left-3x3 determinant along a DIFFERENT cofactor row than the fold
- * the mirrored-mesh watcher executes — so the load-time and run-time
- * answers to "is this basis mirrored" did not round alike. One emission
- * here means one rounding everywhere.
- *
- * The pair is FLOAT deliberately. The reference for a CPU vertex bake is
- * the pinned WGSL vertex stage, which multiplies the f32 `finalWorld`
- * against f32 lanes — not `transformCoordinatesToRef`, whose JavaScript
- * numbers would lower to double and disagree with the shader in the last
- * bit. The markers below are the pinned stage lines the pair restates;
- * either changing upstream refuses generation.
- *
- * The determinant is the pin's own `mat4Determinant3`, through the one
- * fold `pinned-mat4-decompose.ts` owns for the reason that file states: a
- * second expansion of one pinned function is two answers to "is this
- * mirrored" waiting to disagree.
+ * Shared CPU vertex transforms for the PAL and both geometry loaders.
+ * World-basis application stays f32 to model the pinned vertex shader,
+ * rather than the double intermediates of JavaScript matrix helpers.
+ * Stage markers and typed direction projection validate that contract;
+ * normalization comes from shader IR and the mirrored-basis determinant
+ * from the shared pinned mat4Determinant3 lowerer.
  */
 import type { LoweringContext } from "./context.js";
 import { lowerMat4Determinant3 } from "./pinned-mat4-decompose.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
+import { pinnedVertexNormalization } from "./pinned-vertex-normalization.js";
 
 const PBR_TEMPLATE_MODULE = "src/material/pbr/pbr-template.ts";
 const STANDARD_TEMPLATE_MODULE = "src/material/standard/standard-template.ts";
 
 /**
- * The pinned vertex-stage lines the emitted pair restates in C++. The
- * templates build WGSL out of string literals, so the contract is textual:
- * the position multiply, the direction multiply, and the Standard basis
- * that spells the same three columns as a `mat3x3`. Spelled as the pin's
- * source spells them, packaged by its own build step; the `${...}` are the
- * templates' own placeholders, kept for the pin's text to carry.
+ * Position and Standard basis markers retain the pin's package transform
+ * and template placeholders. The PBR direction/normalization contract is
+ * checked separately through typed shader IR.
  */
 const PINNED_STAGE_MARKERS: readonly (readonly [
     string,
@@ -48,11 +29,6 @@ const PINNED_STAGE_MARKERS: readonly (readonly [
         PBR_TEMPLATE_MODULE,
         packagedWgsl`let worldPos4 = finalWorld * vec4<f32>(\${posVar}, 1.0);`,
         "vertex-stage position multiply",
-    ],
-    [
-        PBR_TEMPLATE_MODULE,
-        packagedWgsl`out.worldNormal = (finalWorld * vec4<f32>(normalize(\${normVar}), 0.0)).xyz;`,
-        "vertex-stage direction multiply",
     ],
     [
         STANDARD_TEMPLATE_MODULE,
@@ -149,6 +125,8 @@ inline Vec3 transform_direction(
 }
 
 ${determinant}
+
+${pinnedVertexNormalization(context)}
 
 } // namespace bbl::upstream
 `;

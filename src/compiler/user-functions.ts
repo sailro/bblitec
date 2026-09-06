@@ -204,7 +204,7 @@ export interface AliasedMutationScan {
  * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
  *
  * Seeds the tracked set with the declared identifier's symbol, then rewalks
- * the whole source file until a pass adds no alias: a variable declaration
+ * the whole source file until a pass adds no alias: a declaration or assignment
  * whose initializer `aliasingInitializer` accepts extends the set (queueing
  * another pass), and the first node `mutates` accepts ends the scan. What
  * counts as an alias-creating initializer and as a mutation site is the
@@ -267,6 +267,14 @@ export function aliasedMutationScan(
                 walk.aliasingInitializer(node.initializer, scan)
             ) {
                 scan.addAlias(valueSymbol(node.name));
+            }
+            if (
+                ts.isBinaryExpression(node) &&
+                node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(node.left) &&
+                walk.aliasingInitializer(node.right, scan)
+            ) {
+                scan.addAlias(valueSymbol(node.left));
             }
             ts.forEachChild(node, visit);
         };

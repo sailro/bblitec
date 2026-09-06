@@ -92,6 +92,21 @@ test("the recursive-visitor flatten answers with the container's mesh list", () 
     // declared for the empty `Mesh[]`, and the driver loop emits nothing.
     assert.doesNotMatch(result.cpp, /std::vector<bbl::MeshHandle> [A-Za-z0-9_]*meshes/);
     assert.doesNotMatch(result.cpp, /collect_meshes/);
+    assert.equal(result.manifest.sceneMaterialCount, 2);
+    assert.deepEqual(result.manifest.sceneMaterialGltfAssetsBefore, [1, 1]);
+});
+
+test("material construction counts node instances and primitives, not mesh definitions", () => {
+    const result = compileWalk(exactWalk, {
+        ...twoMeshDocument,
+        meshes: [
+            { name: "used", primitives: [{}, {}] },
+            { name: "unused", primitives: [{}, {}, {}] },
+        ],
+    });
+    assert.equal(result.manifest.sceneMaterialCount, 4);
+    assert.equal(result.cpp.match(/bbl::create_standard_material\(/g)?.length, 1);
+    assert.match(result.cpp, /for \(const bbl::MeshHandle /);
 });
 
 test("a guard testing a field that is not the renderable one is refused", () => {

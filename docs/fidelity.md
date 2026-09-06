@@ -54,13 +54,19 @@ handwritten translation do not make it an AST-derived implementation.
 | Node materials | Pinned graph compiler and block emitters |
 | Material/splat plugins | Scene declarations folded, then pin's own splicer/bridges |
 | Sprites, splats, effects, post-processes | Pinned literals/builders/composers, with declared specialization |
-| Specialized shared vertex | Handwritten stage in `shader-builtins-standard.ts`, guarded by pinned contracts |
+| Specialized shared vertex | Pinned PBR template and shared deformation/instance fragments, projected through typed shader IR |
 
-The last row and regex-based skybox specialization remain maintenance debts.
 Do not introduce additional shader transcriptions or use a fallback shader when
 composition fails. Bindings, vertex interfaces and uniform layouts must match
 the actual deployed module. Detailed transport is owned by
 [backends](backends.md).
+
+The shared diagnostic/depth/background vertex stage keeps its pre-baked world
+and fixed PAL binding layout. When deformation is enabled, it uses four bone
+influences in a 64-matrix uniform palette and either two-target attributes or
+the pinned storage-morph payload. Its attribute path retains tangent deltas and
+a pre-morph bitangent. `shared-material-vertex-transport` records these
+adaptations; ordinary colour materials retain their own pinned composers.
 
 ### Numeric width
 
@@ -74,6 +80,13 @@ Use the runtime's JavaScript `round_js` rule for `Math.round`.
 `hypot_js` uses the recorded sum-of-squares approximation. RGBD decode
 results are half-float texture data because that is the pin's storage format.
 High-precision camera/node support does not imply every native matrix is F64.
+
+The CPU vertex bake projects the pin's WGSL normal/tangent normalization through
+typed shader IR with float32 intermediates and division. It retains its strict
+length-above-`1e-6` gate (zero otherwise) after the baked world transform.
+`guarded-cpu-vertex-normalization` records this adaptation; substituting the
+JavaScript tuple/object normalizers would change precision, epsilon and the
+degenerate result.
 
 ### The reference pose
 
@@ -106,9 +119,12 @@ Morph-bound providers must affect both fitted bounds and the refresh version.
 A scene that reaches a provider may still fail to observe its effect, so use
 a focused changed-bound control when validating that mechanism.
 
-CSM fitting is restated under expression/inventory guards rather than lowered
-as a whole. Unsupported thin-instance caster bounds must not be presented as a
-precision difference. The active audit tracks lowering and gating debt.
+CSM fitting, caster bias and receiver packing are lowered from the pinned ASTs.
+Number-array values retain JavaScript-number precision; Float32Array stores
+narrow at their original boundary. Native cache/resource carriers remain
+structural adapters. Unsupported thin-instance caster cases must not be
+presented as precision differences; broader carrier and gating work remains
+in [TODO](../TODO.md).
 
 ### Background and environment
 

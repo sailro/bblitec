@@ -66,6 +66,8 @@ test("compiles the Babylon Lite primitives example", () => {
             "synchronous-aot-await",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
+            "guarded-cpu-vertex-normalization",
+            "shared-material-vertex-transport",
         ],
     );
     assert.deepEqual(result.manifest.generatedSources, [
@@ -6449,7 +6451,7 @@ test("keeps large constant-count data loops at runtime", () => {
     );
 });
 
-test("statically iterates large loops that reach pinned scene construction", () => {
+test("keeps large helper construction loops native with call-site profiles", () => {
     const result = compileSource(`
         import { createBox, createEngine } from "babylon-lite";
         function addBox(engine: Awaited<ReturnType<typeof createEngine>>): void {
@@ -6463,8 +6465,10 @@ test("statically iterates large loops that reach pinned scene construction", () 
         }
     `);
 
-    assert.doesNotMatch(result.cpp, /for \(/);
-    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 40);
+    assert.match(result.cpp, /for \(; \w+ < 40\.0; \w+\+\+\)/);
+    assert.equal(result.cpp.match(/bbl::create_box\(/g)?.length, 1);
+    assert.equal(result.manifest.sceneMeshes.length, 1);
+    assert.equal(result.manifest.sceneMeshes[0]?.runtimeInstances, true);
 });
 
 test("grows JavaScript arrays on indexed writes", () => {
@@ -7000,11 +7004,13 @@ test("compiles pinned scene 271's live shadow-light replacement unchanged", () =
     );
     assert.match(result.cpp, /remove_from_scene\(v_scene, v_lightA\)/);
     assert.match(result.cpp, /unregister_scene\(v_scene\)/);
-    assert.equal(
-        result.cpp.match(/register_scene_with_shadow_support\(v_scene\)/g)
-            ?.length,
-        2,
-    );
+    const registrations = [...result.cpp.matchAll(
+        /register_scene_with_shadow_support\((\w+)\)/g,
+    )];
+    assert.equal(registrations.length, 2);
+    for (const [, scene] of registrations) {
+        assert.match(result.cpp, new RegExp(`auto ${scene} = v_scene;`));
+    }
     assert.match(result.cpp, /topology_rebuild_pending/);
     assert.match(result.cpp, /rebuild_scene_renderables\(v_scene\)/);
     assert.match(result.cpp, /defer_start_continuation\(v_engine/);
@@ -14753,6 +14759,8 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
             "compile-time-asset-materialization",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
+            "guarded-cpu-vertex-normalization",
+            "shared-material-vertex-transport",
         ],
     );
     assert.deepEqual(
@@ -16267,10 +16275,9 @@ test("compiles Babylon Lite scene 146 geometry outputs and frame graph", () => {
     assert.match(result.cpp, /bbl::create_copy_to_texture_task/);
     assert.match(result.cpp, /bbl::add_task_at_start/);
     assert.match(result.cpp, /scene146-impostor-worldPosition/);
-    assert.match(result.cpp, /double v_fn0_tileW = \(1\.0 \/ 6\.0\)/);
     assert.match(
         result.cpp,
-        /scene146-impostor-worldPosition[\s\S]*NormalizedViewport\{\(3\.0 \* v_fn0_tileW\), 0\.0, v_fn0_tileW, 0\.15\}/,
+        /double (v_fn\d+_tileW) = \(1\.0 \/ 6\.0\)[\s\S]*scene146-impostor-worldPosition[^\n]*NormalizedViewport\{\(3\.0 \* \1\), 0\.0, \1, 0\.15\}/,
     );
     assert.ok(
         result.manifest.generatedSources.includes(
@@ -19076,11 +19083,11 @@ test("bakes a CSG boolean into the geometry the pin produced", () => {
     // mesh already ends upstream.
     assert.match(
         result.cpp,
-        /static const float v_bblite_csg_geometry_\d+_positions\[\] = \{/,
+        /inline const std::array<float, \d+> v_bblite_csg_geometry_\d+_positions\{/,
     );
     assert.match(
         result.cpp,
-        /bbl::create_mesh_from_data\(v_engine, "carved", std::vector<float>\(v_bblite_csg_geometry_\d+_positions,/,
+        /bbl::create_mesh_from_data\(v_engine, "carved", std::vector<float>\(bblscene::v_bblite_csg_geometry_\d+_positions\.begin\(\),/,
     );
     assert.ok(
         result.manifest.adaptations.some(

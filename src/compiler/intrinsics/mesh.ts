@@ -39,6 +39,22 @@ import {
     type CsgSourceMesh,
 } from "../../pinned-csg.js";
 
+/**
+ * Native math and instance-buffer work: these may record reached stream facts,
+ * but allocate no generation-owned mesh/material/asset ordinal. Keep that
+ * distinction separate from runtimeOnlyIntrinsics, whose calls record no facts.
+ */
+export const nativeMeshDataIntrinsics: ReadonlySet<string> = new Set([
+    "mat4Identity",
+    "mat4Compose",
+    "setThinInstanceMatrix",
+    "setThinInstanceColors",
+    "setThinInstanceCount",
+    "flushThinInstances",
+    "addThinInstance",
+    "removeThinInstance",
+]);
+
 export interface MeshIntrinsicContext
     extends IntrinsicCallContext,
         ObjectValidationContext,
@@ -1302,7 +1318,7 @@ export function compileMeshIntrinsic(
                 call.arguments[2]!,
             );
             context.reachFeature("mesh:thin-instances", call);
-            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1333,7 +1349,7 @@ export function compileMeshIntrinsic(
             context.reachFeature("mesh:thin-instance-colors", call);
             // The pin's ShaderMaterial reads this stream's presence off the
             // mesh to decide its instanced prelude, so the record notes it.
-            context.recordThinInstanceColorMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceColorMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1356,7 +1372,7 @@ export function compileMeshIntrinsic(
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
-            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1378,7 +1394,7 @@ export function compileMeshIntrinsic(
                 "f32array",
             );
             context.reachFeature("mesh:thin-instances-dynamic", call);
-            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1399,7 +1415,7 @@ export function compileMeshIntrinsic(
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
-            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1422,7 +1438,7 @@ export function compileMeshIntrinsic(
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
-            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "number",
                 cpp:
@@ -1443,7 +1459,7 @@ export function compileMeshIntrinsic(
             );
             context.reachFeature("mesh:thin-instances", call);
             context.reachFeature("mesh:thin-instances-dynamic", call);
-            context.recordThinInstanceMesh(mesh.sceneMeshIndex);
+            context.recordThinInstanceMesh(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1505,7 +1521,7 @@ export function compileMeshIntrinsic(
                 "mesh:thin-instance-gpu-culling",
                 call,
             );
-            context.recordThinInstanceGpuCulling(mesh.sceneMeshIndex);
+            context.recordThinInstanceGpuCulling(mesh.sceneMeshIndex ?? mesh.sceneMeshProfileIndex);
             return {
                 kind: "void",
                 cpp:
@@ -1817,8 +1833,9 @@ export function compileMeshIntrinsic(
             const baked = bakeCsgMesh(plan, meshName);
             const prefix =
                 context.allocateTemporaryCppName("csg_geometry");
-            const geometry = csgGeometryDeclarations(prefix, baked);
-            for (const line of geometry.lines) context.emit(line);
+            const geometry = csgGeometryDeclarations(prefix, baked, (symbol, type, elements) =>
+                `bblscene::${context.dataTypes.registerSharedConstantArray(symbol, type, elements)}`);
+            context.reachJsData();
             const sceneMeshIndex = context.recordSceneMesh(
                 "from-data",
                 {

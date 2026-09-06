@@ -157,9 +157,14 @@ export function compileEngineIntrinsic(
                     call.arguments[0]!,
                 );
             }
+            const defaultRenderTask = context.compileSceneDefaultRenderTask(call.arguments[1]);
+            const samples = engine.msaaSamples ?? 4;
+            const create = `bbl::create_scene_context(${engine.cpp})`;
             return {
                 kind: "scene",
-                cpp: `bbl::create_scene_context(${engine.cpp})`,
+                cpp: defaultRenderTask && samples === 4
+                    ? create
+                    : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${samples}u)`,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,
@@ -173,10 +178,6 @@ export function compileEngineIntrinsic(
                               engine.msaaSamples,
                       }
                     : {}),
-                defaultRenderTask:
-                    context.compileSceneDefaultRenderTask(
-                        call.arguments[1],
-                    ),
             };
         }
 
@@ -211,7 +212,6 @@ export function compileEngineIntrinsic(
                 ...(surface.msaaSamples
                     ? { msaaSamples: surface.msaaSamples }
                     : {}),
-                defaultRenderTask: false,
                 sceneEnvironmentState: {
                     rotationSet: false,
                     hasTexturedSkybox: false,

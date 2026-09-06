@@ -17,15 +17,10 @@
  * reorders a body's factory calls or changes one of their option objects
  * fails generation by name instead of silently drawing a different widget.
  *
- * Three pinned BODIES are not read that way and are transcribed into the
- * emitted C++ below: `buildHemisphereMesh` and `lineDefsForLevel` from
- * `src/gizmo/light-gizmo.ts`, and `buildFrustumWireframe`/`buildFrustumEdge`
- * from `src/gizmo/camera-gizmo.ts`, along with the placement literals their
- * callers pass. Every construct in them is one `lowerPinnedFunction`
- * already handles -- `for`, `if`, `Math.*`, and `push` onto a grown list --
- * so this is a gap rather than a limit, and it is the one place where an
- * upstream edit to a gizmo's geometry would compile clean and draw a
- * different widget. [TODO](../../TODO.md)'s gizmo entry carries it.
+ * Hemisphere vertices, light-line records and frustum geometry are lowered
+ * from the pinned bodies in `pinned-gizmo-geometry.ts`. The native scene
+ * adapter below owns mesh allocation, material assignment and parenting,
+ * not their geometric equations.
  *
  * What is deliberately NOT re-derived: the quaternion helpers. Those are
  * lowered from `src/gizmo/gizmo-math.ts` through the shared pinned-function
@@ -66,6 +61,11 @@ import {
 import { pinnedMeshOptionFlag } from "../pinned-mesh-defaults.js";
 import { pinnedPolyhedron } from "../pinned-polyhedra.js";
 import { lowerPointerDrag } from "./pointer-drag-lowerer.js";
+import {
+    pinnedGizmoBoundsGeometry,
+    pinnedGizmoFollowGeometry,
+    pinnedGizmoGeometry,
+} from "./pinned-gizmo-geometry.js";
 
 const UTILITY_MODULE = "src/gizmo/utility-layer.ts";
 const MATH_MODULE = "src/gizmo/gizmo-math.ts";
@@ -209,10 +209,8 @@ interface PinnedFactoryCall {
     /** `createCylinder`, `createSphere`, `createBox`. */
     callee: string;
     /**
-     * The option object's members, by the pin's own names. A member the
-     * pin spells as a constant carries its value; one it computes from a
-     * parameter (the frustum edge's thickness) carries undefined, and its
-     * value comes from the module constant the caller reads instead.
+     * Literal option values, by the pin's own names. Computed members
+     * require the numeric adapter instead of this constant reader.
      */
     options: ReadonlyMap<string, number | undefined>;
     /** A bare numeric second argument, where the factory takes one. */
@@ -317,19 +315,11 @@ export class GizmoLowerer {
         return calls;
     }
 
-    /**
-     * One factory call's constant option, or a named failure.
-     *
-     * `fallback` is for the one member the pin computes rather than
-     * spells -- the frustum edge's thickness, which is its own module
-     * constant -- and the member still has to be DECLARED, so a pin that
-     * drops it fails here rather than silently taking the fallback.
-     */
+    /** One factory call's constant option, or a named failure. */
     private option(
         call: PinnedFactoryCall,
         name: string,
         at: ts.Node,
-        fallback?: number,
     ): number {
         if (!call.options.has(name)) {
             return this.context.contractError(
@@ -337,7 +327,7 @@ export class GizmoLowerer {
                 `Expected pinned ${call.callee} to declare '${name}'.`,
             );
         }
-        const value = call.options.get(name) ?? fallback;
+        const value = call.options.get(name);
         if (value === undefined) {
             return this.context.contractError(
                 at,
@@ -345,20 +335,6 @@ export class GizmoLowerer {
             );
         }
         return value;
-    }
-
-    /** A module-scope numeric constant, read where the pin declares it. */
-    private constant(modulePath: string, name: string): number {
-        const file = this.context.sourceFile(modulePath);
-        const initializer = this.context.moduleScopeConstant(file, name);
-        if (!initializer) {
-            return this.context.contractError(
-                file,
-                `Expected ${modulePath} to declare the constant ` +
-                    `'${name}'.`,
-            );
-        }
-        return this.context.numericValue(initializer, file);
     }
 
     /**
@@ -517,9 +493,9 @@ export class GizmoLowerer {
                 cppName: "direction_to_quat",
                 calls,
                 memberBindings: new Map([
-                    ["dir.x", { cpp: "dir.x", type: "scalar" as const }],
-                    ["dir.y", { cpp: "dir.y", type: "scalar" as const }],
-                    ["dir.z", { cpp: "dir.z", type: "scalar" as const }],
+                    ["dir.x", { cpp: "static_cast<double>(dir.x)", type: "scalar" as const }],
+                    ["dir.y", { cpp: "static_cast<double>(dir.y)", type: "scalar" as const }],
+                    ["dir.z", { cpp: "static_cast<double>(dir.z)", type: "scalar" as const }],
                     // The pin's own constant, at the width its body reads
                     // it: a JavaScript number, so a double here.
                     ["Math.PI", { cpp: "pi_double", type: "scalar" as const }],
@@ -587,9 +563,9 @@ export class GizmoLowerer {
                 cppName: "length_vec3",
                 calls,
                 memberBindings: new Map([
-                    ["v.x", { cpp: "v.x", type: "scalar" as const }],
-                    ["v.y", { cpp: "v.y", type: "scalar" as const }],
-                    ["v.z", { cpp: "v.z", type: "scalar" as const }],
+                    ["v.x", { cpp: "static_cast<double>(v.x)", type: "scalar" as const }],
+                    ["v.y", { cpp: "static_cast<double>(v.y)", type: "scalar" as const }],
+                    ["v.z", { cpp: "static_cast<double>(v.z)", type: "scalar" as const }],
                 ]),
                 returns: "double",
             },
@@ -611,9 +587,9 @@ export class GizmoLowerer {
                 cppName: "normalize_vec3",
                 calls,
                 memberBindings: new Map([
-                    ["v.x", { cpp: "v.x", type: "scalar" as const }],
-                    ["v.y", { cpp: "v.y", type: "scalar" as const }],
-                    ["v.z", { cpp: "v.z", type: "scalar" as const }],
+                    ["v.x", { cpp: "static_cast<double>(v.x)", type: "scalar" as const }],
+                    ["v.y", { cpp: "static_cast<double>(v.y)", type: "scalar" as const }],
+                    ["v.z", { cpp: "static_cast<double>(v.z)", type: "scalar" as const }],
                 ]),
                 returns: {
                     type: "Vec3d",
@@ -742,9 +718,9 @@ export class GizmoLowerer {
                             },
                         ],
                     ),
-                    ["dir.x", { cpp: "dir.x", type: "scalar" as const }],
-                    ["dir.y", { cpp: "dir.y", type: "scalar" as const }],
-                    ["dir.z", { cpp: "dir.z", type: "scalar" as const }],
+                    ["dir.x", { cpp: "static_cast<double>(dir.x)", type: "scalar" as const }],
+                    ["dir.y", { cpp: "static_cast<double>(dir.y)", type: "scalar" as const }],
+                    ["dir.z", { cpp: "static_cast<double>(dir.z)", type: "scalar" as const }],
                 ]),
                 returns: {
                     type: "Vec3d",
@@ -797,9 +773,9 @@ export class GizmoLowerer {
                 cppName: "look_at_quat",
                 calls,
                 memberBindings: new Map([
-                    ["dir.x", { cpp: "dir.x", type: "scalar" as const }],
-                    ["dir.y", { cpp: "dir.y", type: "scalar" as const }],
-                    ["dir.z", { cpp: "dir.z", type: "scalar" as const }],
+                    ["dir.x", { cpp: "static_cast<double>(dir.x)", type: "scalar" as const }],
+                    ["dir.y", { cpp: "static_cast<double>(dir.y)", type: "scalar" as const }],
+                    ["dir.z", { cpp: "static_cast<double>(dir.z)", type: "scalar" as const }],
                 ]),
                 returns: this.quatReturn(MATH_MODULE, "lookAtQuat"),
             },
@@ -860,6 +836,88 @@ export class GizmoLowerer {
                 calls: pinnedNumericMathCallsWithHypot(),
             },
         );
+    }
+
+    private displayLowerer(
+        modulePath: string,
+        bindings: Iterable<[string, PinnedBinding]> = [],
+    ): PinnedNumericLowerer {
+        return new PinnedNumericLowerer(this.context.sourceFile(modulePath), {
+            bindings: new Map([
+                ["Math.PI", { cpp: "pi_double", type: "scalar" }],
+                ...bindings,
+            ]),
+            calls: new Map([
+                ...pinnedNumericMathCallsWithHypot(),
+                ["quatFromBjsEuler", (args: readonly string[]) =>
+                    `quat_from_bjs_euler(${args.join(", ")})`],
+                ["rotateVec3ByQuat", (args: readonly string[]) =>
+                    `rotate_vec3_by_quat(${args.join(", ")})`],
+            ]),
+            booleanAnd: true,
+        });
+    }
+
+    /** The pin's TRS writes, with only the native setter's float sinks adapted. */
+    private displayPlacement(
+        scope: ts.Node,
+        local: string,
+        lowerer: PinnedNumericLowerer,
+    ): string {
+        const position = this.channel(scope, local, "position", lowerer, ["0.0", "0.0", "0.0"]);
+        const scaling = this.channel(scope, local, "scaling", lowerer, ["1.0", "1.0", "1.0"]);
+        const rotation = this.channel(scope, local, "rotationQuaternion", lowerer, ["0.0", "0.0", "0.0", "1.0"]);
+        return `Vec3d{${position.join(", ")}}, ` +
+            `Vec3{${scaling.map((lane) => `static_cast<float>(${lane})`).join(", ")}}, ` +
+            `std::array<double, 4>{${rotation.join(", ")}}`;
+    }
+
+    /** A node factory's supplied TRS and the factory's own omitted defaults. */
+    private displayNodeArguments(
+        scope: ts.Node,
+        local: string,
+        lowerer: PinnedNumericLowerer,
+    ): string {
+        const call = this.context.unwrapExpression(this.localInitializer(scope, local));
+        if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) ||
+            call.expression.text !== "createTransformNode" ||
+            !call.arguments[0] || !ts.isStringLiteral(call.arguments[0])) {
+            this.context.contractError(call, "Expected a named pinned display transform node.");
+        }
+        const factory = this.context.functionDeclaration(
+            "src/scene/transform-node.ts", "createTransformNode",
+        ).declaration;
+        if (factory.parameters.length !== 11 || call.arguments.length > factory.parameters.length) {
+            this.context.contractError(call, "Expected the pinned transform-node TRS parameters.");
+        }
+        const values = factory.parameters.slice(1).map((parameter, index) => {
+            const value = call.arguments[index + 1] ?? parameter.initializer;
+            if (!value) this.context.contractError(parameter, "Missing pinned transform-node default.");
+            return lowerer.expression(value);
+        });
+        return `${JSON.stringify(call.arguments[0].text)}, Vec3d{${values.slice(0, 3).join(", ")}}, ` +
+            `Vec4{${values.slice(3, 7).map((lane) => `static_cast<float>(${lane})`).join(", ")}}, ` +
+            `Vec3{${values.slice(7).map((lane) => `static_cast<float>(${lane})`).join(", ")}}`;
+    }
+
+    private lightGeometryArm(scope: ts.Node, type: string): ts.Node {
+        const branch = this.context.findNodes(scope, (node): node is ts.IfStatement => {
+            if (!ts.isIfStatement(node)) return false;
+            const condition = this.context.unwrapExpression(node.expression);
+            return ts.isBinaryExpression(condition) &&
+                condition.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken &&
+                ts.isIdentifier(condition.left) && condition.left.text === "lightType" &&
+                ts.isStringLiteral(condition.right) &&
+                condition.right.text === (type === "spot" ? "hemispheric" : type);
+        });
+        if (branch.length !== 1) {
+            this.context.contractError(scope, `Expected the pinned '${type}' light geometry branch.`);
+        }
+        const body = type === "spot" ? branch[0]!.elseStatement : branch[0]!.thenStatement;
+        if (!body || !ts.isBlock(body)) {
+            this.context.contractError(branch[0]!, "Expected a pinned per-light geometry block.");
+        }
+        return body;
     }
 
     /**
@@ -1179,7 +1237,7 @@ export class GizmoLowerer {
         local: string,
         channelName: string,
         lowerer: PinnedNumericLowerer,
-        fallback: readonly [string, string, string],
+        fallback: readonly string[],
     ): readonly string[] {
         let found: ts.CallExpression | undefined;
         const visit = (node: ts.Node): void => {
@@ -1205,11 +1263,11 @@ export class GizmoLowerer {
             visit(root);
         }
         if (!found) return fallback;
-        if (found.arguments.length !== 3) {
+        if (found.arguments.length !== fallback.length) {
             this.context.contractError(
                 found,
                 `Expected pinned ${local}.${channelName}.set to take ` +
-                    "three components.",
+                    `${fallback.length} components.`,
             );
         }
         return found.arguments.map((argument) =>
@@ -1696,38 +1754,26 @@ EditGizmoHandle push_edit_gizmo(
         if (utility.camera.value >= e.cameras.size()) return;
         const std::array<float, 16> cw =
             upstream::camera_world_matrix(e.cameras[utility.camera.value]);
-        const double ox = tx - static_cast<double>(cw[12]);
-        const double oy = ty - static_cast<double>(cw[13]);
-        const double oz = tz - static_cast<double>(cw[14]);
-        const double dist =
-            (ox * static_cast<double>(cw[8]) +
-             oy * static_cast<double>(cw[9]) +
-             oz * static_cast<double>(cw[10])) *
-            g.scale_ratio;
+        const Vec3d scale = gizmo_projected_scaling(
+            Vec3d{tx, ty, tz}, cw, g.scale_ratio);
         set_transform_node_scaling(
             e,
             g.root,
             Vec3{
-                static_cast<float>(dist),
-                static_cast<float>(dist),
-                static_cast<float>(dist)});
+                static_cast<float>(scale.x),
+                static_cast<float>(scale.y),
+                static_cast<float>(scale.z)});
         // \`attachFollowTarget\`'s \`onAfterFollow\`: the widget's
         // local-coordinate arm, which every composite reaches at load.
         // The three drag and rotation widgets re-take the pin's
         // shortest-arc \`lookAtQuat\` of the transformed axis; the scale
         // widget's cube is not roll-symmetric, so it composes the node's
         // world rotation onto the orientation baked at creation.
-        //
-        // The non-local arm writes that baked orientation unconditionally
-        // where the pin writes it only when its stored world axis has
-        // moved. Outside local mode the value IS baked_rotation, which
-        // edit_gizmo_root already put on the root at creation, so the
-        // write would be a no-op that still costs a full subtree dirty
-        // walk every frame -- a third one, after the position and scale
-        // above. Skipped instead.
-        if (!g.use_local_coordinates) return;
+        // World mode must restore the baked orientation after local-mode
+        // frames. Compare at the native float store below so an unchanged
+        // orientation does not invalidate the entire widget subtree.
         std::array<double, 4> rotation = g.baked_rotation;
-        {
+        if (g.use_local_coordinates) {
             if (
                 g.orientation ==
                 GizmoLocalOrientation::compose_baked_rotation) {
@@ -1747,14 +1793,20 @@ EditGizmoHandle push_edit_gizmo(
                     transform_direction_by_world(wm, g.local_axis));
             }
         }
-        set_transform_node_rotation_quaternion(
-            e,
-            g.root,
-            Vec4{
-                static_cast<float>(rotation[0]),
-                static_cast<float>(rotation[1]),
-                static_cast<float>(rotation[2]),
-                static_cast<float>(rotation[3])});
+        const Vec4 desired_rotation{
+            static_cast<float>(rotation[0]),
+            static_cast<float>(rotation[1]),
+            static_cast<float>(rotation[2]),
+            static_cast<float>(rotation[3])};
+        const TransformNodeRecord& root_record = e.transform_nodes[g.root.value];
+        const Vec4& current_rotation = root_record.rotation_quaternion;
+        if (!root_record.has_rotation_quaternion ||
+            current_rotation.x != desired_rotation.x ||
+            current_rotation.y != desired_rotation.y ||
+            current_rotation.z != desired_rotation.z ||
+            current_rotation.w != desired_rotation.w) {
+            set_transform_node_rotation_quaternion(e, g.root, desired_rotation);
+        }
     });
     return handle;
 }`;
@@ -3637,22 +3689,22 @@ std::array<float, 16> bbox_mat4_from_quat(
                 "Expected the pinned edge builder to make one cylinder.",
             );
         }
-        const edgeOptions = edgeCalls[0]!;
-        const cylinderOption = (name: string): string => {
-            if (!edgeOptions.options.has(name)) {
-                this.context.contractError(
-                    edgeBuilder,
-                    `Expected the pinned edge cylinder to declare ` +
-                        `'${name}'.`,
-                );
+        const edgeCall = this.context.callExpression(edgeBuilder, "createCylinder");
+        const edgeLiteral = this.context.callObjectArgument(edgeBuilder, "createCylinder", 1);
+        const edgeLowerer = this.widgetLowerer(BOUNDING_BOX_MODULE, new Map([["thickness", "edge_thickness"]]));
+        const edgeOptions = new Map<string, { cpp: string; node: ts.Expression }>();
+        for (const property of edgeLiteral.properties) {
+            if (!ts.isPropertyAssignment(property)) {
+                this.context.contractError(property, "Expected a pinned bounding-edge cylinder option.");
             }
-            const constant = edgeOptions.options.get(name);
-            // The two diameters are the caller's live `thickness`; the
-            // rest are the pin's own literals.
-            return constant === undefined
-                ? "edge_thickness"
-                : this.context.doubleLiteral(constant);
-        };
+            const name = this.context.propertyName(property.name);
+            if (!name) this.context.contractError(property, "Expected a named bounding-edge cylinder option.");
+            edgeOptions.set(name, {
+                cpp: edgeLowerer.expression(property.initializer),
+                node: this.context.unwrapExpression(property.initializer),
+            });
+        }
+        const edgeCylinder = this.widgetCylinder({ options: edgeOptions, at: edgeCall });
         const rootCalls = this.factoryCalls(
             file,
             this.localInitializer(factory, "root"),
@@ -3832,18 +3884,8 @@ std::array<float, 16> bbox_mat4_from_quat(
         );
         const handlePlace = this.arrowLocal(handleBuilder, "place");
         const anchorPlace = this.arrowLocal(anchorBuilder, "place");
-        if (
-            handlePlace.body.getText(file).replace(/\s+/g, " ") !==
-            anchorPlace.body.getText(file).replace(/\s+/g, " ")
-        ) {
-            this.context.contractError(
-                anchorPlace,
-                "Expected the pinned face-handle and rotation-anchor " +
-                    "placements to agree; one generated writer serves both.",
-            );
-        }
-        const placeHandle = this.loweredArrow(
-            handlePlace,
+        const placeHandleBody = (arrow: ts.ArrowFunction): string => this.loweredArrow(
+            arrow,
             this.placementScope(
                 new Map([
                     ["mesh.position", "bbox_set_position(engine, mesh"],
@@ -3856,6 +3898,8 @@ std::array<float, 16> bbox_mat4_from_quat(
             ),
             file,
         );
+        const placeHandle = placeHandleBody(handlePlace);
+        const placeAnchor = placeHandleBody(anchorPlace);
         const placeCorner = this.loweredArrow(
             this.arrowLocal(cornerBuilder, "place"),
             this.placementScope(
@@ -3947,6 +3991,18 @@ std::array<float, 16> bbox_mat4_from_quat(
             "ys",
             "zs",
         ]);
+        const placementBindings = new Map<string, PinnedBinding>();
+        const placementFunctions = new Map<PinnedBinding, string>();
+        for (const [name, fn] of [
+            ["edges", "bbox_place_edge"],
+            ["corners", "bbox_place_corner"],
+            ["rotators", "bbox_place_anchor"],
+            ["faces", "bbox_place_handle"],
+        ] as const) {
+            const binding: PinnedBinding = { cpp: `record.${name}`, type: "scalar", absentCpp: "false" };
+            placementBindings.set(name, binding);
+            placementFunctions.set(binding, fn);
+        }
         const layoutScope = this.placementScope(
             new Map([
                 ["body.position", "bbox_set_position(engine, record.body"],
@@ -3966,10 +4022,7 @@ std::array<float, 16> bbox_mat4_from_quat(
                 ["xs", { cpp: "xs", type: "scalar" }],
                 ["ys", { cpp: "ys", type: "scalar" }],
                 ["zs", { cpp: "zs", type: "scalar" }],
-                ["edges", { cpp: "record.edges", type: "scalar" }],
-                ["rotators", { cpp: "record.rotators", type: "scalar" }],
-                ["corners", { cpp: "record.corners", type: "scalar" }],
-                ["faces", { cpp: "record.faces", type: "scalar" }],
+                ...placementBindings,
             ]),
         );
         layoutScope.calls = new Map([
@@ -3994,17 +4047,10 @@ std::array<float, 16> bbox_mat4_from_quat(
             ...(layoutScope.methods ?? []),
             [
                 "place",
-                (receiver: string, args: readonly string[]): string => {
-                    if (receiver.startsWith("record.edges")) {
-                        return `bbox_place_edge(engine, ${receiver}, ` +
-                            `${args.join(", ")})`;
-                    }
-                    if (receiver.startsWith("record.corners")) {
-                        return `bbox_place_corner(engine, ${receiver}, ` +
-                            `${args.join(", ")})`;
-                    }
-                    return `bbox_place_handle(engine, ${receiver}, ` +
-                        `${args.join(", ")})`;
+                (receiver: string, args: readonly string[], binding: PinnedBinding): string => {
+                    const fn = placementFunctions.get(binding);
+                    if (!fn) this.context.contractError(layout, "Unbound pinned gizmo placement receiver.");
+                    return `${fn}(engine, ${receiver}, ${args.join(", ")})`;
                 },
             ],
         ]);
@@ -4178,6 +4224,8 @@ struct BoundingBoxBounds {
     Vec3d size{};
 };
 
+${pinnedGizmoBoundsGeometry(this.context)}
+
 /**
  * The pin's own _cpuPositions stream over a native geometry.
  *
@@ -4297,7 +4345,6 @@ ${placeEdge}
 // ${this.context.provenance(
             BOUNDING_BOX_MODULE,
             "buildHandle",
-            "the identical rotation-anchor placement beside it",
         )}
 void bbox_place_handle(
     Engine& engine,
@@ -4305,6 +4352,15 @@ void bbox_place_handle(
     Vec3d p,
     const std::array<double, 4>& q) {
 ${placeHandle}
+}
+
+// ${this.context.provenance(BOUNDING_BOX_MODULE, "buildEdgeAnchor")}
+void bbox_place_anchor(
+    Engine& engine,
+    MeshHandle mesh,
+    Vec3d p,
+    const std::array<double, 4>& q) {
+${placeAnchor}
 }
 
 // ${this.context.provenance(BOUNDING_BOX_MODULE, "buildCornerHandle")}
@@ -4380,13 +4436,7 @@ void bbox_fold_mesh(
         0);
     const std::array<std::array<double, 3>, 2> aabb =
         bbox_compute_aabb(BoundingBoxPositions{&vertices}, world);
-    if (!std::isfinite(aabb[0][0])) return;
-    if (aabb[0][0] < bounds.min.x) bounds.min.x = aabb[0][0];
-    if (aabb[0][1] < bounds.min.y) bounds.min.y = aabb[0][1];
-    if (aabb[0][2] < bounds.min.z) bounds.min.z = aabb[0][2];
-    if (aabb[1][0] > bounds.max.x) bounds.max.x = aabb[1][0];
-    if (aabb[1][1] > bounds.max.y) bounds.max.y = aabb[1][1];
-    if (aabb[1][2] > bounds.max.z) bounds.max.z = aabb[1][2];
+    gizmo_bounds_fold(bounds, aabb);
 }
 
 /**
@@ -4402,10 +4452,7 @@ BoundingBoxBounds bbox_compute_bounds(
     TransformNodeHandle root,
     const Scene& main_scene,
     const std::array<float, 16>& pre_transform) {
-    const double infinity = std::numeric_limits<double>::infinity();
-    BoundingBoxBounds bounds;
-    bounds.min = Vec3d{infinity, infinity, infinity};
-    bounds.max = Vec3d{-infinity, -infinity, -infinity};
+    BoundingBoxBounds bounds = gizmo_bounds_initial();
     std::vector<std::uint32_t> visited;
     const auto seen = [&visited](std::uint32_t mesh) {
         return std::find(visited.begin(), visited.end(), mesh) !=
@@ -4451,8 +4498,8 @@ BoundingBoxBounds bbox_compute_bounds(
         visited.push_back(node.value);
         const MeshRecord& record = engine.meshes[node.value];
         bbox_fold_mesh(engine, record, pre_transform, bounds);
-        for (const MeshHandle child : record.children) {
-            pending.push_back(TransformNodeChild{child});
+        for (const MeshHandle descendant : record.children) {
+            pending.push_back(TransformNodeChild{descendant});
         }
     }
     for (const MeshHandle candidate : main_scene.meshes) {
@@ -4464,18 +4511,7 @@ BoundingBoxBounds bbox_compute_bounds(
         visited.push_back(candidate.value);
         bbox_fold_mesh(engine, mesh, pre_transform, bounds);
     }
-    if (!std::isfinite(bounds.min.x)) {
-        return BoundingBoxBounds{};
-    }
-    bounds.centre = Vec3d{
-        (bounds.min.x + bounds.max.x) * 0.5,
-        (bounds.min.y + bounds.max.y) * 0.5,
-        (bounds.min.z + bounds.max.z) * 0.5};
-    bounds.size = Vec3d{
-        bounds.max.x - bounds.min.x,
-        bounds.max.y - bounds.min.y,
-        bounds.max.z - bounds.min.z};
-    return bounds;
+    return gizmo_bounds_finish(bounds);
 }
 
 /**
@@ -4567,13 +4603,7 @@ ${materialWrites}
     for (std::int64_t i = 0; i < ${edgeCount}; ++i) {
         const MeshHandle mesh = create_cylinder(
             engine,
-            CylinderOptions{
-                ${cylinderOption("height")},
-                ${cylinderOption("diameterTop")},
-                ${cylinderOption("diameterBottom")},
-                ${cylinderOption("tessellation")},
-                1.0,
-                false});
+            ${edgeCylinder});
         engine.meshes[mesh.value].name = ${edgeName};
         engine.meshes[mesh.value].material = gizmo.material;
         engine.meshes[mesh.value].pickable = false;
@@ -4883,15 +4913,6 @@ void attach_bounding_box_gizmo_to_node(
         }
         const cameraFile = this.context.sourceFile(CAMERA_MODULE);
         const lightFile = this.context.sourceFile(LIGHT_MODULE);
-        const bodyScale = this.constant(
-            CAMERA_MODULE,
-            "CAMERA_BODY_SCALE",
-        );
-        const edgeThickness = this.constant(
-            CAMERA_MODULE,
-            "FRUSTUM_EDGE_THICKNESS",
-        );
-        const lightScale = this.constant(LIGHT_MODULE, "LIGHT_GIZMO_SCALE");
         const bodyCalls = this.factoryCalls(
             cameraFile,
             this.context.functionDeclaration(
@@ -4903,6 +4924,7 @@ void attach_bounding_box_gizmo_to_node(
         if (
             bodyCalls.length !== 4 ||
             bodyCalls[0]!.callee !== "createBox" ||
+            bodyCalls[0]!.scalar === undefined ||
             bodyCalls.slice(1).some((call) => call.callee !== "createCylinder")
         ) {
             this.context.contractError(
@@ -4914,14 +4936,6 @@ void attach_bounding_box_gizmo_to_node(
                     "cylinders, in that order.",
             );
         }
-        const edgeCall = this.factoryCalls(
-            cameraFile,
-            this.context.functionDeclaration(
-                CAMERA_MODULE,
-                "buildFrustumEdge",
-            ).declaration,
-            ["createCylinder"],
-        )[0]!;
         const lineCall = this.factoryCalls(
             lightFile,
             this.context.functionDeclaration(
@@ -4962,19 +4976,16 @@ void attach_bounding_box_gizmo_to_node(
         const cylinder = (
             call: PinnedFactoryCall,
             at: ts.Node,
-            diameterFallback?: number,
         ): string => {
             const top = this.option(
                 call,
                 "diameterTop",
                 at,
-                diameterFallback,
             );
             const bottom = this.option(
                 call,
                 "diameterBottom",
                 at,
-                diameterFallback,
             );
             return (
                 `CylinderOptions{` +
@@ -5008,6 +5019,64 @@ void attach_bounding_box_gizmo_to_node(
             LIGHT_MODULE,
             "buildLightTypeMesh",
         ).declaration;
+        const cameraFactory = this.context.functionDeclaration(CAMERA_MODULE, "createCameraGizmo").declaration;
+        const lightFactory = this.context.functionDeclaration(LIGHT_MODULE, "createLightGizmo").declaration;
+        const cameraMath = this.displayLowerer(CAMERA_MODULE, [
+            ["rotX", { cpp: "rot_x", type: "f64-buffer" }],
+            ["rotZ", { cpp: "rot_z", type: "f64-buffer" }],
+            ["outerRot", { cpp: "outer_rot", type: "f64-buffer" }],
+            ["canvas.width", { cpp: "canvas_width", type: "scalar" }],
+            ["canvas.height", { cpp: "canvas_height", type: "scalar" }],
+        ]);
+        const lineDeclaration = this.context.functionDeclaration(LIGHT_MODULE, "buildLightLines").declaration;
+        const lineMath = this.displayLowerer(LIGHT_MODULE, [
+            ["rootQ", { cpp: "root_q", type: "f64-buffer" }],
+            ["q", { cpp: "q", type: "f64-buffer" }],
+            ["px", { cpp: "p[0]", type: "scalar" }],
+            ["py", { cpp: "p[1]", type: "scalar" }],
+            ["pz", { cpp: "p[2]", type: "scalar" }],
+            ...["pivotY", "pivotZ", "posY", "sx", "sy", "sz"].map((member): [string, PinnedBinding] =>
+                [`def.${member}`, { cpp: `def.${member}`, type: "scalar" }]),
+        ]);
+        const lightMath = this.displayLowerer(LIGHT_MODULE, [
+            ["mq", { cpp: "mq", type: "f64-buffer" }],
+            ["sq", { cpp: "sphere_rotation", type: "f64-buffer" }],
+            ["hq", { cpp: "hemi_rotation", type: "f64-buffer" }],
+            ["x", { cpp: "entry[0]", type: "scalar" }],
+            ["y", { cpp: "entry[1]", type: "scalar" }],
+            ["sy", { cpp: "entry[1]", type: "scalar" }],
+        ]);
+        const directionalArm = this.lightGeometryArm(lightDeclaration, "directional");
+        const pointArm = this.lightGeometryArm(lightDeclaration, "point");
+        const hemisphereArm = this.lightGeometryArm(lightDeclaration, "hemispheric");
+        const spotArm = this.lightGeometryArm(lightDeclaration, "spot");
+        const shaftBuilder = this.arrowLocal(directionalArm, "makeShaft");
+        const headBuilder = this.arrowLocal(directionalArm, "makeHead");
+        const argumentRows = (scope: ts.Node, callee: string): readonly string[] =>
+            this.context.findNodes(scope, (node): node is ts.CallExpression =>
+                ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+                node.expression.text === callee).map((call) => {
+                if (call.arguments.length !== 2) {
+                    this.context.contractError(call, "Expected two pinned directional-light placement arguments.");
+                }
+                return `{{${call.arguments.map((argument) => lightMath.expression(argument)).join(", ")}}}`;
+            });
+        const shafts = argumentRows(directionalArm, "makeShaft");
+        const heads = argumentRows(directionalArm, "makeHead");
+        const lightLinesLevel = (scope: ts.Node): string => {
+            const call = this.context.callExpression(scope, "buildLightLines");
+            if (call.arguments.length !== 5) {
+                this.context.contractError(call, "Expected the pinned light-line level argument.");
+            }
+            return lightMath.expression(call.arguments[4]!);
+        };
+        const hemisphereArguments = (scope: ts.Node): string => {
+            const call = this.context.callExpression(scope, "buildHemisphereMesh");
+            if (call.arguments.length !== 3) {
+                this.context.contractError(call, "Expected pinned hemisphere segments and diameter.");
+            }
+            return call.arguments.slice(1).map((argument) => lightMath.expression(argument)).join(", ");
+        };
         return {
             modulePath: CAMERA_MODULE,
             symbolName: "createCameraGizmo",
@@ -5086,146 +5155,29 @@ void place_mesh(
     mark_mesh_dirty(engine, mesh);
 }
 
-/**
- * The pin's own hemisphere (light-gizmo.ts buildHemisphereMesh): a half
- * UV sphere from the apex down to the equator plus a disc cap.
- */
+${pinnedGizmoGeometry(this.context)}
+
+${pinnedGizmoFollowGeometry(this.context, this.reachesEditGizmos())}
+
 MeshHandle build_hemisphere_mesh(
     Engine& engine,
     double segments,
     double diameter) {
-    const double r = diameter / 2.0;
-    const double rings = std::max(3.0, segments);
-    const double radial = rings * 2.0;
-    std::vector<float> positions;
-    std::vector<float> normals;
-    std::vector<float> uvs;
-    std::vector<std::uint32_t> indices;
-    for (double i = 0.0; i <= rings; i += 1.0) {
-        const double az = (i / rings) * (pi_double / 2.0);
-        const double sinz = std::sin(az);
-        const double cosz = std::cos(az);
-        for (double j = 0.0; j <= radial; j += 1.0) {
-            const double ay = (j / radial) * pi_double * 2.0;
-            const double nx = sinz * std::cos(ay);
-            const double ny = cosz;
-            const double nz = -sinz * std::sin(ay);
-            positions.push_back(static_cast<float>(r * nx));
-            positions.push_back(static_cast<float>(r * ny));
-            positions.push_back(static_cast<float>(r * nz));
-            normals.push_back(static_cast<float>(nx));
-            normals.push_back(static_cast<float>(ny));
-            normals.push_back(static_cast<float>(nz));
-            uvs.push_back(static_cast<float>(j / radial));
-            uvs.push_back(static_cast<float>(i / rings));
-        }
-    }
-    const std::uint32_t stride = static_cast<std::uint32_t>(radial) + 1u;
-    for (std::uint32_t i = 0; i < static_cast<std::uint32_t>(rings); ++i) {
-        for (
-            std::uint32_t j = 0;
-            j < static_cast<std::uint32_t>(radial);
-            ++j) {
-            const std::uint32_t a = i * stride + j;
-            const std::uint32_t b = a + stride;
-            indices.push_back(a);
-            indices.push_back(a + 1u);
-            indices.push_back(b);
-            indices.push_back(b);
-            indices.push_back(a + 1u);
-            indices.push_back(b + 1u);
-        }
-    }
-    const std::uint32_t center_index =
-        static_cast<std::uint32_t>(positions.size() / 3u);
-    positions.push_back(0.0f);
-    positions.push_back(0.0f);
-    positions.push_back(0.0f);
-    normals.push_back(0.0f);
-    normals.push_back(-1.0f);
-    normals.push_back(0.0f);
-    uvs.push_back(0.5f);
-    uvs.push_back(0.5f);
-    const std::uint32_t cap_start =
-        static_cast<std::uint32_t>(positions.size() / 3u);
-    for (double j = 0.0; j <= radial; j += 1.0) {
-        const double ay = (j / radial) * pi_double * 2.0;
-        positions.push_back(static_cast<float>(r * std::cos(ay)));
-        positions.push_back(0.0f);
-        positions.push_back(static_cast<float>(-r * std::sin(ay)));
-        normals.push_back(0.0f);
-        normals.push_back(-1.0f);
-        normals.push_back(0.0f);
-        uvs.push_back(static_cast<float>(j / radial));
-        uvs.push_back(0.0f);
-    }
-    for (std::uint32_t j = 0; j < static_cast<std::uint32_t>(radial); ++j) {
-        indices.push_back(center_index);
-        indices.push_back(cap_start + j + 1u);
-        indices.push_back(cap_start + j);
-    }
+    const GizmoHemisphereGeometry geometry =
+        gizmo_hemisphere_geometry(segments, diameter);
     return create_mesh_from_data(
         engine,
-        "hemisphere",
-        positions,
-        normals,
-        indices,
-        uvs,
+        geometry.name,
+        geometry.positions,
+        geometry.normals,
+        geometry.indices,
+        geometry.uvs,
         {},
         {},
         {});
 }
 
-/** The pin's own _CreateLightLines table (light-gizmo.ts). */
-struct GizmoLineDef {
-    double pivot_y;
-    double pivot_z;
-    double pos_y;
-    double sx;
-    double sy;
-    double sz;
-};
-
-std::vector<GizmoLineDef> line_defs_for_level(double levels) {
-    const double dist_from_sphere = 1.2;
-    const double full_pos_y = 1.0 * 0.5 + dist_from_sphere;
-    const double half_pos_y = 0.5 * 0.5 + dist_from_sphere;
-    std::vector<GizmoLineDef> defs;
-    defs.push_back(GizmoLineDef{0.0, 0.0, full_pos_y, 1.0, 1.0, 1.0});
-    for (double i = 0.0; i < 4.0; i += 1.0) {
-        defs.push_back(GizmoLineDef{
-            pi_double / 2.0 + (pi_double / 2.0) * i,
-            pi_double / 4.0,
-            half_pos_y,
-            0.8,
-            0.5,
-            0.8});
-    }
-    if (levels < 3.0) return defs;
-    for (double i = 0.0; i < 4.0; i += 1.0) {
-        defs.push_back(GizmoLineDef{
-            (pi_double / 2.0) * i,
-            pi_double / 2.0,
-            full_pos_y,
-            1.0,
-            1.0,
-            1.0});
-    }
-    if (levels < 4.0) return defs;
-    for (double i = 0.0; i < 4.0; i += 1.0) {
-        defs.push_back(GizmoLineDef{
-            pi_double / 2.0 + (pi_double / 2.0) * i,
-            pi_double + pi_double / 4.0,
-            half_pos_y,
-            0.8,
-            0.5,
-            0.8});
-    }
-    if (levels < 5.0) return defs;
-    defs.push_back(GizmoLineDef{0.0, pi_double, full_pos_y, 1.0, 1.0, 1.0});
-    return defs;
-}
-
+// ${this.context.provenance(LIGHT_MODULE, "buildLightLines")}
 void build_light_lines(
     Engine& engine,
     Scene& scene,
@@ -5233,29 +5185,16 @@ void build_light_lines(
     TransformNodeHandle parent,
     double levels) {
     const std::array<double, 4> root_q =
-        quat_from_bjs_euler(pi_double / 2.0, 0.0, 0.0);
+        ${lineMath.expression(this.localInitializer(lineDeclaration, "rootQ"))};
     const TransformNodeHandle lines_root = create_transform_node(
         engine,
-        "lightLinesRoot",
-        Vec3d{0.0, 0.0, 0.0},
-        Vec4{
-            static_cast<float>(root_q[0]),
-            static_cast<float>(root_q[1]),
-            static_cast<float>(root_q[2]),
-            static_cast<float>(root_q[3])},
-        Vec3{1.0f, 1.0f, 1.0f});
+        ${this.displayNodeArguments(lineDeclaration, "linesRoot", lineMath)});
     set_transform_node_parent(engine, lines_root, parent);
     for (const GizmoLineDef& def : line_defs_for_level(levels)) {
         const std::array<double, 4> q =
-            quat_from_bjs_euler(0.0, def.pivot_y, def.pivot_z);
-        const std::array<double, 3> p = rotate_vec3_by_quat(
-            q[0],
-            q[1],
-            q[2],
-            q[3],
-            0.0,
-            def.pos_y,
-            0.0);
+            ${lineMath.expression(this.localInitializer(lineDeclaration, "q"))};
+        const std::array<double, 3> p =
+            ${lineMath.expression(this.context.callExpression(lineDeclaration, "rotateVec3ByQuat"))};
         const MeshHandle line = create_cylinder(
             engine,
             ${cylinder(lineCall, lightDeclaration)});
@@ -5264,12 +5203,7 @@ void build_light_lines(
         place_mesh(
             engine,
             line,
-            Vec3d{p[0], p[1], p[2]},
-            Vec3{
-                static_cast<float>(def.sx),
-                static_cast<float>(def.sy),
-                static_cast<float>(def.sz)},
-            q,
+            ${this.displayPlacement(lineDeclaration, "line", lineMath)},
             lines_root);
     }
 }
@@ -5336,52 +5270,37 @@ CameraGizmoHandle create_camera_gizmo(
     engine.materials[gizmo.frustum_material.value].disable_lighting = true;
     gizmo.root = create_transform_node(
         engine,
-        "cameraGizmoRoot",
-        Vec3d{0.0, 0.0, 0.0},
-        Vec4{0.0f, 0.0f, 0.0f, 1.0f},
-        Vec3{1.0f, 1.0f, 1.0f});
+        ${this.displayNodeArguments(cameraFactory, "root", cameraMath)});
     add_to_scene(scene, gizmo.root);
 
     const std::array<double, 4> outer_rot =
-        quat_from_bjs_euler(0.0, -pi_double * 0.5, 0.0);
+        ${cameraMath.expression(this.localInitializer(cameraFactory, "outerRot"))};
     const TransformNodeHandle body_outer = create_transform_node(
         engine,
-        "cameraBodyOuter",
-        Vec3d{0.0, 0.0, 0.0},
-        Vec4{
-            static_cast<float>(outer_rot[0]),
-            static_cast<float>(outer_rot[1]),
-            static_cast<float>(outer_rot[2]),
-            static_cast<float>(outer_rot[3])},
-        Vec3{1.0f, 1.0f, 1.0f});
+        ${this.displayNodeArguments(cameraFactory, "bodyOuter", cameraMath)});
     set_transform_node_parent(engine, body_outer, gizmo.root);
     const TransformNodeHandle body_mesh = create_transform_node(
         engine,
-        "cameraBodyMesh",
-        Vec3d{-0.9, 0.0, 0.0},
-        Vec4{0.0f, 0.0f, 0.0f, 1.0f},
-        Vec3{1.0f, 1.0f, 1.0f});
+        ${this.displayNodeArguments(cameraFactory, "bodyMesh", cameraMath)});
     set_transform_node_parent(engine, body_mesh, body_outer);
     gizmo.body_outer = body_outer;
 
+    // ${this.context.provenance(CAMERA_MODULE, "buildCameraBodyMesh")}
     const std::array<double, 4> rot_x =
-        quat_from_bjs_euler(pi_double * 0.5, 0.0, 0.0);
+        ${cameraMath.expression(this.localInitializer(cameraDeclaration, "rotX"))};
     const std::array<double, 4> rot_z =
-        quat_from_bjs_euler(0.0, 0.0, pi_double * 0.5);
-    const std::array<double, 4> identity_rot{0.0, 0.0, 0.0, 1.0};
+        ${cameraMath.expression(this.localInitializer(cameraDeclaration, "rotZ"))};
     const MeshHandle box = create_box(
         engine,
         BoxOptions{
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar ?? 1)},
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar ?? 1)},
-            ${this.context.floatLiteral(bodyCalls[0]!.scalar ?? 1)}});
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar!)},
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar!)},
+            ${this.context.floatLiteral(bodyCalls[0]!.scalar!)}});
     gizmo_mesh(engine, scene, box, gizmo.material);
     place_mesh(
         engine,
         box,
-        Vec3d{0.0, 0.0, 0.0},
-        Vec3{1.0f, 0.8f, 0.5f},
-        identity_rot,
+        ${this.displayPlacement(cameraDeclaration, "box", cameraMath)},
         body_mesh);
     const MeshHandle reel_a = create_cylinder(
         engine,
@@ -5390,9 +5309,7 @@ CameraGizmoHandle create_camera_gizmo(
     place_mesh(
         engine,
         reel_a,
-        Vec3d{-0.6, 0.3, 0.0},
-        Vec3{1.0f, 1.0f, 1.0f},
-        rot_x,
+        ${this.displayPlacement(cameraDeclaration, "cyl1", cameraMath)},
         body_mesh);
     const MeshHandle reel_b = create_cylinder(
         engine,
@@ -5401,9 +5318,7 @@ CameraGizmoHandle create_camera_gizmo(
     place_mesh(
         engine,
         reel_b,
-        Vec3d{0.4, 0.5, 0.0},
-        Vec3{1.0f, 1.0f, 1.0f},
-        rot_x,
+        ${this.displayPlacement(cameraDeclaration, "cyl2", cameraMath)},
         body_mesh);
     const MeshHandle lens = create_cylinder(
         engine,
@@ -5412,9 +5327,7 @@ CameraGizmoHandle create_camera_gizmo(
     place_mesh(
         engine,
         lens,
-        Vec3d{0.6, 0.0, 0.0},
-        Vec3{1.0f, 1.0f, 1.0f},
-        rot_z,
+        ${this.displayPlacement(cameraDeclaration, "cyl3", cameraMath)},
         body_mesh);
 
     engine.camera_gizmos.push_back(gizmo);
@@ -5444,26 +5357,18 @@ CameraGizmoHandle create_camera_gizmo(
                 static_cast<float>(q.z),
                 static_cast<float>(q.w)});
         Scene& utility = utility_layer_scene(e, layer);
-        double dist = ${this.context.doubleLiteral(bodyScale)};
-        if (utility.camera.value < e.cameras.size()) {
-            const std::array<float, 16> cw =
-                upstream::camera_world_matrix(e.cameras[utility.camera.value]);
-            dist = bbl::js::hypot_js({
-                       static_cast<double>(cw[12]) -
-                           static_cast<double>(wm[12]),
-                       static_cast<double>(cw[13]) -
-                           static_cast<double>(wm[13]),
-                       static_cast<double>(cw[14]) -
-                           static_cast<double>(wm[14])}) *
-                   ${this.context.doubleLiteral(bodyScale)};
-        }
+        const bool has_camera = utility.camera.value < e.cameras.size();
+        const std::array<float, 16> cw = has_camera
+            ? upstream::camera_world_matrix(e.cameras[utility.camera.value])
+            : std::array<float, 16>{};
+        const Vec3d scale = gizmo_camera_scaling(has_camera, cw, wm);
         set_transform_node_scaling(
             e,
             g.body_outer,
             Vec3{
-                static_cast<float>(dist),
-                static_cast<float>(dist),
-                static_cast<float>(dist)});
+                static_cast<float>(scale.x),
+                static_cast<float>(scale.y),
+                static_cast<float>(scale.z)});
     });
     return handle;
 }
@@ -5482,78 +5387,28 @@ void attach_camera_gizmo_to_camera(
     const CameraRecord& cam = engine.cameras[camera.value];
     const double canvas_width = engine.canvas_client_width;
     const double canvas_height = engine.canvas_client_height;
-    const double aspect =
-        canvas_width > 0.0 && canvas_height > 0.0
-            ? canvas_width / canvas_height
-            : 16.0 / 9.0;
-    const double tan_half = std::tan(cam.fov * 0.5);
-    const double near_p = std::max(cam.near_plane, 1e-4);
-    const double far_v = std::max(cam.far_plane, near_p);
-    const double near_v = (far_v * near_p) / (2.0 * far_v - near_p);
-    const double nh = tan_half * near_v;
-    const double nw = nh * aspect;
-    const double fh = tan_half * far_v;
-    const double fw = fh * aspect;
-    const std::array<std::array<double, 3>, 8> corners{{
-        {{-nw, -nh, near_v}},
-        {{nw, -nh, near_v}},
-        {{nw, nh, near_v}},
-        {{-nw, nh, near_v}},
-        {{-fw, -fh, far_v}},
-        {{fw, -fh, far_v}},
-        {{fw, fh, far_v}},
-        {{-fw, fh, far_v}},
-    }};
-    const std::array<std::array<int, 2>, 12> edges{{
-        {{0, 1}}, {{1, 2}}, {{2, 3}}, {{3, 0}},
-        {{4, 5}}, {{5, 6}}, {{6, 7}}, {{7, 4}},
-        {{0, 4}}, {{1, 5}}, {{2, 6}}, {{3, 7}},
-    }};
-    for (const std::array<int, 2>& edge : edges) {
-        const std::array<double, 3>& a =
-            corners[static_cast<std::size_t>(edge[0])];
-        const std::array<double, 3>& b =
-            corners[static_cast<std::size_t>(edge[1])];
+    const double aspect = ${cameraMath.expression(this.localInitializer(cameraFactory, "aspect"))};
+    for (const GizmoFrustumEdge& edge : gizmo_frustum_geometry(
+             cam.fov, aspect, cam.near_plane, cam.far_plane)) {
         const MeshHandle mesh = create_cylinder(
             engine,
-            ${cylinder(edgeCall, cameraDeclaration, edgeThickness)});
+            CylinderOptions{
+                edge.height,
+                edge.diameterTop,
+                edge.diameterBottom,
+                edge.tessellation,
+                1.0,
+                edge.diameterTop == 0.0});
         gizmo_mesh(engine, scene, mesh, record.frustum_material);
-        const double dx = b[0] - a[0];
-        const double dy = b[1] - a[1];
-        const double dz = b[2] - a[2];
-        double len = bbl::js::hypot_js({dx, dy, dz});
-        if (len == 0.0) len = 1.0;
-        const double nx = dx / len;
-        const double ny = dy / len;
-        const double nz = dz / len;
-        const double cx = nz;
-        const double cy = 0.0;
-        const double cz = -nx;
-        const double c_len = bbl::js::hypot_js({cx, cy, cz});
-        const double dot = ny;
-        std::array<double, 4> rotation{0.0, 0.0, 0.0, 1.0};
-        if (c_len < 1e-7) {
-            rotation = dot > 0.0
-                ? std::array<double, 4>{0.0, 0.0, 0.0, 1.0}
-                : std::array<double, 4>{1.0, 0.0, 0.0, 0.0};
-        } else {
-            const double angle = std::atan2(c_len, dot);
-            const double s = std::sin(angle * 0.5);
-            rotation = std::array<double, 4>{
-                (cx / c_len) * s,
-                (cy / c_len) * s,
-                (cz / c_len) * s,
-                std::cos(angle * 0.5)};
-        }
         place_mesh(
             engine,
             mesh,
-            Vec3d{
-                (a[0] + b[0]) * 0.5,
-                (a[1] + b[1]) * 0.5,
-                (a[2] + b[2]) * 0.5},
-            Vec3{1.0f, static_cast<float>(len), 1.0f},
-            rotation,
+            edge.position,
+            Vec3{
+                static_cast<float>(edge.scaling.x),
+                static_cast<float>(edge.scaling.y),
+                static_cast<float>(edge.scaling.z)},
+            edge.rotation,
             record.root);
     }
 }
@@ -5571,10 +5426,7 @@ LightGizmoHandle create_light_gizmo(
         Color3{0.1f, 0.1f, 0.1f};
     gizmo.root = create_transform_node(
         engine,
-        "lightGizmoRoot",
-        Vec3d{0.0, 0.0, 0.0},
-        Vec4{0.0f, 0.0f, 0.0f, 1.0f},
-        Vec3{1.0f, 1.0f, 1.0f});
+        ${this.displayNodeArguments(lightFactory, "root", lightMath)});
     add_to_scene(scene, gizmo.root);
     engine.light_gizmos.push_back(gizmo);
     const LightGizmoHandle handle{
@@ -5621,27 +5473,23 @@ LightGizmoHandle create_light_gizmo(
         Scene& utility = utility_layer_scene(e, layer);
         const Vec3d root_position =
             e.transform_nodes[g.root.value].position;
-        double dist = ${this.context.doubleLiteral(lightScale)};
-        if (utility.camera.value < e.cameras.size()) {
-            const std::array<float, 16> cw =
-                upstream::camera_world_matrix(e.cameras[utility.camera.value]);
-            dist = bbl::js::hypot_js({
-                       static_cast<double>(cw[12]) - root_position.x,
-                       static_cast<double>(cw[13]) - root_position.y,
-                       static_cast<double>(cw[14]) - root_position.z}) *
-                   ${this.context.doubleLiteral(lightScale)};
-        }
+        const bool has_camera = utility.camera.value < e.cameras.size();
+        const std::array<float, 16> cw = has_camera
+            ? upstream::camera_world_matrix(e.cameras[utility.camera.value])
+            : std::array<float, 16>{};
+        const Vec3d scale = gizmo_light_scaling(has_camera, cw, root_position);
         set_transform_node_scaling(
             e,
             g.root,
             Vec3{
-                static_cast<float>(dist),
-                static_cast<float>(dist),
-                static_cast<float>(dist)});
+                static_cast<float>(scale.x),
+                static_cast<float>(scale.y),
+                static_cast<float>(scale.z)});
     });
     return handle;
 }
 
+// ${this.context.provenance(LIGHT_MODULE, "buildLightTypeMesh")}
 void attach_light_gizmo_to_light(
     Engine& engine,
     LightGizmoHandle gizmo,
@@ -5669,20 +5517,12 @@ void attach_light_gizmo_to_light(
     record.built = true;
     record.built_kind = kind;
     Scene& scene = layer_record(engine, record.layer).scene;
-    const std::array<double, 4> identity_rot{0.0, 0.0, 0.0, 1.0};
     if (kind == LightKind::directional) {
         const std::array<double, 4> mq =
-            quat_from_bjs_euler(0.0, pi_double / 2.0, pi_double / 2.0);
+            ${lightMath.expression(this.localInitializer(directionalArm, "mq"))};
         const TransformNodeHandle mesh_root = create_transform_node(
             engine,
-            "directionalLight",
-            Vec3d{0.0, 0.0, 0.0},
-            Vec4{
-                static_cast<float>(mq[0]),
-                static_cast<float>(mq[1]),
-                static_cast<float>(mq[2]),
-                static_cast<float>(mq[3])},
-            Vec3{1.0f, 1.0f, 1.0f});
+            ${this.displayNodeArguments(directionalArm, "meshRoot", lightMath)});
         set_transform_node_parent(engine, mesh_root, record.root);
         const MeshHandle sphere = create_sphere(
             engine,
@@ -5691,12 +5531,10 @@ void attach_light_gizmo_to_light(
         place_mesh(
             engine,
             sphere,
-            Vec3d{0.0, 0.0, 0.0},
-            Vec3{1.0f, 1.0f, 1.0f},
-            identity_rot,
+            ${this.displayPlacement(directionalArm, "sphere", lightMath)},
             mesh_root);
-        const std::array<std::array<double, 2>, 3> shafts{{
-            {{0.0, 1.0}}, {{1.25, 0.5}}, {{-1.25, 0.5}},
+        const std::array<std::array<double, 2>, ${shafts.length}> shafts{{
+            ${shafts.join(", ")},
         }};
         for (const std::array<double, 2>& entry : shafts) {
             const MeshHandle shaft = create_cylinder(
@@ -5706,13 +5544,11 @@ void attach_light_gizmo_to_light(
             place_mesh(
                 engine,
                 shaft,
-                Vec3d{entry[0], 0.0, 0.0},
-                Vec3{1.0f, static_cast<float>(entry[1]), 1.0f},
-                identity_rot,
+                ${this.displayPlacement(shaftBuilder, "shaft", lightMath)},
                 mesh_root);
         }
-        const std::array<std::array<double, 2>, 3> heads{{
-            {{0.0, 3.0}}, {{1.25, 1.5}}, {{-1.25, 1.5}},
+        const std::array<std::array<double, 2>, ${heads.length}> heads{{
+            ${heads.join(", ")},
         }};
         for (const std::array<double, 2>& entry : heads) {
             const MeshHandle head = create_cylinder(
@@ -5722,9 +5558,7 @@ void attach_light_gizmo_to_light(
             place_mesh(
                 engine,
                 head,
-                Vec3d{entry[0], entry[1], 0.0},
-                Vec3{1.0f, 1.0f, 1.0f},
-                identity_rot,
+                ${this.displayPlacement(headBuilder, "head", lightMath)},
                 mesh_root);
         }
         return;
@@ -5742,6 +5576,8 @@ void attach_light_gizmo_to_light(
         Vec3{1.0f, 1.0f, 1.0f});
     set_transform_node_parent(engine, type_root, record.root);
     if (kind == LightKind::point) {
+        const std::array<double, 4> sphere_rotation =
+            ${lightMath.expression(this.localInitializer(pointArm, "sq"))};
         const MeshHandle sphere = create_sphere(
             engine,
             ${sphere(pointSphere, lightDeclaration)});
@@ -5749,24 +5585,22 @@ void attach_light_gizmo_to_light(
         place_mesh(
             engine,
             sphere,
-            Vec3d{0.0, 0.0, 0.0},
-            Vec3{1.0f, 1.0f, 1.0f},
-            quat_from_bjs_euler(pi_double / 2.0, 0.0, 0.0),
+            ${this.displayPlacement(pointArm, "sphere", lightMath)},
             type_root);
-        build_light_lines(engine, scene, record.material, type_root, 5.0);
+        build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(pointArm)});
         return;
     }
     if (kind == LightKind::hemispheric) {
-        const MeshHandle hemi = build_hemisphere_mesh(engine, 10.0, 1.0);
+        const std::array<double, 4> hemi_rotation =
+            ${lightMath.expression(this.localInitializer(hemisphereArm, "hq"))};
+        const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(hemisphereArm)});
         gizmo_mesh(engine, scene, hemi, record.material);
         place_mesh(
             engine,
             hemi,
-            Vec3d{0.0, 0.0, -0.15},
-            Vec3{1.0f, 1.0f, 1.0f},
-            quat_from_bjs_euler(pi_double / 2.0, 0.0, 0.0),
+            ${this.displayPlacement(hemisphereArm, "hemi", lightMath)},
             type_root);
-        build_light_lines(engine, scene, record.material, type_root, 3.0);
+        build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(hemisphereArm)});
         return;
     }
     const MeshHandle sphere = create_sphere(
@@ -5776,20 +5610,18 @@ void attach_light_gizmo_to_light(
     place_mesh(
         engine,
         sphere,
-        Vec3d{0.0, 0.0, 0.0},
-        Vec3{1.0f, 1.0f, 1.0f},
-        identity_rot,
+        ${this.displayPlacement(spotArm, "sphere", lightMath)},
         type_root);
-    const MeshHandle hemi = build_hemisphere_mesh(engine, 10.0, 2.0);
+    const std::array<double, 4> hemi_rotation =
+        ${lightMath.expression(this.localInitializer(spotArm, "hq"))};
+    const MeshHandle hemi = build_hemisphere_mesh(engine, ${hemisphereArguments(spotArm)});
     gizmo_mesh(engine, scene, hemi, record.material);
     place_mesh(
         engine,
         hemi,
-        Vec3d{0.0, 0.0, 0.0},
-        Vec3{1.0f, 1.0f, 1.0f},
-        quat_from_bjs_euler(-pi_double / 2.0, 0.0, 0.0),
+        ${this.displayPlacement(spotArm, "hemi", lightMath)},
         type_root);
-    build_light_lines(engine, scene, record.material, type_root, 2.0);
+    build_light_lines(engine, scene, record.material, type_root, ${lightLinesLevel(spotArm)});
 }
 
 ${this.features.includes("gizmo:pointer-drag") ? "void initialize_pointer_gizmo(Engine&, UtilityLayerHandle, EditGizmoHandle, MaterialHandle, bool);" : ""}

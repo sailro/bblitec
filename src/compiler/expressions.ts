@@ -63,6 +63,7 @@ import type {
     UserFunctionLowerer,
 } from "./user-functions.js";
 import { tryResolveFunctionDeclaration } from "./user-functions.js";
+import { commonResourceValue } from "./types.js";
 
 /**
  * Number formatters the language owns rather than the scene.
@@ -2714,10 +2715,10 @@ export class ExpressionLowerer {
                     `and ${whenFalse.kind}${whenFalse.cpp.length === 0 ? " without native storage" : ""}).`,
             );
         }
-        const conditional: Value = {
+        const conditional = commonResourceValue({
             ...whenTrue,
             cpp: `(${condition} ? ${whenTrue.cpp} : ${whenFalse.cpp})`,
-        };
+        }, [whenTrue, whenFalse]);
         if (
             whenTrue.nativeLvalue &&
             whenFalse.nativeLvalue

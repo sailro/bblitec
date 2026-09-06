@@ -1564,22 +1564,17 @@ test("replays billboard stages in compiler-owned frame-graph scene tasks", () =>
     );
 });
 
-test("fits one cascade per CSM split", () => {
+test("derives cascade splits from the pinned fitting body", () => {
     const shadows = source("src/lowering/shadow-lowerer.ts");
-
-    // The pin's split is `p = (i + 1) / N` over the cascade index, and each
-    // slice runs from the PREVIOUS split to its own, stepping by its own
-    // length -- a body computing `1 / N` alone would fit every cascade to
-    // the nearest one.
     assert.match(
         shadows,
-        /const double p =\s*static_cast<double>\(index \+ 1\) \/ static_cast<double>\(count\);/,
+        /pinnedCsmFunctions\(context\)/,
     );
     assert.match(
         shadows,
-        /const double split =\s*previous_split \+\s*generator\.csm_cascades\[cascade\]\.frustum_length \/ camera_range;/,
+        /const CsmCascades& cascades = csm_compute_cascades\(/,
     );
-    assert.match(shadows, /previous_split = split;/);
+    assert.doesNotMatch(shadows, /const double split|const double logarithmic/);
 });
 
 test("shares parent and clone transforms with shadow caster fitting", () => {

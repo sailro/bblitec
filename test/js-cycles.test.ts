@@ -113,6 +113,49 @@ test("generated class closures retain field storage after this lookup", { skip: 
     `);
 });
 
+test("native class methods invalidate collection cardinality through fields and arguments", { skip: !tools }, () => {
+    checkGeneratedCycles("native-class-collections", `
+        class Values {
+            readonly items: number[] = [];
+            append(value: number): void { this.items.push(value); }
+            populate(array: number[], keys: Set<number>, map: Map<string, number>): void {
+                array.push(2);
+                keys.add(3);
+                map.set("value", 4);
+            }
+        }
+        const values = new Values();
+        values.append(1);
+        const array: number[] = [];
+        const keys = new Set<number>();
+        const map = new Map<string, number>();
+        values.populate(array, keys, map);
+        let total = 0;
+        for (const value of values.items) total += value;
+        for (const value of array) total += value;
+        for (const value of keys) total += value;
+        for (const value of map.values()) total += value;
+        if (total !== 10) throw new Error("native class collections lost their mutations");
+    `, 0);
+});
+
+test("inline class callback registration preserves returned collection aliases", { skip: !tools }, () => {
+    checkGeneratedCycles("class-returned-collection", `
+        class Counter {
+            value = 0;
+            install(callbacks: Set<() => void>): void {
+                callbacks.add(() => { this.value += 1; });
+            }
+        }
+        const counter = new Counter();
+        const callbacks = new Set<() => void>();
+        function destination(): Set<() => void> { return callbacks; }
+        counter.install(destination());
+        for (const callback of callbacks) callback();
+        if (counter.value !== 1) throw new Error("returned class collection alias");
+    `);
+});
+
 test("returned class field homes remain visible to later stored callbacks", { skip: !tools }, () => {
     checkGeneratedCycles("returned-class", `
         class Counter {

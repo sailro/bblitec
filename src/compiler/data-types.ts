@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { createHash } from "node:crypto";
 import { cppIdentifier, doubleLiteral } from "../cpp-literals.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 
@@ -280,6 +281,23 @@ function declaredInBabylonLite(symbol: ts.Symbol): boolean {
   );
 }
 
+/** Classify an opaque pinned handle without materializing any data types. */
+export function pinnedHandleKind(type: ts.Type): HandleKind | undefined {
+  const symbol =
+    type.aliasSymbol && pinnedHandleTypes[type.aliasSymbol.name]
+      ? type.aliasSymbol
+      : type.symbol;
+  const kind = symbol ? pinnedHandleTypes[symbol.name] : undefined;
+  return kind && declaredInBabylonLite(symbol!) ? kind : undefined;
+}
+
+export function isPinnedType(type: ts.Type, names: readonly string[]): boolean {
+  return [type.aliasSymbol, type.symbol].some(
+    (symbol) => symbol !== undefined &&
+      names.includes(symbol.name) && declaredInBabylonLite(symbol),
+  );
+}
+
 /**
  * The pin's scene-graph shape: a node owns `children: SceneNode[]` and a
  * `worldMatrix`. SceneNode and every camera interface carry both.
@@ -291,7 +309,7 @@ function isSceneGraphNode(type: ts.Type): boolean {
   );
 }
 
-function declaredInDomLibrary(symbol: ts.Symbol): boolean {
+export function declaredInDomLibrary(symbol: ts.Symbol): boolean {
   return (symbol.declarations ?? []).some((declaration) =>
     declaration
       .getSourceFile()
@@ -902,14 +920,8 @@ export class DataTypeRegistry {
     if (type.symbol?.name === "Int32Array") {
       return { kind: "i32array" };
     }
-    const pinnedHandleSymbol =
-      type.aliasSymbol && pinnedHandleTypes[type.aliasSymbol.name]
-        ? type.aliasSymbol
-        : type.symbol;
-    const pinnedHandle = pinnedHandleSymbol
-      ? pinnedHandleTypes[pinnedHandleSymbol.name]
-      : undefined;
-    if (pinnedHandle && declaredInBabylonLite(pinnedHandleSymbol!)) {
+    const pinnedHandle = pinnedHandleKind(type);
+    if (pinnedHandle) {
       return { kind: "handle", handle: pinnedHandle };
     }
     if (type.symbol && declaredInBabylonLite(type.symbol) && isSceneGraphNode(type)) {
@@ -2363,6 +2375,25 @@ export class DataTypeRegistry {
       elementCppType,
       elements,
     });
+    return name;
+  }
+
+  private readonly sharedConstantArrays = new Map<string, string>();
+
+  public registerSharedConstantArray(
+    preferredName: string,
+    elementCppType: string,
+    elements: string[],
+  ): string {
+    const key = createHash("sha256")
+      .update(JSON.stringify([elementCppType, elements]))
+      .digest("hex");
+    const existing = this.sharedConstantArrays.get(key);
+    if (existing !== undefined) return existing;
+    const name = this.registerConstantArray(
+      ts.factory.createNumericLiteral("0"), preferredName, elementCppType, elements,
+    );
+    this.sharedConstantArrays.set(key, name);
     return name;
   }
 

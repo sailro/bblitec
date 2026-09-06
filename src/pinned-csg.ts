@@ -41,6 +41,7 @@ import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import {
     cppArrayDeclaration,
     float32Literal,
+    type CppArrayTableRegistrar,
 } from "./cpp-literals.js";
 
 /**
@@ -116,6 +117,7 @@ export interface BakedCsgMesh {
 export function csgGeometryDeclarations(
     prefix: string,
     mesh: BakedCsgMesh,
+    registerTable?: CppArrayTableRegistrar,
 ): {
     readonly lines: readonly string[];
     readonly positions: string;
@@ -136,6 +138,7 @@ export function csgGeometryDeclarations(
             elementType === "float"
                 ? float32Literal
                 : (value: number) => `${value}u`,
+            registerTable,
         );
         lines.push(...declared.lines);
         return declared.expression;

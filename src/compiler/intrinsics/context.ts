@@ -33,10 +33,10 @@ export interface IntrinsicCallContext {
      * the scene AST node being lowered — for an intrinsic, the call.
      */
     reachFeature(feature: Feature, site: ts.Node): void;
-    /** Records a scene-code mesh creation for the per-renderable variant key. */
-    /** Counts one scene-code material creation of any family. */
+    /** Records one scene-code material creation or native construction profile. */
     recordSceneMaterialSlot(): number;
-    /** Records a scene-code mesh creation and returns its creation index. */
+    isRuntimeResourceConstruction(): boolean;
+    /** Records a scene-code mesh's composition row before its execution mode is applied. */
     recordSceneMesh(
         kind: string,
         streams?: {

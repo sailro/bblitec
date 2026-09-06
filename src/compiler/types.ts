@@ -148,10 +148,12 @@ export interface CompileManifest {
   standardMaterialPlugins: MaterialPluginManifest[][];
   /** Actual Standard material states observed for each plugin signature. */
   standardMaterialPluginInputs: PinnedStandardMaterialInput[][];
-  /** Every scene-code material creation, any family, for the handle count. */
+  /** Scene-material record count; physical creation count when no runtime profiles exist. */
   sceneMaterialCount: number;
   /** glTF load count at each scene material creation, across all families. */
   sceneMaterialGltfAssetsBefore?: number[];
+  /** These material rows are native call-site profiles, not physical counts. */
+  runtimeMaterialProfiles?: number[];
   sceneMeshes: SceneMeshManifest[];
   /** Scene-code lights added outside a repeating/deferred callback, in
    *  scene order. When `dynamicSceneLights` is false this is the complete
@@ -350,15 +352,16 @@ export interface SpriteCustomShaderManifest {
 }
 
 /**
- * One scene-code mesh creation, in creation order, so generation can key the
- * per-renderable variant table the way the runtime keys mesh handles. The
- * builders share one fixed attribute set; `kind` names the intrinsic so a
- * builder with a different set fails by name instead of composing against the
- * wrong bits.
+ * One scene-code composition row. Ordinary rows retain creation order;
+ * runtimeInstances rows describe a fixed attribute profile independently of
+ * how often its native factory executes. The renderer binds those profiles
+ * explicitly rather than deriving their row from a physical mesh handle.
  */
 export interface SceneMeshManifest {
   kind: string;
   gltfAssetsBefore: number;
+  /** A call-site attribute profile instantiated zero or more times natively. */
+  runtimeInstances?: true;
   /** This creation site is assigned a scene-code Standard material. */
   standardMaterial?: true;
   /** The 1-based Standard plugin signature assigned to this mesh. */
@@ -418,6 +421,8 @@ export interface SceneMeshManifest {
    * in either source order.
    */
   shaderVariant?: string;
+  /** Scene-local programs selected dynamically for this composition row. */
+  shaderVariants?: readonly string[];
 }
 
 /**
@@ -1542,6 +1547,60 @@ export interface SceneTopologyState {
   lights: Array<{ identity: LightIdentity; kind: LightKind }>;
 }
 
+/** Collection size is independent of whether generation can name its elements. */
+export interface CollectionCardinality {
+  kind: "array" | "keyed";
+  count: number | undefined;
+  keys?: Set<string | number | boolean>;
+  createdIn: readonly object[];
+  varyingIn: Set<object>;
+  /** An untracked alias can mutate this collection without visiting its cell. */
+  untrackedAliases?: true;
+}
+
+export interface DefaultRenderTaskEmission {
+  sceneCpp: string;
+  setup: string;
+}
+
+/** A runtime mesh element carries capabilities, never a prototype's identity. */
+export function runtimeMeshValue(value: Value): Value {
+  if (value.kind !== "mesh") return value;
+  return {
+    kind: "mesh",
+    cpp: value.cpp,
+    ...(value.engineCpp !== undefined ? { engineCpp: value.engineCpp } : {}),
+    ...(value.dataType ? { dataType: value.dataType } : {}),
+    ...(value.runtimeIteration ? { runtimeIteration: true } : {}),
+    ...(value.runtimeMeshStreams ? { runtimeMeshStreams: true } : {}),
+    ...(value.directMorphCompatible ? { directMorphCompatible: true } : {}),
+  };
+}
+
+/** A runtime choice retains only facts shared by every possible resource. */
+export function commonResourceValue(value: Value, candidates: readonly Value[]): Value {
+  if (value.kind !== "mesh" && value.kind !== "material") return value;
+  const common = { ...value };
+  for (const key of [
+    "scenePbrMaterialIndex", "sceneMaterialSlot", "sceneMeshIndex", "sceneMeshProfileIndex",
+    "shaderVariant", "sceneShaderVariant", "nodeMaterialIndex", "standardMaterial",
+    "standardMaterialPluginIndex", "standardMaterialInput", "assetPbrMaterial", "assetWholeMeshList",
+  ] as const) {
+    if (candidates.some((candidate) => candidate[key] !== value[key])) delete common[key];
+  }
+  if (candidates.some((candidate) => candidate.runtimeMeshStreams)) common.runtimeMeshStreams = true;
+  if (!candidates.every((candidate) => candidate.directMorphCompatible)) delete common.directMorphCompatible;
+  if (value.kind === "material") {
+    const variants = [...new Set(candidates.flatMap((candidate) => [
+      ...(candidate.sceneShaderVariant === undefined ? [] : [candidate.sceneShaderVariant]),
+      ...(candidate.possibleSceneShaderVariants ?? []),
+    ]))].sort();
+    if (variants.length > 0) common.possibleSceneShaderVariants = variants;
+    else delete common.possibleSceneShaderVariants;
+  }
+  return common;
+}
+
 export interface Value {
   kind: ValueKind;
   cpp: string;
@@ -1585,6 +1644,8 @@ export interface Value {
   staticElements?: Value[];
   /** Root binding whose static element snapshot this parameter alias shares. */
   staticElementsOwner?: Value;
+  /** Shared by aliases even after their generation-known elements are withdrawn. */
+  collectionCardinality?: CollectionCardinality;
   /** Representative metadata for a handle read from a runtime container. */
   runtimeElementTemplate?: Value;
   /**
@@ -1773,6 +1834,8 @@ export interface Value {
    * order, and the scene meshes follow in creation order.
    */
   sceneMeshIndex?: number;
+  /** A repeated native creation's profile, never a singleton mesh identity. */
+  sceneMeshProfileIndex?: number;
   /**
    * This `createMeshFromData` mesh was handed at least one optional
    * attribute stream whose presence is a run-time answer, so the
@@ -2004,6 +2067,8 @@ export interface Value {
    * that to the mesh, so only it is marked here.
    */
   sceneShaderVariant?: string;
+  /** Possible scene-local programs, distinct from a singleton material identity. */
+  possibleSceneShaderVariants?: readonly string[];
   /** Stable creation slot for a scene-owned material that escapes a scope. */
   sceneMaterialSlot?: number;
   animationFrameRate?: string;
@@ -2084,8 +2149,6 @@ export interface Value {
    * getter of the record runs. This is the closure the source wrote.
    */
   recordScopes?: ReadonlyArray<Map<ts.Symbol, VariableBinding>>;
-  defaultRenderTask?: boolean;
-  defaultRenderTaskEmitted?: boolean;
   /** Shared across compiler aliases of one native scene. */
   sceneEnvironmentState?: {
     rotationSet: boolean;

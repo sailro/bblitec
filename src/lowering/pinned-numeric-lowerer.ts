@@ -178,7 +178,7 @@ export interface PinnedNumericScope {
      */
     methods?: ReadonlyMap<
         string,
-        (receiver: string, args: readonly string[]) => string
+        (receiver: string, args: readonly string[], binding: PinnedBinding) => string
     >;
     /**
      * How a bare `set` on a bound buffer spells its source, where the source
@@ -357,7 +357,7 @@ export class PinnedNumericLowerer {
         return cpp;
     }
 
-    private withBindings<T>(action: () => T): T {
+    protected withBindings<T>(action: () => T): T {
         const saved = new Map(this.scope.bindings);
         try { return action(); }
         finally {
@@ -367,6 +367,9 @@ export class PinnedNumericLowerer {
     }
 
     public statement(statement: ts.Statement, indent: string): string[] {
+        if (ts.isContinueStatement(statement) && !statement.label) {
+            return [`${indent}continue;`];
+        }
         if (ts.isVariableStatement(statement)) {
             const helper = this.localHelper(statement.declarationList);
             if (helper) {
@@ -391,6 +394,21 @@ export class PinnedNumericLowerer {
             return [`${indent}break;`];
         }
         if (ts.isExpressionStatement(statement)) {
+            const expression = this.unwrap(statement.expression);
+            if (ts.isBinaryExpression(expression) &&
+                expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+                const right = this.unwrap(expression.right);
+                if (ts.isBinaryExpression(right) && right.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+                    if (!ts.isIdentifier(expression.left) || !ts.isIdentifier(right.left)) {
+                        return this.fail(expression, "scalar chained assignment targets");
+                    }
+                    return [
+                        ...this.statement(ts.factory.createExpressionStatement(right), indent),
+                        ...this.statement(ts.factory.createExpressionStatement(
+                            ts.factory.updateBinaryExpression(expression, expression.left, expression.operatorToken, right.left)), indent),
+                    ];
+                }
+            }
             const inlined = this.inlinedHelperCall(
                 statement.expression,
                 indent,
@@ -1934,7 +1952,7 @@ export class PinnedNumericLowerer {
                 callee.expression.getText(this.file),
             );
             if (method && receiver) {
-                return method(receiver.cpp, args);
+                return method(receiver.cpp, args, receiver);
             }
             // `edges[ei]!.place(...)` -- the receiver is an ELEMENT of a
             // bound list rather than a name. The element resolves through
@@ -1942,12 +1960,9 @@ export class PinnedNumericLowerer {
             // reaches the caller's spelling exactly as a method on a named
             // buffer does.
             const element = this.unwrap(callee.expression);
-            if (
-                method &&
-                ts.isElementAccessExpression(element) &&
-                this.elementOwner(element)
-            ) {
-                return method(this.elementAccess(element), args);
+            if (method && ts.isElementAccessExpression(element)) {
+                const owner = this.elementOwner(element);
+                if (owner) return method(this.elementAccess(element), args, owner);
             }
         }
         const name = ts.isPropertyAccessExpression(callee)

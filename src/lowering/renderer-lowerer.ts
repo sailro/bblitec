@@ -72,6 +72,7 @@ import {
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
+import { meshProfileBindingCpp, type MeshProfileTable } from "./resource-profiles.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -355,6 +356,7 @@ export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerRenderPlan(options: {
+        meshProfiles?: MeshProfileTable;
         fog?: boolean;
         imageSkybox?: boolean;
         solidSkybox?: boolean;
@@ -967,6 +969,7 @@ export class RendererLowerer {
     /** The emitted renderer_plan.hpp, verbatim from the adopted plan. */
     private renderPlanHeaderCpp(
         options: {
+            meshProfiles?: MeshProfileTable;
             solidSkybox?: boolean;
             imageSkybox?: boolean;
             gpuInstancing?: boolean;
@@ -1329,6 +1332,7 @@ struct ImageSkyboxUniforms {
 `
     : ""}\
 
+${options.meshProfiles ? "MeshHandle bind_scene_mesh_profile(Engine& engine, MeshHandle mesh, std::uint32_t profile);\n" : ""}\
 void initialize_composition_feature_rows(Engine& engine);
 RenderPlan build_render_plan(const Scene& scene, const Engine& engine);
 RenderFeatures build_render_features(
@@ -1525,6 +1529,7 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
     /** The emitted renderer_plan.cpp, verbatim from the adopted plan. */
     private renderPlanSourceCpp(
         options: {
+            meshProfiles?: MeshProfileTable;
             nodeVisibility?: boolean;
             orthographicCamera?: boolean;
             gpuInstancing?: boolean;
@@ -2035,6 +2040,7 @@ void sort_transparent_draws(
         });
 }
 
+${options.meshProfiles ? meshProfileBindingCpp(options.meshProfiles) : ""}\
 void initialize_composition_feature_rows(Engine& engine) {
     if (engine.composition_feature_rows_initialized) {
         return;
@@ -2042,8 +2048,12 @@ void initialize_composition_feature_rows(Engine& engine) {
     std::uint32_t next_row = 0;
     for (std::uint32_t index = 0; index < engine.meshes.size(); ++index) {
         MeshRecord& mesh = engine.meshes[index];
+${options.meshProfiles ? `        if (mesh.composition_feature_row != invalid_handle) continue;\n` : ""}\
         if (mesh.feature_source_mesh == invalid_handle) {
-            mesh.composition_feature_row = next_row++;
+${options.meshProfiles ? `            mesh.composition_feature_row = next_row < static_mesh_profile_rows.size()
+                ? static_mesh_profile_rows[next_row]
+                : ${options.meshProfiles.rowCount}u + next_row - static_cast<std::uint32_t>(static_mesh_profile_rows.size());
+            ++next_row;` : "            mesh.composition_feature_row = next_row++;"}\
             continue;
         }
         if (
@@ -2908,6 +2918,7 @@ ${pinnedFogInfosPacking()}    };
                 options.gpuDeformation,
                 options.gpuInstancing,
                 options.morphStorage,
+                this.context,
             ),
         });
         if (options.fog) {
@@ -3301,103 +3312,14 @@ ${pinnedFogInfosPacking()}    };
             [pbrGeometry, "input.clipPos.z", "geometry screen depth"],
         ];
         if (options.morphStorage) {
-            const morphCoreModule =
-                "src/shader/fragments/morph-fragment-core.ts";
-            const morphCore = this.context.store.getSource(morphCoreModule);
             const morphTargetsModule = "src/morph/create-morph-targets.ts";
             const morphTargets =
                 this.context.store.getSource(morphTargetsModule);
             requiredUpstreamFormulas.push(
                 [
-                    morphCore,
-                    packagedWgsl`for (var i = 0u; i < morph.count; i = i + 1u)`,
-                    "storage morph accumulation loop",
-                ],
-                [
-                    morphCore,
-                    packagedWgsl`let b = (i * morph.vertexCount + vertexIndex) * 6u;`,
-                    "storage morph delta indexing",
-                ],
-                [
-                    morphCore,
-                    packagedWgsl`var<storage, read>`,
-                    "storage morph binding rewrite",
-                ],
-                [
                     morphTargets,
                     "MORPH_WEIGHTS_HEADER_BYTES = 16",
                     "morph weights header ABI",
-                ],
-            );
-        }
-        if (options.gpuDeformation || options.gpuInstancing) {
-            // The transcribed vertex stage's deformation and instancing
-            // bodies (shader-builtins-standard.ts) reassign the world matrix
-            // where the pin's /*VW*/ slot does and re-apply it exactly as the
-            // pinned template does: position at w=1, normal and tangent at
-            // w=0 after a normalize, bitangent at w=0 without one.
-            // The position and normal lines are the world-transform header's
-            // markers (pinned-world-transform.ts), asserted for every scene.
-            requiredUpstreamFormulas.push(
-                [
-                    pbr,
-                    packagedWgsl`out.worldTangent=(finalWorld*vec4<f32>(T_local,0.0)).xyz;`,
-                    "vertex world tangent application",
-                ],
-                [
-                    pbr,
-                    packagedWgsl`out.worldBitangent=(finalWorld*vec4<f32>(B_local,0.0)).xyz;`,
-                    "vertex world bitangent application",
-                ],
-            );
-        }
-        if (options.gpuDeformation) {
-            // The 4-influence skinning sum transcribes the pin's shared
-            // skeleton fragment; the world-composed bone palette is the
-            // documented transport for `finalWorld = world * influence`
-            // (the left world distributes over the weighted sum).
-            const skeletonFragmentModule =
-                "src/shader/fragments/skeleton-fragment.ts";
-            const skeletonFragment =
-                this.context.store.getSource(skeletonFragmentModule);
-            requiredUpstreamFormulas.push(
-                [
-                    skeletonFragment,
-                    packagedWgsl`var influence: mat4x4<f32> = readMatrixFromRawSampler(boneSampler, f32(joints[0])) * weights[0];`,
-                    "skinning first bone influence",
-                ],
-                [
-                    skeletonFragment,
-                    packagedWgsl`influence = influence + readMatrixFromRawSampler(boneSampler, f32(joints[3])) * weights[3];`,
-                    "skinning fourth bone influence",
-                ],
-                [
-                    skeletonFragment,
-                    // `\${worldExpr}` is the template's own placeholder, kept
-                    // so the marker packages as the pin's text does.
-                    packagedWgsl`finalWorld = \${worldExpr} * influence;`,
-                    "skinning blended world composition",
-                ],
-            );
-        }
-        if (options.gpuInstancing) {
-            // The instancing body transcribes the pin's shared thin-instance
-            // fragment: the mat4 assembled from the four instance columns in
-            // order, composed with the parent world on the left.
-            const thinInstanceFragmentModule =
-                "src/shader/fragments/thin-instance-fragment.ts";
-            const thinInstanceFragment =
-                this.context.store.getSource(thinInstanceFragmentModule);
-            requiredUpstreamFormulas.push(
-                [
-                    thinInstanceFragment,
-                    packagedWgsl`let instanceWorld = mat4x4<f32>(world0, world1, world2, world3);`,
-                    "thin-instance matrix column order",
-                ],
-                [
-                    thinInstanceFragment,
-                    packagedWgsl`finalWorld = mesh.world * instanceWorld;`,
-                    "thin-instance world composition order",
                 ],
             );
         }

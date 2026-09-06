@@ -216,7 +216,7 @@ test("generates the shared Tint material vertex interface", () => {
     assert.match(instancedVertex, /@binding\(1\).*instanceUniforms/);
     assert.match(
         instancedVertex,
-        /instanceUniforms\.parentWorld \* localInstanceMatrix/,
+        /instanceUniforms\.parentWorld \* instanceWorld/,
     );
     assert.match(
         deformedInstancedVertex,

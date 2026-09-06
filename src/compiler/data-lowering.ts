@@ -17,7 +17,7 @@ import {
     type DataType,
     type TypedArrayKind,
 } from "./data-types.js";
-import type { Value } from "./types.js";
+import { commonResourceValue, runtimeMeshValue, type Value } from "./types.js";
 import {
     compileJsonStrictComparison,
     isJsonValue,
@@ -158,7 +158,8 @@ export interface DataLoweringContext {
     recordDataAssignmentMetadata(
         target: Value,
         source: ts.Expression,
-    ): void;
+        destination?: ts.Expression,
+    ): boolean;
     recordDataLightSlot(value: Value, index: number): void;
     declaredDataProperty(
         expression: ts.PropertyAccessExpression,
@@ -230,7 +231,11 @@ export interface DataLoweringContext {
     enterRuntimeIteration(): void;
     leaveRuntimeIteration(): void;
     /** Clears an array snapshot from every compiler alias that shares it. */
-    invalidateStaticElements(value: Value): void;
+    invalidateStaticElements(value: Value, preserveCardinality?: boolean): void;
+    recordArrayPush(value: Value, added: number | undefined): boolean;
+    knownCollectionCardinality(expression: ts.Expression): number | undefined;
+    recordCollectionKey(value: Value, key: Value, removed?: boolean): void;
+    recordCollectionClear(value: Value): void;
     /** Clears a map/object snapshot from every compiler alias that shares it. */
     invalidateRecordProperties(value: Value): void;
     reachJsData(): void;
@@ -270,18 +275,6 @@ export class DataLowerer {
     private readonly ownership = new Map<
         string,
         LocalOwnership
-    >();
-
-    /**
-     * Namespace-scope tables already emitted for constant typed-array
-     * literals, keyed on element type + the exact literal text. The
-     * first emission owns the symbol; a later identical literal
-     * references it instead of restating the bytes (tetris restated
-     * fourteen 74-124 KB vertex literals twice each).
-     */
-    private readonly typedArrayLiteralTables = new Map<
-        string,
-        string
     >();
 
     public constructor(
@@ -1130,8 +1123,9 @@ export class DataLowerer {
 
     public materializeKnownTuple(
         expression: ts.Expression,
+        knownValue?: Value,
     ): Value | undefined {
-        const known = this.context.compileValue(expression);
+        const known = knownValue ?? this.context.compileValue(expression);
         if (known.kind !== "tuple") {
             return undefined;
         }
@@ -1168,6 +1162,11 @@ export class DataLowerer {
                 : undefined;
         const element = declaredElement ?? inferredElement;
         if (!element) {
+            return undefined;
+        }
+        if (knownValue && !(known.tupleElements ?? []).every(
+            (entry) => this.knownValueFitsSink(entry, element, expression, false),
+        )) {
             return undefined;
         }
         const values = (known.tupleElements ?? []).map(
@@ -1223,6 +1222,44 @@ export class DataLowerer {
             cpp: `bblscene::${name}`,
             dataType: { kind: "span", element },
         };
+    }
+
+    private knownValueFitsSink(
+        value: Value,
+        sink: DataType,
+        node: ts.Node,
+        staticOnly: boolean,
+    ): boolean {
+        if (!staticOnly && value.dataType && this.spanCompatible(value.dataType, sink)) return true;
+        switch (sink.kind) {
+            case "number":
+                return staticOnly ? value.staticNumber !== undefined : value.kind === "number";
+            case "boolean":
+                return staticOnly ? value.staticBoolean !== undefined : value.kind === "boolean";
+            case "string":
+                return staticOnly ? value.staticString !== undefined : value.kind === "string";
+            case "enum":
+                return value.staticString !== undefined;
+            case "optional":
+                return value.kind === "json-null" || this.knownValueFitsSink(value, sink.inner, node, staticOnly);
+            case "tuple":
+                return value.kind === "tuple" && value.tupleElements?.length === sink.arity &&
+                    value.tupleElements.every((entry) =>
+                        this.knownValueFitsSink(entry, { kind: "number" }, node, staticOnly));
+            case "vector":
+            case "span":
+                return value.kind === "tuple" && (value.tupleElements ?? []).every((entry) =>
+                    this.knownValueFitsSink(entry, sink.element, node, staticOnly));
+            case "struct":
+                return value.kind === "record" && this.context.dataTypes.structFields(sink.name, node).every((field) => {
+                    const property = value.recordProperties?.[field.sourceName];
+                    return property
+                        ? this.knownValueFitsSink(property, field.type, node, staticOnly)
+                        : field.defaultWhenMissing === true || field.type.kind === "optional";
+                });
+            default:
+                return false;
+        }
     }
 
     private staticTypedArrayLength(
@@ -1817,9 +1854,10 @@ export class DataLowerer {
             // length generation knows, and knowing it is what lets a
             // counted `for` over it unroll — the difference between three
             // mesh records and one `createBox` run three times.
-            const fixed = this.fixedLengths.get(
-                this.rootName(owner.cpp),
-            );
+            const cardinality = owner.collectionCardinality ?? owner.staticElementsOwner?.collectionCardinality;
+            const fixed = cardinality?.untrackedAliases
+                ? undefined
+                : this.fixedLengths.get(this.rootName(owner.cpp));
             return {
                 kind: "number",
                 cpp: `bbl::js::array_length(${owner.cpp})`,
@@ -2190,8 +2228,8 @@ export class DataLowerer {
             };
         }
         switch (dataType.kind) {
-            case "vector":
-                return {
+            case "vector": {
+                const value: Value = {
                     ...this.leafValue(
                         indexed,
                         dataType.element,
@@ -2200,6 +2238,12 @@ export class DataLowerer {
                         ? { readOnly: true as const }
                         : {}),
                 };
+                const candidates = owner.staticElementsOwner?.staticElements ?? owner.staticElements ??
+                    (owner.runtimeElementTemplate ? [owner.runtimeElementTemplate] : undefined);
+                return mode === "read" && value.kind === "material" && candidates?.length
+                    ? commonResourceValue(value, candidates)
+                    : value;
+            }
             case "span":
                 return {
                     ...this.leafValue(
@@ -3119,58 +3163,12 @@ export class DataLowerer {
         if (!element) {
             return undefined;
         }
-        const isStaticForSink = (
-            value: Value,
-            sink: DataType,
-        ): boolean => {
-            switch (sink.kind) {
-                case "number":
-                    return value.staticNumber !== undefined;
-                case "boolean":
-                    return value.staticBoolean !== undefined;
-                case "string":
-                case "enum":
-                    return value.staticString !== undefined;
-                case "optional":
-                    return value.kind === "json-null" ||
-                        isStaticForSink(value, sink.inner);
-                case "tuple":
-                    return value.kind === "tuple" &&
-                        value.tupleElements?.length === sink.arity &&
-                        value.tupleElements.every((entry) =>
-                            isStaticForSink(entry, { kind: "number" }),
-                        );
-                case "vector":
-                case "span":
-                    return value.kind === "tuple" &&
-                        (value.tupleElements ?? []).every((entry) =>
-                            isStaticForSink(entry, sink.element),
-                        );
-                case "struct": {
-                    if (value.kind !== "record") return false;
-                    return this.context.dataTypes
-                        .structFields(sink.name, unwrapped)
-                        .every((field) => {
-                            const property =
-                                value.recordProperties?.[
-                                    field.sourceName
-                                ];
-                            return property
-                                ? isStaticForSink(property, field.type)
-                                : field.defaultWhenMissing === true ||
-                                      field.type.kind === "optional";
-                        });
-                }
-                default:
-                    return false;
-            }
-        };
         const elements = literal
             ? literal.elements.map((entry) =>
                   this.compileForSink(entry, element),
               )
             : bound!.tupleElements!.map((entry) =>
-                  isStaticForSink(entry, element)
+                  this.knownValueFitsSink(entry, element, unwrapped, true)
                       ? this.compileKnownValueForSink(
                             entry,
                             element,
@@ -3989,8 +3987,8 @@ export class DataLowerer {
     }
 
     /** Clear a complete element snapshot through every compiler alias. */
-    public invalidateStaticElements(value: Value): void {
-        this.context.invalidateStaticElements(value);
+    public invalidateStaticElements(value: Value, preserveCardinality = false): void {
+        this.context.invalidateStaticElements(value, preserveCardinality);
     }
 
     /**
@@ -4672,21 +4670,9 @@ export class DataLowerer {
         ) {
             return `bbl::js::${prefix}_array_from(bbl::js::Array<double>{${elements.join(", ")}})`;
         }
-        const key = `double|${elements.join(", ")}`;
-        let name = this.typedArrayLiteralTables.get(key);
-        if (name === undefined) {
-            // The registry keys tables by node, and one source node can
-            // fold to different contents under an unrolled loop — a
-            // fresh synthetic key node per registration keeps the
-            // content map here the only authority.
-            name = this.context.dataTypes.registerConstantArray(
-                ts.factory.createNumericLiteral("0"),
-                `${prefix}_values`,
-                "double",
-                [...elements],
-            );
-            this.typedArrayLiteralTables.set(key, name);
-        }
+        const name = this.context.dataTypes.registerSharedConstantArray(
+            `${prefix}_values`, "double", [...elements],
+        );
         return `bbl::js::${prefix}_array_from(bblscene::${name})`;
     }
 
@@ -7417,11 +7403,12 @@ export class DataLowerer {
             target.dataType,
         );
         this.context.emit(`${target.cpp} = ${value};`);
-        this.context.recordDataAssignmentMetadata(
+        const rebound = this.context.recordDataAssignmentMetadata(
             target,
             expression.right,
+            left,
         );
-        this.invalidateStaticElements(target);
+        if (!rebound) this.invalidateStaticElements(target);
         return true;
     }
 
@@ -7883,6 +7870,7 @@ export class DataLowerer {
             this.context.recordDataAssignmentMetadata(
                 target,
                 expression.right,
+                expression.left,
             );
             invalidateRootRecordSnapshot();
             return true;
@@ -8659,6 +8647,7 @@ export class DataLowerer {
      */
     public iterationTarget(
         expression: ts.Expression,
+        knownTuple?: Value,
     ):
         | {
               container: Value;
@@ -8666,13 +8655,16 @@ export class DataLowerer {
               template?: Value;
           }
         | undefined {
-        const rawValue =
+        const rawValue = knownTuple && !ts.isIdentifier(this.context.unwrap(expression))
+            ? this.materializeKnownTuple(expression, knownTuple)
+            :
             this.materializeConstantArray(expression) ??
             this.compileDataPath(expression, "read") ??
             this.materializeStaticTable(expression) ??
             this.callSpanValue(expression) ??
             this.selectedIterationValue(expression) ??
             this.runtimeArrayLiteral(expression) ??
+            (knownTuple ? this.materializeKnownTuple(expression, knownTuple) : undefined) ??
             (this.dataTypeAt(expression)?.kind === "string"
                 ? this.context.compileValue(expression)
                 : undefined);
@@ -8863,11 +8855,12 @@ export class DataLowerer {
             return;
         }
         if (ts.isIdentifier(name)) {
-            define(name, {
+            const value: Value = {
                 ...(template ?? {}),
                 ...this.leafValue(itemCpp, element),
                 runtimeIteration: true,
-            });
+            };
+            define(name, runtimeMeshValue(value));
             return;
         }
         if (ts.isArrayBindingPattern(name)) {

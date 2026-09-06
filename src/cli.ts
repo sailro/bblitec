@@ -1152,6 +1152,7 @@ async function main(): Promise<void> {
         materialIndexBase,
         casterViewCount,
         renderableMeshFeatures,
+        meshProfiles,
         pinnedVariants,
         runtimeMeshFeatures,
         standardComposition,
@@ -1469,6 +1470,7 @@ async function main(): Promise<void> {
             casterViewCount,
         renderableMeshFeatures,
         pinnedSkeletonPalette,
+        ...(meshProfiles ? { meshProfiles } : {}),
         ...(runtimeMeshFeatures !== undefined
             ? { runtimeMeshFeatures }
             : {}),

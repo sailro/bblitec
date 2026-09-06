@@ -15,10 +15,18 @@ export interface ShaderCppScalar {
 export function emitShaderCppExpression(
     expression: ShaderExpression,
     bindings: ReadonlyMap<string, readonly ShaderCppScalar[]>,
-    options: { tabulateUnorm8?: boolean } = {},
+    options: {
+        tabulateUnorm8?: boolean;
+        /** Explicit CPU-bake adaptation: return zero unless length exceeds this f32 threshold. */
+        minimumNormalizeLength?: number;
+    } = {},
 ): { components: string[]; declarations: string[] } {
     const declarations: string[] = [];
     const tables = new Map<string, string>();
+    if (options.minimumNormalizeLength !== undefined &&
+        (!Number.isFinite(Math.fround(options.minimumNormalizeLength)) || options.minimumNormalizeLength < 0)) {
+        throw new Error("WGSL normalization threshold must be a nonnegative finite f32 value.");
+    }
     const abstract = (value: number, integer: boolean): ShaderCppScalar => {
         // Keep the bounded interpreter exact; wider abstract integers need a
         // BigInt path before they can be accepted (WGSL uses signed 64-bit).
@@ -65,6 +73,7 @@ export function emitShaderCppExpression(
                 return swizzle(root, node.parts[1]!);
             }
             case "member": return swizzle(emit(node.expression), node.member);
+            case "index": throw new Error("C++ shader projection does not support indexed values.");
             case "construct": {
                 if (node.type === "mat4x4<f32>") throw new Error(`Unsupported C++ shader construction '${node.type}'.`);
                 const width = typeComponents(node.type);
@@ -93,6 +102,22 @@ export function emitShaderCppExpression(
                 });
             }
             case "call": {
+                if (node.name === "normalize") {
+                    if (node.arguments.length !== 1) throw new Error("WGSL normalize requires one vector argument.");
+                    const lanes = emit(node.arguments[0]!).map(materialize);
+                    if (lanes.length < 2 || lanes.length > 4) throw new Error("WGSL normalize requires a two-, three- or four-lane vector.");
+                    const input = `shader_normalize_input_${declarations.length}`;
+                    const length = `shader_normalize_length_${declarations.length}`;
+                    declarations.push(`const std::array<float, ${lanes.length}> ${input}{${lanes.map(lane => lane.cpp).join(", ")}};`);
+                    const squared = lanes.map((_, index) => `${input}[${index}] * ${input}[${index}]`)
+                        .reduce((sum, term) => `(${sum} + ${term})`);
+                    declarations.push(`const float ${length} = std::sqrt(${squared});`);
+                    return lanes.map((_, index) => ({
+                        cpp: options.minimumNormalizeLength === undefined
+                            ? `(${input}[${index}] / ${length})`
+                            : `(${length} > ${floatLiteral(options.minimumNormalizeLength)} ? ${input}[${index}] / ${length} : 0.0f)`,
+                    }));
+                }
                 const arities: Readonly<Record<string, number>> = { pow: 2, max: 2, min: 2, sqrt: 1, abs: 1 };
                 if (arities[node.name] !== node.arguments.length) throw new Error(`Unsupported WGSL call '${node.name}'.`);
                 return vectorize(node.arguments.map(emit), args => {

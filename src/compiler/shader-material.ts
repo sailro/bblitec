@@ -1072,37 +1072,42 @@ export function shaderThinInstanceLanes(
     const lanes = new Map<string, boolean>();
     const seen = new Map<string, SceneMeshManifest>();
     for (const mesh of meshes) {
-        const variant = mesh.shaderVariant;
-        if (variant === undefined) continue;
-        if (mesh.thinInstances === "possible") {
-            fail(
-                `Shader material '${variant}' is on a mesh that may acquire ` +
-                    "thin instances from a frame callback; the instanced " +
-                    "lanes are declared in the prelude the stage compiles " +
-                    "against, so the form has to be settled before the draw " +
-                    "exists.",
-            );
-        }
-        const first = seen.get(variant);
-        if (first === undefined) {
-            seen.set(variant, mesh);
-            if (mesh.thinInstances !== undefined) {
-                lanes.set(variant, mesh.thinInstanceColors === true);
+        if (mesh.shaderVariant === undefined && !mesh.shaderVariants?.length) continue;
+        const variants = new Set([
+            ...(mesh.shaderVariant === undefined ? [] : [mesh.shaderVariant]),
+            ...(mesh.shaderVariants ?? []),
+        ]);
+        for (const variant of variants) {
+            if (mesh.thinInstances === "possible") {
+                fail(
+                    `Shader material '${variant}' is on a mesh that may acquire ` +
+                        "thin instances from a frame callback; the instanced " +
+                        "lanes are declared in the prelude the stage compiles " +
+                        "against, so the form has to be settled before the draw " +
+                        "exists.",
+                );
             }
-            continue;
-        }
-        // Both axes decide the prelude, so both have to agree across the
-        // meshes one baked variant serves.
-        if (
-            first.thinInstances !== mesh.thinInstances ||
-            first.thinInstanceColors !== mesh.thinInstanceColors
-        ) {
-            fail(
-                `Shader material '${variant}' is drawn on meshes that ` +
-                    "disagree about thin instances; the lanes are declared " +
-                    "in the prelude the stage compiles against, so one " +
-                    "baked variant cannot serve both.",
-            );
+            const first = seen.get(variant);
+            if (first === undefined) {
+                seen.set(variant, mesh);
+                if (mesh.thinInstances !== undefined) {
+                    lanes.set(variant, mesh.thinInstanceColors === true);
+                }
+                continue;
+            }
+            // Every possible program must agree on the two instance lanes
+            // across all meshes that can select that program.
+            if (
+                first.thinInstances !== mesh.thinInstances ||
+                first.thinInstanceColors !== mesh.thinInstanceColors
+            ) {
+                fail(
+                    `Shader material '${variant}' is drawn on meshes that ` +
+                        "disagree about thin instances; the lanes are declared " +
+                        "in the prelude the stage compiles against, so one " +
+                        "baked variant cannot serve both.",
+                );
+            }
         }
     }
     return lanes;

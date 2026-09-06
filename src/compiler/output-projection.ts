@@ -321,6 +321,7 @@ export interface MainCppProjection {
     jsDataReached: boolean;
     /** Whether the entry body itself decodes an image (drawn-atlas records). */
     imageDecodeReached: boolean;
+    runtimeMeshProfiles?: boolean;
     jsRandomReached: boolean;
     audioSessionReached?: boolean;
     throwReached: boolean;
@@ -409,7 +410,7 @@ export function renderMainCpp(projection: MainCppProjection): string {
         )
             ? "#include <bblite/upstream/camera_math.hpp>\n"
             : "";
-    const cameraProjectionInclude = features.includes(
+    const cameraProjectionInclude = (projection.runtimeMeshProfiles && features.includes("renderer:scene")) || features.includes(
         "camera:view-projection",
     )
         ? "#include <bblite/upstream/renderer_plan.hpp>\n"
@@ -455,6 +456,12 @@ export function renderMainCpp(projection: MainCppProjection): string {
     }
     const dataPreamble =
         renderDataPreamble();
+    if (projection.runtimeMeshProfiles && !features.includes("renderer:scene")) {
+        // Without a renderer no draw reads composition profiles.
+        preambleSections.push(`namespace bbl::upstream {
+inline MeshHandle bind_scene_mesh_profile(Engine&, MeshHandle mesh, std::uint32_t) { return mesh; }
+}`);
+    }
     if (dataPreamble.length > 0) {
         preambleSections.push(dataPreamble);
     }

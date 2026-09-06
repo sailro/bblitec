@@ -19,6 +19,7 @@ vcpkg_from_github(
         # the patch pins the arithmetic so that stays true for any asset.
         walkable-threshold-libm.patch
         optional-components.patch
+        checked-allocations.patch
 )
 
 # The wasm reference is emscripten's strict IEEE float; MSVC's default

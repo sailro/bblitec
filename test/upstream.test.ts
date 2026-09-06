@@ -56,6 +56,7 @@ import { packageSpz } from "../src/splat-packager.js";
 import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 import { receiverShadowLightSlots } from "../src/compose-pipeline.js";
+import { materialVertexWgsl } from "../src/shader-builtins-standard.js";
 
 /** The provenance banner every generated source carries, derived from the
  *  pin so a version bump does not churn these assertions. */
@@ -2246,13 +2247,9 @@ test("emits no transcribed standard fragments", () => {
     );
 });
 
-test("anchors the deformation and instancing vertex arms to their pinned fragments", () => {
-    // The transcribed vertex stage's skinning and thin-instance bodies are
-    // marker-anchored like its storage-morph arm: running lowerShaders with
-    // the arms on exercises assertPinnedShaderFormulas against the pinned
-    // skeleton-fragment, thin-instance-fragment and pbr-template /*VW*/
-    // application lines, so a retuned pin refuses generation here.
-    const shaders = new RendererLowerer(new LoweringContext()).lowerShaders({
+test("derives renderer deformation and instancing stages from the pinned fragments", () => {
+    const context = new LoweringContext();
+    const shaders = new RendererLowerer(context).lowerShaders({
         ground: false,
         skybox: false,
         shaderPrograms: [],
@@ -2265,27 +2262,12 @@ test("anchors the deformation and instancing vertex arms to their pinned fragmen
     const vertex = shaders.find((shader) =>
         shader.output.endsWith("pbr.vert.native.wgsl"),
     );
-    // The anchored formulas' transcribed counterparts: the sum runs to
-    // exactly four influences, the normal transforms at w=0 after a
-    // normalize, and the parent world composes on the left of the
-    // per-instance matrix before the upper-left 3x3 carries the normal.
-    assert.match(
-        String(vertex?.data),
-        /deformation\.boneMatrices\[u32\(input\.joints\.w\)\] \* input\.weights\.w;/,
-    );
-    assert.doesNotMatch(String(vertex?.data), /joints1|weights1/);
-    assert.match(
-        String(vertex?.data),
-        /worldNormal =\s*\(skin \* vec4<f32>\(normalize\(worldNormal\), 0\.0\)\)\.xyz;/,
-    );
-    assert.match(
-        String(vertex?.data),
-        /instanceUniforms\.parentWorld \* localInstanceMatrix;/,
-    );
-    assert.match(
-        String(vertex?.data),
-        /worldNormal = instanceNormal \* worldNormal;/,
-    );
+    assert.ok(vertex);
+    assert.equal(vertex.data, materialVertexWgsl(true, true, true, context));
+    assert.doesNotMatch(String(vertex.data), /joints1|weights1/);
+    for (const module of ["skeleton-fragment.ts", "thin-instance-fragment.ts", "morph-fragment-core.ts"]) {
+        assert.ok(String(vertex.data).includes(module));
+    }
 });
 
 test("emits only reached custom shader variants", () => {
