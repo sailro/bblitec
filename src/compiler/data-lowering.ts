@@ -4755,6 +4755,78 @@ export class DataLowerer {
      * Compiles an expression against a known data sink type, producing a C++
      * expression string.
      */
+    /** Lowers selected branch preparation after the caller evaluates the condition once. */
+    public compileConditionalForSink(
+        unwrapped: ts.ConditionalExpression,
+        dataType: DataType,
+        condition: string,
+    ): string {
+        if (dataType.kind === "optional") {
+            // The selected value is wrapped in `bbl::js::Nullable`
+            // below, which is the data runtime's own type.
+            this.context.reachJsData();
+        }
+        const compileBranch = (
+            branch: ts.Expression,
+        ): { cpp: string; lines: string[] } => {
+            let compiled = "";
+            const lines = this.context.captureEmittedLines(
+                () => {
+                    compiled = this.compileForSink(
+                        branch,
+                        dataType,
+                    );
+                },
+            );
+            return {
+                cpp:
+                    dataType.kind === "optional"
+                        ? `${this.context.dataTypes.cppType(dataType)}{${compiled}}`
+                        : compiled,
+                lines,
+            };
+        };
+        if (condition === "true" || condition === "false") {
+            const selected = compileBranch(
+                condition === "true"
+                    ? unwrapped.whenTrue
+                    : unwrapped.whenFalse,
+            );
+            for (const line of selected.lines) {
+                this.context.emit(line);
+            }
+            return selected.cpp;
+        }
+        const whenTrue = compileBranch(unwrapped.whenTrue);
+        const whenFalse = compileBranch(unwrapped.whenFalse);
+        if (
+            whenTrue.lines.length === 0 &&
+            whenFalse.lines.length === 0
+        ) {
+            return (
+                `(${condition}` +
+                ` ? ${whenTrue.cpp}` +
+                ` : ${whenFalse.cpp})`
+            );
+        }
+        const returnType =
+            this.context.dataTypes.cppType(dataType);
+        const indented = (lines: string[]): string =>
+            lines.map((line) => `        ${line}`).join("\n");
+        const trueLines = indented(whenTrue.lines);
+        const falseLines = indented(whenFalse.lines);
+        return (
+            `([&]() -> ${returnType} {\n` +
+            `    if (${condition}) {\n` +
+            (trueLines ? `${trueLines}\n` : "") +
+            `        return ${whenTrue.cpp};\n` +
+            `    }\n` +
+            (falseLines ? `${falseLines}\n` : "") +
+            `    return ${whenFalse.cpp};\n` +
+            `}())`
+        );
+    }
+
     public compileForSink(
         expression: ts.Expression,
         dataType: DataType,
@@ -4817,70 +4889,7 @@ export class DataLowerer {
             const condition = this.context.compileCondition(
                 unwrapped.condition,
             );
-            if (dataType.kind === "optional") {
-                // The selected value is wrapped in `bbl::js::Nullable`
-                // below, which is the data runtime's own type.
-                this.context.reachJsData();
-            }
-            const compileBranch = (
-                branch: ts.Expression,
-            ): { cpp: string; lines: string[] } => {
-                let compiled = "";
-                const lines = this.context.captureEmittedLines(
-                    () => {
-                        compiled = this.compileForSink(
-                            branch,
-                            dataType,
-                        );
-                    },
-                );
-                return {
-                    cpp:
-                        dataType.kind === "optional"
-                            ? `${this.context.dataTypes.cppType(dataType)}{${compiled}}`
-                            : compiled,
-                    lines,
-                };
-            };
-            if (condition === "true" || condition === "false") {
-                const selected = compileBranch(
-                    condition === "true"
-                        ? unwrapped.whenTrue
-                        : unwrapped.whenFalse,
-                );
-                for (const line of selected.lines) {
-                    this.context.emit(line);
-                }
-                return selected.cpp;
-            }
-            const whenTrue = compileBranch(unwrapped.whenTrue);
-            const whenFalse = compileBranch(unwrapped.whenFalse);
-            if (
-                whenTrue.lines.length === 0 &&
-                whenFalse.lines.length === 0
-            ) {
-                return (
-                    `(${condition}` +
-                    ` ? ${whenTrue.cpp}` +
-                    ` : ${whenFalse.cpp})`
-                );
-            }
-            const returnType =
-                this.context.dataTypes.cppType(dataType);
-            const indented = (lines: string[]): string =>
-                lines.map((line) => `        ${line}`).join("\n");
-            const trueLines = indented(whenTrue.lines);
-            const falseLines = indented(whenFalse.lines);
-            return (
-                `([&]() -> ${returnType} {\n` +
-                `    if (${condition}) {\n` +
-                (trueLines ? `${trueLines}\n` : "") +
-                `        return ${whenTrue.cpp};\n` +
-                `    }\n` +
-                (falseLines ? `${falseLines}\n` : "") +
-                `    return ${whenFalse.cpp};\n` +
-                `}())`
-            );
+            return this.compileConditionalForSink(unwrapped, dataType, condition);
         }
         // `left ?? right` for a sink is a select the operator already
         // lowers: the general arm yields the selected value at the left's

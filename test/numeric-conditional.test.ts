@@ -46,6 +46,8 @@ test("numeric conditional preparation runs only in the selected branch", { skip:
         if (skipped !== 0 || item.reads !== 0) throw new Error("unselected getter ran");
         const taken = !outer ? (found?.active ? 1 : 0) : 0;
         if (taken !== 1 || item.reads !== 1) throw new Error("selected getter count");
+        const fromGetter = item.active ? 9 : 0;
+        if (fromGetter !== 9 || item.reads !== 2) throw new Error("condition evaluated twice");
     `;
     const output = resolve("artifacts/numeric-conditional");
     mkdirSync(output, { recursive: true });
