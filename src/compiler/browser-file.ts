@@ -213,6 +213,16 @@ export function compileBrowserFileCall(
     ) {
         context.expectArgumentCount(call, 1, 1);
         const argument = context.compileValue(call.arguments[0]!);
+        // A URL the bake driver produced exists only at generation; the
+        // release upstream writes for it is the driver's own page's to
+        // perform, so the call is no statement here and reaches no file
+        // bridge.
+        if (
+            callee.name.text === "revokeObjectURL" &&
+            argument.kind === "executed-url"
+        ) {
+            return { kind: "void", cpp: "" };
+        }
         const engine = context.requireDefaultEngine(call);
         context.reachFeature("browser:file", call);
         if (callee.name.text === "createObjectURL") {

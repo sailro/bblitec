@@ -35,6 +35,7 @@ import {
     pinnedBrowserEntryUrl,
 } from "./capture-suite-reference.js";
 import {
+    pageBase64Script,
     runPageGlobal,
     screenshotCaptureBrowserArgs,
 } from "./browser-harness.js";
@@ -43,6 +44,12 @@ import {
     moduleClosureBytes,
     moduleIdentity,
 } from "./bake-cache.js";
+import {
+    HOOK_NAMES,
+    type LiveGraph,
+    type LiveSystemFacts,
+    SLOT_NAMES,
+} from "./lowering/node-particle-live-lowerer.js";
 
 /**
  * The graph a `parseNodeParticleSource` call reached.
@@ -68,6 +75,17 @@ export type NodeParticleGraphSource =
           exportName: string;
           /** The factory's own arguments, as the static JSON they are. */
           args: readonly unknown[];
+          /**
+           * Arguments that are URLs a sibling module function produced
+           * from a canvas it drew (`createNpeSprite2DGraph(flareUrl)`).
+           * The driver runs that function in the same browser and passes
+           * what it returned, in place of the JSON at that index.
+           */
+          urlArguments?: ReadonlyArray<{
+              index: number;
+              module: string;
+              exportName: string;
+          }>;
           normalized?: true;
       };
 
@@ -209,6 +227,30 @@ export interface NodeParticleSprite2DRequest {
     opacity?: number;
     visible?: boolean;
     order?: number;
+    /**
+     * The scene never stepped or froze this set: the renderer's own hook
+     * animates it every frame, so the bake reports the built graph and the
+     * system's build facts for the live lowering instead of a frozen state.
+     */
+    live?: true;
+}
+
+/**
+ * One live system, as the bake reports it for the live lowering
+ * (`src/lowering/node-particle-live-lowerer.ts`): the parsed graph, the
+ * facts read off the system the pin built, and the texture its block
+ * loaded -- with the bytes when the URL was a browser object URL that dies
+ * with the page.
+ */
+export interface NodeParticleLiveBake {
+    /** Index into the request's `sprite2d` list, and the bridge within it. */
+    request: number;
+    bridge: number;
+    set: number;
+    system: number;
+    graph: LiveGraph;
+    facts: LiveSystemFacts;
+    texture: NodeParticleTexture & { bytes?: string; mediaType?: string };
 }
 
 /**
@@ -339,17 +381,34 @@ export interface NodeParticleBake {
     registrations: NodeParticleExpansion[];
     /** `registerNodeParticleSet2D*` expansions, in request order. */
     sprite2d: NodeParticleExpansion[];
+    /** The systems live pure-2D bindings walk, with their build facts. */
+    live: NodeParticleLiveBake[];
 }
 
 /** The pinned package path the served driver imports. */
 const pinnedPackage = pinnedBrowserEntryUrl;
 
-function graphExpression(graph: NodeParticleGraphSource): string {
+function graphExpression(graph: NodeParticleGraphSource, setIndex: number): string {
     if (graph.kind === "literal") {
         return JSON.stringify(graph.graph);
     }
-    const args = graph.args.map((value) => JSON.stringify(value)).join(", ");
+    const args = graph.args.map((value, index) => {
+        const url = graph.urlArguments?.find((entry) => entry.index === index);
+        return url ? `url_${setIndex}_${index}` : JSON.stringify(value);
+    }).join(", ");
     return `${graph.exportName}(${args})`;
+}
+
+/**
+ * The URL arguments a factory takes, produced ahead of the build by the
+ * same module functions the scene awaited, in the same browser.
+ */
+function urlArgumentLines(graph: NodeParticleGraphSource, setIndex: number): string[] {
+    if (graph.kind !== "module") return [];
+    return (graph.urlArguments ?? []).map(
+        (entry) =>
+            `    const url_${setIndex}_${entry.index} = await ${entry.exportName}();`,
+    );
 }
 
 /**
@@ -372,6 +431,9 @@ function graphImports(request: NodeParticleBakeRequest): string {
     for (const set of request.sets) {
         if (set.graph.kind !== "module") continue;
         moduleImport(set.graph.module, set.graph.exportName);
+        for (const url of set.graph.urlArguments ?? []) {
+            moduleImport(url.module, url.exportName);
+        }
     }
     for (const texture of request.textures ?? []) {
         const { module, exportName } = pixelsModule(texture.source);
@@ -511,20 +573,30 @@ function cameraLines(set: NodeParticleSetRequest): string[] {
  * -- and it stays async because the normalizer fetches its heavy runtime
  * lazily, only for a graph that actually carries a Teleport-family block.
  */
-function graphArgument(graph: NodeParticleGraphSource): string {
-    const parsed = `parseNodeParticleSource(${graphExpression(graph)})`;
+function graphArgument(graph: NodeParticleGraphSource, setIndex: number): string {
+    const parsed = `parseNodeParticleSource(${graphExpression(graph, setIndex)})`;
     return graph.normalized
         ? `await normalizeNodeParticleGraph(${parsed})`
         : parsed;
 }
 
+/**
+ * The build calls, one per set. Each parsed graph's block map is wrapped
+ * to record the order the pin's `buildBlock` looks blocks up, which is the
+ * traversal the live lowering restates and checks itself against; a
+ * frozen set pays one array push per lookup and reads none of it.
+ */
 function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
     return sets
         .map((set, index) =>
             [
                 ...cameraLines(set),
+                ...urlArgumentLines(set.graph, index),
+                `    graphs[${index}] = ${graphArgument(set.graph, index)};`,
+                `    visits[${index}] = [];`,
+                `    graphs[${index}].blocks = recordVisits(graphs[${index}].blocks, visits[${index}]);`,
                 `    sets[${index}] = await ${set.builder}(engine, scene,`,
-                `        ${graphArgument(set.graph)}, {`,
+                `        graphs[${index}], {`,
                 `        emitter: { x: ${set.emitter[0]}, ` +
                     `y: ${set.emitter[1]}, z: ${set.emitter[2]} },`,
                 ...(set.textureBaseUrl === undefined
@@ -572,12 +644,12 @@ function driverImports(sets: readonly NodeParticleSetRequest[]): string[] {
 function driverModule(request: NodeParticleBakeRequest): string {
     const builders = driverImports(request.sets).join(`,\n         `);
     return `import { createEngine, createSceneContext, enableDeviceLostSceneRecovery,
-         createArcRotateCamera, parseNodeParticleSource, startParticleSystem,
+         createArcRotateCamera, parseNodeParticleSource, startParticleSystem, mat4Translation,
          stopParticleSystem, animateParticleSystem, createParticleBillboard,
          syncParticleBillboard, createTexture2DFromPixels,
          ${builders} } from ${JSON.stringify(pinnedPackage)};
 ${graphImports(request)}
-
+${pageBase64Script}
 window.__bakeNodeParticles = async () => {
     const canvas = document.getElementById("renderCanvas");
     const engine = await createEngine(canvas);
@@ -590,6 +662,20 @@ window.__bakeNodeParticles = async () => {
     // generator the page started with.
     const originalRandom = Math.random;
     const sets = [];
+    const graphs = [];
+    const visits = [];
+    // The pin's buildBlock looks each block up once, after marking it, so
+    // the lookups ARE its traversal order; a map that records them is what
+    // the live lowering compares its own restated walk against.
+    const recordVisits = (blocks, log) => {
+        const recording = new Map(blocks);
+        const plain = Map.prototype.get.bind(recording);
+        recording.get = (key) => {
+            log.push(key);
+            return plain(key);
+        };
+        return recording;
+    };
 ${buildCalls(request.sets)}
     const systemAt = (setIndex, index) => {
         const system = sets[setIndex].systems[index];
@@ -625,13 +711,15 @@ ${stepProgram(request.steps)}
     // the (set, system) pair it was BUILT as, which is the key the baked
     // table is looked up by.
     const frozen = ${JSON.stringify([...request.billboards])};
+    // A live binding's systems are not frozen: the renderer animates them
+    // every frame, and the live lowering takes the built graph instead.
     const expand = (requests) =>
-        requests.map(({ set: setIndex, autoStart }, request) => ({
+        requests.map(({ set: setIndex, autoStart, live }, request) => ({
             request,
             autoStart: autoStart ?? true,
             systems: sets[setIndex].systems.map((system) => {
                 const origin = originOf(system);
-                if (!frozen.some((entry) =>
+                if (!live && !frozen.some((entry) =>
                     entry.set === origin.set && entry.system === origin.system)) {
                     frozen.push({ set: origin.set, system: origin.system });
                 }
@@ -712,6 +800,87 @@ ${stepProgram(request.steps)}
             frames,
         });
     }
+    // The live systems: the parsed graph the pin built, and what its build
+    // installed, read off the system itself so the live lowering's own
+    // evaluation of the same graph has something to be checked against.
+    const live = [];
+    const liveRequests = ${JSON.stringify(
+        (request.sprite2d ?? []).flatMap((entry, index) => (entry.live ? [index] : [])),
+    )};
+    const emitters = ${JSON.stringify(request.sets.map((set) => set.emitter))};
+    for (const expansion of sprite2dExpansions) {
+        if (!liveRequests.includes(expansion.request)) continue;
+        for (let bridge = 0; bridge < expansion.systems.length; bridge++) {
+            const entry = expansion.systems[bridge];
+            const system = systemAt(entry.set, entry.system);
+            const graph = graphs[entry.set];
+            const systemBlockId = graph.systemBlockIds[entry.system];
+            if (systemBlockId === undefined) {
+                throw new Error("node-particle bake: a live system has no SystemBlock root");
+            }
+            const source = system.texture ? system.texture._recoverySource : null;
+            if (!system.texture || !source || source.kind !== "url") {
+                throw new Error("node-particle bake: a live system's texture is not a loaded image");
+            }
+            // A blob URL is this page's own; its bytes travel with the bake.
+            let bytes;
+            let mediaType;
+            if (source.url.startsWith("blob:")) {
+                const blob = await (await fetch(source.url)).blob();
+                bytes = bblBase64(new Uint8Array(await blob.arrayBuffer()));
+                mediaType = blob.type;
+            }
+            const slots = {};
+            for (const slot of ${JSON.stringify(SLOT_NAMES)}) {
+                slots[slot] = system[slot] !== null;
+            }
+            const hooks = {};
+            for (const hook of ${JSON.stringify(HOOK_NAMES)}) {
+                hooks[hook] = system[hook] !== undefined;
+            }
+            const emitter = emitters[entry.set];
+            live.push({
+                request: expansion.request,
+                bridge,
+                set: entry.set,
+                system: entry.system,
+                graph: {
+                    blocks: [...graph.blocks.values()].map((block) => ({
+                        id: block.id,
+                        className: block.className,
+                        name: block.name,
+                        inputs: block.inputs,
+                        serialized: block.serialized,
+                    })),
+                    systemBlockIds: graph.systemBlockIds,
+                },
+                facts: {
+                    set: entry.set,
+                    system: entry.system,
+                    systemBlockId,
+                    capacity: system.buffer.capacity,
+                    emitRate: system.emitRate,
+                    updateSpeed: system.updateSpeed,
+                    blendMode: system.blendMode,
+                    targetStopDuration: system.targetStopDuration,
+                    updateSteps: system.updateSteps.length,
+                    slots,
+                    hooks,
+                    emitter,
+                    emitterWorldMatrix: Array.from(mat4Translation(emitter[0], emitter[1], emitter[2])),
+                    visitOrder: visits[entry.set],
+                },
+                texture: {
+                    url: source.url,
+                    invertY: source.opts.invertY === true,
+                    sceneAssigned: false,
+                    width: system.texture.width,
+                    height: system.texture.height,
+                    ...(bytes === undefined ? {} : { bytes, mediaType }),
+                },
+            });
+        }
+    }
     // Every state is read before any probe runs: a probe step consumes the
     // seeded sequence, and a later system's extraction must not see it.
     // Only a REGISTERED system needs the probe -- it is the per-frame step
@@ -757,6 +926,7 @@ ${stepProgram(request.steps)}
         systems,
         registrations: registrationExpansions,
         sprite2d: sprite2dExpansions,
+        live,
     };
 };
 `;
@@ -767,7 +937,8 @@ function assertBake(value: unknown): NodeParticleBake {
         typeof value !== "object" ||
         value === null ||
         !Array.isArray((value as { systems?: unknown }).systems) ||
-        !Array.isArray((value as { sprite2d?: unknown }).sprite2d)
+        !Array.isArray((value as { sprite2d?: unknown }).sprite2d) ||
+        !Array.isArray((value as { live?: unknown }).live)
     ) {
         throw new Error("The node-particle bake returned no systems.");
     }
@@ -816,7 +987,8 @@ export async function bakeNodeParticles(
         await cachedJsonBake<NodeParticleBake>(
             {
                 kind: "node-particle",
-                version: "1",
+                // 2: the bake reports live systems beside the frozen ones.
+                version: "2",
                 module: moduleIdentity(import.meta.url),
                 browser: true,
                 parameters: {},

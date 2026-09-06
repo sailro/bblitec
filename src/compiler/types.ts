@@ -122,6 +122,7 @@ export interface CompileManifest {
   geometryOutputTasks: GeometryOutputTaskManifest[];
   postProcessTasks: PostProcessTaskManifest[];
   postProcessComposites: PostProcessCompositeManifest[];
+  screenSpaceTasks: ScreenSpaceTaskManifest[];
   adaptations: CompileAdaptation[];
   scenePbrMaterials: ScenePbrMaterialManifest[];
   /**
@@ -1042,7 +1043,13 @@ export type PostProcessOptionValue =
    * say, so the name travels to composition and the pinned module answers
    * it -- the value is never restated here.
    */
-  | { pinnedEnum: string; member: string };
+  | { pinnedEnum: string; member: string }
+  /**
+   * A numeric triple, which only a screen-space task reads: the contact
+   * shadows' `tint`. It travels whole to the pin's own factory like every
+   * other setting.
+   */
+  | readonly number[];
 
 /**
  * One reached post-process pass, in reach order.
@@ -1080,6 +1087,28 @@ export interface PostProcessTaskManifest {
    * forwarded whole — the pin decides which of them its text branches on.
    */
   options: Record<string, PostProcessOptionValue>;
+}
+
+/**
+ * One reached screen-space effect task, in reach order.
+ *
+ * The pin builds each through its own factory, which generation runs; what
+ * the compiler records is the entry point, the settings the scene wrote and
+ * which of the optional textures it named. `taskIndex` is the reach order,
+ * which is the generated factory's identity.
+ */
+export interface ScreenSpaceTaskManifest {
+  taskIndex: number;
+  /** The Babylon Lite entry point the task was created through. */
+  intrinsic: string;
+  /** The scene's own name for the task, when it gave one. */
+  name?: string;
+  /** Every setting the scene wrote, statically resolved and forwarded whole. */
+  options: Record<string, PostProcessOptionValue>;
+  /** Whether the scene named a composite target. */
+  hasTarget: boolean;
+  /** Whether the scene named a depth source apart from the colour source. */
+  hasDepthTexture: boolean;
 }
 
 export interface CompileResult {
@@ -1176,6 +1205,32 @@ export type ValueKind =
    * and one that reaches anything else fails rather than compiling.
    */
   | "node-particle-2d-binding"
+  /**
+   * One bridge of a LIVE pure-2D binding (`binding.bridges[k]`): the
+   * mapping the generated registrar keeps for that system, whose `originPx`
+   * a scene moves per frame and whose `system.buffer.alive` it reads.
+   */
+  | "node-particle-2d-bridge"
+  /**
+   * `bridge.system.buffer` on a live bridge: the simulated buffer, whose
+   * one read is its live count.
+   */
+  | "node-particle-buffer"
+  /**
+   * `let x;` with no type: a name whose value is the compile-time record
+   * its first assignment binds (`let set; try { set = await build(...) }`).
+   * Nothing native exists until then, and a first assignment that is not
+   * such a record fails where the declaration would have.
+   */
+  | "pending-let"
+  /**
+   * The URL a zero-parameter module function produced from a canvas it
+   * drew at generation (`await createNpeSprite2DFlareUrl()`). It exists
+   * only as an argument to a node-particle graph factory, where the bake
+   * driver runs the same function in the same browser, and as the operand
+   * of the `URL.revokeObjectURL` that releases it, which erases.
+   */
+  | "executed-url"
   /**
    * A `CsgSolid`: the pinned BSP solid, which exists only at generation.
    * The plan it carries is replayed against the pin's own modules when
@@ -1921,6 +1976,21 @@ export interface Value {
   nodeParticleSetIndex?: number;
   nodeParticleSystemIndex?: number;
   /**
+   * For a pure-2D binding and its bridges: which
+   * `registerNodeParticleSet2D` request, and which bridge of it.
+   */
+  nodeParticleRequestIndex?: number;
+  nodeParticleBridgeIndex?: number;
+  /**
+   * The binding's systems are simulated natively every frame (lowered
+   * from the graph) rather than frozen at generation; its bridges and
+   * their systems and buffers carry the mark, since scene code reaches
+   * the generated registrar's mapping through them.
+   */
+  nodeParticleLive?: true;
+  /** For an `executed-url`: the module and export the driver runs. */
+  executedUrl?: { module: string; exportName: string };
+  /**
    * For a `createTexture2DFromPixels` texture: what the bake driver needs
    * to build the same texture in the browser. A particle system's texture
    * is assigned in scene code, and the pin reads its width and height to
@@ -2024,6 +2094,12 @@ export interface Value {
    * scene can name, so a setter on one is refused.
    */
   postProcessComposite?: PostProcessCompositeManifest;
+  /**
+   * Set instead when a `task` value names a screen-space effect. Its
+   * `outputTexture` is whichever target its composite ends on, and its
+   * settings are live record fields a scene may write.
+   */
+  screenSpaceTask?: ScreenSpaceTaskManifest;
   lightKind?: LightKind;
   /**
    * A camera's own construction, as static numbers, and the scene's
@@ -2405,6 +2481,13 @@ export type Feature =
   | "renderer:clip-plane"
   | "renderer:geometry-output"
   | "renderer:post-process"
+  /**
+   * The pin's screen-space contact-shadow and global-illumination tasks:
+   * two dedicated pipelines over a depth-only view plus the ordinary
+   * post-process passes they build, which is why reaching one also reaches
+   * `renderer:post-process`.
+   */
+  | "renderer:screen-space"
   | "renderer:high-precision-matrix"
   | "renderer:floating-origin"
   /**

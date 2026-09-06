@@ -21,8 +21,6 @@ import type { CompiledShaderProgram } from "./compiler.js";
 import type {
     CompiledNodeParticles,
     Feature,
-    NativeHostUi,
-    NativeHostUiElement,
 } from "./compiler/types.js";
 import { reachedGeneratedSources } from "./generated-sources.js";
 import {
@@ -39,6 +37,8 @@ import {
     composeComposite,
     composePostProcess,
 } from "./pinned-post-process.js";
+import { composeScreenSpaceTask } from "./pinned-screen-space.js";
+import { readNativeHostUi } from "./native-host-ui.js";
 import {
     featureActivationPath,
     featureActivationRows,
@@ -97,10 +97,6 @@ import { pinnedFeaturesCarrySkeleton } from "./pinned-mesh-features.js";
 import { DEFORMATION_BONE_SLOTS } from "./shader-builtins-standard.js";
 import { composeScenePipeline } from "./compose-pipeline.js";
 import { holdDistLock } from "./dist-lock.js";
-import {
-    isUiStyleSelectorKind,
-    nativeHostUiStyleRules,
-} from "./ui-style-rule.js";
 import {
     composeSplatModule,
     composeSplatShModule,
@@ -208,198 +204,6 @@ function parseArguments(arguments_: string[]): CliOptions {
         ...(height ? { height } : {}),
         ...(search ? { search } : {}),
         ...(hostUi ? { hostUi } : {}),
-    };
-}
-
-function refuseUnknownKeys(
-    record: Record<string, unknown>,
-    known: readonly string[],
-    location: string,
-): void {
-    for (const key of Object.keys(record)) {
-        if (!known.includes(key)) {
-            throw new Error(`${location}: unknown key '${key}'.`);
-        }
-    }
-}
-
-function nativeHostUiElement(
-    value: unknown,
-    location: string,
-): NativeHostUiElement {
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error(`${location} must be an object.`);
-    }
-    const record = value as Record<string, unknown>;
-    refuseUnknownKeys(
-        record,
-        ["tag", "text", "attributes", "children"],
-        location,
-    );
-    if (typeof record.tag !== "string") {
-        throw new Error(`${location}.tag must be a string.`);
-    }
-    if (record.text !== undefined && typeof record.text !== "string") {
-        throw new Error(`${location}.text must be a string.`);
-    }
-    let attributes: Record<string, string> | undefined;
-    if (record.attributes !== undefined) {
-        if (
-            !record.attributes ||
-            typeof record.attributes !== "object" ||
-            Array.isArray(record.attributes)
-        ) {
-            throw new Error(`${location}.attributes must be an object.`);
-        }
-        attributes = {};
-        for (const [name, attribute] of Object.entries(record.attributes)) {
-            if (typeof attribute !== "string") {
-                throw new Error(
-                    `${location}.attributes.${name} must be a string.`,
-                );
-            }
-            attributes[name] = attribute;
-        }
-    }
-    if (record.children !== undefined && !Array.isArray(record.children)) {
-        throw new Error(`${location}.children must be an array.`);
-    }
-    return {
-        tag: record.tag,
-        ...(record.text !== undefined ? { text: record.text } : {}),
-        ...(attributes ? { attributes } : {}),
-        ...(record.children
-            ? {
-                  children: record.children.map((child, index) =>
-                      nativeHostUiElement(
-                          child,
-                          `${location}.children[${index}]`,
-                      ),
-                  ),
-              }
-            : {}),
-    };
-}
-
-function readNativeHostUi(path: string): NativeHostUi {
-    const value: unknown = JSON.parse(readFileSync(resolve(path), "utf8"));
-    if (!value || typeof value !== "object" || Array.isArray(value)) {
-        throw new Error(`Native host UI '${path}' must contain an object.`);
-    }
-    const record = value as Record<string, unknown>;
-    refuseUnknownKeys(
-        record,
-        ["elements", "classStyles", "styleRules"],
-        `Native host UI '${path}'`,
-    );
-    if (!Array.isArray(record.elements)) {
-        throw new Error(`Native host UI '${path}' must contain elements[].`);
-    }
-    if (
-        record.classStyles !== undefined &&
-        !Array.isArray(record.classStyles)
-    ) {
-        throw new Error(`Native host UI '${path}' classStyles must be an array.`);
-    }
-    const classStyles = (record.classStyles ?? []).map((rule, index) => {
-        if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
-            throw new Error(`Native host UI '${path}' classStyles[${index}] must be an object.`);
-        }
-        const item = rule as Record<string, unknown>;
-        refuseUnknownKeys(
-            item,
-            ["className", "style"],
-            `Native host UI '${path}' classStyles[${index}]`,
-        );
-        if (
-            typeof item.className !== "string" ||
-            typeof item.style !== "string"
-        ) {
-            throw new Error(`Native host UI '${path}' classStyles[${index}] requires string className and style values.`);
-        }
-        return { className: item.className, style: item.style };
-    });
-    if (
-        record.styleRules !== undefined &&
-        !Array.isArray(record.styleRules)
-    ) {
-        throw new Error(`Native host UI '${path}' styleRules must be an array.`);
-    }
-    const styleRules = (record.styleRules ?? []).map((rule, index) => {
-        const location = `Native host UI '${path}' styleRules[${index}]`;
-        if (!rule || typeof rule !== "object" || Array.isArray(rule)) {
-            throw new Error(`${location} must be an object.`);
-        }
-        const item = rule as Record<string, unknown>;
-        refuseUnknownKeys(
-            item,
-            [
-                "kind",
-                "primary",
-                "secondary",
-                "tag",
-                "hover",
-                "focusVisible",
-                "maxWidth",
-                "style",
-            ],
-            location,
-        );
-        if (
-            !isUiStyleSelectorKind(item.kind) ||
-            typeof item.primary !== "string" ||
-            typeof item.style !== "string"
-        ) {
-            throw new Error(
-                `${location} requires a supported kind plus string primary and style values.`,
-            );
-        }
-        if (
-            item.secondary !== undefined &&
-            typeof item.secondary !== "string"
-        ) {
-            throw new Error(`${location}.secondary must be a string.`);
-        }
-        if (item.tag !== undefined && typeof item.tag !== "string") {
-            throw new Error(`${location}.tag must be a string.`);
-        }
-        if (item.hover !== undefined && typeof item.hover !== "boolean") {
-            throw new Error(`${location}.hover must be a boolean.`);
-        }
-        if (item.focusVisible !== undefined && typeof item.focusVisible !== "boolean") {
-            throw new Error(`${location}.focusVisible must be a boolean.`);
-        }
-        if (item.maxWidth !== undefined && typeof item.maxWidth !== "number") {
-            throw new Error(`${location}.maxWidth must be a number.`);
-        }
-        return {
-            kind: item.kind,
-            primary: item.primary,
-            style: item.style,
-            ...(item.secondary !== undefined
-                ? { secondary: item.secondary }
-                : {}),
-            ...(item.tag !== undefined ? { tag: item.tag } : {}),
-            ...(item.hover !== undefined ? { hover: item.hover } : {}),
-            ...(item.focusVisible !== undefined ? { focusVisible: item.focusVisible } : {}),
-            ...(item.maxWidth !== undefined
-                ? { maxWidth: item.maxWidth }
-                : {}),
-        };
-    });
-    return {
-        // As given (registry-relative), so the recorded activation site is
-        // machine-independent where an absolute resolution would not be.
-        sourcePath: path,
-        ...((classStyles.length > 0 || styleRules.length > 0)
-            ? { styleRules: nativeHostUiStyleRules({ classStyles, styleRules }) }
-            : {}),
-        elements: record.elements.map((element, index) =>
-            nativeHostUiElement(
-                element,
-                `Native host UI '${path}' elements[${index}]`,
-            ),
-        ),
     };
 }
 
@@ -633,10 +437,22 @@ async function bakeNodeParticleSystems(
     systems: NodeParticleSystemEmit[];
     sprite2d: NodeParticleSprite2DEmit[];
     registrations: NodeParticleRegistrationEmit[];
+    /** Whether any system was frozen at generation (the executed bake). */
+    frozen: boolean;
 }> {
     const { bakeNodeParticles } = await import("./pinned-node-particle.js");
     const bake = await bakeNodeParticles(program);
-    const systems = bake.systems.map((system) => {
+    // Whether a set's blend takes `createParticleBlend`'s five modes (the
+    // exact-blend builder, or the enabler over any builder) or the plain
+    // builder's three-arm mapping.
+    const exactBlendOf = (setIndex: number): boolean => {
+        const set = program.sets[setIndex];
+        return (
+            set?.builder === "buildNodeParticleSetWithBlendModes" ||
+            set?.enableBlendModes === true
+        );
+    };
+    const systems: NodeParticleSystemEmit[] = bake.systems.map((system) => {
         // A texture the scene assigned is already a generated asset -- the
         // pixel-buffer module the compiler registered -- so only a graph's
         // own loaded image is packaged from its URL here.
@@ -653,12 +469,9 @@ async function bakeNodeParticleSystems(
                 entry.set === system.set &&
                 entry.system === system.system,
         );
-        const set = program.sets[system.set];
         return {
             bake: system,
-            exactBlend:
-                set?.builder === "buildNodeParticleSetWithBlendModes" ||
-                set?.enableBlendModes === true,
+            exactBlend: exactBlendOf(system.set),
             textureAsset: asset?.output ?? "",
             ...(assigned
                 ? {
@@ -674,6 +487,40 @@ async function bakeNodeParticleSystems(
             ...(asset ? { asset } : {}),
         };
     });
+    // A live system has no frozen state: the renderer animates it every
+    // frame, and the live lowering takes the built graph and the facts the
+    // pin reported about its own build. What the bake row carries is what
+    // the atlas builder reads -- the texture, packaged from the bytes the
+    // driver fetched when the URL was a browser object URL.
+    for (const entry of bake.live) {
+        const { bytes, mediaType, ...texture } = entry.texture;
+        const source = bytes !== undefined
+            ? `data:${mediaType || "image/png"};base64,${bytes}`
+            : texture.url;
+        const asset = assetRecord(source, "texture", assetPayloads);
+        systems.push({
+            bake: {
+                set: entry.set,
+                system: entry.system,
+                capacity: entry.facts.capacity,
+                blendMode: entry.facts.blendMode,
+                updateSpeed: entry.facts.updateSpeed,
+                stepIsIdentity: false,
+                texture,
+                spriteSheet: null,
+                alive: 0,
+                positions: [],
+                sizes: [],
+                colors: [],
+                rotations: [],
+                frames: null,
+            },
+            exactBlend: exactBlendOf(entry.set),
+            textureAsset: asset.output,
+            asset,
+            live: { graph: entry.graph, facts: entry.facts },
+        });
+    }
     // The bake reports which systems each pure-2D binding walked, because a
     // set's count is the graph's answer and `systems.push` can add one from
     // another set. The mapping constants beside it are the scene's own.
@@ -681,6 +528,7 @@ async function bakeNodeParticleSystems(
         const request = program.sprite2d[expansion.request]!;
         return {
             exact: request.exact,
+            autoStart: request.autoStart,
             pixelsPerUnit: request.pixelsPerUnit,
             originPx: request.originPx,
             invertY: request.invertY,
@@ -702,7 +550,12 @@ async function bakeNodeParticleSystems(
     const registrations = bake.registrations.map((expansion) => ({
         systems: expansion.systems,
     }));
-    return { systems, sprite2d, registrations };
+    return {
+        systems,
+        sprite2d,
+        registrations,
+        frozen: bake.systems.length > 0,
+    };
 }
 
 /**
@@ -884,10 +737,29 @@ async function main(): Promise<void> {
     // emitters below, the image-codec scan and the manifest write.
     const bakedParticles = bakingNodeParticles
         ? await bakingNodeParticles
-        : { systems: [], sprite2d: [], registrations: [] };
+        : { systems: [], sprite2d: [], registrations: [], frozen: false };
     const nodeParticles = bakedParticles.systems;
     const nodeParticleSprite2d = bakedParticles.sprite2d;
     const nodeParticleRegistrations = bakedParticles.registrations;
+    if (bakedParticles.frozen) {
+        // A frozen system is the executed bake. A system a pure-2D binding
+        // took live is simulated natively from the lowered graph and
+        // records no adaptation of its own: its random draws are the pinned
+        // generator's, which `deterministic-seeded-random` already states.
+        result.manifest.adaptations.push({
+            id: "executed-node-particle-simulation",
+            category: "asset-materialization",
+            sourceSemantics:
+                "The scene builds a node-particle graph and steps its CPU simulation a fixed number of times before the first frame, drawing from the deterministic Math.random it installs.",
+            nativeSemantics:
+                "Generation runs the pin's own parser, graph builder and simulation in headless Chromium and bakes the particle state they produced; the native runtime draws that state and never simulates. The graph build is closures the compiler does not lower, and the value is fragile beyond a rounding step: the seed is drawn through Math.sin, which is not bit-portable off V8, so a native simulation would diverge into a different set of particles rather than a slightly different one. Everything downstream of the state -- the atlas, the blend and the per-particle write -- stays folded from the pinned declarations. The baked state depends on the Chrome that ran it, as the drawn atlas and the pinned GGX prefilter already do.",
+            risk: "medium",
+            validation: [
+                "scenes 262, 263, 264, 276, 277, 280 and 281 parity against the browser golden, which runs the same simulation at load",
+                "byte-stable across repeated compilations",
+            ],
+        });
+    }
     for (const system of nodeParticles) {
         if (!system.asset) continue;
         if (
@@ -1315,6 +1187,32 @@ async function main(): Promise<void> {
             }),
         ),
     );
+    const screenSpaceTasks = await Promise.all(
+        result.manifest.screenSpaceTasks.map(async (manifest) => ({
+            manifest,
+            composed: await composeScreenSpaceTask(manifest),
+        })),
+    );
+    if (screenSpaceTasks.length > 0) {
+        // The pin flags a temporal reallocation by comparing scaled sizes
+        // and keeps its GPU textures across frame-graph rebuilds; the
+        // backends renumber every target's allocation on a rebuild, and
+        // that identity is what the native frame function compares.
+        result.manifest.adaptations.push({
+            id: "screen-space-allocation-identity",
+            category: "rendering",
+            sourceSemantics:
+                "A screen-space task's record() flags a reallocation when " +
+                "its scaled extent changed and its temporal history survives " +
+                "a frame-graph rebuild that keeps every texture.",
+            nativeSemantics:
+                "The frame function flags a reallocation when a target's " +
+                "backend allocation changed, so a rebuild that recreates " +
+                "unchanged-size targets also invalidates the temporal history.",
+            risk: "low",
+            validation: ["screen-space-effects parity thresholds"],
+        });
+    }
     // Deformation runs on the GPU or not at all, so the transcribed vertex
     // stage's uniform array is a hard bound rather than a slow path. Both
     // halves of the question are settled here — the asset's largest skin and
@@ -1370,6 +1268,7 @@ async function main(): Promise<void> {
         postProcessShaders,
         ...(pickingShaders !== undefined ? { pickingShaders } : {}),
         postProcessComposites,
+        ...(screenSpaceTasks.length > 0 ? { screenSpaceTasks } : {}),
         ...(nodeParticles.length > 0 ? { nodeParticles } : {}),
         ...(nodeParticleSprite2d.length > 0
             ? { nodeParticleSprite2d }

@@ -48,6 +48,14 @@ export class PostProcessLowerer {
          * to the composite refusals; empty when the caller has no site.
          */
         private readonly refusalSite: string = "",
+        /**
+         * Writer bodies for stages another lowerer composed onto this
+         * table -- a screen-space task's composite pass, whose writer
+         * reads that task's live fields -- keyed by stage index. They join
+         * the emitted switch beside the effects declared here.
+         */
+        private readonly externalWriters: ReadonlyMap<number, string> =
+            new Map(),
     ) {
         this.passes = postProcessPassOrder(tasks, composites);
     }
@@ -642,6 +650,39 @@ ${this.uniformCases()}
 
 namespace bbl {
 
+void resolve_post_process_pass_output(
+    Engine& engine,
+    PostProcessPassOptions& pass) {
+    if (
+        pass.source.source == RenderTextureSource::render_target &&
+        pass.source.target.value >= engine.render_targets.size()) {
+        throw std::runtime_error("Post-process source is invalid.");
+    }
+    // prepareOutputTarget: the caller's target, or one made from the
+    // source's own descriptor at a single sample.
+    if (pass.target.value != invalid_handle) {
+        if (pass.target.value >= engine.render_targets.size()) {
+            throw std::runtime_error("Post-process target is invalid.");
+        }
+        pass.output_target = pass.target;
+        return;
+    }
+    if (pass.source.source != RenderTextureSource::render_target) {
+        throw std::runtime_error(
+            "A post-process pass with no target needs a render-target "
+            "source to size its own.");
+    }
+    const RenderTargetRecord& source =
+        engine.render_targets[pass.source.target.value];
+    RenderTargetOptions internal;
+    internal.samples = 1u;
+    internal.has_color = true;
+    internal.has_depth = false;
+    internal.width = source.width;
+    internal.height = source.height;
+    pass.output_target = create_render_target(engine, internal);
+}
+
 TaskHandle create_post_process_task(
     Engine& engine,
     PostProcessTaskOptions options) {
@@ -649,34 +690,7 @@ TaskHandle create_post_process_task(
         throw std::runtime_error("Post-process task records no pass.");
     }
     for (PostProcessPassOptions& pass : options.passes) {
-        if (
-            pass.source.source == RenderTextureSource::render_target &&
-            pass.source.target.value >= engine.render_targets.size()) {
-            throw std::runtime_error("Post-process source is invalid.");
-        }
-        // prepareOutputTarget: the caller's target, or one made from the
-        // source's own descriptor at a single sample.
-        if (pass.target.value != invalid_handle) {
-            if (pass.target.value >= engine.render_targets.size()) {
-                throw std::runtime_error("Post-process target is invalid.");
-            }
-            pass.output_target = pass.target;
-            continue;
-        }
-        if (pass.source.source != RenderTextureSource::render_target) {
-            throw std::runtime_error(
-                "A post-process pass with no target needs a render-target "
-                "source to size its own.");
-        }
-        const RenderTargetRecord& source =
-            engine.render_targets[pass.source.target.value];
-        RenderTargetOptions internal;
-        internal.samples = 1u;
-        internal.has_color = true;
-        internal.has_depth = false;
-        internal.width = source.width;
-        internal.height = source.height;
-        pass.output_target = create_render_target(engine, internal);
+        resolve_post_process_pass_output(engine, pass);
     }
     FrameTaskRecord task;
     task.kind = FrameTaskKind::post_process;
@@ -882,23 +896,28 @@ ${passes.join(",\n")},
             indices.push(pass.shaderIndex);
             byEffect.set(pass.intrinsic, indices);
         }
-        return [...byEffect]
-            .map(([intrinsic, indices]) => {
-                const effect = postProcessEffect(intrinsic);
-                if (!effect) {
-                    throw new Error(
-                        `Reached post-process effect '${intrinsic}' has no descriptor.`,
-                    );
-                }
-                const labels = indices
-                    .map((index) => `        case ${index}u:`)
-                    .join("\n");
-                return `${labels} {
+        const declared = [...byEffect].map(([intrinsic, indices]) => {
+            const effect = postProcessEffect(intrinsic);
+            if (!effect) {
+                throw new Error(
+                    `Reached post-process effect '${intrinsic}' has no descriptor.`,
+                );
+            }
+            const labels = indices
+                .map((index) => `        case ${index}u:`)
+                .join("\n");
+            return `${labels} {
 ${this.uniformWriterBody(effect)}
             break;
         }`;
-            })
-            .join("\n");
+        });
+        const external = [...this.externalWriters].map(
+            ([index, body]) => `        case ${index}u: {
+${body}
+            break;
+        }`,
+        );
+        return [...declared, ...external].join("\n");
     }
 
     /**
@@ -1179,21 +1198,23 @@ function compositeExtraIndex(
  * a swapchain-shaped format arriving here would mean the composite named one,
  * which it does not, and is refused with everything else unlisted.
  */
-function nativeTextureFormat(
+export function nativeTextureFormat(
     format: string,
     label: string,
     refusalSite = "",
 ): string {
     const native: Readonly<Record<string, string>> = {
+        r8unorm: "TextureFormatClass::r8_unorm",
         r16float: "TextureFormatClass::r16_float",
         r32float: "TextureFormatClass::r32_float",
+        rg16float: "TextureFormatClass::rg16_float",
         rgba8unorm: "TextureFormatClass::rgba8_unorm",
         rgba16float: "TextureFormatClass::rgba16_float",
     };
     const name = native[format];
     if (!name) {
         throw new Error(
-            `A composite sizes '${label}' in '${format}', which this port's ` +
+            `The pin keeps '${label}' in '${format}', which this port's ` +
                 `two backends do not both express.${refusalSite}`,
         );
     }

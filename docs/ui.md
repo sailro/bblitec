@@ -89,9 +89,12 @@ reached tags, platform font families/weights, fixed positioning/inset/calc,
 reached shorthands, packaged backgrounds, alpha colours, gradients, rounded
 borders, text effects and deterministic CSS animation.
 
-Stylesheet selectors are bounded: class/id, two-class compounds, reviewed
-id/class descendants and statically proven ancestor-class/tag forms with
-optional hover. Source order, specificity, attached-sheet order and live
+Stylesheet selectors are bounded: class/id, two-class and tag/class
+compounds, reviewed id/class descendants and statically proven
+ancestor-class/tag forms with optional hover. A tag-only rule is not
+projected; a companion spells it as an ancestor-class/tag form, whose
+specificity ties with the tag/class compound it pairs with, so their source
+order decides where the browser's specificity would. Source order, specificity, attached-sheet order and live
 max-width media evaluation are retained. Runtime style values pass through
 the projection; static property names and static values are validated.
 
@@ -103,7 +106,14 @@ existing children without recreating them.
 
 Fonts resolve through DirectWrite, CoreText or fontconfig, with platform emoji
 fallback where available. No hardcoded font paths are required. General
-emoji/ZWJ shaping is outside the default RmlUi font engine.
+emoji/ZWJ shaping is outside the default RmlUi font engine. A reached
+`<button>` without an author font takes Chromium's form-control default below
+author rules: the generic sans face two points under the 16px default, at
+that face's normal line height, rather than the inherited system-ui size.
+RmlUi has no `line-height: normal`; the projection approximates it with each
+face's own ratio -- the system face's at the document root, the generic sans
+face's on that button rule -- so an element at another size inherits a ratio
+computed for one face rather than the browser's per-size rounding.
 
 Maintained patches under `native/patches/` adapt the installed RmlUi:
 

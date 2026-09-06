@@ -186,6 +186,19 @@ export function sanitizeCppIdentifier(name: string): string {
 }
 
 /** A source-level name that is safe as an unprefixed C++ identifier. */
+/**
+ * A pinned camelCase name as the snake_case member the native records
+ * spell it: `posX` -> `pos_x`, `colorStepR` -> `color_step_r`,
+ * `_scaledStep` -> `scaled_step`. One spelling, so a lowerer reading a
+ * pinned field and the runtime record declaring it cannot disagree.
+ */
+export function snakeCase(name: string): string {
+    return name
+        .replace(/^_+/, "")
+        .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+        .toLowerCase();
+}
+
 export function cppIdentifier(name: string): string {
     const cleaned = sanitizeCppIdentifier(name);
     const prefixed = /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned;

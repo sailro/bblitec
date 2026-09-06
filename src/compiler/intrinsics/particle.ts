@@ -67,6 +67,13 @@ export interface ParticleIntrinsicContext
     readonly reachedNodeParticles: CompiledNodeParticles;
     requireDefaultEngine(node: ts.Node): string;
     compileStaticString(expression: ts.Expression): string;
+    lookupOptional(identifier: ts.Identifier): Value | undefined;
+    /**
+     * A live system draws the pin's own `Math.random` per particle in
+     * native code, so the browser reference must draw the same pinned
+     * sequence; this is the same reach lowered scene code records.
+     */
+    reachJsRandom(): void;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -115,15 +122,35 @@ function graphSource(
     }
     // The factory's own arguments travel as the static JSON they are: the
     // corpus passes a flags record assembled from browser-folded values, so
-    // by the time it reaches here every field is a constant.
+    // by the time it reaches here every field is a constant. A URL a
+    // sibling module function drew at generation travels as that function,
+    // which the driver runs in the same browser before the build.
+    const urlArguments: Array<{ index: number; module: string; exportName: string }> = [];
+    const args = (document.call?.arguments ?? []).map((argument, index) => {
+        const unwrapped = context.unwrap(argument);
+        const bound = ts.isIdentifier(unwrapped)
+            ? context.lookupOptional(unwrapped)
+            : undefined;
+        if (bound?.kind === "executed-url" && bound.executedUrl) {
+            urlArguments.push({ index, ...bound.executedUrl });
+            return null;
+        }
+        return staticArgumentJson(context, argument);
+    });
     return {
         kind: "module",
         module: document.module,
         exportName: document.exportName,
-        args: (document.call?.arguments ?? []).map((argument) =>
-            staticArgumentJson(context, argument),
-        ),
+        args,
+        ...(urlArguments.length > 0 ? { urlArguments } : {}),
     };
+}
+
+/** Whether a live pure-2D binding already took this set. */
+function isLive(context: ParticleIntrinsicContext, set: number): boolean {
+    return context.reachedNodeParticles.sprite2d.some(
+        (binding) => binding.set === set && binding.live === true,
+    );
 }
 
 /**
@@ -403,6 +430,13 @@ function requireUnbaked(
             node,
             "This particle system was already frozen by " +
                 "createParticleBillboard; the bake carries one state.",
+        );
+    }
+    if (isLive(context, set)) {
+        context.fail(
+            node,
+            "This particle system is animated every frame by its pure-2D " +
+                "binding; a scene step on a live system is not lowered.",
         );
     }
 }
@@ -740,30 +774,53 @@ export function compileParticleIntrinsic(
                         "binding; the bake carries one state per system.",
                 );
             }
+            // A set the scene never stepped or froze is LIVE: the pin's
+            // registrar animates it every frame from the renderer's hook,
+            // and the lowering simulates it natively from the graph
+            // (`src/lowering/node-particle-live-lowerer.ts`). Its random
+            // draws are then the pinned generator's, which the browser
+            // reference must install too.
+            const live =
+                !context.reachedNodeParticles.steps.some(
+                    (step) => "set" in step && step.set === index,
+                ) &&
+                !context.reachedNodeParticles.billboards.some(
+                    (frozen) => frozen.set === index,
+                );
+            if (live) context.reachJsRandom();
             context.reachedNodeParticles.sprite2d.push({
                 set: index,
                 exact:
                     importedName ===
                     "registerNodeParticleSet2DWithBlendModes",
                 ...sprite2dOptions(context, call.arguments[2]),
+                ...(live ? { live: true as const } : {}),
             });
             context.reachFeature("sprite:2d", call);
             context.reachFeature("particle:node", call);
+            const request = context.reachedNodeParticles.sprite2d.length - 1;
             context.emit(
                 "bbl::upstream::register_node_particle_set_2d(" +
                     `${renderer.engineCpp ?? context.requireDefaultEngine(call)}, ` +
-                    `${renderer.cpp}, ` +
-                    `${context.reachedNodeParticles.sprite2d.length - 1});`,
+                    `${renderer.cpp}, ${request});`,
             );
             // The binding upstream owns the hook and the layers it attached,
             // and every operation on it -- disposal above all -- refuses at
-            // its own intrinsic. What the corpus does with it is report its
-            // state through the canvas dataset, so it binds as a value the
-            // erasure carries: a read that reaches instrumentation
+            // its own intrinsic. What the corpus does with a FROZEN one is
+            // report its state through the canvas dataset, so it binds as a
+            // value the erasure carries: a read that reaches instrumentation
             // disappears with it, and a read that reaches anything else
             // fails as an undeterminable browser value rather than
-            // compiling to something this port does not have.
-            return { kind: "node-particle-2d-binding", cpp: "" };
+            // compiling to something this port does not have. A live one
+            // is marked, so `binding.bridges[k]` names the mapping the
+            // generated registrar keeps for its request.
+            return {
+                kind: "node-particle-2d-binding",
+                cpp: "",
+                nodeParticleRequestIndex: request,
+                nodeParticleSetIndex: index,
+                ...(live ? { nodeParticleLive: true as const } : {}),
+            };
         }
 
         case "buildNodeParticleSetWithTextureUpdates":

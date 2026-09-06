@@ -321,6 +321,10 @@ inline SpriteAtlasGpu& sprite_atlas_gpu(
     const SpriteAtlasRecord& atlas = engine.sprite_atlases[handle.value];
     SpriteAtlasGpu gpu;
     gpu.atlas = handle;
+    // The chain is the record's own `mip_maps`: off for `loadSpriteAtlas`,
+    // on for the atlas a node-particle texture block builds through
+    // `loadTexture2D`, whose trilinear sampler the layer binds -- so a
+    // minified sprite samples the same level the browser samples.
     gpu.texture = atlas.has_render_texture
         ? render_textures[atlas.render_texture.value]
         : upload_2d_texture(
@@ -330,7 +334,8 @@ inline SpriteAtlasGpu& sprite_atlas_gpu(
             atlas.width,
             atlas.height,
             SDL_GPU_TEXTUREFORMAT_R8G8B8A8_UNORM,
-            "sprite atlas");
+            "sprite atlas",
+            atlas_mip_levels(atlas));
     gpu.sampler = create_texture_sampler(device, atlas.sampler);
     gpu.owns_texture = !atlas.has_render_texture;
     cache.push_back(gpu);

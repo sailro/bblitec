@@ -1670,6 +1670,10 @@ bool ui_style_rule_matches(
         return
             ui_record_has_class(record, rule.primary) &&
             ui_record_has_class(record, rule.secondary);
+    case UiStyleSelectorKind::TagClass:
+        return
+            record.tag == rule.tag &&
+            ui_record_has_class(record, rule.primary);
     case UiStyleSelectorKind::ClassDescendantTag:
         if (record.tag != rule.tag) return false;
         break;
@@ -1713,6 +1717,9 @@ std::string ui_style_rule_selector(const UiStyleRule& rule) {
     case UiStyleSelectorKind::ClassDescendantTag:
         selector = "." + rule.primary + " " + rule.tag;
         break;
+    case UiStyleSelectorKind::TagClass:
+        selector = rule.tag + "." + rule.primary;
+        break;
     case UiStyleSelectorKind::IdDescendantClass:
         selector = "#" + rule.primary + " ." + rule.secondary;
         break;
@@ -1737,6 +1744,7 @@ std::uint32_t ui_style_rule_specificity(const UiStyleRule& rule) {
         classes += 2;
         break;
     case UiStyleSelectorKind::ClassDescendantTag:
+    case UiStyleSelectorKind::TagClass:
         ++classes;
         ++tags;
         break;

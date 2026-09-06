@@ -504,6 +504,12 @@ struct DawnRenderTarget {
     std::uint32_t height = 0;
     /** What its colour attachment resolved to, for a target that follows it. */
     WGPUTextureFormat color_format = WGPUTextureFormat_Undefined;
+    /**
+     * Which build of the frame graph created these textures, numbered per
+     * target: the identity a screen-space effect compares its bound
+     * textures by (`ScreenSpaceFrameInputs`). Zero until first created.
+     */
+    std::uint32_t allocation = 0;
 };
 
 struct DawnRenderTask {
@@ -585,6 +591,39 @@ struct DawnPostProcessTask {
     std::size_t program = npos;
     WGPUBindGroup group = nullptr;
     WGPUBuffer uniforms = nullptr;
+};
+#endif
+
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+/**
+ * A screen-space producer or temporal resolve: the pin's own dedicated
+ * pipeline (`ensureProducerPipeline`, `ensurePipeline`) over the layout the
+ * generated table declares, shared by every task drawing the same stage.
+ */
+struct DawnScreenSpaceProgram {
+    std::uint32_t stage = 0;
+    WGPUShaderModule module = nullptr;
+    WGPUBindGroupLayout group_layout = nullptr;
+    WGPUPipelineLayout pipeline_layout = nullptr;
+    WGPURenderPipeline pipeline = nullptr;
+};
+
+/**
+ * One stage of one task: its program, its uniform buffer and the bind group
+ * over the frame-graph textures it reads. The pin rebuilds that group when
+ * any bound `GPUTexture` identity changed; here a texture changes identity
+ * only through the frame-graph rebuild that resets this stage, so an empty
+ * group is the whole test.
+ */
+struct DawnScreenSpaceStage {
+    std::size_t program = npos;
+    WGPUBuffer uniforms = nullptr;
+    WGPUBindGroup group = nullptr;
+};
+
+struct DawnScreenSpaceTask {
+    DawnScreenSpaceStage producer;
+    DawnScreenSpaceStage resolve;
 };
 #endif
 
@@ -833,6 +872,8 @@ struct DawnState : DawnDevice {
 #endif
     // Frame graph state.
     std::vector<DawnRenderTarget> render_targets;
+    /** The last `DawnRenderTarget::allocation` handed out. */
+    std::uint32_t render_target_allocations = 0;
     std::vector<DawnRenderTask> render_tasks;
     std::vector<DawnGeometryTask> geometry_tasks;
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
@@ -840,6 +881,14 @@ struct DawnState : DawnDevice {
     std::vector<std::vector<DawnPostProcessTask>> post_process_tasks;
     /** The distinct programs those passes draw with. */
     std::vector<DawnPostProcessProgram> post_process_programs;
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+    /** The distinct producer/resolve stages the screen-space tasks draw. */
+    std::vector<DawnScreenSpaceProgram> screen_space_programs;
+    // Per frame task, a screen-space task's two stages.
+    std::vector<DawnScreenSpaceTask> screen_space_tasks;
+#endif
+#if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
     // The pin's own `getBilinearSampler`: linear magnification and
     // minification over WebGPU's defaults, which is clamp addressing and a
     // nearest mip filter. `nearest_sampler` is already its `getNearestSampler`
@@ -1084,14 +1133,13 @@ struct DawnState : DawnDevice {
     WGPUBindGroup skybox_texture_group = nullptr;
     WGPUBindGroup skybox_material_group = nullptr;
     bool skybox_enabled = false;
-    WGPUShaderModule mip_vertex_module = nullptr;
-    WGPUShaderModule mip_fragment_module = nullptr;
-    WGPUSampler mip_sampler = nullptr;
+    // The pinned mip generator, shared with the pure-2D sprite driver
+    // through `pal_dawn_shared.hpp`.
+    DawnMipGenerator mips;
 #if BBLITE_GPU_MORPH_STORAGE
     WGPUBuffer empty_morph_deltas = nullptr;
     WGPUBuffer empty_morph_weights = nullptr;
 #endif
-    std::map<WGPUTextureFormat, WGPURenderPipeline> mip_pipelines;
     // Mesh pipelines keyed by (kind, shader variant id); the variant is
     // zero for every non-shader kind.
     std::map<
@@ -1166,6 +1214,28 @@ struct DawnState : DawnDevice {
         release(meshes);
         for (std::vector<DawnMesh>& layer : overlay_meshes) release(layer);
     }
+
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+    /**
+     * The screen-space programs key only the generated stage table's
+     * formats, so they outlive every frame-graph rebuild and go with the
+     * device.
+     */
+    void release_screen_space_programs() {
+        for (DawnScreenSpaceProgram& program : screen_space_programs) {
+            if (program.pipeline) wgpuRenderPipelineRelease(program.pipeline);
+            if (program.pipeline_layout) {
+                wgpuPipelineLayoutRelease(program.pipeline_layout);
+            }
+            if (program.group_layout) {
+                wgpuBindGroupLayoutRelease(program.group_layout);
+            }
+            if (program.module) wgpuShaderModuleRelease(program.module);
+            program = {};
+        }
+        screen_space_programs.clear();
+    }
+#endif
 
     void release_frame_graph_textures() {
 #if BBLITE_SHADOW_RECEIVERS
@@ -1286,6 +1356,19 @@ struct DawnState : DawnDevice {
             program = {};
         }
         post_process_programs.clear();
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+        // A stage's bind group names the attachments the graph just
+        // released, so it goes with them; its program keys only the
+        // generated stage table's formats and outlives every rebuild.
+        for (DawnScreenSpaceTask& task : screen_space_tasks) {
+            for (DawnScreenSpaceStage* stage : {&task.producer, &task.resolve}) {
+                if (stage->group) wgpuBindGroupRelease(stage->group);
+                if (stage->uniforms) wgpuBufferRelease(stage->uniforms);
+                *stage = {};
+            }
+        }
+        screen_space_tasks.clear();
 #endif
 #if defined(BBLITE_HAS_EFFECT_TASK) && BBLITE_HAS_EFFECT_TASK
         for (DawnEffectPass& pass : effect_tasks) {
@@ -1599,16 +1682,12 @@ struct DawnState : DawnDevice {
         }
         sprite_render_textures.clear();
 #endif
-        for (auto& [format, pipeline] : mip_pipelines) {
-            if (pipeline) wgpuRenderPipelineRelease(pipeline);
-        }
-        if (mip_sampler) wgpuSamplerRelease(mip_sampler);
-        if (mip_fragment_module) {
-            wgpuShaderModuleRelease(mip_fragment_module);
-        }
-        if (mip_vertex_module) wgpuShaderModuleRelease(mip_vertex_module);
+        release_dawn_mip_generator(mips);
         release_render_tasks();
         release_frame_graph_textures();
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+        release_screen_space_programs();
+#endif
 #if BBLITE_SHADOW_RECEIVERS
         // The receiver group already went with the frame-graph textures it
         // views; what remains is the generator-owned state, which outlives
@@ -2722,49 +2801,9 @@ WGPUTexture create_solid_texture(
 // (src/texture/generate-mipmaps.ts BLIT_SHADER) is deployed from
 // generation like every other pinned shader — mip-blit.vert/.frag —
 // instead of living here as a C++ string invisible to shader provenance.
-WGPURenderPipeline mip_pipeline_for(
-    DawnState& state,
-    WGPUTextureFormat format) {
-    const auto existing = state.mip_pipelines.find(format);
-    if (existing != state.mip_pipelines.end()) return existing->second;
-    if (!state.mip_vertex_module) {
-        state.mip_vertex_module =
-            load_wgsl_module(state, "mip-blit.vert");
-        state.mip_fragment_module =
-            load_wgsl_module(state, "mip-blit.frag");
-        // The pinned generator samples with the bilinear sampler:
-        // linear filters and WebGPU-default clamp addressing.
-        WGPUSamplerDescriptor sampler_descriptor =
-            WGPU_SAMPLER_DESCRIPTOR_INIT;
-        sampler_descriptor.magFilter = WGPUFilterMode_Linear;
-        sampler_descriptor.minFilter = WGPUFilterMode_Linear;
-        state.mip_sampler =
-            wgpuDeviceCreateSampler(state.device, &sampler_descriptor);
-    }
-    WGPURenderPipelineDescriptor descriptor =
-        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.vertex.module = state.mip_vertex_module;
-    descriptor.vertex.entryPoint = string_view("mainVertex");
-    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
-    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
-    color_target.format = format;
-    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
-    fragment.module = state.mip_fragment_module;
-    fragment.entryPoint = string_view("mainFragment");
-    fragment.targetCount = 1;
-    fragment.targets = &color_target;
-    descriptor.fragment = &fragment;
-    WGPURenderPipeline pipeline =
-        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
-    if (!pipeline) dawn_error("mip blit pipeline creation failed.");
-    state.mip_pipelines[format] = pipeline;
-    return pipeline;
-}
-
-// The pinned generator blits one face at a time for cube textures
-// (recordMipmaps' optional layer): views become single-layer 2D. The
-// record variant encodes into a caller-owned encoder (the pinned
-// recordMipmaps) so mid-frame chains stay ordered with the frame.
+// The generator itself lives in pal_dawn_shared.hpp (`DawnMipGenerator`),
+// shared with the pure-2D sprite driver; these are the scene driver's
+// spellings over its own state.
 void record_mipmaps(
     DawnState& state,
     WGPUCommandEncoder encoder,
@@ -2772,70 +2811,8 @@ void record_mipmaps(
     WGPUTextureFormat format,
     std::uint32_t mip_count,
     std::int32_t face = -1) {
-    if (mip_count <= 1) return;
-    WGPURenderPipeline pipeline = mip_pipeline_for(state, format);
-    WGPUBindGroupLayout layout =
-        wgpuRenderPipelineGetBindGroupLayout(pipeline, 0);
-    for (std::uint32_t level = 1; level < mip_count; ++level) {
-        WGPUTextureViewDescriptor source_descriptor =
-            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        source_descriptor.baseMipLevel = level - 1;
-        source_descriptor.mipLevelCount = 1;
-        WGPUTextureViewDescriptor target_descriptor =
-            WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
-        target_descriptor.baseMipLevel = level;
-        target_descriptor.mipLevelCount = 1;
-        if (face >= 0) {
-            source_descriptor.dimension = WGPUTextureViewDimension_2D;
-            source_descriptor.baseArrayLayer =
-                static_cast<std::uint32_t>(face);
-            source_descriptor.arrayLayerCount = 1;
-            target_descriptor.dimension = WGPUTextureViewDimension_2D;
-            target_descriptor.baseArrayLayer =
-                static_cast<std::uint32_t>(face);
-            target_descriptor.arrayLayerCount = 1;
-        }
-        WGPUTextureView source =
-            wgpuTextureCreateView(texture, &source_descriptor);
-        WGPUTextureView target =
-            wgpuTextureCreateView(texture, &target_descriptor);
-
-        std::array<WGPUBindGroupEntry, 2> entries{};
-        entries[0] = WGPU_BIND_GROUP_ENTRY_INIT;
-        entries[0].binding = 0;
-        entries[0].textureView = source;
-        entries[1] = WGPU_BIND_GROUP_ENTRY_INIT;
-        entries[1].binding = 1;
-        entries[1].sampler = state.mip_sampler;
-        WGPUBindGroupDescriptor bind_descriptor =
-            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-        bind_descriptor.layout = layout;
-        bind_descriptor.entryCount = entries.size();
-        bind_descriptor.entries = entries.data();
-        WGPUBindGroup bind_group =
-            wgpuDeviceCreateBindGroup(state.device, &bind_descriptor);
-
-        WGPURenderPassColorAttachment color_attachment =
-            WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
-        color_attachment.view = target;
-        color_attachment.loadOp = WGPULoadOp_Clear;
-        color_attachment.storeOp = WGPUStoreOp_Store;
-        WGPURenderPassDescriptor pass_descriptor =
-            WGPU_RENDER_PASS_DESCRIPTOR_INIT;
-        pass_descriptor.colorAttachmentCount = 1;
-        pass_descriptor.colorAttachments = &color_attachment;
-        WGPURenderPassEncoder pass =
-            wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
-        wgpuRenderPassEncoderSetPipeline(pass, pipeline);
-        wgpuRenderPassEncoderSetBindGroup(pass, 0, bind_group, 0, nullptr);
-        wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
-        wgpuRenderPassEncoderEnd(pass);
-        wgpuRenderPassEncoderRelease(pass);
-        wgpuBindGroupRelease(bind_group);
-        wgpuTextureViewRelease(target);
-        wgpuTextureViewRelease(source);
-    }
-    wgpuBindGroupLayoutRelease(layout);
+    record_mipmaps(
+        state.device, state.mips, encoder, texture, format, mip_count, face);
 }
 
 void generate_mipmaps(
@@ -2844,14 +2821,14 @@ void generate_mipmaps(
     WGPUTextureFormat format,
     std::uint32_t mip_count,
     std::int32_t face = -1) {
-    if (mip_count <= 1) return;
-    WGPUCommandEncoder encoder =
-        wgpuDeviceCreateCommandEncoder(state.device, nullptr);
-    record_mipmaps(state, encoder, texture, format, mip_count, face);
-    WGPUCommandBuffer command = wgpuCommandEncoderFinish(encoder, nullptr);
-    wgpuQueueSubmit(state.queue, 1, &command);
-    wgpuCommandBufferRelease(command);
-    wgpuCommandEncoderRelease(encoder);
+    generate_mipmaps(
+        state.device,
+        state.queue,
+        state.mips,
+        texture,
+        format,
+        mip_count,
+        face);
 }
 
 /**
@@ -3332,8 +3309,12 @@ WGPUTextureFormat texture_format(TextureFormatClass format) {
     switch (format) {
         case TextureFormatClass::rgba8_unorm:
             return WGPUTextureFormat_RGBA8Unorm;
+        case TextureFormatClass::r8_unorm:
+            return WGPUTextureFormat_R8Unorm;
         case TextureFormatClass::r16_float:
             return WGPUTextureFormat_R16Float;
+        case TextureFormatClass::rg16_float:
+            return WGPUTextureFormat_RG16Float;
         case TextureFormatClass::r32_float:
             return WGPUTextureFormat_R32Float;
         case TextureFormatClass::rgba16_float:
@@ -3409,12 +3390,12 @@ void create_frame_graph_textures(
         if (record.scale_source.value != invalid_handle) {
             const DawnRenderTarget& scale_source =
                 state.render_targets[record.scale_source.value];
-            target.width = scaled_target_extent(
+            const ScaledExtents scaled = scaled_target_extents(
+                record,
                 scale_source.width,
-                record.width_ratio);
-            target.height = scaled_target_extent(
-                scale_source.height,
-                record.height_ratio);
+                scale_source.height);
+            target.width = scaled.width;
+            target.height = scaled.height;
         }
         // The swapchain owns no texture here -- its view is acquired per
         // frame -- but a target that follows it still needs its format.
@@ -3422,6 +3403,7 @@ void create_frame_graph_textures(
             target.color_format = state.surface_format;
             continue;
         }
+        target.allocation = ++state.render_target_allocations;
         const std::uint32_t samples = task_sample_count(state, record.samples);
         // "The source's format" is what a composite's intermediate asks for
         // when it names none, so it resolves through the target it scales
@@ -3522,10 +3504,13 @@ void create_frame_graph_textures(
                     target.depth,
                     &depth_view_descriptor);
                 // A shadow map is read through a comparison sampler on the
-                // depth texture itself. Every other sampled depth is read
-                // as a Standard emissive slot, which needs the r32float
-                // copy so it decodes like SDL's D3D12 depth SRV.
-                if (!record.shadow_map) {
+                // depth texture itself, and a screen-space effect reads a
+                // colour-carrying target's depth through the depth-only view
+                // above. The remaining sampled depth -- a colour-less target
+                // -- is read as a Standard emissive slot, which needs the
+                // r32float copy so it decodes like SDL's D3D12 depth SRV;
+                // `dawn_render_target_texture` hands out nothing else.
+                if (!record.shadow_map && !record.has_color) {
                     target.depth_copy = create_frame_texture(
                         state,
                         WGPUTextureFormat_R32Float,
@@ -3553,13 +3538,24 @@ void create_frame_graph_textures(
     // before a frame starts and its entries own vectors worth not moving.
     for (std::size_t index = 0; index < engine.frame_tasks.size(); ++index) {
         const FrameTaskRecord& task = engine.frame_tasks[index];
-        if (task.kind != FrameTaskKind::post_process) continue;
+        // A screen-space task's history copy and composite are ordinary
+        // passes in the same list, recorded by the same pass path.
+        if (
+            task.kind != FrameTaskKind::post_process &&
+            task.kind != FrameTaskKind::screen_space) {
+            continue;
+        }
         if (
             state.post_process_tasks[index].size() <
             task.post_process.passes.size()) {
             state.post_process_tasks[index].resize(
                 task.post_process.passes.size());
         }
+    }
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+    if (state.screen_space_tasks.size() < engine.frame_tasks.size()) {
+        state.screen_space_tasks.resize(engine.frame_tasks.size());
     }
 #endif
     for (
@@ -8988,6 +8984,304 @@ void record_post_process_pass(
 }
 #endif
 
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+/** Builds the entry `screen_space_program` below found missing. */
+DawnScreenSpaceProgram build_screen_space_program(
+    DawnState& state,
+    std::uint32_t stage) {
+    const upstream::ScreenSpaceShaderInfo& info =
+        upstream::screen_space_shader_infos.at(stage);
+    DawnScreenSpaceProgram program;
+    program.stage = stage;
+    // Both stages live in one deployed module under the fragment stem.
+    program.module =
+        load_wgsl_module(state, std::string(info.stem) + ".frag");
+    // The pin's own bind group layout, entry for entry: every binding is
+    // fragment-visible, and the kinds are the ones its descriptors name.
+    std::vector<WGPUBindGroupLayoutEntry> layout_entries;
+    for (std::size_t index = 0; index < info.binding_count; ++index) {
+        const upstream::ScreenSpaceStageBinding& binding =
+            info.bindings[index];
+        WGPUBindGroupLayoutEntry entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        entry.binding = binding.binding;
+        entry.visibility = WGPUShaderStage_Fragment;
+        switch (binding.kind) {
+            case upstream::ScreenSpaceBindingKind::depth_texture:
+                entry.texture.sampleType = WGPUTextureSampleType_Depth;
+                break;
+            case upstream::ScreenSpaceBindingKind::texture:
+                entry.texture.sampleType = WGPUTextureSampleType_Float;
+                break;
+            case upstream::ScreenSpaceBindingKind::sampler:
+                entry.sampler.type = WGPUSamplerBindingType_Filtering;
+                break;
+            case upstream::ScreenSpaceBindingKind::uniform:
+                entry.buffer.type = WGPUBufferBindingType_Uniform;
+                break;
+        }
+        layout_entries.push_back(entry);
+    }
+    WGPUBindGroupLayoutDescriptor layout_descriptor =
+        WGPU_BIND_GROUP_LAYOUT_DESCRIPTOR_INIT;
+    layout_descriptor.entryCount = layout_entries.size();
+    layout_descriptor.entries = layout_entries.data();
+    program.group_layout =
+        wgpuDeviceCreateBindGroupLayout(state.device, &layout_descriptor);
+    WGPUPipelineLayoutDescriptor pipeline_layout =
+        WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
+    pipeline_layout.bindGroupLayoutCount = 1;
+    pipeline_layout.bindGroupLayouts = &program.group_layout;
+    program.pipeline_layout =
+        wgpuDeviceCreatePipelineLayout(state.device, &pipeline_layout);
+    // Single-sample, unblended, a triangle list: `ensureProducerPipeline`.
+    WGPUColorTargetState color_target = WGPU_COLOR_TARGET_STATE_INIT;
+    color_target.format = texture_format(info.target_format);
+    WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
+    fragment.module = program.module;
+    fragment.entryPoint = string_view(info.fragment_entry);
+    fragment.targetCount = 1;
+    fragment.targets = &color_target;
+    WGPURenderPipelineDescriptor descriptor =
+        WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
+    descriptor.layout = program.pipeline_layout;
+    descriptor.vertex.module = program.module;
+    descriptor.vertex.entryPoint = string_view(info.vertex_entry);
+    descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
+    descriptor.primitive.cullMode = WGPUCullMode_None;
+    descriptor.multisample.count = 1;
+    descriptor.multisample.mask = ~0u;
+    descriptor.fragment = &fragment;
+    program.pipeline =
+        wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
+    if (!program.pipeline) {
+        dawn_error("screen-space pipeline creation failed.");
+    }
+    return program;
+}
+
+std::size_t screen_space_program(DawnState& state, std::uint32_t stage) {
+    return find_or_create_program(
+        state.screen_space_programs,
+        [&](const DawnScreenSpaceProgram& program) {
+            return program.stage == stage;
+        },
+        [&] { return build_screen_space_program(state, stage); });
+}
+
+/**
+ * The view a stage binding reads, by the role the pin bound there: the
+ * depth attachment's depth-only view, the lit source colour, or one of the
+ * task's owned targets.
+ */
+WGPUTextureView screen_space_binding_view(
+    DawnState& state,
+    const ScreenSpaceTaskOptions& task,
+    upstream::ScreenSpaceTextureRole role) {
+    switch (role) {
+        case upstream::ScreenSpaceTextureRole::depth:
+            return state.render_targets.at(task.depth.value).depth_sampled_view;
+        case upstream::ScreenSpaceTextureRole::source_color:
+            return state.render_targets.at(task.source.value).sampled_color_view;
+        case upstream::ScreenSpaceTextureRole::raw:
+            return state.render_targets.at(task.raw.value).sampled_color_view;
+        case upstream::ScreenSpaceTextureRole::history:
+            return state.render_targets.at(task.history.value)
+                .sampled_color_view;
+        default:
+            dawn_error(
+                "A screen-space stage binds a texture role this backend "
+                "does not serve.");
+    }
+}
+
+/**
+ * A pass over one temporal target, cleared to zero: what every dedicated
+ * stage draws into and what the identity clear leaves empty.
+ */
+WGPURenderPassEncoder begin_screen_space_pass(
+    WGPUCommandEncoder encoder,
+    WGPUTextureView target) {
+    WGPURenderPassColorAttachment attachment =
+        WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+    attachment.view = target;
+    attachment.loadOp = WGPULoadOp_Clear;
+    attachment.storeOp = WGPUStoreOp_Store;
+    WGPURenderPassDescriptor pass_descriptor =
+        WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+    pass_descriptor.colorAttachmentCount = 1;
+    pass_descriptor.colorAttachments = &attachment;
+    return wgpuCommandEncoderBeginRenderPass(encoder, &pass_descriptor);
+}
+
+/**
+ * One dedicated stage: the block written to its buffer, the bind group
+ * built over the frame-graph textures it names (the pin's
+ * `rebuildProducerBindGroup`/`rebuildBindGroup` identity test, which here
+ * the frame-graph rebuild answers by resetting the stage), then the pin's
+ * clear-and-draw over a fullscreen triangle.
+ */
+void record_screen_space_stage(
+    DawnState& state,
+    const ScreenSpaceTaskOptions& task,
+    DawnScreenSpaceStage& stage,
+    std::uint32_t stage_index,
+    WGPUCommandEncoder encoder,
+    WGPUTextureView target,
+    const float* uniforms) {
+    if (stage.program == npos) {
+        stage.program = screen_space_program(state, stage_index);
+    }
+    const DawnScreenSpaceProgram& program =
+        state.screen_space_programs[stage.program];
+    const upstream::ScreenSpaceShaderInfo& info =
+        upstream::screen_space_shader_infos[program.stage];
+    if (!stage.uniforms) {
+        WGPUBufferDescriptor uniform_descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
+        uniform_descriptor.size = info.uniform_bytes;
+        uniform_descriptor.usage =
+            WGPUBufferUsage_Uniform | WGPUBufferUsage_CopyDst;
+        stage.uniforms =
+            wgpuDeviceCreateBuffer(state.device, &uniform_descriptor);
+    }
+    wgpuQueueWriteBuffer(
+        state.queue,
+        stage.uniforms,
+        0,
+        uniforms,
+        info.uniform_bytes);
+    if (!stage.group) {
+        std::vector<WGPUBindGroupEntry> entries;
+        for (std::size_t index = 0; index < info.binding_count; ++index) {
+            const upstream::ScreenSpaceStageBinding& binding =
+                info.bindings[index];
+            WGPUBindGroupEntry entry = WGPU_BIND_GROUP_ENTRY_INIT;
+            entry.binding = binding.binding;
+            switch (binding.kind) {
+                case upstream::ScreenSpaceBindingKind::depth_texture:
+                case upstream::ScreenSpaceBindingKind::texture:
+                    entry.textureView =
+                        screen_space_binding_view(state, task, binding.role);
+                    break;
+                case upstream::ScreenSpaceBindingKind::sampler:
+                    // The pin's one bilinear sampler wherever it samples.
+                    entry.sampler = state.post_process_bilinear_sampler;
+                    break;
+                case upstream::ScreenSpaceBindingKind::uniform:
+                    entry.buffer = stage.uniforms;
+                    entry.size = info.uniform_bytes;
+                    break;
+            }
+            entries.push_back(entry);
+        }
+        WGPUBindGroupDescriptor group_descriptor =
+            WGPU_BIND_GROUP_DESCRIPTOR_INIT;
+        group_descriptor.layout = program.group_layout;
+        group_descriptor.entryCount = entries.size();
+        group_descriptor.entries = entries.data();
+        stage.group =
+            wgpuDeviceCreateBindGroup(state.device, &group_descriptor);
+    }
+    WGPURenderPassEncoder pass = begin_screen_space_pass(encoder, target);
+    wgpuRenderPassEncoderSetPipeline(pass, program.pipeline);
+    wgpuRenderPassEncoderSetBindGroup(pass, 0, stage.group, 0, nullptr);
+    wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+}
+
+/** The pin's `clearIdentity`: one clear-only pass over a temporal target. */
+void clear_screen_space_target(
+    WGPUCommandEncoder encoder,
+    WGPUTextureView view) {
+    WGPURenderPassEncoder pass = begin_screen_space_pass(encoder, view);
+    wgpuRenderPassEncoderEnd(pass);
+    wgpuRenderPassEncoderRelease(pass);
+}
+
+/**
+ * One screen-space task, in the pin's own `execute` order: the generated
+ * frame function samples the task's live settings and advances its temporal
+ * state, and what it decided is encoded here -- the identity clear on the
+ * enabled-to-disabled transition or a singular view-projection inverse,
+ * then producer, resolve and history copy when the effect runs, then the
+ * composite whenever the task has one.
+ */
+template <typename SourceTextureView>
+void record_screen_space_task(
+    DawnState& state,
+    Engine& engine,
+    TaskHandle handle,
+    WGPUCommandEncoder encoder,
+    WGPUTextureView surface_view,
+    std::uint32_t width,
+    std::uint32_t height,
+    SourceTextureView source_texture_view,
+    bool& frame_graph_presented) {
+    FrameTaskRecord& record = engine.frame_tasks[handle.value];
+    const ScreenSpaceTaskOptions& task = record.screen_space;
+    DawnScreenSpaceTask& gpu = state.screen_space_tasks[handle.value];
+    const DawnRenderTarget& raw = state.render_targets.at(task.raw.value);
+    const DawnRenderTarget& stable =
+        state.render_targets.at(task.stable.value);
+    const DawnRenderTarget& history =
+        state.render_targets.at(task.history.value);
+    const ScreenSpaceFrameDecision decision = upstream::screen_space_frame(
+        engine,
+        handle,
+        screen_space_frame_inputs(state.render_targets, task));
+    if (decision.clear_identity) {
+        clear_screen_space_target(encoder, stable.color_view);
+        clear_screen_space_target(encoder, history.color_view);
+    }
+    if (decision.run_effect) {
+        record_screen_space_stage(
+            state,
+            task,
+            gpu.producer,
+            task.producer_shader,
+            encoder,
+            raw.color_view,
+            decision.producer_uniforms.data());
+        record_screen_space_stage(
+            state,
+            task,
+            gpu.resolve,
+            task.resolve_shader,
+            encoder,
+            stable.color_view,
+            decision.temporal_uniforms.data());
+        record_post_process_pass(
+            state,
+            engine,
+            handle,
+            encoder,
+            surface_view,
+            width,
+            height,
+            0,
+            source_texture_view);
+    }
+    if (record.post_process.passes.size() > 1) {
+        record_post_process_pass(
+            state,
+            engine,
+            handle,
+            encoder,
+            surface_view,
+            width,
+            height,
+            1,
+            source_texture_view);
+        const RenderTargetRecord& output_record =
+            engine.render_targets[
+                record.post_process.passes[1].output_target.value];
+        if (output_record.swapchain) {
+            frame_graph_presented = true;
+        }
+    }
+}
+#endif
+
 } // namespace
 
 
@@ -9516,6 +9810,7 @@ bool run_dawn_engine(Engine& engine) {
             state.sprite_passes.push_back(create_dawn_sprite_pass(
                 state.device,
                 state.queue,
+                state.mips,
                 engine,
                 SpriteRendererHandle{static_cast<std::uint32_t>(
                     state.sprite_passes.size())},
@@ -9616,6 +9911,7 @@ bool run_dawn_engine(Engine& engine) {
         state.scene_sprite_pass = create_dawn_scene_sprite_pass(
             state.device,
             state.queue,
+            state.mips,
             engine,
             scene.depth_hosted_sprite_layers,
             state.sprite_render_textures,
@@ -11833,7 +12129,7 @@ bool run_dawn_engine(Engine& engine) {
         const double benchmark_start = monotonic_milliseconds();
         // Only an animated billboard pass reads it, so the frame's own
         // delta is unused in a build that reaches no billboards.
-        [[maybe_unused]] const float delta_ms =
+        [[maybe_unused]] const double delta_ms =
             advance_frame(
                 engine,
                 scene,
@@ -11873,6 +12169,7 @@ bool run_dawn_engine(Engine& engine) {
             sync_dawn_sprite_pass_layers(
                 state.device,
                 state.queue,
+                state.mips,
                 engine,
                 sprite_pass,
                 state.sprite_render_textures,
@@ -14477,7 +14774,9 @@ bool run_dawn_engine(Engine& engine) {
                     }
                     wgpuRenderPassEncoderEnd(task_pass);
                     wgpuRenderPassEncoderRelease(task_pass);
-                    if (target_record.sampled_depth) {
+                    // Only a colour-less sampled-depth target has the copy
+                    // to refresh; see `create_frame_graph_textures`.
+                    if (target_record.sampled_depth && target.depth_copy) {
                         encode_depth_copy(state, encoder, target);
                     }
                     continue;
@@ -15193,6 +15492,21 @@ bool run_dawn_engine(Engine& engine) {
                         frame_graph_presented = true;
                     }
                 }
+                continue;
+            }
+#endif
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+            if (task.kind == FrameTaskKind::screen_space) {
+                record_screen_space_task(
+                    state,
+                    engine,
+                    handle,
+                    encoder,
+                    surface_view,
+                    width,
+                    height,
+                    source_texture_view,
+                    frame_graph_presented);
                 continue;
             }
 #endif

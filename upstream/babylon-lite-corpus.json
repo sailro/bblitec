@@ -4171,6 +4171,56 @@
           "sha256": "1c9473f822776cf0fc25332326d0d10a246b7e6608176db419fd294bd12ac533"
         }
       ]
+    },
+    {
+      "id": "screen-space-effects",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
+      "reference": {
+        "source": "reference/screen-space-effects/babylon-lite-golden.png",
+        "sha256": "b3c4e6a7bce57fc7e81e255727568451da651f91dbf9a485189e61605c03c115"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/screen-space-effects.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
+          "sha256": "18dd234dea1b384e0cbf3b4b22fdcb0603a588b02e722e25e2cdba53017e0285"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/screen-space-effects/cornellBox.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects/cornellBox.glb",
+          "sha256": "7e7401f90066d9f2b2f185dca8905ad6ba0da0bd22a197d9cdd1eb8f335a2fca"
+        }
+      ]
+    },
+    {
+      "id": "npe-sprite2d",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/npe-sprite2d.ts",
+      "reference": {
+        "source": "reference/npe-sprite2d/babylon-lite-golden.png",
+        "sha256": "2364ce6cc790f3dd69099c387a1cce89e3d6870bf3fc026b301573019f3f82e4"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/npe-sprite2d.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/npe-sprite2d.ts",
+          "sha256": "c5f964ad0fb8a174562fc649c445354a400d97920fc3dfa0decdb9d939b1ac79"
+        },
+        {
+          "upstreamPath": "lab/lite/src/shared/npe-sprite2d-fixture.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/shared/npe-sprite2d-fixture.ts",
+          "sha256": "438ccab47cc44670e48ae2bb0d69ff000bdde2b152f61765c831dab63dc477d6"
+        }
+      ]
     }
   ]
 }

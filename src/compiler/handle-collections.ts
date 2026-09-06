@@ -304,6 +304,29 @@ export class HandleCollections {
     }
 
     /**
+     * The asset's flattened mesh list as a value, when the expression is
+     * the `getContainerMeshes(container)` call itself rather than a local
+     * bound to it -- the same collection `iterationTarget` loops over.
+     */
+    private flattenedMeshesValue(
+        expression: ts.Expression,
+    ): Value | undefined {
+        const unwrapped = this.context.unwrap(expression);
+        if (
+            !ts.isCallExpression(unwrapped) ||
+            !ts.isIdentifier(unwrapped.expression) ||
+            this.context.importedName(unwrapped.expression) !==
+                "getContainerMeshes"
+        ) {
+            return undefined;
+        }
+        const value = this.context.compileValue(unwrapped);
+        return value.kind === "handle-collection" && value.handleCollection
+            ? value
+            : undefined;
+    }
+
+    /**
      * The loop target of a collection expression, plus the owner it was
      * read from — which is what the `??` binding needs to know whether the
      * members are a materialized asset's.
@@ -1230,13 +1253,14 @@ export class HandleCollections {
         const mapped = this.mappedMaterialFindSource(
             callee.expression,
         );
-        const bound = this.boundCollectionValue(
-            callee.expression,
-        );
-        const target = mapped?.target ?? (bound
-            ? this.iterationTarget(callee.expression)
-            : this.resolveExpressionTarget(callee.expression)
-                  ?.target);
+        // A named collection, or the asset's flattened mesh list searched
+        // in place -- `getContainerMeshes(asset).find(...)` -- which is
+        // the same iteration target a `for..of` over that call resolves.
+        const bound =
+            this.boundCollectionValue(callee.expression) ??
+            this.flattenedMeshesValue(callee.expression);
+        const target =
+            mapped?.target ?? this.iterationTarget(callee.expression);
         if (!target) {
             return undefined;
         }

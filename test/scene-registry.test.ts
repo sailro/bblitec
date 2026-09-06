@@ -23,7 +23,7 @@ test("registers unique generated scene targets", () => {
                 sourceOrigin === "babylon-lite-application",
             )
             .map(({ id }) => id),
-        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "antigravity-racer", "littlest-tokyo", "bath-day", "freeciv", "sandblox", "minecraft"],
+        ["tetris", "doom", "quake", "torus-states", "platformer", "break-meshes", "racer", "antigravity-racer", "littlest-tokyo", "bath-day", "freeciv", "sandblox", "minecraft", "screen-space-effects", "npe-sprite2d"],
     );
     assert.equal(new Set(scenes.map(({ output }) => output)).size, scenes.length);
     // Entries carry only what is theirs; every path a scene id implies is

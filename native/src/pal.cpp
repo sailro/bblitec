@@ -330,13 +330,13 @@ double performance_milliseconds() {
     return state.fixed ? state.milliseconds : monotonic_milliseconds();
 }
 
-void advance_performance_milliseconds(float delta_ms) {
+void advance_performance_milliseconds(double delta_ms) {
     auto& state = performance_clock_state();
-    if (state.fixed && delta_ms > 0.0f) {
-        // The scene's update delta is deliberately a float, matching the
-        // engine API. Browser-facing time is a DOMHighResTimeStamp, however,
-        // so retain the configured decimal as a double instead of accumulating
-        // the narrowed float and missing exact timer boundaries such as 700ms.
+    if (state.fixed && delta_ms > 0.0) {
+        // Browser-facing time is a DOMHighResTimeStamp, so the configured
+        // decimal is retained as a double and multiplied by the step count
+        // rather than accumulated, so exact timer boundaries such as 700ms
+        // are met.
         ++state.fixed_steps;
         state.milliseconds =
             static_cast<double>(state.fixed_steps) * state.fixed_delta_ms;

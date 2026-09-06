@@ -4331,6 +4331,55 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+    {
+        id: "screen-space-effects",
+        name: "Screen-Space Effects",
+        source: "corpus/babylon-lite/lab/lite/src/demos/screen-space-effects.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Screen-Space Effects",
+        nativeHostUi: "ui/screen-space-effects-host.json",
+        parity: {
+            // Both temporal effects accumulate 64 samples from a stable
+            // view, so the convention's frame 180 is well past convergence
+            // and the producer phase is the same on both sides. The
+            // canvas is within one count of the golden on SDL_GPU and
+            // byte-exact on Dawn; the 0.373 / 0.455 full-page residual is
+            // the three retained-UI toggle buttons (glyph rasterization,
+            // docs/ui.md), where the two backends agree to a thousandth,
+            // so one gate pair covers both.
+            referenceFrame: 180,
+            maxFullMad: 0.41,
+            maxForegroundMad: 0.5,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            // The demo clears to 0.025 grey, which is 6 in every channel;
+            // the box's own darkest walls sit well above 14, so a tight
+            // radius keeps them in the foreground.
+            backgroundColor: [6, 6, 6],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        id: "npe-sprite2d",
+        name: "NPE on Sprite2D",
+        source: "corpus/babylon-lite/lab/lite/src/demos/npe-sprite2d.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - NPE Sprite2D",
+        parity: {
+            // A live node-particle system drawn by the pure-2D bridge: the
+            // simulation runs natively from the lowered graph and both
+            // sides draw the pinned mulberry32 sequence, so the frame is a
+            // fixed count of animate calls from a fixed clock.
+            referenceFrame: 180,
+            maxFullMad: 0.01,
+            maxForegroundMad: 0.01,
+            // The renderer clears to (0.015, 0.007, 0.035): 4, 2, 9 in
+            // 8-bit; the flare's dimmest fringe sits well above that.
+            backgroundColor: [4, 2, 9],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
 ];
 
 /**

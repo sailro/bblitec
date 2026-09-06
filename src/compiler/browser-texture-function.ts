@@ -143,7 +143,7 @@ function mayOwnBrowserTextures(source: ts.SourceFile): boolean {
 }
 
 /** Walk `node`'s value positions; type annotations are not executed. */
-function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
+export function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
     ts.forEachChild(node, (child) => {
         if (ts.isTypeNode(child) || ts.isTypeAliasDeclaration(child)) return;
         visit(child);
@@ -151,7 +151,20 @@ function forEachValueNode(node: ts.Node, visit: (node: ts.Node) => void): void {
     });
 }
 
-function ownsCanvas(node: ts.Node): boolean {
+/** Whether a value position under `node` satisfies `predicate`. */
+export function containsValueNode(
+    node: ts.Node,
+    predicate: (child: ts.Node) => boolean,
+): boolean {
+    let found = false;
+    forEachValueNode(node, (child) => {
+        if (!found && predicate(child)) found = true;
+    });
+    return found;
+}
+
+/** A function body that allocates a browser canvas of either spelling. */
+export function ownsCanvas(node: ts.Node): boolean {
     let found = false;
     forEachValueNode(node, (child) => {
         if (found) return;
@@ -214,75 +227,22 @@ export function browserTextureFunctionShape(
     if (declaration.parameters.length !== 1) return undefined;
     const sourceFile = declaration.parent;
     if (!mayOwnBrowserTextures(sourceFile)) return undefined;
-    const symbols = new CompilerSymbols(checker);
+    if (!importsAreExecutable(sourceFile)) return undefined;
 
-    // The imports the module evaluation will run: the pin, or a repository
-    // sibling. Anything else is a package this bake will not resolve.
-    for (const statement of sourceFile.statements) {
-        if (!ts.isImportDeclaration(statement)) continue;
-        if (statement.importClause?.isTypeOnly) continue;
-        if (!ts.isStringLiteral(statement.moduleSpecifier)) return undefined;
-        const specifier = statement.moduleSpecifier.text;
-        if (isBabylonModule(specifier)) continue;
-        if (!specifier.startsWith(".")) return undefined;
-    }
-
-    const closure: ts.FunctionDeclaration[] = [declaration];
-    const queue: ts.FunctionDeclaration[] = [declaration];
-    let queueIndex = 0;
     let factories = 0;
-    while (queueIndex < queue.length) {
-        const current = queue[queueIndex++]!;
-        let rejected = false;
-        forEachValueNode(current, (node) => {
-            if (rejected) return;
-            if (
-                writesThroughTrackedRoot(node, (target) => {
-                    const root = rootIdentifier(target);
-                    return (
-                        root !== undefined &&
-                        namesModuleScopeBinding(checker, root)
-                    );
-                }, () => false)
-            ) {
-                // A module-level write memoizes across calls, so one
-                // execution would not describe what the scene does.
-                rejected = true;
-                return;
-            }
-            if (!ts.isIdentifier(node)) return;
-            if (
-                ts.isPropertyAccessExpression(node.parent) &&
-                node.parent.name === node
-            ) {
-                return;
-            }
-            const pinned = symbols.babylonImportName(node);
-            if (pinned !== undefined) {
-                if (!(supportedFactories as readonly string[]).includes(pinned)) {
-                    rejected = true;
-                    return;
-                }
-                if (
-                    ts.isCallExpression(node.parent) &&
-                    node.parent.expression === node
-                ) {
-                    factories += 1;
-                }
-                return;
-            }
-            const target = localFunctionDeclaration(checker, node, sourceFile);
-            if (target === "foreign") {
-                rejected = true;
-                return;
-            }
-            if (target && !closure.includes(target)) {
-                closure.push(target);
-                queue.push(target);
-            }
-        });
-        if (rejected) return undefined;
-    }
+    const closure = sameFileClosure(checker, declaration, (pinned, node) => {
+        if (!(supportedFactories as readonly string[]).includes(pinned)) {
+            return false;
+        }
+        if (
+            ts.isCallExpression(node.parent) &&
+            node.parent.expression === node
+        ) {
+            factories += 1;
+        }
+        return true;
+    });
+    if (!closure) return undefined;
     if (factories === 0) return undefined;
     if (!closure.some((member) => ownsCanvas(member))) return undefined;
 
@@ -300,6 +260,79 @@ export function browserTextureFunctionShape(
 }
 
 /**
+ * Whether a module's imports are ones an executed-in-browser bake resolves:
+ * the pin, or a repository sibling. Anything else is a package the bake
+ * server will not serve.
+ */
+export function importsAreExecutable(sourceFile: ts.SourceFile): boolean {
+    for (const statement of sourceFile.statements) {
+        if (!ts.isImportDeclaration(statement)) continue;
+        if (statement.importClause?.isTypeOnly) continue;
+        if (!ts.isStringLiteral(statement.moduleSpecifier)) return false;
+        const specifier = statement.moduleSpecifier.text;
+        if (isBabylonModule(specifier)) continue;
+        if (!specifier.startsWith(".")) return false;
+    }
+    return true;
+}
+
+/**
+ * The function plus every same-file function it transitively reaches, or
+ * undefined when the closure is not one a browser bake can execute whole:
+ * a module-level write (memoization across calls, so one execution would
+ * not describe what the scene does), a function declared in another file,
+ * or a pinned name `acceptPinned` refuses. `acceptPinned` sees every
+ * pinned import the closure reaches, in value position, with its node.
+ */
+export function sameFileClosure(
+    checker: ts.TypeChecker,
+    declaration: ts.FunctionDeclaration,
+    acceptPinned: (name: string, node: ts.Identifier) => boolean,
+): ts.FunctionDeclaration[] | undefined {
+    const sourceFile = declaration.getSourceFile();
+    const symbols = new CompilerSymbols(checker);
+    const closure: ts.FunctionDeclaration[] = [declaration];
+    for (let index = 0; index < closure.length; index += 1) {
+        let rejected = false;
+        forEachValueNode(closure[index]!, (node) => {
+            if (rejected) return;
+            if (
+                writesThroughTrackedRoot(node, (target) => {
+                    const root = rootIdentifier(target);
+                    return (
+                        root !== undefined &&
+                        namesModuleScopeBinding(checker, root)
+                    );
+                }, () => false)
+            ) {
+                rejected = true;
+                return;
+            }
+            if (!ts.isIdentifier(node)) return;
+            if (
+                ts.isPropertyAccessExpression(node.parent) &&
+                node.parent.name === node
+            ) {
+                return;
+            }
+            const pinned = symbols.babylonImportName(node);
+            if (pinned !== undefined) {
+                if (!acceptPinned(pinned, node)) rejected = true;
+                return;
+            }
+            const target = localFunctionDeclaration(checker, node, sourceFile);
+            if (target === "foreign") {
+                rejected = true;
+                return;
+            }
+            if (target && !closure.includes(target)) closure.push(target);
+        });
+        if (rejected) return undefined;
+    }
+    return closure;
+}
+
+/**
  * The same-file function an identifier names, `"foreign"` for one declared
  * elsewhere, or undefined when the identifier names no function body at all.
  *
@@ -307,7 +340,7 @@ export function browserTextureFunctionShape(
  * still reached, and leaving it out of the closure would leave its canvas,
  * its pinned reaches and its module-level writes unexamined.
  */
-function localFunctionDeclaration(
+export function localFunctionDeclaration(
     checker: ts.TypeChecker,
     identifier: ts.Identifier,
     sourceFile: ts.SourceFile,

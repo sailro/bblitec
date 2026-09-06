@@ -250,6 +250,21 @@ function compileEffectOptions(
         ...effect.extraTextures,
         ...(effect.usesCamera ? ["camera"] : []),
     ]);
+    return compileDescriptorOptions(context, object, intrinsic, handled);
+}
+
+/**
+ * Every named property of a task descriptor the caller did not read
+ * itself, statically resolved: the settings a pinned factory receives
+ * whole. A computed or spread member has no name to forward under and is
+ * refused.
+ */
+export function compileDescriptorOptions(
+    context: EngineOptionContext,
+    object: ts.ObjectLiteralExpression,
+    intrinsic: string,
+    handled: ReadonlySet<string>,
+): Record<string, PostProcessOptionValue> {
     const options: Record<string, PostProcessOptionValue> = {};
     for (const property of object.properties) {
         const key =
@@ -260,7 +275,7 @@ function compileEffectOptions(
         if (!key) {
             context.fail(
                 property,
-                "Reached post-process descriptors support named properties only.",
+                "Reached task descriptors support named properties only.",
             );
         }
         if (handled.has(key)) continue;
@@ -321,12 +336,18 @@ function paramValue(
  * extent: the pass then covered the whole target instead of the half the
  * scene asked for, with nothing said.
  */
-function compileOptionValue(
+export function compileOptionValue(
     context: EngineOptionContext,
     expression: ts.Expression,
     label: string,
 ): PostProcessOptionValue {
     const unwrapped = context.unwrap(expression);
+    // The contact shadows' `tint` triple: a numeric array forwarded whole.
+    if (ts.isArrayLiteralExpression(unwrapped)) {
+        return unwrapped.elements.map((element) =>
+            compileStaticNumber(context, element, label),
+        );
+    }
     if (ts.isObjectLiteralExpression(unwrapped)) {
         const component = (field: string): number => {
             const value = context.objectProperty(unwrapped, field);

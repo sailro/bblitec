@@ -69,6 +69,17 @@ import type { PinnedSplatShModule } from "./pinned-splat-fragments.js";
 import { GeometryOutputLowerer } from "./lowering/geometry-output-lowerer.js";
 import { SplatLowerer } from "./lowering/splat-lowerer.js";
 import { PostProcessLowerer } from "./lowering/post-process-lowerer.js";
+import {
+    ScreenSpaceLowerer,
+    screenSpaceShadersHeader,
+    type ScreenSpaceStageRow,
+    type ScreenSpaceLoweringInput,
+} from "./lowering/screen-space-lowerer.js";
+import type {
+    ComposedScreenSpaceStage,
+    ComposedScreenSpaceTask,
+} from "./pinned-screen-space.js";
+import type { ScreenSpaceTaskManifest } from "./compiler/types.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { VatLowerer } from "./lowering/vat-lowerer.js";
 import {
@@ -339,6 +350,16 @@ export interface UpstreamEmitOptions {
      * passes are numbered after every plain pass, so one table indexes both.
      */
     postProcessComposites: readonly ComposedComposite[];
+    /**
+     * Each reached screen-space effect with what running its factory
+     * built, in reach order. Their history-copy and composite passes are
+     * numbered after every composite's, in the same post-process table;
+     * their producer and resolve stages have a table of their own.
+     */
+    screenSpaceTasks?: readonly {
+        manifest: ScreenSpaceTaskManifest;
+        composed: ComposedScreenSpaceTask;
+    }[];
     gpuDeformation: boolean;
     /**
      * Whether the loader records live world boxes and default framing reads
@@ -547,6 +568,12 @@ const SHADER_FAMILIES = {
     /** The pin's Gaussian-splat module. */
     splat: { vertex: "vs", fragment: "fs", pinnedBindings: true },
     /**
+     * A screen-space producer or temporal resolve: the pin's own module in
+     * its own group scheme, naming its stages per module rather than per
+     * family, so each deployed row declares its own entry points.
+     */
+    screenSpace: { vertex: "", fragment: "", pinnedBindings: true },
+    /**
      * The two modules a GPU pick draws through: the mesh candidates', and
      * the Gaussian cloud's. Both are the pin's own compositions and both
      * name their stages the way its splat module does, but they are their
@@ -662,10 +689,20 @@ export function metallicReflectanceCapabilityDefines(
 function shaderDeclaration(
     output: string,
     family: ShaderFamily,
+    entryPoint?: string,
 ): { entryPoint: string; pinnedBindings: boolean } {
     const entry = SHADER_FAMILIES[family];
+    const familyEntry = output.includes(".vert.")
+        ? entry.vertex
+        : entry.fragment;
+    if (!entryPoint && !familyEntry) {
+        throw new Error(
+            `Shader family '${family}' names no entry point for ${output}; ` +
+                "the module must declare its own.",
+        );
+    }
     return {
-        entryPoint: output.includes(".vert.") ? entry.vertex : entry.fragment,
+        entryPoint: entryPoint ?? familyEntry,
         pinnedBindings: entry.pinnedBindings,
     };
 }
@@ -1359,7 +1396,38 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 stem: string;
                 entryPoint: string;
             }>;
+            /**
+             * The module's own entry point for its deployed stem, where
+             * the family names none: a screen-space stage names its
+             * fragment per module.
+             */
+            entryPoint?: string;
         }> = [];
+        // The Dawn backend's utility shaders, split from the pinned modules
+        // once for whichever drivers reach them.
+        let dawnUtilityMemo: DawnUtilityShaders | undefined;
+        const utilityShaders = (): DawnUtilityShaders =>
+            (dawnUtilityMemo ??= dawnUtilityShaders(transmission));
+        // The pinned mip generator's blit, deployed once however many
+        // drivers reach it: the scene renderer for every scene, and the
+        // sprite renderer for an atlas the pinned loader gave a chain.
+        const deployMipBlit = (): void => {
+            const vertex = "upstream/shaders/mip-blit.vert.native.wgsl";
+            if (composedShaders.some((entry) => entry.output === vertex)) {
+                return;
+            }
+            composedShaders.push(
+                { output: vertex, data: utilityShaders().mipBlitVertex },
+                {
+                    output: "upstream/shaders/mip-blit.frag.native.wgsl",
+                    data: utilityShaders().mipBlitFragment,
+                },
+            );
+            generated.push({
+                modulePath: "src/texture/generate-mipmaps.ts",
+                symbolName: "BLIT_SHADER",
+            });
+        };
         if (features.includes("effect:wrapper")) {
             // One module per descriptor, both entry points in it: the pin
             // builds one shader module and names a stage in each half of
@@ -1556,6 +1624,12 @@ ${wgsl}`,
             );
             generated.push(...spriteCoreAdditionalProvenance);
             if (features.includes("renderer:sprite")) {
+                // Dawn's sprite layers fill the mip chain of an atlas the
+                // pinned loader gave one -- a node-particle texture block's
+                // -- with the same pinned blit the scene renderer deploys.
+                // A pure-2D scene has no renderer block to deploy it, so it
+                // deploys here; the renderer block below skips a second copy.
+                deployMipBlit();
                 const composeSpriteShader = (options: {
                     uvScroll?: boolean;
                     fragment?: string;
@@ -1895,21 +1969,8 @@ ${wgsl}`,
             // the offline pipeline still compiles them like any deployed
             // WGSL, which is what keeps them under the same provenance
             // and drift checks.
-            const dawnUtility = dawnUtilityShaders(transmission);
-            composedShaders.push(
-                {
-                    output: "upstream/shaders/mip-blit.vert.native.wgsl",
-                    data: dawnUtility.mipBlitVertex,
-                },
-                {
-                    output: "upstream/shaders/mip-blit.frag.native.wgsl",
-                    data: dawnUtility.mipBlitFragment,
-                },
-            );
-            generated.push({
-                modulePath: "src/texture/generate-mipmaps.ts",
-                symbolName: "BLIT_SHADER",
-            });
+            const dawnUtility = utilityShaders();
+            deployMipBlit();
             if (transmission) {
                 composedShaders.push(
                     {
@@ -2027,24 +2088,11 @@ ${wgsl}`,
             );
         }
         if (features.includes("renderer:post-process")) {
-            this.writeSource(
-                "upstream/src/frame_graph_post_process.cpp",
-                new PostProcessLowerer(
-                    context,
-                    options.postProcessTasks,
-                    options.postProcessComposites,
-                    refusalReachedFrom(
-                        options.featureSites,
-                        "renderer:post-process",
-                    ),
-                ).lowerTaskRecords(),
-                generated,
-                "upstream/include/bblite/upstream/frame_graph_post_process.hpp",
-            );
-            // One stage table over both kinds of pass: the plain effects in
-            // reach order, then each composite's own chain. A pass is a pass
-            // once composed, so the deployed modules and the layout table do
-            // not distinguish where it came from.
+            // One stage table over every kind of pass: the plain effects in
+            // reach order, then each composite's own chain, then each
+            // screen-space task's history copy and composite. A pass is a
+            // pass once composed, so the deployed modules and the layout
+            // table do not distinguish where it came from.
             const postProcessStages: ComposedPostProcess[] = [
                 ...options.postProcessShaders,
                 ...options.postProcessComposites.flatMap((composite) =>
@@ -2055,6 +2103,105 @@ ${wgsl}`,
                     })),
                 ),
             ];
+            // The screen-space effects' dedicated stages, deduplicated by
+            // text like every other module: two contact-shadow tasks share
+            // one producer, and both kinds of task share nothing.
+            const screenSpaceStages: ScreenSpaceStageRow[] = [];
+            const screenSpaceStage = (
+                stage: ComposedScreenSpaceStage,
+            ): number => {
+                const found = screenSpaceStages.findIndex(
+                    (candidate) => candidate.wgsl === stage.wgsl,
+                );
+                if (found >= 0) return found;
+                screenSpaceStages.push({
+                    wgsl: stage.wgsl,
+                    stem: `screenspace-${screenSpaceStages.length}`,
+                    vertexEntry: stage.vertexEntry,
+                    fragmentEntry: stage.fragmentEntry,
+                    uniformBytes: stage.uniformBytes,
+                    targetFormat: stage.targetFormat,
+                    bindings: stage.bindings,
+                });
+                return screenSpaceStages.length - 1;
+            };
+            const screenSpaceInputs: ScreenSpaceLoweringInput[] = [];
+            for (const task of options.screenSpaceTasks ?? []) {
+                const historyCopyShader = postProcessStages.length;
+                postProcessStages.push(task.composed.historyCopy);
+                let compositeShader: number | undefined;
+                if (task.composed.composite) {
+                    compositeShader = postProcessStages.length;
+                    postProcessStages.push(task.composed.composite);
+                }
+                screenSpaceInputs.push({
+                    manifest: task.manifest,
+                    composed: task.composed,
+                    producerStage: screenSpaceStage(task.composed.producer),
+                    resolveStage: screenSpaceStage(task.composed.resolve),
+                    historyCopyShader,
+                    compositeShader,
+                });
+            }
+            const screenSpace =
+                screenSpaceInputs.length > 0
+                    ? new ScreenSpaceLowerer(context, screenSpaceInputs)
+                    : undefined;
+            this.writeSource(
+                "upstream/src/frame_graph_post_process.cpp",
+                new PostProcessLowerer(
+                    context,
+                    options.postProcessTasks,
+                    options.postProcessComposites,
+                    refusalReachedFrom(
+                        options.featureSites,
+                        "renderer:post-process",
+                    ),
+                    screenSpace?.compositeWriters(),
+                ).lowerTaskRecords(),
+                generated,
+                "upstream/include/bblite/upstream/frame_graph_post_process.hpp",
+            );
+            if (screenSpace) {
+                if (!features.includes("renderer:screen-space")) {
+                    throw new Error(
+                        "A screen-space task was composed without reaching " +
+                            "renderer:screen-space.",
+                    );
+                }
+                this.writeSource(
+                    "upstream/src/frame_graph_screen_space.cpp",
+                    screenSpace.lowerTaskRecords(),
+                    generated,
+                    "upstream/include/bblite/upstream/frame_graph_screen_space.hpp",
+                );
+                const screenSpaceProvenance = context.provenance(
+                    "src/post-process/screen-space-temporal.ts",
+                    "createScreenSpaceTemporalOwner",
+                );
+                for (const stage of screenSpaceStages) {
+                    composedShaders.push({
+                        output: `upstream/shaders/${stage.stem}.frag.native.wgsl`,
+                        data: `// ${screenSpaceProvenance}
+${stage.wgsl}`,
+                        family: "screenSpace",
+                        entryPoint: stage.fragmentEntry,
+                        alsoStages: [
+                            {
+                                stem: `${stage.stem}.vert`,
+                                entryPoint: stage.vertexEntry,
+                            },
+                        ],
+                    });
+                }
+                this.tree.write(
+                    "upstream/include/bblite/upstream/screen_space_shaders.hpp",
+                    screenSpaceShadersHeader(
+                        screenSpaceProvenance,
+                        screenSpaceStages,
+                    ),
+                );
+            }
             // Both stages of a pass live in one composed module: the pin
             // builds one shader module and names a stage in each half of
             // the pipeline descriptor. The text deploys ONCE, under the
@@ -2887,6 +3034,7 @@ ${shadow.blurFragmentWgsl}`,
                                 data,
                                 family,
                                 alsoStages,
+                                entryPoint,
                             }) => ({
                                 output,
                                 sha256: createHash("sha256")
@@ -2895,6 +3043,7 @@ ${shadow.blurFragmentWgsl}`,
                                 ...shaderDeclaration(
                                     output,
                                     family ?? "owned",
+                                    entryPoint,
                                 ),
                                 ...(alsoStages
                                     ? { alsoStages }

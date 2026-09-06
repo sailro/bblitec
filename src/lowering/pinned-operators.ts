@@ -151,6 +151,14 @@ export function pinnedHypotCall(args: readonly string[]): string {
 }
 
 /**
+ * `Math.round` as the pin's own half-up rounding rather than `<cmath>`'s
+ * half-away-from-zero, spelled once for every lowering that reaches it.
+ */
+export function pinnedRoundCall(args: readonly string[]): string {
+    return `bbl::js::round_js(${args.join(", ")})`;
+}
+
+/**
  * The `<cmath>` name a `Math.x(...)` call lowers to, or undefined when the
  * node is not such a call.
  */

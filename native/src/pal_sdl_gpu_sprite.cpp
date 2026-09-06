@@ -197,7 +197,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 engine, running, frame_options.test_pass);
 #endif
             input_replay.dispatch(frame, window, engine);
-            const float delta_ms = advance_frame(
+            const double delta_ms = advance_frame(
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);

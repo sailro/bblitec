@@ -33,6 +33,10 @@
 #include <bblite/upstream/pinned_texture.hpp>
 #include <bblite/upstream/pinned_rgbd.hpp>
 #include <bblite/upstream/pinned_matrix.hpp>
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+#include <bblite/upstream/frame_graph_screen_space.hpp>
+#include <bblite/upstream/screen_space_shaders.hpp>
+#endif
 #if BBLITE_HAS_PICKING
 #include <bblite/upstream/picking_math.hpp>
 #endif
@@ -4331,7 +4335,9 @@ struct FrameOptions {
     long max_frames = 0;
     long benchmark_frames = 0;
     double animation_seek_seconds = 0.0;
-    float frame_delta_ms = 0.0f;
+    // A double, as `BBLITE_FRAME_DELTA_MS` is written and as the browser's
+    // frame timestamps are; see `FrameClock::advance`.
+    double frame_delta_ms = 0.0;
 
     /** Frames to run: a benchmark adds its warmup to the request. */
     [[nodiscard]] long frame_budget() const {
@@ -4428,9 +4434,8 @@ inline FrameOptions read_frame_options() {
     const std::string frame_delta =
         environment_variable("BBLITE_FRAME_DELTA_MS");
     options.frame_delta_ms = frame_delta.empty()
-        ? 0.0f
-        : static_cast<float>(
-              std::strtod(frame_delta.c_str(), nullptr));
+        ? 0.0
+        : std::strtod(frame_delta.c_str(), nullptr);
     return options;
 }
 
@@ -4581,7 +4586,7 @@ inline SpriteInstanceUpload resolve_sprite_instance_upload(
 inline void run_sprite_renderer_before_update(
     Engine& engine,
     SpriteRendererHandle renderer,
-    float delta_ms) {
+    double delta_ms) {
     if (renderer.value >= engine.sprite_renderers.size()) return;
     SpriteRendererRecord& record = engine.sprite_renderers[renderer.value];
     if (record.disposed || record.before_update.empty()) return;
@@ -4845,18 +4850,22 @@ inline void require_effect_uniform_size(
  */
 class FrameClock {
 public:
-    [[nodiscard]] float advance(float fixed_delta_ms) {
+    // A double, as the browser's DOMHighResTimeStamp difference is: a
+    // renderer hook that divides the delta by the pin's frame period
+    // (`deltaMs / FRAME_MS`) reads exactly the ratio the browser computes
+    // under the same fixed step, where a float step would leave it one
+    // part in ten million short. Scene callbacks still take the float the
+    // engine API declares.
+    [[nodiscard]] double advance(double fixed_delta_ms) {
         const double now = monotonic_milliseconds();
         const bool first_frame = previous_ == 0.0;
-        const float measured = previous_ > 0.0
-            ? static_cast<float>(now - previous_)
-            : 0.0f;
+        const double measured = previous_ > 0.0 ? now - previous_ : 0.0;
         previous_ = now;
-        const float delta_ms =
-            fixed_delta_ms > 0.0f && !first_frame
+        const double delta_ms =
+            fixed_delta_ms > 0.0 && !first_frame
                 ? fixed_delta_ms
                 : measured;
-        if (fixed_delta_ms > 0.0f) {
+        if (fixed_delta_ms > 0.0) {
             advance_performance_milliseconds(delta_ms);
         }
         return delta_ms;
@@ -5028,6 +5037,74 @@ inline std::uint32_t scaled_target_extent(
         1.0,
         std::floor(static_cast<double>(source) * ratio)));
 }
+
+/** Both extents of a target sized from another, see `scaled_target_extents`. */
+struct ScaledExtents {
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+};
+
+/**
+ * A scaled target's extents under the rounding its record names: the
+ * composite rule above, or the screen-space effects' own
+ * `computeScreenSpaceScaledSize`, which generation lowers from the pin and
+ * which takes one scale for both axes. A record asking for that rule in a
+ * build that reached no screen-space effect names a generation defect, so
+ * it fails rather than rounding the other way.
+ */
+inline ScaledExtents scaled_target_extents(
+    const RenderTargetRecord& record,
+    std::uint32_t source_width,
+    std::uint32_t source_height) {
+    if (record.scale_rounding == ScaleRounding::round) {
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+        const upstream::ScreenSpaceScaledSize scaled =
+            upstream::screen_space_scaled_size(
+                static_cast<double>(source_width),
+                static_cast<double>(source_height),
+                record.width_ratio);
+        return ScaledExtents{scaled.width, scaled.height};
+#else
+        throw std::runtime_error(
+            "A render target asks for screen-space rounding in a build "
+            "that reached no screen-space effect.");
+#endif
+    }
+    return ScaledExtents{
+        scaled_target_extent(source_width, record.width_ratio),
+        scaled_target_extent(source_height, record.height_ratio)};
+}
+
+#if defined(BBLITE_HAS_SCREEN_SPACE) && BBLITE_HAS_SCREEN_SPACE
+/**
+ * What the generated screen-space frame function reads off a backend's
+ * targets: the depth source's and the raw target's extents, and the
+ * allocation identities its texture-identity tests compare (docs/fidelity.md).
+ * Both backends keep those three fields on their target rows under the same
+ * names, so one reader serves both.
+ */
+template <typename RenderTargets>
+ScreenSpaceFrameInputs screen_space_frame_inputs(
+    const RenderTargets& targets,
+    const ScreenSpaceTaskOptions& task) {
+    const auto& depth = targets.at(task.depth.value);
+    const auto& source = targets.at(task.source.value);
+    const auto& raw = targets.at(task.raw.value);
+    const auto& stable = targets.at(task.stable.value);
+    const auto& history = targets.at(task.history.value);
+    ScreenSpaceFrameInputs inputs;
+    inputs.depth_width = depth.width;
+    inputs.depth_height = depth.height;
+    inputs.effect_width = raw.width;
+    inputs.effect_height = raw.height;
+    inputs.depth_allocation = depth.allocation;
+    inputs.color_allocation = source.allocation;
+    inputs.raw_allocation = raw.allocation;
+    inputs.stable_allocation = stable.allocation;
+    inputs.history_allocation = history.allocation;
+    return inputs;
+}
+#endif
 
 #if defined(BBLITE_HAS_POST_PROCESS) && BBLITE_HAS_POST_PROCESS
 /** One post-process pass's resolved output and source extents. */
@@ -5800,25 +5877,25 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * wall-clock gap: the loop keeps presenting the frame it last drew, and a
  * frozen frame advances nothing.
  */
-[[nodiscard]] inline float advance_frame(
+[[nodiscard]] inline double advance_frame(
     Engine& engine,
     Scene& scene,
     FrameClock& frame_clock,
-    float frame_delta_ms) {
+    double frame_delta_ms) {
     if (engine.stopped) {
-        return 0.0f;
+        return 0.0;
     }
-    const float delta_ms = frame_clock.advance(
-        frame_delta_ms > 0.0f
-            ? frame_delta_ms
-            : scene.fixed_delta_ms);
+    const double delta_ms = frame_clock.advance(
+        frame_delta_ms > 0.0 ? frame_delta_ms : scene.fixed_delta_ms);
     run_animation_frame_callbacks(engine);
+    // The scene callback API is the engine's float delta.
+    const float callback_delta_ms = static_cast<float>(delta_ms);
     // A callback may dispose its own scene while it is running. Snapshot the
     // dispatch list so clearing SceneState::before_render cannot destroy the
     // currently executing std::function (or invalidate the next iterator).
     const auto root_callbacks = scene.before_render;
     for (const auto& callback : root_callbacks) {
-        callback(delta_ms);
+        callback(callback_delta_ms);
     }
     // Every other registered scene's own callbacks. A swapchain overlay
     // layer is a second SceneContext with its own `_beforeRender` list --
@@ -5830,7 +5907,7 @@ inline void run_animation_frame_callbacks(Engine& engine) {
         if (!registered || registered->shares_identity(scene)) continue;
         const auto callbacks = registered->before_render;
         for (const auto& callback : callbacks) {
-            callback(delta_ms);
+            callback(callback_delta_ms);
         }
     }
     return delta_ms;
@@ -5842,29 +5919,30 @@ inline void run_animation_frame_callbacks(Engine& engine) {
  * application can still own a requestAnimationFrame loop and queue a
  * timeout. Both run from the same frame clock as custom-shader time.
  */
-[[nodiscard]] inline float advance_frame(
+[[nodiscard]] inline double advance_frame(
     Engine& engine,
     FrameClock& frame_clock,
-    float frame_delta_ms) {
+    double frame_delta_ms) {
     if (engine.stopped) {
-        return 0.0f;
+        return 0.0;
     }
-    const float delta_ms = frame_clock.advance(frame_delta_ms);
+    const double delta_ms = frame_clock.advance(frame_delta_ms);
     run_animation_frame_callbacks(engine);
     return delta_ms;
 }
 
 /** The measured update boundary for a standalone FrameGraphContext. */
-[[nodiscard]] inline float advance_frame(
+[[nodiscard]] inline double advance_frame(
     Engine& engine,
     FrameGraphContext& context,
     FrameClock& frame_clock,
-    float frame_delta_ms) {
-    if (engine.stopped) return 0.0f;
-    const float delta_ms = frame_clock.advance(frame_delta_ms);
+    double frame_delta_ms) {
+    if (engine.stopped) return 0.0;
+    const double delta_ms = frame_clock.advance(frame_delta_ms);
     run_animation_frame_callbacks(engine);
+    const float callback_delta_ms = static_cast<float>(delta_ms);
     for (const auto& callback : context.updates) {
-        callback(delta_ms);
+        callback(callback_delta_ms);
     }
     return delta_ms;
 }

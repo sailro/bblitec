@@ -394,14 +394,16 @@ export class BrowserErasure {
             ) {
                 return true;
             }
-            const bound =
-                this.context.lookupOptional(unwrapped)?.kind;
-            // A pure-2D particle binding has no native counterpart and the
-            // corpus only reports it, so a read of one erases exactly as a
-            // browser value does.
+            const value = this.context.lookupOptional(unwrapped);
+            const bound = value?.kind;
+            // A FROZEN pure-2D particle binding has no native counterpart
+            // and the corpus only reports it, so a read of one erases
+            // exactly as a browser value does. A live one names the mapping
+            // the generated registrar keeps, which scene code moves.
             return (
                 bound === "browser" ||
-                bound === "node-particle-2d-binding" ||
+                (bound === "node-particle-2d-binding" &&
+                    !value?.nodeParticleLive) ||
                 (bound === undefined &&
                     this.context.isBrowserDomValue(unwrapped))
             );
