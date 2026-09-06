@@ -75,6 +75,10 @@ selected at both generated-source and dependency boundaries. See
 | Storage/files | Per-user localStorage, bounded Blob/object URLs, one-file open and download; [UI](ui.md#file-transfer-controls) owns controls |
 | UI | Supported retained DOM/CSS/Canvas2D operations; [UI](ui.md) owns their complete compatibility boundary |
 
+Pinned readonly literal enum exports remain values in native arrays. Physics
+motion and prestep arguments validate against the pin's parameter types before
+converting to native enums.
+
 This is not a complete typed user-code IR. Handle-dependent helper inlining,
 escape classification, generic bodies, resource loops and aliasing have
 limitations. The [runtime ownership contract](architecture.md#runtime-and-memory)
@@ -121,6 +125,12 @@ Bounded module producers can run in Chromium to bake drawn atlases or computed
 pixel buffers. CSG plans execute the pinned CSG implementation under Node.
 Cache identity covers producer inputs and the relevant implementation. Browser
 rasterization and numerically fragile executed output are recorded adaptations.
+
+CSG2 executes the pinned Manifold WASM in Chromium and retains the pin's
+per-material partition names and slots. Initialization and solid disposal run
+at generation. Source solids currently require unchanged identity-transform
+box/sphere factories; preceding material assignments are supported. Runtime
+control of generation-only CSG2 operations refuses.
 
 ### Browser-produced textures
 
@@ -241,6 +251,9 @@ owns its mutable storage.
 
 Scene-created transform nodes, parenting, local/world transforms, visibility,
 supported imported-hierarchy walks and bounded cloning are represented.
+Retained `position`, `rotation` and `scaling` aliases preserve their owner's
+handle across arena growth and source-variable reassignment; vector setters
+reuse the normal transform mutation path.
 Imported roots and runtime TransformNode values still have distinct paths;
 full imported-root cloning/rotation/scaling and arbitrary hierarchy visitor
 effects remain unfinished.

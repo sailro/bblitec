@@ -43,6 +43,24 @@ export class CompilerSymbols {
         private readonly checker: ts.TypeChecker,
     ) {}
 
+    /** Literal-valued readonly exports include the pin's `as const` enum bags. */
+    public pinnedConstantProperty(
+        expression: ts.PropertyAccessExpression,
+    ): number | string | undefined {
+        const owner = expression.expression;
+        if (!ts.isIdentifier(owner) ||
+            !this.declarationSourcePath(owner)?.replaceAll("\\", "/").includes("/@babylonjs/lite/")) {
+            return undefined;
+        }
+        const declaration = this.checker.getSymbolAtLocation(expression.name)
+            ?.declarations?.find(ts.isPropertySignature);
+        if (!declaration?.modifiers?.some(
+            (modifier) => modifier.kind === ts.SyntaxKind.ReadonlyKeyword,
+        )) return undefined;
+        const type = this.checker.getTypeAtLocation(expression);
+        return type.isNumberLiteral() || type.isStringLiteral() ? type.value : undefined;
+    }
+
     public valueSymbol(
         identifier: ts.Identifier,
     ): ts.Symbol | undefined {

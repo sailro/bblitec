@@ -1335,6 +1335,32 @@ export class ExpressionLowerer {
                 this.context.dataLowerer.dataTypeAt(
                     unwrapped,
                 );
+            if (
+                conditionalType?.kind === "number" ||
+                conditionalType?.kind === "vector" ||
+                (conditionalType?.kind === "struct" &&
+                    this.context.dataTypes.isReferenceStruct(conditionalType.name))
+            ) {
+                const condition = this.context.compileCondition(unwrapped.condition);
+                if (condition === "true" || condition === "false") {
+                    // Keep the selected Value's generation-known metadata.
+                    // A string-only sink would discard staticNumber, for
+                    // example when the chosen number configures engine MSAA.
+                    return this.compileValue(condition === "true"
+                        ? unwrapped.whenTrue : unwrapped.whenFalse);
+                }
+                // The common sink keeps all branch preparation inside the
+                // selected arm, including optional Map.get temporaries and
+                // array literals that need runtime storage of different sizes.
+                return this.context.dataValue(
+                    this.inRuntimeControlFlow(() =>
+                        this.context.dataLowerer.compileConditionalForSink(
+                            unwrapped, conditionalType, condition,
+                        ),
+                    ),
+                    conditionalType,
+                );
+            }
             if (conditionalType?.kind === "optional") {
                 const objectIdentity =
                     conditionalType.inner.kind === "struct"
@@ -1362,37 +1388,6 @@ export class ExpressionLowerer {
                           }
                         : {}),
                 };
-            }
-            if (
-                conditionalType?.kind === "struct" &&
-                this.context.dataTypes.isReferenceStruct(
-                    conditionalType.name,
-                )
-            ) {
-                return this.context.dataValue(
-                    this.inRuntimeControlFlow(() =>
-                        this.context.dataLowerer.compileForSink(
-                            unwrapped,
-                            conditionalType,
-                        ),
-                    ),
-                    conditionalType,
-                );
-            }
-            if (conditionalType?.kind === "vector") {
-                // Array literals are represented as compile-time tuples until
-                // a native sink asks for storage. A runtime conditional is
-                // such a sink, and unlike a tuple select its two arrays may
-                // legally have different lengths.
-                return this.context.dataValue(
-                    this.inRuntimeControlFlow(() =>
-                        this.context.dataLowerer.compileForSink(
-                            unwrapped,
-                            conditionalType,
-                        ),
-                    ),
-                    conditionalType,
-                );
             }
             const condition = this.context.compileCondition(
                 unwrapped.condition,

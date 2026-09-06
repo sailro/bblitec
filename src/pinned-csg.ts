@@ -190,7 +190,7 @@ const pinnedMeshFactories = await importPinnedModule<
  * reaches the bake — what does is the CPU geometry the same function
  * retains — so the range is a plain `ArrayBuffer` and the rest is inert.
  */
-function recordingEngine(): unknown {
+export function recordingCsgEngine(): unknown {
     return {
         _device: {
             createBuffer({ size }: { size: number }) {
@@ -224,7 +224,7 @@ const bakedMeshes = new Map<string, BakedCsgMesh>();
  * is 16 bytes and every stream is 4 wide, so each one lands aligned and
  * unpacking is views rather than copies.
  */
-function packBakedMesh(mesh: BakedCsgMesh): Uint8Array {
+export function packBakedCsgMesh(mesh: BakedCsgMesh): Uint8Array {
     const counts = [
         mesh.positions.length,
         mesh.normals.length,
@@ -246,7 +246,7 @@ function packBakedMesh(mesh: BakedCsgMesh): Uint8Array {
     return bytes;
 }
 
-function unpackBakedMesh(payload: Uint8Array): BakedCsgMesh {
+export function unpackBakedCsgMesh(payload: Uint8Array): BakedCsgMesh {
     // `readFileSync` answers with a view that can start at any offset in a
     // pooled buffer, and a typed-array view needs a 4-byte-aligned one; the
     // copy is one memcpy and only on an unaligned read.
@@ -310,7 +310,7 @@ export function bakeCsgMesh(
     // cache that outlived a Node upgrade would replay bytes a cold run no
     // longer produces, which is the delete-equals-cold contract the
     // record's "byte-stable across repeated compilations" rests on.
-    const baked = unpackBakedMesh(
+    const baked = unpackBakedCsgMesh(
         cachedBakeSync(
             {
                 kind: "executed-csg-solid",
@@ -320,7 +320,7 @@ export function bakeCsgMesh(
                 parameters: { plan, node: process.version },
                 inputs: [],
             },
-            () => packBakedMesh(replayCsgPlan(plan, name)),
+            () => packBakedCsgMesh(replayCsgPlan(plan, name)),
         ),
     );
     bakedMeshes.set(key, baked);
@@ -328,7 +328,7 @@ export function bakeCsgMesh(
 }
 
 function replayCsgPlan(plan: CsgSolidPlan, name: string): BakedCsgMesh {
-    const engine = recordingEngine();
+    const engine = recordingCsgEngine();
     const mesh = pinnedCsg.createMeshFromCsg(
         engine,
         buildSolid(engine, plan),

@@ -14,10 +14,12 @@ import type {
 import type { MaterialPluginManifest } from "../pinned-material-plugins.js";
 import type { PinnedStandardMaterialInput } from "../pinned-standard-variants.js";
 import type { CsgSolidPlan } from "../pinned-csg.js";
+import type { Csg2SolidPlan } from "../pinned-csg2.js";
 import type {
   NativeHostUiStyleSource,
 } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
+import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 
 export type {
   NativeHostUiClassStyle,
@@ -1239,6 +1241,7 @@ export type ValueKind =
    * that conversion refuses by name.
    */
   | "csg-solid"
+  | "csg2-solid"
   | "camera-ortho"
   | "camera-world-matrix"
   | "color4"
@@ -1514,6 +1517,7 @@ export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
     // replays the plan it carries against the pin's own modules and
     // bakes the geometry, so the binding declares nothing native.
     kind === "csg-solid" ||
+    kind === "csg2-solid" ||
     // The solver module a physics scene loads. The pin hands it to
     // `createHavokWorld`; a native build reaches its solver through
     // the PAL, so the binding exists for that call to accept.
@@ -1908,6 +1912,7 @@ export interface Value {
    * them the way the pin composes two solids.
    */
   csgSolid?: CsgSolidPlan;
+  csg2Solid?: { readonly plan: Csg2SolidPlan; disposed: boolean };
   /** Stable identity shared by every Value alias of one light handle. */
   lightIdentity?: LightIdentity;
   /**
@@ -2061,6 +2066,12 @@ export interface Value {
    */
   handleIdentity?: string;
   engineCpp?: string;
+  /** A node's observable transform object retains its owning handle. */
+  sceneNodeVector?: {
+    owner: Value & { engineCpp: string };
+    transform: SceneNodeTransformDescriptor;
+    bound?: true;
+  };
   geometryTask?: GeometryOutputTaskManifest;
   /**
    * Set on a `render-texture` or `render-target-texture` whose texture is
@@ -2335,6 +2346,7 @@ export type Feature =
   | "material:standard-vertex-colors"
   | "mesh:box"
   | "mesh:csg"
+  | "mesh:csg2"
   | "mesh:from-data"
   | "mesh:update-positions"
   | "mesh:ground"

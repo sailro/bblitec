@@ -17,7 +17,7 @@ import type {
     ValueKind,
 } from "./types.js";
 import { lightVectorSetter } from "./assignments.js";
-import { sceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import {
     staticIndexLoopShape,
     loopBoundMayChange,
@@ -116,6 +116,8 @@ export interface StatementLoweringContext {
         | "mark_mesh_dirty"
         | "mark_mesh_runtime_transform";
     captureEmittedLines(emitBody: () => void): string[];
+    nativeBindingCheckpoint(): number;
+    captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[];
     /**
      * Runs a shape probe, keeping what it emitted only when it answers.
      * A probe that resolves a call compiles it, so one that declines has
@@ -1499,13 +1501,20 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         statement: ts.TryStatement,
     ): void {
-        const capturedFinally = statement.finallyBlock
-            ? this.captureFinallyGuard(
-                  context,
-                  statement.finallyBlock,
-              )
-            : undefined;
-        const finallyGuard = capturedFinally?.length
+        if (!statement.finallyBlock) {
+            this.emitTryBody(context, statement);
+            return;
+        }
+        // Lower in source order so generation-only bindings and cleanup see
+        // the try body's effects. Native cleanup still precedes the captured
+        // body as a scope guard, covering early returns and exceptions.
+        const beforeBody = context.nativeBindingCheckpoint();
+        const body = context.captureEmittedLines(() =>
+            this.emitTryBody(context, statement));
+        const capturedFinally = this.captureFinallyGuard(
+            context, statement.finallyBlock, beforeBody,
+        );
+        const finallyGuard = capturedFinally.length
             ? capturedFinally
             : undefined;
         if (finallyGuard) {
@@ -1521,6 +1530,17 @@ export class StatementLowerer {
             context.decreaseIndent();
             context.emit("});");
         }
+        for (const line of body) context.emit(line);
+        if (finallyGuard) {
+            context.decreaseIndent();
+            context.emit("}");
+        }
+    }
+
+    private emitTryBody(
+        context: StatementLoweringContext,
+        statement: ts.TryStatement,
+    ): void {
         if (statement.catchClause) {
             const catchDeclaration =
                 statement.catchClause.variableDeclaration;
@@ -1588,10 +1608,6 @@ export class StatementLowerer {
                 context.decreaseIndent();
             }
             context.emit("}");
-            if (finallyGuard) {
-                context.decreaseIndent();
-                context.emit("}");
-            }
             return;
         }
         if (!statement.finallyBlock) {
@@ -1601,22 +1617,14 @@ export class StatementLowerer {
                     "that erases to nothing.",
             );
         }
-        if (!finallyGuard) {
-            context.pushScope(context.allocateBlockPrefix());
-            try {
-                for (const child of statement.tryBlock.statements) {
-                    this.emit(context, child);
-                    if (this.terminatesAfterLowering(child)) break;
-                }
-            } finally {
-                context.popScope();
+        context.pushScope(context.allocateBlockPrefix());
+        try {
+            for (const child of statement.tryBlock.statements) {
+                this.emit(context, child);
+                if (this.terminatesAfterLowering(child) || this.staticIterationCompleted()) break;
             }
-            return;
-        }
-        this.emitScopedBody(context, statement.tryBlock);
-        if (finallyGuard) {
-            context.decreaseIndent();
-            context.emit("}");
+        } finally {
+            context.popScope();
         }
     }
 
@@ -1677,16 +1685,27 @@ export class StatementLowerer {
     private captureFinallyGuard(
         context: StatementLoweringContext,
         block: ts.Block,
+        beforeBody: number,
     ): string[] {
+        // A pending break/continue leaves the try only after every cleanup
+        // statement runs. An abrupt cleanup completion can replace it.
+        const completions = this.staticIterationCompletions.map(frame => ({
+            frame, completion: frame.completion,
+        }));
+        for (const { frame } of completions) frame.completion = "normal";
         context.pushScope(context.allocateBlockPrefix());
         try {
-            return context.captureEmittedLines(() => {
+            return context.captureHoistedLines(() => {
                 for (const statement of block.statements) {
                     this.emit(context, statement);
+                    if (this.terminatesAfterLowering(statement) || this.staticIterationCompleted()) break;
                 }
-            });
+            }, beforeBody, block);
         } finally {
             context.popScope();
+            for (const { frame, completion } of completions) {
+                if (frame.completion === "normal") frame.completion = completion;
+            }
         }
     }
 
@@ -3676,6 +3695,12 @@ export class StatementLowerer {
             return false;
         }
         const owner = call.expression.expression;
+        const alias = ts.isIdentifier(owner)
+            ? context.lookupOptional(owner)?.sceneNodeVector
+            : undefined;
+        if (alias) {
+            return this.emitSceneNodeVectorSet(context, call, alias.owner, alias.transform);
+        }
         if (!ts.isPropertyAccessExpression(owner)) {
             return false;
         }
@@ -3791,11 +3816,16 @@ export class StatementLowerer {
             return true;
         }
         const transform = sceneNodeTransformDescriptor(owner.name.text);
-        if (
-            (target.kind === "transform-node" ||
-                target.kind === "scene-node") &&
-            transform
-        ) {
+        return transform ? this.emitSceneNodeVectorSet(context, call, target, transform) : false;
+    }
+
+    private emitSceneNodeVectorSet(
+        context: StatementLoweringContext,
+        call: ts.CallExpression,
+        target: Value,
+        transform: SceneNodeTransformDescriptor,
+    ): boolean {
+        if (target.kind === "transform-node" || target.kind === "scene-node") {
             // A node's TRS lanes are the same ObservableVec3/ObservableQuat
             // a mesh's are -- upstream a TransformNode IS a SceneNode -- so
             // each write moves the field and marks the node's local matrix
@@ -3832,9 +3862,6 @@ export class StatementLowerer {
             return true;
         }
         if (target.kind !== "mesh") {
-            return false;
-        }
-        if (!transform) {
             return false;
         }
         const components = this.setCallComponents(

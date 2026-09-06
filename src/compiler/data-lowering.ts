@@ -805,17 +805,21 @@ export class DataLowerer {
             if (!owner) {
                 return undefined;
             }
-            if (unwrapped.questionDotToken) {
+            if (ts.isPropertyAccessChain(unwrapped)) {
                 const optional = this.optionalPropertyRead(
                     owner,
                     unwrapped,
                 );
                 if (optional) return optional;
             }
-            return this.propertyRead(
-                owner,
-                unwrapped,
-            );
+            // A call can yield an intrinsic record or engine handle rather
+            // than native data. Its owner has already been evaluated, so
+            // continue through the shared property reader before declining
+            // the path and causing the caller to evaluate it again.
+            return this.propertyRead(owner, unwrapped) ??
+                (mode === "read"
+                    ? this.context.readResolvedProperty(owner, unwrapped)
+                    : undefined);
         }
         if (ts.isElementAccessExpression(unwrapped)) {
             // Static tables materialize only under runtime indices; static
@@ -973,7 +977,10 @@ export class DataLowerer {
             return undefined;
         }
 
-        const selected = read(presentOwner);
+        let selected: Value | undefined;
+        const selectedLines = this.context.captureEmittedLines(() => {
+            selected = read(presentOwner);
+        });
         if (!selected) {
             // The owner can also be an optional engine handle. Its declared
             // property surface, rather than the plain-data model, owns that
@@ -1016,6 +1023,25 @@ export class DataLowerer {
         const combinedPresent = selectedPresent
             ? `(${present} && ${selectedPresent})`
             : present;
+        const impure = selected.impure;
+        const optionalResult = (type: DataType, selectedCpp: string, empty: string): Value => {
+            const cppType = this.context.dataTypes.cppType(type);
+            if (selectedLines.length === 0 && !impure) {
+                return this.leafValue(`(${combinedPresent} ? ${selectedCpp} : ${empty})`, type);
+            }
+            // Getter lowering may emit an inlined method body. Both those
+            // statements and the result expression belong to the present
+            // branch, and the condition must not evaluate them twice.
+            const result = this.context.allocateTemporaryCppName("optional_result");
+            const resultCpp = selectedPresent
+                ? `(${selectedPresent} ? ${selectedCpp} : ${empty})`
+                : selectedCpp;
+            this.context.emit(`const ${cppType} ${result} = ([&]() -> ${cppType} {\n` +
+                `    if (!(${present})) return ${empty};\n` +
+                selectedLines.map(line => `    ${line}\n`).join("") +
+                `    return ${resultCpp};\n}());`);
+            return this.leafValue(result, type);
+        };
         if (
             selectedType.kind === "struct" &&
             this.context.dataTypes.isReferenceStruct(
@@ -1025,9 +1051,10 @@ export class DataLowerer {
             const cppType = this.context.dataTypes.cppType(
                 selectedType,
             );
-            return this.leafValue(
-                `(${combinedPresent} ? ${selected.cpp} : ${cppType}{})`,
+            return optionalResult(
                 selectedType,
+                selected.cpp,
+                `${cppType}{}`,
             );
         }
         const resultType: DataType =
@@ -1052,13 +1079,7 @@ export class DataLowerer {
         const cppType =
             this.context.dataTypes.cppType(resultType);
         this.context.reachJsData();
-        return {
-            kind: "data",
-            cpp:
-                `(${combinedPresent} ? ${cppType}{${selectedCpp}} : ` +
-                `${cppType}{std::nullopt})`,
-            dataType: resultType,
-        };
+        return optionalResult(resultType, `${cppType}{${selectedCpp}}`, `${cppType}{std::nullopt}`);
     }
 
     private optionalPropertyRead(
@@ -2154,10 +2175,17 @@ export class DataLowerer {
                 fieldType,
             );
         }
-        const index = this.context.compileNumber(
-            access.argumentExpression,
-            "double",
-        );
+        const ownedRead = owner.freshData && mode === "read" && dataType.kind !== "string";
+        let index = "";
+        const compileIndex = (): void => {
+            index = this.context.compileNumber(access.argumentExpression, "double");
+        };
+        const indexLines = ownedRead
+            ? this.context.captureEmittedLines(compileIndex)
+            : (compileIndex(), []);
+        const indexedOwner = ownedRead
+            ? this.context.allocateTemporaryCppName("indexed_owner")
+            : owner.cpp;
         this.context.reachJsData();
         const nativeIndex = `bbl::js::array_index(${index})`;
         if (dataType.kind === "string") {
@@ -2195,18 +2223,27 @@ export class DataLowerer {
                 this.staticGrowthIndex(access));
         const site = (): string =>
             this.context.cppString(this.indexSiteLabel(access));
-        const indexed =
+        const element =
             dataType.kind === "vector" && mode === "write"
                 ? proven
                     ? `bbl::js::array_index_write(${owner.cpp}, ${nativeIndex})`
                     : `bbl::js::array_index_write_checked(${owner.cpp}, ${index}, ${site()})`
                 : proven
-                  ? `${owner.cpp}[${nativeIndex}]`
+                  ? `${indexedOwner}[${nativeIndex}]`
                   : mode === "write" &&
                       (isTypedArrayType(dataType) ||
                           dataType.kind === "tuple")
                     ? `bbl::js::array_store_checked(${owner.cpp}, ${index}, ${site()})`
-                    : `bbl::js::array_index_checked(${owner.cpp}, ${index}, ${site()})`;
+                    : `bbl::js::array_index_checked(${indexedOwner}, ${index}, ${site()})`;
+        // A fresh container is a native rvalue. Keep its owning wrapper alive
+        // for the checked read, and return the element by value so no reference
+        // escapes that wrapper. The expression stays behind its source guard;
+        // index preparation follows the owner evaluation, as in JavaScript.
+        const indexed = ownedRead
+            ? `([&]() { auto ${indexedOwner} = ${owner.cpp};\n` +
+                indexLines.map(line => `    ${line}\n`).join("") +
+                `    return ${element}; }())`
+            : element;
         if (
             isTypedArrayType(dataType)
         ) {
@@ -2236,6 +2273,9 @@ export class DataLowerer {
                     ),
                     ...(owner.readOnly
                         ? { readOnly: true as const }
+                        : {}),
+                    ...(ownedRead && passesByReference(this.context.dataTypes, dataType.element)
+                        ? { freshData: true as const }
                         : {}),
                 };
                 const candidates = owner.staticElementsOwner?.staticElements ?? owner.staticElements ??
@@ -4715,6 +4755,78 @@ export class DataLowerer {
      * Compiles an expression against a known data sink type, producing a C++
      * expression string.
      */
+    /** Lowers selected branch preparation after the caller evaluates the condition once. */
+    public compileConditionalForSink(
+        unwrapped: ts.ConditionalExpression,
+        dataType: DataType,
+        condition: string,
+    ): string {
+        if (dataType.kind === "optional") {
+            // The selected value is wrapped in `bbl::js::Nullable`
+            // below, which is the data runtime's own type.
+            this.context.reachJsData();
+        }
+        const compileBranch = (
+            branch: ts.Expression,
+        ): { cpp: string; lines: string[] } => {
+            let compiled = "";
+            const lines = this.context.captureEmittedLines(
+                () => {
+                    compiled = this.compileForSink(
+                        branch,
+                        dataType,
+                    );
+                },
+            );
+            return {
+                cpp:
+                    dataType.kind === "optional"
+                        ? `${this.context.dataTypes.cppType(dataType)}{${compiled}}`
+                        : compiled,
+                lines,
+            };
+        };
+        if (condition === "true" || condition === "false") {
+            const selected = compileBranch(
+                condition === "true"
+                    ? unwrapped.whenTrue
+                    : unwrapped.whenFalse,
+            );
+            for (const line of selected.lines) {
+                this.context.emit(line);
+            }
+            return selected.cpp;
+        }
+        const whenTrue = compileBranch(unwrapped.whenTrue);
+        const whenFalse = compileBranch(unwrapped.whenFalse);
+        if (
+            whenTrue.lines.length === 0 &&
+            whenFalse.lines.length === 0
+        ) {
+            return (
+                `(${condition}` +
+                ` ? ${whenTrue.cpp}` +
+                ` : ${whenFalse.cpp})`
+            );
+        }
+        const returnType =
+            this.context.dataTypes.cppType(dataType);
+        const indented = (lines: string[]): string =>
+            lines.map((line) => `        ${line}`).join("\n");
+        const trueLines = indented(whenTrue.lines);
+        const falseLines = indented(whenFalse.lines);
+        return (
+            `([&]() -> ${returnType} {\n` +
+            `    if (${condition}) {\n` +
+            (trueLines ? `${trueLines}\n` : "") +
+            `        return ${whenTrue.cpp};\n` +
+            `    }\n` +
+            (falseLines ? `${falseLines}\n` : "") +
+            `    return ${whenFalse.cpp};\n` +
+            `}())`
+        );
+    }
+
     public compileForSink(
         expression: ts.Expression,
         dataType: DataType,
@@ -4767,81 +4879,17 @@ export class DataLowerer {
         }
         // A conditional selects between two values of the sink's own
         // type, so each branch lowers for the same sink and the choice
-        // stays where the source wrote it. Numbers and booleans are left
-        // alone: their own compilers already lower a conditional, and
-        // routing them here would change what every existing scene emits.
+        // stays where the source wrote it. Booleans keep their condition
+        // compiler's surface. Numeric callers
+        // use this same sink so branch preparation is guarded consistently.
         if (
             ts.isConditionalExpression(unwrapped) &&
-            dataType.kind !== "number" &&
             dataType.kind !== "boolean"
         ) {
             const condition = this.context.compileCondition(
                 unwrapped.condition,
             );
-            if (dataType.kind === "optional") {
-                // The selected value is wrapped in `bbl::js::Nullable`
-                // below, which is the data runtime's own type.
-                this.context.reachJsData();
-            }
-            const compileBranch = (
-                branch: ts.Expression,
-            ): { cpp: string; lines: string[] } => {
-                let compiled = "";
-                const lines = this.context.captureEmittedLines(
-                    () => {
-                        compiled = this.compileForSink(
-                            branch,
-                            dataType,
-                        );
-                    },
-                );
-                return {
-                    cpp:
-                        dataType.kind === "optional"
-                            ? `${this.context.dataTypes.cppType(dataType)}{${compiled}}`
-                            : compiled,
-                    lines,
-                };
-            };
-            if (condition === "true" || condition === "false") {
-                const selected = compileBranch(
-                    condition === "true"
-                        ? unwrapped.whenTrue
-                        : unwrapped.whenFalse,
-                );
-                for (const line of selected.lines) {
-                    this.context.emit(line);
-                }
-                return selected.cpp;
-            }
-            const whenTrue = compileBranch(unwrapped.whenTrue);
-            const whenFalse = compileBranch(unwrapped.whenFalse);
-            if (
-                whenTrue.lines.length === 0 &&
-                whenFalse.lines.length === 0
-            ) {
-                return (
-                    `(${condition}` +
-                    ` ? ${whenTrue.cpp}` +
-                    ` : ${whenFalse.cpp})`
-                );
-            }
-            const returnType =
-                this.context.dataTypes.cppType(dataType);
-            const indented = (lines: string[]): string =>
-                lines.map((line) => `        ${line}`).join("\n");
-            const trueLines = indented(whenTrue.lines);
-            const falseLines = indented(whenFalse.lines);
-            return (
-                `([&]() -> ${returnType} {\n` +
-                `    if (${condition}) {\n` +
-                (trueLines ? `${trueLines}\n` : "") +
-                `        return ${whenTrue.cpp};\n` +
-                `    }\n` +
-                (falseLines ? `${falseLines}\n` : "") +
-                `    return ${whenFalse.cpp};\n` +
-                `}())`
-            );
+            return this.compileConditionalForSink(unwrapped, dataType, condition);
         }
         // `left ?? right` for a sink is a select the operator already
         // lowers: the general arm yields the selected value at the left's

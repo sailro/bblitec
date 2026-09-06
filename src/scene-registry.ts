@@ -2037,6 +2037,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene106",
+        name: "Scene 106 - Physics Motion and Prestep Grid",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",
+        title: "Babylon Lite Native - Physics Motion and Prestep Grid",
+        parity: {
+            // The pinned scene's own visual contract captures physics step 20.
+            referenceSearch: "?captureFrame=20",
+            // Both backends measure 0.018 full / 0.098 foreground and
+            // render identically; the remaining motion is Bullet/Havok.
+            maxFullMad: 0.025,
+            maxForegroundMad: 0.12,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "30" },
+        },
+    },
+    {
         id: "scene272",
         name: "Scene 272 - Runtime Mesh Swap",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene272.ts",
@@ -3980,6 +3997,21 @@ const sceneInputs: readonly SceneInput[] = [
             // pin at generation and its four arrays are baked. Both
             // backends are byte-identical to the golden, which is also the
             // evidence that Node's V8 and Chrome's agree on the split.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene91",
+        name: "Scene 91 - CSG2 Operations",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene91.ts",
+        title: "Babylon Lite Native - CSG2 Operations",
+        parity: {
+            // The unchanged pin's Manifold WASM produces both material
+            // partitions at generation. Both backends match every byte of
+            // the browser's three boolean rows, including the drawn labels.
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],

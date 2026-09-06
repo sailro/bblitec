@@ -87,6 +87,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:standard-vertex-colors": [],
     "mesh:box": [],
     "mesh:csg": [],
+    "mesh:csg2": [],
     "mesh:from-data": [],
     "mesh:update-positions": [],
     "mesh:ground": [],

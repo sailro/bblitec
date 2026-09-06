@@ -1205,6 +1205,12 @@
       "sha256": "f0f054fb8309f86819be0ca5e1ee3a5d91e2c3a46c3a987de23f7fc87d1deeef"
     },
     {
+      "id": "scene91",
+      "upstreamPath": "lab/lite/src/lite/scene91.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene91.ts",
+      "sha256": "31f029bb1f6383432b184017cde0ce44ebc08a4fcb47a5bcecddd97c9e67c5ee"
+    },
+    {
       "id": "scene226",
       "upstreamPath": "lab/lite/src/lite/scene226.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene226.ts",
@@ -1323,6 +1329,12 @@
       "upstreamPath": "lab/lite/src/lite/scene272.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene272.ts",
       "sha256": "e56f01b4bcde9bdd59bc276387baf7e615b7dfd5b761ace906be6098548cdc78"
+    },
+    {
+      "id": "scene106",
+      "upstreamPath": "lab/lite/src/lite/scene106.ts",
+      "source": "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",
+      "sha256": "080dc80c222e3a1fa16e9fa8cb284a77b0ccb9d9b417821c5d7cdc25d9635caf"
     }
   ],
   "modules": [
@@ -1624,11 +1636,6 @@
       "sha256": "9fa4455f128d8c7a1a0710567e64c424e12d1890475d660b23b1a94839fb584d"
     },
     {
-      "upstreamPath": "lab/lite/src/lite/scene91.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene91.ts",
-      "sha256": "31f029bb1f6383432b184017cde0ce44ebc08a4fcb47a5bcecddd97c9e67c5ee"
-    },
-    {
       "upstreamPath": "lab/lite/src/lite/scene103.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene103.ts",
       "sha256": "335b572d7512baa348d0ebba78a987c451416524e436d19472e24b025625936a"
@@ -1642,11 +1649,6 @@
       "upstreamPath": "lab/lite/src/lite/scene105.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene105.ts",
       "sha256": "73cfaaffd6608f65defaf93e3695b8c1ecb131852b2e3eb02c365553e88c269d"
-    },
-    {
-      "upstreamPath": "lab/lite/src/lite/scene106.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene106.ts",
-      "sha256": "080dc80c222e3a1fa16e9fa8cb284a77b0ccb9d9b417821c5d7cdc25d9635caf"
     },
     {
       "upstreamPath": "lab/lite/src/lite/scene114.ts",

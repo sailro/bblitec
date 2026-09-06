@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { readFileSync, mkdirSync } from "node:fs";
+import { readFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { nativeFixtureVcpkgRoot, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -76,6 +76,78 @@ test("button labels and emoji share their owning button's mouse activation targe
 });
 
 const nativeTools = optionalNativeFixtureTools();
+const compilerNativeTools = optionalNativeFixtureTools(false);
+
+test("generated gamepad indexing retains fresh arrays and source evaluation order", { skip: !compilerNativeTools }, () => {
+    const output = resolve("artifacts/gamepad-indexing-check");
+    mkdirSync(output, { recursive: true });
+    const compiled = compileSource(`
+        import { createEngine } from "babylon-lite";
+        const engine = await createEngine({});
+        const pads = navigator.getGamepads();
+        let pressed = 0;
+        let axes = 0;
+        let indexCalls = 0;
+        function nextIndex(index: number): number { indexCalls++; return index; }
+        for (const pad of pads) {
+            if (!pad) continue;
+            for (let index = 0; index < 3; index++) {
+                if (pad.buttons[index]!.pressed) pressed++;
+                axes += pad.axes[index]!;
+                if (pad.buttons[nextIndex(index)]!.pressed) pressed++;
+            }
+            const retained = pad.buttons[2]!;
+            if (retained.pressed) pressed++;
+            if (pad.buttons[pad.index]!.pressed) pressed++;
+        }
+        const absent = pads[1];
+        if (absent && absent.buttons[0]!.pressed) throw new Error("absent gamepad");
+        const fallback = absent ? absent.axes[0]! : 10;
+        const present = pads[0];
+        if (present && present.buttons[0]!.pressed) pressed++;
+        if (pressed !== 6 || axes !== 1.5 || indexCalls !== 3 || fallback !== 10)
+            throw new Error("gamepad indexing changed");
+    `);
+    writeFileSync(join(output, "program.hpp"), compiled.cpp);
+    writeFileSync(join(output, "check.cpp"), `
+        #define main generated_scene_main
+        #include "program.hpp"
+        #undef main
+        #include <cassert>
+        namespace { unsigned button_reads = 0, axis_reads = 0, pressed_reads = 0, index_reads = 0; }
+        namespace bbl {
+        Engine create_engine(EngineOptions) { return {}; }
+        js::Array<js::Nullable<GamepadHandle>> platform_gamepads(Engine&) {
+            return {GamepadHandle{7u, 1u}, std::nullopt};
+        }
+        js::Array<GamepadButtonHandle> gamepad_buttons(Engine&, GamepadHandle pad) {
+            assert(pad.instance_id == 7u); ++button_reads;
+            return {GamepadButtonHandle{pad, 0u}, GamepadButtonHandle{pad, 1u}, GamepadButtonHandle{pad, 2u}};
+        }
+        js::Array<double> gamepad_axes(Engine&, GamepadHandle pad) {
+            assert(pad.instance_id == 7u); ++axis_reads; return {0.25, 0.5, 0.75};
+        }
+        double gamepad_index(Engine&, GamepadHandle pad) {
+            assert(pad.instance_id == 7u && button_reads == 8u); ++index_reads; return pad.index;
+        }
+        bool gamepad_button_pressed(Engine&, GamepadButtonHandle button) {
+            assert(button.gamepad.instance_id == 7u && button.index < 3u);
+            ++pressed_reads; return button.index != 1u;
+        }
+        }
+        int main() {
+            assert(generated_scene_main() == 0);
+            assert(button_reads == 9u && axis_reads == 3u && pressed_reads == 9u && index_reads == 1u);
+        }
+    `);
+    const executable = join(output, "check.exe");
+    runNativeFixtureCompiler(compilerNativeTools!, [
+        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc",
+        `/Fo:${output}\\`, `/Fe:${executable}`, "/I", "native/include", join(output, "check.cpp"),
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
+});
+
 test("transparent button borders and backgrounds are not gradient text colors", () => {
     const cpp = compileSource(`
         import { createEngine } from "babylon-lite";

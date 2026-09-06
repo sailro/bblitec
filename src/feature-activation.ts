@@ -532,6 +532,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/mesh/csg.ts",
         consumers: CMAKE,
     },
+    "mesh:csg2": {
+        provenance: "src/mesh/csg2.ts (pinned Manifold WASM)",
+        consumers: CMAKE,
+    },
     "mesh:from-data": {
         provenance: "src/mesh/mesh-factories.ts",
         consumers: CMAKE,

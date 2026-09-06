@@ -902,15 +902,30 @@ foreach ($shaderDirectory in $shaderDirectories) {
                     continue
                 }
                 $pendingHlsl = "$outputBase.pending-hlsl"
+                $pendingDiagnostics = "$outputBase.pending-diagnostics"
                 $reflection = & $Tint $source.FullName `
                     --entry-point $entryPoint `
                     --format hlsl `
                     --output-name $pendingHlsl `
-                    --dump-inspector-bindings true 2>&1
-                if ($LASTEXITCODE -ne 0) {
-                    throw "Tint HLSL generation failed for $($source.FullName)."
+                    --dump-inspector-bindings true 2> $pendingDiagnostics
+                $reflectionExitCode = $LASTEXITCODE
+                # Merging process streams makes cache bytes depend on which
+                # pipe PowerShell drains first. Preserve each stream's order,
+                # with diagnostics before inspector output on every fill.
+                $reflectionText = (@(Get-Content $pendingDiagnostics) + @($reflection)) `
+                    -join [Environment]::NewLine
+                Remove-Item -LiteralPath $pendingDiagnostics
+                if ($reflectionExitCode -ne 0) {
+                    throw "Tint HLSL generation failed for $($source.FullName).`n$reflectionText"
                 }
-                $reflectionText = $reflection -join [Environment]::NewLine
+                # Diagnostics include the input path, which is not part of the
+                # content-addressed key. Keep their locations and text, but use
+                # one source label even when identical WGSL has different names.
+                $reflectionText = [regex]::Replace(
+                    $reflectionText,
+                    "(?m)^$([regex]::Escape($source.FullName))(?=:\d+:\d+ )",
+                    "source.wgsl"
+                )
                 $pendingReflection = "$outputBase.pending-reflection"
                 $reflectionText | Set-Content $pendingReflection
                 Move-IfDifferent $pendingReflection "$outputBase.tint-reflection.txt"

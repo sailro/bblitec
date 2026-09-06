@@ -21,7 +21,7 @@ import {
     emitStructuralPropertyAssignment,
     type AssignmentContext,
 } from "./compiler/assignments.js";
-import { sceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
+import { sceneNodeTransformDescriptor, type SceneNodeTransformDescriptor } from "./scene-node-transform-descriptor.js";
 import {
     registerAsset,
     registerUiImageAsset,
@@ -2343,6 +2343,7 @@ class Compiler
             cppName,
         );
         let value = this.compileValue(declaration.initializer);
+        value = this.bindSceneNodeVector(value);
         if (forwardCallback) {
             this.completeForwardFunctionResult(
                 declaration,
@@ -8673,9 +8674,15 @@ class Compiler
         } finally {
             this.nativeDependencyStack.pop();
         }
+        // CSG values retain materialized geometry plans, not the native mesh
+        // handles read while producing them. A later consumer can therefore
+        // use the plan from a hoisted cleanup without capturing those locals.
+        const geometryPlan = value.kind === "csg-solid" || value.kind === "csg2-solid";
         const retained = new Set(value.nativeCaptures);
-        for (const binding of dependencies) {
-            if (binding.sequence <= boundary) retained.add(binding);
+        if (!geometryPlan) {
+            for (const binding of dependencies) {
+                if (binding.sequence <= boundary) retained.add(binding);
+            }
         }
         if (retained.size && !this.nativeStoredValues.has(value)) value.nativeCaptures = [...retained];
         this.useNativeValue(value);
@@ -9375,21 +9382,7 @@ class Compiler
                         `class: ${owner.classDeclaration?.name?.text ?? "none"}).`,
                 );
             }
-            const ownerPresent =
-                owner.optionalFoundCpp ??
-                (expression.questionDotToken &&
-                owner.dataType?.kind === "struct" &&
-                this.dataTypes.isReferenceStruct(owner.dataType.name)
-                    ? `static_cast<bool>(${owner.cpp})`
-                    : undefined);
-            if (ownerPresent === undefined) {
-                return value;
-            }
-            const present =
-                value.optionalFoundCpp === undefined
-                    ? ownerPresent
-                    : `(${ownerPresent} && ${value.optionalFoundCpp})`;
-            return { ...value, optionalFoundCpp: present };
+            return this.propertyWithOwnerPresence(owner, value, expression);
         }
         // `baked.clips`: the bake's own row map. It carries the bake and
         // nothing else, so the name lookup that follows is the native row
@@ -9430,17 +9423,9 @@ class Compiler
         }
         const resolved = this.readOwnerProperty(owner, expression);
         if (resolved) {
-            if (
-                expression.questionDotToken &&
-                owner.optionalFoundCpp !== undefined
-            ) {
-                const present =
-                    resolved.optionalFoundCpp === undefined
-                        ? owner.optionalFoundCpp
-                        : `(${owner.optionalFoundCpp} && ${resolved.optionalFoundCpp})`;
-                return { ...resolved, optionalFoundCpp: present };
-            }
-            return resolved;
+            return expression.questionDotToken
+                ? this.propertyWithOwnerPresence(owner, resolved, expression)
+                : resolved;
         }
         return this.fail(
             expression,
@@ -9451,7 +9436,8 @@ class Compiler
     private enumMemberValue(
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        const constant = this.checker.getConstantValue(expression);
+        const constant = this.checker.getConstantValue(expression) ??
+            this.symbols.pinnedConstantProperty(expression);
         if (typeof constant === "number") {
             return {
                 kind: "number",
@@ -12737,7 +12723,10 @@ class Compiler
             // identity in classInstances is not a reliable dispatch guard.
             this.defineThis(owner);
             try {
-                return this.compileValue(expression);
+                // A getter is an evaluation, even when its return happens
+                // to lower to a field read. Optional chains must consume it
+                // once and keep any nested method calls behind their guard.
+                return { ...this.compileValue(expression), impure: true };
             } finally {
                 this.defineThis(previousThis);
             }
@@ -13359,6 +13348,30 @@ class Compiler
         return binding;
     }
 
+    public nativeBindingCheckpoint(): number {
+        return this.nextNativeBindingSequence;
+    }
+
+    public captureHoistedLines(emitBody: () => void, beforeBody: number, site: ts.Node): string[] {
+        const beforeGuard = this.nextNativeBindingSequence;
+        const dependencies = new Set<NativeCaptureBinding>();
+        this.nativeDependencyStack.push(dependencies);
+        let lines: string[];
+        try {
+            lines = this.captureEmittedLines(emitBody);
+        } finally {
+            this.nativeDependencyStack.pop();
+        }
+        for (const binding of dependencies) {
+            if (binding.sequence > beforeBody && binding.sequence <= beforeGuard) {
+                this.fail(site,
+                    `A hoisted finally guard cannot reference native local '${binding.name}' ` +
+                    "declared inside its try/catch body; declare retained native state before the try.");
+            }
+        }
+        return lines;
+    }
+
     private describeNativeValue(value: Value): void {
         this.nativeStoredValues.add(value);
         const storage = value.sharedStorageCpp ??
@@ -13404,6 +13417,7 @@ class Compiler
             }
         }
         if (value.kind === "record") {
+            if (value.sceneNodeVector) this.useNativeValue(value.sceneNodeVector.owner, seen);
             for (const field of Object.values(value.recordProperties ?? {})) this.useNativeValue(field, seen);
         }
         if (value.kind === "tuple") {
@@ -16473,10 +16487,24 @@ class Compiler
         owner: Value,
         expression: ts.PropertyAccessExpression,
     ): Value | undefined {
-        return this.readOwnerProperty(
-            this.classLowerer.hydrate(owner) ?? owner,
-            expression,
-        );
+        const hydrated = this.classLowerer.hydrate(owner) ?? owner;
+        const value = this.readOwnerProperty(hydrated, expression);
+        return value && (hydrated.kind === "record" || expression.questionDotToken)
+            ? this.propertyWithOwnerPresence(hydrated, value, expression)
+            : value;
+    }
+
+    private propertyWithOwnerPresence(owner: Value, value: Value, expression: ts.PropertyAccessExpression): Value {
+        const ownerPresent = owner.optionalFoundCpp ??
+            (expression.questionDotToken && owner.dataType?.kind === "struct" &&
+                this.dataTypes.isReferenceStruct(owner.dataType.name)
+                ? `static_cast<bool>(${owner.cpp})`
+                : undefined);
+        if (ownerPresent === undefined) return value;
+        const present = value.optionalFoundCpp === undefined
+            ? ownerPresent
+            : `(${ownerPresent} && ${value.optionalFoundCpp})`;
+        return { ...value, optionalFoundCpp: present };
     }
 
     /**
@@ -16818,26 +16846,13 @@ class Compiler
             if (owner.kind === "scene-node") {
                 this.reachFeature("scene:node-transforms", expression);
             }
-            const collection =
-                owner.kind === "mesh" ? "meshes" : "transform_nodes";
-            const vector = owner.kind === "scene-node"
-                ? `bbl::scene_node_${sceneNodeTransform.nativeField}(${engine}, ${owner.cpp})`
-                : `${engine}.${collection}[${owner.cpp}.value].${sceneNodeTransform.nativeField}`;
-            const component = (name: "x" | "y" | "z" | "w"): Value => ({
-                kind: "number",
-                cpp: `${vector}.${name}`,
-                dataType: { kind: "number" },
-                engineCpp: engine,
-                ...(owner.kind === "scene-node" ? { freshData: true } : {}),
-            });
+            const vectorOwner = { ...owner, engineCpp: engine };
             return {
                 kind: "record",
                 cpp: "",
-                recordProperties: Object.fromEntries(
-                    sceneNodeTransform.components.map((name) => [
-                        name,
-                        component(name),
-                    ]),
+                sceneNodeVector: { owner: vectorOwner, transform: sceneNodeTransform },
+                recordProperties: this.sceneNodeVectorProperties(
+                    vectorOwner, sceneNodeTransform, owner.kind === "scene-node",
                 ),
             };
         }
@@ -17045,10 +17060,10 @@ class Compiler
      *
      * Only a record that exists at generation qualifies (`cpp` is empty),
      * because a native value would have needed storage at the declaration.
-     * And only an assignment the declaring function reaches unconditionally
+     * And only an assignment the declaring scope reaches unconditionally
      * on the way to the name's later reads -- through blocks and `try`
-     * bodies, never a callback, a branch or a loop -- because the binding
-     * is written once for the whole function rather than per path.
+     * bodies, never a nested callback, branch or loop. A declaration inside
+     * a statically expanded loop has its own binding on every iteration.
      */
     public bindPendingLet(identifier: ts.Identifier, value: Value): void {
         if (value.cpp !== "" || !isCompileTimeOnlyValue(value.kind)) {
@@ -17061,12 +17076,17 @@ class Compiler
         }
         const symbol = this.requireValueSymbol(identifier);
         const declaration = symbol.valueDeclaration;
-        const owningFunction = declaration
-            ? ts.findAncestor(declaration, ts.isFunctionLike)
+        const blockScoped = declaration && ts.isVariableDeclaration(declaration) &&
+            ts.isVariableDeclarationList(declaration.parent) &&
+            (declaration.parent.flags & ts.NodeFlags.BlockScoped) !== 0;
+        const declaringScope = declaration
+            ? ts.findAncestor(declaration, (node) =>
+                  ts.isSourceFile(node) ||
+                  (blockScoped ? ts.isBlock(node) : ts.isFunctionLike(node)))
             : undefined;
         for (
             let node: ts.Node | undefined = identifier.parent;
-            node && node !== owningFunction;
+            node && node !== declaringScope;
             node = node.parent
         ) {
             if (
@@ -17082,7 +17102,7 @@ class Compiler
             this.fail(
                 identifier,
                 `'${identifier.text}' is assigned inside a ${ts.SyntaxKind[node.kind]}; ` +
-                    "an untyped 'let' binds only where its function reaches " +
+                    "an untyped 'let' binds only where its declaring scope reaches " +
                     "the assignment unconditionally.",
             );
         }
@@ -17091,7 +17111,13 @@ class Compiler
             this.fail(identifier, `Unable to resolve variable '${identifier.text}'.`);
         }
         this.describeNativeValue(value);
-        owner.set(symbol, { ...owner.get(symbol)!, value });
+        owner.set(symbol, { ...owner.get(symbol)!, value: {
+            ...value,
+            // A successful generation-only binding is a present object,
+            // including when its annotation still admits undefined.
+            optionalFoundCpp: value.optionalFoundCpp ??
+                (value.kind === "json-null" ? "false" : "true"),
+        } });
     }
 
     public rebindVariable(identifier: ts.Identifier, value: Value): void {
@@ -17538,6 +17564,39 @@ class Compiler
             .some((property) => this.recordHasMutableContainer(property, seen));
     }
 
+    private sceneNodeVectorProperties(
+        owner: Value & { engineCpp: string },
+        transform: SceneNodeTransformDescriptor,
+        freshData = false,
+    ): Record<string, Value> {
+        const engine = owner.engineCpp;
+        const vector = owner.kind === "scene-node"
+            ? `bbl::scene_node_${transform.nativeField}(${engine}, ${owner.cpp})`
+            : `${engine}.${owner.kind === "mesh" ? "meshes" : "transform_nodes"}[${owner.cpp}.value].${transform.nativeField}`;
+        return Object.fromEntries(transform.components.map((name) => [name, {
+            kind: "number",
+            cpp: `${vector}.${name}`,
+            dataType: { kind: "number" },
+            engineCpp: engine,
+            ...(freshData ? { freshData: true } : {}),
+        } satisfies Value]));
+    }
+
+    /** Retain the handle, so vector aliases survive arena growth and source rebinding. */
+    private bindSceneNodeVector(value: Value): Value {
+        const vector = value.sceneNodeVector;
+        if (!vector || vector.bound) return value;
+        const cpp = this.allocateTemporaryCppName("vector_owner");
+        this.emit(`[[maybe_unused]] const auto ${cpp} = ${vector.owner.cpp};`);
+        const owner = { ...vector.owner, cpp };
+        this.describeNativeValue(owner);
+        return {
+            ...value,
+            sceneNodeVector: { ...vector, owner, bound: true },
+            recordProperties: this.sceneNodeVectorProperties(owner, vector.transform),
+        };
+    }
+
     /** Materialize mutable members when a compile-time record escapes. */
     private materializeRecordScalars(
         record: Value,
@@ -17545,6 +17604,9 @@ class Compiler
         preserveIdentity = false,
         node?: ts.Expression,
     ): Value {
+        if (record.sceneNodeVector) {
+            return this.bindSceneNodeVector(record);
+        }
         const stored = node && this.referenceRecordValue(record, node);
         if (stored) {
             // Choose the whole-object home before boxing individual fields.
