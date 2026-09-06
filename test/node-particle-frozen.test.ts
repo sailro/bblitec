@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
+import { PNG } from "pngjs";
 import { compileSource } from "../src/compiler.js";
 import { bakeNodeParticles } from "../src/pinned-node-particle.js";
 
@@ -109,4 +110,11 @@ test("pinned frozen bake preserves full-capacity typed columns and stable Float6
     assert.notEqual(buffer.bufferColumns!.age![0], Math.fround(buffer.bufferColumns!.age![0]!));
     assert.equal(buffer.bufferColumns!.posX![0], Math.fround(3.1));
     assert.equal(buffer.bufferColumns!.age![599], 0);
+    const atlas = PNG.sync.read(Buffer.from(buffer.texture!.bytes!, "base64"));
+    assert.equal(atlas.width, 128);
+    assert.equal(atlas.height, 64);
+    assert.equal(buffer.texture!.mediaType, "image/png");
+    const rgba = (x: number, y: number) => [...atlas.data.subarray((y * atlas.width + x) * 4, (y * atlas.width + x) * 4 + 4)];
+    assert.deepEqual(rgba(96, 8), [255, 96, 32, 255]);
+    assert.equal(rgba(96, 56)[3], 0);
 });

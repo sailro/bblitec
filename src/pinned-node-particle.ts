@@ -273,7 +273,7 @@ export interface NodeParticleLiveBake {
     system: number;
     graph: LiveGraph;
     facts: LiveSystemFacts;
-    texture: NodeParticleTexture & { bytes?: string; mediaType?: string };
+    texture: NodeParticleTexture;
 }
 
 /**
@@ -343,6 +343,9 @@ export interface NodeParticleTexture {
     sceneAssigned: boolean;
     width: number;
     height: number;
+    /** Browser object URLs die with the bake page; their bytes travel with it. */
+    bytes?: string;
+    mediaType?: string;
 }
 
 /**
@@ -766,6 +769,14 @@ ${stepProgram(request.steps)}
     const sceneTextures = ${JSON.stringify(
         (request.textures ?? []).map(({ set, system }) => ({ set, system })),
     )};
+    const textureBytes = async (source) => {
+        if (!source?.url.startsWith("blob:")) return {};
+        const blob = await (await fetch(source.url)).blob();
+        return {
+            bytes: bblBase64(new Uint8Array(await blob.arrayBuffer())),
+            mediaType: blob.type,
+        };
+    };
     const systems = [];
     for (const { set: setIndex, system: index } of frozen) {
         const system = systemAt(setIndex, index);
@@ -832,6 +843,7 @@ ${stepProgram(request.steps)}
                       sceneAssigned: sceneTextured,
                       width: system.texture.width,
                       height: system.texture.height,
+                      ...await textureBytes(source),
                   }
                 : null,
             spriteSheet: sheet
@@ -867,14 +879,6 @@ ${stepProgram(request.steps)}
             const source = system.texture ? system.texture._recoverySource : null;
             if (!system.texture || !source || source.kind !== "url") {
                 throw new Error("node-particle bake: a live system's texture is not a loaded image");
-            }
-            // A blob URL is this page's own; its bytes travel with the bake.
-            let bytes;
-            let mediaType;
-            if (source.url.startsWith("blob:")) {
-                const blob = await (await fetch(source.url)).blob();
-                bytes = bblBase64(new Uint8Array(await blob.arrayBuffer()));
-                mediaType = blob.type;
             }
             const slots = {};
             for (const slot of ${JSON.stringify(SLOT_NAMES)}) {
@@ -922,7 +926,7 @@ ${stepProgram(request.steps)}
                     sceneAssigned: false,
                     width: system.texture.width,
                     height: system.texture.height,
-                    ...(bytes === undefined ? {} : { bytes, mediaType }),
+                    ...await textureBytes(source),
                 },
             });
         }
@@ -1021,6 +1025,7 @@ export async function bakeNodeParticles(
             browserArgs: screenshotCaptureBrowserArgs,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Node particle",
+            consoleErrorPrefix: "Node particle module",
         });
         return assertBake(result);
     };
