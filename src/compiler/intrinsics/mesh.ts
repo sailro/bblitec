@@ -39,7 +39,7 @@ import {
     type CsgSolidPlan,
     type CsgSourceMesh,
 } from "../../pinned-csg.js";
-import { bakeCsg2Meshes, csg2BooleanNames, type Csg2SolidPlan } from "../../pinned-csg2.js";
+import { bakeCsg2Meshes, csg2BooleanNames, csg2MaterialSlotCount, type Csg2SolidPlan } from "../../pinned-csg2.js";
 
 /**
  * Native math and instance-buffer work: these may record reached stream facts,
@@ -441,8 +441,8 @@ function csgOptionBag<Name extends string>(
  *
  * Two spellings answer it. The argument may BE the builder call, which
  * nothing can have moved yet. Or it may name a local binding whose
- * initializer is that call and whose FIRST use is this one -- the
- * strongest rule that needs no dataflow, because a `position` write, a
+ * initializer is that call and whose only prior uses assign its material.
+ * Material setters do not alter geometry or the world transform; a `position` write, a
  * helper handed the mesh, or a callback closing over it all mention the
  * binding earlier. Naming the builder CALL rather than reading a
  * descriptor off the mesh's own value is what closes the other direction:
@@ -551,6 +551,10 @@ function requireCsgSolid(
 }
 
 const initializedCsg2Contexts = new WeakSet<MeshIntrinsicContext>();
+const csg2Intrinsics: ReadonlySet<string> = new Set([
+    "initializeCsg2Async", "isCsg2Ready", "createCsg2FromMesh", "disposeCsg2",
+    "createMeshFromCsg2", "createMeshesFromCsg2", ...csg2BooleanNames,
+]);
 
 function requireCsg2Solid(context: MeshIntrinsicContext, argument: ts.Expression): Csg2SolidPlan {
     const value = context.compileValue(argument);
@@ -566,6 +570,9 @@ export function compileMeshIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    if (csg2Intrinsics.has(importedName) && context.isRuntimeResourceConstruction()) {
+        context.fail(call, "CSG2 modelling and lifetime require unconditional generation-known execution; runtime branches, loops and callbacks are unsupported.");
+    }
     switch (importedName) {
         case "initializeCsg2Async": {
             context.expectArgumentCount(call, 0, 0);
@@ -587,8 +594,9 @@ export function compileMeshIntrinsic(
             const source = builder && csgSourceFromCall(context, builder);
             if (!source) context.fail(call.arguments[0]!, "createCsg2FromMesh requires an unchanged identity-transform createBox/createSphere with generation-known options; only preceding material assignments are permitted.");
             const materialSlot = call.arguments[1] ? staticNumberValue(context, context.unwrap(call.arguments[1])) : 0;
-            if (materialSlot === undefined || !Number.isInteger(materialSlot) || materialSlot < 0 || materialSlot >= 65536) {
-                context.fail(call.arguments[1] ?? call, "A CSG2 material slot must be a generation-known integer in [0, 65535].");
+            const slotCount = csg2MaterialSlotCount();
+            if (materialSlot === undefined || !Number.isInteger(materialSlot) || materialSlot < 0 || materialSlot >= slotCount) {
+                context.fail(call.arguments[1] ?? call, `A CSG2 material slot must be a generation-known integer in [0, ${slotCount - 1}].`);
             }
             context.reachFeature("mesh:csg2", call);
             return { kind: "csg2-solid", cpp: "", csg2Solid: { plan: { op: "from-mesh", source, materialSlot }, disposed: false } };
@@ -629,7 +637,14 @@ export function compileMeshIntrinsic(
             const nameArgument = call.arguments[partitioned ? 3 : 2];
             const name = nameArgument ? context.compileValue(nameArgument).staticString : "csg2";
             if (name === undefined) context.fail(nameArgument ?? call, "A CSG2 output name must be generation-known.");
-            const baked = bakeCsg2Meshes({ plan, name, ...(materials ? { materialCount: materials.length } : {}) });
+            const baked = (() => {
+                try {
+                    return bakeCsg2Meshes({ plan, name, ...(materials ? { materialCount: materials.length } : {}) });
+                } catch (error) {
+                    if (error instanceof Error) context.fail(call, error.message);
+                    throw error;
+                }
+            })();
             const meshes: Value[] = [];
             for (const output of baked) {
                 const prefix = context.allocateTemporaryCppName("csg2_geometry");

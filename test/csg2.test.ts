@@ -35,6 +35,18 @@ test("CSG2 compiler preserves native material partitions and generation-only sol
     assert.ok(!result.manifest.features.includes("mesh:csg"));
 });
 
+test("unchanged Scene 91 retains all six material partitions through nullable try/finally bindings", () => {
+    const path = "corpus/babylon-lite/lab/lite/src/lite/scene91.ts";
+    const result = compileSource(readFileSync(path, "utf8"), { fileName: path });
+    assert.equal(result.manifest.sceneMeshes.length, 18);
+    assert.equal(result.manifest.sceneMeshes.filter((mesh) => mesh.kind === "from-data" && mesh.standardMaterial).length, 6);
+    for (const operation of ["subtract", "intersect", "union"]) {
+        for (const material of [0, 1]) assert.ok(result.cpp.includes(`"csg-${operation}_sub${material}"`));
+    }
+    assert.equal(result.cpp.match(/bbl::create_mesh_from_data\(/g)?.length, 6);
+    assert.ok(result.cpp.slice(result.cpp.indexOf("int main()")).length < 100000);
+});
+
 test("CSG2 rejects missing initialization, disposed aliases and unsupported source mutations", () => {
     assert.throws(() => compileSource(source(`const solid = createCsg2FromMesh(createBox(engine, 2));`)), /requires initializeCsg2Async/);
     assert.throws(() => compileSource(source(`
@@ -58,6 +70,17 @@ test("CSG2 rejects missing initialization, disposed aliases and unsupported sour
             const solid = createCsg2FromMesh(createBox(engine, 2), ${slot});
         `)), /generation-known integer/);
     }
+});
+
+test("CSG2 refuses runtime-controlled initialization and disposal", () => {
+    assert.throws(() => compileSource(source(`
+        if (Math.random() > 0.5) await initializeCsg2Async();
+    `)), /unconditional generation-known execution/);
+    assert.throws(() => compileSource(source(`
+        await initializeCsg2Async();
+        const solid = createCsg2FromMesh(createBox(engine, 2));
+        if (Math.random() > 0.5) disposeCsg2(solid);
+    `)), /unconditional generation-known execution/);
 });
 
 function volume(mesh: BakedCsgMesh): number {

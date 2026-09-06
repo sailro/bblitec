@@ -7,6 +7,7 @@ import { cachedBakeSync, moduleIdentity } from "./bake-cache.js";
 import { createSuiteSceneServer } from "./capture-suite-reference.js";
 import { pageBase64Script, runPageGlobal } from "./browser-harness.js";
 import { runGenerationChild } from "./compiler/generation-child.js";
+import { LoweringContext } from "./lowering/context.js";
 import {
     packBakedCsgMesh,
     recordingCsgEngine,
@@ -17,6 +18,15 @@ import {
 
 export const csg2BooleanNames = ["csg2Subtract", "csg2Intersect", "csg2Add"] as const;
 export type Csg2BooleanName = (typeof csg2BooleanNames)[number];
+let materialSlotCount: number | undefined;
+export function csg2MaterialSlotCount(): number {
+    if (materialSlotCount === undefined) {
+        const context = new LoweringContext();
+        const source = context.sourceFile("src/mesh/csg2.ts");
+        materialSlotCount = context.numericValue(context.variableInitializer(source, "MATERIAL_ID_RESERVE_COUNT"), source);
+    }
+    return materialSlotCount;
+}
 export type Csg2SolidPlan =
     | { readonly op: "from-mesh"; readonly source: CsgSourceMesh; readonly materialSlot: number }
     | { readonly op: Csg2BooleanName; readonly left: Csg2SolidPlan; readonly right: Csg2SolidPlan };
@@ -105,16 +115,21 @@ async function replayPlan(
     }
 }
 
-/** Called by the synchronous compiler's generation child. */
-export async function executeCsg2Bake(request: Csg2BakeRequest): Promise<unknown> {
-    const server = createSuiteSceneServer(`
+/** The exact driver source is also part of the persistent cache identity. */
+function csg2Driver(request: Csg2BakeRequest): string {
+    return `
 import * as csg from "/node_modules/@babylonjs/lite/lib/mesh/csg2.js";
 import * as factories from "/node_modules/@babylonjs/lite/lib/mesh/mesh-factories.js";
 ${pageBase64Script}
 window.__bakeCsg2 = () => (${replayPlan.toString()})(
     ${JSON.stringify(request)}, csg, factories,
     ${recordingCsgEngine.toString()}, ${packBakedCsgMesh.toString()}, bblBase64);
-`);
+`;
+}
+
+/** Called by the synchronous compiler's generation child. */
+export async function executeCsg2Bake(request: Csg2BakeRequest): Promise<unknown> {
+    const server = createSuiteSceneServer(csg2Driver(request));
     return runPageGlobal(server, "__bakeCsg2", {
         serverName: "pinned CSG2 bake",
         browserRequirement: "Pinned CSG2 Manifold WASM requires Chrome or Edge.",
@@ -124,7 +139,9 @@ window.__bakeCsg2 = () => (${replayPlan.toString()})(
 export function bakeCsg2Meshes(request: Csg2BakeRequest): readonly BakedCsg2Mesh[] {
     const bytes = cachedBakeSync({
         kind: "executed-csg2-solid", version: "1", module: moduleIdentity(import.meta.url),
-        browser: true, parameters: { request }, inputs: [],
+        // The complete executed driver includes the shared recording and
+        // stream transport helpers, so changes there cannot reuse old bytes.
+        browser: true, parameters: { request }, inputs: [Buffer.from(csg2Driver(request))],
     }, () => Buffer.from(runGenerationChild({
         script: `
 const source = JSON.parse(process.env.BBLITE_CSG2_REQUEST);
@@ -139,12 +156,15 @@ process.stdout.write(JSON.stringify(await module.executeCsg2Bake(source)));
     if (!Array.isArray(value)) throw new Error("Pinned CSG2 bake did not return a mesh list.");
     return value.map((entry: unknown) => {
         if (typeof entry !== "object" || entry === null || !("name" in entry) || typeof entry.name !== "string" ||
-            !("geometry" in entry) || typeof entry.geometry !== "string" ||
-            ("materialSlot" in entry && (typeof entry.materialSlot !== "number" || !Number.isInteger(entry.materialSlot)))) {
+            !("geometry" in entry) || typeof entry.geometry !== "string") {
             throw new Error("Pinned CSG2 bake returned an invalid mesh descriptor.");
         }
+        const materialSlot = "materialSlot" in entry ? entry.materialSlot : undefined;
+        if (materialSlot !== undefined && (typeof materialSlot !== "number" || !Number.isInteger(materialSlot) || materialSlot < 0)) {
+            throw new Error("Pinned CSG2 bake returned an invalid material slot.");
+        }
         return { name: entry.name,
-            ...("materialSlot" in entry ? { materialSlot: entry.materialSlot as number } : {}),
+            ...(materialSlot !== undefined ? { materialSlot } : {}),
             geometry: unpackBakedCsgMesh(Buffer.from(entry.geometry, "base64")) };
     });
 }

@@ -512,7 +512,12 @@ export function compileAdaptations(
             sourceSemantics: "The scene initializes the pinned Manifold WASM runtime, builds solids from retained CPU mesh streams, applies booleans, and creates one mesh or one mesh per material slot.",
             nativeSemantics: "Generation executes unchanged csg2.ts and the package's bundled Manifold WASM in Chromium. Only identity-transform box/sphere inputs with generation-known options are accepted. Native code constructs the exact returned streams and retains the pin's partition ordering, names and material selection. Solids and their disposal remain generation-only; initialization and modelling failures happen during compilation.",
             risk: "medium",
-            validation: ["pinned CSG2 boolean, material partition and refusal tests", "binary transport preserves the pin's float32 and index streams"],
+            validation: [
+                "pinned CSG2 boolean, material partition and refusal tests",
+                "binary transport preserves the pin's float32 and index streams",
+                "unchanged scene 91 is byte-identical to the browser golden on SDL_GPU and Dawn",
+                "both-backend input replay observes camera orbit, changed images and window-close completion",
+            ],
         });
     }
     if (features.includes("gizmo:pointer-drag")) {

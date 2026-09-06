@@ -4004,6 +4004,21 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene91",
+        name: "Scene 91 - CSG2 Operations",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene91.ts",
+        title: "Babylon Lite Native - CSG2 Operations",
+        parity: {
+            // The unchanged pin's Manifold WASM produces both material
+            // partitions at generation. Both backends match every byte of
+            // the browser's three boolean rows, including the drawn labels.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene214",
         name: "Scene 214 - Cascaded Shadow Torus Knots",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene214.ts",
