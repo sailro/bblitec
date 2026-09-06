@@ -3153,7 +3153,7 @@ ${distanceLocals}
         Vec3d{hit.point[0], hit.point[1], hit.point[2]},
         Vec3d{hit.normal[0], hit.normal[1], hit.normal[2]},
         distance,
-        body,
+        std::move(body),
     };
 }
 

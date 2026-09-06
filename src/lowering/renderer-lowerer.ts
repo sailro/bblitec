@@ -1996,8 +1996,7 @@ void sort_transparent_draws(
     const CameraBasis basis = camera_basis(camera);
     const Vec3& eye = basis.eye;
     const Vec3& forward = basis.forward;
-    auto& commands = transparent.visibility_candidates.empty()
-        ? transparent.commands : transparent.visibility_candidates;
+    auto& commands = transparent.visibility_candidates;
     for (RenderDrawCommand& command : commands) {
         if (command.item.mesh.value >= engine.meshes.size()) {
             command.sort_distance = 0.0f;
@@ -2045,12 +2044,10 @@ void sort_transparent_draws(
                 (left.sort_distance == right.sort_distance &&
                  left.item.order < right.item.order);
         });
-    if (!transparent.visibility_candidates.empty()) {
-        transparent.commands.clear();
-        for (const RenderDrawCommand& command : commands) {
-            if (mesh_draws(engine.meshes.at(command.item.mesh.value))) {
-                transparent.commands.push_back(command);
-            }
+    transparent.commands.clear();
+    for (const RenderDrawCommand& command : commands) {
+        if (mesh_draws(engine.meshes.at(command.item.mesh.value))) {
+            transparent.commands.push_back(command);
         }
     }
 }

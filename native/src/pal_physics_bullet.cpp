@@ -1478,7 +1478,8 @@ PhysicsRaycastResult physics_world_raycast(
     callback.m_collisionFilterGroup = static_cast<int>(membership);
     callback.m_collisionFilterMask = static_cast<int>(collide_with);
     world_at(world).world->rayTest(ray_from, ray_to, callback);
-    if (std::getenv("BBLITE_TRACE_PHYSICS_RAYS")) {
+    static const bool trace = std::getenv("BBLITE_TRACE_PHYSICS_RAYS") != nullptr;
+    if (trace) {
         const PhysicsBodyState* body = callback.hasHit() ? body_entry_of(callback.m_collisionObject) : nullptr;
         std::fprintf(stderr,
             "[physics-ray] from=[%.17g,%.17g,%.17g] to=[%.17g,%.17g,%.17g] hit=%d body=%u point=[%.17g,%.17g,%.17g]\n",
@@ -1498,7 +1499,6 @@ PhysicsRaycastResult physics_world_raycast(
         true,
         {point.x(), point.y(), point.z()},
         {normal.x(), normal.y(), normal.z()},
-        static_cast<double>((point - ray_from).length()),
         hit_body ? hit_body->identity : 0,
     };
 }

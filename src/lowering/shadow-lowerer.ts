@@ -1528,10 +1528,7 @@ export function pinnedShadowHeader(context: LoweringContext): string {
     const esm = esmDefaults(context);
     const pcfDirectional = pcfDirectionalDefaults(context);
     const csm = csmDefaults(context);
-    const mat4Invert = lowerMat4InvertCpp(context).replace(
-        "\nstd::optional<std::array<float, 16>> mat4_invert(",
-        "\ninline std::optional<std::array<float, 16>> mat4_invert(",
-    );
+    const mat4Invert = lowerMat4InvertCpp(context, { inline: true });
     const casterFallback = esmCasterBoundsFallback(context);
     const trs = pinnedTrsComposition(context);
     const floats = (values: readonly number[]): string =>
