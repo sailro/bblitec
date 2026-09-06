@@ -31,7 +31,7 @@ families include:
 | --- | --- |
 | AOT/browser | Assets materialize during compilation; supported promises settle synchronously; reference queries fold; bounded browser instrumentation erases |
 | Executed producers | Chromium produces atlas pixels, fragile computed buffers, prefiltered assets and frozen particles; output can depend on the compiling browser |
-| Frame time | The fixed-step clock and the sprite renderer's per-frame hook carry the browser's double delta; scene and frame-graph callbacks receive the engine API's float |
+| Frame time | The fixed-step clock, the sprite renderer's per-frame hook and the sprite-layer and billboard effect clocks carry the browser's double delta; scene and frame-graph callbacks receive the engine API's float |
 | Plain-data model | Native storage/aliasing, checked access and sparse initialization differ from unrestricted JavaScript |
 | Skinning | A loaded eight-influence skin retains four influences |
 | GPU culling | Reached thin-instance culling can use the pin's all-active-instance fallback without its compute/indirect optimization |

@@ -12127,9 +12127,9 @@ bool run_dawn_engine(Engine& engine) {
         // and a bracket that began at each backend's acquisition would then
         // cover a different span on each.
         const double benchmark_start = monotonic_milliseconds();
-        // Only an animated billboard pass reads it, so the frame's own
-        // delta is unused in a build that reaches no billboards.
-        [[maybe_unused]] const double delta_ms =
+        // The frame trace, sprite passes and animated billboard passes
+        // read the frame's own delta.
+        const double delta_ms =
             advance_frame(
                 engine,
                 scene,

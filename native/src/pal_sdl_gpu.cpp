@@ -9406,9 +9406,9 @@ bool run_gpu_engine(Engine& engine) {
             // unconditional because the benchmark bracket reads them.
             const double acquired =
                 cpu_profile ? monotonic_milliseconds() : 0.0;
-            // Only an animated billboard pass reads it, so the frame's own
-            // delta is unused in a build that reaches no billboards.
-            [[maybe_unused]] const double delta_ms =
+            // The frame trace, sprite passes and animated billboard passes
+            // read the frame's own delta.
+            const double delta_ms =
                 advance_frame(
                     engine,
                     scene,
