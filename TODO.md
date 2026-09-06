@@ -16,9 +16,12 @@ implementation, follow the sizing/capture workflow in
 - [ ] Generalize namespace/default imports beyond specialized recognized
   modules; preserve resolved-symbol intrinsic identity.
 - [ ] Build a typed user-code IR with one symbol/alias resolver, escape graph
-  and retaining-sink model. Replace source-text/positional scope recognizers.
-  General render/update callbacks, escaping captures and dynamic-import/AOT
-  promise dispatch need this common contract.
+  and retaining-sink model. Replace source-text/positional scope recognizers,
+  including the syntactic stored-callback set behind shared closure cells;
+  until then a by-value capture of a mutable binding that a closure writes
+  needs a refusal measured across the matrix. General render/update
+  callbacks, escaping captures and dynamic-import/AOT promise dispatch need
+  this common contract.
 - [ ] Extend discriminated unions, numeric-literal narrowing and
   definitely-assigned locals across try/finally. A static nullable annotation
   must not keep both branches live when its value is known.

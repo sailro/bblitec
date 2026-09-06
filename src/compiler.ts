@@ -1834,30 +1834,48 @@ class Compiler
     }
 
     /**
-     * A callback passed to a local helper is stored when the helper invokes
-     * that parameter from one of its own retained callbacks: the
-     * screen-space demo's `bindToggle(id, label, initial, update)` calls
-     * `update` from its click listener, so the argument closes over the
-     * caller's bindings exactly as an inline listener would.
+     * The argument a call keeps past its own return: a listener
+     * registration its second, a browser timer its first (the racer's
+     * `setTimeout(tick, 700)`). `requestAnimationFrame` is absent: an
+     * inline entry-level frame callback borrows the entry scope by
+     * reference, one registered inside another callback is a nested root,
+     * and a named loop passed to it is a kept value like any other.
      */
-    private isStoredArgumentCallback(node: ts.Node): boolean {
-        if (!ts.isArrowFunction(node) && !ts.isFunctionExpression(node)) {
-            return false;
+    private retainedArgumentIndex(
+        call: ts.CallExpression,
+    ): number | undefined {
+        const callee = this.unwrap(call.expression);
+        if (
+            ts.isPropertyAccessExpression(callee) &&
+            callee.name.text === "addEventListener" &&
+            call.arguments.length >= 2
+        ) {
+            return 1;
         }
-        const call = node.parent;
-        if (!call || !ts.isCallExpression(call)) return false;
-        const index = call.arguments.indexOf(node);
-        if (index < 0) return false;
+        const global = browserGlobalNamed(this, call.expression)?.text;
+        return (global === "setTimeout" || global === "setInterval") &&
+            call.arguments.length >= 1
+            ? 0
+            : undefined;
+    }
+
+    /**
+     * Whether a call keeps its argument at `index` in a retained callback:
+     * a listener or timer registration, or a repository helper that invokes
+     * that parameter from one of its own stored callbacks (freeciv's
+     * `installControls(engine, view, zoomCtl, hover, onMapClick)` calls
+     * `onClick` from its pointer-up listener). The helper may live in any
+     * repository module; the pinned package has no bodies to resolve.
+     */
+    private callRetainsArgument(
+        call: ts.CallExpression,
+        index: number,
+    ): boolean {
+        if (this.retainedArgumentIndex(call) === index) return true;
         const callee = this.unwrap(call.expression);
         if (!ts.isIdentifier(callee)) return false;
-        const target = resolveFunctionDeclaration(
-            this.checker,
-            callee,
-            (site, message) => this.fail(site, message),
-        );
-        if (!target || target.getSourceFile() !== node.getSourceFile()) {
-            return false;
-        }
+        const target = tryResolveFunctionDeclaration(this.checker, callee);
+        if (!target) return false;
         const parameter = target.parameters[index];
         if (!parameter || !ts.isIdentifier(parameter.name)) return false;
         const symbol = this.symbols.valueSymbol(parameter.name);
@@ -1867,188 +1885,183 @@ class Compiler
         );
     }
 
+    /**
+     * The bindings a stored callback of `owner` closes over; every closure
+     * over one of them must share a single cell, because a stored
+     * closure's environment owns its captures by value. A callback is
+     * stored when the program keeps the function value past the statement
+     * naming it: a local function referenced anywhere but as a direct
+     * callee (the rule `recursiveStorageEscapes` applies), a record member
+     * or accessor, a returned function, an argument the call retains, a
+     * function pushed into a container or assigned to a property, and any
+     * callback registered from inside another callback, whose environment
+     * the emitter copies whatever registers it. A local function a stored
+     * callback calls runs from it and is stored with it. The owner itself
+     * is never a root: its own locals live in its frame.
+     */
     private collectSharedClosureSymbols(
         owner: ts.Node,
     ): ReadonlySet<ts.Symbol> {
         const captured = new Set<ts.Symbol>();
         const storedLocalFunctions = new Set<ts.Symbol>();
         const storedLocalFunctionNames = new Set<string>();
-        const isRetainedEventRegistration = (
-            node: ts.Node,
-        ): node is ts.CallExpression =>
-            ts.isCallExpression(node) &&
-            ts.isPropertyAccessExpression(this.unwrap(node.expression)) &&
-            (this.unwrap(node.expression) as ts.PropertyAccessExpression).name
-                .text === "addEventListener" &&
-            node.arguments.length >= 2;
-        const collectStoredFunctions = (node: ts.Node): void => {
-            if (ts.isShorthandPropertyAssignment(node)) {
-                storedLocalFunctionNames.add(node.name.text);
-                const symbol = this.symbols.valueSymbol(node.name);
-                if (symbol) storedLocalFunctions.add(symbol);
-            } else if (
-                ts.isPropertyAssignment(node) &&
-                ts.isIdentifier(this.unwrap(node.initializer))
-            ) {
-                storedLocalFunctionNames.add(
-                    (this.unwrap(node.initializer) as ts.Identifier).text,
-                );
-                const symbol = this.symbols.valueSymbol(
-                    this.unwrap(node.initializer) as ts.Identifier,
-                );
-                if (symbol) storedLocalFunctions.add(symbol);
-            } else if (isRetainedEventRegistration(node)) {
-                const callback = node.arguments[1]
-                    ? this.unwrap(node.arguments[1])
-                    : undefined;
-                if (callback && ts.isIdentifier(callback)) {
-                    storedLocalFunctionNames.add(callback.text);
-                    const symbol = this.symbols.valueSymbol(callback);
-                    if (symbol) storedLocalFunctions.add(symbol);
-                }
-            } else if (
-                ts.isReturnStatement(node) &&
-                node.expression &&
-                ts.isIdentifier(this.unwrap(node.expression))
-            ) {
-                const returned = this.unwrap(node.expression) as ts.Identifier;
-                storedLocalFunctionNames.add(returned.text);
-                const symbol = this.symbols.valueSymbol(returned);
-                if (symbol) storedLocalFunctions.add(symbol);
-            }
-            ts.forEachChild(node, collectStoredFunctions);
-        };
-        collectStoredFunctions(owner);
-
         const localFunctions = new Map<ts.Symbol, ts.FunctionLikeDeclaration>();
-        const storedCallbackRoots: ts.FunctionLikeDeclaration[] = [];
-        // The inline arrows stored through a retained listener or a helper
-        // that retains its parameter, as found once below.
-        const inlineStoredCallbacks = new Set<ts.Node>();
-        const collectFunctionGraph = (node: ts.Node): void => {
-            if (ts.isFunctionDeclaration(node) && node.name) {
-                const symbol = this.symbols.valueSymbol(node.name);
-                if (symbol) localFunctions.set(symbol, node);
-            } else if (
-                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                ts.isVariableDeclaration(node.parent) &&
-                ts.isIdentifier(node.parent.name)
-            ) {
-                const symbol = this.symbols.valueSymbol(node.parent.name);
-                if (symbol) localFunctions.set(symbol, node);
+        const localFunctionNames = new Set<string>();
+        const roots: ts.FunctionLikeDeclaration[] = [];
+        const rootSet = new Set<ts.Node>();
+        const isClosure = (
+            node: ts.Node,
+        ): node is ts.ArrowFunction | ts.FunctionExpression =>
+            ts.isArrowFunction(node) || ts.isFunctionExpression(node);
+        const isRecordMember = (node: ts.Node): boolean =>
+            ((ts.isMethodDeclaration(node) ||
+                ts.isGetAccessorDeclaration(node) ||
+                ts.isSetAccessorDeclaration(node)) &&
+                ts.isObjectLiteralExpression(node.parent)) ||
+            (isClosure(node) &&
+                ts.isPropertyAssignment(node.parent) &&
+                ts.isObjectLiteralExpression(node.parent.parent));
+        const localFunctionName = (
+            node: ts.Node,
+        ): ts.Identifier | undefined =>
+            ts.isFunctionDeclaration(node) && node.name
+                ? node.name
+                : isClosure(node) &&
+                    ts.isVariableDeclaration(node.parent) &&
+                    ts.isIdentifier(node.parent.name)
+                  ? node.parent.name
+                  : undefined;
+        const storeNamed = (identifier: ts.Identifier): void => {
+            storedLocalFunctionNames.add(identifier.text);
+            const symbol = this.symbols.valueSymbol(identifier);
+            if (symbol) storedLocalFunctions.add(symbol);
+        };
+        const isStoredLocal = (identifier: ts.Identifier): boolean => {
+            if (storedLocalFunctionNames.has(identifier.text)) return true;
+            const symbol = this.symbols.valueSymbol(identifier);
+            return !!symbol && storedLocalFunctions.has(symbol);
+        };
+        const isDataSinkClosure = (node: ts.Node): boolean => {
+            if (!isClosure(node)) return false;
+            const parent = node.parent;
+            if (ts.isCallExpression(parent) && parent.arguments.includes(node)) {
+                const callee = this.unwrap(parent.expression);
+                return (
+                    ts.isPropertyAccessExpression(callee) &&
+                    ["push", "unshift", "add", "set"].includes(callee.name.text)
+                );
             }
             if (
-                (ts.isMethodDeclaration(node) &&
-                    ts.isObjectLiteralExpression(node.parent)) ||
-                ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                    ts.isPropertyAssignment(node.parent) &&
-                    ts.isObjectLiteralExpression(node.parent.parent))
+                ts.isBinaryExpression(parent) &&
+                parent.operatorToken.kind === ts.SyntaxKind.EqualsToken &&
+                parent.right === node
             ) {
-                storedCallbackRoots.push(node);
-            } else if (
-                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                ts.isReturnStatement(node.parent) &&
-                node.parent.expression === node
-            ) {
-                storedCallbackRoots.push(node);
-            } else if (
-                node !== owner &&
-                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                ((ts.isCallExpression(node.parent) &&
-                    node.parent.arguments[1] === node &&
-                    isRetainedEventRegistration(node.parent)) ||
-                    this.isStoredArgumentCallback(node))
-            ) {
-                // A local function called from a retained listener, or from
-                // a callback a helper retains, runs from that stored callback
-                // and closes over the same bindings. The walk below tests
-                // the same nodes, so they are remembered rather than
-                // re-derived through the callee analysis.
-                storedCallbackRoots.push(node);
-                inlineStoredCallbacks.add(node);
+                return (
+                    ts.isPropertyAccessExpression(parent.left) ||
+                    ts.isElementAccessExpression(parent.left)
+                );
             }
-            ts.forEachChild(node, collectFunctionGraph);
+            return ts.isArrayLiteralExpression(parent);
         };
-        collectFunctionGraph(owner);
+        const addRoot = (node: ts.FunctionLikeDeclaration): void => {
+            roots.push(node);
+            rootSet.add(node);
+        };
+        // Local functions and inline roots. `callbackDepth` counts the
+        // enclosing callback arguments: below one, every callback argument
+        // is a root.
+        const collectRoots = (node: ts.Node, callbackDepth: number): void => {
+            const name = localFunctionName(node);
+            if (name) {
+                localFunctionNames.add(name.text);
+                const symbol = this.symbols.valueSymbol(name);
+                if (symbol) {
+                    localFunctions.set(symbol, node as ts.FunctionLikeDeclaration);
+                }
+            }
+            let depth = callbackDepth;
+            if (isClosure(node)) {
+                const call = ts.isCallExpression(node.parent) ? node.parent : undefined;
+                const index = call ? call.arguments.indexOf(node) : -1;
+                if (
+                    isRecordMember(node) ||
+                    (ts.isReturnStatement(node.parent) &&
+                        node.parent.expression === node) ||
+                    isDataSinkClosure(node) ||
+                    (call !== undefined &&
+                        index >= 0 &&
+                        (callbackDepth > 0 ||
+                            this.callRetainsArgument(call, index)))
+                ) {
+                    addRoot(node);
+                }
+                if (index >= 0) depth = callbackDepth + 1;
+            } else if (isRecordMember(node)) {
+                addRoot(node as ts.FunctionLikeDeclaration);
+            }
+            ts.forEachChild(node, (child) => collectRoots(child, depth));
+        };
+        ts.forEachChild(owner, (child) => collectRoots(child, 0));
+        // A local function referenced anywhere but as a direct callee is a
+        // value the program keeps: passed by name, assigned, pushed, returned
+        // or captured.
+        const collectStoredReferences = (node: ts.Node): void => {
+            if (ts.isShorthandPropertyAssignment(node)) {
+                if (localFunctionNames.has(node.name.text)) storeNamed(node.name);
+            } else if (ts.isIdentifier(node) && localFunctionNames.has(node.text)) {
+                const parent = node.parent;
+                const declared =
+                    (ts.isFunctionDeclaration(parent) ||
+                        ts.isVariableDeclaration(parent)) &&
+                    parent.name === node;
+                const callee =
+                    ts.isCallExpression(parent) && parent.expression === node;
+                const member =
+                    ts.isPropertyAccessExpression(parent) && parent.name === node;
+                if (!declared && !callee && !member) {
+                    const symbol = this.symbols.valueSymbol(node);
+                    if (symbol && localFunctions.has(symbol)) storeNamed(node);
+                }
+            }
+            ts.forEachChild(node, collectStoredReferences);
+        };
+        collectStoredReferences(owner);
         for (const symbol of storedLocalFunctions) {
             const declaration = localFunctions.get(symbol);
-            if (declaration) storedCallbackRoots.push(declaration);
+            if (declaration) addRoot(declaration);
         }
-        const visitedCallbacks = new Set<ts.FunctionLikeDeclaration>();
-        for (let index = 0; index < storedCallbackRoots.length; ++index) {
-            const callback = storedCallbackRoots[index]!;
-            if (visitedCallbacks.has(callback)) continue;
-            visitedCallbacks.add(callback);
-            const collectReferencedFunctions = (node: ts.Node): void => {
-                if (ts.isIdentifier(node)) {
+        // A local function a root calls runs from that stored callback.
+        const visitedRoots = new Set<ts.Node>();
+        for (let index = 0; index < roots.length; ++index) {
+            const root = roots[index]!;
+            if (visitedRoots.has(root)) continue;
+            visitedRoots.add(root);
+            const collectCallees = (node: ts.Node): void => {
+                if (ts.isIdentifier(node) && localFunctionNames.has(node.text)) {
                     const symbol = this.symbols.valueSymbol(node);
                     const declaration = symbol
                         ? localFunctions.get(symbol)
                         : undefined;
-                    if (
-                        symbol &&
-                        declaration &&
-                        !storedLocalFunctions.has(symbol)
-                    ) {
+                    if (symbol && declaration && !storedLocalFunctions.has(symbol)) {
                         storedLocalFunctions.add(symbol);
-                        storedCallbackRoots.push(declaration);
+                        addRoot(declaration);
                     }
                 }
-                ts.forEachChild(node, collectReferencedFunctions);
+                ts.forEachChild(node, collectCallees);
             };
-            collectReferencedFunctions(callback);
+            collectCallees(root);
         }
-
-        const visit = (
-            node: ts.Node,
-            insideStoredRecordCallback: boolean,
-        ): void => {
-            // Local functions returned through a record are compiled into
-            // independent native callbacks just like inline object-literal
-            // methods. JavaScript still closes every one of them over the
-            // same binding. Limit this to functions actually stored in such
-            // a record: ordinary recurring frame callbacks keep the existing
-            // static-lifetime lowering they require.
-            let storedLocalCallback = false;
-            if (ts.isFunctionDeclaration(node) && node.name) {
-                const symbol = this.symbols.valueSymbol(node.name);
-                storedLocalCallback =
-                    storedLocalFunctionNames.has(node.name.text) ||
-                    (!!symbol && storedLocalFunctions.has(symbol));
-            } else if (
-                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                ts.isVariableDeclaration(node.parent) &&
-                ts.isIdentifier(node.parent.name)
-            ) {
-                const symbol = this.symbols.valueSymbol(node.parent.name);
-                storedLocalCallback =
-                    storedLocalFunctionNames.has(node.parent.name.text) ||
-                    (!!symbol && storedLocalFunctions.has(symbol));
-            }
-            const storedRecordCallback =
-                (ts.isMethodDeclaration(node) &&
-                    ts.isObjectLiteralExpression(node.parent)) ||
-                ((ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                    ts.isPropertyAssignment(node.parent) &&
-                    ts.isObjectLiteralExpression(node.parent.parent));
-            const returnedCallback =
-                node !== owner &&
-                (ts.isArrowFunction(node) || ts.isFunctionExpression(node)) &&
-                ts.isReturnStatement(node.parent) &&
-                node.parent.expression === node;
-            const inside =
-                insideStoredRecordCallback ||
-                storedRecordCallback ||
-                storedLocalCallback ||
-                inlineStoredCallbacks.has(node) ||
-                returnedCallback;
-            if (inside && ts.isIdentifier(node)) {
+        const visit = (node: ts.Node, inside: boolean): void => {
+            const name = localFunctionName(node);
+            const stored =
+                inside || rootSet.has(node) || (!!name && isStoredLocal(name));
+            if (stored && ts.isIdentifier(node)) {
                 const symbol = this.symbols.valueSymbol(node);
                 if (symbol) captured.add(symbol);
             }
-            ts.forEachChild(node, (child) => visit(child, inside));
+            ts.forEachChild(node, (child) => visit(child, stored));
         };
-        visit(owner, false);
+        ts.forEachChild(owner, (child) => visit(child, false));
         return captured;
     }
 
@@ -11003,7 +11016,10 @@ class Compiler
             !ts.isArrowFunction(unwrapped) &&
             !ts.isFunctionExpression(unwrapped)
         ) {
-            this.fail(unwrapped, "onBeforeRender requires an inline callback.");
+            this.fail(
+                unwrapped,
+                "A frame, timer or listener callback must be an inline function or a named local function.",
+            );
         }
         if (unwrapped.parameters.length > 1) {
             this.fail(

@@ -4380,6 +4380,25 @@ const sceneInputs: readonly SceneInput[] = [
             nativeEnvironment: fixedCaptureEnvironment(),
         },
     },
+    {
+        id: "regression-timer-callback-cells",
+        name: "Regression - Timer Callback Cells",
+        source: "examples/regression-timer-callback-cells.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Timer Callback Cells",
+        parity: {
+            // The countdown flips at 2.1 s and the interval's third period
+            // lands at 1.2 s on the fixed clock; frame 180 is 3.0 s, past
+            // both, and no fixed-pose corpus scene observes a stored
+            // callback's write.
+            referenceFrame: 180,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [9, 11, 18],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
 ];
 
 /**

@@ -130,7 +130,7 @@ inline void trace_scene_topology(
  */
 inline void trace_dynamic_frame(
     const Engine& engine,
-    float delta_ms,
+    double delta_ms,
     long frame) {
     if (!runtime_trace_enabled()) return;
     if (

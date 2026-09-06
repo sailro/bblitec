@@ -299,3 +299,4 @@ a project-owned gate when it reaches the same contract.
 | glTF-step-animation | <img src="images/scenes/regression-gltf-step-animation.png" alt="glTF STEP animation rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | glTF STEP Animation |
 | morph-ground | <img src="images/scenes/regression-morph-ground.png" alt="Morph storage ground rendering" width="160"> | 0.000 / 0.001 | 0.000 / 0.001 | Morph Storage Ground |
 | shadow-pbr-only | <img src="images/scenes/regression-shadow-pbr-only.png" alt="PBR shadows without Standard rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | PBR Shadow Receiver Without Standard |
+| timer-callback-cells | <img src="images/scenes/regression-timer-callback-cells.png" alt="Timer callback cells rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Timer Callback Cells |
