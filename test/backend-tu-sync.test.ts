@@ -120,23 +120,28 @@ test("both backends allocate the pinned instance stream for a late pool", () => 
 // audit hoisted the SDL upload batch to run lifetime. The fixes are
 // structural -- ownership and scope, not a call to remember -- so what is
 // pinned here is the structure that carries each invariant.
-test("the SDL scene loop tears down after its try, like its siblings", () => {
-    // A run-lifetime object declared inside the try (the upload batch,
-    // the pick hook guard) unwinds when the try ends. With the device
-    // teardown inside that same try on the normal path, the batch
-    // outlived the device and released through it; after the catch, it
-    // cannot.
-    const text = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+test("the SDL scene loop keeps device cleanup outside its run-local resources", () => {
+    // Reverse destruction order must release the upload batch and pick
+    // hook before the device, on normal exit, exceptions and coroutine
+    // cancellation. The outer scope guard owns the single teardown path.
+    const source = readFileSync("native/src/pal_sdl_gpu.cpp", "utf8");
+    const entry = source.indexOf("SceneRun run_gpu_engine(Engine& engine)");
+    assert.ok(entry >= 0, "the scene loop is not declared");
+    const text = source.slice(entry);
+    const cleanup = /const auto run_cleanup = js::finally\(\[&\]\(\) noexcept \{[\s\S]*?\n    \}\);/.exec(text);
+    assert.ok(cleanup, "the scene loop has no device cleanup scope guard");
+    const state = text.indexOf("GpuState state;");
+    assert.ok(state >= 0 && state < cleanup.index, "the device state must outlive its cleanup guard");
+    assert.match(cleanup[0], /release\(state\);/, "the cleanup guard does not release its device");
+    assert.equal(text.match(/release\(state\);/g)?.length, 1, "device teardown must have one owner");
+    const resources = cleanup.index + cleanup[0].length;
+    assert.match(text.slice(resources), /^\s*\{/, "run-local resources need their own inner scope");
     const batch = text.indexOf(
         "GpuBufferUploadBatch frame_buffer_uploads(state.device);",
     );
-    assert.ok(batch >= 0, "the run-lifetime batch is not declared");
-    const rethrow = text.indexOf("} catch (...) {", batch);
-    const teardown = text.lastIndexOf("release(state);");
-    assert.ok(rethrow >= 0, "the scene loop has no catch after the batch");
     assert.ok(
-        teardown > rethrow,
-        "the normal-path release(state) sits inside the try, before the batch unwinds",
+        batch > resources,
+        "the upload batch must unwind before the device cleanup guard",
     );
 });
 
