@@ -374,10 +374,11 @@ defines the distinction.
 
 Raycasts expose nullable body identity, hit point/normal and the pin's double
 distance from the original origin. Returned bodies retain Map key identity.
+The default and explicit false `shouldHitTriggers` queries exclude triggers;
+true and runtime boolean values select the closest eligible body after both
+collision masks, using the current trigger flag.
 Scene 103 covers automatic instance lookup and default-query pointer picking;
 focused segment-end probes preserve the pin's exact and float-rounded misses.
-Raycast trigger exclusion remains a confirmed limitation tracked as
-[A30](../audit.md#subsequent-review-findings).
 
 ## Audio
 

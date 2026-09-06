@@ -77,11 +77,12 @@ namespace { bool has_hit = false; unsigned raycasts = 0; }
 namespace bbl::upstream {
 PhysicsWorldHandle create_havok_world(Scene&, Vec3d) { return {}; }
 PhysicsRaycastResult physics_raycast(PhysicsWorldHandle, Vec3d from, Vec3d to,
-    std::uint32_t membership, std::uint32_t collide_with) {
+    std::uint32_t membership, std::uint32_t collide_with, bool should_hit_triggers) {
     ++raycasts;
     assert(from.x == 0 && from.y == 1 && from.z == 0);
     assert(to.x == 0 && to.y == -1 && to.z == 0);
     assert(membership == 0xffffffffu && collide_with == 0xffffffffu);
+    assert(!should_hit_triggers);
     return {.has_hit = has_hit};
 }
 }

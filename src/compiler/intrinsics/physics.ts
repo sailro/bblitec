@@ -596,6 +596,7 @@ export function compilePhysicsIntrinsic(
       context.expectKind(world, "physics-world", call.arguments[0]!);
       let membership = "0xffffffffu";
       let collideWith = "0xffffffffu";
+      let shouldHitTriggers = "false";
       if (call.arguments[3]) {
         const options = context.expectObjectLiteral(call.arguments[3]);
         validateObjectProperties(
@@ -607,9 +608,7 @@ export function compilePhysicsIntrinsic(
         const membershipExpression = context.objectProperty(options, "membership");
         const collideExpression = context.objectProperty(options, "collideWith");
         const triggers = context.objectProperty(options, "shouldHitTriggers");
-        if (triggers && context.compileBoolean(triggers) !== "false") {
-          context.fail(triggers, "Physics raycasts against trigger bodies are not reached.");
-        }
+        if (triggers) shouldHitTriggers = context.compileBoolean(triggers);
         if (membershipExpression) {
           membership = `static_cast<std::uint32_t>(${context.compileNumber(membershipExpression, "double")})`;
         }
@@ -623,7 +622,7 @@ export function compilePhysicsIntrinsic(
           `bbl::upstream::physics_raycast(${world.cpp}, ` +
           `${context.compileVec3(call.arguments[1]!, "double")}, ` +
           `${context.compileVec3(call.arguments[2]!, "double")}, ` +
-          `${membership}, ${collideWith});`,
+          `${membership}, ${collideWith}, ${shouldHitTriggers});`,
       );
       return {
         kind: "record",

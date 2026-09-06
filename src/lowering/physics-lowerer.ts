@@ -1766,7 +1766,7 @@ ${locals}            return pal::${palFunction}(${args.join(", ")});
     this.assertShapeContracts(
       (symbol) => this.context.functionDeclaration(queryModule, symbol).declaration,
       [
-        ["physicsRaycast", ["findBodyById(world, hitData[0][0])"]],
+        ["physicsRaycast", ["findBodyById(world, hitData[0][0])", "query.shouldHitTriggers ?? false"]],
         ["findBodyById", ["world._bodies", "bodies[i]!._hkBody[0] === hitBodyId"]],
       ],
     );
@@ -2211,7 +2211,8 @@ void on_physics_collision(
     Vec3d from,
     Vec3d to,
     std::uint32_t membership,
-    std::uint32_t collide_with);
+    std::uint32_t collide_with,
+    bool should_hit_triggers);
 
 }  // namespace bbl::upstream
 
@@ -3126,14 +3127,16 @@ PhysicsRaycastResult physics_raycast(
     Vec3d from,
     Vec3d to,
     std::uint32_t membership,
-    std::uint32_t collide_with) {
+    std::uint32_t collide_with,
+    bool should_hit_triggers) {
     const PhysicsWorld& world = physics_world_record(handle);
     const pal::PhysicsRaycastResult hit = pal::physics_world_raycast(
         world.handle,
         {from.x, from.y, from.z},
         {to.x, to.y, to.z},
         membership,
-        collide_with);
+        collide_with,
+        should_hit_triggers);
     // src/physics/havok-queries.ts#findBodyById searches the tracked world
     // list and returns the original body's identity, or null if it is absent.
     js::Nullable<PhysicsBody> body;
