@@ -393,9 +393,7 @@ export function staticNumberValue(
             index !== undefined &&
             Number.isInteger(index)
         ) {
-            const entry =
-                context.lookupOptional(target)
-                    ?.tupleElements?.[index];
+            const entry = staticTupleElements(context, target)?.[index];
             if (
                 entry?.kind === "number" &&
                 entry.staticNumber !== undefined
@@ -477,8 +475,8 @@ export function staticNumberValue(
  * expression `compileVec3` emits.
  */
 /**
- * The two numbers an `[x, y]` array literal states, or undefined where the
- * scene computes one.
+ * The two numbers an `[x, y]` literal or a current tuple snapshot states,
+ * or undefined where the scene computes one.
  *
  * `staticVec3Value` beside it reads the `{ x, y, z }` object the pin uses for
  * positions; a layer direction is an array in the pinned props, so it reads
@@ -490,6 +488,12 @@ export function staticNumberPair(
     expression: ts.Expression,
 ): readonly [number, number] | undefined {
     const node = context.resolveStaticExpression(expression);
+    const elements = staticTupleElements(context, node);
+    if (elements) {
+        if (elements.length !== 2) return undefined;
+        const [x, y] = elements.map((element) => element.staticNumber);
+        return x === undefined || y === undefined ? undefined : [x, y];
+    }
     if (!ts.isArrayLiteralExpression(node) || node.elements.length !== 2) {
         return undefined;
     }
@@ -497,6 +501,16 @@ export function staticNumberPair(
         staticNumberValue(context, element)
     );
     return x === undefined || y === undefined ? undefined : [x, y];
+}
+
+/** Read the current tuple snapshot; native writes invalidate it through aliases. */
+function staticTupleElements(
+    context: PositiveIntegerContext,
+    expression: ts.Expression,
+): readonly Value[] | undefined {
+    if (!ts.isIdentifier(expression)) return undefined;
+    const value = context.lookupOptional(expression);
+    return value?.tupleElements ?? value?.staticElementsOwner?.staticElements ?? value?.staticElements;
 }
 
 export function staticVec3Value(

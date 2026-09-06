@@ -3191,6 +3191,23 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene300",
+        name: "Scene 300 - Frozen NPE Sprite2D Sheet",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene300.ts",
+        title: "Babylon Lite Native - Frozen Particle Sprite2D",
+        parity: {
+            // The default query freezes the seeded particle buffer while
+            // real renderer hooks keep the shared sheet and layer in sync.
+            // SDL_GPU differs in 142 pixels by one count; Dawn is byte-exact.
+            referenceFrame: 12,
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [4, 2, 9],
+            backgroundThreshold: 8,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "scene301",
         name: "Scene 301 - NPE Sprite2D Blend Modes",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene301.ts",

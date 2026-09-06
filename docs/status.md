@@ -239,6 +239,7 @@ its cause.
 | 282 | <img src="images/scenes/scene282.png" alt="Scene 282 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Standard UV Transform |
 | 283 | <img src="images/scenes/scene283.png" alt="Scene 283 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Multiply Blend |
 | 284 | <img src="images/scenes/scene284.png" alt="Scene 284 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE MultiplyAdd Blend |
+| 300 | <img src="images/scenes/scene300.png" alt="Scene 300 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Frozen Buffer and Shared Sprite Sheet |
 | 301 | <img src="images/scenes/scene301.png" alt="Scene 301 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Sprite2D Blend Modes |
 | 303 | <img src="images/scenes/scene303.png" alt="Scene 303 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Sprite2D Renderer-Native Y-Sort |
 | 305 | <img src="images/scenes/scene305.png" alt="Scene 305 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Teleport Graph Plumbing |

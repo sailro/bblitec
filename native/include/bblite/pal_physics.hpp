@@ -237,7 +237,8 @@ physics_world_trigger_events(PhysicsWorldHandle world);
     std::array<double, 3> from,
     std::array<double, 3> to,
     std::uint32_t membership,
-    std::uint32_t collide_with);
+    std::uint32_t collide_with,
+    bool should_hit_triggers);
 
 // --- Shapes ----------------------------------------------------------
 //

@@ -682,6 +682,8 @@ export class NativeFunctionLowerer {
                     path?.dataType &&
                     dataTypesEqual(path.dataType, dataType)
                 ) {
+                    // A readonly parameter may return or retain the tuple.
+                    if (dataType.kind === "tuple") this.invalidateMutableCollection(path);
                     return path.cpp;
                 }
                 return this.context.dataLowerer.compileForSink(

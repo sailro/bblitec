@@ -288,6 +288,7 @@ import {
     isDeterministicRandomRead,
 } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
+import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
 import {
     physicsEventInfoType,
     physicsEventInfoValue,
@@ -645,6 +646,7 @@ class Compiler
         registrations: [],
         textures: [],
         sprite2d: [],
+        buffers: [],
     };
     /**
      * Pixels-texture locals already handed to a material slot.
@@ -3340,12 +3342,25 @@ class Compiler
         )
             ? staticHandleEntries.map(({ value }) => value)
             : undefined;
+        // Native numeric tuples retain generation facts on the same snapshot
+        // that array writes and escaping aliases already invalidate.
+        const staticTupleNumbers = annotated.kind === "tuple" &&
+            ts.isArrayLiteralExpression(initializer)
+            ? initializer.elements.map((element) => staticNumberValue(this, element))
+            : undefined;
+        const staticTupleElements: Value[] | undefined = staticTupleNumbers?.every(
+            (value): value is number => value !== undefined,
+        ) ? staticTupleNumbers.map((value, index) => ({
+            kind: "number",
+            cpp: `${cppName}[${index}]`,
+            staticNumber: value,
+        })) : undefined;
         const staticElements =
             annotated.kind === "vector" &&
             ts.isArrayLiteralExpression(initializer) &&
             initializer.elements.length === 0
                 ? []
-                : staticHandleElements;
+                : staticHandleElements ?? staticTupleElements;
         this.reachJsData();
         const spreadTarget =
             annotated.kind === "struct"
@@ -16568,6 +16583,10 @@ class Compiler
                 return dataProperty;
             }
         }
+        const frozenParticleProperty = readFrozenParticleProperty(
+            this, owner, expression.name.text, expression,
+        );
+        if (frozenParticleProperty) return frozenParticleProperty;
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own

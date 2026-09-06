@@ -233,6 +233,29 @@ export interface NodeParticleSprite2DRequest {
      * system's build facts for the live lowering instead of a frozen state.
      */
     live?: true;
+    /** Retain the frozen bridge so shared sprite-sheet indices sync each frame. */
+    retainFrozen?: true;
+}
+
+/** Typed buffer columns carried through the frozen-state boundary. */
+export const nodeParticleColumnWidths = {
+    posX: "f32", posY: "f32", posZ: "f32",
+    dirX: "f32", dirY: "f32", dirZ: "f32",
+    size: "f32", angle: "f32", scaleX: "f32", scaleY: "f32",
+    colorR: "f32", colorG: "f32", colorB: "f32", colorA: "f32",
+    colorStepR: "f32", colorStepG: "f32", colorStepB: "f32", colorStepA: "f32",
+    age: "f64", lifeTime: "f64", id: "u32",
+} as const;
+export type NodeParticleColumn = keyof typeof nodeParticleColumnWidths;
+
+export interface NodeParticleFrozenBufferRequest {
+    set: number;
+    system: number;
+    columns: NodeParticleColumn[];
+    /** A native value has read the final state, so subsequent bake writes refuse. */
+    observed?: true;
+    /** A scene supplied shared native sprite-sheet metadata. */
+    sheet?: true;
 }
 
 /**
@@ -250,7 +273,7 @@ export interface NodeParticleLiveBake {
     system: number;
     graph: LiveGraph;
     facts: LiveSystemFacts;
-    texture: NodeParticleTexture & { bytes?: string; mediaType?: string };
+    texture: NodeParticleTexture;
 }
 
 /**
@@ -303,6 +326,7 @@ export interface NodeParticleBakeRequest {
     textures?: readonly NodeParticleTextureRequest[];
     /** The pure-2D bridges a scene registered on a SpriteRenderer. */
     sprite2d?: readonly NodeParticleSprite2DRequest[];
+    buffers?: readonly NodeParticleFrozenBufferRequest[];
 }
 
 /** The pinned `loadTexture2D` call the graph's texture block made. */
@@ -319,6 +343,9 @@ export interface NodeParticleTexture {
     sceneAssigned: boolean;
     width: number;
     height: number;
+    /** Browser object URLs die with the bake page; their bytes travel with it. */
+    bytes?: string;
+    mediaType?: string;
 }
 
 /**
@@ -358,6 +385,8 @@ export interface NodeParticleSystemBake {
     rotations: number[];
     /** `_spriteSheet.cellIndex` per particle, or null without a sheet. */
     frames: number[] | null;
+    /** Requested columns retain their full capacity, including inactive slots. */
+    bufferColumns?: Partial<Record<NodeParticleColumn, readonly number[]>>;
 }
 
 /**
@@ -519,7 +548,7 @@ function stepProgram(steps: readonly NodeParticleStep[]): string {
         if (step.op === "buffer-write") {
             lines.push(
                 `    ${system}.buffer.${step.column}[${step.index}] = ` +
-                    `${step.value};`,
+                    `${Object.is(step.value, -0) ? "-0" : step.value};`,
             );
         } else if (step.op === "expect-alive") {
             // The scene's own message is a template over the very count it
@@ -710,7 +739,12 @@ ${stepProgram(request.steps)}
     // expansion happens here, in the pin's own order. Each system carries
     // the (set, system) pair it was BUILT as, which is the key the baked
     // table is looked up by.
-    const frozen = ${JSON.stringify([...request.billboards])};
+    const frozen = ${JSON.stringify([...request.billboards,
+        ...(request.buffers ?? []).filter((buffer) => !request.billboards.some(
+            (entry) => entry.set === buffer.set && entry.system === buffer.system,
+        )).map(({ set, system }) => ({ set, system })),
+    ])};
+    const bufferRequests = ${JSON.stringify(request.buffers ?? [])};
     // A live binding's systems are not frozen: the renderer animates them
     // every frame, and the live lowering takes the built graph instead.
     const expand = (requests) =>
@@ -735,6 +769,14 @@ ${stepProgram(request.steps)}
     const sceneTextures = ${JSON.stringify(
         (request.textures ?? []).map(({ set, system }) => ({ set, system })),
     )};
+    const textureBytes = async (source) => {
+        if (!source?.url.startsWith("blob:")) return {};
+        const blob = await (await fetch(source.url)).blob();
+        return {
+            bytes: bblBase64(new Uint8Array(await blob.arrayBuffer())),
+            mediaType: blob.type,
+        };
+    };
     const systems = [];
     for (const { set: setIndex, system: index } of frozen) {
         const system = systemAt(setIndex, index);
@@ -766,6 +808,20 @@ ${stepProgram(request.steps)}
         const colors = [];
         const rotations = [];
         const frames = sheet ? [] : null;
+        const bufferRequest = bufferRequests.find((entry) =>
+            entry.set === setIndex && entry.system === index);
+        const bufferColumns = bufferRequest ? {} : undefined;
+        for (const column of bufferRequest?.columns ?? []) {
+            const expected = ${JSON.stringify(nodeParticleColumnWidths)}[column];
+            const values = buffer[column];
+            const constructor = expected === "f32" ? Float32Array
+                : expected === "f64" ? Float64Array : Uint32Array;
+            if (!(values instanceof constructor) || values.length !== buffer.capacity ||
+                !values.every((value) => Number.isFinite(value) && !Object.is(value, -0))) {
+                throw new Error("node-particle bake: unsupported frozen buffer column " + column);
+            }
+            bufferColumns[column] = Array.from(values);
+        }
         for (let i = 0; i < alive; i++) {
             positions.push(buffer.posX[i], buffer.posY[i], buffer.posZ[i]);
             sizes.push(buffer.size[i] * buffer.scaleX[i], buffer.size[i] * buffer.scaleY[i]);
@@ -787,6 +843,7 @@ ${stepProgram(request.steps)}
                       sceneAssigned: sceneTextured,
                       width: system.texture.width,
                       height: system.texture.height,
+                      ...await textureBytes(source),
                   }
                 : null,
             spriteSheet: sheet
@@ -798,6 +855,7 @@ ${stepProgram(request.steps)}
             colors,
             rotations,
             frames,
+            ...(bufferColumns ? { bufferColumns } : {}),
         });
     }
     // The live systems: the parsed graph the pin built, and what its build
@@ -821,14 +879,6 @@ ${stepProgram(request.steps)}
             const source = system.texture ? system.texture._recoverySource : null;
             if (!system.texture || !source || source.kind !== "url") {
                 throw new Error("node-particle bake: a live system's texture is not a loaded image");
-            }
-            // A blob URL is this page's own; its bytes travel with the bake.
-            let bytes;
-            let mediaType;
-            if (source.url.startsWith("blob:")) {
-                const blob = await (await fetch(source.url)).blob();
-                bytes = bblBase64(new Uint8Array(await blob.arrayBuffer()));
-                mediaType = blob.type;
             }
             const slots = {};
             for (const slot of ${JSON.stringify(SLOT_NAMES)}) {
@@ -876,7 +926,7 @@ ${stepProgram(request.steps)}
                     sceneAssigned: false,
                     width: system.texture.width,
                     height: system.texture.height,
-                    ...(bytes === undefined ? {} : { bytes, mediaType }),
+                    ...await textureBytes(source),
                 },
             });
         }
@@ -919,6 +969,10 @@ ${stepProgram(request.steps)}
                 buffer.colorA[i] === baked.colors[i * 4 + 3] &&
                 buffer.angle[i] === baked.rotations[i] &&
                 (!sheet || sheet.cellIndex[i] === baked.frames[i]);
+        }
+        for (const [column, values] of Object.entries(baked.bufferColumns ?? {})) {
+            same = same && values.length === buffer[column].length &&
+                values.every((value, index) => Object.is(value, buffer[column][index]));
         }
         baked.stepIsIdentity = same;
     }
@@ -971,6 +1025,7 @@ export async function bakeNodeParticles(
             browserArgs: screenshotCaptureBrowserArgs,
             viewport: { width: 1280, height: 720 },
             pageErrorPrefix: "Node particle",
+            consoleErrorPrefix: "Node particle module",
         });
         return assertBake(result);
     };

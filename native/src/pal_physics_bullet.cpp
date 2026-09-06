@@ -1471,10 +1471,22 @@ PhysicsRaycastResult physics_world_raycast(
     std::array<double, 3> from,
     std::array<double, 3> to,
     std::uint32_t membership,
-    std::uint32_t collide_with) {
+    std::uint32_t collide_with,
+    bool should_hit_triggers) {
     const btVector3 ray_from = to_bt(from);
     const btVector3 ray_to = to_bt(to);
-    btCollisionWorld::ClosestRayResultCallback callback(ray_from, ray_to);
+    struct FilteredRayCallback final : btCollisionWorld::ClosestRayResultCallback {
+        bool include_triggers;
+
+        FilteredRayCallback(const btVector3& start, const btVector3& end, bool include)
+            : ClosestRayResultCallback(start, end), include_triggers(include) {}
+
+        bool needsCollision(btBroadphaseProxy* proxy) const override {
+            return ClosestRayResultCallback::needsCollision(proxy) &&
+                (include_triggers || !is_trigger_object(
+                    static_cast<const btCollisionObject*>(proxy->m_clientObject)));
+        }
+    } callback(ray_from, ray_to, should_hit_triggers);
     callback.m_collisionFilterGroup = static_cast<int>(membership);
     callback.m_collisionFilterMask = static_cast<int>(collide_with);
     world_at(world).world->rayTest(ray_from, ray_to, callback);

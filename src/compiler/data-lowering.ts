@@ -856,6 +856,9 @@ export class DataLowerer {
                 );
                 if (optional) return optional;
             }
+            if (mode === "write" && owner.dataType?.kind === "tuple") {
+                this.invalidateStaticElements(owner);
+            }
             return this.elementRead(
                 owner,
                 unwrapped,
@@ -5893,6 +5896,9 @@ export class DataLowerer {
         node: ts.Node,
     ): string {
         this.context.useNativeValue(value);
+        // A stored tuple aliases its source. Once that alias leaves the local
+        // binding graph, generation cannot retain a snapshot of its contents.
+        if (value.dataType?.kind === "tuple") this.invalidateStaticElements(value);
         if (
             dataType.kind !== "optional" &&
             ts.isExpression(node)
@@ -6681,6 +6687,7 @@ export class DataLowerer {
                       ),
                   }
                 : rawValue;
+        if (value.dataType?.kind === "tuple") this.invalidateStaticElements(value);
         if (dataType.kind === "tuple" && value.kind === "tuple") {
             return this.compileKnownValueForSink(
                 value,

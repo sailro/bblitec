@@ -196,4 +196,4 @@ These findings were identified after the completed audit above.
 
 | ID | Priority | Finding and evidence | Required action | State |
 | --- | --- | --- | --- | --- |
-| A30 | P2 | Physics raycasts accept the pin's default/explicit `shouldHitTriggers: false`, but `physics_world_raycast` uses Bullet's closest-hit callback without excluding `CF_NO_CONTACT_RESPONSE` objects. A nearer trigger can replace the intended solid hit. This source-confirmed gap predates scene 103, which contains no triggers. | Carry the query option through the PAL boundary and add an observing near-trigger/far-solid test for both values before claiming trigger-filter parity. | Open |
+| A30 | P2 | Physics raycasts accepted the pin's default/explicit `shouldHitTriggers: false`, but Bullet's closest-hit callback still selected nearer trigger bodies. | Carry the boolean through generated code and filter trigger objects alongside both collision masks before closest-hit selection. The old-code native fixture reproduced the wrong body; pinned Havok and actual Bullet checks now cover omitted/false/true/runtime options, trigger-only misses, body identity, masks and live flag toggles. | Fixed |

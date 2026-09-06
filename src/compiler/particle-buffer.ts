@@ -1,32 +1,129 @@
 /**
- * A particle buffer is generation-time state, and the two shapes a scene
- * writes about it move to the bake driver rather than emitting anything.
- *
- * The simulation runs at generation, so `buffer.alive` and every column
- * exist only there: a scene that checks the live count is asserting about
- * the bake, and one that writes a column is editing the state the bake
- * hands on. Both are recorded as steps, in the order the scene wrote them,
- * because a write before the last `animateParticleSystem` means something
- * different from one after it.
+ * Particle simulation and initialization writes execute in the ordered bake.
+ * Buffer and column aliases retain the originating system identity. Native
+ * reads expose its final snapshot, including Float64 ages and inactive slots;
+ * writes after that boundary refuse instead of silently moving an earlier read.
  */
 import ts from "typescript";
 import {
     staticNumberValue,
     type PositiveIntegerContext,
 } from "./option-helpers.js";
-import type { CompiledNodeParticles } from "./types.js";
+import type { CompiledNodeParticles, Value } from "./types.js";
+import {
+    nodeParticleColumnWidths,
+    type NodeParticleColumn,
+    type NodeParticleFrozenBufferRequest,
+} from "../pinned-node-particle.js";
 
 export interface ParticleBufferContext extends PositiveIntegerContext {
     readonly reachedNodeParticles: CompiledNodeParticles;
     unwrap(expression: ts.Expression): ts.Expression;
+    isRuntimeResourceConstruction(): boolean;
+}
+
+type BufferIdentity = { set: number; system: number };
+
+export function frozenParticleBuffer(
+    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
+    owner: BufferIdentity,
+    node: ts.Node,
+): NodeParticleFrozenBufferRequest {
+    if (context.reachedNodeParticles.steps.some((step) => step.op === "push-system" &&
+        (step.set === owner.set || step.fromSet === owner.set))) {
+        context.fail(node, "Native frozen particle buffer reads and sprite sheets cannot be combined with system-list composition; pushed systems share their original buffer identity.");
+    }
+    const previous = context.reachedNodeParticles.buffers.find(
+        (entry) => entry.set === owner.set && entry.system === owner.system,
+    );
+    if (previous) return previous;
+    const request: NodeParticleFrozenBufferRequest = { ...owner, columns: [] };
+    context.reachedNodeParticles.buffers.push(request);
+    return request;
+}
+
+/** A native read exposes the final snapshot; later simulation cannot move it. */
+export function requireParticleBakeWritable(
+    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail" | "isRuntimeResourceConstruction">,
+    owner: BufferIdentity,
+    node: ts.Node,
+): void {
+    const program = context.reachedNodeParticles;
+    if (context.isRuntimeResourceConstruction() ||
+        program.buffers.some((entry) => entry.set === owner.set &&
+            entry.system === owner.system && entry.observed) ||
+        program.billboards.some((entry) => entry.set === owner.set && entry.system === owner.system) ||
+        program.registrations.some((entry) => entry.set === owner.set) ||
+        program.sprite2d.some((entry) => entry.set === owner.set)) {
+        context.fail(node, "A frozen particle buffer can only change during definite initialization, before a native snapshot read or renderer registration.");
+    }
+}
+
+function identity(value: Value | undefined): BufferIdentity | undefined {
+    return value && !value.nodeParticleLive &&
+        value.nodeParticleSetIndex !== undefined &&
+        value.nodeParticleSystemIndex !== undefined
+        ? { set: value.nodeParticleSetIndex, system: value.nodeParticleSystemIndex }
+        : undefined;
+}
+
+export function readFrozenParticleProperty(
+    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
+    owner: Value,
+    name: string,
+    node: ts.Node,
+): Value | undefined {
+    const buffer = identity(owner);
+    if (!buffer) return undefined;
+    if (owner.kind === "node-particle-system" && name === "buffer") {
+        return { ...owner, kind: "node-particle-buffer" };
+    }
+    if (owner.kind !== "node-particle-buffer" && owner.kind !== "node-particle-column") return undefined;
+    if (owner.kind === "node-particle-buffer" && Object.hasOwn(nodeParticleColumnWidths, name)) {
+        return { ...owner, kind: "node-particle-column", nodeParticleColumn: name as NodeParticleColumn };
+    }
+    if ((owner.kind === "node-particle-buffer" && (name === "alive" || name === "capacity")) ||
+        (owner.kind === "node-particle-column" && name === "length")) {
+        const request = frozenParticleBuffer(context, buffer, node);
+        const field = name === "alive" ? "alive" : "capacity";
+        if (field === "alive") request.observed = true;
+        return {
+            kind: "number",
+            cpp: `bbl::upstream::node_particle_frozen_${field}(${buffer.set}, ${buffer.system})`,
+            dataType: { kind: "number" },
+        };
+    }
+    context.fail(node, `Frozen particle ${owner.kind === "node-particle-buffer" ? "buffer" : "column"} property '${name}' is not lowered.`);
+}
+
+export function readFrozenParticleElement(
+    context: Pick<ParticleBufferContext, "reachedNodeParticles" | "fail">,
+    owner: Value,
+    indexCpp: string,
+    node: ts.Node,
+): Value {
+    const buffer = identity(owner)!;
+    const request = frozenParticleBuffer(context, buffer, node);
+    const column = owner.nodeParticleColumn!;
+    if (!request.columns.includes(column)) request.columns.push(column);
+    request.observed = true;
+    return {
+        kind: "data",
+        cpp: `bbl::upstream::node_particle_frozen_column(${buffer.set}, ${buffer.system}, "${column}", ${indexCpp})`,
+        dataType: { kind: "optional", inner: { kind: "number" } },
+    };
 }
 
 /** The system a `<local>.buffer` path names, or undefined. */
 function bufferOwner(
     context: ParticleBufferContext,
     expression: ts.Expression,
-): { set: number; system: number } | undefined {
+): BufferIdentity | undefined {
     const unwrapped = context.unwrap(expression);
+    if (ts.isIdentifier(unwrapped)) {
+        const value = context.lookupOptional(unwrapped);
+        return value?.kind === "node-particle-buffer" ? identity(value) : undefined;
+    }
     if (
         !ts.isPropertyAccessExpression(unwrapped) ||
         unwrapped.name.text !== "buffer" ||
@@ -42,10 +139,7 @@ function bufferOwner(
     ) {
         return undefined;
     }
-    return {
-        set: owner.nodeParticleSetIndex,
-        system: owner.nodeParticleSystemIndex,
-    };
+    return identity(owner);
 }
 
 /**
@@ -60,9 +154,16 @@ export function emitParticleBufferWrite(
     const left = context.unwrap(expression.left);
     if (!ts.isElementAccessExpression(left)) return false;
     const column = context.unwrap(left.expression);
-    if (!ts.isPropertyAccessExpression(column)) return false;
-    const owner = bufferOwner(context, column.expression);
+    const alias = ts.isIdentifier(column) ? context.lookupOptional(column) : undefined;
+    const owner = alias?.kind === "node-particle-column"
+        ? identity(alias)
+        : ts.isPropertyAccessExpression(column) ? bufferOwner(context, column.expression) : undefined;
     if (!owner) return false;
+    const name = alias?.nodeParticleColumn ?? (column as ts.PropertyAccessExpression).name.text;
+    if (!Object.hasOwn(nodeParticleColumnWidths, name)) {
+        context.fail(column, `Particle buffer column '${name}' is not lowered.`);
+    }
+    requireParticleBakeWritable(context, owner, expression);
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
         context.fail(
             expression.operatorToken,
@@ -93,7 +194,7 @@ export function emitParticleBufferWrite(
         op: "buffer-write",
         set: owner.set,
         system: owner.system,
-        column: column.name.text,
+        column: name,
         index,
         value,
     });
@@ -122,6 +223,10 @@ export function emitParticleAliveGuard(
     }
     const owner = bufferOwner(context, left.expression);
     if (!owner) return false;
+    if (context.isRuntimeResourceConstruction() ||
+        context.reachedNodeParticles.sprite2d.some((entry) => entry.set === owner.set) ||
+        context.reachedNodeParticles.buffers.some((entry) => entry.set === owner.set &&
+            entry.system === owner.system && entry.observed)) return false;
     const operator =
         condition.operatorToken.kind ===
         ts.SyntaxKind.EqualsEqualsEqualsToken

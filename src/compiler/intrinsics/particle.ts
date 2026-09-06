@@ -22,6 +22,7 @@
 // synced.
 import { createHash } from "node:crypto";
 import ts from "typescript";
+import { requireParticleBakeWritable } from "../particle-buffer.js";
 import {
     staticGraphDocument,
     type ExecutedModuleReferenceContext,
@@ -31,6 +32,7 @@ import {
     compileStaticNumber,
     notJson,
     staticJsonValue,
+    staticNumberPair,
     staticVec3Value,
     validateObjectProperties,
     type ObjectValidationContext,
@@ -292,28 +294,14 @@ function sprite2dOptions(
     }
     const origin = context.objectProperty(options, "originPx");
     if (origin) {
-        const unwrapped = context.unwrap(origin);
-        if (
-            !ts.isArrayLiteralExpression(unwrapped) ||
-            unwrapped.elements.length !== 2
-        ) {
+        const pair = staticNumberPair(context, origin);
+        if (!pair) {
             context.fail(
                 origin,
-                "originPx is a two-element array literal.",
+                "originPx must be a static two-element number tuple.",
             );
         }
-        resolved.originPx = [
-            compileStaticNumber(
-                context,
-                unwrapped.elements[0]!,
-                "originPx x",
-            ),
-            compileStaticNumber(
-                context,
-                unwrapped.elements[1]!,
-                "originPx y",
-            ),
-        ];
+        resolved.originPx = pair;
     }
     const layer = context.objectProperty(options, "layer");
     if (!layer) return resolved;
@@ -425,6 +413,7 @@ function requireUnbaked(
     system: number,
     node: ts.Node,
 ): void {
+    requireParticleBakeWritable(context, { set, system }, node);
     if (isFrozen(context, set, system)) {
         context.fail(
             node,
@@ -788,6 +777,15 @@ export function compileParticleIntrinsic(
                     (frozen) => frozen.set === index,
                 );
             if (live) context.reachJsRandom();
+            const sheet = context.reachedNodeParticles.buffers.some(
+                (buffer) => buffer.set === index && buffer.sheet,
+            );
+            if (live && sheet) {
+                context.fail(call, "A scene-supplied particle sprite sheet requires a frozen system; live sprite-sheet simulation is not lowered.");
+            }
+            if (live && context.reachedNodeParticles.buffers.some((buffer) => buffer.set === index)) {
+                context.fail(call, "A frozen particle buffer read cannot be combined with live particle simulation.");
+            }
             context.reachedNodeParticles.sprite2d.push({
                 set: index,
                 exact:
@@ -795,6 +793,7 @@ export function compileParticleIntrinsic(
                     "registerNodeParticleSet2DWithBlendModes",
                 ...sprite2dOptions(context, call.arguments[2]),
                 ...(live ? { live: true as const } : {}),
+                ...(sheet ? { retainFrozen: true as const } : {}),
             });
             context.reachFeature("sprite:2d", call);
             context.reachFeature("particle:node", call);

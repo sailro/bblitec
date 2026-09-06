@@ -459,7 +459,9 @@ async function bakeNodeParticleSystems(
         const asset =
             system.texture && !system.texture.sceneAssigned
                 ? assetRecord(
-                      system.texture.url,
+                      system.texture.bytes === undefined
+                          ? system.texture.url
+                          : `data:${system.texture.mediaType || "image/png"};base64,${system.texture.bytes}`,
                       "texture",
                       assetPayloads,
                   )
@@ -532,6 +534,7 @@ async function bakeNodeParticleSystems(
             pixelsPerUnit: request.pixelsPerUnit,
             originPx: request.originPx,
             invertY: request.invertY,
+            ...(request.retainFrozen ? { retainFrozen: true as const } : {}),
             ...(request.opacity === undefined
                 ? {}
                 : { opacity: request.opacity }),
