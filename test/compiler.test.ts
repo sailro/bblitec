@@ -19709,12 +19709,12 @@ test("retains a whole typed-array buffer behind an escaping byte view", () => {
         void main();
     `);
 
-    const history = result.cpp.match(/bbl::js::F32Array (v_fn\d+_history) =/);
-    assert.ok(history);
+    const bytes = result.cpp.match(/bbl::js::U8Array (v_fn\d+_bytes) =/);
+    assert.ok(bytes);
     assert.match(
         result.cpp,
         new RegExp(
-            `bbl::update_storage_buffer\\([^;]+, ${history[1]}, 0\\.0f\\)`,
+            `bbl::update_storage_buffer\\([^;]+, ${bytes[1]}, 0\\.0f\\)`,
         ),
     );
 });

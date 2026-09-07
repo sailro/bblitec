@@ -277,6 +277,7 @@ export function compileDataMethodCall(
                 lowerer.context.allocateTemporaryCppName(
                     "filled_array",
                 );
+            lowerer.context.emit(`auto ${temporary} = ${typed.cpp};`);
             const number = lowerer.context.compileNumber(
                 call.arguments[0]!,
                 "double",
@@ -284,9 +285,6 @@ export function compileDataMethodCall(
             const value = typedArrayStoreExpression(
                 typed.dataType.kind,
                 number,
-            );
-            lowerer.context.emit(
-                `auto ${temporary} = ${typed.cpp};`,
             );
             lowerer.context.emit(
                 `bbl::js::array_fill(${temporary}, ${value});`,

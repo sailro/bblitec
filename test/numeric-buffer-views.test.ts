@@ -8,8 +8,9 @@ import { compileSource } from "../src/compiler.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const program = `
+import {createEngine,createStorageBuffer,updateStorageBuffer} from "@babylonjs/lite";
 function makeBuffer(size:number):ArrayBuffer {const bytes=new Uint8Array(size);return bytes.buffer;}
-function main() {
+async function main() {
  if(!new RegExp("^views$").test("views")) throw new Error("constructor RegExp dispatch");
  const bytes=new Uint8Array(32);
  const buffer=bytes.buffer;
@@ -54,6 +55,15 @@ function main() {
  function replace():number {previous[0]=100;active=new Float32Array(makeBuffer(8));return 2;}
  active[0]+=replace();
  if(previous[0]!==5 || active[0]!==0) throw new Error("compound owner and value order");
+ const indexedBytes=new Uint8Array(16);
+ let indexed=new Float32Array(indexedBytes.buffer,0,2);
+ const indexedBefore=indexed;
+ function replaceIndex():number {indexed=new Float32Array(indexedBytes.buffer,8,2);return 0;}
+ indexed[replaceIndex()]=7;
+ if(indexedBefore[0]!==7 || indexed[0]!==0) throw new Error("owner before write index");
+ indexed=indexedBefore;
+ const observedIndex=indexed[replaceIndex()];
+ if(observedIndex!==7 || indexed[0]!==0) throw new Error("owner before read index");
  let calls=0;
  function offset():number {calls++;return 4.9;}
  function length():number {if(calls!==1) throw new Error("constructor argument order");calls++;return 1.9;}
@@ -74,14 +84,39 @@ function main() {
  try {const invalid=new Float32Array(makeBuffer(10));failures-=100+invalid.length;} catch(error:unknown) {failures++;}
  try {const invalid=new Float32Array(buffer,0,9);failures-=100+invalid.length;} catch(error:unknown) {failures++;}
  if(failures!==6) throw new Error("constructor bounds");
+ calls=0;
+ try {const invalid=new Float32Array(buffer,1).fill(offset());failures-=100+invalid.length;} catch(error:unknown) {}
+ if(calls!==0) throw new Error("fill argument before constructor");
+ const engine=await createEngine({});
+ const uploadBytes=new Uint8Array(16);
+ const emptyOwner=new Float32Array(uploadBytes.buffer,4,0);
+ const uploadFull=new Uint8Array(emptyOwner.buffer);
+ const storage=createStorageBuffer(engine,uploadBytes);
+ uploadBytes[0]=7;
+ updateStorageBuffer(engine,storage,uploadFull);
+ const shortOwner=new Float32Array(uploadBytes.buffer,4,1);
+ const secondFull=new Uint8Array(shortOwner.buffer);
+ uploadBytes[0]=9;
+ updateStorageBuffer(engine,storage,secondFull);
 }
 `;
 
-test("numeric buffer views preserve JavaScript aliases, stores, order and ToIndex", () => {
+test("numeric buffer views preserve JavaScript aliases, stores, order and ToIndex", async () => {
     const javascript = ts.transpileModule(program, {
         compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext },
     }).outputText;
-    new Function(`${javascript}\nmain();`)();
+    // Engine creation/upload are the only seams; the source performs every
+    // view operation with the host JavaScript typed-array constructors.
+    let uploads = 0;
+    await new Function("createEngine", "createStorageBuffer", "updateStorageBuffer",
+        `${javascript.replace(/^import[^\n]+\n/m, "")}\nreturn main();`)(
+        async () => ({}), (_engine: unknown, bytes: Uint8Array) => bytes.slice(),
+        (_engine: unknown, storage: Uint8Array, bytes: Uint8Array) => {
+            storage.set(bytes);
+            assert.equal(storage.length, 16);
+            assert.equal(storage[0], 7 + uploads++ * 2);
+        });
+    assert.equal(uploads, 2);
     const compiled = compileSource(program);
     assert.match(compiled.cpp, /bbl::js::F32Array\(v_bblite_view_buffer_/);
     assert.match(compiled.cpp, /typed_array_byte_offset/);
@@ -94,7 +129,8 @@ test("native byte-backed numeric views match the same observing program and refu
     const source = join(output, "check.cpp");
     const executable = join(output, "check.exe");
     writeFileSync(source,
-        `#define main generated_scene_main\n${compileSource(program).cpp}\n#undef main\n` +
+        `#include <bblite/runtime.hpp>\nnamespace bbl { template<class Data> void observe_upload(Engine&, StorageBufferHandle, const Data&, double); }\n` +
+        `#define main generated_scene_main\n${compileSource(program).cpp.replaceAll("bbl::update_storage_buffer(", "bbl::observe_upload(")}\n#undef main\n` +
         readFileSync("test/fixtures/numeric-buffer-views-check.cpp", "utf8"));
     runNativeFixtureCompiler(tools!, [
         "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",

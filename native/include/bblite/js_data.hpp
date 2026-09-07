@@ -309,6 +309,16 @@ template <typename Values>
     else return 0;
 }
 
+/** Retain object identity before an index expression invokes source code. */
+template <typename Values>
+[[nodiscard]] Values retain_typed_array_owner(const Values& values) {
+    if constexpr (requires (Values& owner) { owner.slot(std::size_t{}); }) {
+        return values;
+    } else {
+        throw std::runtime_error("An effectful numeric index requires retained typed-array storage, not a borrowed native vector.");
+    }
+}
+
 /**
  * A JavaScript object reference: the plain-data records a scene declares
  * are shared by identity, and this is the handle that shares them.

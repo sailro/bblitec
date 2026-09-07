@@ -947,7 +947,7 @@ export function compileMaterialIntrinsic(
                 kind: "void",
                 cpp:
                     `bbl::update_storage_buffer(${engineCpp}, ` +
-                    `${buffer.cpp}, ${data.wholeTypedArrayBackingCpp ?? data.cpp}, ${byteOffset})`,
+                    `${buffer.cpp}, ${data.cpp}, ${byteOffset})`,
             };
         }
 

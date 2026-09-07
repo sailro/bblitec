@@ -1790,14 +1790,6 @@ export interface Value {
   freshData?: true;
   dataStore?: TypedArrayKind;
   /**
-   * Native typed array whose complete byte storage this value views.
-   *
-   * This is carried through `typed.buffer` and a whole-buffer Uint8Array view
-   * so byte consumers can capture the owning typed array instead of a raw
-   * pointer into a shorter-lived native vector copy.
-   */
-  wholeTypedArrayBackingCpp?: string;
-  /**
    * Set on a value read out of a container of const elements (a span,
    * including a materialized constant table). It cannot be bound by
    * reference, and the source language would not let it be written

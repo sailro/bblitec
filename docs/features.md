@@ -90,6 +90,8 @@ Explicit nonnumeric constructor arguments refuse. Numeric buffer views refuse
 methods and native consumers requiring contiguous typed storage, including
 iteration, copying constructors, fill, set, slice and copyWithin; numeric
 subarray remains unsupported. Owned typed arrays retain their existing APIs.
+Effectful indices over internal borrowed native vectors refuse until those
+producers supply a retained source array; scalar indices keep their existing path.
 
 Scene-facing `mat4Invert` reuses the pinned inverse and returns nullable fresh
 Float32 storage. Singular matrices return null; Float64 inputs and high-precision

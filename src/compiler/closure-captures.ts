@@ -7,7 +7,7 @@ export interface NativeCaptureBinding {
 }
 
 export const nativeCompanionKeys = [
-    "engineCpp", "ownedEngineCpp", "optionalStorageCpp", "optionalFoundCpp", "truthinessCpp", "wholeTypedArrayBackingCpp",
+    "engineCpp", "ownedEngineCpp", "optionalStorageCpp", "optionalFoundCpp", "truthinessCpp",
     "audioMainBusCpp", "spriteLayerCpp", "dynamicAssetPathCpp",
 ] as const;
 export type NativeCompanionKey = typeof nativeCompanionKeys[number];

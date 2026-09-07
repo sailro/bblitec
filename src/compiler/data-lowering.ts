@@ -1958,10 +1958,6 @@ export class DataLowerer {
                     kind: "data",
                     cpp: `bbl::js::ArrayBuffer(${owner.cpp})`,
                     dataType: { kind: "arraybuffer" },
-                    wholeTypedArrayBackingCpp: owner.cpp,
-                    nativeCompanionCaptures: {
-                        wholeTypedArrayBackingCpp: owner.nativeCaptures ?? [],
-                    },
                 };
             }
             if (property === "byteOffset") {
@@ -2190,14 +2186,29 @@ export class DataLowerer {
             );
         }
         const ownedRead = owner.freshData && mode === "read" && dataType.kind !== "string";
+        // Index calls, getters and mutations can replace the array binding.
+        // Scalar arithmetic over locals cannot, so ordinary counted accesses
+        // need no extra wrapper copy before their index is evaluated.
+        const indexCanRunCode = (node: ts.Node): boolean =>
+            ts.isCallExpression(node) || ts.isNewExpression(node) ||
+            ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node) ||
+            ts.isPostfixUnaryExpression(node) ||
+            (ts.isPrefixUnaryExpression(node) &&
+                (node.operator === ts.SyntaxKind.PlusPlusToken || node.operator === ts.SyntaxKind.MinusMinusToken)) ||
+            (ts.isBinaryExpression(node) &&
+                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) ||
+            !!ts.forEachChild(node, indexCanRunCode);
+        const typedIndexRunsCode = isTypedArrayType(dataType) && indexCanRunCode(access.argumentExpression);
+        const retainedIndexOwner = ownedRead || typedIndexRunsCode;
         let index = "";
         const compileIndex = (): void => {
             index = this.context.compileNumber(access.argumentExpression, "double");
         };
-        const indexLines = ownedRead
+        const indexLines = retainedIndexOwner
             ? this.context.captureEmittedLines(compileIndex)
             : (compileIndex(), []);
-        const indexedOwner = ownedRead
+        const indexedOwner = retainedIndexOwner
             ? this.context.allocateTemporaryCppName("indexed_owner")
             : owner.cpp;
         this.context.reachJsData();
@@ -2249,14 +2260,15 @@ export class DataLowerer {
                   : mode === "write" &&
                       (isTypedArrayType(dataType) ||
                           dataType.kind === "tuple")
-                    ? `bbl::js::array_store_checked(${owner.cpp}, ${index}, ${site()})`
+                    ? `bbl::js::array_store_checked(${indexedOwner}, ${index}, ${site()})`
                     : `bbl::js::array_index_checked(${indexedOwner}, ${index}, ${site()})`;
-        // A fresh container is a native rvalue. Keep its owning wrapper alive
-        // for the checked read, and return the element by value so no reference
-        // escapes that wrapper. The expression stays behind its source guard;
-        // index preparation follows the owner evaluation, as in JavaScript.
-        const indexed = ownedRead
-            ? `([&]() { auto ${indexedOwner} = ${owner.cpp};\n` +
+        // Keep fresh containers and retained typed-array owners alive until
+        // the index finishes. Numeric writes return a slot that owns its view;
+        // reads return values. This expression stays behind its source guard.
+        const retainedOwner = typedIndexRunsCode
+            ? `bbl::js::retain_typed_array_owner(${owner.cpp})` : owner.cpp;
+        const indexed = retainedIndexOwner
+            ? `([&]() { auto ${indexedOwner} = ${retainedOwner};\n` +
                 indexLines.map(line => `    ${line}\n`).join("") +
                 `    return ${element}; }())`
             : element;
@@ -4562,16 +4574,6 @@ export class DataLowerer {
                 kind: "data",
                 cpp: `${this.context.dataTypes.cppType(dataType)}(${buffer}${offset}${length})`,
                 dataType,
-                ...((expression.arguments?.length ?? 0) === 1 &&
-                source.wholeTypedArrayBackingCpp
-                    ? {
-                          wholeTypedArrayBackingCpp:
-                              source.wholeTypedArrayBackingCpp,
-                          nativeCompanionCaptures: {
-                              wholeTypedArrayBackingCpp: source.nativeCompanionCaptures?.wholeTypedArrayBackingCpp ?? source.nativeCaptures ?? [],
-                          },
-                      }
-                    : {}),
             };
         }
         if ((expression.arguments?.length ?? 0) > 1) {
