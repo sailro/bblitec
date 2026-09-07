@@ -46,6 +46,16 @@ A pinned computation executed unchanged over the same inputs is not
 automatically a semantic divergence. Conversely, shape assertions around a
 handwritten translation do not make it an AST-derived implementation.
 
+Provider-backed node particles execute source callbacks and supported pinned
+evaluators natively, including authored pre-frame steps. Provider validation,
+matrix copying, setup and frame updates are lowered from the pin; billboard
+registration order and synchronization are asserted adapters over the existing
+billboard storage. Native/pinned fixtures compare all local particle columns
+and random draw counts through 180 frames, including deaths and swap-removal.
+Frozen particle bakes retain their existing Chromium execution path. Mixed
+native/frozen sets refuse because splitting their shared random stream between
+generation and runtime would change its ordering.
+
 ## Shader contract
 
 ### Where a shader comes from
