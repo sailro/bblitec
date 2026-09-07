@@ -1173,8 +1173,10 @@ export interface NodeParticleManifest {
     graph: string;
     emitter: readonly [number, number, number];
     textureBaseUrl?: string;
+    /** Provider callbacks and authored simulation steps execute natively. */
+    native?: true;
   }>;
-  /** How many `animateParticleSystem` calls the program replays. */
+  /** How many generation-time `animateParticleSystem` calls the bake replays. */
   steps: number;
   /** Whether the program installs a deterministic seed before them. */
   seeded: boolean;

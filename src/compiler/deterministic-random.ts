@@ -1,7 +1,7 @@
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
-// This is the one place a piece of the scene's own text travels to
+// For frozen simulations, this is the one place scene text travels to
 // generation rather than being lowered, and the reason is specific: the
 // simulation it seeds is EXECUTED by the pin under the browser
 // (`src/pinned-node-particle.ts`), so the sequence has to be drawn by the
@@ -11,11 +11,14 @@
 // it, and the corpus seeds through `Math.sin`, which is not reproducible off
 // V8 anyway.
 //
-// So the assignment lowers to NOTHING native. It parameterizes the bake and
+// In that path the assignment lowers to nothing native. It parameterizes the bake and
 // nothing else, which is only sound while no lowered code answers
 // `Math.random`: the native runtime would answer with the pinned mulberry32
 // and disagree with the browser. `assertDeterministicRandomUnreached` is
 // that check, run once the whole entry has been walked.
+// Provider-backed sets instead run the authored callback and simulation
+// natively, so their random assignments install native closures and saved
+// random functions retain their JavaScript identity and captured state.
 import ts from "typescript";
 import type { CompiledNodeParticles, Value } from "./types.js";
 import { transpileForBrowser } from "../typescript-transpile.js";

@@ -706,6 +706,11 @@ function emitNodeParticleTextureAssignment(
   target: Value,
 ): void {
   requireSimpleAssignment(context, expression, "node-particle system texture");
+  if (context.reachedNodeParticles.sets[target.nodeParticleSetIndex!]?.native &&
+      context.isRuntimeResourceConstruction()) {
+    context.fail(left,
+      "A provider-backed particle texture must be assigned before recurring frame callbacks; its native atlas is built once.");
+  }
   const texture = context.compileValue(expression.right);
   context.expectKind(texture, "texture", expression.right);
   if (!texture.pixelsTexture) {

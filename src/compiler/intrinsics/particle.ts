@@ -455,6 +455,9 @@ export function compileParticleIntrinsic(
     switch (importedName) {
         case "withNodeParticleEmitterProvider": {
             context.expectArgumentCount(call, 1, 2);
+            if (context.isRuntimeResourceConstruction()) {
+                context.fail(call, "A native emitter provider must be constructed before recurring frame callbacks; its set has one native identity.");
+            }
             if (context.reachedNodeParticles.steps.some((step) => step.op === "random")) {
                 context.fail(call, "A native emitter provider cannot follow a generation-only Math.random override.");
             }
@@ -541,6 +544,12 @@ export function compileParticleIntrinsic(
                 emitter = options.emitter;
                 textureBaseUrl = options.textureBaseUrl;
             }
+            if (provider && context.isRuntimeResourceConstruction()) {
+                context.fail(call, "A provider-backed particle set must be built before recurring frame callbacks; each build needs its own native identity.");
+            }
+            if (context.reachedNodeParticles.sets.some((set) => !!set.native !== !!provider)) {
+                context.fail(call, "Native provider-backed and generation-only particle sets cannot share one program; their simulations must observe one Math.random sequence.");
+            }
             // A flow-map graph derives its view-projection from the
             // scene's camera during the build, so the driver replays that
             // camera; a builder that reaches the arm without a recordable
@@ -620,6 +629,9 @@ export function compileParticleIntrinsic(
         case "createParticleBillboard": {
             context.expectArgumentCount(call, 1, 1);
             const { value, set, system } = systemOf(context, call, 0);
+            if (context.reachedNodeParticles.sets[set]?.native) {
+                context.fail(call, "Provider-backed particle systems draw through registerNodeParticleSet; the explicit billboard bridge only carries frozen state.");
+            }
             if (!isFrozen(context, set, system)) {
                 context.reachedNodeParticles.billboards.push({ set, system });
             }
@@ -740,6 +752,9 @@ export function compileParticleIntrinsic(
                 );
             }
             const index = set.nodeParticleSetIndex!;
+            if (context.reachedNodeParticles.sets[index]?.native && context.isRuntimeResourceConstruction()) {
+                context.fail(call, "A provider-backed particle set must be registered before recurring frame callbacks; repeated registration creates additional billboards and callbacks.");
+            }
             if (
                 context.reachedNodeParticles.registrations.some(
                     (entry) => entry.set === index,
@@ -788,6 +803,9 @@ export function compileParticleIntrinsic(
                 call.arguments[1]!,
             );
             const index = set.nodeParticleSetIndex!;
+            if (context.reachedNodeParticles.sets[index]?.native) {
+                context.fail(call, "Provider-backed particle systems draw through registerNodeParticleSet; the pure-2D provider bridge is not lowered.");
+            }
             if (
                 context.reachedNodeParticles.sprite2d.some(
                     (entry) => entry.set === index,
@@ -904,6 +922,7 @@ export function nodeParticleManifest(
             ...(set.textureBaseUrl === undefined
                 ? {}
                 : { textureBaseUrl: set.textureBaseUrl }),
+            ...(set.native ? { native: true as const } : {}),
         })),
         steps: program.steps.filter((step) => step.op === "animate").length,
         seeded: program.steps.some((step) => step.op === "random"),

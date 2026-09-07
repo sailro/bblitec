@@ -11,7 +11,9 @@ function scene(body: string, helpers = ""): string {
     return `
         import { createEngine, createSceneContext, parseNodeParticleSource,
             buildNodeParticleSet, withNodeParticleEmitterProvider, startParticleSystem,
-            stopParticleSystem, animateParticleSystem } from "@babylonjs/lite";
+            stopParticleSystem, animateParticleSystem, createParticleBillboard,
+            registerNodeParticleSet, registerNodeParticleSet2D, createSpriteRenderer, onBeforeRender,
+            createTexture2DFromPixels } from "@babylonjs/lite";
         ${helpers}
         async function main() {
             const engine = await createEngine({});
@@ -78,6 +80,43 @@ test("provider option aliases retain static options and source-ordered native ca
     assert.deepEqual(result.nodeParticles!.buffers, []);
     assert.match(result.cpp, /sample_node_particle_emitter/);
     assert.match(result.cpp, /set_random_override/);
+});
+
+test("provider-backed systems refuse bridges and composition that would freeze native state", () => {
+    for (const [operation, diagnostic] of [
+        ["createParticleBillboard(system);", /explicit billboard bridge only carries frozen state/],
+        ["registerNodeParticleSet2D(createSpriteRenderer(engine, { layers: [] }), set);", /pure-2D provider bridge is not lowered/],
+        ["set.systems.push(system);", /System-list composition with a provider-backed particle set/],
+    ] as const) {
+        assert.throws(() => compileSource(scene(provider + operation)), diagnostic);
+    }
+});
+
+test("provider construction and texture mutation refuse recurring callback storage", () => {
+    assert.throws(() => compileSource(scene(`${provider}
+        onBeforeRender(scene, () => {
+            withNodeParticleEmitterProvider(() => matrix);
+        });
+    `)), /native emitter provider must be constructed before recurring frame callbacks/);
+    assert.throws(() => compileSource(scene(`${provider}
+        onBeforeRender(scene, async () => {
+            await buildNodeParticleSet(engine, scene, parseNodeParticleSource({ blocks: [] }), options);
+        });
+    `)), /provider-backed particle set must be built before recurring frame callbacks/);
+    assert.throws(() => compileSource(scene(`${provider}
+        const texture = createTexture2DFromPixels(engine, new Uint8Array([255, 255, 255, 255]), 1, 1);
+        onBeforeRender(scene, () => { system.texture = texture; });
+    `)), /provider-backed particle texture must be assigned before recurring frame callbacks/);
+    assert.throws(() => compileSource(scene(`${provider}
+        onBeforeRender(scene, () => registerNodeParticleSet(scene, set));
+    `)), /provider-backed particle set must be registered before recurring frame callbacks/);
+});
+
+test("native and generation-only sets cannot split the shared random sequence", () => {
+    const frozen = `const frozen = await buildNodeParticleSet(engine, scene, parseNodeParticleSource({ blocks: [] }));`;
+    for (const body of [frozen + provider, provider + "Math.random = () => 0.25;" + frozen]) {
+        assert.throws(() => compileSource(scene(body)), /simulations must observe one Math.random sequence/);
+    }
 });
 
 test("resolved query primitives remain native input to imported numeric helpers", () => {
