@@ -1707,11 +1707,6 @@
       "sha256": "73cfaaffd6608f65defaf93e3695b8c1ecb131852b2e3eb02c365553e88c269d"
     },
     {
-      "upstreamPath": "lab/lite/src/lite/scene121.ts",
-      "source": "corpus/babylon-lite/lab/lite/src/lite/scene121.ts",
-      "sha256": "46bac70e9b72f34cb76ddd2ed68fe367a789a58b4566b992e9c84f1d5c93d68e"
-    },
-    {
       "upstreamPath": "lab/lite/src/lite/scene149.ts",
       "source": "corpus/babylon-lite/lab/lite/src/lite/scene149.ts",
       "sha256": "3d78b87edc62f16f4faa73b46b992f4a206218778371062039cf7d537b00037f"
