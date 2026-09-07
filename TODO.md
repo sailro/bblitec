@@ -147,7 +147,7 @@ implementation, follow the sizing/capture workflow in
 | Rotation | Replace separate Euler/quaternion lanes with the pinned proxy model; lower quaternion-to-Euler conversion and measure mixed writes. |
 | Direct morph | Multiple targets and one shared weights object attached to several meshes. Scene-code morph targets under a PBR material compose no morph variant and render the bind pose without refusing: a scene-authored mesh's feature word comes from a synthetic primitive carrying no targets, and PBR's runtime mesh bits carry only thin-instance arms. Standard has the arm. Refusing precisely needs the material-family lane below. |
 | PBR | Remaining metallic-reflectance options, textured environment rotation, local cubemap blending and unimplemented asset extension fields. |
-| Standard UV | Material uvOffset, lightmap legacyFlipV and rebuild semantics beyond the reached fixed transform. |
+| Standard UV | Lightmap legacyFlipV and rebuild semantics beyond the reached live offset and texture transforms. |
 | Textures | Remaining depth/geometry texture-view assignments and explicit per-texture encoding paths; do not conflate supported colour views with other aspects. |
 | Node material | Geometry MRT, delegating blockLoader, loaded-material texture handles and live scalar inputs. Alpha-combine graphs are already supported; wider alpha modes still need contracts. A node material drawn by a geometry-renderer task builds a single-target pipeline for a multi-attachment pass and is not refused; the refusal belongs where the mesh and task are paired, not on the feature pair. |
 | Plugin | Uniform writers/UBO layouts, priority/defines/runtime enable state and PBR sampler plugins. Trim dead Standard arms using actual material usage counts. |
