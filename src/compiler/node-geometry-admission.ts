@@ -6,8 +6,7 @@ interface Context {
     readonly checker: ts.TypeChecker;
     readonly symbols: { importedName(identifier: ts.Identifier): string | undefined };
     unwrap(expression: ts.Expression): ts.Expression;
-    lookupOptional(identifier: ts.Identifier): Value | undefined;
-    resolveRecordValue(expression: ts.Expression): Value | undefined;
+    knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined;
     isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     noteNodeGeometryMutation(node: ts.Node): void;
 }
@@ -16,12 +15,8 @@ const transforms = new Set(["position", "rotation", "rotationQuaternion", "scali
 
 /** Observe writer ownership without compiling or evaluating a speculative receiver. */
 export function checkNodeGeometryMutation(context: Context, expression: ts.Expression): void {
-    const known = (expression: ts.Expression): Value | undefined => {
-        const node = context.unwrap(expression);
-        return ts.isIdentifier(node) ? context.lookupOptional(node) : context.resolveRecordValue(node);
-    };
     const unprovenMesh = (expression: ts.Expression): boolean => {
-        const value = known(expression);
+        const value = context.knownValueWithoutEvaluation(expression);
         if (value) {
             if (value.kind === "asset-root" || value.kind === "scene-node") return true;
             if (value.kind === "mesh") return value.sceneMeshIndex === undefined && value.sceneMeshProfileIndex === undefined;
@@ -32,7 +27,7 @@ export function checkNodeGeometryMutation(context: Context, expression: ts.Expre
     };
     const importedVector = (expression: ts.Expression): boolean => {
         const node = context.unwrap(expression);
-        const value = known(node);
+        const value = context.knownValueWithoutEvaluation(node);
         if (value?.cameraVector) return false;
         if (value?.sceneNodeVector) {
             const owner = value.sceneNodeVector.owner;

@@ -65,6 +65,9 @@ test("text entity aliases, helpers, containers and escaped callbacks preserve na
         const holder={get item():TextRenderable{return owner();}};
         holder.item.opacity=.4;
         if(calls!==2||r.opacity!==.4)throw new Error("getter evaluated twice");
+        const holderAlias=holder;
+        holderAlias.item.opacity=.6;
+        if(calls!==3||r.opacity!==.6)throw new Error("aliased getter evaluated twice");
         r.rotationQuaternion.set(0,0,0,1);
         r.rotation.y=.25;
         if(r.rotation.y!==.25)throw new Error("Euler cache");

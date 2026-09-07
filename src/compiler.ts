@@ -4665,7 +4665,7 @@ class Compiler
         const binding = left && ts.isIdentifier(left) ? this.lookupOptional(left) : undefined;
         const previous = binding ?? target;
         const previousState = previous.collectionCardinality ?? previous.staticElementsOwner?.collectionCardinality;
-        const sourceValue = this.collectionMetadataValue(source);
+        const sourceValue = this.knownValueWithoutEvaluation(source);
         const sourceState = sourceValue?.collectionCardinality ?? sourceValue?.staticElementsOwner?.collectionCardinality;
         const right = this.unwrap(source);
         const nativeConstructor = ts.isNewExpression(right) &&
@@ -9162,7 +9162,7 @@ class Compiler
     public constArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
-        if (this.collectionMetadataValue(expression)?.collectionCardinality?.untrackedAliases) return undefined;
+        if (this.knownValueWithoutEvaluation(expression)?.collectionCardinality?.untrackedAliases) return undefined;
         const unwrapped = this.unwrap(expression);
         if (!ts.isIdentifier(unwrapped)) return undefined;
         const declarations =
@@ -12733,7 +12733,7 @@ class Compiler
     public probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
-        if (this.collectionMetadataValue(expression)?.collectionCardinality?.untrackedAliases) return undefined;
+        if (this.knownValueWithoutEvaluation(expression)?.collectionCardinality?.untrackedAliases) return undefined;
         // A list a scene selects between with a generation-known condition
         // is still a static list. Scene 140 writes both of its option
         // arrays that way -- `sg ? [sg] : undefined` for the shadow lights
@@ -18826,19 +18826,20 @@ class Compiler
         invalidate(owner);
     }
 
-    private collectionMetadataValue(expression: ts.Expression): Value | undefined {
+    /** Read carried facts only; accessors and runtime expressions are not evaluated. */
+    public knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined {
         const node = this.unwrap(expression);
         if (ts.isIdentifier(node)) return this.lookupOptional(node);
         if (node.kind === ts.SyntaxKind.ThisKeyword) return this.activeThis();
         if (ts.isPropertyAccessExpression(node)) {
-            const owner = this.collectionMetadataValue(node.expression);
+            const owner = this.knownValueWithoutEvaluation(node.expression);
             if (!owner?.recordGetters?.[node.name.text]) return owner?.recordProperties?.[node.name.text];
         }
         return undefined;
     }
 
     public knownCollectionCardinality(expression: ts.Expression): number | undefined {
-        const carried = this.collectionMetadataValue(expression);
+        const carried = this.knownValueWithoutEvaluation(expression);
         const carriedState = carried?.collectionCardinality ?? carried?.staticElementsOwner?.collectionCardinality;
         if (carriedState) {
             return carriedState.untrackedAliases ||
@@ -18857,7 +18858,7 @@ class Compiler
             }
             return count;
         }
-        const value = this.collectionMetadataValue(node);
+        const value = this.knownValueWithoutEvaluation(node);
         const state = value?.collectionCardinality ?? value?.staticElementsOwner?.collectionCardinality;
         if (state) {
             return state.untrackedAliases ||
@@ -18871,7 +18872,7 @@ class Compiler
 
     /** A known size whose members no longer have individual static aliases. */
     public runtimeCollectionCardinality(expression: ts.Expression): number | undefined {
-        const value = this.collectionMetadataValue(expression);
+        const value = this.knownValueWithoutEvaluation(expression);
         return value && !value.tupleElements &&
             !(value.staticElementsOwner?.staticElements ?? value.staticElements)
             ? this.knownCollectionCardinality(expression)
