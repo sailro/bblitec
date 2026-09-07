@@ -1082,9 +1082,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 parenting: features.includes("mesh:parenting"),
                 visibility: features.includes("mesh:visible"),
                 geometryAccess: features.includes("mesh:geometry-access"),
-                managedAnimationGroups: features.includes(
-                    "animation:managed-groups",
-                ),
+                animationManagers: features.includes("animation:managed-groups") ||
+                    features.includes("animation:property"),
                 transformNodes: features.includes("mesh:transform-node"),
                 sceneNodeTransforms: features.includes("scene:node-transforms"),
                 mirroredMeshes: features.includes("mesh:mirrored"),

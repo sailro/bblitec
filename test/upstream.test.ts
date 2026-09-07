@@ -393,7 +393,7 @@ test("generates property animation evaluation and seeking", () => {
     );
     assert.match(lowered.source, /void seek_animation_manager\(/);
     assert.match(
-        new SceneLowerer(new LoweringContext()).lowerCore({ managedAnimationGroups: true }).source,
+        new SceneLowerer(new LoweringContext()).lowerCore({ animationManagers: true }).source,
         /scene\.animation_seekers[\s\S]*seek_animation_manager\(manager, \*engine, time\)/,
     );
     assert.match(lowered.source, /mesh\.scaling = Vec3/);

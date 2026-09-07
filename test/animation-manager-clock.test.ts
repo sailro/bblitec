@@ -6,6 +6,7 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { AnimationLowerer } from "../src/lowering/animation-lowerer.js";
 import { LoweringContext } from "../src/lowering/context.js";
+import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 test("exact standalone manager source retains both authored modes and live client dimensions", () => {
@@ -125,6 +126,20 @@ test("pinned manager distinguishes manual updates, first ticks, fixed steps and 
 });
 
 const tools = optionalNativeFixtureTools(false);
+test("property-only scene registration seeks late managers and freezes their groups", { skip: !tools }, () => {
+    const output = resolve("artifacts/animation-manager-seek-check");
+    mkdirSync(output, { recursive: true });
+    emitUpstreamGenerated(output, ["core", "renderer:scene", "animation:property"]);
+    const executable = join(output, "check.exe");
+    runNativeFixtureCompiler(tools!, [
+        "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",
+        "/I", "native/include", "/I", join(output, "upstream/include"), `/Fo:${output}\\`, `/Fe:${executable}`,
+        join(output, "upstream/src/scene_core.cpp"), join(output, "upstream/src/animation_property.cpp"),
+        "test/fixtures/animation-manager-seek-check.cpp", "/link", "/OPT:REF",
+    ]);
+    execFileSync(executable, { stdio: "pipe" });
+});
+
 test("autonomous notifications retain block-local objects for inline and named callbacks", { skip: !tools }, () => {
     const output = resolve("artifacts/animation-manager-capture-check");
     const headers = join(output, "bblite/upstream");
