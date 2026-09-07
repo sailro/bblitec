@@ -31,6 +31,11 @@
 #else
 namespace bbl::pal { class TextGpuCapture; }
 #endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+#include "pal_node_capture.hpp"
+#else
+namespace bbl::pal { class NodeGpuCapture; }
+#endif
 
 #if BBLITE_VISUAL_CAPTURE
 
@@ -1800,22 +1805,15 @@ inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Eng
  * is taken, so the capture describes the image that was measured rather
  * than some other frame of the same run.
  */
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
-inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& capture) {
-    const auto bytes = [&](const char* name, const std::vector<std::uint8_t>& values) {
-        json.key(name); json.begin_array();
-        for (const auto value : values) json.value(static_cast<std::uint32_t>(value));
-        json.end_array();
-    };
-    const auto constants = [&](const char* name, const std::vector<TextGpuConstantCapture>& values) {
-        json.key(name); json.begin_array();
-        for (const auto& value : values) {
-            json.begin_object(); json.field("id", value.id); json.field("value", value.value); json.end_object();
-        }
-        json.end_array();
-    };
-    json.begin_object();
-    json.field("frame", static_cast<std::size_t>(capture.frame()));
+#if BBLITE_HAS_TEXT || BBLITE_NODE_GEOMETRY_VARIANTS > 0
+inline void write_gpu_capture_bytes(JsonWriter& json, const char* name,
+    const std::vector<std::uint8_t>& values) {
+    json.key(name); json.begin_array();
+    for (const auto value : values) json.value(static_cast<std::uint32_t>(value));
+    json.end_array();
+}
+
+inline void write_gpu_capture_resources(JsonWriter& json, const GpuUploadCapture& capture) {
     json.key("resources"); json.begin_array();
     for (const auto& resource : capture.resources()) {
         json.begin_object();
@@ -1824,7 +1822,7 @@ inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& captu
         json.field("allocationBytes", resource.allocation_bytes);
         json.field("width", resource.width); json.field("rows", resource.rows);
         json.field("destroyed", resource.destroyed);
-        bytes("uploadedBytes", resource.uploaded_bytes);
+        write_gpu_capture_bytes(json, "uploadedBytes", resource.uploaded_bytes);
         json.key("writtenRanges"); json.begin_array();
         for (const auto& range : resource.written_ranges) {
             json.begin_object(); json.field("offset", range.offset); json.field("bytes", range.bytes); json.end_object();
@@ -1841,6 +1839,21 @@ inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& captu
         json.end_array(); json.end_object();
     }
     json.end_array();
+}
+#endif
+
+#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& capture) {
+    const auto constants = [&](const char* name, const std::vector<TextGpuConstantCapture>& values) {
+        json.key(name); json.begin_array();
+        for (const auto& value : values) {
+            json.begin_object(); json.field("id", value.id); json.field("value", value.value); json.end_object();
+        }
+        json.end_array();
+    };
+    json.begin_object();
+    json.field("frame", static_cast<std::size_t>(capture.frame()));
+    write_gpu_capture_resources(json, capture);
     json.key("draws"); json.begin_array();
     for (const auto& draw : capture.draws()) {
         json.begin_object();
@@ -1866,7 +1879,55 @@ inline void write_text_gpu_capture(JsonWriter& json, const TextGpuCapture& captu
         json.end_array();
         json.field("vertices", draw.vertices); json.field("instanceCount", draw.instance_count);
         json.field("firstVertex", draw.first_vertex); json.field("firstInstance", draw.first_instance);
-        bytes("pushedUniformBytes", draw.pushed_uniform_bytes);
+        write_gpu_capture_bytes(json, "pushedUniformBytes", draw.pushed_uniform_bytes);
+        json.end_object();
+    }
+    json.end_array(); json.end_object();
+}
+#endif
+
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+inline void write_node_gpu_capture(JsonWriter& json, const NodeGpuCapture& capture) {
+    json.begin_object();
+    json.field("frame", static_cast<std::size_t>(capture.frame()));
+    write_gpu_capture_resources(json, capture);
+    json.key("pipelines"); json.begin_array();
+    for (const auto& pipeline : capture.pipelines()) {
+        json.begin_object();
+        json.field("id", static_cast<std::size_t>(pipeline.id));
+        json.field("variant", pipeline.variant); json.field("geometryVariant", pipeline.geometry_variant);
+        json.field("colorTargetCount", pipeline.color_target_count); json.field("samples", pipeline.samples);
+        json.field("usesLocalAttributes", pipeline.uses_local_attributes);
+        json.field("topology", pipeline.topology); json.field("cullMode", pipeline.cull_mode); json.field("frontFace", pipeline.front_face);
+        json.key("attributes"); json.begin_array();
+        for (const auto& attribute : pipeline.attributes) {
+            json.begin_object();
+            json.field("name", attribute.name); json.field("format", attribute.format);
+            json.field("location", attribute.location); json.field("slot", attribute.slot);
+            json.field("offset", attribute.offset); json.field("stride", attribute.stride);
+            json.end_object();
+        }
+        json.end_array(); json.end_object();
+    }
+    json.end_array();
+    json.key("draws"); json.begin_array();
+    for (const auto& draw : capture.draws()) {
+        json.begin_object();
+        json.field("pipeline", static_cast<std::size_t>(draw.pipeline)); json.field("group", static_cast<std::size_t>(draw.group));
+        json.field("vertices", static_cast<std::size_t>(draw.vertices)); json.field("indices", static_cast<std::size_t>(draw.indices));
+        json.field("meshUniform", static_cast<std::size_t>(draw.mesh_uniform));
+        json.field("mesh", draw.mesh); json.field("material", draw.material);
+        json.field("vertexOffset", draw.vertex_offset); json.field("indexOffset", draw.index_offset);
+        json.field("indexCount", draw.index_count); json.field("firstIndex", draw.first_index);
+        json.field("instanceCount", draw.instance_count); json.field("baseVertex", static_cast<int>(draw.base_vertex));
+        json.key("bindings"); json.begin_array();
+        for (const auto& binding : draw.bindings) {
+            json.begin_object(); json.field("binding", binding.binding); json.field("role", binding.role);
+            json.field("resource", static_cast<std::size_t>(binding.resource)); json.field("view", static_cast<std::size_t>(binding.view));
+            json.end_object();
+        }
+        json.end_array();
+        write_gpu_capture_bytes(json, "pushedUniformBytes", draw.pushed_uniform_bytes);
         json.end_object();
     }
     json.end_array(); json.end_object();
@@ -1884,7 +1945,8 @@ inline void write_render_capture(
     int width,
     int height,
     long frame,
-    [[maybe_unused]] TextGpuCapture* text_capture = nullptr) {
+    [[maybe_unused]] TextGpuCapture* text_capture = nullptr,
+    [[maybe_unused]] NodeGpuCapture* node_capture = nullptr) {
     std::ofstream stream(path, std::ios::binary | std::ios::trunc);
     if (!stream) {
         throw std::runtime_error(
@@ -1932,6 +1994,12 @@ inline void write_render_capture(
     if (text_capture) {
         json.key("textGpu");
         write_text_gpu_capture(json, *text_capture);
+    }
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (node_capture) {
+        json.key("nodeGpu");
+        write_node_gpu_capture(json, *node_capture);
     }
 #endif
 
@@ -2188,6 +2256,9 @@ inline void write_render_capture(
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
     if (text_capture) text_capture->stop();
 #endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (node_capture) node_capture->stop();
+#endif
 }
 #endif // BBLITE_HAS_PBR_RENDERER (write_render_capture)
 
@@ -2310,7 +2381,8 @@ namespace bbl::pal {
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 inline void write_render_capture(
     const std::string&, const char*, const Scene&, const Engine&, const CameraRecord&,
-    const upstream::RenderPlan&, const std::array<float, 16>&, int, int, long, TextGpuCapture* = nullptr) {}
+    const upstream::RenderPlan&, const std::array<float, 16>&, int, int, long,
+    TextGpuCapture* = nullptr, NodeGpuCapture* = nullptr) {}
 #endif
 #if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER
 inline void CaptureGate::maybe_write_standalone_render_capture(
