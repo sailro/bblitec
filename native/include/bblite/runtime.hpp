@@ -863,6 +863,10 @@ private:
 struct SceneState;
 struct TextRenderableState;
 struct TextDataState;
+struct NodeInputState;
+using NodeInputHandle = std::shared_ptr<NodeInputState>;
+struct NodeMaterialInputsState;
+struct NodeMaterialGroupState;
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -3248,6 +3252,7 @@ struct MaterialRecord {
     // Its variant rides `shader_variant` below, which indexes whichever
     // family's table the material belongs to.
     bool node_material = false;
+    std::shared_ptr<NodeMaterialInputsState> node_inputs;
     bool grid_material = false;
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
@@ -5007,6 +5012,7 @@ struct SceneState {
     /** The same, for the baked meshes this scene's registration reaches. */
     bool seeks_vat = false;
     std::vector<js::Callback<void()>> deferred_builders;
+    std::vector<std::shared_ptr<NodeMaterialGroupState>> node_material_groups;
     EnvironmentState environment;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
     std::uint64_t fog_identity = 0;
@@ -5721,7 +5727,7 @@ MaterialHandle create_shader_material(
  */
 struct NodeMaterialTexture {
     std::string name;
-    FileTexture texture;
+    StoredTexture texture;
 };
 
 NodeMaterialTexture node_material_texture(
@@ -5741,6 +5747,7 @@ MaterialHandle create_node_material(
     Engine& engine,
     std::uint32_t variant,
     std::vector<NodeMaterialTexture> textures);
+void queue_node_material_group(Scene& scene, MeshHandle mesh);
 void set_shader_uniform_values(
     Engine& engine,
     MaterialHandle material,

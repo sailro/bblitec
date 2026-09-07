@@ -28,6 +28,8 @@ export class SceneLowerer {
       sceneNodeTransforms?: boolean;
       /** Retained text entities participate in scene disposal. */
       text?: boolean;
+      /** Node materials capture texture slots in deferred scene groups. */
+      nodeMaterials?: boolean;
     } = {},
   ): LoweredSource {
     const modulePath = "src/scene/scene-core.ts";
@@ -1735,6 +1737,7 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     ++scene.render_topology_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
+${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
 }
 
 // A static glTF mesh normally bakes its node world into each vertex. Once
@@ -2409,6 +2412,7 @@ ${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
     scene.before_render.clear();
     scene.animation_seekers.clear();
     scene.deferred_builders.clear();
+${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
     scene.camera = {};
 }
 

@@ -472,22 +472,22 @@ test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
     assert.doesNotMatch(source, /normalized\.data\.sampler\.min_filter/);
 });
 
-test("dispatches stored node textures without losing pixels metadata", () => {
+test("retains node texture producers until deferred binding normalizes pixels metadata", () => {
     const source = new FactoryLowerer(
         new LoweringContext(),
     ).lowerNodeMaterialFactory().source;
 
     assert.match(
         source,
-        /const PixelsTexture& texture\) \{[\s\S]*normalized\.data\.bytes = texture\.rgba;[\s\S]*normalized\.data\.rgba_width = texture\.width;[\s\S]*normalized\.data\.rgba_height = texture\.height;/,
+        /const PixelsTexture& texture\) \{\s*return NodeMaterialTexture\{std::move\(name\), texture\};/,
     );
     assert.match(
         source,
-        /normalized\.data\.sampler = texture\.sampler;\s*normalized\.data\.uv_transform = texture\.uv_transform;\s*normalized\.data\.uv_invert_y = texture\.uv_invert_y;/,
+        /normalized\.data\.sampler = stored\.sampler;\s*normalized\.data\.uv_transform = stored\.uv_transform;\s*normalized\.data\.uv_invert_y = stored\.uv_invert_y;/,
     );
     assert.match(
         source,
-        /const StoredTexture& texture\) \{\s*return std::visit\([\s\S]*node_material_texture\(std::move\(name\), stored\);/,
+        /const StoredTexture& texture\) \{\s*return NodeMaterialTexture\{std::move\(name\), texture\};/,
     );
 });
 

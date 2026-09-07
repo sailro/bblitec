@@ -1090,6 +1090,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 mirroredMeshes: features.includes("mesh:mirrored"),
                 vat: features.includes("mesh:vat"),
                 text: features.includes("text:renderable"),
+                nodeMaterials: nodeVariantList.length > 0,
             }),
             generated,
         );
