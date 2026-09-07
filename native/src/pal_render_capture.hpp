@@ -16,6 +16,8 @@
 // bytes to the wrong slot would still look correct here -- that failure
 // mode is what the SDL_GPU-versus-Dawn differential covers, so the two
 // tools are complementary and neither replaces the other.
+// The textGpu and opt-in nodeGpu sections are separate actual-operation
+// receipts supplied by the PALs; their bytes are not rebuilt here.
 #pragma once
 
 #include <bblite/pal.hpp>

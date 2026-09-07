@@ -85,6 +85,13 @@ outside `writtenRanges` are not observed GPU contents. Use
 operation observations to check bytes, identities, idle/input behavior and
 resize on both backends. The same checker accepts the `text-shared` and
 `text-blend` fixtures' browser observations.
+For node materials with geometry views, set `BBLITE_NODE_GPU_CAPTURE=1` alongside
+`BBLITE_RENDER_CAPTURE` to include `nodeGpu`. It records actual vertex/index
+uploads, pipeline attribute offsets and strides, per-view draw bindings, and
+mesh uniform uploads or pushes. Resource IDs join the upload receipts to draws;
+SDL has no native bind-group object, so its group ID is zero. Byte ranges outside
+`writtenRanges` remain unobserved. Full geometry uploads can make these captures
+large, so enable this for binding checks rather than every image measurement.
 The palette comparison covers the first two matrices; read the full deformation
 dump for other bones. Expected native-only shader permutations are not errors.
 
@@ -214,6 +221,7 @@ its source, compiler, package, pose or native stamp changes.
 | Variable | Purpose |
 | --- | --- |
 | `BBLITE_RENDER_CAPTURE=<path>` | CPU-side native capture |
+| `BBLITE_NODE_GPU_CAPTURE=1` | Add actual node geometry uploads and draw bindings to the requested render capture |
 | `BBLITE_DEFORMATION_DUMP=<path>` | Full bone/morph dump on supported SDL paths |
 | `BBLITE_MSAA=1` | Single-sample isolation |
 | `BBLITE_RUNTIME_TRACE=1`, `BBLITE_RUNTIME_TRACE_INTERVAL=<n>` | Input/camera/topology/window traces |
