@@ -29,6 +29,10 @@ const hierarchy = {
 };
 const stackOrder = [4, 3, 1, 0, 5, 2, 6];
 const preorderOrder = [6, 2, 5, 0, 1, 3, 4];
+const recursiveCorpus = ts.createSourceFile("scene41.ts", readFileSync("corpus/babylon-lite/lab/lite/src/lite/scene41.ts", "utf8"), ts.ScriptTarget.Latest, true);
+const recursiveVisitor = recursiveCorpus.statements.filter(statement => ts.isFunctionDeclaration(statement) &&
+    ["isMeshNode", "hasChildren", "collectMeshes"].includes(statement.name?.text ?? ""))
+    .map(statement => statement.getText(recursiveCorpus).replaceAll("collectMeshes", "visitMeshes")).join("\n");
 
 test("source collectors observe the pinned multi-level, multi-primitive hierarchy", async () => {
     assert.deepEqual(await gltfMeshWalks(hierarchy, [stack, preorder]), [stackOrder, preorderOrder]);
@@ -71,9 +75,10 @@ const closure = `function recursive(container: AssetContainer): Mesh[] {
 }`;
 
 function compiledWalks() {
-    return compileSource(`import {createEngine, loadGltf, getContainerMeshes, type AssetContainer, type Mesh, type Material} from "@babylonjs/lite";
+    return compileSource(`import {createEngine, loadGltf, getContainerMeshes, type AssetContainer, type Mesh, type Material, type SceneNode} from "@babylonjs/lite";
         ${declaration.getText(corpus)}
         ${closure}
+        ${recursiveVisitor}
         const engine = await createEngine({});
         const asset = await loadGltf(engine, "hierarchy.gltf");
         const other = await loadGltf(engine, "unrelated.gltf");
@@ -97,17 +102,26 @@ function compiledWalks() {
             if (mesh !== flat[expected[cursor]!]!) throw new Error("recursive order changed");
             cursor++;
         }
+        const walked: Mesh[] = [];
+        for (const entity of asset.entities) visitMeshes(entity, walked);
+        const retained: {meshes: Mesh[]} = {meshes: walked};
+        const view: {meshes: readonly Mesh[]} = {meshes: walked};
+        for (let i=0; i<expected.length; i++) {
+            if (retained.meshes[i] !== flat[expected[i]!] || view.meshes[i] !== flat[expected[i]!]) {
+                throw new Error("escaped traversal did not retain its source order");
+            }
+        }
     `);
 }
 
 test("compiler demand is per asset and keeps distinct source collector orders", async () => {
     const result = compiledWalks();
-    assert.deepEqual(result.manifest.assets.map(asset => asset.meshWalks), [[0, 1], undefined]);
-    assert.equal(result.manifest.meshWalks?.length, 2);
+    assert.deepEqual(result.manifest.assets.map(asset => asset.meshWalks), [[0, 1, 2], undefined]);
+    assert.equal(result.manifest.meshWalks?.length, 3);
     assert.match(result.cpp, /bbl::asset_mesh_walk\([^\n]+, 0\)/);
     assert.match(result.cpp, /bbl::asset_mesh_walk\([^\n]+, 1\)/);
     assert.match(result.cpp, /\.assets\[[^\]]+\]\.meshes/);
-    assert.deepEqual(await gltfMeshWalks(hierarchy, result.manifest.meshWalks!), [stackOrder, preorderOrder]);
+    assert.deepEqual(await gltfMeshWalks(hierarchy, result.manifest.meshWalks!), [stackOrder, preorderOrder, preorderOrder]);
     const lowerer = new GltfLowerer(new LoweringContext());
     assert(!lowerer.lowerLoaderAdapter().source.includes("load_source_mesh_walks"));
     assert(lowerer.lowerLoaderAdapter({sourceMeshWalks: true}).source.includes("load_source_mesh_walks(asset, document)"));

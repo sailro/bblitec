@@ -6357,9 +6357,8 @@ export class DataLowerer {
                         dataType.element.handle
                 ) {
                     this.context.reachJsData();
-                    return `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>(` +
-                        `${value.handleCollection.containerCpp}.begin(), ` +
-                        `${value.handleCollection.containerCpp}.end())`;
+                    return `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
+                        `${value.handleCollection.containerCpp})`;
                 }
                 if (value.kind === "tuple") {
                     this.context.reachJsData();
@@ -6519,9 +6518,8 @@ export class DataLowerer {
                         dataType.element.handle
                 ) {
                     this.context.reachJsData();
-                    return `bbl::js::Array<${this.context.dataTypes.cppType(dataType.element)}>(` +
-                        `${value.handleCollection.containerCpp}.begin(), ` +
-                        `${value.handleCollection.containerCpp}.end())`;
+                    return `bbl::js::array_from_iterable<${this.context.dataTypes.cppType(dataType.element)}>(` +
+                        `${value.handleCollection.containerCpp})`;
                 }
                 if (value.kind === "tuple") {
                     this.context.reachJsData();
