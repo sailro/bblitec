@@ -155,6 +155,15 @@ test("text projection refuses mixed draw and custom task families in either feat
     }
 });
 
+test("text owner classification preserves existing splat components and imported root bulk transforms", () => {
+    for (const id of [125, 269]) {
+        const sourcePath = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
+        const result = compileSource(readFileSync(sourcePath, "utf8"), { fileName: sourcePath });
+        assert.ok(!result.manifest.features.some((feature) => feature.startsWith("text:")));
+        assert.match(result.cpp, id === 125 ? /\.position\.y = 1\.7f/ : /set_asset_root_position\(/);
+    }
+});
+
 test("exact text source projects unchanged shaders, observed descriptors and compilable native declarations", async (t) => {
     const output = resolve(directory, "exact");
     execFileSync(process.execPath, ["dist/src/cli.js", "corpus/babylon-lite/lab/lite/src/lite/scene275.ts", "--out", output], {stdio:"pipe"});
@@ -173,6 +182,10 @@ test("exact text source projects unchanged shaders, observed descriptors and com
     }
     assert.match(readFileSync(resolve(output, "upstream/include/bblite/upstream/camera_change_key.hpp"), "utf8"), /scene_camera_change_key/);
     assert.ok(readFileSync(resolve(output, "upstream/include/bblite/upstream_text_gpu.hpp"), "utf8").includes("ensure_text_gpu"));
+    const dataSource = readFileSync(resolve(output, "upstream/src/text_data.cpp"), "utf8");
+    const payloadReads = [...dataSource.matchAll(/bbl::pal::read_binary_file\(([^\n]+?)\)/g)];
+    assert.ok(payloadReads.length > 0);
+    assert.ok(payloadReads.every((match) => match[1]!.startsWith("bbl::asset_path(")), "Every text payload resolves under the executable assets directory");
     const native = optionalNativeFixtureTools(false);
     if (!native) { t.skip("Native fixture compiler unavailable"); return; }
     runNativeFixtureCompiler(native, ["/nologo", "/std:c++20", "/W4", "/WX", "/EHsc", "/c", "/DBBLITE_HAS_TEXT=1",

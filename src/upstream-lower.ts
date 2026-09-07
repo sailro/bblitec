@@ -1095,7 +1095,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 symbolName: "createDefaultTextData",
                 header: "#pragma once\n#include <bblite/text.hpp>\nnamespace bbl { TextData create_compiled_text_data(std::uint32_t index); }\n",
                 source: "#include <bblite/upstream_text.hpp>\n#include <bblite/pal.hpp>\nnamespace bbl {\nTextData create_compiled_text_data(std::uint32_t index) {\n    switch (index) {\n" +
-                    (options.textData ?? []).map((row) => `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(${cppStringLiteral(blob.assetOutput)})`)};`).join("\n") +
+                    (options.textData ?? []).map((row) => `    case ${row.id}: return ${text.dataExpression(row, (blob) => `bbl::pal::read_binary_file(bbl::asset_path(${cppStringLiteral(blob.assetOutput)}))`)};`).join("\n") +
                     "\n    default: throw std::out_of_range(\"Compiled text data index\");\n    }\n}\n}\n",
             }, generated, "upstream/include/bblite/upstream/text_data.hpp");
         }

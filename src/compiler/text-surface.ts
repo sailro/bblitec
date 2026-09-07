@@ -1,6 +1,6 @@
 /** The text transform object retains its renderable; it is never a copied Vec3. */
 import ts from "typescript";
-import { isPinnedType, pinnedHandleKind } from "./data-types.js";
+import { pinnedHandleKind } from "./data-types.js";
 import type { Value } from "./types.js";
 
 export type TextTransform = "position" | "scaling" | "rotation" | "rotationQuaternion";
@@ -61,8 +61,12 @@ function possibleTextOwner(context: TextSurfaceContext, expression: ts.Expressio
     const known = ts.isIdentifier(node) ? context.lookupOptional(node) : undefined;
     if (known && ["text-renderable", "text-vector", "text-data"].includes(known.kind)) return true;
     const type = context.checker.getTypeAtLocation(node);
-    return ["text-renderable", "text-data"].includes(pinnedHandleKind(type) ?? "") ||
-        isPinnedType(type, ["ObservableVec3", "ObservableQuat", "EulerProxy"]);
+    if (["text-renderable", "text-data"].includes(pinnedHandleKind(type) ?? "")) return true;
+    // ObservableVec3 is also the pin's mesh, splat and camera surface. Its
+    // type alone cannot authorize a text read: several of those owners lower
+    // writes directly without exposing a first-class vector value.
+    return ts.isPropertyAccessExpression(node) && transforms.includes(node.name.text) &&
+        pinnedHandleKind(context.checker.getTypeAtLocation(node.expression)) === "text-renderable";
 }
 
 function ownerValue(context: TextSurfaceContext, expression: ts.Expression): Value | undefined {
