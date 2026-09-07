@@ -1408,7 +1408,7 @@ test("selects live shadow-receiver variants for runtime meshes", () => {
     // composed material families must therefore select this dynamic bit from
     // the live mesh record instead of silently choosing a non-shadow variant.
     assert.equal(
-        (shared.match(/if \(record\.receives_shadows\) \{/g) ?? []).length,
+        (shared.match(/if \(record\.receives_shadows\) \{\s*key\.mesh_features \|= receive_shadows;/g) ?? []).length,
         2,
     );
     assert.equal(
