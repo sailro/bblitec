@@ -264,6 +264,7 @@ export function gltfLoaderCpp(
         deformPicking = false,
         pinnedSkeletonPalette = false,
         dynamicThinInstances = false,
+        retainLocalNormals = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
         animationMask = false,
@@ -2883,7 +2884,10 @@ ${nonTrianglePrimitives
                 retains_runtime_instance_vertices;
             if (retains_local_vertices) {
                 geometry.bind_vertices.resize(positions.count);
-            }
+            }${retainLocalNormals ? `
+            if (normals) {
+                geometry.local_normals.resize(positions.count);
+            }` : ""}
             // A primitive with no material index takes the pin's default
             // material -- getMat(undefined) assembles one from an empty
             // object -- created once and appended after the document's,
@@ -2925,7 +2929,8 @@ ${nonTrianglePrimitives
                         read_component(buffer, container, views, *normals, index, 0),
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
-                    };
+                    };${retainLocalNormals ? `
+                    geometry.local_normals[index] = local_normal;` : ""}
                     live_local_normal = normalize(Vec3{
                         -local_normal.x,
                         local_normal.y,

@@ -2039,6 +2039,10 @@ enum class MeshTopology : std::uint8_t {
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
+    // Source NORMAL values for a draw that reads raw local attributes.
+    // Imported bind_vertices may already normalize/mirror them; keep this
+    // optional lane independently, without duplicating the full vertex.
+    std::vector<Vec3> local_normals;
     std::vector<std::vector<Vec3>> morph_positions;
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
@@ -2113,6 +2117,7 @@ void release_storage(std::vector<T>& storage) {
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
     release_storage(geometry.bind_vertices);
+    release_storage(geometry.local_normals);
     release_storage(geometry.morph_positions);
     release_storage(geometry.morph_bounds);
     release_storage(geometry.morph_normals);
