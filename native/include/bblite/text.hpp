@@ -38,8 +38,8 @@ struct TextDrawGroup {
     std::size_t slot_count = 0;
     std::size_t live_count = 0;
     // The pin owns this cache on TextData, shared by all its renderables.
-    std::shared_ptr<void> bind_group;
-    double bind_group_version = -1;
+    mutable std::shared_ptr<void> bind_group;
+    mutable double bind_group_version = -1;
 };
 struct TextDataPayload {
     double width = 0;
@@ -58,6 +58,12 @@ struct TextAtlasGpuState {
     std::function<void()> destroy_curves;
     std::function<void()> destroy_bands;
     std::function<void()> destroy_metadata;
+    std::shared_ptr<void> backend;
+    const void* device_identity = nullptr;
+    double curve_rows = 0;
+    double band_rows = 0;
+    double metadata_capacity = 0;
+    double uploaded_version = -1;
 };
 struct TextDataState {
     std::shared_ptr<const TextDataPayload> payload;
@@ -94,6 +100,29 @@ struct TextGpuState {
     double uploaded_viewport_w = 0;
     double uploaded_viewport_h = 0;
     double uploaded_opacity = std::numeric_limits<double>::quiet_NaN();
+    std::shared_ptr<void> backend;
+    const void* device_identity = nullptr;
+    std::string target_key;
+    std::shared_ptr<void> pipeline;
+    std::shared_ptr<void> variant_pipeline;
+    double instance_capacity = 0;
+    double style_buffer_bytes = 0;
+    double uploaded_data_version = -1;
+    double uploaded_style_version = -1;
+};
+
+enum class TextBufferKind { uniform, instances, styles };
+enum class TextAtlasTextureKind { curves, bands };
+struct TextPipelineBinding {
+    std::shared_ptr<void> pipeline;
+    std::shared_ptr<void> variant_pipeline;
+    std::shared_ptr<void> layout;
+    std::shared_ptr<void> quad;
+};
+struct TextTargetSignature {
+    std::optional<std::string> color_format;
+    std::optional<std::uint32_t> sample_count;
+    std::optional<std::string> depth_format;
 };
 struct TextRenderableState {
     TextData data;
@@ -111,6 +140,7 @@ struct TextRenderableState {
     bool ignore_depth = false;
     double order = 200;
     bool is_transparent = true;
+    bool alpha_to_coverage = false;
     double version = 0;
     std::shared_ptr<TextGpuState> gpu;
 };
