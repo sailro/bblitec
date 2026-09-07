@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 // Original-scene texture animation and camera controls through SDL's frame input tape.
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { PNG } from "pngjs";
+import { compareImages, imageDimensions } from "../dist/src/parity.js";
+import { resolveNativeExecutable, spawnNativeMeasured, verifyBuildIdentity, verifyDeployedPayload } from "../dist/src/parity-scene.js";
+import { getScene } from "../dist/src/scene-registry.js";
 
-const executable = resolve(process.argv[2] ?? "native/build-scene241-release/bblite_native.exe");
+const scene = getScene("scene241");
+const executable = resolveNativeExecutable(process.argv[2], scene.buildDirectory);
+const generated = resolve(scene.output);
+verifyDeployedPayload(executable, generated);
 const output = resolve("artifacts/scene241-input");
 mkdirSync(output, { recursive: true });
 const idle = (count) => Array(count).fill("-");
@@ -16,34 +20,29 @@ const phases = [
     { name: "orbit", frame: 40, replay: [...idle(20), "+UiMouseLeft@640:360", ...Array.from({ length: 12 }, (_, i) => `UiMove@${650 + i * 10}:360`), "-UiMouseLeft@760:360"] },
 ];
 const mad = (first, second) => {
-    const a = PNG.sync.read(readFileSync(first));
-    const b = PNG.sync.read(readFileSync(second));
-    assert.equal(a.width, b.width);
-    assert.equal(a.height, b.height);
-    let sum = 0;
-    for (let i = 0; i < a.data.length; ++i) if (i % 4 !== 3) sum += Math.abs(a.data[i] - b.data[i]);
-    return sum / (a.width * a.height * 3);
+    assert.deepEqual(imageDimensions(first), imageDimensions(second));
+    return compareImages(first, second).mad;
 };
 const results = [];
 for (const backend of ["sdl_gpu", "dawn"]) {
     const captures = new Map();
     for (const phase of phases) {
         const stem = resolve(output, `${backend}-${phase.name}`);
-        const run = spawnSync(executable, [], {
-            cwd: resolve("generated/scene241"), timeout: 20000, encoding: "utf8",
-            // Camera controls are intentionally disabled in hidden test passes.
-            env: { ...process.env, BBLITE_GPU_BACKEND: backend, BBLITE_TEST_PASS: "0",
+        const stamp = stem + ".build-stamp";
+        for (const path of [stamp, stem + ".png", stem + ".json"]) rmSync(path, { force: true });
+        // Camera controls are intentionally disabled in hidden test passes.
+        const captured = spawnNativeMeasured(executable, {
+                BBLITE_GPU_BACKEND: backend, BBLITE_TEST_PASS: "0",
                 BBLITE_MAX_FRAMES: String(phase.frame + 1), BBLITE_SCREENSHOT_FRAME: String(phase.frame),
                 BBLITE_SCREENSHOT: stem + ".png", BBLITE_RENDER_CAPTURE: stem + ".json",
+                BBLITE_BUILD_STAMP_OUT: stamp,
                 BBLITE_FRAME_DELTA_MS: "16", BBLITE_ANIMATION_SEEK_SECONDS: "",
                 BBLITE_INPUT_REPLAY: phase.replay.join(","), BBLITE_RUNTIME_TRACE: "1",
                 BBLITE_GPU_DEBUG: "1", SDL_ASSERT: "always_ignore" },
-            stdio: ["ignore", "pipe", "pipe"],
-        });
-        const captured = (run.stdout ?? "") + (run.stderr ?? "");
+            [], true, 20000);
         writeFileSync(stem + ".log", captured);
-        assert.equal(run.status, 0, run.error?.message ?? captured);
         assert(!/validation error|gpu error|exception/i.test(captured), captured);
+        verifyBuildIdentity(executable, generated, stamp);
         const capture = JSON.parse(readFileSync(stem + ".json", "utf8"));
         assert.equal(capture.meshes.length, 132);
         assert.equal(capture.draws.length, 132);
