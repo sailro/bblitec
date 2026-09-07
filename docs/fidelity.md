@@ -244,7 +244,9 @@ picking must refer to the same rendered cloud. Transform baking and live row
 updates retain the pin's data layout and buffer identity. The loader retains
 rows when baking, `splatsData` or `updateData` is reached; a successful update
 publishes new geometry and a version for draw/picking refresh. Existing aliases
-retain replaced row buffers. Both PALs refresh the existing four data textures
+retain replaced row buffers. Native buffers without a retained owner refuse
+at the update boundary; copying their wrappers cannot extend the source lifetime.
+Both PALs refresh the existing four data textures
 before the next draw or pick. An immediate pick keeps the preceding order;
 the next frame applies the pin's depth-transform sort gate to the new centres.
 The native sort remains synchronous on the render thread, as recorded in the

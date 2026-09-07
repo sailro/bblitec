@@ -146,7 +146,9 @@ shared source rows. Numeric views can edit those bytes before an update;
 replacing the buffer preserves aliases to the old rows. The update uses the
 pinned geometry builder, rejects incompatible counts before committing, and
 publishes a version consumed by both PALs and cloud picking. The receiver must
-be a present splat handle. Unused row APIs carry no retained source buffer.
+be a present splat handle, and the buffer must own or retain its storage.
+Borrowed native-vector buffers refuse before publishing any cloud state.
+Unused row APIs carry no retained source buffer.
 `splatsData` is a getter-only property; assigning to it is refused. Replace its
 buffer through `updateData`.
 
