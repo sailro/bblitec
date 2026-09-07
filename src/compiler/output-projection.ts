@@ -208,6 +208,7 @@ export const featureSources: Record<Feature, string[]> = {
     "sprite:billboard-cutout": [],
     "sprite:billboard-custom-shader": [],
     "renderer:sprite": ["src/pal_sdl_gpu_sprite.cpp"],
+    "renderer:canvas": ["src/pal_sdl_gpu_sprite.cpp"],
     // The scene-less fullscreen-effect path: an EffectRenderer is its own
     // rendering context on the engine, exactly as a SpriteRenderer is, so a
     // scene registering one and no SceneContext compiles no scene renderer

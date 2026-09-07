@@ -27,7 +27,7 @@ export interface SceneIntrinsicContext
         right: Value,
         node: ts.Node,
     ): void;
-    compileFrameCallback(expression: ts.Expression): string;
+    compileFrameCallback(expression: ts.Expression, signature?: import("../types.js").FrameCallbackSignature, retainCaptures?: boolean): string;
     compileVoidCallback(expression: ts.Expression): string;
     emit(line: string): void;
     /**

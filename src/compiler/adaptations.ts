@@ -735,6 +735,13 @@ export function compileAdaptations(
                 "projected without a general DOM activeElement object; color " +
                 "emoji use the platform face with explicit VS16 font runs, " +
                 "not general ZWJ/emoji-sequence shaping" +
+                (features.includes("renderer:canvas")
+                    ? "; a source without a Babylon engine receives a native " +
+                      "window and frame host for its primary Canvas2D surface; " +
+                      "rectangle edges use analytic backing-pixel coverage " +
+                      "through premultiplied UI meshes, with browser raster " +
+                      "quantization differences"
+                    : "") +
                 (scoped.length > 0
                     ? `; the statically-proven descendant rule(s) ${scoped
                          .map((selector) => `'${selector}'`)

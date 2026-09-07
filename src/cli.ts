@@ -1578,6 +1578,9 @@ ${imageCodecLines || '    ""'}
     // recompile everything that includes it.
     tree.keep(buildStampHeaderPath);
     tree.prune("upstream");
+    // A valid presentation-only program can reach no Babylon shader. Keep
+    // the stage's input directory even when pruning removed its last shader.
+    mkdirSync(resolve(outputPath, "upstream", "shaders"), { recursive: true });
     // Last, because it digests everything written above. The executable
     // embeds this and the parity gate refuses a binary whose stamp no
     // longer matches the inputs on disk.

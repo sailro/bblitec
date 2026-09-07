@@ -391,6 +391,22 @@ Track interpolation and target
 support are independent; a property-animation option does not establish glTF
 support for the same spelling.
 
+Property groups can bind mutable numeric leaves on plain data objects. Each
+path resolves its owner once at group creation, retains that object and shares
+the caller's storage; replacing an intermediate object does not retarget an
+existing group. Resolved owner/property identity also drives weighted mixing.
+Whole data-vector/array writes and missing, readonly or nonnumeric leaves
+remain unsupported.
+
+Animation managers support `fixedDeltaMs`, retained `onUpdate` callbacks and
+autonomous start/stop on the engine RAF conductor. Clock expressions and state
+writes derive from the pin; the first variable-step tick receives zero, and
+`onUpdate` runs after each autonomous update. Manual updates and seeks do not
+notify. Engine-less Canvas2D entries use the private presentation host described
+in [UI](ui.md#canvas2d). Autonomous managers cannot coexist with the older
+persistent application RAF lowering; those loops need source requeue retention
+before their callback ordering can compose.
+
 ## Deformation and instancing
 
 GPU skinning, morph/storage morph, baked vertex animation and dynamic

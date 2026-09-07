@@ -1,5 +1,5 @@
-// The frame driver for a scene that registers sprite renderers and no
-// `SceneContext`.
+// The shared 2D frame driver: sprite renderers or a primary Canvas2D surface,
+// with no `SceneContext`.
 //
 // The drawing is not here — it is in `pal_sdl_gpu_sprite.hpp`, as the two
 // halves of a rendering context, so the scene renderer composes the same
@@ -35,7 +35,7 @@
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER
 
 bool run_sprite_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
@@ -44,9 +44,14 @@ bool run_sprite_gpu_engine(Engine& engine) {
         "SDL_GPU sprites",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
-    if (engine.registered_sprite_renderers.empty()) {
+    const bool canvas_only = engine.registered_sprite_renderers.empty();
+    if (canvas_only
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        && engine.primary_canvas.value >= engine.ui_elements.size()
+#endif
+    ) {
         throw std::runtime_error(
-            "Sprite renderer requires a registered SpriteRenderer.");
+            "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
     }
     SdlGpuDevice gpu{};
     SDL_Window*& window = gpu.window;
@@ -54,8 +59,10 @@ bool run_sprite_gpu_engine(Engine& engine) {
     SDL_GPUTexture* color = nullptr;
     std::uint32_t color_width = 0;
     std::uint32_t color_height = 0;
+#if BBLITE_HAS_SPRITE_RENDERER
     std::vector<SpritePass> passes;
     std::vector<SDL_GPUTexture*> render_textures;
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiSdlResources ui_resources;
@@ -68,12 +75,14 @@ bool run_sprite_gpu_engine(Engine& engine) {
         destroy_ui_rml_runtime(ui_runtime);
         ui_runtime = nullptr;
 #endif
+#if BBLITE_HAS_SPRITE_RENDERER
         for (SpritePass& pass : passes) {
             release_sprite_pass(device, pass);
         }
         for (SDL_GPUTexture* texture : render_textures) {
             if (texture) SDL_ReleaseGPUTexture(device, texture);
         }
+#endif
         if (color) SDL_ReleaseGPUTexture(device, color);
         if (window && device) SDL_ReleaseWindowFromGPUDevice(device, window);
         if (device) SDL_DestroyGPUDevice(device);
@@ -93,7 +102,9 @@ bool run_sprite_gpu_engine(Engine& engine) {
         // frames, so a per-frame sprite mutation stages its dirty span
         // and shares one copy-pass submission instead of paying a
         // transfer-buffer create/release and a submit per layer.
+#if BBLITE_HAS_SPRITE_RENDERER
         GpuBufferUploadBatch buffer_uploads(device);
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
         ui_runtime = create_ui_rml_runtime(
             engine,
@@ -102,6 +113,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.height));
 #endif
 
+#if BBLITE_HAS_SPRITE_RENDERER
         const auto sync_render_textures = [&]() {
             render_textures.resize(
                 engine.sprite_render_textures.size(), nullptr);
@@ -161,13 +173,14 @@ bool run_sprite_gpu_engine(Engine& engine) {
 
         sync_render_textures();
         sync_renderer_passes();
+#endif
 
         const long limit = frame_options.frame_budget();
         const bool benchmark = frame_options.benchmarking();
         const bool mem_profile =
             environment_variable("BBLITE_MEM_PROFILE") == "1";
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        const bool capture_ui = frame_options.capture_ui;
+        const bool capture_ui = frame_options.capture_ui || canvas_only;
 #endif
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
@@ -197,12 +210,13 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 engine, running, frame_options.test_pass);
 #endif
             input_replay.dispatch(frame, window, engine);
-            const double delta_ms = advance_frame(
+            [[maybe_unused]] const double delta_ms = advance_frame(
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);
             const double frame_start = monotonic_milliseconds();
 
+#if BBLITE_HAS_SPRITE_RENDERER
             sync_render_textures();
             sync_renderer_passes();
 
@@ -225,6 +239,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
                     device, engine, pass, delta_ms, buffer_uploads);
             }
             buffer_uploads.submit();
+#endif
 
             SDL_GPUCommandBuffer* command =
                 SDL_AcquireGPUCommandBuffer(device);
@@ -274,6 +289,15 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 color_height = height;
             }
 
+            if (canvas_only) {
+                SDL_GPUColorTargetInfo target{};
+                target.texture = capture_run ? color : swapchain;
+                target.load_op = SDL_GPU_LOADOP_CLEAR;
+                target.store_op = SDL_GPU_STOREOP_STORE;
+                SDL_GPURenderPass* pass = SDL_BeginGPURenderPass(command, &target, 1, nullptr);
+                SDL_EndGPURenderPass(pass);
+            }
+#if BBLITE_HAS_SPRITE_RENDERER
             for (std::size_t first_index = 0;
                  first_index < passes.size();) {
                 const SpriteRendererRecord& first_renderer =
@@ -317,6 +341,7 @@ bool run_sprite_gpu_engine(Engine& engine) {
                 SDL_EndGPURenderPass(render_pass);
                 first_index = end_index;
             }
+#endif
 
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
             const UiRenderFrame& ui_frame =

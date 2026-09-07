@@ -391,7 +391,11 @@ test("generates property animation evaluation and seeking", () => {
         lowered.source,
         /PropertyAnimationInterpolation::step/,
     );
-    assert.match(lowered.source, /scene\.animation_seekers/);
+    assert.match(lowered.source, /void seek_animation_manager\(/);
+    assert.match(
+        new SceneLowerer(new LoweringContext()).lowerCore({ managedAnimationGroups: true }).source,
+        /scene\.animation_seekers[\s\S]*seek_animation_manager\(manager, \*engine, time\)/,
+    );
     assert.match(lowered.source, /mesh\.scaling = Vec3/);
     assert.match(
         lowered.source,
@@ -591,7 +595,7 @@ test("emits mixer-neutral weight fades in the manager pre-update phase", () => {
     );
     assert.match(
         managed.source,
-        /void start_animation_manager\([\s\S]*?bind_manager_engine\(manager, \*engine\)/,
+        /void start_animation_manager\([\s\S]*?bind_manager_engine\(manager, engine\)/,
     );
 });
 

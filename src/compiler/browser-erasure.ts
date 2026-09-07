@@ -563,6 +563,13 @@ export class BrowserErasure {
         const callee = this.context.unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return false;
 
+        if (callee.name.text === "getContext" && call.arguments.length === 1) {
+            const canvas = this.evaluateBrowserValue(callee.expression);
+            const context = this.evaluateBrowserValue(call.arguments[0]!);
+            if (canvas?.kind === "object" && canvas.primaryCanvas &&
+                context?.kind === "string" && context.value === "2d") return true;
+        }
+
         if (
             callee.name.text === "createElement" &&
             ts.isIdentifier(callee.expression) &&
@@ -1008,7 +1015,7 @@ export class BrowserErasure {
                     // auto-run guard therefore selects the same branch in the
                     // native reference environment; keep it as an object so
                     // truthiness folds without pretending it equals `true`.
-                    return { kind: "object" };
+                    return { kind: "object", primaryCanvas: true };
                 }
                 // The receiver is evaluated rather than looked up, because
                 // the corpus writes the query read both ways: bound to a

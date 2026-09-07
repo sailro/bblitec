@@ -56,6 +56,17 @@ Frozen particle bakes retain their existing Chromium execution path. Mixed
 native/frozen sets refuse because splitting their shared random stream between
 generation and runtime would change its ordering.
 
+Autonomous property-animation managers lower clock arithmetic and lifecycle
+state writes from the pinned manager. The PAL supplies ordered, cancellable
+frame requests; notification captures retain their source-owned data. The
+native presentation loop also hosts a reached primary Canvas2D surface when
+the source creates no engine. Persistent application RAF loops currently refuse
+composition with autonomous managers because their optimized registration does
+not retain each source requeue. Canvas2D rectangle coverage uses analytic
+backing-pixel coverage through the existing retained UI mesh, so browser raster
+quantization remains an explicit UI adaptation. Semantic fixtures compare the
+pinned and native manager lifecycle; image gates validate both native backends.
+
 ## Shader contract
 
 ### Where a shader comes from

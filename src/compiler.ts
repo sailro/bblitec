@@ -902,6 +902,9 @@ class Compiler
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
+    /** Platform owner for an entry that has no source-created Babylon engine. */
+    private presentationHostCpp: string | undefined;
+    private presentationCanvasValue: Value | undefined;
     /** First statement after the one engine is created. */
     private engineCreationInsertion: number | undefined;
     private nativeHostUiIdsCache: ReadonlySet<string> | undefined;
@@ -4363,6 +4366,11 @@ class Compiler
     private uiElementValue(expression: ts.Expression): Value | undefined {
         const owner = this.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
+            if (this.presentationHostCpp &&
+                value?.browserValue?.kind === "object" &&
+                value.browserValue.primaryCanvas) {
+                return Object.assign(value, this.primaryPresentationCanvas(owner));
+            }
             const storedMetadata = value
                 ? (this.uiElementMetadataByDataStorage.get(value.cpp) ??
                   (value.optionalStorageCpp
@@ -9341,7 +9349,12 @@ class Compiler
         // as the path it is written as. Unknown identifiers still fail
         // in lookup at the end of that chain, and an owner that is
         // itself unsupported fails naming the sub-path that failed.
-        const rawOwner = this.compileValue(ownerExpression);
+        const compiledOwner = this.compileValue(ownerExpression);
+        const rawOwner = this.presentationHostCpp &&
+            compiledOwner.browserValue?.kind === "object" &&
+            compiledOwner.browserValue.primaryCanvas
+            ? this.primaryPresentationCanvas(ownerExpression)
+            : compiledOwner;
         // A shared class instance read back out of a container is a `Ref`
         // with no compile-time shape of its own. Hydrating it here is what
         // gives the ordinary record path its fields, getters and setters,
@@ -11262,6 +11275,7 @@ class Compiler
     public compileFrameCallback(
         expression: ts.Expression,
         signature: FrameCallbackSignature = "delta",
+        retainCaptures = false,
     ): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
@@ -11272,7 +11286,7 @@ class Compiler
                     bound.cpp.length > 0 &&
                     bound.nativeCallbackParameterTypes?.length === 0
                 ) {
-                    const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+                    const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
                     const emitBody = () => {
                         this.useNativeValue(bound);
                         this.emit(`${bound.cpp}();`);
@@ -11288,7 +11302,7 @@ class Compiler
                     `A named deferred callback must resolve to a native zero-argument function (received ${bound?.kind ?? "unbound"}).`,
                 );
             }
-            return this.compileNamedFrameCallback(unwrapped, signature);
+            return this.compileNamedFrameCallback(unwrapped, signature, retainCaptures);
         }
         if (
             !ts.isArrowFunction(unwrapped) &&
@@ -11354,7 +11368,7 @@ class Compiler
         // guards statements later in the callback; it is not an inlined
         // function return that needs the breakable wrapper path.
         this.beginNativeFunctionBody(undefined, true);
-        const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
@@ -11472,6 +11486,7 @@ class Compiler
     private compileNamedFrameCallback(
         identifier: ts.Identifier,
         signature: Exclude<FrameCallbackSignature, "void">,
+        retainCaptures: boolean,
     ): string {
         const parameter =
             signature === "interval"
@@ -11492,7 +11507,7 @@ class Compiler
                     ? undefined
                     : this.variableScopes.length;
         }
-        const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         this.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
         try {
@@ -14471,8 +14486,9 @@ class Compiler
         // A scene-created overlay canvas is retained by the UI IR and owns
         // its own backing extent. Only the browser entry canvas maps to the
         // engine drawing surface below.
-        if (this.uiElementValue(unwrapped.expression)?.uiCanvas) {
-            return undefined;
+        const element = this.uiElementValue(unwrapped.expression);
+        if (element?.uiCanvas) {
+            return element.uiPrimaryCanvas && axis.client ? axis : undefined;
         }
         const ownerType = this.checker.getTypeAtLocation(unwrapped.expression);
         const members =
@@ -14497,12 +14513,23 @@ class Compiler
     public staticCanvasSize(expression: ts.Expression): number | undefined {
         const property = this.canvasSizeInfo(expression);
         if (!property) return undefined;
+        // A retained primary canvas can redraw after a window resize; its
+        // client extent is a host observation, including inside Math calls.
+        if (this.presentationHostCpp) return undefined;
         return property.axis === "width"
             ? this.options.width
             : this.options.height;
     }
 
     public canvasSizeValue(expression: ts.Expression): Value | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (!this.defaultEngineCpp && ts.isPropertyAccessExpression(unwrapped) &&
+            CANVAS_SIZE_AXES.has(unwrapped.name.text)) {
+            const owner = this.evaluateBrowserValue(unwrapped.expression);
+            if (owner?.kind === "object" && owner.primaryCanvas) {
+                this.requirePresentationHost(expression);
+            }
+        }
         const property = this.canvasSizeInfo(expression);
         return property
             ? {
@@ -14723,6 +14750,17 @@ class Compiler
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         const callee = this.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
+            if (callee.name.text === "getContext" && call.arguments.length === 1) {
+                const canvas = this.evaluateBrowserValue(callee.expression);
+                const context = this.evaluateBrowserValue(call.arguments[0]!);
+                if (canvas?.kind === "object" && canvas.primaryCanvas &&
+                    context?.kind === "string" && context.value === "2d") {
+                    if (this.defaultEngineCpp && !this.presentationHostCpp) {
+                        this.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
+                    }
+                    this.requirePresentationHost(call);
+                }
+            }
             if (this.isNativeHostUiLookup(call)) {
                 const id = this.compileStringLiteral(call.arguments[0]!);
                 const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.requireDefaultEngine(call);
@@ -14838,6 +14876,8 @@ class Compiler
                             element.uiCanvasId,
                         );
                         return invocation("clear_rect", 4);
+                    case "fillRect":
+                        return invocation("fill_rect", 4);
                     case "beginPath":
                         return invocation("begin_path", 0);
                     case "moveTo":
@@ -15754,6 +15794,7 @@ class Compiler
         if (!recurring) {
             return { kind: "void", cpp: `bbl::request_animation_frame(${engine}, ${callback})` };
         }
+        this.requireCompatibleFrameConductor("persistent", call);
         const callbacks = this.engineStartMark
             ? "post_render_animation_frame_callbacks"
             : "animation_frame_callbacks";
@@ -15761,6 +15802,15 @@ class Compiler
             kind: "void",
             cpp: `${engine}.${callbacks}.push_back(${callback})`,
         };
+    }
+
+    private frameConductorOwner: "manager" | "persistent" | undefined;
+
+    public requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void {
+        if (this.frameConductorOwner && this.frameConductorOwner !== owner) {
+            this.fail(site, "Autonomous animation managers cannot share a program with a persistent application RAF loop; that loop must retain its source requeue before the two callback orders can compose.");
+        }
+        this.frameConductorOwner = owner;
     }
 
     public emitPlatformEventListener(call: ts.CallExpression): boolean {
@@ -18704,6 +18754,49 @@ class Compiler
     }
 
     /**
+     * A Canvas2D/animation-only entry still needs a platform clock and window.
+     * Its host is declared in the entry preamble, including when first reached
+     * while compiling a callback, so no Babylon scene or engine is fabricated
+     * in the source value model.
+     */
+    public requirePresentationHost(node: ts.Node): string {
+        if (!this.defaultEngineCpp) {
+            if (this.options.workers) {
+                this.fail(node, "Standalone Canvas2D presentation is not lowered in worker realms.");
+            }
+            const name = this.allocateTemporaryCppName("presentation_host");
+            this.presentationHostCpp = name;
+            this.defaultEngineCpp = name;
+            // Preamble storage precedes every closure, even one currently
+            // being compiled. Its capture boundary therefore is entry scope.
+            this.nativeBindings.set(name, {
+                name, sequence: 0, borrowed: true, allowReference: false,
+            });
+        }
+        return this.requireDefaultEngine(node);
+    }
+
+    private primaryPresentationCanvas(node: ts.Node): Value {
+        const engine = this.requirePresentationHost(node);
+        if (!this.presentationCanvasValue) {
+            this.reachFeature("ui:rml", node);
+            this.reachFeature("backend:sdl", node);
+            this.reachFeature("renderer:canvas", node);
+            this.presentationCanvasValue = {
+                kind: "ui-element",
+                cpp: `bbl::ui_primary_canvas(${engine})`,
+                engineCpp: engine,
+                uiTag: "canvas",
+                uiCanvas: true,
+                uiPrimaryCanvas: true,
+                uiCanvasId: this.uiCanvasIds++,
+                truthinessCpp: "true",
+            };
+        }
+        return this.presentationCanvasValue;
+    }
+
+    /**
      * The scene-material manifest recorders live in
      * `compiler/scene-materials.ts`; the context surface the material
      * intrinsics stamp through delegates to one recorder instance, so
@@ -19916,6 +20009,12 @@ class Compiler
     }
 
     private renderCpp(features: Feature[]): string {
+        if (this.presentationHostCpp && !this.presentationCanvasValue) {
+            this.failAtFile("An engine-less animation manager needs a reached primary Canvas2D surface for native presentation.");
+        }
+        if (this.presentationHostCpp && this.defaultEngineCpp !== this.presentationHostCpp) {
+            this.failAtFile("A primary Canvas2D presentation host cannot also acquire a source-created GPU engine.");
+        }
         this.hoistEngineContinuation();
         if (
             this.body.some(
@@ -19961,7 +20060,13 @@ class Compiler
             nativeFunctionDefinitions: this.nativeFunctionDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
             voxelFileStorageReached: this.voxelFileStorageReached,
-            body: this.body,
+            body: this.presentationHostCpp
+                ? [
+                    `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
+                    ...this.body,
+                    `        bbl::start_engine(${this.presentationHostCpp});`,
+                ]
+                : this.body,
         });
     }
 

@@ -1,5 +1,5 @@
-// The Dawn frame driver for a scene that registers sprite renderers and no
-// `SceneContext`.
+// The shared Dawn 2D frame driver: sprite renderers or a primary Canvas2D
+// surface, with no `SceneContext`.
 //
 // The drawing is not here — it is in `pal_dawn_sprite.hpp`, as the two
 // halves of a rendering context, so the scene renderer composes the same
@@ -35,7 +35,7 @@
 
 namespace bbl::pal {
 
-#if BBLITE_HAS_DAWN && BBLITE_HAS_SPRITE_RENDERER
+#if BBLITE_HAS_DAWN && (BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER)
 
 bool run_sprite_dawn_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
@@ -44,17 +44,24 @@ bool run_sprite_dawn_engine(Engine& engine) {
         "Dawn sprites",
         /*supports_single_sample=*/true,
         /*supports_copy_task=*/false);
-    if (engine.registered_sprite_renderers.empty()) {
+    const bool canvas_only = engine.registered_sprite_renderers.empty();
+    if (canvas_only
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+        && engine.primary_canvas.value >= engine.ui_elements.size()
+#endif
+    ) {
         throw std::runtime_error(
-            "Sprite renderer requires a registered SpriteRenderer.");
+            "The 2D frame host requires a sprite renderer or primary Canvas2D surface.");
     }
 
     DawnDevice state;
+#if BBLITE_HAS_SPRITE_RENDERER
     // The pinned mip generator, for an atlas the loader gave a chain.
     DawnMipGenerator mips;
     std::vector<DawnSpritePass> passes;
     std::vector<WGPUTexture> render_textures;
     std::vector<WGPUTextureView> render_texture_views;
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     UiRmlRuntime* ui_runtime = nullptr;
     SpriteUiDawnResources ui_resources;
@@ -65,6 +72,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         destroy_ui_rml_runtime(ui_runtime);
         ui_runtime = nullptr;
 #endif
+#if BBLITE_HAS_SPRITE_RENDERER
         for (DawnSpritePass& pass : passes) {
             release_dawn_sprite_pass(pass);
         }
@@ -75,6 +83,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         for (WGPUTexture texture : render_textures) {
             if (texture) wgpuTextureRelease(texture);
         }
+#endif
         if (state.queue) wgpuQueueRelease(state.queue);
         if (state.device) wgpuDeviceRelease(state.device);
         if (state.adapter) wgpuAdapterRelease(state.adapter);
@@ -100,6 +109,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
             static_cast<std::uint32_t>(engine.options.height));
 #endif
 
+#if BBLITE_HAS_SPRITE_RENDERER
         const auto sync_render_textures = [&]() {
             render_textures.resize(
                 engine.sprite_render_textures.size(), nullptr);
@@ -171,6 +181,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
 
         sync_render_textures();
         sync_renderer_passes();
+#endif
 
         std::uint32_t width =
             static_cast<std::uint32_t>(engine.options.width);
@@ -183,7 +194,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
         const bool benchmark = frame_options.benchmarking();
         const bool mem_profile =
             environment_variable("BBLITE_MEM_PROFILE") == "1";
-        const bool capture_ui = frame_options.capture_ui;
+        const bool capture_ui = frame_options.capture_ui || canvas_only;
         const long warmup = frame_options.benchmark_warmup();
         CaptureGate captures(frame_options, limit, &engine);
         std::vector<double> samples;
@@ -210,7 +221,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 height = state.surface_height;
             }
             input_replay.dispatch(frame, state.window, engine);
-            const double delta_ms = advance_frame(
+            [[maybe_unused]] const double delta_ms = advance_frame(
                 engine,
                 frame_clock,
                 frame_options.frame_delta_ms);
@@ -221,8 +232,10 @@ bool run_sprite_dawn_engine(Engine& engine) {
 #endif
             const double frame_start = monotonic_milliseconds();
 
+#if BBLITE_HAS_SPRITE_RENDERER
             sync_render_textures();
             sync_renderer_passes();
+#endif
 
             WGPUSurfaceTexture surface_texture{};
             wgpuSurfaceGetCurrentTexture(state.surface, &surface_texture);
@@ -234,6 +247,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
 
             // Every context updates before any records, which is the
             // pinned loop's order.
+#if BBLITE_HAS_SPRITE_RENDERER
             for (DawnSpritePass& pass : passes) {
                 // `spriteRendererUpdate` runs the renderer's own hooks
                 // first, so one that moves a sprite or a layer is seen by
@@ -261,9 +275,23 @@ bool run_sprite_dawn_engine(Engine& engine) {
                     height,
                     delta_ms);
             }
+#endif
 
             WGPUCommandEncoder encoder =
                 wgpuDeviceCreateCommandEncoder(state.device, nullptr);
+            if (canvas_only) {
+                WGPURenderPassColorAttachment target = WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
+                target.view = surface_view;
+                target.loadOp = WGPULoadOp_Clear;
+                target.storeOp = WGPUStoreOp_Store;
+                WGPURenderPassDescriptor descriptor = WGPU_RENDER_PASS_DESCRIPTOR_INIT;
+                descriptor.colorAttachmentCount = 1;
+                descriptor.colorAttachments = &target;
+                WGPURenderPassEncoder pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+                wgpuRenderPassEncoderEnd(pass);
+                wgpuRenderPassEncoderRelease(pass);
+            }
+#if BBLITE_HAS_SPRITE_RENDERER
             for (std::size_t first_index = 0;
                  first_index < passes.size();) {
                 const SpriteRendererRecord& first_renderer =
@@ -310,6 +338,7 @@ bool run_sprite_dawn_engine(Engine& engine) {
                 wgpuRenderPassEncoderRelease(render_pass);
                 first_index = end_index;
             }
+#endif
 
             const bool capture_frame =
                 frame >= frame_options.screenshot_frame &&

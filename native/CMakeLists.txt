@@ -516,7 +516,8 @@ if(BBLITE_BACKEND_DAWN)
         bblite_native
         PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn.cpp"
     )
-    if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES)
+    if("renderer:sprite" IN_LIST BBLITE_RUNTIME_FEATURES OR
+       "renderer:canvas" IN_LIST BBLITE_RUNTIME_FEATURES)
         target_sources(
             bblite_native
             PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_dawn_sprite.cpp"
@@ -708,6 +709,12 @@ else()
         bblite_native
         PRIVATE BBLITE_HAS_SPRITE_RENDERER=0
     )
+endif()
+
+if("renderer:canvas" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_CANVAS_RENDERER=1)
+else()
+    target_compile_definitions(bblite_native PRIVATE BBLITE_HAS_CANVAS_RENDERER=0)
 endif()
 
 if("renderer:effect" IN_LIST BBLITE_RUNTIME_FEATURES)

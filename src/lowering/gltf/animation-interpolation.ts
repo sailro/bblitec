@@ -20,6 +20,7 @@ import {
 
 /** C++ precedence for the expression subset the pinned leaves use. */
 export const cppPrecedence = {
+    conditional: 0,
     logicalOr: 1,
     logicalAnd: 2,
     equality: 3,
@@ -103,6 +104,18 @@ export function renderCppExpression(
             precedence: cppPrecedence.primary,
         };
     }
+    if (expression.kind === ts.SyntaxKind.TrueKeyword || expression.kind === ts.SyntaxKind.FalseKeyword) {
+        return { text: expression.kind === ts.SyntaxKind.TrueKeyword ? "true" : "false", precedence: cppPrecedence.primary };
+    }
+    if (ts.isConditionalExpression(expression)) {
+        const condition = renderCppExpression(scope, expression.condition);
+        const whenTrue = renderCppExpression(scope, expression.whenTrue);
+        const whenFalse = renderCppExpression(scope, expression.whenFalse);
+        return {
+            text: `${renderCppOperand(condition, cppPrecedence.logicalOr)} ? ${whenTrue.text} : ${whenFalse.text}`,
+            precedence: cppPrecedence.conditional,
+        };
+    }
     if (ts.isIdentifier(expression)) {
         const substituted = scope.substitutions?.get(expression.text);
         if (substituted) return substituted;
@@ -161,6 +174,9 @@ export function renderCppExpression(
         }
         return scope.elementRead(expression);
     }
+    if (ts.isPropertyAccessExpression(expression) && scope.propertyRead) {
+        return scope.propertyRead(expression);
+    }
     if (ts.isCallExpression(expression)) {
         const math = pinnedMathCall(expression);
         if (math) {
@@ -173,6 +189,7 @@ export function renderCppExpression(
             };
         }
         const callee = expression.expression;
+        if (scope.callRead) return scope.callRead(expression);
         refuseNode(
             scope.symbol,
             scope.file,

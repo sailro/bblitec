@@ -1728,6 +1728,8 @@ export interface Value {
   uiRoot?: true;
   /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
   uiCanvas?: true;
+  /** The native presentation host's primary browser canvas. */
+  uiPrimaryCanvas?: true;
   /**
    * Generation identity of one created canvas element, carried unchanged
    * into its 2D-context views and const bindings (whose `cpp` spellings
@@ -2315,7 +2317,7 @@ export interface Value {
     | { kind: "number"; value: number }
     | { kind: "null" }
     | { kind: "dom-rect" }
-    | { kind: "object" }
+    | { kind: "object"; primaryCanvas?: true }
     | { kind: "search-params"; search: string }
     | { kind: "string"; value: string };
   cameraKind?: "arc-rotate" | "free" | "geospatial";
@@ -2545,6 +2547,7 @@ export type Feature =
   | "sprite:billboard-cutout"
   | "sprite:billboard-custom-shader"
   | "renderer:sprite"
+  | "renderer:canvas"
   | "renderer:effect"
   | "frame-graph:resources"
   | "renderer:frame-graph"

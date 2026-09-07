@@ -141,6 +141,7 @@ void ui_on_event(
     std::function<void(const PlatformMouseEvent&)> callback);
 
 /** Bounded Canvas2D command IR used by retained UI canvas elements. */
+UiElementHandle ui_primary_canvas(Engine&);
 void ui_canvas_set_width(Engine&, UiElementHandle, double);
 void ui_canvas_set_height(Engine&, UiElementHandle, double);
 double ui_canvas_width(Engine&, UiElementHandle);
@@ -152,6 +153,7 @@ void ui_canvas_set_line_join(Engine&, UiElementHandle, std::string);
 void ui_canvas_set_line_cap(Engine&, UiElementHandle, std::string);
 void ui_canvas_scale(Engine&, UiElementHandle, double, double);
 void ui_canvas_clear_rect(Engine&, UiElementHandle, double, double, double, double);
+void ui_canvas_fill_rect(Engine&, UiElementHandle, double, double, double, double);
 void ui_canvas_begin_path(Engine&, UiElementHandle);
 void ui_canvas_move_to(Engine&, UiElementHandle, double, double);
 void ui_canvas_line_to(Engine&, UiElementHandle, double, double);

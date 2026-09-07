@@ -260,7 +260,7 @@ namespace {
 // EffectRenderer each register on the engine rather than on a scene, so a
 // scene registering one and no SceneContext generates no render plan and
 // draws from that context's own translation unit instead.
-enum class RendererKind { scene, sprites, effects, frame_graph };
+enum class RendererKind { scene, sprites, canvas, effects, frame_graph };
 
 RendererKind renderer_kind(const Engine& engine) {
     if (!engine.registered_scenes.empty()) return RendererKind::scene;
@@ -273,12 +273,18 @@ RendererKind renderer_kind(const Engine& engine) {
     if (!engine.registered_sprite_renderers.empty()) {
         return RendererKind::sprites;
     }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+    if (engine.primary_canvas.value < engine.ui_elements.size()) {
+        return RendererKind::canvas;
+    }
+#endif
     return RendererKind::scene;
 }
 
 const char* renderer_name(RendererKind kind) {
     switch (kind) {
         case RendererKind::sprites: return "A sprite renderer";
+        case RendererKind::canvas: return "A Canvas2D surface";
         case RendererKind::effects: return "An effect renderer";
         case RendererKind::frame_graph: return "A frame graph";
         case RendererKind::scene: break;
@@ -294,6 +300,7 @@ const char* renderer_name(RendererKind kind) {
 bool run_sdl_gpu(Engine& engine, RendererKind kind) {
     switch (kind) {
         case RendererKind::sprites:
+        case RendererKind::canvas:
             return pal::run_sprite_gpu_engine(engine);
         case RendererKind::effects:
             return pal::run_effect_gpu_engine(engine);
@@ -307,6 +314,7 @@ bool run_sdl_gpu(Engine& engine, RendererKind kind) {
 bool run_dawn(Engine& engine, RendererKind kind) {
     switch (kind) {
         case RendererKind::sprites:
+        case RendererKind::canvas:
             return pal::run_sprite_dawn_engine(engine);
         case RendererKind::effects:
             return pal::run_effect_dawn_engine(engine);

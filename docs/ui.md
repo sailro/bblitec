@@ -81,7 +81,7 @@ elements refuse.
 ## Canvas2D
 
 The retained slice includes backing dimensions, a 2D context, scale,
-provably full-surface clear, paths (move/line/close/arcTo/arc), reached fill and
+provably full-surface clear, fillRect, paths (move/line/close/arcTo/arc), reached fill and
 stroke state, putImageData, canvas-to-canvas destination-rectangle drawImage,
 sampling intent and bounded fillText.
 
@@ -90,6 +90,19 @@ The IR carries element handles and sampling state, not GPU objects.
 Partial clear, source-rectangle blits, general text shaping/clipping,
 arbitrary transforms and general non-convex tessellation are unsupported.
 Geometry is tessellated from the retained command stream for each draw frame.
+
+An engine-less entry can present the primary `renderCanvas` through this same
+IR. Its private platform host supplies window size, input, the RAF clock and
+both GPU backends without creating a Babylon scene. Primary client dimensions
+stay live across resize; backing dimensions retain the source's reset behavior.
+Combining primary Canvas2D ownership with a source-created GPU engine refuses.
+
+Rectangles normalize negative extents, apply the retained scale and clip to
+the backing surface without changing the current path. Fractional boundaries
+use backing-pixel area coverage before CSS layout scaling. A full opaque
+rectangle retires covered commands, bounding repeated full redraws; partial
+or translucent rectangles preserve earlier drawing. Browser texture-producing
+canvases retain their existing executed materialization route.
 
 ## CSS, layout, and fonts
 
