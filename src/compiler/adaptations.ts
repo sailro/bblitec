@@ -43,6 +43,22 @@ export function compileAdaptations(
     features: Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
+    if (features.includes("material:local-cubemap")) {
+        adaptations.push({
+            id: "static-local-cubemap-packets", category: "asset-materialization", risk: "medium",
+            sourceSemantics: "Local environment setters and probe construction create per-material uniforms, grid buffers and cube-array resources at runtime.",
+            nativeSemantics: "Static pre-registration configuration executes the pinned setters, validation, packers and UBO writer during generation. Native materials retain independent environment identities and replay the recorded texture copies. Live reconfiguration refuses. SDL transports the unchanged 64 KiB probe uniform as read-only storage because its push-uniform limit is 16 KiB; Dawn retains the uniform binding.",
+            validation: ["local cubemap packing and ownership tests", "scene186 differential parity and camera observations"],
+        });
+    }
+    if (features.includes("renderer:surface")) {
+        adaptations.push({
+            id: "retained-canvas-surfaces", category: "platform", risk: "medium",
+            sourceSemantics: "Each canvas has its own swapchain, scene targets, projection and pointer controls on a shared device.",
+            nativeSemantics: "Scene targets follow retained host canvas rectangles and are composed into one OS window. Mouse capture remains with the canvas where the drag began. Reviewed host companions provide layout and labels; native target resize follows layout each frame.",
+            validation: ["surface admission tests", "scene227 and scene228 full-page/canvas gates and independent camera/resize replay"],
+        });
+    }
     if (features.includes("platform:workers")) {
         adaptations.push({
             id: "native-dedicated-worker-realms", category: "platform", risk: "medium",

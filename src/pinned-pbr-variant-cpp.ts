@@ -74,6 +74,7 @@ const baseWriter = {
 } as const;
 
 const extensionWriters: ReadonlyArray<{
+    kind?: "ast";
     modulePath: string;
     symbolName: string;
     sourceLocal: string;
@@ -87,7 +88,8 @@ const extensionWriters: ReadonlyArray<{
             (baseName: string) => Readonly<Record<string, string | null>>
         >
     >;
-}> = [
+} | {kind: "packet"; baseField: string; recordField: string}> = [
+    {kind: "packet", baseField: "localEnvironmentMode", recordField: "local_environment"},
     {
         modulePath: "src/material/pbr/fragments/clearcoat-fragment.ts",
         symbolName: "writeClearcoatUBO",
@@ -557,6 +559,7 @@ interface VariantBinding {
         | "texture2dLoad"
         | "texture2dUint"
         | "textureCube"
+        | "textureCubeArray"
         // The shadow receiver's three: a PCF map is a depth texture read
         // through a comparison sampler, an ESM map an ordinary float one
         // read through an ordinary sampler, a CSM map a LAYERED depth one
@@ -680,6 +683,8 @@ function textureBindingKind(
     switch (type) {
         case "texture_cube<f32>":
             return "textureCube";
+        case "texture_cube_array<f32>":
+            return "textureCubeArray";
         // A cascaded receiver's map: the same depth sample type as
         // `texture_depth_2d`, bound through a layered view whose layer the
         // fragment selects per cascade.
@@ -1301,6 +1306,7 @@ enum class PinnedBindingKind {
     // sample type WebGPU names Uint rather than UnfilterableFloat.
     texture2dUint,
     textureCube,
+    textureCubeArray,
     // The shadow receiver's three: a PCF map is a depth texture read through
     // a comparison sampler, an ESM one an ordinary float texture read
     // through an ordinary sampler, a CSM one a layered depth texture -- and
@@ -1482,6 +1488,12 @@ export function pinnedPbrVariantsHeader(
         const reached = extensionWriters.filter((extension) =>
             slots.some((slot) => slot.name === extension.baseField)
         );
+        const writerFields = new Map<string, UboFieldSlot[]>(reached.map(extension => [extension.baseField, []]));
+        let currentWriter: UboFieldSlot[] | undefined;
+        for (const slot of slots) {
+            currentWriter = writerFields.get(slot.name) ?? currentWriter;
+            currentWriter?.push(slot);
+        }
         // Every field the variant declares has to be filled by some writer. A
         // field with none uploads a zero, which is the exact failure mode this
         // path exists to remove: the fragment compiles, binds and draws, and one
@@ -1494,9 +1506,7 @@ export function pinnedPbrVariantsHeader(
         // declaration order, which is how the pin partitions them too.
         {
             const covered = new Set<string>();
-            const bases = [
-                ...reached.map((extension) => extension.baseField),
-            ];
+            const bases = [...writerFields.keys()];
             let owner = "base";
             for (const slot of slots) {
                 if (bases.includes(slot.name)) owner = slot.name;
@@ -1533,8 +1543,20 @@ export function pinnedPbrVariantsHeader(
             }
         }
         const lowered = reached
-            .map((extension) =>
-                `// ${extension.modulePath} ${extension.symbolName}\n` +
+            .map((extension) => {
+                if (extension.kind === "packet") {
+                    return `// Fields produced by the executed pinned extension writer.\n` +
+                        `inline void write_${name}_${extension.baseField.replace(/\W+/g, "_")}(\n` +
+                        `    const MaterialRecord& material, [[maybe_unused]] const TextureTransform& transform,\n` +
+                        `    ${name}MaterialUniforms& out) {\n` +
+                        `    if (!material.${extension.recordField}) throw std::runtime_error("Material has no compiled extension packet.");\n` +
+                        writerFields.get(extension.baseField)!.map(field => `    {
+        const auto& field = material.${extension.recordField}->material_fields.at("${field.name}");
+        if (field.size() != ${field.lanes}) throw std::runtime_error("Compiled material field layout changed.");
+        std::memcpy(reinterpret_cast<std::uint8_t*>(&out) + ${field.offset}, field.data(), ${field.lanes} * sizeof(float));
+    }`).join("\n") + "\n}";
+                }
+                return `// ${extension.modulePath} ${extension.symbolName}\n` +
                 // Named after the field the writer starts at, not the symbol:
                 // several extensions expose their writer as `pbrExt.writeUbo`
                 // on their own literal, so the symbol is not unique within a
@@ -1568,8 +1590,8 @@ export function pinnedPbrVariantsHeader(
                             ? { nestedWriters: extension.nestedWriters }
                             : {}),
                     }).join("\n")
-                }\n}`
-            );
+                }\n}`;
+            });
         let writer: string;
         try {
             // The pin's own `_writeMaterialData`, lowered like every extension
@@ -2042,6 +2064,7 @@ inline std::size_t pbr_variant_for(
 
 /** Which slot groups a scene compiles, mirroring the render capabilities. */
 export interface MaterialTextureSlotFeatures {
+    localCubemap?: boolean;
     transmission: boolean;
     clearcoat: boolean;
     sheen: boolean;
@@ -2324,6 +2347,8 @@ function materialTextureSlotRows(
             samplerName: "brdfSampler_",
         },
     ];
+    if (features.localCubemap) state.push({source: "local_probe_cube", srgb: "linear", fallback: "white",
+        textureName: "localProbeTexture", samplerName: "localProbeSampler"});
     if (features.transmission) {
         state.push({
             source: "scene_color",
@@ -2421,28 +2446,23 @@ export function materialTextureSlotsHeader(
     variants: readonly { vertexWgsl: string; fragmentWgsl: string }[],
     provenance: string,
 ): string {
-    const { mesh, state } = materialTextureSlotRows(features);
+    const bindings = variants.flatMap(variant => variantBindings(variant.vertexWgsl, variant.fragmentWgsl));
+    const { mesh, state } = materialTextureSlotRows({...features,
+        localCubemap: bindings.some(binding => binding.name === "localProbeTexture")});
     const served = new Set<string>();
     for (const row of [...mesh, ...state]) {
         if (row.textureName !== "") served.add(row.textureName);
         if (row.samplerName !== "") served.add(row.samplerName);
     }
     const unserved = new Set<string>();
-    for (const variant of variants) {
-        for (
-            const binding of variantBindings(
-                variant.vertexWgsl,
-                variant.fragmentWgsl,
-            )
+    for (const binding of bindings) {
+        if (
+            binding.kind === "storageBuffer" ||
+            binding.kind === "uniformBuffer"
         ) {
-            if (
-                binding.kind === "storageBuffer" ||
-                binding.kind === "uniformBuffer"
-            ) {
-                continue;
-            }
-            if (!served.has(binding.name)) unserved.add(binding.name);
+            continue;
         }
+        if (!served.has(binding.name)) unserved.add(binding.name);
     }
     if (unserved.size > 0) {
         throw new Error(
@@ -2531,6 +2551,7 @@ enum class MaterialTextureSource {
     // Scene-owned resources the pinned bindings also name: no mesh slot,
     // no record field -- each backend resolves these from its own state.
     environment_cube,
+    local_probe_cube,
     brdf_lut,
     /** The transmission scene-colour grab the pin refracts through. */
     scene_color,

@@ -24,6 +24,7 @@ import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import type { CompiledTextData, TextFontSource } from "../pinned-text-data.js";
 import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
+import type { LocalCubemapPlan } from "../pinned-local-cubemap.js";
 
 export type {
   NativeHostUiClassStyle,
@@ -575,6 +576,7 @@ export interface ScenePbrMetallicReflectanceManifest {
 }
 
 export interface ScenePbrMaterialManifest {
+  localCubemapCandidates?: number;
   /**
    * How many scene-code materials of any family the program had created
    * when this one was, so the runtime handle is
@@ -1302,6 +1304,8 @@ export type ValueKind =
   | "color4"
   | "data"
   | "engine"
+  | "environment-textures"
+  | "pbr-local-probe-set"
   // A captured browser GPUDevice exists only so a structurally recognized
   // thin-instance upload helper can be replaced as a unit. No generic raw
   // device operation is part of the compiled surface.
@@ -1744,6 +1748,12 @@ export interface Value {
   nativeCompanionCaptures?: Partial<Record<NativeCompanionKey, readonly NativeCaptureBinding[]>>;
   /** Generation-known tag for scene-created retained DOM elements. */
   uiTag?: string;
+  /** Audited host lookup whose native storage is initialized after engine creation. */
+  uiHostId?: string;
+  /** This engine/surface/scene presents into a retained host canvas. */
+  surfaceCanvas?: true;
+  environmentAsset?: CompileAsset;
+  localCubemap?: {plan: LocalCubemapPlan; environments: Value[]};
   /** The live DOMStringMap view returned by an element's `dataset`. */
   uiDataset?: true;
   /**
@@ -2430,6 +2440,8 @@ export type Feature =
   | "material:pbr-gamma-albedo"
   | "material:iridescence"
   | "material:lightmap"
+  | "material:local-cubemap"
+  | "renderer:surface"
   | "material:anisotropy"
   | "material:metallic-reflectance"
   | "material:tracking"

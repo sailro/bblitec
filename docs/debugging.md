@@ -77,11 +77,13 @@ when a missing small object or changed buffer could pass an image gate.
 | TAA | `check-scene261-input.mjs`: frozen/live observations, history and camera state. |
 | Text | `check-scene275-input.mjs`: operation observations for scene/shared/blend fixtures. |
 | Node geometry | `check-scene149-input.mjs`: browser orbit/resize observations. Live browser resize throws error84; compare unchanged-module startup at resized dimensions. |
+| Local cubemaps | `check-scene186-input.mjs`: native camera, idle and resize captures; eight faces and four reflective ORM replacements on both backends. |
+| Shared-engine canvases | `check-surface-input.mjs`: scenes 227/228 left/right drags, divider-crossing capture, idle isolation and geometry after resize. |
 | Worker windows | `check-offscreen-window.mjs`: held presses, worker progress, resize, shutdown. |
 | Physics timing | `check-break-meshes-timing.mjs`: unchanged fixed overrides and live timing. |
 | KHR_interactivity | `check-calculator-input.mjs [calculator\|scene304]`: press control, "7" then "x" taps at the scene's golden pose; display digits and dispatched nodes by name on both backends. |
 
-Scripts are under `tools/`. Scene checkers take the executable, generated
+Scripts are under `tools/`. Checkers use scene defaults or take an executable, generated
 directory and saved browser observations; see each script's usage. Build its
 matching source first. A registry `nativeEnvironment` carries
 `BBLITE_SCREENSHOT_FRAME` beside its clock; a checker spreads it before its own

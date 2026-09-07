@@ -482,9 +482,12 @@ export function compileSceneIntrinsic(
                 call.arguments[0]!,
             );
             context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
+            const defaultTask = scene.surfaceCanvas ? context.ensureDefaultRenderTask(scene, call) : undefined;
             return {
                 kind: "void",
-                cpp: `bbl::register_scene(${scene.cpp})`,
+                cpp: defaultTask
+                    ? `${defaultTask.setup};\n        bbl::register_scene(${defaultTask.sceneCpp})`
+                    : `bbl::register_scene(${scene.cpp})`,
             };
         }
 

@@ -187,6 +187,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["material:pbr"],
     },
     {
+        source: "upstream/src/local_cubemap.cpp",
+        features: ["material:local-cubemap"],
+    },
+    {
         source: "upstream/src/material_views.cpp",
         features: ["material:no-color-view"],
     },

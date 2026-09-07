@@ -1630,6 +1630,8 @@ struct RenderTargetRecord {
     std::uint32_t depth_layers = 1;
     /** Which pinned rounding sizes this target from `scale_source`. */
     ScaleRounding scale_rounding = ScaleRounding::floor;
+    /** Canvas-sized default graph targets inherit their scene's surface. */
+    std::optional<UiElementHandle> surface_canvas{};
 };
 
 /** The pin's mixed cache tuple, named by its seven identity/value inputs. */
@@ -3085,7 +3087,22 @@ struct TextureTransform {
     float rotation = 0.0f;
 };
 
+struct EnvironmentState;
+struct LocalCubemapRecord {
+    struct Copy {
+        std::uint32_t source, source_mip, source_layer, mip, layer, size;
+    };
+    std::vector<std::shared_ptr<const EnvironmentState>> environments;
+    std::vector<std::uint32_t> uniform_data;
+    std::vector<std::uint32_t> grid_data;
+    std::unordered_map<std::string, std::vector<float>> material_fields;
+    std::vector<Copy> copies;
+    std::uint32_t width = 0, mip_count = 0, layers = 0;
+    bool overrides_environment = false;
+};
+
 struct MaterialRecord {
+    std::shared_ptr<LocalCubemapRecord> local_environment;
     /** Material.name, copied from the authored asset when one exists. */
     std::string name;
     Color3 diffuse_color{};
@@ -4503,6 +4520,8 @@ struct Engine {
     std::vector<UiElementRecord> ui_elements;
     /** The primary 2D canvas, when this engine is only a platform host. */
     UiElementHandle primary_canvas{};
+    /** Retained canvas of the engine's primary GPU surface, when hosted in a page. */
+    std::optional<UiElementHandle> surface_canvas;
     UiElementHandle ui_focused_element{};
     std::uint64_t ui_focus_revision = 0;
     bool ui_focus_visible = true;
@@ -5885,7 +5904,9 @@ void update_scene_skeleton_bone_matrices(
     SceneSkeletonHandle skeleton,
     const std::vector<float>& bone_data);
 AssetHandle load_babylon(Engine& engine, const std::string& path);
-void load_environment(Scene& scene, EnvironmentOptions options);
+std::shared_ptr<const EnvironmentState> load_environment(Scene& scene, EnvironmentOptions options);
+std::shared_ptr<LocalCubemapRecord> load_local_cubemap(
+    const std::string& path, std::vector<std::shared_ptr<const EnvironmentState>> environments);
 void add_dds_environment_background(
     Scene& scene,
     DdsEnvironmentBackgroundOptions options);

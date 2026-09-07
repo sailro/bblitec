@@ -902,6 +902,24 @@ struct DawnState : DawnDevice {
     std::vector<WGPUTexture> reflection_cubes;
     std::vector<WGPUTextureView> reflection_cube_views;
     WGPUTexture environment_cube = nullptr;
+#if BBLITE_LOCAL_CUBEMAP
+    struct LocalCubemap {
+        std::shared_ptr<const LocalCubemapRecord> source;
+        WGPUTexture texture = nullptr;
+        WGPUTextureView array_view = nullptr;
+        WGPUTextureView cube_view = nullptr;
+        WGPUBuffer uniform = nullptr;
+        WGPUBuffer grid = nullptr;
+        ~LocalCubemap() {
+            if (array_view) wgpuTextureViewRelease(array_view);
+            if (cube_view) wgpuTextureViewRelease(cube_view);
+            if (texture) wgpuTextureRelease(texture);
+            if (uniform) wgpuBufferRelease(uniform);
+            if (grid) wgpuBufferRelease(grid);
+        }
+    };
+    std::unordered_map<const LocalCubemapRecord*, std::unique_ptr<LocalCubemap>> local_cubemaps;
+#endif
     WGPUTextureView environment_cube_view = nullptr;
     WGPUTexture brdf_texture = nullptr;
     WGPUTextureView brdf_view = nullptr;
@@ -2168,6 +2186,9 @@ struct DawnState : DawnDevice {
         if (msaa_color) wgpuTextureRelease(msaa_color);
         if (surface) wgpuSurfaceRelease(surface);
         if (queue) wgpuQueueRelease(queue);
+#if BBLITE_LOCAL_CUBEMAP
+        local_cubemaps.clear();
+#endif
         if (device) wgpuDeviceRelease(device);
         if (adapter) wgpuAdapterRelease(adapter);
         if (instance) wgpuInstanceRelease(instance);
@@ -2996,6 +3017,8 @@ WGPUBindGroupLayoutEntry variant_layout_entry(
             layout_entry.texture.viewDimension =
                 binding.kind == upstream::PinnedBindingKind::textureCube
                     ? WGPUTextureViewDimension_Cube
+                    : binding.kind == upstream::PinnedBindingKind::textureCubeArray
+                    ? WGPUTextureViewDimension_CubeArray
                     : WGPUTextureViewDimension_2D;
             break;
     }
@@ -3201,15 +3224,15 @@ WGPUTexture upload_reflection_cube(
 // Upload the environment cubemap exactly as the browser does: rgba16f
 // faces with pre-baked mips, uploaded unflipped (the SDL_GPU vertical
 // reversal is an SDL-only adaptation).
-void upload_environment(DawnState& state, const EnvironmentState& environment) {
+WGPUTexture create_environment_texture(DawnState& state, const EnvironmentState& environment, std::uint32_t layers = 6) {
     const bool has_environment = environment_cube_present(environment);
-    if (!has_environment) return;
+    if (!has_environment) return nullptr;
     const std::uint32_t width = environment.specular_width;
     const std::uint32_t mip_count = environment.specular_mip_count;
     WGPUTextureDescriptor descriptor = WGPU_TEXTURE_DESCRIPTOR_INIT;
     descriptor.usage =
         WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst;
-    descriptor.size = {width, width, 6};
+    descriptor.size = {width, width, layers};
     descriptor.format = WGPUTextureFormat_RGBA16Float;
     descriptor.mipLevelCount = mip_count;
     WGPUTexture texture =
@@ -3217,10 +3240,10 @@ void upload_environment(DawnState& state, const EnvironmentState& environment) {
     if (!texture) dawn_error("wgpuDeviceCreateTexture environment");
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
         const std::uint32_t mip_width = std::max(width >> mip, 1u);
-        for (std::uint32_t face = 0; face < 6; ++face) {
+        for (std::uint32_t face = 0; face < layers; ++face) {
             const TextureData& face_data =
                 environment.specular_faces[
-                    static_cast<std::size_t>(mip) * 6 + face];
+                    static_cast<std::size_t>(mip) * layers + face];
             std::vector<std::uint16_t> half_pixels;
             const std::uint8_t* source_bytes = nullptr;
             std::size_t byte_size = 0;
@@ -3278,6 +3301,12 @@ void upload_environment(DawnState& state, const EnvironmentState& environment) {
                 &size);
         }
     }
+    return texture;
+}
+
+void upload_environment(DawnState& state, const EnvironmentState& environment) {
+    const auto texture = create_environment_texture(state, environment);
+    if (!texture) return;
     if (state.environment_cube_view) {
         wgpuTextureViewRelease(state.environment_cube_view);
     }
@@ -3292,6 +3321,32 @@ void upload_environment(DawnState& state, const EnvironmentState& environment) {
     state.environment_cube_view =
         wgpuTextureCreateView(texture, &view_descriptor);
 }
+
+#if BBLITE_LOCAL_CUBEMAP
+DawnState::LocalCubemap* ensure_local_cubemap(DawnState& state, const MaterialRecord* material) {
+    if (!material || !material->local_environment) return nullptr;
+    const auto& source = material->local_environment;
+    if (const auto found = state.local_cubemaps.find(source.get()); found != state.local_cubemaps.end()) return found->second.get();
+    auto gpu = std::make_unique<DawnState::LocalCubemap>();
+    gpu->source = source;
+    gpu->texture = create_environment_texture(state, local_cubemap_texture(*source), source->layers);
+    if (!gpu->texture) dawn_error("Local cubemap texture upload failed.");
+    WGPUTextureViewDescriptor view = WGPU_TEXTURE_VIEW_DESCRIPTOR_INIT;
+    view.dimension = WGPUTextureViewDimension_CubeArray;
+    view.arrayLayerCount = source->layers;
+    gpu->array_view = wgpuTextureCreateView(gpu->texture, &view);
+    if (source->overrides_environment) {
+        view.dimension = WGPUTextureViewDimension_Cube;
+        view.arrayLayerCount = 6;
+        gpu->cube_view = wgpuTextureCreateView(gpu->texture, &view);
+    }
+    gpu->uniform = create_buffer(state, WGPUBufferUsage_Uniform, source->uniform_data.data(), source->uniform_data.size() * sizeof(std::uint32_t));
+    gpu->grid = create_buffer(state, WGPUBufferUsage_Storage, source->grid_data.data(), source->grid_data.size() * sizeof(std::uint32_t));
+    auto* result = gpu.get();
+    state.local_cubemaps.emplace(source.get(), std::move(gpu));
+    return result;
+}
+#endif
 
 void upload_brdf(DawnState& state, const EnvironmentState& environment) {
     std::vector<std::uint16_t> half_pixels;
@@ -3432,7 +3487,8 @@ void create_frame_graph_textures(
     if (
         state.render_targets.size() == engine.render_targets.size() &&
         state.frame_graph_width == width &&
-        state.frame_graph_height == height) {
+        state.frame_graph_height == height &&
+        !surface_targets_changed(engine, state.render_targets, width, height)) {
         return;
     }
     state.release_frame_graph_textures();
@@ -3451,8 +3507,7 @@ void create_frame_graph_textures(
         ++index) {
         const RenderTargetRecord& record = engine.render_targets[index];
         DawnRenderTarget& target = state.render_targets[index];
-        target.width = record.width > 0 ? record.width : width;
-        target.height = record.height > 0 ? record.height : height;
+        std::tie(target.width, target.height) = surface_target_extent(engine, record, width, height);
         // A composite's intermediate takes a fraction of whatever its
         // source resolved to. Creation order guarantees that source is
         // already sized: `create_render_target` refuses a forward reference.
@@ -4154,10 +4209,19 @@ struct PinnedResource {
 PinnedResource pinned_resource_for(
     DawnState& state,
     const DawnMesh& mesh,
-    std::string_view name) {
+    std::string_view name,
+    [[maybe_unused]] const MaterialRecord* material = nullptr) {
     const upstream::MaterialTextureSlot* slot =
         material_slot_for_binding(name);
     if (slot != nullptr) {
+#if BBLITE_LOCAL_CUBEMAP
+        if (material && material->local_environment) {
+            const auto& local = *state.local_cubemaps.at(material->local_environment.get());
+            if (slot->source == upstream::MaterialTextureSource::local_probe_cube) return {local.array_view, state.default_sampler};
+            if (slot->source == upstream::MaterialTextureSource::environment_cube && local.source->overrides_environment)
+                return {local.cube_view, state.default_sampler};
+        }
+#endif
         if (slot->slot != upstream::material_texture_no_slot) {
             // The material's own textures, in the generated slot order the
             // upload loop fills.
@@ -4439,6 +4503,9 @@ WGPUBindGroup build_pinned_draw_group(
     // The material this group is built for, whose ESM caster view names the
     // generator its `shadowParams` block belongs to.
     [[maybe_unused]] const MaterialRecord* material = nullptr) {
+#if BBLITE_LOCAL_CUBEMAP
+    const auto* local_cubemap = ensure_local_cubemap(state, material);
+#endif
     const upstream::PbrVariantEntry& entry = upstream::pbr_variants[variant];
     std::vector<WGPUBindGroupEntry> entries;
     entries.reserve(2 + entry.binding_count);
@@ -4457,6 +4524,15 @@ WGPUBindGroup build_pinned_draw_group(
             upstream::pbr_variant_bindings[entry.first_binding + index];
         WGPUBindGroupEntry group_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         group_entry.binding = binding.binding;
+#if BBLITE_LOCAL_CUBEMAP
+        if (local_cubemap && (binding.name == "localProbeData" || binding.name == "localProbeGrid")) {
+            const bool uniform = binding.name == "localProbeData";
+            group_entry.buffer = uniform ? local_cubemap->uniform : local_cubemap->grid;
+            group_entry.size = (uniform ? local_cubemap->source->uniform_data.size() : local_cubemap->source->grid_data.size()) * sizeof(std::uint32_t);
+            entries.push_back(group_entry);
+            continue;
+        }
+#endif
         if (binding.kind == upstream::PinnedBindingKind::uniformBuffer) {
 #if BBLITE_SHADOWS_ESM
             // The ESM caster's own block, from the generator its view was
@@ -4540,7 +4616,7 @@ WGPUBindGroup build_pinned_draw_group(
             continue;
         }
         const PinnedResource resource =
-            pinned_resource_for(state, mesh, binding.name);
+            pinned_resource_for(state, mesh, binding.name, material);
         if (binding.kind == upstream::PinnedBindingKind::sampler) {
             group_entry.sampler = resource.sampler;
         } else {
@@ -12559,6 +12635,7 @@ SceneRun run_dawn_engine(Engine& engine) {
     bool running = true;
     long frame = 0;
     CameraPointerState pointer_state;
+    SurfaceCameraPointerState surface_pointer_state;
     CameraTraceState camera_trace_state;
     PlatformInputReplay input_replay;
     // Caller-owned scratch for the custom-shader stage blocks: the packer
@@ -12574,7 +12651,7 @@ SceneRun run_dawn_engine(Engine& engine) {
     // in a deterministic test pass.
     const auto camera_pointer_hook = [&](const SDL_Event& event) {
         if (hidden_test_pass) return;
-        handle_camera_pointer_event(event, camera, pointer_state);
+        dispatch_surface_camera_pointer(engine, event, camera, pointer_state, surface_pointer_state);
     };
 #if BBLITE_OFFSCREEN_SURFACES
     auto* offscreen = OffscreenRun::current();
@@ -13099,7 +13176,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         }
         const double uploaded =
             cpu_profile ? monotonic_milliseconds() : 0.0;
-        update_camera(camera);
+        update_surface_cameras(engine, camera);
         trace_camera_state(camera, camera_trace_state, frame);
         upstream::sort_transparent_draws(
             render_plan.draw_lists.transparent,

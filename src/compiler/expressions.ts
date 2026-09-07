@@ -10,6 +10,7 @@
 // native functions, user functions) is the resolution order a call site
 // observes.
 import ts from "typescript";
+import {isHandleKind} from "./data-types.js";
 
 import { doubleLiteral } from "../cpp-literals.js";
 import {
@@ -2443,6 +2444,11 @@ export class ExpressionLowerer {
      */
     private laneValue(expression: ts.Expression): Value {
         const value = this.compileValue(expression);
+        // Array/object members retain the result of a resource-producing call.
+        // Reusing the member must never execute its factory again.
+        if (isHandleKind(value.kind) && containsEvaluatedCall(expression) && !value.nativeBinding) {
+            return this.context.pinValueToTemporary(value, "resource_member", expression);
+        }
         if (
             value.kind !== "number" ||
             value.staticNumber !== undefined
@@ -3227,6 +3233,20 @@ export class ExpressionLowerer {
                 callee.expression,
             );
             if (staticOwner) {
+                if (staticOwner.kind === "tuple" && callee.name.text === "flat") {
+                    this.context.expectArgumentCount(call, 0, 1);
+                    const depth = call.arguments[0] ? staticNumberValue(this.context, call.arguments[0]) : 1;
+                    if (depth === undefined) this.context.fail(call, "Array.flat requires a generation-known depth for tuple input.");
+                    const remaining = Number.isNaN(depth) ? 0 : Math.max(0, Math.trunc(depth));
+                    const flatten = (elements: readonly Value[], level: number): Value[] => elements.flatMap(element => {
+                        if (level > 0 && element.kind === "tuple") return flatten(element.tupleElements ?? [], level - 1);
+                        if (level > 0 && element.dataType?.kind === "vector") {
+                            this.context.fail(call, "Tuple Array.flat cannot flatten an array with runtime length.");
+                        }
+                        return [element];
+                    });
+                    return { kind: "tuple", cpp: "", tupleElements: flatten(staticOwner.tupleElements ?? [], remaining) };
+                }
                 const fetched =
                     this.context.compileStaticFetchMethod(
                         call,

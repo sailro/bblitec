@@ -4328,6 +4328,50 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene186",
+        name: "Scene 186 - Local Cubemap Blending",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene186.ts",
+        title: "Babylon Lite Native - Local Cubemap Blending",
+        parity: {
+            maxFullMad: 0.005,
+            maxForegroundMad: 0.005,
+            backgroundColor: [6, 8, 11],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene227",
+        name: "Scene 227 - Shared Scene Surfaces",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene227.ts",
+        title: "Babylon Lite Native - Shared Scene Surfaces",
+        nativeHostUi: "ui/scene227-host.json",
+        parity: {
+            referenceHostPage: "corpus/babylon-lite/lab/lite/scene227.html",
+            // Full-page label rasterization; the canvases match exactly.
+            maxFullMad: 0.18,
+            maxForegroundMad: 0.24,
+            canvasThresholds: {maxFullMad: 0.001, maxForegroundMad: 0.001},
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene228",
+        name: "Scene 228 - Independent Scene Surfaces",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene228.ts",
+        title: "Babylon Lite Native - Independent Scene Surfaces",
+        nativeHostUi: "ui/scene228-host.json",
+        parity: {
+            referenceHostPage: "corpus/babylon-lite/lab/lite/scene228.html",
+            // Full-page labels; canvas MAD is below 0.000002 on both backends.
+            maxFullMad: 0.2,
+            maxForegroundMad: 0.18,
+            canvasThresholds: {maxFullMad: 0.001, maxForegroundMad: 0.001},
+            backgroundColor: [0, 0, 0],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene226",
         name: "Scene 226 - Gaussian Splatting glTF",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene226.ts",

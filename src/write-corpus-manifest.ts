@@ -45,6 +45,9 @@ interface ExactCorpusReference {
     reference: string;
     referenceSha256: string;
     moduleSha256: string;
+    capturedAt?: string;
+    referenceHostPage?: string;
+    referenceHostPageSha256?: string;
     referenceSearch?: string;
 }
 
@@ -149,6 +152,10 @@ export function rewriteExactCorpusManifest(
 
         // The golden is evidence, not a row to refresh.
         const golden = sha256(readFileSync(resolve(repositoryRoot, row.reference)));
+        if (row.referenceHostPage !== parity.referenceHostPage || (row.referenceHostPage &&
+            row.referenceHostPageSha256 !== sha256(readFileSync(resolve(repositoryRoot, row.referenceHostPage))))) {
+            throw new Error(`${row.id}: host HTML differs from golden provenance; explicit reference adoption is required.`);
+        }
         if (golden !== row.referenceSha256) {
             throw new Error(
                 `${row.id}: the golden at ${row.reference} no longer matches its ` +

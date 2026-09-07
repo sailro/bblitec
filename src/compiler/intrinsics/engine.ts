@@ -120,13 +120,21 @@ export function compileEngineIntrinsic(
             );
 
         case "createSurface": {
-            context.expectArgumentCount(call, 2, 3);
+            context.expectArgumentCount(call, 2, 2);
             const engine = context.compileValue(call.arguments[0]!);
             context.expectKind(engine, "engine", call.arguments[0]!);
             const canvas = context.compileValue(call.arguments[1]!);
             context.expectKind(canvas, "ui-element", call.arguments[1]!);
+            context.expectSameEngine(engine, canvas, call);
+            if (canvas.uiTag !== "canvas") {
+                context.fail(call, "Additional surfaces require retained canvas elements.");
+            }
+            context.reachFeature("renderer:surface", call);
             return {
                 kind: "surface",
+                surfaceCanvas: true,
+                // Surface defaults are independent of the engine's primary surface.
+                msaaSamples: 4,
                 cpp: `bbl::create_surface(${engine.cpp}, ${canvas.cpp})`,
                 engineCpp: engine.engineCpp ?? engine.cpp,
             };
@@ -171,6 +179,7 @@ export function compileEngineIntrinsic(
             const create = `bbl::create_scene_context(${engine.cpp})`;
             return {
                 kind: "scene",
+                ...(engine.surfaceCanvas ? { surfaceCanvas: true as const } : {}),
                 cpp: defaultRenderTask && samples === 4
                     ? create
                     : `bbl::configure_scene_render_defaults(${create}, ${defaultRenderTask}, ${samples}u)`,

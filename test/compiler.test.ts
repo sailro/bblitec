@@ -16151,7 +16151,7 @@ test("folds a numeric shader source factory at its reached call", () => {
     ]);
     assert.match(
         result.cpp,
-        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\([^)]*depthBias\)\);/,
+        /bbl::set_shader_uniform_value\([^;]*, 0u, static_cast<float>\(0\.0\)\);/,
     );
 });
 

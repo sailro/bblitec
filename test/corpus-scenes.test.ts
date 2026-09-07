@@ -18,6 +18,8 @@ interface CorpusReferenceEntry {
     reference: string;
     referenceSha256: string;
     moduleSha256: string;
+    referenceHostPage?: string;
+    referenceHostPageSha256?: string;
     /**
      * The query the reference page was served at, for a scene whose own
      * pinned spec serves one. The module digest cannot carry it -- the
@@ -86,7 +88,7 @@ test("keeps registered Babylon Lite support modules byte-identical to the pin", 
     for (const module of manifest.modules ?? []) {
         assert.match(
             module.upstreamPath,
-            /^lab\/lite\/src\/(?:demos|shared|_shared)\//,
+            /^lab\/lite\/(?:src\/(?:demos|shared|_shared|lite)\/|scene\d+\.html$)/,
         );
         assert.equal(
             module.source,
@@ -284,6 +286,12 @@ test("keeps exact-source corpus references immutable", () => {
             scene.parity.referenceSearch,
             `${reference.id} capture query differs from golden provenance.`,
         );
+        assert.equal(reference.referenceHostPage, scene.parity.referenceHostPage);
+        if (reference.referenceHostPage) {
+            assert.equal(reference.referenceHostPageSha256,
+                createHash("sha256").update(readFileSync(reference.referenceHostPage)).digest("hex"),
+                `${reference.id} host HTML differs from golden provenance.`);
+        }
     }
 });
 

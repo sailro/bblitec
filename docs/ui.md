@@ -11,6 +11,10 @@ surface and its compatibility limits.
 Scene TypeScript owns live controls. Reviewed `ui/*.json` companions describe
 static host chrome explicitly; they do not discover arbitrary browser pages.
 
+The multi-canvas companions retain the original canvases, divider and labels. Equivalent flex panes
+provide native rectangles; pinned host HTML supplies the browser reference. Canvas-only captures
+retain every canvas at its page position, so labels cannot conceal a rendering regression.
+
 ## DOM and events
 
 | Area | Supported |

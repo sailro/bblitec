@@ -40,6 +40,7 @@ import {
     type PinnedPbrVariant,
 } from "./pinned-pbr-variants.js";
 import type { PinnedClusteredMarker } from "./pinned-clustered-lights.js";
+import {applyPinnedLocalCubemap} from "./pinned-local-cubemap.js";
 import type { PinnedSceneArm } from "./pinned-scene-arms.js";
 import { pinnedReceiverReachesArm } from "./pinned-light-mode.js";
 import type { ShadowLightSlot } from "./pinned-shadow-slots.js";
@@ -1112,6 +1113,9 @@ export async function composeScenePbrVariants(
         // builder's separate `_occlusionImage ? 1 : 0` rule does not reach
         // this scene-code path.
         const input: PinnedMaterialInput = {};
+        if (material.localCubemapCandidates !== undefined) {
+            await applyPinnedLocalCubemap(input, material.localCubemapCandidates);
+        }
         // The pin's setPbrUnlit stamps `mat._unlit = true`, and setPbrSkybox
         // stamps `mat._skyboxMode = true`.
         if (scene.linearImageProcessing) {
@@ -1348,7 +1352,8 @@ export async function composeScenePbrVariants(
             const cacheKey = material.plugins
                 ? undefined
                 : JSON.stringify([material.baseColorFactorRuntime
-                    ? {...input, baseColorFactor: "runtime-array"} : input, composeOptions]);
+                    ? {...input, baseColorFactor: "runtime-array"} : input, composeOptions,
+                    material.localCubemapCandidates]);
             let variant = cacheKey
                 ? compositionCache.get(cacheKey)
                 : undefined;

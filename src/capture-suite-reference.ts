@@ -892,7 +892,7 @@ export async function captureSuiteReference(
                 }
                 await page.screenshot({ path: referencePath });
             } else {
-                if (options.independentEngines !== undefined) {
+                if (options.independentEngines !== undefined || options.hostPage !== undefined) {
                     // Keep every canvas at its authored page position. Hidden
                     // ancestors retain layout; visibility is restored on canvases.
                     await page.addStyleTag({ content: "body *{visibility:hidden!important}body canvas{visibility:visible!important}html,body{background:#000!important}" });
