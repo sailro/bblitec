@@ -69,6 +69,43 @@ int main(int argc, char** argv) {
     require(original.byte_length() == mutated.size() && std::memcmp(original.data(), mutated.data(), mutated.size()) == 0, "old alias changed");
     require(original_view.load(8) == -4.0f && replacement_view.load(7) == 7.0f, "replacement changed old numeric view");
     expect_geometry(mesh, path("stage2"));
+    {
+        // Native data producers can expose a callback-local const vector.
+        // Retaining its ArrayBuffer wrapper would retain only a raw pointer.
+        std::vector<float> values(replacement.byte_length() / sizeof(float));
+        std::memcpy(values.data(), replacement.data(), replacement.byte_length());
+        values[1] += 100.0f;
+        const std::vector<float> local_rows = std::move(values);
+        const bbl::js::ArrayBuffer borrowed(local_rows);
+        require(!borrowed.retains_storage(), "fixture must borrow native storage");
+        bool caught = false;
+        try {
+            bbl::update_splat_data(engine, handle, borrowed);
+        } catch (const std::runtime_error& error) {
+            caught = std::string(error.what()).find("updateData requires retained ArrayBuffer storage") != std::string::npos;
+        }
+        require(caught, "update retained callback-local vector bytes");
+    }
+    require(mesh.data_version == 2 && *mesh.splats_data == replacement,
+        "borrowed-buffer rejection published backing or version");
+    const auto replacement_bytes = read(path("replacement"));
+    require(std::memcmp(mesh.splats_data->data(), replacement_bytes.data(), replacement_bytes.size()) == 0,
+        "borrowed-buffer rejection changed retained bytes");
+    expect_geometry(mesh, path("stage2"));
+    {
+        // Ownership refusal must precede the geometry builder's own errors.
+        const std::vector<std::uint16_t> malformed(33);
+        bool caught = false;
+        try {
+            bbl::update_splat_data(engine, handle, bbl::js::ArrayBuffer(malformed));
+        } catch (const std::runtime_error& error) {
+            caught = std::string(error.what()).find("updateData requires retained ArrayBuffer storage") != std::string::npos;
+        }
+        require(caught, "borrowed data reached geometry construction");
+        require(mesh.data_version == 2 && *mesh.splats_data == replacement,
+            "malformed borrowed-buffer rejection published state");
+        expect_geometry(mesh, path("stage2"));
+    }
     for (const auto length : {96u, 0u, 65u}) {
         bool caught = false;
         try {

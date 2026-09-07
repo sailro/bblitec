@@ -970,6 +970,9 @@ void update_splat_data(
     Engine& engine,
     SplatMeshHandle splat,
     const js::ArrayBuffer& buffer) {
+    if (!buffer.retains_storage()) {
+        throw std::runtime_error("updateData requires retained ArrayBuffer storage; borrowed native vectors cannot outlive their producer.");
+    }
     SplatMeshRecord& mesh = engine.splat_meshes[splat.value];
     upstream::SplatGeometry geometry = upstream::build_splat_geometry(
         std::span<const std::uint8_t>(buffer.data(), buffer.byte_length()));
