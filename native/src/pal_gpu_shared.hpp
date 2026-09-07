@@ -723,8 +723,8 @@ struct GpuVertex {
     float morph_normal_1[3];
     float morph_tangent_0[3];
     float morph_tangent_1[3];
-#if BBLITE_PBR_VARIANTS > 0
-    // The pin's own skinned vertex stage takes joint indices as integers where
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+    // The pin's own skinned vertex stages take joint indices as integers where
     // the transcribed one takes them as floats. Both are carried while the two
     // paths coexist, and this sits last so no existing attribute offset moves;
     // the float pair goes away with the transcription.
@@ -732,7 +732,7 @@ struct GpuVertex {
 #endif
 #endif
 };
-#if BBLITE_GPU_DEFORMATION && BBLITE_PBR_VARIANTS > 0
+#if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON))
 static_assert(sizeof(GpuVertex) == 216);
 #elif BBLITE_GPU_DEFORMATION
 static_assert(sizeof(GpuVertex) == 200);
@@ -1638,7 +1638,7 @@ inline std::vector<GpuVertex> transformed_vertices(
                     ? geometry.morph_tangents[1][vertex_index].z
                     : 0.0f,
             },
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
             {
                 static_cast<std::uint32_t>(vertex.joints[0]),
                 static_cast<std::uint32_t>(vertex.joints[1]),
@@ -2116,7 +2116,7 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
         {},  // morph normal 1
         {},  // morph tangent 0
         {},  // morph tangent 1
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
         {},  // integer joint indices
 #endif
 #endif
@@ -2329,7 +2329,7 @@ inline PinnedVertexInput pinned_vertex_input(
     if (name == "weights") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, weights));
     }
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     // The pin takes joint indices as integers; the transcribed stage takes
     // them as floats, so the vertex carries both while the two coexist.
     if (name == "joints") {
