@@ -10,6 +10,9 @@ import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-f
 const program = `
 import {createEngine,createStorageBuffer,updateStorageBuffer} from "@babylonjs/lite";
 function makeBuffer(size:number):ArrayBuffer {const bytes=new Uint8Array(size);return bytes.buffer;}
+function byteView(value:Float32Array):Uint8Array {
+ return new Uint8Array(value.buffer,value.byteOffset,value.byteLength);
+}
 async function main() {
  if(!new RegExp("^views$").test("views")) throw new Error("constructor RegExp dispatch");
  const bytes=new Uint8Array(32);
@@ -21,6 +24,11 @@ async function main() {
  words[1]=1077936128;
  if(floats[1]!==3 || floats.byteOffset!==4 || floats.byteLength!==8 || floats.length!==2) throw new Error("view extents");
  if(floats.buffer!==buffer || floats.buffer!==words.buffer) throw new Error("buffer identity");
+ const passedBytes=byteView(floats);
+ if(passedBytes.buffer!==buffer || passedBytes.byteOffset!==4 || passedBytes.byteLength!==8) throw new Error("parameter view extents");
+ const passedWords=new Uint32Array(passedBytes.buffer,passedBytes.byteOffset,2);
+ passedWords[1]=1082130432;
+ if(floats[1]!==4 || passedBytes[7]!==64) throw new Error("parameter view alias");
  const alias=floats;
  const separate=new Float32Array(buffer,4,2);
  if(alias!==floats || separate===floats) throw new Error("view identity");
@@ -72,6 +80,14 @@ async function main() {
  calls=0;
  const chained=new Uint8Array(buffer,offset(),length()).slice();
  if(calls!==2 || chained.length!==1) throw new Error("constructor receiver evaluated twice");
+ calls=0;
+ function count():number {calls++;return 2;}
+ const counted=new Float32Array(count());
+ if(calls!==1 || counted.length!==2) throw new Error("non-buffer length probe effects");
+ calls=0;
+ function sequence():Float32Array {calls++;return counted;}
+ const copied=new Float32Array(sequence());
+ if(calls!==1 || copied.length!==2 || copied===counted) throw new Error("non-buffer sequence probe effects");
  const zero=new Float32Array(buffer,-0.9,NaN);
  const whole=new Float32Array(buffer,NaN);
  if(zero.length!==0 || whole.length!==8 || zero.byteOffset!==0) throw new Error("ToIndex after truncation");
@@ -120,6 +136,14 @@ test("numeric buffer views preserve JavaScript aliases, stores, order and ToInde
     const compiled = compileSource(program);
     assert.match(compiled.cpp, /bbl::js::F32Array\(v_bblite_view_buffer_/);
     assert.match(compiled.cpp, /typed_array_byte_offset/);
+});
+
+test("generic typed-array buffer resolution does not admit SharedArrayBuffer", () => {
+    assert.throws(() => compileSource(`
+        const shared=new SharedArrayBuffer(16);
+        const values=new Float32Array(shared);
+        values[0]=1;
+    `), /input\.ts:2:\d+: Unsupported constructor expression/);
 });
 
 const tools = optionalNativeFixtureTools(false);

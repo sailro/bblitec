@@ -147,6 +147,8 @@ replacing the buffer preserves aliases to the old rows. The update uses the
 pinned geometry builder, rejects incompatible counts before committing, and
 publishes a version consumed by both PALs and cloud picking. The receiver must
 be a present splat handle. Unused row APIs carry no retained source buffer.
+`splatsData` is a getter-only property; assigning to it is refused. Replace its
+buffer through `updateData`.
 
 ### Environment compilation
 

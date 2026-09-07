@@ -56,7 +56,7 @@ interface PropertyRead {
    * node, say -- needs the collection as well as the value.
    */
   helperTakesEngine?: true;
-  /** The helper returns a new owning data container, not aliased storage. */
+  /** The helper returns an owning data wrapper by value; backing storage may be shared. */
   helperReturnsFreshData?: true;
   retag?: true;
   barrier?: true;
@@ -978,6 +978,7 @@ export const propertyRules: readonly PropertyRule[] = [
     dataType: { kind: "arraybuffer" },
     helper: "bbl::splat_data",
     helperTakesEngine: true,
+    helperReturnsFreshData: true,
     feature: "loader:splat-data",
     alwaysTruthy: true,
   },
@@ -1021,6 +1022,7 @@ export function cameraRecordField(property: string): string | undefined {
 export interface PropertyContext {
   requireEngine(value: Value, node: ts.Node): string;
   reachFeature(feature: Feature, site: ts.Node): void;
+  reachJsData(): void;
   fail(node: ts.Node, message: string): never;
   /** Whether generation has seen a thin-instance pool set on this mesh. */
   meshHasThinInstancePool(owner: Value): boolean;
@@ -1065,6 +1067,9 @@ export function readProperty(
   }
   if (rule.feature) {
     context.reachFeature(rule.feature, expression);
+  }
+  if (rule.helperReturnsFreshData) {
+    context.reachJsData();
   }
   // An engine handle names itself; anything else carries the engine it
   // was created from, so the value read out of it stays resolvable.

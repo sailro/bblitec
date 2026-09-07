@@ -4544,9 +4544,17 @@ export class DataLowerer {
         }
         const sourceType = this.context.dataTypes.fromTsType(
             this.context.checker.getTypeAtLocation(unwrapped), unwrapped);
-        if (sourceType?.kind === "arraybuffer") {
-            const source = this.compileDataPath(unwrapped, "read") ??
-                this.context.compileValue(unwrapped);
+        // Generic typed-array parameters expose ArrayBufferLike in lib.d.ts,
+        // while a reached native array carries only an ordinary ArrayBuffer.
+        // Resolve that value before selecting the overload. A non-buffer
+        // probe must discard emissions so length/sequence arguments run once.
+        const source = this.context.probeEmission(() => {
+            const value = this.compileDataPath(unwrapped, "read") ??
+                (sourceType?.kind === "arraybuffer"
+                    ? this.context.compileValue(unwrapped) : undefined);
+            return value?.dataType?.kind === "arraybuffer" ? value : undefined;
+        });
+        if (source) {
             const arguments_ = expression.arguments ?? [];
             if (arguments_.length > 3) {
                 this.context.fail(
@@ -4582,10 +4590,8 @@ export class DataLowerer {
                 `new ${name} supports at most one argument unless it views an ArrayBuffer.`,
             );
         }
-        const converted = this.typedArrayFromSource(
-            prefix,
-            unwrapped,
-        );
+        const converted = this.context.probeEmission(() =>
+            this.typedArrayFromSource(prefix, unwrapped));
         if (converted !== undefined) {
             return { kind: "data", cpp: converted, dataType };
         }

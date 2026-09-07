@@ -13,6 +13,13 @@ import { emitUpstreamGenerated } from "../src/upstream-lower.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const meshModule = "src/mesh/GaussianSplatting/gaussian-splatting-mesh.ts";
+const splatProgram = (operation: string): string => `
+    import {createEngine,createSceneContext,loadSplat} from "@babylonjs/lite";
+    async function main(){
+        const engine=await createEngine({}); const scene=createSceneContext(engine);
+        const cloud=await loadSplat(scene,"https://example.com/cloud.splat");
+        ${operation}
+    }`;
 class EditedStore extends UpstreamSourceStore {
     constructor(private readonly edit: (text: string) => string) { super(); }
     override getSourceFile(path: string): ts.SourceFile {
@@ -46,9 +53,7 @@ test("either public splat row API retains loader data without reaching transform
         ["update", "const bytes=new Uint8Array(64); cloud.updateData(bytes.buffer);"],
         ["unused", ""],
     ] as const) {
-        const compiled = compileSource(`import {createEngine,createSceneContext,loadSplat} from "@babylonjs/lite";
-            async function main(){const engine=await createEngine({});const scene=createSceneContext(engine);
-            const cloud=await loadSplat(scene,"https://example.com/cloud.splat"); ${operation}}`);
+        const compiled = compileSource(splatProgram(operation));
         assert.equal(compiled.manifest.features.includes("loader:splat-data"), name !== "unused");
         assert.equal(compiled.manifest.features.includes("loader:splat-bake"), false);
         const output = resolve(`artifacts/splat-data-exposure-${name}`);
@@ -56,6 +61,18 @@ test("either public splat row API retains loader data without reaching transform
         const loader = readFileSync(join(output, "upstream/src/splat_loader.cpp"), "utf8");
         assert.equal(loader.includes("void update_splat_data("), name !== "unused");
         assert.equal(loader.includes("record.splats_data ="), name !== "unused");
+    }
+});
+
+test("getter-only splat rows refuse writes through direct, alias and nested source paths", () => {
+    for (const write of [
+        "cloud.splatsData=bytes.buffer;",
+        "const alias=cloud; alias.splatsData=bytes.buffer;",
+        "const holder={cloud}; holder.cloud.splatsData=bytes.buffer;",
+        'cloud["splatsData"]=bytes.buffer;',
+    ]) {
+        assert.throws(() => compileSource(splatProgram(`const bytes=new Uint8Array(64); ${write}`)),
+            /input\.ts:\d+:\d+: (Unsupported property assignment|Only property assignments are supported)/);
     }
 });
 
@@ -115,6 +132,8 @@ async function pinnedLifecycle(output: string): Promise<void> {
     };
     capture("stage0");
     assert.equal(cloud.splatsData, original);
+    assert.throws(() => { cloud.splatsData = new ArrayBuffer(64); }, TypeError);
+    assert.equal(cloud.splatsData, original, "getter-only rows cannot be replaced by assignment");
     const oldPayload = textures.map((t) => t.slice());
     floats[1]! -= 2;
     writeFileSync(join(output, "mutated.bin"), bytes);
@@ -164,6 +183,18 @@ test("the pinned splat lifecycle preserves aliases and rejection order", async (
 });
 
 const nativeTools = optionalNativeFixtureTools(false);
+
+test("splat getter equality alone emits complete native ArrayBuffer support", { skip: !nativeTools }, () => {
+    const output = resolve("artifacts/splat-data-getter-check");
+    mkdirSync(output, { recursive: true });
+    const compiled = compileSource(splatProgram('if(cloud.splatsData!==cloud.splatsData) throw new Error("identity");'));
+    const source = join(output, "check.cpp");
+    writeFileSync(source, compiled.cpp);
+    // Compile the actual getter-only translation unit; no numeric array
+    // constructor or other JS-data use can supply its header indirectly.
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/c",
+        "/I", "native/include", `/Fo:${output}\\`, source]);
+});
 test("native splat CPU updates and bake match the pin across shared and replaced buffers", { skip: !nativeTools }, async () => {
     const output = resolve("artifacts/splat-data-native-check");
     const headers = join(output, "bblite/upstream");
