@@ -4239,6 +4239,71 @@
       ]
     },
     {
+      "id": "mosquito-amber",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/mosquito-amber.ts",
+      "reference": {
+        "source": "reference/mosquito-amber/babylon-lite-golden.png",
+        "sha256": "50932e59920c578ffc02e9cca41b4cb6a900ae0025a8f421ba53fc8bf540a805"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/mosquito-amber.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/mosquito-amber.ts",
+          "sha256": "e1ff6107fbaacc57a922ff514ebfc1a5ec43f66a882ec9db9898b256a8063b28"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        }
+      ]
+    },
+    {
+      "id": "calculator",
+      "entry": "corpus/babylon-lite/lab/lite/src/demos/calculator.ts",
+      "reference": {
+        "source": "reference/calculator/babylon-lite-golden.png",
+        "sha256": "9ebb4e55f6552448d6d2d39e8218a2778a58448af2487f8bdcea4d2cf2e2b780"
+      },
+      "files": [
+        {
+          "upstreamPath": "lab/lite/src/demos/calculator.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/calculator.ts",
+          "sha256": "e7ec53cf9b9528a16f0b1580ca79c3e596e18101e49b346dce1ea6ff35239665"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/demo-asset-url.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/demo-asset-url.ts",
+          "sha256": "7602e4f46f6f287301d87f1b6a4a099e1534818915fd8d594012b2a7ccc31fb6"
+        },
+        {
+          "upstreamPath": "lab/lite/src/demos/loading-progress.ts",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/loading-progress.ts",
+          "sha256": "6d0e57abd383e0c3150d37ab77d06f42d871458aadab729b0a0cc213788a1a03"
+        },
+        {
+          "upstreamPath": "lab/public/models/Calculator.glb",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/Calculator.glb",
+          "sha256": "9cfd07e1fb84f77a699c3d55f302cd7abb342b974231b25bbbf6a8827d828b3a"
+        },
+        {
+          "upstreamPath": "lab/public/brdf-lut.png",
+          "source": "corpus/babylon-lite/lab/lite/src/demos/brdf-lut.png",
+          "sha256": "f10818901fccd58cd708fef7979daa3a37294b0bca53f450dc37e1589419813d"
+        }
+      ]
+    },
+    {
       "id": "offscreen",
       "entry": "corpus/babylon-lite/lab/lite/src/demos/offscreen.ts",
       "reference": {

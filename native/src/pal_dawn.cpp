@@ -11832,7 +11832,7 @@ SceneRun run_dawn_engine(Engine& engine) {
          ,
          &billboard_pick
 #endif
-    ]([[maybe_unused]] GpuPickerHandle picker, double x, double y) -> PickingInfo {
+    ]([[maybe_unused]] GpuPickerHandle picker, double x, double y, const Engine::PickFilter* filter) -> PickingInfo {
             const auto layer = picker_scene_index(engine, picker, active_registered_scenes);
             if (!layer) return PickingInfo{};
             const Scene& scene = *active_registered_scenes[*layer];
@@ -11984,7 +11984,10 @@ SceneRun run_dawn_engine(Engine& engine) {
                     return mesh.vertices && mesh.indices;
                 },
                 ranges,
-                next_id);
+                next_id,
+                filter);
+        // `pickAsyncImpl` takes no pick source under a supplied filter.
+        [[maybe_unused]] const bool pick_sources = filter == nullptr;
 #if BBLITE_DEFORM_PICKING
         for (const auto& candidate : candidates) {
             if (candidate.deform < 0) continue;
@@ -12152,12 +12155,13 @@ SceneRun run_dawn_engine(Engine& engine) {
         // One cloud per pick: the shear and the id colour are single
         // buffers, so a second cloud would need the same dynamic-offset
         // treatment the mesh blocks get. No reached scene loads two.
-        if (state.splat_passes.size() > 1) {
+        if (pick_sources && state.splat_passes.size() > 1) {
             throw std::runtime_error(
                 "Picking more than one Gaussian cloud needs a per-cloud "
                 "id buffer; the reached slice loads one.");
         }
         for (DawnSplatPass& splat : state.splat_passes) {
+            if (!pick_sources) break;
             // Refresh data before encoding, retaining the last frame's order.
             sync_dawn_splat_data(state.queue,
                 engine.splat_meshes[splat.mesh.value], splat);
@@ -12191,16 +12195,18 @@ SceneRun run_dawn_engine(Engine& engine) {
         // then each registered pick source's contiguous range. Its blocks
         // are written here for the same reason the mesh blocks above are
         // -- WebGPU forbids a queue write between draws inside a pass.
-        billboard_pick.prepare(
-            state.device,
-            state.queue,
-            state.pick_scene_layout,
-            engine,
-            scene,
-            upstream::build_view_matrix(
-                upstream::camera_world_matrix(camera)),
-            ranges,
-            next_id);
+        if (pick_sources) {
+            billboard_pick.prepare(
+                state.device,
+                state.queue,
+                state.pick_scene_layout,
+                engine,
+                scene,
+                upstream::build_view_matrix(
+                    upstream::camera_world_matrix(camera)),
+                ranges,
+                next_id);
+        }
 #endif
 
         WGPUCommandEncoderDescriptor encoder_descriptor =
@@ -12403,6 +12409,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         }
 #if BBLITE_HAS_SPLATS
         for (const DawnSplatPass& splat : state.splat_passes) {
+            if (!pick_sources) break;
             if (splat.vertex_count == 0) continue;
             wgpuRenderPassEncoderSetPipeline(
                 pass, state.pick_cloud_pipeline);
@@ -12433,7 +12440,9 @@ SceneRun run_dawn_engine(Engine& engine) {
         }
 #endif
 #if BBLITE_HAS_BILLBOARDS
-        billboard_pick.record(pass, state.pick_scene_group);
+        if (pick_sources) {
+            billboard_pick.record(pass, state.pick_scene_group);
+        }
 #endif
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);

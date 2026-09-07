@@ -415,6 +415,52 @@ export class LoweringContext {
         return object;
     }
 
+    /**
+     * The module and export a registry arm resolves to: `return (await
+     * import("./x.js")).name`, or the same awaited access wrapped in an
+     * arrow the registry calls on demand. Two pinned registries (node
+     * particle blocks, flow-graph block definitions) are switches over
+     * such arms; the walk is stated once.
+     */
+    public dynamicImportExport(
+        registryModule: string,
+        returned: ts.ReturnStatement,
+    ): { module: string; exportName: string } {
+        let access = returned.expression
+            ? this.unwrapExpression(returned.expression)
+            : undefined;
+        if (access && ts.isArrowFunction(access) && !ts.isBlock(access.body)) {
+            access = this.unwrapExpression(access.body);
+        }
+        const awaited =
+            access && ts.isPropertyAccessExpression(access)
+                ? this.unwrapExpression(access.expression)
+                : undefined;
+        const imported =
+            awaited && ts.isAwaitExpression(awaited)
+                ? this.unwrapExpression(awaited.expression)
+                : undefined;
+        const specifier = imported && ts.isCallExpression(imported)
+            ? imported.arguments[0]
+            : undefined;
+        if (
+            !access ||
+            !ts.isPropertyAccessExpression(access) ||
+            !imported ||
+            !ts.isCallExpression(imported) ||
+            imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+            !specifier ||
+            !ts.isStringLiteral(specifier)
+        ) {
+            this.contractError(returned, "The registry arm is not a dynamic import.");
+        }
+        const module = this.store.resolveImport(registryModule, specifier.text);
+        if (!module) {
+            this.contractError(specifier, "The registry imports a module the pin does not ship.");
+        }
+        return { module, exportName: access.name.text };
+    }
+
     public variableInitializer(
         declaration: ts.Node,
         variableName: string,
@@ -563,9 +609,13 @@ export class LoweringContext {
         label: string,
         count = 1,
     ): void {
+        // A parenthesized expression fingerprints as its operand, and the
+        // walk visits both; the operand is the shape, the parenthesis is
+        // not a second statement of it.
         const found = this.findNodes(
             root,
             (node): node is ts.Expression =>
+                !ts.isParenthesizedExpression(node) &&
                 this.expressionMatchesShape(
                     node as ts.Expression,
                     expected,

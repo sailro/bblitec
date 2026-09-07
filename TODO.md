@@ -21,13 +21,17 @@ Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 | 180, 181 | Live text layout/input and standalone text rendering; extend the static text contract, including controls and dynamic weight updates |
 | 186 | Independent local cubemap ownership/cube-array sampling, live PBR ORM/direct-intensity writes and tuple flattening |
 | 227, 228 | Source-level multi-canvas/swapchain creation and input ownership beyond the dedicated Worker host |
-| 304 | FlowGraph runtime and glTF interactivity |
+| 304 | Scene-side reads of the pinned flow-graph runtime records; the graph itself runs natively |
 
 ## Compiler and lowering
 
 - [ ] Replace positional/source-text recognizers with typed user-code IR, one
   symbol/alias resolver and an escape/retaining-sink model. Mutable callback
-  captures and dynamic-import continuations need one ownership contract.
+  captures and dynamic-import continuations need one ownership contract. The
+  node-particle and flow-graph lowerers each carry a pinned-body partial
+  evaluator (environment, module scope, free-name ladder, statement walk);
+  share one core and emit flow-graph node functions as members of the
+  generated runtime class once both generated trees are proven byte-identical.
 - [ ] Extend namespace/default imports, discriminated/numeric-literal unions,
   stored subclass dispatch, generic method instantiation and runtime
   definite assignment across try/finally.
@@ -83,7 +87,7 @@ Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 | Plugins/shader materials | Wider UBO/uniform/system values, runtime plugin signatures, PBR samplers and fixed-function state |
 | Effects | Broader vertex/binding/texture descriptors, update/dispose/unregister paths |
 | Sprites/billboards | Coverage gamma, handle APIs, append-atlas forms and one registration-ordered mixed transparent/pick list |
-| Picking | Eight influences, deformed thin-instance/VAT IDs, filters/remaining result fields and multiple clouds |
+| Picking | Eight influences, deformed thin-instance/VAT IDs, scene-code filter closures, remaining result fields and multiple clouds |
 | Splats | Per-cloud plugins, mixed pick contributors and typed-buffer methods/contiguous consumers |
 | Shadows | Thin-instance CSM bounds, generator options/live receive toggles, task cameras and caster-specific composition |
 | Lines/instances | Runtime point lists, lines/dashes/color changes, fast dynamic draw count and GPU culling/LOD |

@@ -44,6 +44,7 @@ function specialization(
         eightInfluenceSkinning: false,
         gaussianSplats: false,
         compressedImages: false,
+        interactivity: false,
         ...overrides,
     };
 }

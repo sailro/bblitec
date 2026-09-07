@@ -2088,20 +2088,7 @@ export class NodeParticleLiveLowerer {
      * of every system.
      */
     public sharedSource(): string {
-        return [
-            `struct Vec2d {
-    double x = 0.0;
-    double y = 0.0;
-};
-
-struct Color4d {
-    double r = 0.0;
-    double g = 0.0;
-    double b = 0.0;
-    double a = 0.0;
-};`,
-            ...this.shared.values(),
-        ].join("\n\n");
+        return [...this.shared.values()].join("\n\n");
     }
 
     /** A pinned function declaration, resolved once per module and name. */
@@ -2216,36 +2203,7 @@ struct Color4d {
     }
 
     private evaluatorReturn(registry: string, returned: ts.ReturnStatement): { module: string; exportName: string } {
-        const access = returned.expression
-            ? this.context.unwrapExpression(returned.expression)
-            : undefined;
-        const awaited =
-            access && ts.isPropertyAccessExpression(access)
-                ? this.context.unwrapExpression(access.expression)
-                : undefined;
-        const imported =
-            awaited && ts.isAwaitExpression(awaited)
-                ? this.context.unwrapExpression(awaited.expression)
-                : undefined;
-        const specifier = imported && ts.isCallExpression(imported)
-            ? imported.arguments[0]
-            : undefined;
-        if (
-            !access ||
-            !ts.isPropertyAccessExpression(access) ||
-            !imported ||
-            !ts.isCallExpression(imported) ||
-            imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
-            !specifier ||
-            !ts.isStringLiteral(specifier)
-        ) {
-            this.context.contractError(returned, "The registry arm is not a dynamic import.");
-        }
-        const module = this.context.store.resolveImport(registry, specifier.text);
-        if (!module) {
-            this.context.contractError(specifier, "The registry imports a module the pin does not ship.");
-        }
-        return { module, exportName: access.name.text };
+        return this.context.dynamicImportExport(registry, returned);
     }
 
     /**

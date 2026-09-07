@@ -11,7 +11,7 @@ Engine create_engine(EngineOptions options) {
     engine.meshes.back().name = engine.options.title;
     engine.canvas_client_width = 1280;
     engine.canvas_client_height = 720;
-    engine.pick_hook = [](GpuPickerHandle, double x, double y) {
+    engine.pick_hook = [](GpuPickerHandle, double x, double y, const Engine::PickFilter*) {
         picking_queries.push_back({x,y});
         PickingInfo info;
         if (!((x == 160 && y == 60) || (x == 1 && y == 0))) return info;

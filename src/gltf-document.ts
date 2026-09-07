@@ -241,6 +241,22 @@ export function gltfVariantNames(document: JsonRecord): string[] {
 }
 
 /**
+ * The pinned loader's `KHR_interactivity` feature predicate
+ * (`gltf-feature-registry.ts`: `j.extensions?.KHR_interactivity`): the
+ * extension object when the document carries it. The feature runs whatever
+ * graphs it declares, including none.
+ */
+export function gltfInteractivity(document: JsonRecord): JsonRecord | undefined {
+    return asObject(asObject(document.extensions)?.["KHR_interactivity"]);
+}
+
+/** The graphs an interactive document declares; empty without the extension. */
+export function gltfInteractivityGraphs(document: JsonRecord): unknown[] {
+    const graphs = gltfInteractivity(document)?.graphs;
+    return Array.isArray(graphs) ? graphs : [];
+}
+
+/**
  * The index a scene's `selectVariant` name resolves to, or undefined when the
  * scene selected nothing. A name the document does not declare throws here,
  * once, rather than degrading to "no selection" in one consumer and refusing

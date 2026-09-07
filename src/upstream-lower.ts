@@ -90,6 +90,8 @@ import {
     type ScreenSpaceStageRow,
     type ScreenSpaceLoweringInput,
 } from "./lowering/screen-space-lowerer.js";
+import { FlowGraphLowerer } from "./lowering/flow-graph-lowerer.js";
+import type { FlowGraphAssetPrograms } from "./pinned-flow-graph.js";
 import type {
     ComposedScreenSpaceStage,
     ComposedScreenSpaceTask,
@@ -390,6 +392,15 @@ export interface UpstreamEmitOptions {
      * not emit the per-node cascade walk for an extension no asset carries.
      */
     gltfNodeVisibility: boolean;
+    /**
+     * An asset carries `KHR_interactivity` graphs: the loader records the
+     * node and material tables the generated flow graph resolves its
+     * pointers against, and chains the container's attach onto its scene
+     * setup. `flowGraphs` is what generation parsed through the pin, per
+     * packaged asset, and is what the flow-graph lowering emits.
+     */
+    gltfInteractivity?: boolean;
+    flowGraphs?: readonly FlowGraphAssetPrograms[];
     /**
      * The sprite-family custom fragment bodies scene code built, at most one
      * per family. Generation composes each into the pin's own builder; the
@@ -1396,6 +1407,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                         "animation:gltf-group-speed",
                     ),
                     nodeVisibility: options.gltfNodeVisibility,
+                    interactivity: options.gltfInteractivity ?? false,
                     animationPointer: options.animationPointer,
                     animatedWorldBounds:
                         options.animatedWorldBounds,
@@ -2699,6 +2711,24 @@ ${shadow.blurFragmentWgsl}`,
                 "upstream/src/gizmo.cpp",
                 new GizmoLowerer(context, features).lower(),
                 generated,
+            );
+        }
+        // An interactive asset joins the feature at generation; a scene may
+        // also reach it from source (`enableFlowGraphPointerPicking`) with
+        // no interactive asset, in which case the bridge finds no receiver.
+        // What cannot happen is a parsed asset table without the unit that
+        // attaches it.
+        if ((options.flowGraphs?.length ?? 0) > 0 && !features.includes("flow-graph:interactivity")) {
+            throw new Error(
+                "A KHR_interactivity asset was parsed without reaching flow-graph:interactivity.",
+            );
+        }
+        if (features.includes("flow-graph:interactivity")) {
+            this.writeSource(
+                "upstream/src/flow_graph.cpp",
+                new FlowGraphLowerer(context, options.flowGraphs ?? []).lower(),
+                generated,
+                "upstream/include/bblite/upstream/flow_graph.hpp",
             );
         }
         if (features.includes("picking:gpu")) {

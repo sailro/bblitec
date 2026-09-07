@@ -270,6 +270,20 @@ Name/normal queries retain the original engine association and throw after engin
 payload reads survive. Transported results cannot convert to bare Mesh handles; direct statically owned
 pick casts remain supported. Picked points keep their tuple snapshot behavior.
 
+## Flow graphs
+
+glTF `KHR_interactivity` graphs are parsed at generation by the pinned parser and lowered per block:
+each admitted block body is partially evaluated over the static graph into one update function per
+data output and one execute function per signal input, in the pin's pull/push order. Admitted blocks:
+onStart, onSelect, sequence, variable get/set, pointer get/set, add, sub, mul, div, rem, abs, floor,
+lt, clamp, combine2 and extract2. Pointers bind by executing the pinned path converter over recording
+stand-ins; supported targets are node visibility (cascading) and selectability and a material's
+base-colour `KHR_texture_transform` scale/offset. Graphs attach when the asset's scene setup chains,
+fire onStart on the first before-render tick and receive onSelect from `enableFlowGraphPointerPicking`
+(primary-button tap within five pixels, GPU pick under the selectability filter). An asset with the
+extension joins the feature; awaiting `flowGraphRuntimes` is admitted. `flowGraphs` accessors, runtime
+records, `BABYLON_flow_graph` JSON, data cycles and other block types refuse.
+
 ## Display gizmos
 
 Display, editing and bounding-box gizmos use a utility layer. Interaction requires supported pointer

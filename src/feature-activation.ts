@@ -1139,6 +1139,14 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/post-process/screen-space-global-illumination.ts",
         consumers: CMAKE,
     },
+    "flow-graph:interactivity": {
+        provenance:
+            "src/loader-gltf/gltf-feature-registry.ts: " +
+            "KHR_interactivity -> gltf-feature-interactivity.js, " +
+            "src/flow-graph/scene-flow-graph.ts and " +
+            "src/flow-graph/scene-flow-graph-pointer.ts",
+        consumers: CMAKE,
+    },
     "renderer:high-precision-matrix": {
         provenance: "src/math/_matrix-allocator.ts",
         consumers: CMAKE,
@@ -2313,6 +2321,18 @@ function emitOptionRows(
                 : "no asset uses KHR_animation_pointer",
             "src/loader-gltf/gltf-feature-registry.ts: " +
                 "KHR_animation_pointer -> gltf-feature-animation-pointer.js",
+            ["loader flag"],
+        ),
+        row(
+            "gltfInteractivity",
+            "emit-option",
+            emit.gltfInteractivity ?? false,
+            emit.gltfInteractivity
+                ? "an asset carries the KHR_interactivity extension"
+                : "no asset carries the KHR_interactivity extension",
+            "src/loader-gltf/gltf-feature-registry.ts: the " +
+                "j.extensions?.KHR_interactivity predicate -> " +
+                "gltf-feature-interactivity.js",
             ["loader flag"],
         ),
         row(

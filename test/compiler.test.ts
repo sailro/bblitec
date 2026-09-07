@@ -20057,3 +20057,66 @@ test("a null-defaulted guard over a nullable pick conjoins its presence test", (
         /Conditional expressions require matching native value branches/,
     );
 });
+
+test("reaches the flow-graph feature for an asset's runtimes and pointer picking", () => {
+    // The Calculator demo's two touches of the subsystem: waiting for the
+    // asset's runtimes (the generated graph attached at add) and enabling
+    // the pinned pointer bridge, which picks through the GPU id buffer.
+    const result = compileSource(`
+        import {
+            createEngine,
+            createSceneContext,
+            enableFlowGraphPointerPicking,
+            loadGltf,
+        } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const scene = createSceneContext(engine);
+            const asset = await loadGltf(engine, "model.glb");
+            await asset.flowGraphRuntimes;
+            await enableFlowGraphPointerPicking(scene);
+        }
+        void main();
+    `);
+    assert.ok(result.manifest.features.includes("flow-graph:interactivity"));
+    assert.ok(result.manifest.features.includes("picking:gpu"));
+    assert.match(result.cpp, /bbl::enable_flow_graph_pointer_picking\(/);
+});
+
+test("refuses an asset's flow-graph runtimes as a value", () => {
+    // The pin stores a promise of its runtime records; the port keeps the
+    // graphs at generation, so only the reached slice's direct await is
+    // admitted.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine, loadGltf } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const asset = await loadGltf(engine, "model.glb");
+            const pending = asset.flowGraphRuntimes;
+            void pending;
+        }
+        void main();
+    `),
+        /admitted directly under await only/,
+    );
+});
+
+test("refuses reading an asset's flow-graph accessors", () => {
+    // Scene 304 reads the pin's runtime records; the port lowers those away.
+    assert.throws(
+        () =>
+            compileSource(`
+        import { createEngine, loadGltf } from "@babylonjs/lite";
+        async function main() {
+            const engine = await createEngine({});
+            const asset = await loadGltf(engine, "model.glb");
+            const graph = asset.flowGraphs?.[0];
+            void graph;
+        }
+        void main();
+    `),
+        /flowGraphs/,
+    );
+});

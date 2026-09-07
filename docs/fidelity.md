@@ -155,6 +155,18 @@ Detailed picking requires primitive-index support; native throws when unavailabl
 where the browser probe can leave the feature absent. Supported regular
 deformation does not imply thin-instance/VAT or eight-influence coverage.
 
+## Flow-graph contract
+
+Generated graphs evaluate the pin's block bodies over the same static graph, so arithmetic, dispatch
+order and pointer writes are the pin's. `flow-graph-attach-at-add` records the scheduling difference:
+the attach runs inside addToScene instead of a resolved promise; onStart fires on the first
+before-render tick in both. Pick dispatch is synchronous: the native release handler reads the id
+buffer back in the same input phase, at most one frame earlier than the browser's readback promise.
+The pin's pointer-identity guard on release is asserted, not restated; native mouse events carry one
+pointer. Material transform reads come from the record each draw packs; a written offset shows at the
+next draw. Selectability is a per-node flag the pick filter reads; visibility writes cascade through
+the asset's node children and bump the draw-list epoch.
+
 ## Physics contract
 
 The generated Babylon layer targets Bullet; the browser uses Havok.
