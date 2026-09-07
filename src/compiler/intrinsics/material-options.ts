@@ -61,6 +61,7 @@ export interface MaterialOptionContext
     compileValue(expression: ts.Expression): Value;
     compileForDataSink(expression: ts.Expression, type: import("../data-types.js").DataType): string;
     noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void;
+    noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
     expectKind(
         value: Value,
         kind: ValueKind,
@@ -763,8 +764,10 @@ function compilePbrBaseColorFactor(
     value?: readonly [number, number, number, number];
 } {
     const resolved = context.resolveStaticExpression(expression);
-    const retainedStorage = (): string =>
-        `(${context.compileForDataSink(expression, {kind: "vector", element: {kind: "number"}})}).retained_storage()`;
+    const retainedStorage = (): string => {
+        if (!ts.isArrayLiteralExpression(expression)) context.noteMaterialColorRead("baseColorFactor");
+        return `(${context.compileForDataSink(expression, {kind: "vector", element: {kind: "number"}})}).retained_storage()`;
+    };
     if (ts.isIdentifier(expression) && context.lookupOptional(expression)?.kind === "tuple") {
         context.fail(expression, "A static readonly tuple cannot retain material color identity; pass an owning numeric array.");
     }

@@ -145,6 +145,11 @@ producers currently refuse when public albedo texture reads are reached.
 Numeric color reads currently require one static scene registration. Later
 material-group construction, rebuilds and whole color replacement after
 registration refuse because separate group UBO snapshots are not represented.
+Write-only array assignments remain available before a material's first binding,
+including new materials created in live callbacks; the native setter rejects a
+previously registered or currently bound material before changing its arrays or
+render fields. Tuple-returning color helpers retain the existing scalar render
+adapter and cannot co-reach numeric-array property reads.
 Direct array changes remain visible to source reads without implicitly changing
 the pinned `_uboVersion`. Legacy `{r,g,b,a}`/`{r,g,b}` render adapters cannot
 co-reach numeric-array reads. Static readonly tuples cannot be retained as

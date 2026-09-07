@@ -4783,6 +4783,8 @@ template <typename Array = js::Array<double>>
     return values ? js::Nullable<Array>{Array(values)} : js::Nullable<Array>{};
 }
 
+[[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine, MaterialHandle material);
+
 template <typename Array>
 inline void set_material_diffuse_color(
     Engine& engine, MaterialHandle material, const Array& values) {
@@ -4790,6 +4792,9 @@ inline void set_material_diffuse_color(
         throw std::runtime_error("Material diffuseColor requires three numeric channels.");
     }
     auto& record = engine.materials.at(material.value);
+    if (record.source_colors_registered || material_color_has_bound_group(engine, material)) {
+        throw std::runtime_error("Replacing a registered material color requires per-group UBO snapshots.");
+    }
     record.source_diffuse_color = values.retained_storage();
     record.diffuse_color = Color3{static_cast<float>(values[0]),
         static_cast<float>(values[1]), static_cast<float>(values[2])};
@@ -5231,6 +5236,15 @@ private:
           fog_color(state->fog_color),
           clip_plane(state->clip_plane) {}
 };
+
+[[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine, MaterialHandle material) {
+    return std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),
+        [&](const std::shared_ptr<Scene>& scene) {
+            return scene && std::any_of(scene->meshes.begin(), scene->meshes.end(), [&](MeshHandle mesh) {
+                return mesh.value < engine.meshes.size() && engine.meshes[mesh.value].material.value == material.value;
+            });
+        });
+}
 
 inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uint32_t samples) {
     scene.state->default_render_task = enabled;

@@ -14192,7 +14192,7 @@ class Compiler
 
     public noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void {
         this.deferredAdmissionFailures.push({capability: property, node,
-            message: `Reading material.${property} requires retained numeric-array producers; the legacy color-object writer cannot preserve its source shape.`});
+            message: `Reading material.${property} requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.`});
     }
 
     public noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always = false): void {

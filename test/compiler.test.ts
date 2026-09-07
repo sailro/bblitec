@@ -69,6 +69,7 @@ test("compiles the Babylon Lite primitives example", () => {
             "entry-main-wrapper-erasure",
             "browser-setup-erasure",
             "synchronous-aot-await",
+            "plain-data-value-model",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
             "guarded-cpu-vertex-normalization",
@@ -88,7 +89,7 @@ test("compiles the Babylon Lite primitives example", () => {
     ]);
     assert.match(result.cpp, /bbl::create_box/);
     assert.match(result.cpp, /bbl::create_ground/);
-    assert.match(result.cpp, /\.diffuse_color =/);
+    assert.match(result.cpp, /bbl::set_material_diffuse_color\(/);
     assert.match(result.cpp, /bbl::start_engine/);
     assert.doesNotMatch(result.cpp, /document|getElementById|Promise/);
     assert.match(result.cmake, /mesh_factories\.cpp/);
@@ -579,7 +580,7 @@ test("carries a handle annotation on a declaration the intrinsic produced", () =
     `);
 
     assert.match(result.cpp, /bbl::create_box/);
-    assert.match(result.cpp, /\.diffuse_color = bbl::Color3\{/);
+    assert.match(result.cpp, /bbl::set_material_diffuse_color\([^;]+bbl::js::Array<double>\{/);
     assert.match(result.cpp, /-2\.6/);
 });
 
@@ -915,7 +916,7 @@ test("lowers imported typed user functions and constants", () => {
     );
     assert.match(
         result.cpp,
-        /v_fn1_scene\.environment\.exposure = static_cast<float>\(1\.25\)/,
+        /v_fn\d+_scene\.environment\.exposure = static_cast<float>\(1\.25\)/,
     );
     assert.ok(result.manifest.features.includes("light:directional"));
 });
@@ -6202,12 +6203,13 @@ test("specializes if/else without breaking lexical block shadowing", () => {
         },
     );
 
-    assert.match(result.cpp, /double v_fn0_exposure = 1\.25/);
-    assert.match(result.cpp, /double v_fn0_block\d+_exposure = 1\.0/);
+    const scope = /double (v_fn\d+)_exposure = 1\.25/.exec(result.cpp)?.[1];
+    assert.ok(scope);
+    assert.match(result.cpp, new RegExp(`double ${scope}_block\\d+_exposure = 1\\.0`));
     assert.doesNotMatch(result.cpp, /\} else \{/);
     assert.match(
         result.cpp,
-        /\.contrast = static_cast<float>\(v_fn0_exposure\)/,
+        new RegExp(`\\.contrast = static_cast<float>\\(${scope}_exposure\\)`),
     );
 });
 
@@ -6235,9 +6237,12 @@ test("lowers numeric for and while loops", () => {
         },
     );
 
-    assert.equal(result.cpp.match(/v_fn0_samples \+= [012]\.0/g)?.length, 3);
-    assert.match(result.cpp, /while \(v_fn0_remaining > 0\.0\)/);
-    assert.match(result.cpp, /v_fn0_remaining--/);
+    const writes = [...result.cpp.matchAll(/(v_fn\d+)_samples \+= ([012])\.0/g)];
+    assert.deepEqual(writes.map(write => write[2]), ["0", "1", "2"]);
+    const scope = writes[0]![1];
+    assert.ok(writes.every(write => write[1] === scope));
+    assert.match(result.cpp, new RegExp(`while \\(${scope}_remaining > 0\\.0\\)`));
+    assert.match(result.cpp, new RegExp(`${scope}_remaining--`));
 });
 
 test("reevaluates inlined call setup inside loop conditions", () => {
@@ -6458,11 +6463,11 @@ test("unrolls for-of over static arrays", () => {
     );
 
     assert.equal(
-        result.cpp.match(/samples \+= v_fn0_block\d+_bonus/g)?.length,
+        result.cpp.match(/samples \+= v_fn\d+_block\d+_bonus/g)?.length,
         3,
     );
-    assert.match(result.cpp, /double v_fn0_block\d+_bonus = 1\.0/);
-    assert.match(result.cpp, /double v_fn0_block\d+_bonus = 3\.0/);
+    assert.match(result.cpp, /double v_fn\d+_block\d+_bonus = 1\.0/);
+    assert.match(result.cpp, /double v_fn\d+_block\d+_bonus = 3\.0/);
 });
 
 test("unrolls a counted loop over a container it built and never resized", () => {

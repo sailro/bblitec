@@ -98,14 +98,21 @@ test("compiled material colors retain source identity, double width, fallback an
     const presence = lowerGltfMaterialColorPresence(new UpstreamSourceStore().getSourceFile("src/loader-gltf/gltf-pbr-builder.ts"));
     const legacy = cppFunction(compileSource(`import {createEngine,createStandardMaterial} from "@babylonjs/lite";
         async function main(){const engine=await createEngine({});const material=createStandardMaterial();
-        material.diffuseColor={r:.2,g:.3,b:.4};}`).cpp, "int main(")
+        material.diffuseColor={r:.2,g:.3,b:.4};
+        const channels:[number,number,number]=[.2,.3,.4];
+        const tupleMaterial=createStandardMaterial();tupleMaterial.diffuseColor=channels;}`).cpp, "int main(")
         .replace("int main(", "int legacy_source_main(")
         .replace("return 0;", `v_engine.meshes.emplace_back(); v_engine.meshes[0].material = v_material;
+            v_engine.meshes.emplace_back(); v_engine.meshes[1].material = v_tupleMaterial;
             bbl::Scene scene; scene.engine=&v_engine; scene.meshes.push_back(bbl::MeshHandle{0});
+            scene.meshes.push_back(bbl::MeshHandle{1});
             bbl::register_scene(scene);
             assert(v_engine.materials[v_material.value].diffuse_color.r == .2f);
             assert(v_engine.materials[v_material.value].diffuse_color.g == .3f);
             assert(v_engine.materials[v_material.value].diffuse_color.b == .4f);
+            assert(v_engine.materials[v_tupleMaterial.value].diffuse_color.r == .2f);
+            assert(v_engine.materials[v_tupleMaterial.value].diffuse_color.g == .3f);
+            assert(v_engine.materials[v_tupleMaterial.value].diffuse_color.b == .4f);
             return 0;`);
     const directory = resolve("artifacts/test-material-color-identity");
     mkdirSync(directory, {recursive:true});
@@ -133,6 +140,21 @@ int main() {
     bbl::register_scene(scene);
     assert(engine.materials[material.value].diffuse_color.r == .625f);
     assert((*bbl::material_color(engine,material,bbl::MaterialColorSlot::diffuse_color))[0] == .875);
+    auto replacement = bbl::js::Array<double>{.1,.2,.3};
+    bool refused = false;
+    try { bbl::set_material_diffuse_color(engine,material,replacement); }
+    catch (const std::runtime_error&) { refused = true; }
+    assert(refused && engine.materials[material.value].diffuse_color.r == .625f);
+    assert((*bbl::material_color(engine,material,bbl::MaterialColorSlot::diffuse_color))[0] == .875);
+    const auto fresh = bbl::create_standard_material(engine);
+    bbl::set_material_diffuse_color(engine,fresh,replacement);
+    assert(engine.materials[fresh.value].diffuse_color.r == .1f);
+    engine.meshes.emplace_back(); engine.meshes.back().material = fresh;
+    scene.meshes.push_back(bbl::MeshHandle{1});
+    refused = false;
+    try { bbl::set_material_diffuse_color(engine,fresh,replacement); }
+    catch (const std::runtime_error&) { refused = true; }
+    assert(refused);
     engine.materials.clear(); bbl::js::collect_cycles();
     assert(alias[0] == .875);
 }
@@ -147,6 +169,7 @@ test("numeric material reads refuse co-reached legacy color objects in either so
         `const p=createPbrMaterial({baseColorFactor:{r:1,g:1,b:1,a:1}}); color(p);`,
         `const p=createPbrMaterial({}); color(p); createPbrMaterial({baseColorFactor:{r:1,g:1,b:1,a:1}});`,
         `const p=createStandardMaterial(); p.diffuseColor={r:1,g:1,b:1}; color(p);`,
+        `const p=createStandardMaterial(); function channels():[number,number,number]{return [.1,.2,.3];}p.diffuseColor=channels();color(p);`,
     ]) {
         assert.throws(() => compileSource(program.slice(0,program.indexOf("async function main")) +
             `async function main(){const engine=await createEngine({});${statements}}`), /requires retained numeric-array producers/);
@@ -168,9 +191,12 @@ test("material-color transport refuses unsupported widths and later material-gro
     assert.throws(() => compileSource(prefix+`p.diffuseColor=[1,2];}`), /three-channel numeric array/);
     assert.throws(() => compileSource(prefix+`const values:readonly number[]=[1,1,1,1];createPbrMaterial({baseColorFactor:values});}`), /static readonly tuple cannot retain material color identity/);
     const writeOnly = prefix.slice(0, prefix.indexOf("const color="));
-    assert.throws(() => compileSource(writeOnly+`registerScene(scene);p.diffuseColor=[.2,.4,.6];}`), /per-group UBO snapshots/);
-    assert.throws(() => compileSource(writeOnly+`onBeforeRender(scene,()=>{p.diffuseColor=[.2,.4,.6];});}`), /per-group UBO snapshots/);
+    assert.match(compileSource(writeOnly+`registerScene(scene);p.diffuseColor=[.2,.4,.6];}`).cpp, /set_material_diffuse_color/);
+    assert.match(compileSource(writeOnly+`onBeforeRender(scene,()=>{p.diffuseColor=[.2,.4,.6];});}`).cpp, /set_material_diffuse_color/);
     assert.doesNotThrow(() => compileSource(writeOnly+`registerScene(scene);p.diffuseColor={r:.2,g:.4,b:.6};}`));
+    assert.doesNotThrow(() => compileSource(writeOnly+`p.diffuseColor=[.2,.4,.6];rebuildSceneRenderables(scene);}`));
+    assert.throws(() => compileSource(writeOnly+`const channels=[.2,.4,.6];p.diffuseColor=channels;rebuildSceneRenderables(scene);}`), /per-group UBO snapshots/);
+    assert.throws(() => compileSource(writeOnly+`const channels=[.2,.4,.6,1];createPbrMaterial({baseColorFactor:channels});rebuildSceneRenderables(scene);}`), /per-group UBO snapshots/);
 });
 
 test("glTF public factor presence comes from the pinned conditional and retains its array", async () => {

@@ -2408,15 +2408,17 @@ export function emitPropertyAssignment(
       }
       if (recordField.kind === "material" && recordField.property === "diffuseColor") {
         context.noteMaterialColorRenderBoundary(expression, "whole color replacement after registration");
-        if (ts.isObjectLiteralExpression(context.resolveStaticExpression(expression.right))) {
+        const shape = context.resolveStaticExpression(expression.right);
+        const legacyTuple = (!ts.isArrayLiteralExpression(context.unwrap(expression.right)) &&
+          context.checker.isTupleType(context.checker.getTypeAtLocation(expression.right))) ||
+          (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple");
+        if (ts.isObjectLiteralExpression(shape) || legacyTuple) {
           context.noteMaterialColorObjectWrite(expression.right, "diffuseColor");
         } else {
-          // Retaining a source array reaches the same projection boundary as
-          // reading one, even if this program never reads the property back.
-          context.noteMaterialColorRead("diffuseColor");
-          const shape = context.resolveStaticExpression(expression.right);
-          if (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple") {
-            context.fail(expression.right, "A static readonly tuple cannot retain material color identity; pass an owning numeric array.");
+          // A named or returned array can also be mutated through its other
+          // owner. A fresh literal has no external alias until a getter is read.
+          if (!ts.isArrayLiteralExpression(context.unwrap(expression.right))) {
+            context.noteMaterialColorRead("diffuseColor");
           }
           if (ts.isArrayLiteralExpression(shape) && shape.elements.length !== 3) context.fail(expression.right,
             "Material diffuseColor requires a three-channel numeric array.");
