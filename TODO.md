@@ -223,7 +223,6 @@ modules without a numbered scene entry are not integration candidates.
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
 | 49 | A `createCapsule` builder, a mesh parented to a mesh, `shapeProximity`/`shapeCast` over Bullet closest-point and convex-sweep entry points, and a conditional mixing a picked node with null. Four contracts. |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
-| 149 | Delegating `blockLoader` (the pin's `loadNodeBlockEmitterWithGeometry`, where the port accepts a local closed switch), live node-material input handles, loaded-material reads, runtime per-material node construction, and the geometry `LOCAL_POSITION` attachment, which needs a bound local-normal lane and a real node world. Five contracts. |
 | 164 | GPU device-loss lifecycle |
 | 180 | The text subsystem plus live text controls and input. It reads `textarea.value` and re-layouts on `input`, so nothing folds: `layoutText` shapes through a vendored pure-JS shaper, and matching its glyph ids, advances and kerning natively is a re-derivation, not a port. It also needs the standalone text renderer path with no scene or camera, a dynamically imported weight-offset call and eight live DOM controls. |
 | 181 | The same text subsystem and live input as 180. |

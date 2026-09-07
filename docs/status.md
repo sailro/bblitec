@@ -147,6 +147,7 @@ its cause.
 | 146 | <img src="images/scenes/scene146.png" alt="Scene 146 rendering" width="160"> | 0.003 / 0.003 | 0.003 / 0.003 | PBR Geometry Outputs |
 | 147 | <img src="images/scenes/scene147.png" alt="Scene 147 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Circle of Confusion |
 | 148 | <img src="images/scenes/scene148.png" alt="Scene 148 rendering" width="160"> | 0.001 / 0.001 | 0.001 / 0.001 | Depth of Field |
+| 149 | <img src="images/scenes/scene149.png" alt="Scene 149 rendering" width="160"> | 0.007 / 0.009 | 0.000 / 0.000 | Node Material Geometry Outputs |
 | 150 | <img src="images/scenes/scene150.png" alt="Scene 150 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Position Animation |
 | 151 | <img src="images/scenes/scene151.png" alt="Scene 151 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Property Transform Animation |
 | 152 | <img src="images/scenes/scene152.png" alt="Scene 152 rendering" width="160"> | 0.010 / 0.281 | 0.010 / 0.281 | Managed Animation Groups |

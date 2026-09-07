@@ -2945,6 +2945,18 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene149",
+        name: "Scene 149 - Node Material Geometry Outputs",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene149.ts",
+        title: "Babylon Lite Native - Node Material Geometry Outputs",
+        parity: {
+            maxFullMad: 0.02,
+            maxForegroundMad: 0.02,
+            backgroundColor: [51, 51, 76],
+            backgroundThreshold: 8,
+        },
+    },
+    {
         id: "scene58",
         name: "Scene 58 - Sprite2D Frame Animation",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene58.ts",
