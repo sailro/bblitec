@@ -5,12 +5,20 @@ import { compileSource } from "../src/compiler.js";
 const prefix = `import {createEngine, createSceneContext, createRenderTarget, createRenderTask,
     createTaaPostProcessTask, createBlackAndWhitePostProcessTask, registerScene, createPbrMaterial,
     createGridMaterial, createStandardMaterial, createStandardNoColorMaterialView, loadSplat,
-    loadEnvironment} from "@babylonjs/lite";
+    loadEnvironment, setEnvironmentRotation} from "@babylonjs/lite";
     const engine=await createEngine({});
     const scene=createSceneContext(engine,{defaultRenderTask:false});
     const rt=createRenderTarget({format:engine.format,dFormat:"depth24plus-stencil8",samples:1,size:engine});
     const source=createRenderTask({rt},engine,scene);`;
 const taa = `const taa=createTaaPostProcessTask({sourceTexture:rt,sourceRenderTask:source,targetTexture:engine.scRT},engine,scene);`;
+
+test("TAA refuses explicit environment cache invalidation in either reach order", () => {
+    const rotation = `setEnvironmentRotation(scene,.5);`;
+    assert.doesNotThrow(() => compileSource(prefix + rotation));
+    for (const source of [prefix + rotation + taa, prefix + taa + rotation]) {
+        assert.throws(() => compileSource(source), /setEnvironmentRotation invalidates source-task caches/);
+    }
+});
 
 test("TAA preparation refuses unrepresented renderer families in either reach order", () => {
     for (const [body, feature] of [

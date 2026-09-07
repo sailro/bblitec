@@ -309,6 +309,8 @@ export function compileSceneIntrinsic(
         }
 
         case "setEnvironmentRotation": {
+            context.noteTemporalRecordBoundary(call,
+                "setEnvironmentRotation invalidates source-task caches beyond the retained key fields", "always");
             // src/scene/set-environment-rotation.ts stores the Y rotation on
             // the scene and registers the environment uniform/skybox patch.
             // Native carries the same scalar in EnvironmentState; its shared
