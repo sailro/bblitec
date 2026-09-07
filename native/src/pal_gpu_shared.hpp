@@ -3380,8 +3380,8 @@ inline upstream::MeshUniforms pinned_mesh_block(
  *
  * The pin packs the mesh's world matrix, `receiveShadows ? 1 : 0` in the
  * shadow lane, and the same light selection every family uses. The world is
- * the identity because our vertices are baked with it, exactly as the
- * Standard family's are.
+ * the identity for baked vertices. Scene-authored morphs keep local vertices
+ * and deltas, so their block carries the live world after deformation.
  *
  * The shadow lane is a VALUE here where it is a composition key for the
  * other two families: `node-shadow.ts` mixes each light's factor by it
@@ -3393,18 +3393,13 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     const Engine& engine,
     std::uint32_t mesh_index) {
     upstream::NodeMeshUniforms block{};
-    // The identity is the BAKE's answer, not a constant: this port bakes a
-    // node mesh's TRS into its vertices, so the world carries nothing --
-    // unless the floating-origin frame kept them local, which is exactly
-    // what `draw_world` decides for every family alike.
-    block.world = draw_world(
-        pinned_identity_world(),
-        engine.meshes[mesh_index],
-        scene,
-        engine);
+    const MeshRecord& record = engine.meshes[mesh_index];
+    block.world = record.scene_morph_targets
+        ? scene_deformation_draw_world(record, scene, engine)
+        : draw_world(pinned_identity_world(), record, scene, engine);
     if (
         mesh_index < engine.meshes.size() &&
-        engine.meshes[mesh_index].receives_shadows) {
+        record.receives_shadows) {
         block.receivesShadow[0] = 1.0f;
     }
     // `writeAttributeFlags`: the block's three spare lanes carry whether
@@ -3415,7 +3410,6 @@ inline upstream::NodeMeshUniforms node_mesh_block(
     // block never reads the lanes and every mesh block is packed by this
     // one function.
     if (mesh_index < engine.meshes.size()) {
-        const MeshRecord& record = engine.meshes[mesh_index];
         if (record.geometry < engine.geometries.size()) {
             const ModelGeometry& geometry =
                 engine.geometries[record.geometry];

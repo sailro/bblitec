@@ -14,7 +14,8 @@ import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transfo
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 import { composeDeformPickingShaders, deformPickingHeader } from "../src/pinned-picking-shaders.js";
 import { pinnedSceneMeshFeatures } from "../src/pinned-mesh-features.js";
-import { importPinnedModule } from "../src/pinned-shader-composer.js";
+import { mirroredStructFromWgsl } from "../src/pinned-pbr-variant-cpp.js";
+import { importPinnedModule, importPinnedModuleWithExports } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const prefix = `
@@ -190,6 +191,11 @@ test("native direct morph storage matches pin bytes and keeps deformation before
     const factories = new FactoryLowerer(context).lowerMeshFactories([]).source;
     const renderPlan = new RendererLowerer(context).lowerRenderPlan({}).source;
     const pal = readFileSync("native/src/pal_gpu_shared.hpp", "utf8");
+    const nodePipeline = await importPinnedModuleWithExports<{ buildMeshStruct(): string }>(
+        "material/node/node-pipeline.js", ["buildMeshStruct"]);
+    const meshBody = /struct MeshU\{([^}]*)\}/.exec(nodePipeline.buildMeshStruct())?.[1];
+    assert.ok(meshBody, "pinned NodeMaterial MeshU");
+    const { MAX_LIGHTS } = await importPinnedModule<{ MAX_LIGHTS: number }>("light/types.js");
     const output = resolve("artifacts/scene-morph-native-check");
     mkdirSync(output, { recursive: true });
     writeFileSync(join(output, "pinned_matrix.hpp"), pinnedMatrixHeader(context));
@@ -215,6 +221,9 @@ test("native direct morph storage matches pin bytes and keeps deformation before
 #include <cassert>
 #include <cstring>
 namespace bbl::upstream {
+${mirroredStructFromWgsl("NodeMeshUniforms", meshBody, "material/node/node-pipeline.js buildMeshStruct")}
+inline constexpr std::size_t pinned_max_lights = ${MAX_LIGHTS}u;
+${cppDefinition(renderPlan, "bool light_affects_mesh(")}
 ${["mesh_local_matrix(const MeshRecord&", "transform_node_local_matrix(", "transform_node_world(", "mesh_world_matrix("].map(name =>
     cppDefinition(renderPlan, `std::array<float, 16> ${name}`)).join("\n")}
 }
@@ -237,6 +246,9 @@ ${["std::array<float, 16> outer_draw_world(", "std::array<float, 16> draw_world(
     "std::array<float, 16> standard_draw_world(", "std::vector<float> pack_morph_deltas(",
     "std::vector<float> morph_weight_values(", "std::vector<std::uint8_t> pack_morph_weights("].map(name =>
         cppDefinition(pal, `inline ${name}`)).join("\n")}
+template <typename Block>
+${cppDefinition(pal, "inline void pinned_mesh_light_selection(")}
+${cppDefinition(pal, "inline upstream::NodeMeshUniforms node_mesh_block(")}
 }
 void same(const std::vector<float>& actual, const std::vector<std::uint32_t>& expected) {
     assert(actual.size() == expected.size());
@@ -268,11 +280,32 @@ ${checks.join("\n")}
         assert(bbl::pal::standard_draw_world(record, false, scene, engine) == expected);
         record.position.x += 0.25f;
     }
+    // NME colour and caster views bind this same block. The old identity
+    // lost an authored translation once morph vertices stopped being baked;
+    // a live-world record happened to mask it. Exercise both storage arms.
+    record.scene_skeleton = false; record.skinned = false;
+    for (const bool live_world : {false, true}) {
+        record.gpu_world_transform = live_world;
+        const auto expected = bbl::upstream::mesh_world_matrix(engine, record);
+        const auto block = bbl::pal::node_mesh_block(scene, engine, 0);
+        assert(block.world == expected);
+        const auto packed = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
+        const auto deltas = bbl::pal::pack_morph_deltas(engine.geometries[0]);
+        for (const float weight : {0.0f, 0.75f}) {
+            const bbl::Vec3 deformed{packed[0].position[0] + weight * deltas[0],
+                packed[0].position[1] + weight * deltas[1], packed[0].position[2] + weight * deltas[2]};
+            const auto actual = bbl::upstream::transform_position(block.world, deformed);
+            const auto wanted = bbl::upstream::transform_position(expected, deformed);
+            assert(actual.x == wanted.x && actual.y == wanted.y && actual.z == wanted.z);
+        }
+        record.position.x += 0.25f;
+    }
     record.scene_skeleton = false; record.scene_morph_targets = false; record.gpu_world_transform = false;
     const auto plain = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
     assert(!bbl::pal::pinned_draw_conventions(0, record).mirrored_vertices);
     assert(plain[0].position[0] != vertex.position.x);
     assert(bbl::pal::pinned_draw_world(false, false, false, record, scene, engine) == bbl::pal::pinned_mesh_world());
+    assert(bbl::pal::node_mesh_block(scene, engine, 0).world == bbl::pal::pinned_identity_world());
     record.skinned = false; record.gpu_deformation = false; record.morph_storage_weights.clear();
     assert(bbl::pal::pick_mesh_projection(engine, record) == -1);
     record.skinned = true;
