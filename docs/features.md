@@ -440,8 +440,10 @@ and mesh attachment, before scene registration. The deferred builder captures
 the original private slot and reports a missing texture at binding time; an
 unused material may remain unset. Numeric input state, map replacement,
 reflective mutation, later texture producer writes, and topology or input
-changes after registration remain refused. This input slice admits one
-registered scene until independent scene binding snapshots are represented.
+changes after registration remain refused. These binding limits also apply to
+materials initialized only through `options.textures`, without reading public
+inputs. Public input access additionally admits one registered scene until
+independent scene binding snapshots are represented.
 
 Uniform input state is otherwise frozen. A graph reached by a geometry-renderer
 task also composes the pin's geometry view — a third module per (graph, task),

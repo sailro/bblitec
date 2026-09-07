@@ -93,7 +93,7 @@ test("actual pinned node builders retain private slots and start the complete fa
     const node = await importPinnedModule<{ parseNodeMaterialFromSnippet(engine: unknown, snippet: string, options: unknown): Promise<Material> }>("material/node/node-material.js");
     const loader = await importPinnedModule<{ loadNodeBlockEmitterWithGeometry(name: string): Promise<unknown> }>("material/node/node-geometry-block-loader.js");
     const core = await importPinnedModule<{
-        createSceneContext(surface: unknown, options: unknown): { _deferredBuilders: unknown[] };
+        createSceneContext(surface: unknown, options: unknown): { _deferredBuilders: unknown[]; _materialSwapQueue: unknown[] };
         addToScene(scene: unknown, entity: unknown): void;
         buildScene(scene: unknown): Promise<void>;
     }>("scene/scene-core.js");
@@ -133,6 +133,20 @@ test("actual pinned node builders retain private slots and start the complete fa
     await assert.rejects(core.buildScene(failing), /albedo|243/);
     assert.equal(bindings.length, 3, "the valid second group still binds in the failing batch");
     assert(bindings[2]!.entries.some((entry) => entry.resource === second.view));
+    // Options-only owners use the same deferred group lifecycle even when
+    // source code never reads their public input map.
+    const initialized = await node.parseNodeMaterialFromSnippet(engine, "", {
+        json, blockLoader: loader.loadNodeBlockEmitterWithGeometry, textures: { albedo: first },
+    });
+    const built = scene();
+    await core.buildScene(built);
+    core.addToScene(built, mesh(initialized));
+    assert.equal(built._deferredBuilders.length, 0);
+    assert.equal(built._materialSwapQueue.length, 1, "late attachment uses the pin's material-swap lifecycle");
+    assert.equal(bindings.length, 3, "late attachment cannot bind until its pending material swap runs");
+    await core.buildScene(built);
+    assert.equal(bindings.length, 4);
+    assert(bindings[3]!.entries.some((entry) => entry.resource === first.view));
 });
 
 test("generated compiler and node factory preserve retained slots and deferred binding observations", { skip: !tools }, async () => {
@@ -184,4 +198,46 @@ test("node input state refuses numeric, reflective and late binding mutation at 
         ["const pixels = createTexture2DFromPixels(engine, new Uint8Array([1,2,3,4]), 1, 1); material.inputs.albedo!.texture = texture; pixels.uOffset = .5;", /texture producer metadata/],
         ["const bytes = new Uint8Array([1,2,3,4]); const pixels = createTexture2DFromPixels(engine, bytes, 1, 1); material.inputs.albedo!.texture = texture; const device = engine._device; device.queue.writeTexture({texture: pixels.texture}, bytes, {bytesPerRow:4,rowsPerImage:1}, {width:1,height:1});", /later GPU writes/],
     ] as const) assert.throws(() => compileSource(prefix + body), expected);
+});
+
+test("options-only node materials enforce deferred binding boundaries without public input reads", () => {
+    const setup = prefix.slice(0, prefix.indexOf("const material ="));
+    const factory = `const material = await parseNodeMaterialFromSnippet(engine, "", {
+        json: SCENE149_NME_JSON, blockLoader: loadNodeBlockEmitterWithGeometry,
+        textures: { albedo: texture } });`;
+    const result = compileSource(setup + factory + `
+        const mesh = createBox(engine); mesh.material = material;
+        addToScene(scene, mesh); await registerScene(scene);`);
+    assert(result.manifest.features.includes("material:node"));
+    assert(!result.manifest.features.includes("material:node-inputs"));
+    for (const [before, after, expected] of [
+        ["", "const mesh = createBox(engine); mesh.material = material; await registerScene(scene); const alias = scene; addToScene(alias, mesh);", /binding snapshots/],
+        ["", "const mesh = createBox(engine); await registerScene(scene); mesh.material = material;", /binding snapshots/],
+        ["", "const mesh = createBox(engine); mesh.material = material; onBeforeRender(scene, () => { addToScene(scene, mesh); });", /binding snapshots/],
+        ["", "rebuildSceneRenderables(scene);", /binding snapshots/],
+        ["rebuildSceneRenderables(scene);", "", /binding snapshots/],
+        ["", "Object.assign(texture, {uOffset: .5});", /reflective texture producer/],
+        ["Object.assign(texture, {uOffset: .5});", "", /reflective texture producer/],
+        ["", "const pixels = createTexture2DFromPixels(engine, new Uint8Array([1,2,3,4]), 1, 1); pixels.uOffset = .5;", /texture producer metadata/],
+        ["", "const bytes = new Uint8Array([1,2,3,4]); const pixels = createTexture2DFromPixels(engine, bytes, 1, 1); const device = engine._device; device.queue.writeTexture({texture: pixels.texture}, bytes, {bytesPerRow:4,rowsPerImage:1}, {width:1,height:1});", /later GPU writes/],
+    ] as const) {
+        assert.throws(() => compileSource(setup + before + factory + after, {
+            fileName: resolve("options-only-node-boundary.ts"),
+        }), (error: unknown) => {
+            assert(error instanceof Error);
+            assert.match(error.message, expected);
+            assert.match(error.message, /options-only-node-boundary\.ts:\d+:\d+:/);
+            return true;
+        });
+    }
+    // Immutable options keep the existing multiple-scene setup available.
+    assert.doesNotThrow(() => compileSource(setup + factory + `
+        const other = createSceneContext(engine);
+        const first = createBox(engine); const second = createBox(engine);
+        first.material = material; second.material = material;
+        addToScene(scene, first); addToScene(other, second);
+        await registerScene(scene); await registerScene(other);`));
+    // The deferred admission record must stay inert for ordinary materials.
+    assert.doesNotThrow(() => compileSource(setup + `
+        const mesh = createBox(engine); await registerScene(scene); addToScene(scene, mesh);`));
 });

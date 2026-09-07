@@ -1011,6 +1011,12 @@ class Compiler
             if (this.features.has("animation:property")) this.fail(this.sourceFile,
                 "Node geometry views with glTF do not represent property-animation transform producers.");
         }
+        if (this.features.has("material:node")) {
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "node-input");
+            if (admission) this.fail(admission.node, admission.message);
+            if (this.features.has("material:node-inputs") && this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Node input bindings support one registered scene until per-scene binding snapshots are represented.");
+        }
         const colorAdmission = this.deferredAdmissionFailures.find(failure =>
             (failure.capability === "baseColorFactor" || failure.capability === "diffuseColor") &&
             this.materialColorReads.includes(failure.capability));
@@ -1020,12 +1026,6 @@ class Compiler
             if (boundary) this.fail(boundary.node, boundary.message);
             if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
                 "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.");
-        }
-        if (this.features.has("material:node-inputs")) {
-            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "node-input");
-            if (admission) this.fail(admission.node, admission.message);
-            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
-                "Node input bindings support one registered scene until per-scene binding snapshots are represented.");
         }
         if (this.features.has("text:renderable")) {
             const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
@@ -1987,7 +1987,7 @@ class Compiler
     }
 
     public noteNodeInputAdmissionFailure(node: ts.Node, message: string): void {
-        if (this.features.has("material:node-inputs")) this.fail(node, message);
+        if (this.features.has("material:node")) this.fail(node, message);
         this.deferredAdmissionFailures.push({ capability: "node-input", node, message });
     }
 
@@ -14209,7 +14209,7 @@ class Compiler
         }
         if (runtime || (mode !== "registration" && this.temporalSceneRegistration) || reason === "rebuildSceneRenderables") {
             this.deferredAdmissionFailures.push({ capability: "node-input", node,
-                message: `Node input binding snapshots do not cover ${runtime ? `runtime ${reason}` : reason}.` });
+                message: `Node material binding snapshots do not cover ${runtime ? `runtime ${reason}` : reason}.` });
         }
         if (mode === "registration") {
             this.temporalSceneRegistration ??= node;
