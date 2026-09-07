@@ -69,33 +69,55 @@ test("text GPU helpers preserve pinned identities, byte uploads, growth, failure
             options:{offset:number;bytesPerRow:number},size:{height:number})=>write(texture,0,buffer,options.offset,options.bytesPerRow*size.height)}});
     const deviceA=makeDevice(),deviceB=makeDevice(),engine={_device:deviceA};
     const pattern=(count:number,seed:number)=>new Float32Array(Uint8Array.from({length:count},(_,i)=>(i*37+seed)&255).buffer);
-    const atlas={_curveTexData:pattern(131072,3),_bandTexData:pattern(131072,4),_metaData:pattern(384,5),
-        _curveTexelsUsed:3,_bandTexelsUsed:7,_slotCount:3,_version:1,_gpu:null as any};
-    const group=(key:string,start:number,count:number)=>({_curveSet:{_atlas:atlas},_curveSetId:"atlas",_groupKey:key,
-        _slotStart:start,_slotCount:count,_liveCount:2,_bindGroup:null as any,_bindGroupVersion:-1});
+    interface AtlasGpuObservation {
+        _curveTexRows:number;_bandTexRows:number;_metaCap:number;_uploadedVersion:number;
+    }
+    interface AtlasObservation {
+        _curveTexData:Float32Array;_bandTexData:Float32Array;_metaData:Float32Array;
+        _curveTexelsUsed:number;_bandTexelsUsed:number;_slotCount:number;_version:number;
+        _gpu:AtlasGpuObservation|null;
+    }
+    interface GroupObservation {
+        _curveSet:{_atlas:AtlasObservation};_curveSetId:string;_groupKey:string;
+        _slotStart:number;_slotCount:number;_liveCount:number;_bindGroup:{id:number}|null;_bindGroupVersion:number;
+    }
+    interface GpuObservation {
+        _instanceCap:number;_styleBuf:Resource;_uploadedDataVersion:number;_uploadedStyleVersion:number;
+    }
+    const atlas:AtlasObservation={_curveTexData:pattern(131072,3),_bandTexData:pattern(131072,4),_metaData:pattern(384,5),
+        _curveTexelsUsed:3,_bandTexelsUsed:7,_slotCount:3,_version:1,_gpu:null};
+    const group=(key:string,start:number,count:number):GroupObservation=>({_curveSet:{_atlas:atlas},_curveSetId:"atlas",_groupKey:key,
+        _slotStart:start,_slotCount:count,_liveCount:2,_bindGroup:null,_bindGroupVersion:-1});
     const data={_instances:pattern(192,1),_styles:pattern(128,2),_instanceCount:3,_styleCount:1,_version:1,_styleVersion:1,
         _dirtyStart:0,_dirtyEnd:0,_groups:[group("atlas",0,3),group("variant",3,2),group("atlas",0,0)]};
-    const r={_data:data,_gpu:null as any},second={_data:data,_gpu:null as any};
+    interface RenderableObservation {_data:typeof data;_gpu:GpuObservation|null}
+    const r:RenderableObservation={_data:data,_gpu:null},second:RenderableObservation={_data:data,_gpu:null};
     const pipelines={_pipeline:{id:1001},_variantPipeline:{id:1002}},layout={id:1003},quad={id:1004};
     const target={_colorFormat:"rgba8unorm",_sampleCount:4,_depthStencilFormat:"depth24plus"};
     const constants=(path:string,name:string)=>{const f=context.sourceFile(path);return context.numericValue(context.variableInitializer(f,name),f);};
     const instantiate=new Function("GPUBufferUsage","GPUTextureUsage","TEXT_INSTANCE_BYTES","TEXT_STYLE_BYTES","TEXT_UBO_BYTES",
         "GLYPH_METADATA_BYTES","TEX_WIDTH","BYTES_PER_ROW","createEmptyUniformBuffer","getOrCreateTextPipeline",pinnedFunctions(context));
-    const pin=instantiate({STORAGE:1,COPY_DST:2,VERTEX:4},{TEXTURE_BINDING:1,COPY_DST:2,COPY_SRC:4},
+    interface PinnedFunctions {
+        ensureGpu(r:RenderableObservation,owner:typeof engine,output:typeof target,color:string,samples:number,depth:string,depthWrite:boolean):GpuObservation;
+        updateResources(r:RenderableObservation,owner:typeof engine,gpu:GpuObservation,layout:{id:number}):void;
+        drawTextRenderable(gpu:GpuObservation,source:typeof data,quad:{id:number},encoder:typeof pass):number;
+        targetSig(output:Partial<typeof target>):string;
+    }
+    const pin:PinnedFunctions=instantiate({STORAGE:1,COPY_DST:2,VERTEX:4},{TEXTURE_BINDING:1,COPY_DST:2,COPY_SRC:4},
         constants("src/text/text-data.ts","TEXT_INSTANCE_BYTES"),constants("src/text/text-data.ts","TEXT_STYLE_BYTES"),
         constants("src/text/text-renderable.ts","TEXT_UBO_BYTES"),constants("src/text/glyph-storage.ts","GLYPH_METADATA_FLOATS")*4,
         constants("src/text/_gpu/text-textures.ts","TEX_WIDTH"),constants("src/text/_gpu/text-textures.ts","BYTES_PER_ROW"),
         (e:typeof engine,size:number,label:string)=>e._device.createBuffer({label,size}),()=>pipelines);
-    let gpu:any;
+    let gpu!:GpuObservation;
     const ensure=()=>gpu=pin.ensureGpu(r,engine,target,target._colorFormat,4,target._depthStencilFormat,true);
     const update=()=>pin.updateResources(r,engine,gpu,layout);
     const pass={setVertexBuffer:(slot:number,buffer:{id:number})=>event("vertex",slot,buffer.id),
         setPipeline:(p:{id:number})=>event("pipeline",p.id),setBindGroup:(slot:number,g:{id:number})=>{assert.equal(slot,0);event("bind",g.id);},
         draw:(...values:number[])=>event("draw",...values)};
     const draw=()=>event("draws",pin.drawTextRenderable(gpu,data,quad,pass));
-    const record=()=>event("state",gpu._instanceCap,gpu._styleBuf.size,gpu._uploadedDataVersion,gpu._uploadedStyleVersion,
+    const record=()=>{assert(atlas._gpu);event("state",gpu._instanceCap,gpu._styleBuf.size,gpu._uploadedDataVersion,gpu._uploadedStyleVersion,
         data._dirtyStart,data._dirtyEnd,atlas._gpu._curveTexRows,atlas._gpu._bandTexRows,atlas._gpu._metaCap,atlas._gpu._uploadedVersion,
-        data._groups[0]!._bindGroup?.id??0,data._groups[0]!._bindGroupVersion);
+        data._groups[0]!._bindGroup?.id??0,data._groups[0]!._bindGroupVersion);};
     const actions:string[]=[];
     const act=(cpp:string,run:()=>void)=>{actions.push(cpp);run();};
     act("statement_probe(ops);",()=>new Function("retain",probe)((value:number)=>event("hook",value)));
