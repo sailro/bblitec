@@ -842,30 +842,6 @@ async function composeNodeGeometryViews(
                     "attachment.",
             );
         }
-        // The one geometry lane this port's vertex convention cannot serve
-        // through a node graph. `geomWrite` writes LOCAL_POSITION from
-        // whatever the graph connected, and every reached graph connects the
-        // `position` attribute -- which upstream is the mesh's LOCAL position
-        // beside a real `meshU.world`, and here is the node world already
-        // baked into the vertex beside an identity one. The Standard family
-        // meets the same wall and refuses it by name in
-        // `pal_gpu_shared.hpp` `standard_draw_world`; refusing it here keeps
-        // the node family from rendering a plausible-looking world position
-        // in a local-position attachment.
-        if (task.attachments.includes("LOCAL_POSITION")) {
-            throw new Error(
-                `Node material '${label}' is drawn by geometry task ` +
-                    `${task.index}, whose attachments include ` +
-                    "LOCAL_POSITION. `node-geometry-renderable.ts` " +
-                    "`geomWrite` writes that lane from the graph's own " +
-                    "input, which is the pin's LOCAL position attribute; " +
-                    "this port bakes each mesh's world into its vertices " +
-                    "and draws node graphs under an identity `meshU.world`, " +
-                    "so the lane would carry the world position instead. " +
-                    "`pal_gpu_shared.hpp` `standard_draw_world` refuses the " +
-                    "same shape for the Standard family.",
-            );
-        }
         const attachments = await geometryAttachmentTypes(task.attachments);
         const geometryView = view.createNodeGeometryMaterialView(material, {
             attachments,

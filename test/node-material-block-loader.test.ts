@@ -119,10 +119,12 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
     await assert.rejects(() => composeNodeMaterial({
         blocks: [{ id: 1, customType: "BABYLON.MissingEmitterBlock", inputs: [], outputs: [] }],
     }, "missing-emitter", options), /no emitter registered for block "MissingEmitterBlock"/);
-    await assert.rejects(() => composeNodeMaterial(graph, "scene149-local-refusal", {
+    const local = await composeNodeMaterial(graph, "scene149-local", {
         ...options,
         geometryTasks: [{ index: 0, attachments: ["LOCAL_POSITION"], emitColor: false }],
-    }), /attachments include LOCAL_POSITION/);
+    });
+    assert.deepEqual(local.geometryViews[0]!.attributes.map(({ name }) => name),
+        ["position", "normal", "uv"]);
     await assert.rejects(() => composeNodeMaterial(graph, "scene149-color-refusal", {
         ...options,
         geometryTasks: [{ index: 0, attachments: ["ALBEDO"], emitColor: true }],
