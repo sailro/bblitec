@@ -2409,6 +2409,9 @@ export function emitPropertyAssignment(
         if (ts.isObjectLiteralExpression(context.resolveStaticExpression(expression.right))) {
           context.noteMaterialColorObjectWrite(expression.right, "diffuseColor");
         } else {
+          // Retaining a source array reaches the same projection boundary as
+          // reading one, even if this program never reads the property back.
+          context.noteMaterialColorRead("diffuseColor");
           const shape = context.resolveStaticExpression(expression.right);
           if (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple") {
             context.fail(expression.right, "A static readonly tuple cannot retain material color identity; pass an owning numeric array.");
@@ -2462,6 +2465,11 @@ export function emitPropertyAssignment(
         `${record}.${recordField.field} ` +
           `${recordField.simpleOnly ? "=" : operator} ${stored};`,
       );
+      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
+        // This legacy object adapter has no numeric-array identity. Its
+        // render field must not be replaced later by the factory's array.
+        context.emit(`${record}.source_diffuse_color.reset();`);
+      }
       if (recordField.kind === "material" && recordField.property === "alpha") {
         // The pin reads `mat.alpha < 1` live when it builds
         // renderables, so a post-creation write moves the

@@ -84,6 +84,17 @@ test("compiled material colors retain source identity, double width, fallback an
     const registration = ["void require_scene_engine(","std::uint32_t material_family_bit(","std::uint32_t scene_material_families(",
         "void drain_scene_deferred_builders(","void register_scene("].map(name => cppFunction(sceneSource,name)).join("\n");
     const presence = lowerGltfMaterialColorPresence(new UpstreamSourceStore().getSourceFile("src/loader-gltf/gltf-pbr-builder.ts"));
+    const legacy = cppFunction(compileSource(`import {createEngine,createStandardMaterial} from "@babylonjs/lite";
+        async function main(){const engine=await createEngine({});const material=createStandardMaterial();
+        material.diffuseColor={r:.2,g:.3,b:.4};}`).cpp, "int main(")
+        .replace("int main(", "int legacy_source_main(")
+        .replace("return 0;", `v_engine.meshes.emplace_back(); v_engine.meshes[0].material = v_material;
+            bbl::Scene scene; scene.engine=&v_engine; scene.meshes.push_back(bbl::MeshHandle{0});
+            bbl::register_scene(scene);
+            assert(v_engine.materials[v_material.value].diffuse_color.r == .2f);
+            assert(v_engine.materials[v_material.value].diffuse_color.g == .3f);
+            assert(v_engine.materials[v_material.value].diffuse_color.b == .4f);
+            return 0;`);
     const directory = resolve("artifacts/test-material-color-identity");
     mkdirSync(directory, {recursive:true});
     const source = resolve(directory,"check.cpp"), executable = resolve(directory,"check.exe");
@@ -91,8 +102,10 @@ test("compiled material colors retain source identity, double width, fallback an
 #define main source_main
 ${compiled.cpp}
 #undef main
+${legacy}
 int main() {
     if (source_main()) return 1;
+    if (legacy_source_main()) return 1;
     assert(!bbl::gltf_has_base_color_factor(false,{.123456789012345,.4,.7,.8}));
     assert(!bbl::gltf_has_base_color_factor(true,{1,1,1,1}));
     assert(bbl::gltf_has_base_color_factor(true,{.123456789012345,.4,.7,.8}));
@@ -142,6 +155,10 @@ test("material-color transport refuses unsupported widths and later material-gro
     assert.throws(() => compileSource(prefix+`createPbrMaterial({baseColorFactor:[1,2,3]});}`), /four-channel numeric array/);
     assert.throws(() => compileSource(prefix+`p.diffuseColor=[1,2];}`), /three-channel numeric array/);
     assert.throws(() => compileSource(prefix+`const values:readonly number[]=[1,1,1,1];createPbrMaterial({baseColorFactor:values});}`), /static readonly tuple cannot retain material color identity/);
+    const writeOnly = prefix.slice(0, prefix.indexOf("const color="));
+    assert.throws(() => compileSource(writeOnly+`registerScene(scene);p.diffuseColor=[.2,.4,.6];}`), /per-group UBO snapshots/);
+    assert.throws(() => compileSource(writeOnly+`onBeforeRender(scene,()=>{p.diffuseColor=[.2,.4,.6];});}`), /per-group UBO snapshots/);
+    assert.doesNotThrow(() => compileSource(writeOnly+`registerScene(scene);p.diffuseColor={r:.2,g:.4,b:.6};}`));
 });
 
 test("glTF public factor presence comes from the pinned conditional and retains its array", async () => {
