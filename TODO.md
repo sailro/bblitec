@@ -204,7 +204,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 20 numbered scenes unregistered. Helper
+The current registry leaves these 19 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -225,7 +225,6 @@ modules without a numbered scene entry are not integration candidates.
 | 227, 228 | Multiple surfaces and swapchains |
 | 261 | Composite output identity, a source render-task reference as a descriptor option, a live blend-factor writer, a per-frame task execute hook, and camera projection jitter over a persistent per-task scene UBO. Five contracts. The last two have no refusal: with only the first three, generation succeeds and the scene renders unjittered and unblended. |
 | 275 | `loadFont` and `createDefaultTextData` folded by executing the pinned shaper at generation, a text scene entity carrying the pin's deferred registration, the alpha-to-coverage text arm, the pinned Slug shader family with its overridable constant, and a text draw path in both PALs. Six contracts; the payload folds to about 1.5k floats and pinned Tint accepts both stages today, but the sixth is a new draw subsystem and the fifth would be this compiler's first overridable shader constant. |
-| 302 | Ready for checkpoint adoption: primed self-rearming callbacks, inclusive static loops, inlined numeric returns, provider-backed native simulation, local Point/LocalPositionUpdated evaluators and live billboard registration implemented. Authored `?seekTime=2` MAD: SDL_GPU 0.0000033 full / 0.0001617 foreground; Dawn 0/0. Both backends pass frozen/live motion and camera replay; registry/golden/status adoption remains. |
 | 304 | FlowGraph runtimes and glTF interactivity |
 
 - [ ] Investigate the shared shark-pose residual in scenes 11/152 with a

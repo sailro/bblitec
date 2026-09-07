@@ -3400,6 +3400,22 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene302",
+        name: "Scene 302 - NPE Moving Emitter",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene302.ts",
+        title: "Babylon Lite Native - NPE Moving Emitter",
+        parity: {
+            // The authored query advances the seeded moving emitter, then
+            // keeps its live provider and billboard registered at zero speed.
+            referenceSearch: "?seekTime=2",
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "181", ...fixedCaptureEnvironment() },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [2, 3, 6],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene73",
         name: "Scene 73 - Split-Viewport NME Comparison",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene73.ts",
