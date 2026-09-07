@@ -12,6 +12,7 @@ import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { pinnedMatrixHeader } from "../src/lowering/pinned-matrix.js";
 import { pinnedWorldTransformHeader } from "../src/lowering/pinned-world-transform.js";
 import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
+import { composeDeformPickingShaders, deformPickingHeader } from "../src/pinned-picking-shaders.js";
 import { pinnedSceneMeshFeatures } from "../src/pinned-mesh-features.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
@@ -143,6 +144,13 @@ test("native direct morph storage matches pin bytes and keeps deformation before
     writeFileSync(join(output, "pinned_matrix.hpp"), pinnedMatrixHeader(context));
     writeFileSync(join(output, "pinned_world_transform.hpp"), pinnedWorldTransformHeader(context));
     const source = join(output, "check.cpp");
+    writeFileSync(join(output, "picking_projection.hpp"), deformPickingHeader(
+        await composeDeformPickingShaders({
+            meshFeatures: await Promise.all([
+                pinnedSceneMeshFeatures({ kind: "from-data", gltfAssetsBefore: 0, skinned: true }),
+                pinnedSceneMeshFeatures({ kind: "from-data", gltfAssetsBefore: 0, morphTargets: true }),
+                pinnedSceneMeshFeatures({ kind: "from-data", gltfAssetsBefore: 0, skinned: true, morphTargets: true }),
+            ]), skeleton: true, morph: true, detailed: true })));
     writeFileSync(source, `#define BBLITE_GPU_DEFORMATION 1
 #define BBLITE_HAS_PBR_RENDERER 1
 #define BBLITE_GPU_INSTANCING 0
@@ -151,6 +159,7 @@ test("native direct morph storage matches pin bytes and keeps deformation before
 #include <bblite/runtime.hpp>
 #include "pinned_matrix.hpp"
 #include "pinned_world_transform.hpp"
+#include "picking_projection.hpp"
 #include <bit>
 #include <cassert>
 #include <cstring>
@@ -170,7 +179,8 @@ bool pinned_variant_skeleton(std::size_t variant) { return variant == 1; }
 bool pinned_variant_vat(std::size_t) { return false; }
 ${cppDefinition(pal, "inline PinnedDrawConventions pinned_draw_conventions(")}
 ${["std::array<float, 16> outer_draw_world(", "std::array<float, 16> draw_world(",
-    "std::array<float, 16> scene_deformation_draw_world(", "std::vector<GpuVertex> transformed_vertices(",
+    "std::array<float, 16> scene_deformation_draw_world(", "std::array<float, 16> deformed_draw_world(",
+    "int pick_mesh_projection(", "std::vector<GpuVertex> transformed_vertices(",
     "std::array<float, 16> pinned_mesh_world(", "std::array<float, 16> pinned_identity_world(",
     "std::array<float, 16> pinned_x_mirrored_world(", "std::array<float, 16> pinned_draw_world(",
     "std::array<float, 16> standard_draw_world(", "std::vector<float> pack_morph_deltas(",
@@ -195,12 +205,15 @@ ${checks.join("\n")}
     bbl::Scene scene;
     for (const bool skinned : {false, true}) {
         record.scene_skeleton = skinned;
+        record.skinned = skinned; record.pinned_bone_palette = skinned;
+        assert(bbl::pal::pick_mesh_projection(engine, record) == (skinned ? 2 : 1));
         const auto conventions = bbl::pal::pinned_draw_conventions(skinned ? 1u : 0u, record);
         assert(conventions.mirrored_vertices && conventions.skeleton_draw == skinned);
         const auto packed = bbl::pal::transformed_vertices(engine, engine.geometries[0], record);
         assert(packed[0].position[0] == vertex.position.x && packed[0].position[1] == vertex.position.y && packed[0].position[2] == vertex.position.z);
         const auto expected = bbl::upstream::mesh_world_matrix(engine, record);
         assert(bbl::pal::pinned_draw_world(skinned, false, false, record, scene, engine) == expected);
+        assert(bbl::pal::deformed_draw_world(skinned, record, scene, engine) == expected);
         assert(bbl::pal::standard_draw_world(record, false, scene, engine) == expected);
         record.position.x += 0.25f;
     }
@@ -209,6 +222,30 @@ ${checks.join("\n")}
     assert(!bbl::pal::pinned_draw_conventions(0, record).mirrored_vertices);
     assert(plain[0].position[0] != vertex.position.x);
     assert(bbl::pal::pinned_draw_world(false, false, false, record, scene, engine) == bbl::pal::pinned_mesh_world());
+    record.skinned = false; record.gpu_deformation = false; record.morph_storage_weights.clear();
+    assert(bbl::pal::pick_mesh_projection(engine, record) == -1);
+    record.skinned = true;
+    assert(bbl::pal::pick_mesh_projection(engine, record) == 0);
+    record.position = {}; record.scaling = {1, 1, 1}; record.rotation = {};
+    auto palette_world = bbl::pal::pinned_identity_world(); palette_world[12] = 2.5f;
+    record.bone_matrices = {palette_world};
+    assert(bbl::pal::deformed_draw_world(true, record, scene, engine) == bbl::pal::pinned_identity_world());
+    // Imported morph attachments survive absent default weights and a
+    // later all-zero pose; both must keep the same shader/binding layout.
+    record.skinned = false; record.gpu_deformation = true;
+    assert(!engine.geometries[record.geometry].morph_positions.empty());
+    assert(record.morph_storage_weights.empty());
+    assert(bbl::pal::pick_mesh_projection(engine, record) == 1);
+    record.skinned = true;
+    assert(bbl::pal::pick_mesh_projection(engine, record) == 2);
+    record.skinned = false; record.morph_storage_weights = {0.0f};
+    assert(bbl::pal::pick_mesh_projection(engine, record) == 1);
+    assert(bbl::pal::deformed_draw_world(false, record, scene, engine) == palette_world);
+    record.skinned = true; record.pinned_bone_palette = false;
+    bool refused = false;
+    try { bbl::pal::pick_mesh_projection(engine, record); } catch (const std::runtime_error&) { refused = true; }
+    assert(refused);
+
 }
 `);
     const executable = join(output, "check.exe");

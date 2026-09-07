@@ -1,3 +1,4 @@
+import { deformPickingHeader, type DeformPickingShader } from "./pinned-picking-shaders.js";
 import { createHash } from "node:crypto";
 import type { ComposedEsmShadow } from "./pinned-esm-shadow.js";
 import ts from "typescript";
@@ -330,26 +331,8 @@ export interface UpstreamEmitOptions {
         /** The advanced pipeline's affine thin-instance arm. */
         thin?: string;
         detailed?: string;
-        /**
-         * The detailed module composed with the pin's deform vertex
-         * projection, for a candidate whose pose is live. Absent when the
-         * scene deforms nothing, which is the condition the pin's own
-         * lazy import of that module tests.
-         */
-        deform?: string;
-        /**
-         * Whether the composed `deform` module is the pin's MORPH arm.
-         *
-         * Recorded rather than re-derived, because the two questions are
-         * different disjunctions and a backend that sizes its bind group
-         * from the wrong one mismatches the shader it just deployed. The
-         * composition reads scene and asset morph targets; the runtime's
-         * own `BBLITE_GPU_MORPH_STORAGE` also takes a node-material
-         * variant whose morph bindings a graph composed. A scene with the
-         * second and not the first composes the `nomorph` projection --
-         * one `@group(3)` binding -- while that define says three.
-         */
-        deformMorph?: boolean;
+        /** Per-mesh projection arms, each composed for basic and reached detailed picks. */
+        deform?: readonly DeformPickingShader[];
         cloud?: string;
         billboard?: { facing: string; axisLocked?: string };
     };
@@ -824,21 +807,11 @@ class GeneratedSourceWriter {
 }
 
 #define BBLITE_GPU_DEFORMATION ${options.gpuDeformation ? 1 : 0}
-// The pin's deform pick projection, which is composed exactly where its
-// three inputs exist: a detailed pick to draw, a live pose to deform
-// from, and the per-bone palette texture the projection samples. The
-// define carries all three because the module either deployed or did
-// not, and a pipeline built for a missing shader is a startup failure.
-#define BBLITE_DEFORM_PICKING ${
-    options.pickingShaders?.deform !== undefined ? 1 : 0
-}
+// The pin's projection is deployed only when a pick can reach a live pose.
+#define BBLITE_DEFORM_PICKING ${options.pickingShaders?.deform?.length ? 1 : 0}
 #define BBLITE_GPU_MORPH_STORAGE ${gpuMorphStorage ? 1 : 0}
-// Which arm of the pin's deform projection the picking module was composed
-// with, so a backend sizes its bind group to the shader it deployed rather
-// than to a neighbouring question. Zero in every build that composes none.
-#define BBLITE_DEFORM_PICKING_MORPH ${
-    options.pickingShaders?.deformMorph ? 1 : 0
-}
+// Storage lifetime is compiled only when a deployed projection reads morphs.
+#define BBLITE_DEFORM_PICKING_MORPH ${options.pickingShaders?.deform?.some((variant) => variant.morph) ? 1 : 0}
 #define BBLITE_GPU_INSTANCING ${options.gpuInstancing ? 1 : 0}
 #define BBLITE_GPU_INSTANCE_COLORS ${options.gpuInstanceColors ? 1 : 0}
 // Baked vertex animation. Reached at bakeVat, which is the pin's own
@@ -1357,7 +1330,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     ),
                     vat: features.includes("mesh:vat"),
                     deformPicking:
-                        options.pickingShaders?.deform !== undefined,
+                        (options.pickingShaders?.deform?.length ?? 0) > 0,
                     pinnedSkeletonPalette:
                         options.pinnedSkeletonPalette ?? false,
                     dynamicThinInstances: features.includes(
@@ -2792,25 +2765,26 @@ ${shadow.blurFragmentWgsl}`,
                     });
                 }
             }
-            // The deform projection reaches only the VERTEX stage: the
-            // pin's builder splices its declarations, inputs and body
-            // around `vs` and leaves the shared fragment above them
-            // untouched. So the deforming arm costs one stage and shares
-            // the plain detailed module's fragment, the same way the
-            // second billboard orientation shares the first's below.
-            const deformPickingWgsl = options.pickingShaders?.deform;
-            if (deformPickingWgsl !== undefined) {
-                composedShaders.push({
-                    output:
-                        "upstream/shaders/" +
-                        "picking-detailed-deform.vert.native.wgsl",
-                    data:
-                        `// ${context.provenance(
-                            "src/picking/deform-picking-projection.ts",
-                            "getDeformPickingProjection",
-                        )}\n` + deformPickingWgsl,
-                    family: "picking",
-                });
+            // Deformation changes only the vertex stage; each mode keeps
+            // the affine pipeline's fragment and target layout.
+            const deformVariants = options.pickingShaders?.deform ?? [];
+            if (deformVariants.length > 0) {
+                this.tree.write(
+                    "upstream/include/bblite/upstream/picking_projection.hpp",
+                    deformPickingHeader(deformVariants),
+                );
+            }
+            for (const [index, variant] of deformVariants.entries()) {
+                for (const [mode, wgsl] of [["", variant.mesh], ["-detailed", variant.detailed]] as const) {
+                    if (wgsl === undefined) continue;
+                    composedShaders.push({
+                        output: `upstream/shaders/picking${mode}-deform-${index}.vert.native.wgsl`,
+                        data: `// ${context.provenance(
+                            "src/picking/deform-picking-projection.ts", "getDeformPickingProjection",
+                        )}\n${wgsl}`,
+                        family: "picking",
+                    });
+                }
             }
             // The pin's `makeBillboardPickWgsl` forks only in `basis()`,
             // which `vs` calls and `fs` does not -- so the second

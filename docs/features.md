@@ -442,12 +442,16 @@ coverage gamma and several picking combinations remain incomplete.
 
 ## Picking
 
-GPU picking supports the basic and detailed pipelines, mesh/cloud identities,
-sampled picked points and the reached skinned detailed-deformation arms.
-Billboard picking has a bounded contributor path. Detailed support does not
-yet cover every morph-only/basic deformation combination, scene-authored
-skeleton, filter/ignore/discard option, thin instance/VAT id or result property.
-Viewport and unsupported multi-contributor cases refuse at their boundary.
+GPU picking supports the basic and detailed pipelines, mesh/cloud identities
+and sampled picked points. Regular meshes select the pin's four-influence
+skeleton, morph-only or combined projection per mesh in both modes. The
+projection synchronizes pending pose writes before submitting the pick and
+reads the visible draw's bone texture and morph storage. Scene-authored poses
+keep their live mesh world transform. Billboard picking
+has a bounded contributor path. Filter/ignore/discard options, deformed thin
+instances, VAT ids and remaining result properties are incomplete. Deformed
+thin-instance picks, viewport and unsupported multi-contributor cases refuse
+at their boundary.
 
 `PickingInfo` retains one result identity through nullable helper returns,
 records, arrays and Map/Set keys. The reached `hit`, `bu` and `bv` scalar
