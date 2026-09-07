@@ -2,6 +2,7 @@ import ts from "typescript";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
+import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
@@ -776,6 +777,7 @@ class Compiler
     private lastGltfContainerAsset: CompileAsset | undefined;
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
+    public readonly meshWalks: CompiledMeshWalk[] = [];
     public readonly reachedNodeParticles: CompiledNodeParticles = {
         sets: [],
         steps: [],
@@ -1133,6 +1135,7 @@ class Compiler
                         ),
                 ),
                 nodeMaterials: this.reachedNodeMaterials,
+                ...(this.meshWalks.length ? {meshWalks: this.meshWalks} : {}),
                 ...(this.reachedTextData.length > 0 ? { textData: this.reachedTextData } : {}),
                 ...(this.reachedNodeParticles.sets.length > 0
                     ? {

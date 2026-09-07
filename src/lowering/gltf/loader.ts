@@ -80,6 +80,8 @@ export interface GltfLoaderOptions {
     retainLocalNormals?: boolean;
     /** Scene code reads the original public albedo Texture2D producer. */
     sourceTextureReads?: boolean;
+    /** Hydrate source collector permutations observed on the pinned hierarchy. */
+    sourceMeshWalks?: boolean;
     nonTrianglePrimitives?: boolean;
     /**
      * The asset carries Gaussian-splat clouds: packaging ran the pinned

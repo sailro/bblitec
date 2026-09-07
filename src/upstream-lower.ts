@@ -296,6 +296,8 @@ import { pinnedImageProcessingSource } from "./shader-builtins-utility.js";
  * both ends meant every new capability was declared twice.
  */
 export interface UpstreamEmitOptions {
+    /** At least one admitted source collector needs its observed glTF order. */
+    sourceMeshWalks?: boolean;
     textPipelines?: readonly ComposedTextPipeline[];
     textData?: readonly CompiledTextData[];
     idDiagnostics: boolean;
@@ -1365,6 +1367,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 gltf.lowerLoaderAdapter({
                     retainLocalNormals: nodeGeometryViewList.length > 0,
                     sourceTextureReads: features.includes("material:source-texture-read"),
+                    sourceMeshWalks: options.sourceMeshWalks ?? false,
                     animationBlending: features.includes(
                         "animation:gltf-blending",
                     ),

@@ -346,6 +346,14 @@ sparse/quantized/compressed inputs after packaging, texture transforms and
 material extensions. Unsupported extension fields and loader branches refuse.
 The `.babylon` parented/geometry-less-node surface remains incomplete.
 
+Recognized closed glTF mesh collectors retain their source traversal order.
+Packaging runs the pinned hierarchy builder and the admitted stack or recursive
+collector, then stores a separate permutation of the native mesh table. This
+preserves `Map` insertion order and repeated material construction; native flat
+mesh consumers keep their existing table. Only reached asset/collector pairs
+carry this metadata. Partial or repeated hierarchies, instanced/splat producers
+and early `break` remain refused by this bounded collector path.
+
 ## Geometry and meshes
 
 Reached primitives, mesh data, ribbons/extrusion/polyhedra, line systems, CSG,

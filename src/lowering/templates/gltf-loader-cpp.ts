@@ -5,7 +5,7 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -266,6 +266,7 @@ export function gltfLoaderCpp(
         dynamicThinInstances = false,
         retainLocalNormals = false,
         sourceTextureReads = false,
+        sourceMeshWalks = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
         animationMask = false,
@@ -346,6 +347,34 @@ std::size_t unsigned_or(const JsonObject& object, const std::string& key, std::s
     const ts::JsonValue* value = optional(object, key);
     return value ? unsigned_value(*value) : fallback;
 }
+${sourceMeshWalks ? `
+void load_source_mesh_walks(AssetRecord& asset, const JsonObject& document) {
+    const auto* packed = optional(document, ${JSON.stringify(GLTF_MESH_WALKS)});
+    if (!packed) return; // This file has no reached source collector.
+    auto walks = std::make_shared<std::vector<std::vector<std::size_t>>>();
+    for (const auto& row : packed->as_array()) {
+        auto& walk = walks->emplace_back();
+        const auto& entries = row.as_array();
+        if (entries.empty()) continue; // Collector demanded by another asset.
+        if (entries.size() != asset.meshes.size()) {
+            throw std::runtime_error("Invalid glTF source mesh walk size.");
+        }
+        std::vector<bool> seen(asset.meshes.size(), false);
+        walk.reserve(entries.size());
+        for (const auto& entry : entries) {
+            const double number = entry.as_number();
+            if (!(number >= 0 && number < static_cast<double>(asset.meshes.size())) || std::floor(number) != number) {
+                throw std::runtime_error("Invalid glTF source mesh walk index.");
+            }
+            const auto index = unsigned_value(entry);
+            if (seen[index]) throw std::runtime_error("Repeated glTF source mesh walk index.");
+            seen[index] = true;
+            walk.push_back(index);
+        }
+    }
+    asset.source_mesh_walks = std::move(walks);
+}
+` : ""}
 
 float float_or(const JsonObject& object, const std::string& key, float fallback) {
     const ts::JsonValue* value = optional(object, key);
@@ -5513,6 +5542,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             "no animations.");
     }` : ""}
     if (asset.meshes.empty()${gaussianSplats ? " && asset.gaussian_splats.empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
+${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }

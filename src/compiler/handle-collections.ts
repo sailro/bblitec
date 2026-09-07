@@ -67,6 +67,7 @@ import {
 // The same reader the material arms key their skinned mesh features by, so
 // "which meshes of this file are skinned" has one answer in the compiler.
 import { skinnedMeshIndices } from "../pinned-mesh-features.js";
+import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 
 /**
  * One engine handle collection an expression names.
@@ -141,6 +142,7 @@ export function emitHandleCollectionLoop<
 /** What the collection operations need from the entry compiler. */
 export interface HandleCollectionsContext
     extends HandleCollectionLoopContext {
+    readonly meshWalks: CompiledMeshWalk[];
     readonly checker: ts.TypeChecker;
     readonly dataTypes: {
         fromTsType(
@@ -453,12 +455,9 @@ export class HandleCollections {
      * renderables, as the asset's mesh collection — with the container it
      * flattened, which is what tells a caller the loop covers all of it.
      *
-     * The pin exports the same flatten as `getContainerMeshes`, and a scene
-     * that writes its own copy is asking for the same list. Answering with
-     * the asset's materialized meshes is what keeps the entity hierarchy —
-     * which native loading resolves away rather than allocating handles for
-     * — out of the lowering. Without this the call inlines, and its body
-     * refuses at `container.entities`, naming a tree that does not exist.
+     * Packaging observes the admitted body over the pinned glTF hierarchy.
+     * Native loading retains that permutation separately from its flat mesh
+     * table, preserving source order without allocating transform nodes.
      */
     public assetFlattenedMeshesIterationTarget(
         expression: ts.Expression,
@@ -500,7 +499,34 @@ export class HandleCollections {
             return undefined;
         }
         this.requireLoaderFlattenedContainer(owner.asset, call);
-        return { target: collection, asset: owner.asset };
+        const descriptor: CompiledMeshWalk = {
+            kind: "source",
+            parameter: declaration.parameters[0]!.name.getText(),
+            body: declaration.body!.getText(),
+        };
+        return {
+            target: this.sourceMeshWalk(owner, collection, descriptor),
+            asset: owner.asset,
+        };
+    }
+
+    private sourceMeshWalk(
+        owner: Value,
+        target: HandleCollectionTarget,
+        walk: CompiledMeshWalk,
+    ): HandleCollectionTarget {
+        if (owner.asset?.kind !== "gltf") return target;
+        const key = JSON.stringify(walk);
+        let index = this.context.meshWalks.findIndex(
+            candidate => JSON.stringify(candidate) === key,
+        );
+        if (index < 0) index = this.context.meshWalks.push(walk) - 1;
+        const demanded = owner.asset.meshWalks ??= [];
+        if (!demanded.includes(index)) demanded.push(index);
+        return {
+            ...target,
+            containerCpp: `bbl::asset_mesh_walk(${target.engineCpp}, ${owner.cpp}, ${index})`,
+        };
     }
 
     /**
@@ -692,10 +718,14 @@ export class HandleCollections {
             entities,
         );
         this.foldedFlattenLoops.add(loop);
-        return this.assetMeshCollection(
+        const result = this.assetMeshCollection(
             owner,
             declaration.name,
         );
+        result.handleCollection = this.sourceMeshWalk(
+            owner, result.handleCollection!, {kind: "preorder"},
+        );
+        return result;
     }
 
     /**
@@ -2907,10 +2937,9 @@ function isOptionalChildrenLength(
  * reaches every node under the container's entities and collects exactly the
  * ones the loader made mesh records for.
  *
- * Nor is the walk's ORDER proven: a worklist pops from the end, so it reaches
- * siblings in the reverse of the loader's document order. As for the
- * recursive visitor above, that is left unclaimed, and the caller refuses the
- * constructs that would observe it.
+ * This closed body is executed at packaging over the pin's actual glTF
+ * hierarchy. Its observed order becomes a separate native mesh permutation;
+ * it cannot be replaced by either document order or its reverse.
  */
 function isImportedMeshFlattenWalk(
     declaration: ts.FunctionDeclaration,
@@ -3060,9 +3089,8 @@ function isImportedMeshFlattenWalk(
  * walk is seeded from every entity, the descent runs on every node the
  * object probe passes, the collect arm is the renderable-field presence
  * test the loader's mesh records answer, and the body does nothing else --
- * one push, one recursive call, no other effect. Its ORDER is left
- * unclaimed, because the caller answers with the collection
- * `getContainerMeshes` answers with rather than with this traversal.
+ * one push, one recursive call, no other effect. Packaging executes this
+ * closed body over the pin's hierarchy to retain its actual order.
  */
 function isClosureMeshFlattenCollector(
     declaration: ts.FunctionDeclaration,
@@ -3467,13 +3495,9 @@ function guardedBy(
  * that it does nothing else: two statements, one push, one recursive call,
  * no other effect.
  *
- * Its ORDER is left unclaimed for the reason the worklist's is. This walk
- * is the pin's own pre-order DFS, but the native answer is
- * `AssetRecord::meshes`, which the loader builds in glTF node-array order;
- * the two coincide only for a document whose node array is depth-first,
- * which no spelling can promise. The caller answers with exactly the
- * collection `getContainerMeshes` answers with, so nothing learns an order
- * here that the pinned flatten does not already hand it.
+ * The proven traversal is the pin's preorder `getContainerMeshes`. Packaging
+ * executes that function on the pin's hierarchy and retains its permutation
+ * separately from the native node-array table.
  */
 function isRecursiveMeshFlattenVisitor(
     declaration: ts.FunctionDeclaration,

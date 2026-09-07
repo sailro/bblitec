@@ -19,6 +19,7 @@ import {
 } from "./pinned-picking-shaders.js";
 import type { CompiledShaderProgram } from "./compiler.js";
 import type {
+    CompileResult,
     CompiledNodeParticles,
     Feature,
 } from "./compiler/types.js";
@@ -252,6 +253,7 @@ async function materializeAsset(
     outputPath: string,
     assetPayloads: ReadonlyMap<string, string>,
     sourceTextureReads = false,
+    meshWalks: NonNullable<CompileResult["manifest"]["meshWalks"]> = [],
 ): Promise<MaterializedAssetFacts | undefined> {
     const inlineSource = assetPayloads.get(asset.source);
     if (
@@ -302,11 +304,18 @@ async function materializeAsset(
         return;
     }
 
-    if (asset.kind === "gltf" && /\.(?:gltf|glb)(?:[?#]|$)/i.test(source)) {
+    if (asset.kind === "gltf" && (
+        /\.(?:gltf|glb)(?:[?#]|$)/i.test(source) ||
+        (asset.meshWalks?.length ?? 0) > 0
+    )) {
         writeFileSync(
             destination,
             await resolveGeometryExtensions(
-                await packageGltf(source, dirname(inputPath), sourceTextureReads),
+                await packageGltf(
+                    source, dirname(inputPath), sourceTextureReads,
+                    meshWalks.map((walk, index) =>
+                        asset.meshWalks?.includes(index) ? walk : undefined),
+                ),
                 source,
             ),
         );
@@ -624,6 +633,7 @@ async function main(): Promise<void> {
                 outputPath,
                 result.assetPayloads,
                 result.manifest.features.includes("material:source-texture-read"),
+                result.manifest.meshWalks,
             ),
         ),
     );
@@ -825,6 +835,7 @@ async function main(): Promise<void> {
                 outputPath,
                 result.assetPayloads,
                 result.manifest.features.includes("material:source-texture-read"),
+                result.manifest.meshWalks,
             );
         }
     }
@@ -1341,6 +1352,7 @@ async function main(): Promise<void> {
         // the composition/lowering layer can name the scene call site that
         // pulled the owning feature in.
         featureSites: result.manifest.featureSites,
+        sourceMeshWalks: (result.manifest.meshWalks?.length ?? 0) > 0,
         ...(assetLightNodes !== undefined ? { assetLightNodes } : {}),
         shaderPrograms,
         geometryOutputTasks: result.manifest.geometryOutputTasks,

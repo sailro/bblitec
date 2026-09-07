@@ -3666,6 +3666,9 @@ struct SceneSkeletonRecord {
 
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
+    // Source traversal permutations, separate from loader-order storage.
+    // A cloned root shares the indices and maps them to its own mesh handles.
+    std::shared_ptr<const std::vector<std::vector<std::size_t>>> source_mesh_walks{};
     std::vector<LightHandle> lights;
     /**
      * The cameras the `_camera` loader feature instantiated, one per
@@ -4617,6 +4620,22 @@ struct Engine {
     Sprite2DYSortHook sprite_y_sort_hook;
     std::uint64_t next_file_texture_identity = 1;
 };
+
+inline std::vector<MeshHandle> asset_mesh_walk(
+    const Engine& engine, AssetHandle asset, std::size_t walk_index) {
+    const auto& record = engine.assets.at(asset.value);
+    if (!record.source_mesh_walks) {
+        throw std::runtime_error("Source mesh walk metadata is missing.");
+    }
+    const auto& indices = record.source_mesh_walks->at(walk_index);
+    if (indices.size() != record.meshes.size()) {
+        throw std::runtime_error("Source mesh walk does not cover the loaded mesh set.");
+    }
+    std::vector<MeshHandle> result;
+    result.reserve(indices.size());
+    for (const auto index : indices) result.push_back(record.meshes.at(index));
+    return result;
+}
 
 inline void AnimationFrameRequest::operator()(double timestamp) const {
     if (!state->pending) return;

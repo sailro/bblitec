@@ -23,6 +23,7 @@ import type {
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import type { CompiledTextData, TextFontSource } from "../pinned-text-data.js";
+import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 
 export type {
   NativeHostUiClassStyle,
@@ -103,6 +104,8 @@ export interface CompileManifest {
   customShaderPrograms: CompiledShaderProgram[];
   /** Every node-material graph the scene parsed, in reach order. */
   nodeMaterials: CompiledNodeMaterial[];
+  /** Ordered collectors projected separately from native document-order meshes. */
+  meshWalks?: CompiledMeshWalk[];
   /** The scene's node-particle program, summarized. */
   nodeParticles?: NodeParticleManifest;
   /** Static pinned shaper output, without a native text-renderer activation. */
@@ -939,6 +942,8 @@ export interface HandleCollectionInfo {
 }
 
 export interface CompileAsset {
+  /** Indices into CompileManifest.meshWalks demanded for this asset. */
+  meshWalks?: number[];
   source: string;
   output: string;
   kind:

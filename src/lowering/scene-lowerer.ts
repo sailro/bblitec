@@ -1917,6 +1917,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
     const std::vector<MeshHandle> source_meshes = source.meshes;
     const auto clone_animation = source.clone_mesh_animation;
     AssetRecord clone;
+    clone.source_mesh_walks = source.source_mesh_walks;
     clone.root_position = source.root_position;
     clone.root_rotation = source.root_rotation;
     clone.root_scaling_reset = source.root_scaling_reset;

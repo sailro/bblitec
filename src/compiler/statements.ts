@@ -2610,15 +2610,10 @@ export class StatementLowerer {
      * Lowers `for (const mesh of <walk>(container))`, where the walk is
      * proven to flatten the container to its renderables.
      *
-     * The body runs once per renderable, over the meshes native loading
-     * already flattened. `break` is refused: it stops the walk partway
-     * through, and a worklist reaches siblings in the reverse of the
-     * loader's document order, so where it stops is an order this walk
-     * never promised. `continue` observes nothing of that order — the loop
-     * still reaches every renderable, and each one independently skips the
-     * rest of its own iteration — so it lowers as the native `continue` the
-     * emitted range-for already spells, exactly as the same body written
-     * with the condition inverted under an `if` does today.
+     * The body runs in the source collector's observed order. `break` stays
+     * refused because this specialization carries a complete-asset mutation
+     * and resource-count proof; a partial traversal needs a weaker fact.
+     * `continue` lowers to the range-for's native continuation.
      *
      * The binding carries the container itself, which is the licence a
      * setter with no per-material compile-time identity needs: the loop
@@ -2642,7 +2637,7 @@ export class StatementLowerer {
         if (this.breaksEnclosingLoop(statement.statement)) {
             context.fail(
                 statement,
-                "break in a container's mesh walk is not lowered: the walk collects a set, and stopping partway through would depend on an order it does not fix.",
+                "break in a container's mesh walk is not lowered: partial traversal does not carry the complete-asset mutation and resource-count proof.",
             );
         }
         this.emitCollectionForOfBody(

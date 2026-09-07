@@ -4,6 +4,7 @@ import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
 import { packageMaterialExtensions } from "./gltf-material-extension-payload.js";
 import { packageSourceAlbedoIdentities } from "./gltf-material-texture-identity.js";
+import { packageMeshWalks, type CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
@@ -387,17 +388,17 @@ export async function packageGltf(
     source: string,
     baseDirectory: string,
     sourceTextureReads = false,
+    meshWalks: readonly (CompiledMeshWalk | undefined)[] = [],
 ): Promise<Uint8Array> {
     const remote = /^https?:\/\//i.test(source);
-    const rootResource = remote
-        ? await readResource(source, source, baseDirectory)
-        : { bytes: new Uint8Array(await readFile(resolve(baseDirectory, source))) };
+    const rootResource = await readResource(source, source, baseDirectory);
     const parsedGlb = glbChunks(rootResource.bytes);
     const document = parsedGlb?.document ?? asRecord(
         JSON.parse(new TextDecoder().decode(rootResource.bytes)),
     );
     if (sourceTextureReads) await packageSourceAlbedoIdentities(document);
-    const resourceDirectory = remote
+    await packageMeshWalks(document, meshWalks);
+    const resourceDirectory = remote || isDataUrl(source)
         ? baseDirectory
         : dirname(resolve(baseDirectory, source));
     const chunks: Buffer[] = parsedGlb ? [parsedGlb.binary] : [];

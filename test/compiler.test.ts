@@ -11999,7 +11999,7 @@ const containerFlattenWalk = `
         }
 `;
 
-test("lowers a proven container flatten to the loader's own mesh list", () => {
+test("lowers a proven container flatten through its source-order carrier", () => {
     const result = compileSource(`
         import {
             createEngine,
@@ -12017,11 +12017,10 @@ ${containerFlattenWalk}
         }
     `);
 
-    // The walk is answered by the asset's flattened meshes, so nothing in
-    // the emitted body walks an entity tree the loader resolved away.
+    // The generated permutation retains source order without a native tree.
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [\w]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.match(
         result.cpp,
@@ -12030,10 +12029,7 @@ ${containerFlattenWalk}
 });
 
 test("lowers a continue in the consuming loop over a proven container flatten", () => {
-    // A `continue` observes nothing of the walk's unclaimed order: the loop
-    // still reaches every renderable and each one skips only the rest of its
-    // own iteration, so it emits the native `continue` the range-for already
-    // spells -- the same lowering as the condition inverted under an `if`.
+    // Continue preserves the source permutation and skips the current body.
     const result = compileSource(`
         import {
             createEngine,
@@ -12057,7 +12053,7 @@ ${containerFlattenWalk}
 
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [\w]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.match(result.cpp, /\bcontinue;/);
     assert.match(
@@ -12067,9 +12063,7 @@ ${containerFlattenWalk}
 });
 
 test("refuses a break in the consuming loop over a proven container flatten", () => {
-    // Where a `break` stops is a question about the walk's order, and a
-    // worklist reaches siblings in the reverse of the loader's document
-    // order, so the refusal stays exactly on `break`.
+    // Partial traversal cannot carry the whole-asset mutation/count proof.
     assert.throws(
         () =>
             compileSource(`
@@ -12185,7 +12179,7 @@ ${containerFlattenClosure}
 
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [\w]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.match(
         result.cpp,
