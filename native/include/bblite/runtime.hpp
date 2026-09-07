@@ -1665,6 +1665,7 @@ struct SolidTexture {
 struct PbrMaterialOptions {
     SolidTexture base_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+    bool has_base_color_texture = false;
     SolidTexture orm{};
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
@@ -3275,6 +3276,10 @@ struct MaterialRecord {
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
+    /** PBR source slot presence; a factor-baked texture also fills the slot. */
+    bool has_public_base_color_texture = false;
+    /** Source Standard diffuse Texture2D format; separate from renderer defaults. */
+    bool diffuse_texture_srgb = false;
     TextureData metallic_roughness_texture;
     TextureData metallic_reflectance_texture;
     TextureData reflectance_texture;
@@ -4729,7 +4734,23 @@ enum class MaterialTextureSlot : std::uint8_t {
     orm,
     emissive,
     occlusion,
+    diffuse,
 };
+
+[[nodiscard]] inline bool material_texture_present(
+    const Engine& engine,
+    MaterialHandle material,
+    MaterialTextureSlot slot) {
+    const MaterialRecord& record = engine.materials.at(material.value);
+    if (slot == MaterialTextureSlot::base_color) {
+        return !record.standard_material && record.has_public_base_color_texture;
+    }
+    if (slot == MaterialTextureSlot::diffuse) {
+        return record.standard_material &&
+            (record.base_color_texture.has_image() || record.has_diffuse_render_texture);
+    }
+    throw std::runtime_error("Material source presence is not represented for this texture slot.");
+}
 
 /**
  * Adapt a material-owned texture slot to the source-level Texture2D value.
@@ -4746,8 +4767,21 @@ enum class MaterialTextureSlot : std::uint8_t {
     FileTexture texture;
     switch (slot) {
         case MaterialTextureSlot::base_color:
+        case MaterialTextureSlot::diffuse:
+            if (slot == MaterialTextureSlot::diffuse && record.has_diffuse_render_texture) {
+                throw std::runtime_error("Reading a Standard diffuse render attachment as a retained file texture is not supported.");
+            }
             texture.data = record.base_color_texture;
-            texture.srgb = record.base_color_srgb;
+            texture.srgb = slot == MaterialTextureSlot::diffuse
+                ? record.diffuse_texture_srgb : record.base_color_srgb;
+            if (slot == MaterialTextureSlot::base_color &&
+                record.has_public_base_color_texture && !texture.data.has_image()) {
+                texture.data.bytes.assign(record.base_color_fallback.begin(), record.base_color_fallback.end());
+                texture.data.rgba_width = 1;
+                texture.data.rgba_height = 1;
+            }
+            texture.width = texture.data.rgba_width;
+            texture.height = texture.data.rgba_height;
             break;
         case MaterialTextureSlot::normal:
             texture.data = record.normal_texture;

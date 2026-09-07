@@ -606,7 +606,18 @@ export const propertyRules: readonly PropertyRule[] = [
     helperArgument: "bbl::MaterialTextureSlot::base_color",
     textureStorage: "file",
     optionalFound: (ownerCpp, engineCpp) =>
-      `${engineCpp}.materials[${ownerCpp}.value].base_color_texture.has_image()`,
+      `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::base_color)`,
+  },
+  {
+    owner: "material",
+    property: "diffuseTexture",
+    value: "texture",
+    helper: "bbl::material_texture",
+    helperTakesEngine: true,
+    helperArgument: "bbl::MaterialTextureSlot::diffuse",
+    textureStorage: "file",
+    optionalFound: (ownerCpp, engineCpp) =>
+      `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::diffuse)`,
   },
   {
     owner: "material",

@@ -1035,6 +1035,7 @@ void set_material_base_color_file(
     MaterialRecord& record = engine.materials[material.value];
     record.base_color_srgb = texture.srgb;
     record.base_color_texture = std::move(texture.data);
+    record.has_public_base_color_texture = true;
 }
 
 // createPbrMaterial preserves its Texture2D props, and the pinned PBR
@@ -1263,6 +1264,7 @@ MaterialHandle create_pbr_material(
     material.base_color_srgb = false;
     material.orm_fallback = options.orm.texel;
     material.base_color_factor = options.base_color_factor;
+    material.has_public_base_color_texture = options.has_base_color_texture;
     material.roughness_factor = options.roughness_factor;
     material.metallic_factor = options.metallic_factor;
     material.direct_intensity = options.direct_intensity;
@@ -1615,6 +1617,7 @@ TextureData& take_standard_diffuse_slot(
     MaterialRecord& record = standard_slot_material(engine, material);
     record.has_diffuse_render_texture = false;
     record.base_color_texture = TextureData{};
+    record.diffuse_texture_srgb = false;
     return record.base_color_texture;
 }
 ` : ""}${solid ? solidTextureDataFunction : ""}${diffuse ? `
@@ -1668,6 +1671,7 @@ void set_standard_diffuse_pixels_texture(
     slot.sampler = texture.sampler;
     slot.uv_transform = texture.uv_transform;
     slot.uv_invert_y = texture.uv_invert_y;
+    standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
 }
 ` : ""}${solid ? `
 // The same slot, filled by a createSolidTexture2D texture -- the fourth
@@ -1698,6 +1702,7 @@ void set_standard_diffuse_file_texture(
     MaterialHandle material,
     const FileTexture& texture) {
     take_standard_diffuse_slot(engine, material) = texture.data;
+    standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
 }
 ` : ""}${emissiveFile ? `
 // setStandardEmissiveTexture over a loaded image. The render-texture arm

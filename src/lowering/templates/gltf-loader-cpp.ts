@@ -1505,6 +1505,10 @@ MaterialHandle load_material(
     bool animated_base_color) {
     MaterialRecord material;
     material.name = string_or(material_json, "name");
+    // buildDefaultPbrTextures always creates a source Texture2D, including
+    // the factor-baked 1x1 fallback. Renderer image presence is not source
+    // property presence.
+    material.has_public_base_color_texture = true;
     material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
     material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {

@@ -101,6 +101,7 @@ export interface MaterialOptionContext
 export interface CompiledPbrMaterialOptions {
     baseColor: Value;
     baseColorFactor: string;
+    hasBaseColorTexture: boolean;
     orm: Value;
     metallicFactor: string;
     roughnessFactor: string;
@@ -709,6 +710,7 @@ export function compilePbrMaterialOptions(
     }) - 1;
     return {
         baseColor,
+        hasBaseColorTexture: baseColorExpression !== undefined,
         baseColorFactor:
             baseColorFactor?.cpp ??
             "bbl::Color4{1.0f, 1.0f, 1.0f, 1.0f}",

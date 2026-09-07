@@ -558,6 +558,7 @@ export function compileMaterialIntrinsic(
             const {
                 baseColor,
                 baseColorFactor,
+                hasBaseColorTexture,
                 orm,
                 metallicFactor,
                 roughnessFactor,
@@ -635,6 +636,7 @@ export function compileMaterialIntrinsic(
                 `bbl::PbrMaterialOptions{` +
                 `.base_color = ${baseColorCpp}, ` +
                 `.base_color_factor = ${baseColorFactor}, ` +
+                `.has_base_color_texture = ${hasBaseColorTexture}, ` +
                 `.orm = ${ormCpp}, ` +
                 `.metallic_factor = ${metallicFactor}, ` +
                 `.roughness_factor = ${roughnessFactor}, ` +
