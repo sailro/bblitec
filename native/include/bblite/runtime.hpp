@@ -976,7 +976,7 @@ struct PropertyAnimationTarget {
     // A plain-data writer retains this owner through its managed closure.
     // The mixer keys the pin's resolved (object, property) pair.
     const void* object_identity = nullptr;
-    std::string property;
+    std::string property{};
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(write_scalar); }
 };
 
