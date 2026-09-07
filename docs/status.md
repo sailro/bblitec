@@ -1,21 +1,13 @@
 # Current status
 
-Published full-image / foreground MAD for both native backends against the
-pinned browser references. Thresholds and poses live in `src/scene-registry.ts`;
-`npm run status:verify` checks these rows against the available parity reports.
-These are baseline measurements, not a claim that the current working tree has
-been revalidated.
+Published full-image / foreground MAD against pinned browser references.
+Poses and gates live in `src/scene-registry.ts`; `npm run status:verify` checks
+these rows against available reports. Values do not certify an unvalidated
+working tree. Interpretation belongs in [fidelity](fidelity.md#what-is-measured-the-full-page).
 
 ## Curated parity scenes
 
-Values below 0.500 are plain; yellow is 0.500 to below 1.000, and red is
-1.000 or greater. Colour describes magnitude, not the scene-specific pass/fail
-threshold. [Debugging](debugging.md) owns interpretation and capture commands.
-
-Physics rows can include Bullet/Havok trajectory differences; UI rows can
-include RmlUi/browser layout and font differences. Those substitutions are
-explained in [fidelity](fidelity.md). A nonzero residual alone does not identify
-its cause.
+Pinned numbered scenes. Color marks magnitude: yellow ≥0.5, red ≥1; scene-specific gates remain authoritative.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |
@@ -258,11 +250,7 @@ its cause.
 
 ## Upstream application gates
 
-These are complete applications copied byte-for-byte from the same pinned
-Babylon Lite source as the curated scenes. Their full reached source and asset
-graphs are SHA-256-checked, then compiled, rendered, and measured by the same
-two-backend validation path. They exercise cross-feature behavior that a small
-parity scene intentionally does not.
+Unchanged pinned applications, including their reached source and asset graphs.
 
 | Application | Preview | SDL_GPU | Dawn | Coverage |
 | --- | :---: | ---: | ---: | --- |
@@ -280,17 +268,12 @@ parity scene intentionally does not.
 | Freeciv | <img src="images/scenes/freeciv.png" alt="Freeciv rendering" width="160"> | 0.175 / 0.172 | 0.158 / 0.155 | Strategy map; sprites; picking; retained cursor/tooltips. |
 | Sandblox | <img src="images/scenes/sandblox.png" alt="Sandblox rendering" width="160"> | 0.095 / 0.100 | 0.095 / 0.100 | 3D building sandbox; dynamic coloured thin instances; material plugins; property animation; audio; JSON save/load; retained editing UI. UI residual; canvas-only MAD: 0.000 / 0.000 on both backends. |
 | Voxel Sandbox | <img src="images/scenes/minecraft.png" alt="Voxel Sandbox rendering" width="160"> | $\color{#cf222e}{\textsf{1.104}} / \color{#cf222e}{\textsf{1.104}}$ | $\color{#cf222e}{\textsf{1.103}} / \color{#cf222e}{\textsf{1.103}}$ | Procedural voxel world; generated texture atlas; custom shader materials; audio; save/load; retained HUD and crosshair. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.000, Dawn 0.000 / 0.000. |
-| NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Live node-particle graph on the pure-2D bridge: block evaluators partially evaluated at generation, per-particle closures and the pinned simulation loop translated to C++, the pinned random sequence on both sides; flare texture drawn in Chromium at generation; mip-chained sprite atlas; pointer-following emitter origin. |
-| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.373 / 0.455 | 0.372 / 0.453 | Screen-space contact shadows and one-bounce GI over the Cornell box; depth-only producers; temporal resolve with history copy and composite passes; retained toggle buttons. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.002, Dawn 0.000 / 0.000. |
+| NPE on Sprite2D | <img src="images/scenes/npe-sprite2d.png" alt="NPE on Sprite2D rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Live pure-2D node particles; sprite atlas; pointer-following emitter. |
+| Screen-Space Effects | <img src="images/scenes/screen-space-effects.png" alt="Screen-Space Effects rendering" width="160"> | 0.373 / 0.455 | 0.372 / 0.453 | Contact shadows; one-bounce GI; temporal history; retained controls. UI residual; canvas-only MAD: SDL_GPU 0.001 / 0.002, Dawn 0.000 / 0.000. |
 
 ## Project-owned differential gates
 
-These scenes are authored in `bblitec`, but their browser reference still runs
-the same TypeScript against the pinned Babylon Lite package. Their MAD measures
-native differential fidelity; it does not represent upstream corpus coverage.
-
-They cover contracts absent from the measured corpus. A corpus scene supersedes
-a project-owned gate when it reaches the same contract.
+Repository fixtures running against pinned Babylon Lite. These measure contracts outside current corpus coverage.
 
 | Scene | Preview | SDL_GPU | Dawn | Coverage |
 | ---: | :---: | ---: | ---: | --- |

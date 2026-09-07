@@ -1,226 +1,126 @@
 # Native page UI
 
-The compiler lowers a bounded scene-created DOM/CSS/Canvas2D surface into
-typed retained operations. RmlUi projects them into one backend-neutral draw
-frame, consumed by SDL_GPU and Dawn. This is a compatibility surface, not a
-general browser.
+The bounded DOM/CSS/Canvas2D projection uses retained typed operations and
+RmlUi. SDL_GPU and Dawn consume the same UI draw frame. This page owns the UI
+surface and its compatibility limits.
 
 ## Integration
 
-`ui:rml` selects RmlUi, FreeType, platform fonts and renderer integration.
-`ui:inline-svg` additionally requires LunaSVG. Static shipping artifacts
-separate core UI from SVG; the complete development artifact includes SVG.
-Scene feature selection and minimal dependency checks are documented in
-[development](development.md).
-
-Scene-created controls come from the original TypeScript. Reviewed
-`ui/*.json` companions represent static host-page chrome through the same IR.
-They are explicit inputs, not automatic browser-page discovery.
+`ui:rml` selects RmlUi/FreeType; `ui:inline-svg` adds LunaSVG. See
+[development](development.md#minimal-size-shipping-builds) for dependencies.
+Scene TypeScript owns live controls. Reviewed `ui/*.json` companions describe
+static host chrome explicitly; they do not discover arbitrary browser pages.
 
 ## DOM and events
 
-| Area | Supported surface |
+| Area | Supported |
 | --- | --- |
-| Construction | Static-tag createElement; appendChild/append, root attachment and remove |
-| Content | textContent/innerText, bounded innerHTML, className/id/type, static-name attributes |
-| Styles/classes | cssText and reached style properties; classList add/remove/forced toggle |
-| Queries | Static class query on a known root with a complete retained subtree |
-| Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer id |
-| Focus | Retained control/canvas focus, focus listeners, activeElement identity, button focus navigation |
-| Files | Object-URL download anchors and static one-file inputs |
+| Construction | Static-tag createElement, appendChild/append, root attachment, remove |
+| Content | textContent/innerText, bounded innerHTML, className/id/type, static attributes |
+| Styles/classes | cssText, reached style fields, classList add/remove/forced toggle |
+| Queries | Static class query on a known complete retained subtree |
+| Input | Reached click/mousedown/pointerdown/up/cancel/lost-capture callbacks; one pointer |
+| Focus | Control/canvas focus, focus listeners, activeElement identity, button navigation |
+| Files | Object-URL download anchors and static single-file inputs |
 
-UI receives pointer input before scene camera controls. Consumed UI events
-must not also move the camera. Window keyboard listeners run before default
-UI actions; preventDefault suppresses those actions and camera propagation.
-Element records update in place, preserving focus, hover and capture identity.
-Borrowed event objects cannot escape their dispatch; copy owned scalar fields
-into retained state.
+UI receives pointer input before cameras. Consumed events do not move cameras;
+Window keyboard listeners run before default UI actions. `preventDefault`
+suppresses those actions and camera propagation. Retained elements preserve
+focus/hover/capture identity. Borrowed events cannot escape dispatch; copy
+owned scalar fields.
 
-The main engine canvas exposes drawing-buffer pixels through `width/height`
-and CSS pixels through `clientWidth/clientHeight`. CSS extents divide the
-drawable size by SDL's window display scale, matching RmlUi's density ratio.
-SDL window coordinates differ across platforms, so canvas pointer positions
-convert by pixel density divided by display scale before browser callbacks.
-Display-scale changes refresh these metrics even without a pixel resize.
-This keeps projected labels, drag positions and cursor-anchored zoom aligned
-at 100%, fractional and 200% scaling.
-
-Button descendants share their button's focus target. A press/release within
-the button activates it; release outside cancels. Conditional mousedown
-cancellation restores prior focus for that event. Cursor ownership follows
-pointer events, including restoring visibility when leaving a hidden canvas
-cursor.
+Canvas `width/height` are drawable pixels; `clientWidth/clientHeight` are CSS
+pixels. Pointer conversion uses pixel density/display scale. Density changes
+refresh metrics even without a drawable resize.
 
 ### File transfer controls
 
-A live native object URL plus anchor `download` opens the host save dialog.
-Accepted Blob bytes publish through randomized exclusive staging and atomic
-replacement; cancellation writes nothing. Arbitrary URL navigation refuses.
+Downloads use save dialogs and atomic publication; cancellation writes nothing.
+File inputs snapshot bytes/name before change dispatch. Cancellation retains the
+old selection; retained File values keep old snapshots. Reads enforce per-file
+limits and a 256 MiB engine live-selection cap. `File.text` reads the snapshot.
 
-A file input accepts one selection and snapshots bytes/display name before
-dispatching its change callback. Cancellation preserves the previous selection
-and emits no callback. Input/FileList/File values share the immutable snapshot;
-replacement/removal releases their references while retained old File values
-keep their bytes. Reads enforce a per-file bound and a 256 MiB per-engine
-live-selection cap. File.text reads the snapshot, never a source-supplied path.
-
-Native picker completion is synchronized: the change listener and immediate
-text continuation can run before click returns. This ordering is an explicit
-adaptation. Multiple files, directories, wildcard/parameterized/unmappable
-accept entries and source-selected paths refuse.
+Picker completion and immediate text continuations can occur before `click`
+returns. Multiple files/directories, unsupported accept entries, arbitrary URL
+navigation and source-selected native paths refuse.
 
 ### Markup
 
-innerHTML parses at generation. It accepts text, bounded div/span markup and
-reviewed inline svg/path/rect attributes; runtime text is escaped. Scripts,
-event attributes, arbitrary elements, dynamic attributes and malformed nesting
-refuse. LunaSVG rasterizes inline vectors at live CSS size. currentColor tints
-the image, so mixing it with literal paint and selecting internal path/rect
-elements refuse.
+Generation-time innerHTML accepts bounded text/div/span and reviewed
+svg/path/rect attributes. Scripts, event attributes, dynamic attributes,
+unsupported elements and malformed nesting refuse. Runtime text is escaped.
+Inline SVG rasterizes at live CSS size; mixed currentColor/literal paints and
+queries into SVG internals refuse.
 
 ## Canvas2D
 
-The retained slice includes backing dimensions, a 2D context, scale,
-provably full-surface clear, fillRect, paths (move/line/close/arcTo/arc), reached fill and
-stroke state, putImageData, canvas-to-canvas destination-rectangle drawImage,
-sampling intent and bounded fillText.
+Supports backing dimensions, scale, full-surface clear, fillRect, bounded
+paths/fill/stroke, putImageData, destination-rectangle canvas drawImage,
+sampling intent and bounded fillText. Offscreen canvases retain premultiplied
+RGBA pixels and revisions.
 
-Offscreen canvases retain premultiplied RGBA pixels and content revisions.
-The IR carries element handles and sampling state, not GPU objects.
-Partial clear, source-rectangle blits, general text shaping/clipping,
-arbitrary transforms and general non-convex tessellation are unsupported.
-Geometry is tessellated from the retained command stream for each draw frame.
+An engine-less entry can present primary `renderCanvas` with window/input/RAF
+support on both backends. Source-created GPU engine ownership cannot share that
+primary canvas. Client size stays live; backing dimensions follow source resets.
+Rectangles normalize negative extents and use backing-pixel fractional coverage.
+Opaque full redraws retire covered commands.
 
-An engine-less entry can present the primary `renderCanvas` through this same
-IR. Its private platform host supplies window size, input, the RAF clock and
-both GPU backends without creating a Babylon scene. Primary client dimensions
-stay live across resize; backing dimensions retain the source's reset behavior.
-Combining primary Canvas2D ownership with a source-created GPU engine refuses.
-
-Rectangles normalize negative extents, apply the retained scale and clip to
-the backing surface without changing the current path. Fractional boundaries
-use backing-pixel area coverage before CSS layout scaling. A full opaque
-rectangle retires covered commands, bounding repeated full redraws; partial
-or translucent rectangles preserve earlier drawing. Browser texture-producing
-canvases retain their existing executed materialization route.
+Partial clear, source-rectangle blits, arbitrary transforms, general
+clipping/shaping and non-convex tessellation remain unsupported.
 
 ## CSS, layout, and fonts
 
-The projection supports the reviewed property surface: browser defaults for
-reached tags, platform font families/weights, fixed positioning/inset/calc,
-reached shorthands, packaged backgrounds, alpha colours, gradients, rounded
-borders, text effects and deterministic CSS animation.
+Supports reached browser defaults, platform fonts, fixed/inset/calc positioning,
+bounded shorthands, backgrounds, gradients, rounded borders, text effects and
+deterministic CSS animation. Scrollbars are 16 density-independent pixels.
 
-The default stylesheet also sizes RmlUi's generated scrollbars: both axes use
-16 density-independent pixels with visible draggable thumbs. The built-in
-controls opt into pointer input over the otherwise transparent overlay.
-RmlUi supplies no built-in scrollbar styling; an auto-width vertical scrollbar otherwise
-occupies its parent's full width when overflow begins. This can collapse a
-height-limited flex panel's children on a short window or at higher display
-scaling. The native layout fixture checks 100%/200% density, resize into and
-out of overflow, both axes, and wheel/drag access to the menu's lower controls.
+Selectors are bounded class/id/compound and proven ancestor forms, with optional
+hover. Tag-only projection is unsupported. Static selectors/properties are
+validated; source/sheet order and live max-width rules are retained.
+Only fixed grids with proven equivalent wrapping-flex geometry lower; unknown
+track/class/id changes refuse.
 
-Stylesheet selectors are bounded: class/id, two-class and tag/class
-compounds, reviewed id/class descendants and statically proven
-ancestor-class/tag forms with optional hover. A tag-only rule is not
-projected; a companion spells it as an ancestor-class/tag form, whose
-specificity ties with the tag/class compound it pairs with, so their source
-order decides where the browser's specificity would. Source order, specificity, attached-sheet order and live
-max-width media evaluation are retained. Runtime style values pass through
-the projection; static property names and static values are validated.
+Fonts use DirectWrite/CoreText/fontconfig. Generic emoji/ZWJ shaping is limited.
+Unauthored button fonts use the generic sans default; normal line height uses
+per-face ratios, so browser glyph/size rounding can differ.
 
-Fixed grids lower only when static repeat(integer, px) tracks, gaps and
-child geometry prove equivalence to wrapping flex. Track-changing styles,
-unknown class/id mutations and unsupported geometry refuse. The private
-container does not match author selectors; mutable proven shapes migrate
-existing children without recreating them.
-
-Fonts resolve through DirectWrite, CoreText or fontconfig, with platform emoji
-fallback where available. No hardcoded font paths are required. General
-emoji/ZWJ shaping is outside the default RmlUi font engine. A reached
-`<button>` without an author font takes Chromium's form-control default below
-author rules: the generic sans face two points under the 16px default, at
-that face's normal line height, rather than the inherited system-ui size.
-RmlUi has no `line-height: normal`; the projection approximates it with each
-face's own ratio -- the system face's at the document root, the generic sans
-face's on that button rule -- so an element at another size inherits a ratio
-computed for one face rather than the browser's per-size rounding.
-
-Maintained patches under `native/patches/` adapt the installed RmlUi:
-
-| Patch | Compatibility behavior |
+| Maintained RmlUi patch | Purpose |
 | --- | --- |
-| `rmlui-css-box-model.patch` | Solid background under borders; shrink-to-fit sizing beside an absolute horizontal offset |
-| `rmlui-premultiplied-rounding.patch` | Browser-oriented colour/opacity rounding while preserving premultiplied constraints |
-| `rmlui-fractional-letter-spacing.patch` | Fractional accumulation in the default font engine's width/geometry path |
-| `rmlui-transform-key-ownership.patch` | Transition keys own their mutable transforms; preparing animation must not replace a shared stylesheet percentage with the element's old pixel offset |
+| `rmlui-css-box-model.patch` | Solid backgrounds under borders; offset shrink-to-fit sizing |
+| `rmlui-premultiplied-rounding.patch` | Browser-oriented color/opacity rounding |
+| `rmlui-fractional-letter-spacing.patch` | Fractional default-font accumulation; excludes HarfBuzz sample |
+| `rmlui-transform-key-ownership.patch` | Own mutable transition keys; preserve shared relative transforms |
 
-These are compatibility choices. RmlUi documents padding-area background
-painting, and CSS does not prescribe the browser's exact byte-rounding
-algorithm. Do not characterize every difference as a violation of RmlUi's
-contract. The letter-spacing patch does not cover its separate HarfBuzz sample.
-The transform ownership regression checks resizing after a press/release
-transition and another element sharing the same selector. Without the patch,
-`translateX(-50%)` retains the pre-transition width and loses centering when
-text grows. Interpolation still resolves relative units at transition start;
-fully responsive relative-unit interpolation during a transition is not covered.
-
-After changing a maintained patch, rebuild the installed RmlUi library before
-testing UI scenes. Regeneration alone does not update dependency binaries;
-use the build commands and explicit install-root override in development.
-
-Fractional font sizing, glyph rasterization and shaping still differ from the
-browser. This is a known mechanism, not a claim that every UI residual is an
-unavoidable floor. Gradient decorators also retain separate border-compositing
-limitations.
+Relative transition units resolve at transition start. Fully responsive
+relative-unit interpolation, gradient border compositing and exact browser
+font rasterization are not guaranteed. Rebuild patched libraries before checks.
 
 ## Rendering
 
-RmlUi records geometry, texture updates, scissors, transforms and ordered
-backdrop stages. Both renderers draw a transparent UI layer at the scene
-sample count and composite with premultiplied alpha. A backdrop blur resolves
-preceding UI, snapshots the accumulated image, uses cached FP16 scratch
-targets and clips against scissor/clip geometry before later UI.
+Both backends composite a premultiplied transparent layer at scene sample count.
+Backdrop blur snapshots preceding UI, uses FP16 scratch targets and clips before
+later UI. Scene/sprite drivers support retained UI; standalone effect and
+scene-less frame-graph drivers refuse it. Resize/density updates intrinsic
+measurements. Canvas overlays sit below DOM chrome.
 
-Scene and sprite-only drivers integrate UI. Standalone effect and scene-less
-frame-graph drivers currently refuse it during generation. Resize/density
-changes update RmlUi and intrinsic measurements. Packaged image decorators
-resolve through the scene's asset directory.
-
-Canvas overlays render below retained DOM chrome regardless of arbitrary
-z-index interleaving. This is a recorded limitation for translucent flashes.
-
-## Capture and parity
-
-The Offscreen host companion describes the settled pinned HTML. Its two equal
-`minmax(0,1fr)` grid tracks use equivalent flex panes with the original 2 px gap;
-the max-width rule switches both to stacked panes. Loading-overlay scripts are
-not part of this settled native companion. Source TypeScript owns the button
-text, active attribute, worker status and resize messages. Native circles using
-percentage border radii, box shadows and platform text rasterization retain
-the limitations below; full-page and separate canvas gates measure them.
-
-[Fidelity](fidelity.md#what-is-measured-the-full-page) owns the full-page versus
-canvas-only measurement contract; [status](status.md) publishes results and
-[debugging](debugging.md) owns capture commands. Font/layout differences must
-not hide a scene-rendering regression under a permissive composite threshold.
+The Offscreen companion represents settled host HTML using equivalent flex panes;
+its loading scripts are omitted. TypeScript still owns live button/status and
+resize messages.
 
 ## Limits
 
-In addition to the bounded grammar above, `substituted-ui-runtime` records:
+- No general selectors/traversal/observers, text forms, JavaScript hover callbacks,
+  multiple pointer identities or arbitrary events.
+- Supported inset outlines become borders; other shadows/font-variant-numeric
+  can degrade. General grid and unsupported text-shadow forms refuse.
+- The reviewed difference-blend crosshair degrades; other unsupported blend
+  modes refuse. Backdrop blur does not supply general mask/filter layers.
+- blur(px)/none are supported; other reached backdrop functions can degrade.
+- will-change, touch-action, user-select and image-rendering are accepted hints.
+- element.animate and listener removal are no-ops; CSS keyframes use mapped easing.
 
-- No general selectors, DOM traversal, mutation observers, live text/form input,
-  JavaScript hover callbacks, multiple pointer identities or arbitrary events.
-- Supported inset selection outlines project as retained borders; other box
-  shadows and font-variant-numeric can degrade without rendering.
-- The reviewed difference-blend crosshair degrades; other unimplemented blend
-  modes refuse. General mask/filter layers are not supplied by backdrop blur.
-- blur(px)/none backdrop filters are supported; other reached functions can
-  carry recorded degradation. Gradient-text-only properties refuse outside
-  that projection.
-- will-change, touch-action, user-select and image-rendering are accepted
-  hints without a general native implementation.
-- element.animate and listener removal are no-ops; CSS keyframes use mapped
-  easing curves rather than identical browser timing functions.
-- General grid, colour-transparent text and unsupported text-shadow forms
-  refuse instead of silently approximating.
+## Capture and parity
+
+Use the [full-page measurement contract](fidelity.md#what-is-measured-the-full-page)
+and [diagnostic commands](debugging.md). Published values belong in
+[status](status.md); do not infer that every UI residual is unavoidable.
