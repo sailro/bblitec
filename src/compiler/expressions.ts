@@ -591,6 +591,11 @@ export class ExpressionLowerer {
                 unwrapped,
                 "read",
             );
+            const property = data ?? this.context.compilePropertyAccess(unwrapped);
+            if (assertedNonNull && property.kind === "data" &&
+                property.dataType?.kind === "optional" && property.dataType.inner.kind === "handle" && property.dataType.inner.handle === "node-input") {
+                return this.context.dataLowerer.narrowOptional(property, expression, true);
+            }
             if (data) {
                 return data.kind === "data" &&
                     !ts.isPropertyAccessChain(unwrapped) &&
@@ -601,7 +606,7 @@ export class ExpressionLowerer {
                       )
                     : data;
             }
-            return this.context.compilePropertyAccess(unwrapped);
+            return property;
         }
         if (ts.isNewExpression(unwrapped)) {
             const browserFile = compileBrowserFileConstructor(

@@ -12,6 +12,7 @@ import {
     doubleLiteral,
     isTypedArrayType,
     passesByReference,
+    pinnedHandleKind,
     typedArrayStem,
     typedArrayStoreExpression,
     type DataIterationElement,
@@ -3061,7 +3062,7 @@ export class DataLowerer {
             // every mesh intrinsic and property assignment works on a
             // mesh read out of a struct or array exactly as it does on
             // a mesh local. The reached subset has one engine.
-            const engineCpp = dataType.handle === "text-data" || dataType.handle === "text-renderable"
+            const engineCpp = dataType.handle === "text-data" || dataType.handle === "text-renderable" || dataType.handle === "node-input"
                 ? undefined
                 : dataType.handle === "picking-info"
                 ? `bbl::picking_engine(${cpp})`
@@ -5317,15 +5318,16 @@ export class DataLowerer {
                     dataType.inner.kind === "handle" &&
                     optional.kind === dataType.inner.handle
                 ) {
+                    const inner = this.compileKnownValueForSink(optional, dataType.inner, unwrapped);
                     if (optional.optionalFoundCpp === undefined) {
-                        return optional.cpp;
+                        return inner;
                     }
                     const cppType =
                         this.context.dataTypes.cppType(dataType);
                     this.context.reachJsData();
                     return (
                         `(${optional.optionalFoundCpp}` +
-                        ` ? ${cppType}{${optional.cpp}}` +
+                        ` ? ${cppType}{${inner}}` +
                         ` : ${cppType}{std::nullopt})`
                     );
                 }
@@ -6465,11 +6467,12 @@ export class DataLowerer {
                 ) {
                     if (dataType.handle === "texture") {
                         if (value.textureStorage === "solid") {
-                            return `bbl::solid_texture_file(${value.cpp})`;
+                            return `bbl::StoredTexture{bbl::solid_texture_file(${value.cpp})}`;
                         }
-                        if (!(value.textureStorage === "pixels" ||
-                            value.textureStorage === "file" ||
-                            (value.dataType?.kind === "handle" && value.dataType.handle === "texture"))) {
+                        if (value.textureStorage === "pixels" || value.textureStorage === "file") {
+                            return `bbl::StoredTexture{${value.cpp}}`;
+                        }
+                        if (!(value.dataType?.kind === "handle" && value.dataType.handle === "texture")) {
                             this.context.fail(node, "Texture2D data storage supports file, pixel, and solid textures.");
                         }
                     }
@@ -8485,6 +8488,13 @@ export class DataLowerer {
             operand: ts.Expression,
         ): Value | undefined => {
             const unwrapped = this.context.unwrap(operand);
+            // The input getter remains nullable after an earlier assignment:
+            // a helper can change its retained slot without TypeScript
+            // invalidating the caller's local property narrowing.
+            if (ts.isPropertyAccessExpression(unwrapped) && unwrapped.name.text === "texture" &&
+                pinnedHandleKind(this.context.checker.getNonNullableType(this.context.checker.getTypeAtLocation(unwrapped.expression))) === "node-input") {
+                return this.context.compileValue(unwrapped);
+            }
             if (!ts.isOptionalChain(unwrapped)) {
                 return undefined;
             }

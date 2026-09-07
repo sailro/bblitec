@@ -1196,6 +1196,7 @@ export interface NodeParticleManifest {
 }
 
 export type ValueKind =
+  | "node-input"
   | "text-font"
   | "text-data"
   | "text-renderable"
@@ -2426,6 +2427,7 @@ export type Feature =
   | "material:no-color-view"
   | "material:grid"
   | "material:node"
+  | "material:node-inputs"
   | "material:shader"
   | "material:shader-storage"
   | "material:standard"

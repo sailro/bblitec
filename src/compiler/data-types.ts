@@ -17,6 +17,7 @@ type Fail = (node: ts.Node, message: string) => never;
  * instead copy a shared identity, retaining their source object through data.
  */
 export type HandleKind =
+  | "node-input"
   | "text-data"
   | "text-renderable"
   | "picking-info"
@@ -54,6 +55,7 @@ export type HandleKind =
   | "navigation-obstacle";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  "node-input": "bbl::NodeInputHandle",
   "text-data": "std::shared_ptr<bbl::TextDataState>",
   "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
   "picking-info": "bbl::PickingInfo",
@@ -98,6 +100,8 @@ export function isHandleKind(kind: string): kind is HandleKind {
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
+  NodeInputHandle: "node-input",
+  NodeMaterial: "material",
   TextData: "text-data",
   DefaultTextData: "text-data",
   TextRenderable: "text-renderable",

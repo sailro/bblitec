@@ -390,21 +390,8 @@ export function compileNodeMaterialOptions(
         (candidate) => nodeMaterialKey(candidate) === key,
     );
     if (existing >= 0) {
-        // The names belong to the graph, so two calls on one graph name the
-        // same bindings; only the images may differ, and those ride the
-        // material record. A differing set means the two calls do not
-        // describe one graph, which the shared variant table cannot express.
-        const shared = context.reachedNodeMaterials[existing]!.textureNames;
-        if (
-            shared.length !== textureNames.length ||
-            shared.some((name, index) => name !== textureNames[index])
-        ) {
-            context.fail(
-                object,
-                "Two node materials share a graph but name different " +
-                    "texture bindings; the composed variant declares one set.",
-            );
-        }
+        // Inputs belong to each material owner. The graph's shader can be
+        // shared even when callers initialize different subsets of its slots.
         return { index: existing, textures };
     }
     context.reachedNodeMaterials.push(material);

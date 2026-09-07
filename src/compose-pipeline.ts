@@ -1172,23 +1172,12 @@ export async function composeScenePipeline({
                 geometryTasks,
             },
         );
-        // The graph decides which bindings exist and the scene decides which
-        // it supplies; only here are both known. Upstream raises the mismatch
-        // at the first render, so raising it at generation is the same
-        // contract moved to the moment that can carry a source-free message
-        // naming the binding — plus the scene call site that first reached
-        // the node-material family, from the manifest's featureSites record.
-        const nodeSite = refusalReachedFrom(
-            result.manifest.featureSites,
-            "material:node",
-        );
-        for (const binding of composed.textures) {
-            if (material.textureNames.includes(binding.name)) continue;
-            throw new Error(
-                `Node material '${label}' samples the texture binding ` +
-                    `'${binding.name}', which the scene's 'textures' record ` +
-                    `does not supply.${nodeSite}`,
-            );
+        // Slot initialization may follow construction. The native builder
+        // observes missing textures at the pin's binding point, in source
+        // deferred-builder order, rather than while composing its shader.
+        if (result.manifest.features.includes("material:node-inputs")) {
+            const unsupported = composed.inputs.find((input) => input.type !== "texture2d");
+            if (unsupported) throw new Error(`Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.${refusalReachedFrom(result.manifest.featureSites, "material:node-inputs")}`);
         }
         // Extra keys are inert upstream: parseNodeMaterialFromSnippet walks
         // the COMPILED texture bindings and looks each one up in

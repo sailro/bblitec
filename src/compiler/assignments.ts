@@ -443,6 +443,7 @@ export function lightScalarSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
+  noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
   noteTextSceneCameraAssignment(node: ts.Node): void;
   noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
   isRuntimeResourceConstruction(): boolean;
@@ -2118,6 +2119,7 @@ export function emitPropertyAssignment(
     }
 
     if (target.kind === "texture" && property in textureRecordFields) {
+      context.noteNodeInputAdmissionFailure(expression, "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.");
       const field = textureRecordFields[property]!;
       requireSimpleAssignment(context, expression, `texture ${property}`);
       // A `loadTexture2D` image takes these writes too: upstream one

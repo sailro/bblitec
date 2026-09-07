@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
+import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
@@ -835,7 +836,7 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "node-input" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
     private readonly materialColorReads: Array<"baseColorFactor" | "diffuseColor"> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
@@ -1011,6 +1012,12 @@ class Compiler
             if (boundary) this.fail(boundary.node, boundary.message);
             if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
                 "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.");
+        }
+        if (this.features.has("material:node-inputs")) {
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "node-input");
+            if (admission) this.fail(admission.node, admission.message);
+            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Node input bindings support one registered scene until per-scene binding snapshots are represented.");
         }
         if (this.features.has("text:renderable")) {
             const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
@@ -1950,6 +1957,21 @@ class Compiler
 
     public compileTextMutation(expression: ts.Expression): Value | undefined {
         return compileTextMutation(this, expression);
+    }
+
+    public compileNodeInputMutation(expression: ts.Expression): Value | undefined {
+        return compileNodeInputMutation(this, expression);
+    }
+
+    public assertNodeInputMutable(node: ts.Node): void {
+        if (this.frameCallbackDepth > 0 || this.engineStartMark !== undefined || this.temporalSceneRegistration) {
+            this.fail(node, "Node input texture changes require setup before scene registration; captured bind-group replacement is not represented.");
+        }
+    }
+
+    public noteNodeInputAdmissionFailure(node: ts.Node, message: string): void {
+        if (this.features.has("material:node-inputs")) this.fail(node, message);
+        this.deferredAdmissionFailures.push({ capability: "node-input", node, message });
     }
 
     private textAttachmentReached = false;
@@ -4428,6 +4450,8 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        const input = this.compileNodeInputMutation(expression);
+        if (input) { this.emitDiscardedValue(input); return; }
         const text = this.compileTextMutation(expression);
         if (text) { this.emitDiscardedValue(text); return; }
         if (this.compileCameraMutation(expression)) return;
@@ -8968,7 +8992,7 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            value = this.compileNodeInputMutation(expression) ?? this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
         }
@@ -9848,6 +9872,10 @@ class Compiler
         importedName: string,
         call: ts.CallExpression,
     ): Value | undefined {
+        if (importedName === "parseNodeMaterialFromSnippet" &&
+            (this.frameCallbackDepth > 0 || this.engineStartMark !== undefined || this.temporalSceneRegistration)) {
+            this.fail(call, "Node material construction requires setup before scene registration; live group rebuilding is not represented.");
+        }
         if (this.runtimeMaterialProfiles.size > 0 &&
             (importedName === "createPbrMaterial" || importedName === "loadGltf")) {
             this.fail(call, "Runtime material construction leaves no generation-known physical material slot for a later PBR material or glTF load.");
@@ -10020,6 +10048,7 @@ class Compiler
             );
         }
         this.reachFeature("texture:pixels", call);
+        this.noteNodeInputAdmissionFailure(call, "Node input bindings do not represent later GPU writes to a texture producer.");
         return {
             kind: "void",
             cpp:
@@ -11155,7 +11184,7 @@ class Compiler
             if (leftValue.kind === "texture" && rightValue.kind === "texture") {
                 if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Texture2D values support identity comparisons.");
                 const stored = (value: Value, node: ts.Expression) =>
-                    `bbl::StoredTexture{${this.dataLowerer.compileKnownValueForSink(value, { kind: "handle", handle: "texture" }, node)}}`;
+                    this.dataLowerer.compileKnownValueForSink(value, { kind: "handle", handle: "texture" }, node);
                 return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;
             }
             if (textKind(leftValue) || textKind(rightValue)) {
@@ -14154,6 +14183,10 @@ class Compiler
         const runtime = this.frameCallbackDepth > 0 || this.engineStartMark !== undefined;
         if (mode === "always" || runtime || (mode !== "registration" && this.temporalSceneRegistration)) {
             this.noteTemporalAdmissionFailure(node, `TAA task record epochs are not represented for ${runtime ? `runtime ${reason}` : reason}.`);
+        }
+        if (runtime || (mode !== "registration" && this.temporalSceneRegistration) || reason === "rebuildSceneRenderables") {
+            this.deferredAdmissionFailures.push({ capability: "node-input", node,
+                message: `Node input binding snapshots do not cover ${runtime ? `runtime ${reason}` : reason}.` });
         }
         if (mode === "registration") {
             this.temporalSceneRegistration ??= node;
@@ -17175,6 +17208,8 @@ class Compiler
         if (frozenParticleProperty) return frozenParticleProperty;
         const textProperty = readTextProperty(this, owner, expression.name.text, expression);
         if (textProperty) return textProperty;
+        const inputProperty = readNodeInputProperty(this, owner, expression.name.text, expression);
+        if (inputProperty) return inputProperty;
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own

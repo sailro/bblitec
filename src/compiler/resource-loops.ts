@@ -189,7 +189,8 @@ export function requiresStaticDataIteration(
         const awaitedIntrinsic = awaitedCallee && ts.isIdentifier(awaitedCallee)
             ? context.symbols.importedName(awaitedCallee) : undefined;
         if ((ts.isAwaitExpression(node) &&
-                !(awaitedIntrinsic && runtimeOnlyIntrinsics.has(awaitedIntrinsic))) ||
+                !(awaitedIntrinsic && (runtimeOnlyIntrinsics.has(awaitedIntrinsic) ||
+                    (awaited && ts.isCallExpression(awaited) && runtimeProfileCall(context, awaitedIntrinsic, awaited))))) ||
             ts.isYieldExpression(node)) {
             required = true;
             return false;
@@ -224,6 +225,8 @@ export function requiresStaticDataIteration(
                 required = kind === "mesh" || kind === "transform-node"
                     ? !runtimeMeshProperties.has(property) &&
                         property !== "material" && property !== "receiveShadows"
+                    : kind === "node-input"
+                        ? property !== "texture"
                     : kind === "material"
                         ? !runtimeMaterialProperties.has(property)
                         : true;
@@ -386,6 +389,7 @@ export const runtimeProfileConstructionIntrinsics: ReadonlySet<string> = new Set
     "createMeshFromData",
     "createStandardMaterial",
     "createShaderMaterial",
+    "parseNodeMaterialFromSnippet",
 ]);
 
 function runtimeProfileCall(

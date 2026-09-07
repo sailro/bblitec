@@ -411,15 +411,27 @@ incompatible instance layouts for one program still refuse.
 
 Pinned NME graphs compose at generation with bounded graph inputs, textures
 and block-loader forms. Supported alpha-combine graphs draw transparently.
-Uniform input state is generally frozen. A graph reached by a geometry-renderer
+The pinned geometry-aware loader may delegate through its resolved import;
+local closed-switch loaders remain supported. Repeated runtime construction
+of a closed graph shares shader composition while retaining distinct material
+owners, input maps and texture2d slots. Input handles survive aliases, helpers,
+containers and owner teardown. Setup may fill their texture after construction
+and mesh attachment, before scene registration. The deferred builder captures
+the original private slot and reports a missing texture at binding time; an
+unused material may remain unset. Numeric input state, map replacement,
+reflective mutation, later texture producer writes, and topology or input
+changes after registration remain refused. This input slice admits one
+registered scene until independent scene binding snapshots are represented.
+
+Uniform input state is otherwise frozen. A graph reached by a geometry-renderer
 task also composes the pin's geometry view — a third module per (graph, task),
 emitted from the graph's own `GeometryTextureOutputBlock` terminal with its own
 vertex inputs, texture pairs and uniform block — and both backends draw it into
 the task's attachments. That view carries no morph targets, environment or
 shadow lights, no trailing colour attachment, and no LOCAL_POSITION attachment
 (the lane reads the pin's local position attribute, which this port has baked
-into the vertex); each is refused by name. Wider input mutation and delegating
-block-loader forms remain unfinished.
+into the vertex); each is refused by name. Wider input mutation remains
+unfinished.
 
 ### Material plugins
 

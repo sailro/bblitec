@@ -538,6 +538,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/node/node-material.ts",
         consumers: ["features.cmake", "variant table"],
     },
+    "material:node-inputs": {
+        provenance: "src/material/node/node-material.ts inputs and texture slots",
+        consumers: ["variant table"],
+    },
     "material:standard": {
         provenance: "src/material/standard/create-standard-material.ts",
         consumers: CMAKE,
