@@ -34,8 +34,7 @@ export interface MeshOptionContext
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
-    allocateTemporaryCppName(label: string): string;
-    emit(line: string): void;
+    pinValueToTemporary(value: Value, label: string): Value;
 }
 
 /**
@@ -74,9 +73,7 @@ export function compileBoxOptions(
     const number = (value: ts.Expression): string => {
         const cpp = context.compileNumber(value, precision);
         if (precision === "float") return cpp;
-        const snapshot = context.allocateTemporaryCppName("box_dimension");
-        context.emit(`const double ${snapshot} = ${cpp};`);
-        return snapshot;
+        return context.pinValueToTemporary({ kind: "number", cpp }, "box_dimension").cpp;
     };
     if (ts.isObjectLiteralExpression(unwrapped)) {
         validateObjectProperties(

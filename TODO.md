@@ -126,6 +126,11 @@ implementation, follow the sizing/capture workflow in
   readable-present-copy blit paths before consolidating SDL presentation.
 - [ ] Avoid full detailed-pick CPU-array copies while preserving scene-facing
   typed-array semantics. Supply an internal borrowed/read-only geometry view.
+- [ ] Add a bone-palette version covering scene skeleton publication, glTF
+  animation and bone-control writes, then share dirty upload checks between
+  visible draws and picking. Repeated skinned picks currently upload unchanged
+  palettes; transform versions do not cover every pose writer. Validate an
+  immediate pose write followed by a pick before skipping any upload.
 - [ ] Remove double compilation/copies of optional vertex streams and place
   mesh/material compatibility validation at composition, including task
   material overrides.

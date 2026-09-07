@@ -133,6 +133,20 @@ error is not a complete inventory. See [development](development.md#sizing-a-cap
 - Preserve corpus inputs, references and thresholds as evidence.
 - Record semantic adaptations and any unmeasured boundary explicitly.
 
+Scene114's four pick markers need numeric checks as well as image parity:
+individually hiding any marker stays below 0.5 full-image MAD. After processing
+the scene, run the retained browser observations against both native backends:
+
+```powershell
+node tools/check-scene114-input.mjs native/build-scene114-release/bblite_native.exe generated/scene114 reference/scene114/picking-observations.json reference/scene114/babylon-lite-golden.png
+```
+
+The checker verifies source/reference and deployed build identities, all four
+marker positions/scales, and first-ready/canonical/idle state. The separate
+`test/fixtures/morph-picking-standard.ts` source checks weight changes followed
+immediately by picks without a frame between them; process and measure it as
+an ad-hoc scene on both backends.
+
 ## Why each tool still exists
 
 The ladder separates image comparison, captured state, asset composition,
