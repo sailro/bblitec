@@ -11,6 +11,11 @@ import {
 } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
 
+function assertCameraScalarWrite(cpp: string, field: string, value: RegExp): void {
+    const stores = [...cpp.matchAll(new RegExp(`const double (\\w+) = (${value.source});\\s+bbl::write_camera_scalar\\([^\\n]+&bbl::CameraRecord::${field}, \\1\\);`, "g"))];
+    assert.ok(stores.length > 0, `Expected camera.${field} write of ${value.source}`);
+}
+
 const palUiRmlSource = readFileSync(
     resolve("native/src/pal_ui_rml.cpp"),
     "utf8",
@@ -1494,7 +1499,7 @@ test("keeps closures over entry locals on the inline path", () => {
 
     assert.doesNotMatch(result.cpp, /bblscene::nudge/);
     assert.equal(
-        result.cpp.match(/cameras\[v_camera\.value\]\.alpha = /g)?.length,
+        result.cpp.match(/write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/g)?.length,
         2,
     );
 });
@@ -7711,7 +7716,7 @@ test("binds inline engine creation exactly once", () => {
     assert.match(
         result.cpp,
         new RegExp(
-            `${engine}\\.cameras\\[v_camera\\.value\\]\\.alpha = 1\\.0;`,
+            `write_camera_scalar\\(${engine}\\.cameras\\[\\w+\\.value\\], &bbl::CameraRecord::alpha,`,
         ),
     );
 });
@@ -7792,8 +7797,8 @@ test("preserves compound assignments for numeric properties", () => {
     assert.match(result.cpp, /\.fixed_delta_ms \+= 1\.0f/);
     assert.match(result.cpp, /\.environment\.exposure -= 0\.1f/);
     assert.match(result.cpp, /\.environment\.contrast \+= 0\.2f/);
-    assert.match(result.cpp, /\.camera\.value\]\.alpha \+= 0\.3;/);
-    assert.match(result.cpp, /\.cameras\[v_camera\.value\]\.beta -= 0\.4;/);
+    assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 0\.3\)/);
+    assertCameraScalarWrite(result.cpp, "beta", /\(\w+ - 0\.4\)/);
     assert.match(result.cpp, /\.alpha \+= 0\.1f/);
     assert.match(result.cpp, /\.specular_power -= 1\.0f/);
     assert.match(result.cpp, /\.position\.x -= 0\.02/);
@@ -7953,7 +7958,7 @@ test("an assignment used as a value constructs once and reads the target", () =>
     );
     assert.match(result.cpp, /\.camera = bbl::create_arc_rotate_camera\(/);
     assert.match(result.cpp, /auto v_camera = v_scene\.camera;/);
-    assert.match(result.cpp, /radius = 6\.0/);
+    assertCameraScalarWrite(result.cpp, "radius", /6\.0/);
 });
 
 test("folds a nullish-coalescing browser query default", () => {
@@ -15020,7 +15025,7 @@ test("compiles pinned Scene 1 BoomBox parity", () => {
     assert.match(result.cpp, /bbl::load_gltf/);
     assert.match(result.cpp, /bbl::load_environment/);
     assert.match(result.cpp, /bbl::create_default_camera/);
-    assert.match(result.cpp, /\.alpha = 1\.77538;/);
+    assertCameraScalarWrite(result.cpp, "alpha", /1\.77538/);
     assert.doesNotMatch(result.cpp, /Object::assign|drawCallCount/);
     assert.match(result.cmake, /gltf_loader\.cpp/);
     assert.deepEqual(result.manifest.generatedSources, [
@@ -15907,7 +15912,8 @@ test("compiles Babylon Lite scene 32 unlit glTF", () => {
 
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("renderer:scene"));
-    assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
+    assert.match(result.cpp, /const double \w+ = \(\w+ \+ 3\.141592653589793\);/);
+    assert.match(result.cpp, /write_camera_scalar\([^\n]+&bbl::CameraRecord::alpha,/);
     assert.match(result.cpp, /UnlitTest\.glb/);
 });
 
@@ -16592,7 +16598,7 @@ test("compiles Babylon Lite scene 145 standard geometry outputs", () => {
     assert.match(result.cpp, /auto v_camera = v_scene\.camera/);
     assert.match(
         result.cpp,
-        /\.position = bbl::Vec3d\{\(-26\.695675321687403\)/,
+        /const double \w+ = \(-26\.695675321687403\);[\s\S]*set_camera_vector\([^\n]+&bbl::CameraRecord::position,/,
     );
     assert.match(
         result.cpp,
@@ -16795,7 +16801,7 @@ test("compiles Babylon Lite scene 35 camera target destructuring", () => {
     });
     assert.ok(result.manifest.features.includes("loader:gltf"));
     assert.ok(result.manifest.features.includes("camera:default"));
-    assert.match(result.cpp, /\.alpha \+= 3\.141592653589793;/);
+    assertCameraScalarWrite(result.cpp, "alpha", /\(\w+ \+ 3\.141592653589793\)/);
     assert.match(
         result.cpp,
         /\[\[maybe_unused\]\] static double v_x = v_engine\.cameras\[v_cam\.value\]\.target\.x;/,
@@ -16833,11 +16839,11 @@ test("reads FreeCamera position components", () => {
     );
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_camera\.value\]\.position\.z = v_engine\.cameras\[v_camera\.value\]\.position\.x;/,
+        /const double \w+ = v_engine\.cameras\[v_camera\.value\]\.position\.x;[\s\S]*write_camera_vector_component\([^\n]+&bbl::CameraRecord::position, &bbl::Vec3d::z,/,
     );
     assert.match(
         result.cpp,
-        /v_engine\.cameras\[v_fn\d+_camera\.value\]\.target\.x = v_engine\.cameras\[v_fn\d+_camera\.value\]\.position\.z;/,
+        /const double \w+ = v_engine\.cameras\[v_fn\d+_camera\.value\]\.position\.z;[\s\S]*write_camera_vector_component\([^\n]+&bbl::CameraRecord::target, &bbl::Vec3d::x,/,
     );
 });
 

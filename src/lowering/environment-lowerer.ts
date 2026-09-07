@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { assertEnvironmentTextureIdentity } from "./scene-uniform-identity.js";
 import {
     COLOR_CHANNEL_HELPERS_CPP,
     lowerShPrescaleCpp,
@@ -362,6 +363,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                 modulePath,
                 symbolName,
             );
+        assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
         const exposure = this.numericAssignment(
             declaration,
             "scene.imageProcessing.exposure",
@@ -637,16 +639,19 @@ void add_dds_environment_background(
 void load_environment(Scene& scene, EnvironmentOptions options) {
     upstream::ParsedEnvironment parsed =
         upstream::parse_env_file(pal::read_binary_file(options.environment_url));
-    scene.environment.has_irradiance = true;
-    scene.environment.spherical_harmonics = parsed.spherical_harmonics;
-    scene.environment.specular_width = parsed.width;
-    scene.environment.specular_mip_count = parsed.mip_count;
-    scene.environment.specular_faces = std::move(parsed.faces);
-    scene.environment.specular_rgba16f = false;
-    scene.environment.brdf_lut = {};
+    EnvironmentState environment = scene.environment;
+    environment.has_irradiance = true;
+    environment.spherical_harmonics = parsed.spherical_harmonics;
+    environment.specular_width = parsed.width;
+    environment.specular_mip_count = parsed.mip_count;
+    environment.specular_faces = std::move(parsed.faces);
+    environment.specular_rgba16f = false;
+    environment.brdf_lut = {};
     if (!options.brdf_url.empty()) {
-        scene.environment.brdf_lut.bytes = pal::read_binary_file(options.brdf_url);
+        environment.brdf_lut.bytes = pal::read_binary_file(options.brdf_url);
     }
+    scene.environment = std::move(environment);
+    scene.state->environment_identity = next_scene_uniform_object_identity();
     if (!options.ground_texture_url.empty()) {
         scene.environment.ground_texture.bytes =
             pal::read_binary_file(options.ground_texture_url);
@@ -765,6 +770,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
                 modulePath,
                 symbolName,
             );
+        assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
         const assemble = this.context.callExpression(
             declaration,
             "assembleEnvironmentTextures",
@@ -869,19 +875,20 @@ void load_dds_environment(
     if (width == 0 || mip_count == 0) {
         throw std::runtime_error("Compiled DDS environment has invalid dimensions.");
     }
-    scene.environment.has_irradiance = true;
+    EnvironmentState environment = scene.environment;
+    environment.has_irradiance = true;
     for (std::size_t coefficient = 0; coefficient < 9; ++coefficient) {
-        scene.environment.spherical_harmonics[coefficient] = Color3{
+        environment.spherical_harmonics[coefficient] = Color3{
             package_f32(bytes, 16 + coefficient * 12),
             package_f32(bytes, 20 + coefficient * 12),
             package_f32(bytes, 24 + coefficient * 12),
         };
     }
-    scene.environment.specular_width = width;
-    scene.environment.specular_mip_count = mip_count;
-    scene.environment.specular_rgba16f = true;
-    scene.environment.specular_faces.clear();
-    scene.environment.specular_faces.reserve(
+    environment.specular_width = width;
+    environment.specular_mip_count = mip_count;
+    environment.specular_rgba16f = true;
+    environment.specular_faces.clear();
+    environment.specular_faces.reserve(
         static_cast<std::size_t>(mip_count) * 6);
     std::size_t offset = 124;
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
@@ -898,7 +905,7 @@ void load_dds_environment(
                 bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                 bytes.begin() +
                     static_cast<std::ptrdiff_t>(offset + byte_size));
-            scene.environment.specular_faces.push_back(std::move(data));
+            environment.specular_faces.push_back(std::move(data));
             offset += byte_size;
         }
     }
@@ -909,11 +916,13 @@ void load_dds_environment(
     // The pinned loader decodes the same bundled BRDF PNG the .env loader
     // does (loadBrdfImage then decodeBrdfPng), rather than generating the LUT
     // with a compute pass the way the HDR loader beside it does.
-    scene.environment.brdf_lut = {};
+    environment.brdf_lut = {};
     if (!options.brdf_url.empty()) {
-        scene.environment.brdf_lut.bytes =
+        environment.brdf_lut.bytes =
             pal::read_binary_file(options.brdf_url);
     }
+    scene.environment = std::move(environment);
+    scene.state->environment_identity = next_scene_uniform_object_identity();
     // A DDS environment creates no background of its own: the pinned loader
     // takes a cubemap and nothing else.
     scene.environment.has_ground = false;
@@ -936,6 +945,7 @@ void load_dds_environment(
                 modulePath,
                 symbolName,
             );
+        assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
         const exposure = this.numericAssignment(
             declaration,
             "scene.imageProcessing.exposure",
@@ -1054,19 +1064,20 @@ void load_hdr_environment(
         throw std::runtime_error("Compiled HDR environment has invalid dimensions.");
     }
 
-    scene.environment.has_irradiance = true;
+    EnvironmentState environment = scene.environment;
+    environment.has_irradiance = true;
     for (std::size_t coefficient = 0; coefficient < 9; ++coefficient) {
-        scene.environment.spherical_harmonics[coefficient] = Color3{
+        environment.spherical_harmonics[coefficient] = Color3{
             hdr_f32(bytes, 16 + coefficient * 12),
             hdr_f32(bytes, 20 + coefficient * 12),
             hdr_f32(bytes, 24 + coefficient * 12),
         };
     }
-    scene.environment.specular_width = width;
-    scene.environment.specular_mip_count = mip_count;
-    scene.environment.specular_rgba16f = true;
-    scene.environment.specular_faces.clear();
-    scene.environment.specular_faces.reserve(
+    environment.specular_width = width;
+    environment.specular_mip_count = mip_count;
+    environment.specular_rgba16f = true;
+    environment.specular_faces.clear();
+    environment.specular_faces.reserve(
         static_cast<std::size_t>(mip_count) * 6);
     std::size_t offset = 124;
     for (std::uint32_t mip = 0; mip < mip_count; ++mip) {
@@ -1083,7 +1094,7 @@ void load_hdr_environment(
                 bytes.begin() + static_cast<std::ptrdiff_t>(offset),
                 bytes.begin() +
                     static_cast<std::ptrdiff_t>(offset + byte_size));
-            scene.environment.specular_faces.push_back(std::move(data));
+            environment.specular_faces.push_back(std::move(data));
             offset += byte_size;
         }
     }
@@ -1092,13 +1103,15 @@ void load_hdr_environment(
             "Compiled HDR environment has trailing pixel data.");
     }
 
-    scene.environment.brdf_lut = {};
+    environment.brdf_lut = {};
     if (!options.brdf_url.empty()) {
-        scene.environment.brdf_lut.bytes =
+        environment.brdf_lut.bytes =
             pal::read_binary_file(options.brdf_url);
-        scene.environment.brdf_lut_width = 256;
-        scene.environment.brdf_lut_rgba16f = true;
+        environment.brdf_lut_width = 256;
+        environment.brdf_lut_rgba16f = true;
     }
+    scene.environment = std::move(environment);
+    scene.state->environment_identity = next_scene_uniform_object_identity();
     scene.environment.has_ground = false;
     scene.environment.has_skybox = options.use_cubemap_skybox;
     scene.environment.background_enabled_by_default =

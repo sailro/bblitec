@@ -423,6 +423,9 @@ export function lowerPinnedFunction(
         templateParameters?: readonly string[];
         /** Calls the body may make. The caller owns the whole map. */
         calls?: ReadonlyMap<string, (args: readonly string[]) => string>;
+        /** Buffer operations retain the numeric lowerer's receiver/alias rules. */
+        methods?: PinnedNumericScope["methods"];
+        arrayCopy?: PinnedNumericScope["arrayCopy"];
         /** See `PinnedNumericScope.matrixCalls`. */
         matrixCalls?: ReadonlySet<string>;
         /** See `PinnedNumericScope.recordCalls`. */
@@ -588,6 +591,8 @@ export function lowerPinnedFunctionParts(
     const lowerer: PinnedNumericLowerer = new PinnedNumericLowerer(file, {
         bindings,
         calls: options.calls ?? new Map(),
+        ...(options.methods ? { methods: options.methods } : {}),
+        ...(options.arrayCopy ? { arrayCopy: options.arrayCopy } : {}),
         ...(options.matrixCalls ? { matrixCalls: options.matrixCalls } : {}),
         ...(options.recordCalls ? { recordCalls: options.recordCalls } : {}),
         ...(options.tupleCalls ? { tupleCalls: options.tupleCalls } : {}),

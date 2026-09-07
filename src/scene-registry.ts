@@ -2875,6 +2875,20 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene261",
+        name: "Scene 261 - Temporal Anti-Aliasing",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene261.ts",
+        title: "Babylon Lite Native - Temporal Anti-Aliasing",
+        parity: {
+            // The unchanged source freezes itself after 161 TAA executions.
+            // Both renderers match the browser image and retained UBO bits.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [13, 15, 23],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene147",
         name: "Scene 147 - Circle of Confusion",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene147.ts",

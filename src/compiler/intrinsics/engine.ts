@@ -13,6 +13,10 @@ import type {
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledRenderTargetOptions } from "./engine-options.js";
 import type { CompiledScreenSpaceTask } from "./screen-space-options.js";
+import type {
+    CompiledPostProcessComposite,
+    CompiledPostProcessTask,
+} from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
@@ -21,18 +25,9 @@ interface CompiledGeometryTask {
     manifest: GeometryOutputTaskManifest;
 }
 
-interface CompiledPostProcessTask {
-    cpp: string;
-    manifest: PostProcessTaskManifest;
-}
-
-interface CompiledPostProcessComposite {
-    cpp: string;
-    manifest: PostProcessCompositeManifest;
-}
-
 export interface EngineIntrinsicContext
     extends IntrinsicCallContext {
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
     emit(line: string): void;
     fail(node: ts.Node, message: string): never;
     expectSameEngine(
@@ -76,6 +71,7 @@ export interface EngineIntrinsicContext
     ): void;
     recordPostProcessComposite(
         manifest: PostProcessCompositeManifest,
+        site: ts.Node,
     ): void;
     compileScreenSpaceTaskOptions(
         intrinsic: string,
@@ -168,6 +164,7 @@ export function compileEngineIntrinsic(
                 );
             }
             const defaultRenderTask = context.compileSceneDefaultRenderTask(call.arguments[1]);
+            if (defaultRenderTask) context.noteTemporalRecordBoundary(call, "implicit default scene passes", "always");
             const samples = engine.msaaSamples ?? 4;
             const create = `bbl::create_scene_context(${engine.cpp})`;
             return {
@@ -242,6 +239,7 @@ export function compileEngineIntrinsic(
                 kind: "render-target",
                 cpp: `bbl::create_render_target(${engine}, ${options.cpp})`,
                 engineCpp: engine,
+                renderTargetSignature: options.signature,
             };
         }
 
@@ -265,6 +263,7 @@ export function compileEngineIntrinsic(
                     `bbl::create_render_target_texture(` +
                     `${engine.cpp}, ${options.cpp})`,
                 renderTextureSource: "render-target",
+                renderTargetSignature: options.signature,
                 // `rtt.ts` hands back the colour attachment when the
                 // descriptor declared one and the depth attachment
                 // otherwise, so a colourless target's texture samples
@@ -302,12 +301,14 @@ export function compileEngineIntrinsic(
                 cpp:
                     `bbl::create_render_task(${engine.cpp}, ` +
                     `${scene.cpp}, ${options})`,
+                renderTask: true,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
             };
         }
 
         case "createGeometryRendererTask": {
+            context.noteTemporalRecordBoundary(call, "geometry-output task preparation", "always");
             context.expectArgumentCount(call, 3, 3);
             const engine =
                 context.compileValue(call.arguments[1]!);
@@ -345,6 +346,7 @@ export function compileEngineIntrinsic(
         }
 
         case "createCopyToTextureTask": {
+            context.noteTemporalRecordBoundary(call, "copy task preparation", "always");
             context.expectArgumentCount(call, 3, 3);
             const engine =
                 context.compileValue(call.arguments[1]!);
@@ -497,7 +499,10 @@ function compilePostProcessIntrinsic(
             call.arguments[0]!,
             context.postProcessComposites.length,
         );
-        context.recordPostProcessComposite(built.manifest);
+        context.recordPostProcessComposite(built.manifest, call);
+        for (const task of built.sourceTasks) {
+            context.expectSameEngine(engine, task, call);
+        }
         return {
             kind: "task",
             cpp:

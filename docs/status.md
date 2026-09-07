@@ -225,6 +225,7 @@ its cause.
 | 258 | <img src="images/scenes/scene258.png" alt="Scene 258 rendering" width="160"> | 0.002 / 0.004 | 0.002 / 0.004 | Interleaved Buffer |
 | 259 | <img src="images/scenes/scene259.png" alt="Scene 259 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Material Texture |
 | 260 | <img src="images/scenes/scene260.png" alt="Scene 260 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Triangle Strip Primitive |
+| 261 | <img src="images/scenes/scene261.png" alt="Scene 261 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | Temporal Anti-Aliasing |
 | 262 | <img src="images/scenes/scene262.png" alt="Scene 262 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Size |
 | 263 | <img src="images/scenes/scene263.png" alt="Scene 263 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Gravity |
 | 264 | <img src="images/scenes/scene264.png" alt="Scene 264 rendering" width="160"> | 0.000 / 0.000 | 0.000 / 0.000 | NPE Particle Sphere Emitter |

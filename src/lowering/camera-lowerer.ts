@@ -1,8 +1,9 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { CameraMutationLowerer } from "./camera-mutation-lowerer.js";
 
 export class CameraLowerer {
-    public constructor(private readonly context: LoweringContext) {}
+    public constructor(private readonly context: LoweringContext, private readonly trackVersions = false) {}
 
     /**
      * The parented-world composition `camera_world_matrix` mirrors when a
@@ -1609,8 +1610,21 @@ void apply_free_camera_inertia(CameraRecord& camera);
 
 namespace bbl {
 
+void clamp_camera_to_limits(CameraRecord& camera);
+${this.trackVersions ? new CameraMutationLowerer(this.context).setters() : `
+void write_camera_scalar(CameraRecord& camera, double CameraRecord::*field, double value) {
+    camera.*field = value;
+}
+void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::*vector,
+    double Vec3d::*component, double value) {
+    (camera.*vector).*component = value;
+}
+void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::*vector, Vec3d value) {
+    camera.*vector = value;
+}`}
+
 void clamp_camera_to_limits(CameraRecord& camera) {
-    if (camera.lower_radius_limit && camera.radius < *camera.lower_radius_limit) {
+${this.trackVersions ? new CameraMutationLowerer(this.context).clamp() : `    if (camera.lower_radius_limit && camera.radius < *camera.lower_radius_limit) {
         camera.radius = *camera.lower_radius_limit;
         camera.inertial_radius_offset = 0.0;
     } else if (camera.upper_radius_limit && camera.radius > *camera.upper_radius_limit) {
@@ -1630,7 +1644,7 @@ void clamp_camera_to_limits(CameraRecord& camera) {
     } else if (camera.upper_alpha_limit && camera.alpha > *camera.upper_alpha_limit) {
         camera.alpha = *camera.upper_alpha_limit;
         camera.inertial_alpha_offset = 0.0;
-    }
+    }`}
 }
 
 void set_camera_limits(
@@ -1648,6 +1662,7 @@ void set_camera_limits(
     if ((present_mask & (1u << 3u)) != 0u) camera.upper_beta_limit = limits[3];
     if ((present_mask & (1u << 4u)) != 0u) camera.lower_radius_limit = limits[4];
     if ((present_mask & (1u << 5u)) != 0u) camera.upper_radius_limit = limits[5];
+${this.trackVersions ? "    camera.limits_installed = true;" : ""}
     clamp_camera_to_limits(camera);
 }
 
@@ -1702,7 +1717,7 @@ void apply_arc_rotate_wheel(CameraRecord& camera, double delta_y) {
 }
 
 void apply_arc_rotate_inertia(CameraRecord& camera) {
-    constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
+${this.trackVersions ? new CameraMutationLowerer(this.context).inertia() : `    constexpr double rotation_epsilon = ${dvalue(rotationEpsilon)};
     constexpr double radius_epsilon = ${dvalue(radiusEpsilon)};
     constexpr double panning_epsilon = ${dvalue(panningEpsilon)};
     if (camera.inertial_alpha_offset != 0.0 || camera.inertial_beta_offset != 0.0) {
@@ -1735,7 +1750,7 @@ void apply_arc_rotate_inertia(CameraRecord& camera) {
         camera.inertial_panning_y *= camera.panning_inertia;
         if (std::abs(camera.inertial_panning_x) < panning_epsilon) camera.inertial_panning_x = 0.0;
         if (std::abs(camera.inertial_panning_y) < panning_epsilon) camera.inertial_panning_y = 0.0;
-    }
+    }`}
 }
 
 // src/camera/free-camera-controls.ts accumulates crY += dx / sensitivity

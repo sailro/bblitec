@@ -2125,6 +2125,12 @@ export interface Value {
     transform: SceneNodeTransformDescriptor;
     bound?: true;
   };
+  /** An observable camera vector retains its original camera handle. */
+  cameraVector?: {
+    owner: Value & { engineCpp: string };
+    field: "position" | "target" | "up_vector";
+    bound?: true;
+  };
   geometryTask?: GeometryOutputTaskManifest;
   /**
    * Set on a `render-texture` or `render-target-texture` whose texture is
@@ -2158,6 +2164,10 @@ export interface Value {
    * scene can name, so a setter on one is refused.
    */
   postProcessComposite?: PostProcessCompositeManifest;
+  /** Proven scene-render task factory result, including its constant aliases. */
+  renderTask?: true;
+  /** Proven target descriptor retained by aliases for pass-signature admission. */
+  renderTargetSignature?: { surfaceFormat: boolean; hasColor: boolean; depthFormat?: string; samples: number };
   /**
    * Set instead when a `task` value names a screen-space effect. Its
    * `outputTexture` is whichever target its composite ends on, and its

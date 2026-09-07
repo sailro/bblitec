@@ -1,5 +1,6 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "../context.js";
+import { assertEnvironmentTextureIdentity } from "../scene-uniform-identity.js";
 import { gltfLoaderCpp } from "../templates/gltf-loader-cpp.js";
 import {
     lowerAccessorNormalizationCpp,
@@ -739,6 +740,7 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
         );
         const matrixCompose = lowerMatrixComposeCpp(composeFile);
         const matrixNative = lowerMatrixNativeCpp(parserFile);
+        assertEnvironmentTextureIdentity(this.context, imageBasedFile, "src/loader-gltf/ibl-env-assembly.ts", true);
         const iblPolynomial = lowerIblPolynomialCpp(imageBasedFile);
         const iblEnvironmentScalars =
             lowerIblEnvironmentScalarsCpp(

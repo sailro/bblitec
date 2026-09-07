@@ -106,6 +106,37 @@ claim than selecting it off: shared build scripts/stubs may still name disabled
 files. Test standalone configurations rather than infer removability from
 header hygiene alone.
 
+## Temporal post-process transport
+
+Within the [admitted TAA surface](features.md#post-process-passes), source
+render tasks own persistent clean and uploaded scene-uniform bytes. A task
+retains its original scene identity; two tasks drawing the same mesh still
+use separate source blocks. Shared generated writers own cache decisions,
+packing, execute/reset order and jitter. The [fidelity contract](fidelity.md#frame-graph-and-post-process-passes)
+explains why late writes must affect earlier draws in the same submission.
+
+Dawn gives each source task a persistent uniform buffer and frame bind group.
+Queue writes update that buffer before the command buffer is submitted;
+per-mesh material groups do not replace the task's scene binding. When GPU
+resources are recreated, the replacement buffer starts from the task's
+retained uploaded bytes.
+
+SDL_GPU first resolves resources and runs the logical task hooks, retaining
+draw packets until those hooks finish successfully. Ordinary uniform blocks
+are snapshots; scene slots retain the source task's uploaded storage. Encoding
+then pushes its final bytes through the compiled stage slots. Post-process
+uniforms likewise resolve by task and child identity after logical execution.
+Encoding does not replay callbacks or advance TAA a second time. With no
+source camera, uniform bytes and transparent-list order remain unchanged,
+and no camera viewport is applied.
+
+Live target resize recreates GPU resources and applies the pinned TAA record
+reset after successful recording, while retaining source CPU cache/storage.
+After `stopEngine`, presentation reuses the final image without executing
+history or jitter again. SDL retains the completed presentation texture;
+Dawn copies the completed surface into an owned texture. A stopped resize
+scales that retained image rather than rendering another temporal frame.
+
 ## Retained UI
 
 RmlUi emits backend-neutral geometry, textures, scissors, transforms and blur

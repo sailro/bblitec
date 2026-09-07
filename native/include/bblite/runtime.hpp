@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -1333,6 +1334,19 @@ struct PostProcessPassOptions {
     bool uniforms_dirty = true;
 };
 
+/** Retained scalar state for the pinned TAA execute/record lifecycle. */
+struct TaaPostProcessState {
+    double factor;
+    bool disable_on_camera_move;
+    bool first_update;
+    double last_camera_version;
+    double halton_index;
+    std::vector<float> halton{};
+    std::array<float, 16> jitter_scratch{};
+    /** Diagnostic completed executions across GPU resource rebuilds. */
+    std::uint64_t execution_count = 0;
+};
+
 /**
  * The task the scene added, and the passes it records.
  *
@@ -1345,6 +1359,11 @@ struct PostProcessPassOptions {
 struct PostProcessTaskOptions {
     std::string name;
     std::vector<PostProcessPassOptions> passes;
+    /** The facade's output, independent of the order its passes execute. */
+    std::uint32_t output_pass = 0;
+    RenderTargetHandle output_target{};
+    std::vector<TaskHandle> source_tasks{};
+    std::shared_ptr<TaaPostProcessState> taa{};
 };
 
 /**
@@ -1367,6 +1386,8 @@ struct PostProcessCompositeInputs {
     /** The target the caller named, or an invalid handle for none. */
     RenderTargetHandle target{};
     CameraHandle camera{};
+    /** Source render tasks, in the composite descriptor's declared order. */
+    std::vector<TaskHandle> source_tasks{};
 };
 
 /**
@@ -1581,6 +1602,24 @@ struct RenderTargetRecord {
     ScaleRounding scale_rounding = ScaleRounding::floor;
 };
 
+/** The pin's mixed cache tuple, named by its seven identity/value inputs. */
+struct SceneUniformCache {
+    const void* camera = nullptr;
+    std::uint64_t fog = 0;
+    double camera_key = 0.0;
+    double aspect = 0.0;
+    double exposure = 0.0;
+    double contrast = 0.0;
+    std::uint64_t environment = 0;
+};
+
+/** CPU storage survives render-task GPU resource rebuilds. */
+struct PersistentSceneUniforms {
+    SceneUniformCache cache{};
+    std::vector<float> clean{};
+    std::vector<float> drawn{};
+};
+
 struct FrameTaskRecord {
     FrameTaskKind kind = FrameTaskKind::render;
     RenderTaskOptions render;
@@ -1595,6 +1634,10 @@ struct FrameTaskRecord {
     PostProcessTaskOptions post_process;
     EffectTaskOptions effect;
     ScreenSpaceTaskOptions screen_space;
+    /** The task retains the scene passed to its factory, independent of registration. */
+    std::shared_ptr<SceneState> source_scene{};
+    /** Allocated only for a source whose retained UBO is reached by TAA. */
+    std::shared_ptr<PersistentSceneUniforms> scene_uniforms{};
 };
 
 struct RenderTargetTexture {
@@ -3410,6 +3453,12 @@ struct GeospatialLimits {
 // float64 under the high-precision matrix a floating-origin engine asks
 // for, which is the width `getViewMatrix` then reads the basis back at.
 struct CameraRecord {
+    double world_matrix_version = 0.0;
+    double projection_revision = 0.0;
+    double projection_fov = std::numeric_limits<double>::quiet_NaN();
+    double projection_near = std::numeric_limits<double>::quiet_NaN();
+    double projection_far = std::numeric_limits<double>::quiet_NaN();
+    bool limits_installed = false;
     CameraKind kind = CameraKind::arc_rotate;
     Vec3d position{};
     double alpha = -pi_double / 2.0;
@@ -4788,6 +4837,12 @@ inline MaterialHandle remember_scene_material(
     return material;
 }
 
+/** Stable cache keys for distinct pinned fog/environment objects, across scenes. */
+inline std::uint64_t next_scene_uniform_object_identity() {
+    static std::atomic<std::uint64_t> next{1};
+    return next.fetch_add(1, std::memory_order_relaxed);
+}
+
 struct EnvironmentState {
     bool has_irradiance = false;
     float exposure = 1.0f;
@@ -4906,6 +4961,9 @@ struct SceneState {
     bool seeks_vat = false;
     std::vector<js::Callback<void()>> deferred_builders;
     EnvironmentState environment;
+    /** `createSceneContext`: fog is null and _envTextures is absent. */
+    std::uint64_t fog_identity = 0;
+    std::uint64_t environment_identity = 0;
     double fixed_delta_ms = 0.0;
     /** Mesh, light, or shadow changes that require renderer state rebuild. */
     std::uint64_t render_topology_version = 0;
@@ -6540,6 +6598,10 @@ void set_animation_additive_from_frame(
     AnimationGroupHandle group,
     float reference_frame);
 void attach_control(Engine& engine, CameraHandle camera);
+void write_camera_scalar(CameraRecord& camera, double CameraRecord::*field, double value);
+void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::*vector,
+    double Vec3d::*component, double value);
+void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::*vector, Vec3d value);
 void set_camera_limits(
     Engine& engine,
     CameraHandle camera,

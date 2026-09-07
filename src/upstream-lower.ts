@@ -723,6 +723,13 @@ class GeneratedSourceWriter {
     ): void {
         const context = new LoweringContext(this.store);
         const generated: Array<{ modulePath: string; symbolName: string }> = [];
+        if (options.postProcessComposites?.some((task) => task.taa)) {
+            if (options.geometryOutputTasks.length > 0 || options.assetTransmission ||
+                (options.pinnedVariants?.length ?? 0) > 0) {
+                throw new Error("TAA source preparation does not yet cover geometry-output or imported PBR passes." +
+                    refusalReachedFrom(options.featureSites, "renderer:post-process"));
+            }
+        }
         // Which programs a node-particle system draws is the pin's answer
         // twice over: the blend mode comes from the graph's own SystemBlock
         // (so from the bake), and how many passes that mode draws comes from
@@ -1088,7 +1095,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             reachesCameraFactory ||
             features.includes("camera:view-projection")
         ) {
-            const cameraLowerer = new CameraLowerer(context);
+            const cameraLowerer = new CameraLowerer(context,
+                options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"));
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
                 cameraLowerer.lowerArcRotateFactory(
@@ -1279,6 +1287,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.writeSource(
                 "upstream/src/animation_property.cpp",
                 new AnimationLowerer(context).lowerPropertyAnimation({
+                    cameraVersions: options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"),
                     blending: features.includes(
                         "animation:property-blending",
                     ),

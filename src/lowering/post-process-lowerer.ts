@@ -23,6 +23,8 @@ import {
     type PinnedBinding,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { TaaPostProcessLowerer } from "./taa-post-process-lowerer.js";
+import { SceneUboLowerer } from "./scene-ubo-lowerer.js";
 
 const TASK_MODULE = "src/frame-graph/post-process-task.ts";
 
@@ -446,6 +448,16 @@ export class PostProcessLowerer {
             if (slot.runtime) {
                 continue;
             }
+            if (slot.owner === "task") {
+                this.expectDefault(
+                    this.context.propertyInitializer(
+                        this.context.objectInitializer(declaration, "task"), slot.path,
+                    ),
+                    slot.fallback, file,
+                    { intrinsic: effect.intrinsic, option: slot.path },
+                );
+                continue;
+            }
             const { option, component } = slotOption(slot);
             const found = fallbacks.get(option);
             if (!found) {
@@ -512,6 +524,12 @@ export class PostProcessLowerer {
     }
 
     private header(): string {
+        const lifecycleHeaders = new Set(this.composites.filter((composite) => composite.taa !== undefined)
+            .map((composite) => new TaaPostProcessLowerer(this.context, composite).header()));
+        if (lifecycleHeaders.size > 1) {
+            throw new Error("Pinned TAA composites disagree on their retained child pass layout.");
+        }
+        const sceneUbo = lifecycleHeaders.size ? new SceneUboLowerer(this.context) : undefined;
         return `#pragma once
 
 #include <bblite/runtime.hpp>
@@ -549,7 +567,9 @@ void write_post_process_uniforms(
     float* data);
 
 } // namespace bbl::upstream
-${this.compositeDeclarations()}`;
+${this.compositeDeclarations()}
+${[...lifecycleHeaders].join("\n")}
+${sceneUbo ? `#define BBLITE_HAS_TAA 1\n${sceneUbo.jitterHeader()}\n${sceneUbo.cacheHeader()}\n${sceneUbo.storageHeader()}\n${sceneUbo.packingHeader()}` : ""}`;
     }
 
     /** The pin's own switch, as the emitted table's case arms. */
@@ -692,6 +712,7 @@ TaskHandle create_post_process_task(
     for (PostProcessPassOptions& pass : options.passes) {
         resolve_post_process_pass_output(engine, pass);
     }
+    options.output_target = options.passes.at(options.output_pass).output_target;
     FrameTaskRecord task;
     task.kind = FrameTaskKind::post_process;
     task.post_process = std::move(options);
@@ -825,6 +846,10 @@ ${this.compositeFactories()}
                 }
                 return "inputs.target";
             }
+            if (texture.option === "swapchain") {
+                const handle = "swapchain_render_target(engine)";
+                return asTarget ? handle : `render_target_texture(${handle})`;
+            }
             const slot = compositeExtraIndex(
                 composite,
                 texture.option,
@@ -878,7 +903,16 @@ ${lines.join("\n")}    PostProcessTaskOptions options;
     options.passes = {
 ${passes.join(",\n")},
     };
-    return create_post_process_task(engine, std::move(options));
+    options.output_pass = ${composite.outputPass}u;
+    options.source_tasks = std::move(inputs.source_tasks);
+${composite.taa ? `    options.taa = std::make_shared<TaaPostProcessState>(
+        upstream::create_taa_post_process_state(${dvalue(composite.taa.factor)}, ${composite.taa.disableOnCameraMove}));
+    upstream::initialize_taa_jitter(*options.taa, ${dvalue(composite.taa.samples)});
+    FrameTaskRecord& source = engine.frame_tasks.at(options.source_tasks.at(0).value);
+    if (source.kind != FrameTaskKind::render || !source.source_scene) {
+        throw std::runtime_error("TAA source must retain its original render-task scene.");
+    }
+    if (!source.scene_uniforms) source.scene_uniforms = upstream::create_persistent_scene_uniforms();\n` : ""}    return create_post_process_task(engine, std::move(options));
 }`;
     }
 
@@ -1069,7 +1103,7 @@ ${body}
             ],
         ]);
         for (const [slot, parameter] of effect.params.entries()) {
-            const key = `params.${parameter.path}`;
+            const key = `${parameter.owner ?? "params"}.${parameter.path}`;
             if (!bindings.has(key)) {
                 bindings.set(key, {
                     cpp: `task.params[${slot}]`,

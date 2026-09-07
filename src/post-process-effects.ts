@@ -26,6 +26,8 @@
 export interface PostProcessParamSlot {
     /** The path the pinned `writeUniforms` reads it through. */
     path: string;
+    /** The pinned writer's state owner; ordinary effects close over `params`. */
+    owner?: "task";
     /**
      * The pin's own default for it, in the pin's own type.
      *
@@ -121,8 +123,8 @@ export interface PostProcessComposite {
      * The observation seam rewrites the composite's own imports, so it sees a
      * pass only if the composite reached it through one of these -- and a
      * chain that ends on an unobserved pass is refused rather than composed
-     * short: `runComposite` checks the composite's own `outputTexture`
-     * against the last pass it saw. The seam is keyed by specifier rather
+     * short: `runComposite` resolves the composite's own `outputTexture`
+     * against the passes it saw. The seam is keyed by specifier rather
      * than by effect module, so `createPostProcessTask` itself is nameable
      * here like any leaf.
      */
@@ -153,9 +155,29 @@ export interface PostProcessComposite {
     extraTextures: readonly string[];
     /** Whether any of its passes reads the camera's near and far planes. */
     usesCamera: boolean;
+    /** Required source render-task references, in native input order. */
+    sourceTasks?: readonly string[];
 }
 
 export const POST_PROCESS_COMPOSITES: readonly PostProcessComposite[] = [
+    {
+        intrinsic: "createTaaPostProcessTask",
+        module: "src/post-process/taa.ts",
+        passes: {
+            "../frame-graph/post-process-task.js": ["createPostProcessTask"],
+        },
+        inlinePasses: {
+            symbol: "createPostProcessTask",
+            effects: {
+                "-blend": "createTaaBlendPostProcessTask",
+                "-present": "createTaaPresentPostProcessTask",
+                "-history-update": "createTaaHistoryUpdatePostProcessTask",
+            },
+        },
+        extraTextures: [],
+        usesCamera: false,
+        sourceTasks: ["sourceRenderTask"],
+    },
     {
         intrinsic: "createDepthOfFieldPostProcessTask",
         module: "src/post-process/depth-of-field.ts",
@@ -236,6 +258,26 @@ export function postProcessComposite(
 }
 
 export const POST_PROCESS_EFFECTS: readonly PostProcessEffect[] = [
+    {
+        intrinsic: "createTaaBlendPostProcessTask",
+        module: "src/post-process/taa.ts",
+        declaredIn: "createTaaPostProcessTask",
+        declaredAs: "-blend",
+        params: [{ path: "_factor", owner: "task", fallback: 1 }],
+        extraTextures: [],
+        usesCamera: false,
+        internal: true,
+    },
+    ...["Present", "HistoryUpdate"].map((name): PostProcessEffect => ({
+        intrinsic: `createTaa${name}PostProcessTask`,
+        module: "src/post-process/taa.ts",
+        declaredIn: "createTaaPostProcessTask",
+        declaredAs: name === "Present" ? "-present" : "-history-update",
+        params: [],
+        extraTextures: [],
+        usesCamera: false,
+        internal: true,
+    })),
     {
         // Bloom's merge: `source.rgb + blurred.rgb * weight`. It is the one
         // pass whose `_shader` the pin writes inline in a composite's own

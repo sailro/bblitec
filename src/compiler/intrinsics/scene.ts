@@ -9,12 +9,16 @@ import {
 export interface SceneIntrinsicContext
     extends IntrinsicCallContext,
         CameraDeferralContext {
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always", scene?: Value): void;
+    noteTemporalCameraControl(node: ts.Node): void;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
     ): string;
     compileColor3(expression: ts.Expression): string;
     compileVec4(expression: ts.Expression): string;
+    unwrap(expression: ts.Expression): ts.Expression;
+    noteTemporalAdmissionFailure(node: ts.Node, message: string): void;
     expectObjectLiteral(
         expression: ts.Expression,
     ): ts.ObjectLiteralExpression;
@@ -54,6 +58,10 @@ export function compileSceneIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    if (["unregisterScene", "addToScene", "removeFromScene", "addTask", "addTaskAtStart"].includes(importedName)) {
+        context.noteTemporalRecordBoundary(call, `${importedName} after scene registration`);
+    }
+    if (importedName === "rebuildSceneRenderables") context.noteTemporalRecordBoundary(call, importedName, "always");
     switch (importedName) {
         case "addToScene": {
             context.expectArgumentCount(call, 2, 2);
@@ -237,6 +245,7 @@ export function compileSceneIntrinsic(
                 "frame-graph-context",
                 call.arguments[0]!,
             );
+            context.noteTemporalRecordBoundary(call, importedName, "registration", frameGraph);
             return {
                 kind: "void",
                 cpp: `bbl::register_frame_graph_context(${frameGraph.cpp})`,
@@ -273,6 +282,7 @@ export function compileSceneIntrinsic(
                 sceneArgument,
             );
             context.expectSameEngine(camera, scene, call);
+            context.noteTemporalCameraControl(call);
             const deferrals = call.arguments[3]
                 ? compileCameraDeferralOptions(context, call.arguments[3]) : [];
             if (importedName === "attachFreeControl") {
@@ -299,6 +309,8 @@ export function compileSceneIntrinsic(
         }
 
         case "setEnvironmentRotation": {
+            context.noteTemporalRecordBoundary(call,
+                "setEnvironmentRotation invalidates source-task caches beyond the retained key fields", "always");
             // src/scene/set-environment-rotation.ts stores the Y rotation on
             // the scene and registers the environment uniform/skybox patch.
             // Native carries the same scalar in EnvironmentState; its shared
@@ -376,6 +388,15 @@ export function compileSceneIntrinsic(
                 return expression;
             };
             const modeExpression = property("mode");
+            // This adapter snapshots the numeric fields. A fresh literal and
+            // its fresh color array cannot subsequently be mutated through an
+            // alias; retained bags need their own live object carrier first.
+            if (!ts.isObjectLiteralExpression(context.unwrap(call.arguments[1]!)) ||
+                !ts.isArrayLiteralExpression(context.unwrap(property("color")))) {
+                context.noteTemporalAdmissionFailure(call.arguments[1]!,
+                    "TAA requires setFog to receive a fresh inline config with an inline color array; " +
+                    "named or aliased fog objects do not yet retain their identity and live fields.");
+            }
             const mode =
                 context.compileValue(modeExpression);
             if (
@@ -435,6 +456,7 @@ export function compileSceneIntrinsic(
                 "scene",
                 call.arguments[0]!,
             );
+            context.noteTemporalRecordBoundary(call, importedName, "registration", scene);
             return {
                 kind: "void",
                 cpp: `bbl::register_scene(${scene.cpp})`,

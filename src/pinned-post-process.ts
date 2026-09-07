@@ -121,6 +121,10 @@ export interface ComposedComposite {
     intrinsic: string;
     intermediates: readonly CompositeIntermediate[];
     passes: readonly ComposedCompositePass[];
+    /** The observed pass owning the facade's public output, not execution order. */
+    outputPass: number;
+    /** Pinned public factory state consumed by the TAA execute hook. */
+    taa?: { factor: number; disableOnCameraMove: boolean; samples: number };
 }
 
 /** What the factories read off a render target while composing. */
@@ -200,6 +204,7 @@ interface CompositeRun {
      *  parameters off this rather than off the pass, because the pass's
      *  `_shader` closes over the composite's own state. */
     composite: PinnedPostProcessTask;
+    outputPass: number;
 }
 
 /**
@@ -314,10 +319,21 @@ async function runComposite(
         targetTexture: request.hasTarget ? input("targetTexture") : null,
         camera: COMPOSITION_CAMERA,
     };
+    engine.scRT = input("swapchain");
     for (const option of composite.extraTextures) {
         config[option] = input(option);
     }
+    for (const option of composite.sourceTasks ?? []) {
+        // Only identity crosses this composition seam. Reading or executing
+        // a source task requires its live scene UBO and must not be baked.
+        config[option] = {};
+    }
     const task = factory(config, engine, undefined) as PinnedCompositeTask;
+    for (const option of composite.sourceTasks ?? []) {
+        if (!Object.values(task).includes(config[option])) {
+            throw new Error(`Pinned ${composite.intrinsic} does not retain '${option}' by identity.`);
+        }
+    }
     // The chain is not settled by the factory alone: a composite may size an
     // intermediate in `record()` rather than at construction, and SMAA does
     // -- its edge and weight targets are born 1x1 and take the source's
@@ -327,14 +343,13 @@ async function runComposite(
     // graph the way the browser does, against a device that allocates
     // nothing: every quantity below is then the one the frame would use.
     task.record();
-    // The observation seam only sees passes the composite builds through the
-    // entry points its descriptor names, so a chain that ends somewhere else
-    // would compose short and silently. What the composite says its output is
-    // settles that: it must be the output of the last pass observed.
-    const last = passes[passes.length - 1];
-    if (!last || task.outputTexture !== last.task.outputTexture) {
+    // A temporal composite presents before writing history. Resolve the
+    // public output from actual target identity, independently of pass order.
+    const outputPass = passes.findIndex((pass) =>
+        task.outputTexture === pass.task.outputTexture);
+    if (outputPass < 0) {
         throw new Error(
-            `Pinned ${composite.intrinsic} ends on a pass this port did not ` +
+            `Pinned ${composite.intrinsic} publishes a pass this port did not ` +
                 "observe; its descriptor does not name every entry point it " +
                 "builds through.",
         );
@@ -344,7 +359,7 @@ async function runComposite(
             pass.intrinsic = inlinePassEffect(composite, pass.task.name);
         }
     }
-    return { passes, inputs, width, height, composite: task };
+    return { passes, inputs, width, height, composite: task, outputPass };
 }
 
 /**
@@ -429,6 +444,9 @@ export async function composeComposite(
                 "config alone.",
         );
     }
+    if (run.outputPass !== check.outputPass) {
+        throw new Error(`Pinned ${request.intrinsic} changes its public output pass with source size.`);
+    }
     const intermediates: CompositeIntermediate[] = [];
     const indices = new Map<PinnedRenderTarget, number>();
     const engine = compositionEngine();
@@ -479,7 +497,19 @@ export async function composeComposite(
             ),
         };
     });
-    return { intrinsic: request.intrinsic, intermediates, passes };
+    let taa: ComposedComposite["taa"];
+    if (request.intrinsic === "createTaaPostProcessTask") {
+        const factor: unknown = Reflect.get(run.composite, "factor");
+        const disableOnCameraMove: unknown = Reflect.get(run.composite, "disableOnCameraMove");
+        const samples: unknown = Reflect.get(run.composite, "samples");
+        if (typeof factor !== "number" || typeof disableOnCameraMove !== "boolean" ||
+            typeof samples !== "number" || !Number.isSafeInteger(samples) || samples < 1) {
+            throw new Error("Pinned TAA no longer exposes its numeric factor, camera-move flag and positive sample count.");
+        }
+        taa = { factor, disableOnCameraMove, samples };
+    }
+    return { intrinsic: request.intrinsic, intermediates, passes, outputPass: run.outputPass,
+        ...(taa ? { taa } : {}) };
 }
 
 /**
@@ -624,9 +654,10 @@ function resolveCompositeTexture(
  * beyond this list is a `TypeError` rather than a quietly different
  * composition, which is the property that makes the stub safe.
  */
-function compositionEngine(): unknown {
+function compositionEngine() {
     const handle = (): unknown => ({});
     return {
+        scRT: null as PinnedRenderTarget | null,
         _device: {
             createShaderModule: (descriptor: { code: string }) => ({
                 code: descriptor.code,

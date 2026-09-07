@@ -183,6 +183,8 @@ export function callShapeOf(
 /** How one pinned identifier is spelled and typed in the emitted C++. */
 export interface PinnedBinding {
     cpp: string;
+    /** An effectful buffer getter must be read when a local aliases it. */
+    materializeAlias?: true;
     /** For a view, the C++ expression giving its byte length. */
     bytesCpp?: string;
     /**
@@ -1120,7 +1122,14 @@ export class PinnedNumericLowerer {
                     isRecordType(alias.type) ||
                     alias.absentCpp !== undefined)
             ) {
-                this.scope.bindings.set(name, alias);
+                if (alias.materializeAlias) {
+                    if (!isConst) this.fail(declaration, "mutable getter alias binding");
+                    const { materializeAlias: _materializeAlias, ...value } = alias;
+                    lines.push(`${indent}auto&& ${cpp} = ${alias.cpp};`);
+                    this.scope.bindings.set(name, { ...value, cpp });
+                } else {
+                    this.scope.bindings.set(name, alias);
+                }
                 // An opaque record's members are bound by their dotted
                 // text, so the alias carries every member path the
                 // original had: `const buffer = system.buffer` makes
@@ -1598,6 +1607,11 @@ export class PinnedNumericLowerer {
         }
         if (ts.isCallExpression(initializer)) {
             const shape = callShapeOf(this.scope.callShapes, initializer, this.file);
+            if (shape === "f32" || shape === "f64-buffer") {
+                if (!isConst) this.fail(declaration, "mutable buffer call binding");
+                this.scope.bindings.set(name, { cpp, type: shape });
+                return [`${indent}auto&& ${cpp} = ${this.expression(initializer)};`];
+            }
             if (shape && isRecordType(shape)) {
                 this.scope.bindings.set(name, { cpp, type: shape });
                 return [
@@ -1968,6 +1982,11 @@ export class PinnedNumericLowerer {
             ) {
                 this.fail(unwrapped, "store through a read-only view");
             }
+            // A fixed heterogeneous cell can map to a native record field.
+            // Only an explicitly mutable binding names a store destination;
+            // ordinary exact read bindings may be constants or expressions.
+            const exact = this.scope.bindings.get(unwrapped.getText(this.file));
+            if (exact?.mutable) return exact.cpp;
             // Assigning past a list's end EXTENDS it in JavaScript, and the
             // pinned ribbon fills `us[p]` without sizing `us` first. A
             // fixed-size buffer cannot grow and is indexed directly; a list

@@ -17,6 +17,7 @@ export class AnimationLowerer {
     private propertyWriterArms(
         record: "mesh" | "camera",
         indent: string,
+        cameraVersions = false,
     ): string {
         const lines: string[] = [];
         for (const lane of propertyAnimationLanes.values()) {
@@ -24,7 +25,9 @@ export class AnimationLowerer {
             const target = `${record}.${lane.field}`;
             const components = laneComponents(lane);
             const whole = components.length === 0
-                ? `${target} = value[0];`
+                ? record === "camera" && cameraVersions
+                    ? `write_camera_scalar(camera, &CameraRecord::${lane.field}, value[0]);`
+                    : `${target} = value[0];`
                 : `${target} = ${lane.vector}{${
                       components
                           .map((_unused, index) => `value[${index}]`)
@@ -1389,12 +1392,15 @@ void enable_animation_blending(
             weightFades?: boolean;
             /** The scene drives a loaded file's clips from a manager. */
             managedGroups?: boolean;
+            /** Exact observable camera setters required by a temporal task. */
+            cameraVersions?: boolean;
         } = {},
     ): LoweredSource {
         const {
             blending = false,
             weightFades = false,
             managedGroups = false,
+            cameraVersions = false,
         } = options;
         const propertyModule = "src/animation/property-animation.ts";
         const managerModule = "src/animation/animation-manager.ts";
@@ -2348,7 +2354,7 @@ void write_track_value(
         }
         CameraRecord& camera = engine.cameras[target.index];
         switch (path) {
-${this.propertyWriterArms("camera", "            ")}
+${this.propertyWriterArms("camera", "            ", cameraVersions)}
             default:
                 throw std::runtime_error(
                     "Property animation path does not belong to a camera.");

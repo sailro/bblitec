@@ -138,6 +138,7 @@ export function isNeverResized(name: ts.Identifier): boolean {
 }
 
 export interface DataLoweringContext {
+    noteCameraVectorCopy(value: Value, site: ts.Node): void;
     isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     useNativeValue(value: Value): void;
     readonly checker: ts.TypeChecker;
@@ -5929,6 +5930,7 @@ export class DataLowerer {
         dataType: DataType,
         node: ts.Node,
     ): string {
+        if (value.cameraVector) this.context.noteCameraVectorCopy(value, node);
         this.context.useNativeValue(value);
         // A stored tuple aliases its source. Once that alias leaves the local
         // binding graph, generation cannot retain a snapshot of its contents.
