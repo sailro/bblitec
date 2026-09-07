@@ -148,6 +148,7 @@ export interface StatementLoweringContext {
     compileValue(expression: ts.Expression): Value;
     compileTextMutation(expression: ts.Expression): Value | undefined;
     compileNodeInputMutation(expression: ts.Expression): Value | undefined;
+    checkNodeGeometryMutation(expression: ts.Expression): void;
     emitDiscardedValue(value: Value): void;
     emitAwaitExpression(expression: ts.Expression): boolean;
     compileCondition(expression: ts.Expression): string;
@@ -3236,6 +3237,7 @@ export class StatementLowerer {
         context: StatementLoweringContext,
         expression: ts.Expression,
     ): void {
+        context.checkNodeGeometryMutation(expression);
         const input = context.compileNodeInputMutation(expression);
         if (input) { context.emitDiscardedValue(input); return; }
         const text = context.compileTextMutation(expression);

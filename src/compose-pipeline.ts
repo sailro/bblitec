@@ -29,6 +29,7 @@ import {
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import { glbDocument } from "./gltf-document.js";
+import { nodeGeometryAssetRefusal } from "./node-geometry-assets.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
 import type { MeshProfileTable } from "./lowering/resource-profiles.js";
@@ -1116,6 +1117,13 @@ export async function composeScenePipeline({
     // and pipeline builder. The index is the scene's reach order, which is
     // what `create_node_material` was given.
     const nodeVariants: NodeVariantManifestEntry[] = [];
+    if (result.manifest.nodeMaterials.length > 0 && geometryTasks.length > 0) {
+        for (const asset of uniqueGltfAssets) {
+            const document = glbDocument(resolve(outputPath, "assets", asset.output));
+            const reason = document ? await nodeGeometryAssetRefusal(document) : "an unreadable glTF document";
+            if (reason) throw new Error(`Node geometry views do not represent ${reason} in '${asset.output}'.${refusalReachedFrom(result.manifest.featureSites, "renderer:geometry-output")}`);
+        }
+    }
     const repositoryRoot = result.manifest.nodeMaterials.length > 0
         ? findRepositoryRoot(dirname(resolve(result.manifest.source)))
         : "";

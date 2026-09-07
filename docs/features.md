@@ -441,6 +441,13 @@ shadow lights, no trailing colour attachment, and no LOCAL_POSITION attachment
 into the vertex); each is refused by name. Wider input mutation remains
 unfinished.
 
+Imported node geometry currently requires static, tightly packed FLOAT
+POSITION/NORMAL streams and FLOAT UVs when present. Missing normals, reached
+strided attribute views, imported deformation/instancing and source transform
+mutation or cloning are refused. Ordinary accessor byte offsets remain valid;
+unused strided views do not affect admission. Proven scene-authored mesh
+transforms keep their existing behavior alongside imported geometry.
+
 ### Material plugins
 
 Explicit plugin enablement installs the pin's bridges. The compiler folds

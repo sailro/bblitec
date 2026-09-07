@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
+import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
@@ -836,7 +837,7 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "node-input" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "node-input" | "node-geometry" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
     private readonly materialColorReads: Array<"baseColorFactor" | "diffuseColor"> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
@@ -1004,6 +1005,12 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.reachedNodeMaterials.length > 0 && this.geometryOutputTasks.length > 0 && this.features.has("loader:gltf")) {
+            const boundary = this.deferredAdmissionFailures.find(failure => failure.capability === "node-geometry");
+            if (boundary) this.fail(boundary.node, boundary.message);
+            if (this.features.has("animation:property")) this.fail(this.sourceFile,
+                "Node geometry views with glTF do not represent property-animation transform producers.");
+        }
         const colorAdmission = this.deferredAdmissionFailures.find(failure =>
             (failure.capability === "baseColorFactor" || failure.capability === "diffuseColor") &&
             this.materialColorReads.includes(failure.capability));
@@ -1962,6 +1969,15 @@ class Compiler
 
     public compileNodeInputMutation(expression: ts.Expression): Value | undefined {
         return compileNodeInputMutation(this, expression);
+    }
+
+    public checkNodeGeometryMutation(expression: ts.Expression): void {
+        checkNodeGeometryMutation(this, expression);
+    }
+
+    public noteNodeGeometryMutation(node: ts.Node): void {
+        this.deferredAdmissionFailures.push({ capability: "node-geometry", node,
+            message: "Node geometry views require static imported mesh transforms; mutation, cloning and unproven transform aliases are not represented." });
     }
 
     public assertNodeInputMutable(node: ts.Node): void {
@@ -4451,6 +4467,7 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        this.checkNodeGeometryMutation(expression);
         const input = this.compileNodeInputMutation(expression);
         if (input) { this.emitDiscardedValue(input); return; }
         const text = this.compileTextMutation(expression);
@@ -8988,6 +9005,7 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
+        this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
         const dependencies = new Set<NativeCaptureBinding>();
         this.nativeDependencyStack.push(dependencies);
