@@ -12,16 +12,7 @@ import { materializePinnedText, type CompiledTextData, type TextBlob } from "../
 import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import { resolveBundledAsset } from "../src/compiler/assets.js";
 import { stringLiteral } from "../src/cpp-literals.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
-
-function cppFunction(source: string, signature: string): string {
-    const start=source.indexOf(signature);
-    assert.ok(start>=0,signature);
-    const open=source.indexOf("{",start);
-    let depth=1,end=open+1;
-    while(depth) { const char=source[end++]; if(char==="{")depth++; if(char==="}")depth--; }
-    return source.slice(start,end);
-}
+import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 interface Vector { x: number; y: number; z: number; set(x: number, y: number, z: number): void }
 interface Quaternion extends Vector { w: number; version: number; set(x: number, y: number, z: number, w?: number): void }

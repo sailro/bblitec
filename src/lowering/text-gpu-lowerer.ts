@@ -467,7 +467,6 @@ template<class Ops> std::shared_ptr<TextGpuState> ensure_text_gpu(TextRenderable
                     c.assertExpressionShape(variable.initializer!, "r._data", "Text update data identity");
                     return [`${indent}auto& data = *r.data;`];
                 }
-                if (name === "styleRecreated") c.assertExpressionShape(variable.initializer!, "ensureStyleGpu(device, data, gpu)", "Text style update order");
                 if (name === "view") {
                     const call = variable.initializer;
                     if (!call || !ts.isCallExpression(call) || call.arguments.length !== 2)

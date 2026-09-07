@@ -1716,7 +1716,6 @@ export function commonResourceValue(value: Value, candidates: readonly Value[]):
 export interface Value {
   /** Generation-only identities, retained through aliases and inlined helpers. */
   textFont?: { source: TextFontSource; bytes: Uint8Array };
-  textData?: CompiledTextData;
   ownedEngineCpp?: string;
   promiseResult?: Value;
   promiseType?: string;

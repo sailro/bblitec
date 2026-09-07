@@ -835,7 +835,7 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly temporalAdmissionFailures: Array<{ node: ts.Node; message: string }> = [];
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text"; node: ts.Node; message: string }> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
     private temporalControlAttachment: ts.Node | undefined;
@@ -1006,12 +1006,13 @@ class Compiler
             if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
             if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
                 "Text currently supports one registered scene; layered text update/draw ordering is not represented.");
-            if (this.textSceneLifecycle) this.fail(this.textSceneLifecycle.node, this.textSceneLifecycle.message);
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "text");
+            if (admission) this.fail(admission.node, admission.message);
         }
         if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
             const unsupported = this.untrackedTaaCameraWrites[0];
             if (unsupported) this.fail(unsupported.node, `TAA requires tracked camera mutations: ${unsupported.reason}.`);
-            const admission = this.temporalAdmissionFailures[0];
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "taa");
             if (admission) this.fail(admission.node, admission.message);
             for (const feature of ["camera:free", "camera:geospatial", "camera:orthographic", "loader:gltf-cameras"] as const) {
                 if (this.features.has(feature)) this.fail(this.sourceFile,
@@ -1942,10 +1943,9 @@ class Compiler
 
     private textAttachmentReached = false;
     private textCameraMutation: ts.Node | undefined;
-    private textSceneLifecycle: { node: ts.Node; message: string } | undefined;
 
     public noteTextSceneLifecycle(node: ts.Node, message = "Text scene disposal, removal and explicit rebuilding require retained binding topology that is not represented."): void {
-        this.textSceneLifecycle ??= { node, message };
+        this.deferredAdmissionFailures.push({ capability: "text", node, message });
     }
 
     public noteTextSceneCameraAssignment(node: ts.Node): void {
@@ -13575,24 +13575,22 @@ class Compiler
     ): T {
         const start = this.body.length;
         const cameras = this.untrackedTaaCameraWrites.length;
-        const admissions = this.temporalAdmissionFailures.length;
+        const admissions = this.deferredAdmissionFailures.length;
         const registration = this.temporalSceneRegistration;
         const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
         const textCamera = this.textCameraMutation;
         const textAttachment = this.textAttachmentReached;
-        const textLifecycle = this.textSceneLifecycle;
         const result = probe();
         if (!answered(result)) {
             this.body.splice(start);
             this.untrackedTaaCameraWrites.length = cameras;
-            this.temporalAdmissionFailures.length = admissions;
+            this.deferredAdmissionFailures.length = admissions;
             this.temporalSceneRegistration = registration;
             this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
             this.textCameraMutation = textCamera;
             this.textAttachmentReached = textAttachment;
-            this.textSceneLifecycle = textLifecycle;
         }
         return result;
     }
@@ -14112,7 +14110,7 @@ class Compiler
     }
 
     public noteTemporalAdmissionFailure(node: ts.Node, message: string): void {
-        this.temporalAdmissionFailures.push({ node, message });
+        this.deferredAdmissionFailures.push({ capability: "taa", node, message });
     }
 
     public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime", scene?: Value): void {

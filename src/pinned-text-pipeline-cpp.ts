@@ -6,10 +6,12 @@ import { composeTextPipeline, type ComposedTextPipeline } from "./pinned-text-pi
 /** The default pass can resize between the pin's supported sample counts. */
 export async function composeDefaultTextPipelines(): Promise<ComposedTextPipeline[]> {
     const rows: ComposedTextPipeline[] = [];
+    const seen = new Set<string>();
     for (const sampleCount of [1, 4]) for (const depthWrite of [false, true]) for (const alphaToCoverage of [false, true]) {
         const row = await composeTextPipeline({ format: "bgra8unorm", sampleCount,
             depthStencilFormat: "depth24plus-stencil8", depthWrite, alphaToCoverage });
-        if (!rows.some((prior) => JSON.stringify(prior) === JSON.stringify(row))) rows.push(row);
+        const key = JSON.stringify(row);
+        if (!seen.has(key)) { seen.add(key); rows.push(row); }
     }
     return rows;
 }

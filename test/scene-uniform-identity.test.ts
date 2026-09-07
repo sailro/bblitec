@@ -10,7 +10,7 @@ import { EnvironmentLowerer } from "../src/lowering/environment-lowerer.js";
 import { GltfLowerer } from "../src/lowering/gltf-lowerer.js";
 import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const literal = `{mode: 0, density: .1, start: 0, end: 10, color: [.2, .3, .4]}`;
 const taa = `const target = createRenderTarget({format: engine.format, dFormat: "depth24plus-stencil8", size: engine, samples: 1});
@@ -42,21 +42,6 @@ test("TAA fog admits fresh config/color literals and refuses retained identity i
     assert.throws(() => compileSource(program(`${taa} setFog(scene, null);`)), /Expected an object literal/);
     assert.throws(() => compileSource(program(`${taa} scene.fog = null;`)), /Unsupported|not supported|Cannot assign/);
 });
-
-/** Only isolate emitted declarations for this CPU fixture; their bodies stay untouched. */
-function cppFunction(source: string, signature: string): string {
-    const start = source.indexOf(signature);
-    assert.ok(start >= 0, signature);
-    const open = source.indexOf("{", start);
-    let depth = 1, end = open + 1;
-    while (depth && end < source.length) {
-        const char = source[end++];
-        if (char === "{") ++depth;
-        if (char === "}") --depth;
-    }
-    assert.equal(depth, 0);
-    return source.slice(start, end);
-}
 
 test("scene object keys observe pin defaults, fresh fog, retained glTF setup and transactional environment publication", async (t) => {
     const native = optionalNativeFixtureTools(false);

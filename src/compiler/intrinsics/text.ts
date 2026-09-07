@@ -166,7 +166,7 @@ export function compileTextIntrinsic(context: TextIntrinsicContext, name: string
     };
     context.reachedTextData.push(row);
     context.reachFeature("text:data", call);
-    return { kind: "text-data", cpp: `bbl::create_compiled_text_data(${row.id})`, textData: row,
+    return { kind: "text-data", cpp: `bbl::create_compiled_text_data(${row.id})`,
         dataType: { kind: "handle", handle: "text-data" } };
 }
 
