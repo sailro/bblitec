@@ -27,6 +27,7 @@
 #include "RmlUi_Platform_SDL.h"
 #include "pal_runtime_trace.hpp"
 #include "pal_ui_backdrop.hpp"
+#include "pal_ui_canvas.hpp"
 #include "pal_ui_defaults.hpp"
 #include "pal_ui_text.hpp"
 
@@ -48,6 +49,11 @@
 #include <vector>
 
 namespace bbl {
+namespace pal {
+namespace {
+Rml::ColourbPremultiplied canvas_color(std::string_view source);
+}
+}
 namespace {
 
 char ascii_lower(char value) {
@@ -922,6 +928,23 @@ void reset_canvas(
 
 } // namespace
 
+UiElementHandle ui_primary_canvas(Engine& engine) {
+    if (engine.primary_canvas.value < engine.ui_elements.size()) {
+        return engine.primary_canvas;
+    }
+    const auto canvas = ui_create_element(engine, "canvas");
+    engine.primary_canvas = canvas;
+    ui_set_attribute(engine, canvas, "id", "renderCanvas");
+    ui_set_style_property(engine, canvas, "position", "absolute");
+    ui_set_style_property(engine, canvas, "left", "0px");
+    ui_set_style_property(engine, canvas, "top", "0px");
+    ui_set_style_property(engine, canvas, "width", "100%");
+    ui_set_style_property(engine, canvas, "height", "100%");
+    reset_canvas(ui_canvas(engine, canvas), engine.options.width, engine.options.height);
+    ui_append_to_root(engine, canvas);
+    return canvas;
+}
+
 void ui_canvas_set_width(
     Engine& engine,
     UiElementHandle element,
@@ -1001,6 +1024,19 @@ void ui_canvas_clear_rect(
     // The reached overlays clear their full backing store once per update.
     // Keep clearRect bounded to that retained-frame behavior for now.
     ui_canvas(engine, element).draws.clear();
+}
+
+void ui_canvas_fill_rect(
+    Engine& engine,
+    UiElementHandle element,
+    double x,
+    double y,
+    double width,
+    double height) {
+    auto& canvas = ui_canvas(engine, element);
+    const auto color = pal::canvas_color(canvas.fill_style);
+    if (color.alpha == 0) return;
+    pal::retain_canvas_fill_rect(canvas, x, y, width, height, color.alpha == 255);
 }
 
 void ui_canvas_begin_path(Engine& engine, UiElementHandle element) {
@@ -1891,8 +1927,6 @@ struct GradientTextColor {
     double blue = 0.0;
 };
 
-Rml::ColourbPremultiplied canvas_color(std::string_view source);
-
 std::vector<GradientTextColor> gradient_text_colors(
     std::string_view palette) {
     std::vector<GradientTextColor> result;
@@ -2025,6 +2059,14 @@ void append_canvas_disk(
     }
 }
 
+void append_canvas_rectangle(
+    CanvasMesh& mesh,
+    double left,
+    double top,
+    double right,
+    double bottom,
+    Rml::ColourbPremultiplied color);
+
 CanvasMesh canvas_mesh(
     const UiElementRecord::CanvasDrawCommand& draw,
     double scale_x,
@@ -2035,13 +2077,35 @@ CanvasMesh canvas_mesh(
         draw.kind == UiElementRecord::CanvasDrawCommand::Kind::Text) {
         return mesh;
     }
+    const auto color = canvas_color(draw.color);
+    if (draw.kind == UiElementRecord::CanvasDrawCommand::Kind::FillRect) {
+        // Canvas antialiases in its backing store before CSS scaling. Pixel-
+        // aligned quads with area-weighted premultiplied colors preserve that
+        // coverage even in a single-sample UI compositor on either backend.
+        const auto xs = canvas_coverage_bands(
+            draw.destination_x, draw.destination_x + draw.destination_width);
+        const auto ys = canvas_coverage_bands(
+            draw.destination_y, draw.destination_y + draw.destination_height);
+        for (const auto& y : ys) for (const auto& x : xs) {
+            const double coverage = x.coverage * y.coverage;
+            if (coverage <= 0.0) continue;
+            const auto channel = [coverage](Rml::byte value) {
+                return static_cast<Rml::byte>(std::lround(value * coverage));
+            };
+            append_canvas_rectangle(
+                mesh, x.start * scale_x, y.start * scale_y,
+                x.end * scale_x, y.end * scale_y,
+                {channel(color.red), channel(color.green),
+                 channel(color.blue), channel(color.alpha)});
+        }
+        return mesh;
+    }
     if (draw.points.empty()) return mesh;
     std::vector<UiElementRecord::CanvasPoint> points;
     points.reserve(draw.points.size());
     for (const auto point : draw.points) {
         points.push_back({point.x * scale_x, point.y * scale_y});
     }
-    const auto color = canvas_color(draw.color);
     if (draw.kind == UiElementRecord::CanvasDrawCommand::Kind::Fill) {
         if (points.size() < 3) return mesh;
         const int first = append_canvas_vertex(

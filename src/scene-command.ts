@@ -108,6 +108,7 @@ import {
     writeValidationCheckpoint,
 } from "./validation-resume.js";
 import { runConcurrently } from "./run-concurrently.js";
+import { historicalBuildCostMs, orderByHistoricalCost } from "./build-scheduling.js";
 
 function run(
     command: string,
@@ -620,7 +621,7 @@ function buildConcurrency(): {
 async function buildScenes(
     selected: readonly (typeof scenes)[number][],
 ): Promise<void> {
-    const { vcpkg, tools, environment } = buildSetup();
+    const { vcpkg, tools, environment, generator } = buildSetup();
     if (vcpkg) installVcpkgManifest(tools.vcpkg!, vcpkg.install, environment);
     if (selected.length === 1) {
         await runSceneBuild(selected[0]!, undefined, false);
@@ -632,7 +633,7 @@ async function buildScenes(
             `(${jobsPerScene} jobs each).`,
     );
     await runConcurrently(
-        selected,
+        orderByHistoricalCost(selected, (scene) => historicalBuildCostMs(scene.buildDirectory, generator)),
         inFlight,
         (scene) => scene.id,
         (scene) => runSceneBuild(scene, jobsPerScene, true),

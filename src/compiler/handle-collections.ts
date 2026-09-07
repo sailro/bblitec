@@ -1240,6 +1240,11 @@ export class HandleCollections {
                 "A pushed particle system comes from a built set.",
             );
         }
+        if (this.context.reachedNodeParticles.sets[set.nodeParticleSetIndex]?.native ||
+            this.context.reachedNodeParticles.sets[system.nodeParticleSetIndex]?.native) {
+            this.context.fail(call,
+                "System-list composition with a provider-backed particle set is not lowered; pushed systems must retain their original native identity.");
+        }
         if (this.context.reachedNodeParticles.buffers.some((buffer) =>
             buffer.set === set.nodeParticleSetIndex ||
             buffer.set === system.nodeParticleSetIndex)) {

@@ -157,8 +157,9 @@ separate retained surface.
 
 ### Node particles
 
-A set the scene steps or freezes before its first frame is baked: generation
-runs the pinned parser, normalizer, builder and simulation in Chromium and
+A set without an emitter provider that the scene steps or freezes before its
+first frame is baked: generation runs the pinned parser, normalizer, builder
+and simulation in Chromium and
 bakes the particle state they produced. Billboard and Sprite2D bridges derive
 their layout, blend and synchronization rules from pinned declarations. A
 registered frozen set is accepted only when the observed extra step leaves
@@ -187,10 +188,32 @@ draws are the pinned generator's on both sides. Covered evaluators: System
 (static emit rate), CreateParticle, world Box shape, UpdatePosition,
 UpdateColor, TextureSource, Input (constants, Position, Age, Lifetime, Color,
 ScaledDirection, ScaledColorStep), Random (None, PerParticle, PerSystem),
-compact Math, Lerp and Converter. Variant evaluators (once-per-particle
-random, aliased math, connected emit rate, local shapes, sprite sheets),
-moving emitters and the billboard registrar over a live set remain outside
-this slice, and the two-pass MultiplyAdd blend refuses on a live layer.
+compact Math, Lerp and Converter. Local Point shape and LocalPositionUpdated
+also preserve the pin's local position/id/valid columns and their swap-removal.
+Other variant evaluators (once-per-particle random, aliased math, connected
+emit rate, other local shapes and sprite sheets) remain outside this slice,
+and the two-pass MultiplyAdd blend refuses on a live layer.
+
+`withNodeParticleEmitterProvider` selects native simulation, including authored
+pre-frame steps. Its callback retains shared Float32Array storage, is sampled
+when wrapped, and supplies a validated matrix once per started animation call.
+Zero update speed and stopped emission still sample; an unstarted system does
+not. The pinned setup/frame bodies update the world matrix and translation.
+`registerNodeParticleSet` creates a billboard, honors `autoStart`, and installs
+the pinned animate-then-sync callback. Source start/stop/animate, scalar writes
+and live count/capacity reads use that same state. Native Math.random overrides
+retain their closure state and saved-function identity; a finally spanning
+startEngine runs when its continuation completes. That cleanup currently admits
+plain writes; calls, accessors and explicit throws require the exception
+completion work tracked in [TODO](../TODO.md).
+
+Provider-backed sets require definite initialization before recurring callbacks.
+Standalone provider options, mixed native/frozen sets, composed system lists,
+explicit billboard or pure-2D provider bridges, inverse-matrix registration and
+unsupported hooks refuse. Texture changes and blend enabling after registration
+also refuse. Exact native fixtures cover 180 frames, deaths, random draw counts,
+provider sampling and callback ownership; scene302's unchanged seek and live
+modes additionally have both-backend image and input replay measurements.
 
 Three pinned bodies are restated and asserted rather than translated: the
 variant-selection predicate (the build-time evaluator has no
@@ -367,6 +390,22 @@ metallic-roughness texture transforms; those retain their load-time values.
 Track interpolation and target
 support are independent; a property-animation option does not establish glTF
 support for the same spelling.
+
+Property groups can bind mutable numeric leaves on plain data objects. Each
+path resolves its owner once at group creation, retains that object and shares
+the caller's storage; replacing an intermediate object does not retarget an
+existing group. Resolved owner/property identity also drives weighted mixing.
+Whole data-vector/array writes and missing, readonly or nonnumeric leaves
+remain unsupported.
+
+Animation managers support `fixedDeltaMs`, retained `onUpdate` callbacks and
+autonomous start/stop on the engine RAF conductor. Clock expressions and state
+writes derive from the pin; the first variable-step tick receives zero, and
+`onUpdate` runs after each autonomous update. Manual updates and seeks do not
+notify. Engine-less Canvas2D entries use the private presentation host described
+in [UI](ui.md#canvas2d). Autonomous managers cannot coexist with the older
+persistent application RAF lowering; those loops need source requeue retention
+before their callback ordering can compose.
 
 ## Deformation and instancing
 

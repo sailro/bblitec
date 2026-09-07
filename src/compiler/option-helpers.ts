@@ -68,6 +68,7 @@ export interface PositiveIntegerContext {
     lookup(identifier: ts.Identifier): Value;
     /** The binding, or undefined where this scope has none. */
     lookupOptional(identifier: ts.Identifier): Value | undefined;
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     fail(node: ts.Node, message: string): never;
 }
 
@@ -414,7 +415,8 @@ export function staticNumberValue(
     if (
         ts.isPropertyAccessExpression(node) &&
         ts.isIdentifier(node.expression) &&
-        node.expression.text === "Math"
+        node.expression.text === "Math" &&
+        context.isDefaultLibraryIdentifier(node.expression)
     ) {
         // The constants `StaticEvaluator.compileNumber` folds when it emits
         // one of these as text; a Math CALL is folded by the arm above.
@@ -428,7 +430,8 @@ export function staticNumberValue(
         ts.isCallExpression(node) &&
         ts.isPropertyAccessExpression(node.expression) &&
         ts.isIdentifier(node.expression.expression) &&
-        node.expression.expression.text === "Math"
+        node.expression.expression.text === "Math" &&
+        context.isDefaultLibraryIdentifier(node.expression.expression)
     ) {
         if (node.arguments.length === 1) {
             const fold = foldableMathUnary[node.expression.name.text];
@@ -461,7 +464,10 @@ export function staticNumberValue(
     if (ts.isIdentifier(node)) {
         // A miss, not a failure: one caller is an optional probe, and an
         // identifier this scope has no binding for is simply not a constant.
-        return context.lookupOptional(node)?.staticNumber;
+        const value = context.lookupOptional(node);
+        // Writable inline parameters have native storage. Their call-site
+        // metadata is only the initial value, not a proof about later reads.
+        return value?.parameterBinding ? undefined : value?.staticNumber;
     }
     return undefined;
 }

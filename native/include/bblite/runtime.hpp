@@ -959,8 +959,8 @@ enum class PropertyAnimationComponent {
 /**
  * What a property clip is bound to. Upstream resolves a dotted path
  * against whatever object the caller passed, so the target and the path
- * travel together; here the reached objects are a mesh and a camera, and
- * each path belongs to one of them.
+ * travel together. Mesh and camera handles use their native lane writers;
+ * data objects and accessor records retain scalar callback writers.
  */
 enum class PropertyAnimationTargetKind {
     mesh,
@@ -973,6 +973,10 @@ struct PropertyAnimationTarget {
         PropertyAnimationTargetKind::mesh;
     std::uint32_t index = 0;
     js::Callback<void(float)> write_scalar;
+    // A plain-data writer retains this owner through its managed closure.
+    // The mixer keys the pin's resolved (object, property) pair.
+    const void* object_identity = nullptr;
+    std::string property{};
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(write_scalar); }
 };
 
@@ -2876,6 +2880,10 @@ struct PropertyAnimationManagerRecord {
      */
     std::vector<AnimationGroupHandle> gltf_groups;
     bool started = false;
+    double fixed_delta_ms = 0.0;
+    double last_time_ms = 0.0;
+    js::Callback<void(double)> on_update;
+    std::size_t animation_frame_request = 0;
     /** Installed by `enablePropertyAnimationBlending` / `enableAnimationBlending`. */
     AnimationCategoryHandler category_handler =
         AnimationCategoryHandler::none;
@@ -2886,11 +2894,17 @@ struct PropertyAnimationManagerRecord {
         visitor(groups);
         visitor(weight_fades);
         visitor(buckets);
+        visitor(on_update);
     }
 };
 
 using PropertyAnimationManager =
     std::shared_ptr<PropertyAnimationManagerRecord>;
+
+struct PropertyAnimationManagerOptions {
+    double fixed_delta_ms = 0.0;
+    js::Callback<void(double)> on_update;
+};
 
 struct PropertyAnimationGroupOptions {
     float from_time = 0.0f;
@@ -3801,7 +3815,7 @@ struct UiElementRecord {
         double y = 0.0;
     };
     struct CanvasDrawCommand {
-        enum class Kind { Fill, Stroke, Blit, Text } kind = Kind::Fill;
+        enum class Kind { Fill, FillRect, Stroke, Blit, Text } kind = Kind::Fill;
         std::vector<CanvasPoint> points;
         std::string color;
         double line_width = 1.0;
@@ -4129,6 +4143,21 @@ struct BoundingBoxGizmoRecord {
     TransformNodeHandle attached_node{};
 };
 
+struct AnimationFrameRequestState {
+    std::size_t id;
+    js::Callback<void(double)> callback;
+    bool pending = true;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
+};
+
+/** Snapshots share cancellation state with the pending request registry. */
+struct AnimationFrameRequest {
+    Engine* engine;
+    std::shared_ptr<AnimationFrameRequestState> state;
+    void operator()(double timestamp) const;
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(state); }
+};
+
 struct Engine {
 #if defined(BBLITE_WORKERS) && BBLITE_WORKERS
     std::shared_ptr<pal::OffscreenRun> offscreen_run;
@@ -4232,6 +4261,8 @@ struct Engine {
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
     /** Scene-created DOM after compiler lowering, independent of RmlUi. */
     std::vector<UiElementRecord> ui_elements;
+    /** The primary 2D canvas, when this engine is only a platform host. */
+    UiElementHandle primary_canvas{};
     UiElementHandle ui_focused_element{};
     std::uint64_t ui_focus_revision = 0;
     bool ui_focus_visible = true;
@@ -4261,8 +4292,14 @@ struct Engine {
      * invoking it, so a callback which schedules another RAF naturally runs
      * that continuation on the following frame.
      */
-    std::vector<std::function<void(double)>>
+    std::vector<AnimationFrameRequest>
         animation_frame_once_callbacks;
+    std::vector<AnimationFrameRequest>
+        post_render_animation_frame_once_callbacks;
+    std::unordered_map<std::size_t, std::shared_ptr<AnimationFrameRequestState>> animation_frame_requests;
+    std::size_t next_animation_frame_request = 1;
+    /** The next engine RAF is already queued after this turn's render. */
+    bool animation_frame_after_render = false;
     /**
      * Application-owned RAF callbacks registered after `startEngine` has
      * resolved. The engine callback was registered first, so these run after
@@ -4398,6 +4435,35 @@ struct Engine {
     Sprite2DYSortHook sprite_y_sort_hook;
     std::uint64_t next_file_texture_identity = 1;
 };
+
+inline void AnimationFrameRequest::operator()(double timestamp) const {
+    if (!state->pending) return;
+    state->pending = false;
+    engine->animation_frame_requests.erase(state->id);
+    state->callback(timestamp);
+}
+
+/** Select at registration time: a stored callback can run in either phase. */
+inline std::size_t request_animation_frame(Engine& engine, js::Callback<void(double)> callback) {
+    const auto state = js::make_gc_shared<AnimationFrameRequestState>(
+        AnimationFrameRequestState{engine.next_animation_frame_request++, std::move(callback)});
+    engine.animation_frame_requests.emplace(state->id, state);
+    auto& callbacks = engine.animation_frame_after_render
+        ? engine.post_render_animation_frame_once_callbacks
+        : engine.animation_frame_once_callbacks;
+    callbacks.push_back({&engine, state});
+    return state->id;
+}
+
+inline void cancel_animation_frame(Engine& engine, std::size_t id) {
+    const auto found = engine.animation_frame_requests.find(id);
+    if (found == engine.animation_frame_requests.end()) return;
+    found->second->pending = false;
+    engine.animation_frame_requests.erase(found);
+    const auto matches = [id](const AnimationFrameRequest& request) { return request.state->id == id; };
+    std::erase_if(engine.animation_frame_once_callbacks, matches);
+    std::erase_if(engine.post_render_animation_frame_once_callbacks, matches);
+}
 
 /** Copy a typed-array view into an engine-owned GPU storage record. */
 template <typename Data>
@@ -6241,7 +6307,8 @@ void on_visibility_change(
     std::function<void(bool)> callback,
     bool once = false);
 void off_visibility_change(Engine& engine, std::size_t identity);
-PropertyAnimationManager create_animation_manager();
+PropertyAnimationManager create_animation_manager(
+    PropertyAnimationManagerOptions options = {});
 PropertyAnimationClip create_property_animation_clip(
     std::string name,
     std::vector<PropertyAnimationTrack> tracks,
@@ -6272,9 +6339,11 @@ void cross_fade_animation_groups(
     float to_weight);
 void start_animation_manager(
     PropertyAnimationManager manager,
-    Scene& scene);
-PropertyAnimationManager create_animation_manager(
     Engine& engine);
+void stop_animation_manager(PropertyAnimationManager manager);
+PropertyAnimationManager create_animation_manager(
+    Engine& engine,
+    PropertyAnimationManagerOptions options = {});
 void add_animation_groups(
     PropertyAnimationManager manager,
     Engine& engine,
@@ -6282,7 +6351,7 @@ void add_animation_groups(
 void update_animation_manager(
     PropertyAnimationManager manager,
     Engine& engine,
-    float delta_ms);
+    double delta_ms);
 void seek_animation_manager(
     PropertyAnimationManager manager,
     Engine& engine,

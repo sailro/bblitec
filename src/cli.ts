@@ -503,7 +503,9 @@ async function bakeNodeParticleSystems(
         const source = bytes !== undefined
             ? `data:${mediaType || "image/png"};base64,${bytes}`
             : texture.url;
-        const asset = assetRecord(source, "texture", assetPayloads);
+        const asset = texture.sceneAssigned ? undefined : assetRecord(source, "texture", assetPayloads);
+        const assigned = program.textures.find((texture) =>
+            texture.set === entry.set && texture.system === entry.system);
         systems.push({
             bake: {
                 set: entry.set,
@@ -522,9 +524,11 @@ async function bakeNodeParticleSystems(
                 frames: null,
             },
             exactBlend: exactBlendOf(entry.set),
-            textureAsset: asset.output,
-            asset,
-            live: { graph: entry.graph, facts: entry.facts },
+            textureAsset: asset?.output ?? "",
+            ...(asset ? { asset } : {}),
+            ...(assigned ? { texturePixels: { source: assigned.source, asset: assigned.asset,
+                width: assigned.width, height: assigned.height, options: assigned.options } } : {}),
+            live: { graph: entry.graph, facts: entry.facts, ...(entry.provider ? { provider: true as const } : {}) },
         });
     }
     // The bake reports which systems each pure-2D binding walked, because a
@@ -556,6 +560,7 @@ async function bakeNodeParticleSystems(
     // can add one built elsewhere.
     const registrations = bake.registrations.map((expansion) => ({
         systems: expansion.systems,
+        autoStart: program.registrations[expansion.request]!.autoStart,
     }));
     return {
         systems,
@@ -1573,6 +1578,9 @@ ${imageCodecLines || '    ""'}
     // recompile everything that includes it.
     tree.keep(buildStampHeaderPath);
     tree.prune("upstream");
+    // A valid presentation-only program can reach no Babylon shader. Keep
+    // the stage's input directory even when pruning removed its last shader.
+    mkdirSync(resolve(outputPath, "upstream", "shaders"), { recursive: true });
     // Last, because it digests everything written above. The executable
     // embeds this and the parity gate refuses a binary whose stamp no
     // longer matches the inputs on disk.

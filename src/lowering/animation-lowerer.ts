@@ -4,6 +4,7 @@ import {
     propertyAnimationLanes,
 } from "../compiler/property-animation.js";
 import { LoweredSource, LoweringContext } from "./context.js";
+import { lowerAnimationManagerClock } from "./animation-manager.js";
 
 export class AnimationLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -1095,6 +1096,8 @@ PropertyAnimationBucket& track_bucket(
         if (
             candidate.target.kind == target.kind &&
             candidate.target.index == target.index &&
+            candidate.target.object_identity == target.object_identity &&
+            candidate.target.property == target.property &&
             candidate.property == track.path &&
             candidate.component == track.component) {
             return candidate;
@@ -1356,26 +1359,6 @@ void add_animation_groups(
     }
 }
 
-void update_animation_manager(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    float delta_ms) {
-    PropertyAnimationManagerRecord& owner =
-        bind_manager_engine(manager, engine);
-    if (!std::isfinite(delta_ms) || delta_ms < 0.0f) return;
-    tick_manager(engine, owner, delta_ms);
-}
-
-void seek_animation_manager(
-    PropertyAnimationManager manager,
-    Engine& engine,
-    float time) {
-    seek_manager_groups(
-        engine,
-        bind_manager_engine(manager, engine),
-        time);
-}
-
 void set_animation_weight(
     Engine& engine,
     AnimationGroupHandle group,
@@ -1415,6 +1398,7 @@ void enable_animation_blending(
         } = options;
         const propertyModule = "src/animation/property-animation.ts";
         const managerModule = "src/animation/animation-manager.ts";
+        const clock = lowerAnimationManagerClock(this.context);
         const groupModule = "src/animation/animation-group.ts";
         const fadeModule = "src/animation/animation-weight-fade.ts";
         const evaluateModule = "src/animation/evaluate.ts";
@@ -1793,7 +1777,7 @@ void enable_animation_blending(
         // The play-range clamp, paired with the emitted non-loop branch's
         // `std::clamp(current_time, from_time, to_time)` (max against the
         // lower bound, min against the upper) and reused by the emitted
-        // seeker in `start_animation_manager`.
+        // manager's explicit seek entry point.
         const rangeClamp = timeAssignment(
             ts.SyntaxKind.EqualsToken,
             (right) => ts.isCallExpression(right),
@@ -1889,8 +1873,7 @@ void enable_animation_blending(
         // own width where the path names the lane, and one where it names
         // a component of it. Both come out of the same lane table the clip
         // lowerer resolves paths and validates keys against.
-        const trackArity = blending
-            ? `
+        const trackArity = `
 constexpr std::size_t track_stride(
     PropertyAnimationPath path,
     PropertyAnimationComponent component) {
@@ -1906,8 +1889,7 @@ ${[...propertyAnimationLanes.values()]
     }
     return 0;
 }
-`
-            : "";
+`;
         const mixerSource = blending
             ? this.lowerWeightedPointerMixer(msPerSecond)
             : "";
@@ -2472,18 +2454,56 @@ void seek_manager_groups(
     }
 }
 
+std::size_t queue_manager_tick(PropertyAnimationManager manager, Engine& engine) {
+    return request_animation_frame(engine, js::make_closure(
+        std::tuple{manager, &engine}, [](auto& captures, double now_ms) {
+            auto& retained = std::get<0>(captures);
+            auto& owner = *retained;
+            if (${clock.tickGuard}) return;
+            const double delta_ms = ${clock.delta};
+${clock.tickWrites.replaceAll("    ", "            ")}
+            const double step = ${clock.autonomousStep};
+            update_animation_manager(retained, *std::get<1>(captures), delta_ms);
+            if (owner.on_update) owner.on_update(step);
+            // The pinned callback requeues after notification even when that
+            // notification stopped or restarted the manager.
+            owner.animation_frame_request = queue_manager_tick(retained, *std::get<1>(captures));
+        }));
+}
+
 } // namespace
 
-PropertyAnimationManager create_animation_manager() {
-    return js::make_gc_shared<PropertyAnimationManagerRecord>();
+PropertyAnimationManager create_animation_manager(
+    PropertyAnimationManagerOptions options) {
+    auto manager = js::make_gc_shared<PropertyAnimationManagerRecord>();
+    manager->fixed_delta_ms = options.fixed_delta_ms;
+    manager->on_update = std::move(options.on_update);
+    return manager;
 }
 
 PropertyAnimationManager create_animation_manager(
-    Engine& engine) {
-    auto manager =
-        js::make_gc_shared<PropertyAnimationManagerRecord>();
+    Engine& engine,
+    PropertyAnimationManagerOptions options) {
+    auto manager = create_animation_manager(std::move(options));
     bind_manager_engine(manager, engine);
     return manager;
+}
+
+void update_animation_manager(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    double delta_ms) {
+    PropertyAnimationManagerRecord& owner = bind_manager_engine(manager, engine);
+    const double step = ${clock.step};
+    if (${clock.stepGuard}) return;
+    tick_manager(engine, owner, static_cast<float>(step));
+}
+
+void seek_animation_manager(
+    PropertyAnimationManager manager,
+    Engine& engine,
+    float time) {
+    seek_manager_groups(engine, bind_manager_engine(manager, engine), time);
 }
 ${managerEntryPoints}${weightEntryPoints}${weightFadeEntryPoints}
 
@@ -2531,6 +2551,17 @@ PropertyAnimationGroup create_property_animation_group(
         throw std::runtime_error(
             "Property animation target count must match the clip tracks.");
     }
+    // resolvePropertyBinding selects the writer from the actual target. Keep
+    // the source clip reusable when a native lane also binds plain data.
+    for (std::size_t index = 0; index < targets.size(); ++index) {
+        if (targets[index].kind != PropertyAnimationTargetKind::callback) continue;
+        auto& track = clip.tracks[index];
+        if (track_stride(track.path, track.component) != 1) {
+            throw std::runtime_error("Property animation callback target requires a scalar track.");
+        }
+        track.path = PropertyAnimationPath::record_scalar;
+        track.component = PropertyAnimationComponent::whole_lane;
+    }
     auto group =
         js::make_gc_shared<PropertyAnimationGroupRecord>();
     group->targets = std::move(targets);
@@ -2546,24 +2577,19 @@ PropertyAnimationGroup create_property_animation_group(
 
 void start_animation_manager(
     PropertyAnimationManager manager,
-    Scene& scene) {
-    if (!scene.engine) {
-        throw std::runtime_error(
-            "Animation manager requires a scene engine.");
-    }
-    Engine* engine = scene.engine;
-    PropertyAnimationManagerRecord& owner =
-        bind_manager_engine(manager, *engine);
-    if (owner.started) return;
-    owner.started = true;
-    scene.before_render.push_back(
-        js::make_closure(std::tuple{manager, engine}, [](auto& captures, float delta_ms) {
-            tick_manager(*std::get<1>(captures), *std::get<0>(captures), delta_ms);
-        }));
-    scene.animation_seekers.push_back(
-        js::make_closure(std::tuple{manager, engine}, [](auto& captures, float time) {
-            seek_manager_groups(*std::get<1>(captures), *std::get<0>(captures), time);
-        }));
+    Engine& engine) {
+    PropertyAnimationManagerRecord& owner = bind_manager_engine(manager, engine);
+    if (${clock.startGuard}) return;
+${clock.startWrites}
+    owner.animation_frame_request = queue_manager_tick(manager, engine);
+}
+
+void stop_animation_manager(PropertyAnimationManager manager) {
+    PropertyAnimationManagerRecord& owner = require_manager(manager);
+    if (${clock.stopGuard}) return;
+    cancel_animation_frame(*owner.engine, owner.animation_frame_request);
+    owner.animation_frame_request = 0;
+${clock.stopWrites}
 }
 
 void play_animation(PropertyAnimationGroup group) {

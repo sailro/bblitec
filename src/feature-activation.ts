@@ -1046,6 +1046,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/sprite/sprite-pipeline.ts",
         consumers: CMAKE,
     },
+    "renderer:canvas": {
+        provenance: "Browser Canvas2D primary-surface presentation",
+        consumers: CMAKE,
+    },
     "renderer:effect": {
         provenance:
             "src/effect/effect-renderer.ts createEffectRenderer " +
@@ -2607,6 +2611,7 @@ function compositionRows(
     // whichever this scene reached.
     const spriteFamilies = [
         ...(features.includes("renderer:sprite") ? ["2D sprite"] : []),
+        ...(features.includes("renderer:canvas") ? ["Canvas2D"] : []),
         ...(features.includes("sprite:billboard") ? ["billboard"] : []),
     ];
     return [

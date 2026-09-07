@@ -49,6 +49,9 @@ export function requireParticleBakeWritable(
     node: ts.Node,
 ): void {
     const program = context.reachedNodeParticles;
+    if (program.sets[owner.set]?.native) {
+        context.fail(node, "Native provider-backed particle buffers cannot be written through a generation snapshot.");
+    }
     if (context.isRuntimeResourceConstruction() ||
         program.buffers.some((entry) => entry.set === owner.set &&
             entry.system === owner.system && entry.observed) ||
@@ -79,6 +82,12 @@ export function readFrozenParticleProperty(
         return { ...owner, kind: "node-particle-buffer" };
     }
     if (owner.kind !== "node-particle-buffer" && owner.kind !== "node-particle-column") return undefined;
+    if (context.reachedNodeParticles.sets[buffer.set]?.native) {
+        if (owner.kind === "node-particle-buffer" && (name === "alive" || name === "capacity")) {
+            return { kind: "number", cpp: `bbl::upstream::native_node_particle_${name}(${buffer.set}, ${buffer.system})`, dataType: { kind: "number" } };
+        }
+        context.fail(node, `Native provider-backed particle buffer property '${name}' is not lowered.`);
+    }
     if (owner.kind === "node-particle-buffer" && Object.hasOwn(nodeParticleColumnWidths, name)) {
         return { ...owner, kind: "node-particle-column", nodeParticleColumn: name as NodeParticleColumn };
     }
@@ -223,6 +232,7 @@ export function emitParticleAliveGuard(
     }
     const owner = bufferOwner(context, left.expression);
     if (!owner) return false;
+    if (context.reachedNodeParticles.sets[owner.set]?.native) return false;
     if (context.isRuntimeResourceConstruction() ||
         context.reachedNodeParticles.sprite2d.some((entry) => entry.set === owner.set) ||
         context.reachedNodeParticles.buffers.some((entry) => entry.set === owner.set &&

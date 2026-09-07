@@ -6,7 +6,7 @@ import {
 } from "../option-helpers.js";
 import type { PropertyAnimationTargetKind } from "../property-animation.js";
 import type { CompilerSymbols } from "../symbols.js";
-import type { Value } from "../types.js";
+import type { FrameCallbackSignature, Value } from "../types.js";
 import type { IntrinsicCallContext } from "./context.js";
 
 interface CompiledAnimationClip {
@@ -19,6 +19,7 @@ interface CompiledAnimationClip {
 
 export interface AnimationIntrinsicContext
     extends IntrinsicCallContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     compilePropertyAnimationClip(
         nameExpression: ts.Expression,
         tracksExpression: ts.Expression,
@@ -45,6 +46,9 @@ export interface AnimationIntrinsicContext
         identifier: ts.Identifier,
     ): Value | undefined;
     requireDefaultScene(node: ts.Node): Value;
+    requirePresentationHost(node: ts.Node): string;
+    compileFrameCallback(expression: ts.Expression, signature?: FrameCallbackSignature, retainCaptures?: boolean): string;
+    requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void;
     requireEngine(value: Value, node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     fail(node: ts.Node, message: string): never;
@@ -156,10 +160,6 @@ export function compileAnimationIntrinsic(
 ): Value | undefined {
     switch (importedName) {
         case "createAnimationManager": {
-            // The pin's options are engine, fixedDeltaMs and onUpdate. The
-            // engine is what a manager driving a loaded file's clips needs
-            // (its weighted mixers throw without one); the other two are
-            // the autonomous loop's, which this runtime does not run.
             context.expectArgumentCount(call, 0, 1);
             context.reachFeature("animation:property", call);
             const optionsExpression = call.arguments[0];
@@ -175,32 +175,32 @@ export function compileAnimationIntrinsic(
             validateObjectProperties(
                 context,
                 options,
-                ["engine"],
-                "Reached animation manager options support engine.",
+                ["engine", "fixedDeltaMs", "onUpdate"],
+                "Animation manager options support engine, fixedDeltaMs and onUpdate.",
             );
             const engineExpression = context.objectProperty(
                 options,
                 "engine",
             );
-            if (!engineExpression) {
-                context.fail(
-                    options,
-                    "Reached animation manager options require engine.",
-                );
+            let engineCpp: string | undefined;
+            if (engineExpression) {
+                const engine = context.compileValue(engineExpression);
+                context.expectKind(engine, "engine", engineExpression);
+                engineCpp = engine.cpp;
             }
-            const engine =
-                context.compileValue(engineExpression);
-            context.expectKind(
-                engine,
-                "engine",
-                engineExpression,
-            );
+            const fixedDelta = context.objectProperty(options, "fixedDeltaMs");
+            const onUpdate = context.objectProperty(options, "onUpdate");
+            // Capturing a Canvas2D callback establishes its platform owner
+            // before the callback's retained captures are compiled.
+            if (onUpdate) engineCpp ??= context.requirePresentationHost(call);
+            const fields: string[] = [];
+            if (fixedDelta) fields.push(`.fixed_delta_ms = ${context.compileNumber(fixedDelta, "double")}`);
+            if (onUpdate) fields.push(`.on_update = ${context.compileFrameCallback(onUpdate, "timestamp", true)}`);
+            const nativeOptions = `bbl::PropertyAnimationManagerOptions{${fields.join(", ")}}`;
             return {
                 kind: "animation-manager",
-                cpp:
-                    `bbl::create_animation_manager(` +
-                    `${engine.cpp})`,
-                engineCpp: engine.cpp,
+                cpp: `bbl::create_animation_manager(${engineCpp ? `${engineCpp}, ` : ""}${nativeOptions})`,
+                ...(engineCpp ? { engineCpp } : {}),
             };
         }
 
@@ -264,6 +264,7 @@ export function compileAnimationIntrinsic(
                     `${manager.cpp}, ${manager.engineCpp}, ` +
                     `${context.compileNumber(
                         call.arguments[1]!,
+                        "double",
                     )})`,
             };
         }
@@ -305,9 +306,8 @@ export function compileAnimationIntrinsic(
                 "animation-clip",
                 call.arguments[2]!,
             );
-            // The clip's paths name the object kind they resolve
-            // against, so the target is checked against them rather than
-            // fixed: a mesh clip binds a mesh, a camera clip a camera.
+            // Plain objects resolve their fields independently of native
+            // mesh/camera lane names; a clip can bind either kind of target.
             const targetKind =
                 clip.animationTargetKind ?? "mesh";
             const paths = clip.animationPaths ?? [];
@@ -319,12 +319,7 @@ export function compileAnimationIntrinsic(
             }
             let targetsCpp: string;
             let engine: string;
-            if (targetKind === "record") {
-                context.expectKind(
-                    target,
-                    "record",
-                    call.arguments[1]!,
-                );
+            if (target.kind === "data" || target.kind === "record") {
                 const compiled =
                     context.compilePropertyAnimationTargets(
                         target,
@@ -725,6 +720,7 @@ export function compileAnimationIntrinsic(
 
         case "startAnimationManager": {
             context.expectArgumentCount(call, 1, 1);
+            context.requireCompatibleFrameConductor("manager", call);
             const manager =
                 context.compileValue(call.arguments[0]!);
             context.expectKind(
@@ -732,17 +728,25 @@ export function compileAnimationIntrinsic(
                 "animation-manager",
                 call.arguments[0]!,
             );
-            const scene =
-                context.requireDefaultScene(call);
-            const engine = context.requireEngine(scene, call);
+            const engine = manager.engineCpp
+                ? context.requireEngine(manager, call)
+                : context.requirePresentationHost(call);
             associateManagerEngine(context, manager, engine, call);
             context.reachFeature("animation:property", call);
             return {
                 kind: "void",
                 cpp:
                     `bbl::start_animation_manager(` +
-                    `${manager.cpp}, ${scene.cpp})`,
+                    `${manager.cpp}, ${engine})`,
             };
+        }
+
+        case "stopAnimationManager": {
+            context.expectArgumentCount(call, 1, 1);
+            const manager = context.compileValue(call.arguments[0]!);
+            context.expectKind(manager, "animation-manager", call.arguments[0]!);
+            context.reachFeature("animation:property", call);
+            return { kind: "void", cpp: `bbl::stop_animation_manager(${manager.cpp})` };
         }
 
         case "playAnimation":

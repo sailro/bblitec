@@ -97,7 +97,7 @@ export interface EngineIntrinsicContext
         name: string,
     ): ts.Expression | undefined;
     propertyName(name: ts.PropertyName): string | undefined;
-    compileFrameCallback(expression: ts.Expression): string;
+    compileFrameCallback(expression: ts.Expression, signature?: import("../types.js").FrameCallbackSignature, retainCaptures?: boolean): string;
 }
 
 function reachRenderer(

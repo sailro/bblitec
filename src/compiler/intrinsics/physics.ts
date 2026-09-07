@@ -50,7 +50,7 @@ export interface PhysicsIntrinsicContext
   bindDataTuple(value: Value, arity: number, label?: string): string;
   expectSameEngine(left: Value, right: Value, node: ts.Node): void;
   expectObjectLiteral(expression: ts.Expression): ts.ObjectLiteralExpression;
-  compileFrameCallback(expression: ts.Expression): string;
+  compileFrameCallback(expression: ts.Expression, signature?: import("../types.js").FrameCallbackSignature, retainCaptures?: boolean): string;
   compilePhysicsCollisionCallback(expression: ts.Expression): string;
   compilePhysicsTriggerCallback(expression: ts.Expression): string;
   allocateTemporaryCppName(label: string): string;

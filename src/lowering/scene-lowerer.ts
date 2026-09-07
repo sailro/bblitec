@@ -19,7 +19,7 @@ export class SceneLowerer {
       parenting?: boolean;
       visibility?: boolean;
       geometryAccess?: boolean;
-      managedAnimationGroups?: boolean;
+      animationManagers?: boolean;
       /** The scene baked a vertex animation texture (mesh:vat). */
       vat?: boolean;
       /** The scene reaches `createTransformNode`. */
@@ -1575,7 +1575,7 @@ void set_scene_clip_plane(Scene& scene, Vec4 plane) {
             [engine](float time) { seek_vat(*engine, time); });
     }`
       : "";
-    const managerSeek = options.managedAnimationGroups
+    const managerSeek = options.animationManagers
       ? `
     if (!scene.seeks_animation_managers) {
         scene.seeks_animation_managers = true;

@@ -17874,7 +17874,7 @@ test("preserves nested one-shot animation-frame continuations", () => {
     `);
 
     assert.equal(
-        (result.cpp.match(/animation_frame_once_callbacks\.push_back/g) ?? [])
+        (result.cpp.match(/bbl::request_animation_frame\(/g) ?? [])
             .length,
         2,
     );
@@ -18471,7 +18471,7 @@ test("compiles scene 156's measured cross-fade branch directly", () => {
     assert.ok(result.manifest.features.includes("animation:weight-fades"));
     assert.match(
         result.cpp,
-        /bbl::update_animation_manager\(v_manager, v_engine, 1000\.0f\)/,
+        /bbl::update_animation_manager\(v_manager, v_engine, 1000\.0\)/,
     );
     assert.match(
         result.cpp,
@@ -18483,7 +18483,7 @@ test("compiles scene 156's measured cross-fade branch directly", () => {
     // the runtime repeats every frame.
     assert.match(
         result.cpp,
-        /bbl::update_animation_manager\(v_manager, v_engine, 250\.0f\)/,
+        /bbl::update_animation_manager\(v_manager, v_engine, 250\.0\)/,
     );
     assert.equal(
         result.cpp.match(

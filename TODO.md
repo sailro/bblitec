@@ -24,6 +24,10 @@ implementation, follow the sizing/capture workflow in
   this common contract.
 - [ ] Extend discriminated unions, numeric-literal narrowing and runtime
   definitely-assigned locals across try/finally beyond generation-only bindings.
+- [ ] Lower finally with explicit exception completion so a cleanup exception
+  replaces an active body exception. The existing C++ scope guard can terminate
+  on that double throw; engine-spanning finally therefore refuses cleanup calls,
+  accessors and explicit throws until their exception behavior is represented.
 - [ ] Carry runtime numeric width on values rather than in already-rendered
   C++ text; use the same sink conversion for inline returns and tuple lanes.
   Invalidate static parameter metadata after assignment. Compare generated
@@ -160,7 +164,7 @@ implementation, follow the sizing/capture workflow in
 | Shadows | Thin-instance CSM caster bounds, unsupported generator options/live receive toggles, task-camera facade and caster-specific composition. Recheck morph-bound numeric width and CSM array sizes against pinned declarations. |
 | Lines | Runtime-computed point lists, createLines/dashed lines, colour updates, material compare and per-instance colour setters outside the reached slice. |
 | Thin instances | Dynamic draw-count fast path, culling/LOD controls and actual GPU culler; measure a sufficiently large changing pool. |
-| Particles | Broader live sets, moving-emitter replay, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. Native frozen buffer/sheet access across composed sets still needs canonical system identity. |
+| Particles | Broader live evaluators, provider inverse-matrix registration and pure-2D/explicit billboard bridges, graph snippets, flipped texture uploads, bridge lifecycle/view options and broader graph-factory arguments. Mixed native/frozen sets and composed system membership still need shared random/buffer identity. |
 | Navigation | Tiled-without-obstacles builds, additional queries/random state, sources and disposal not yet lowered. |
 | Physics | Constraints, character controllers/viewer, heightfield/capsule APIs, disposal, shape rotation and remaining body/trigger options. Existing force/impulse/velocity/prestep and authored centre-of-mass controls are not missing. Havok's inertia term is per unit mass while `PhysicsMassProperties::inertia` is absolute, so explicit inertia and inertia orientation are refused rather than converted. Constraints are a new divergence class: the stepping contract covers contacts only, and `LINEAR_DISTANCE` has no Bullet equivalent. |
 | Physics fidelity | First-substep gravity/landing residuals, speculative box contacts, fixed-clock timer boundary and double-precision solver evaluation need focused traces. |
@@ -204,7 +208,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 20 numbered scenes unregistered. Helper
+The current registry leaves these 18 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -217,7 +221,6 @@ modules without a numbered scene entry are not integration candidates.
 | 114 | A PBR morph arm for scene-code geometry, `createBoxData` as a data result, nullable `PickingInfo`, barycentric reads, and the pin's morph-only and basic deform-picking arms on both backends. Five contracts. |
 | 121 | Splat rows as a scene-readable buffer and live `updateData` re-upload in both PALs, over a typed array that is a view rather than an owner. Five contracts; the view change is runtime-wide, not scene-local. |
 | 149 | Delegating `blockLoader` (the pin's `loadNodeBlockEmitterWithGeometry`, where the port accepts a local closed switch), live node-material input handles, loaded-material reads, runtime per-material node construction, and the geometry `LOCAL_POSITION` attachment, which needs a bound local-normal lane and a real node world. Five contracts. |
-| 153 | Canvas2D-only driver, fillRect, plain-data animation targets and update loop |
 | 164 | GPU device-loss lifecycle |
 | 180 | The text subsystem plus live text controls and input. It reads `textarea.value` and re-layouts on `input`, so nothing folds: `layoutText` shapes through a vendored pure-JS shaper, and matching its glyph ids, advances and kerning natively is a re-derivation, not a port. It also needs the standalone text renderer path with no scene or camera, a dynamically imported weight-offset call and eight live DOM controls. |
 | 181 | The same text subsystem and live input as 180. |
@@ -225,7 +228,6 @@ modules without a numbered scene entry are not integration candidates.
 | 227, 228 | Multiple surfaces and swapchains |
 | 261 | Composite output identity, a source render-task reference as a descriptor option, a live blend-factor writer, a per-frame task execute hook, and camera projection jitter over a persistent per-task scene UBO. Five contracts. The last two have no refusal: with only the first three, generation succeeds and the scene renders unjittered and unblended. |
 | 275 | `loadFont` and `createDefaultTextData` folded by executing the pinned shaper at generation, a text scene entity carrying the pin's deferred registration, the alpha-to-coverage text arm, the pinned Slug shader family with its overridable constant, and a text draw path in both PALs. Six contracts; the payload folds to about 1.5k floats and pinned Tint accepts both stages today, but the sixth is a new draw subsystem and the fifth would be this compiler's first overridable shader constant. |
-| 302 | A primed self-rearming frame callback, a `<=` counted-loop shape, a user function's statically-known numeric return surviving inlining, and the moving-emitter provider with its per-step world matrix. Four contracts, all generation-side. |
 | 304 | FlowGraph runtimes and glTF interactivity |
 
 - [ ] Investigate the shared shark-pose residual in scenes 11/152 with a

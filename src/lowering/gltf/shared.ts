@@ -23,6 +23,10 @@ export interface CppExpressionScope {
     elementRead?: (expression: ts.ElementAccessExpression) => RenderedCpp;
     /** Resolves `s?.prop` optional reads (the sampler's enum locals). */
     chainRead?: (expression: ts.PropertyAccessChain) => RenderedCpp;
+    /** Resolves a pinned record field through its native storage mapping. */
+    propertyRead?: (expression: ts.PropertyAccessExpression) => RenderedCpp;
+    /** Resolves a non-Math call whose host operation has a correspondence. */
+    callRead?: (expression: ts.CallExpression) => RenderedCpp;
 }
 
 export function refuseNode(

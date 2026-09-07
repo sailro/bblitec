@@ -213,6 +213,7 @@ import {
     callArgumentIsReadOnly,
     isSupportedFunction,
     parameterIsMutated,
+    retainedNativeMutationTarget,
     parameterIsReadOnly,
     recursiveStorageEscapes,
     writesThroughTrackedRoot,
@@ -901,6 +902,9 @@ class Compiler
     private reachedPlainBillboardSystem = false;
     public hasMainEntry = false;
     private defaultEngineCpp: string | undefined;
+    /** Platform owner for an entry that has no source-created Babylon engine. */
+    private presentationHostCpp: string | undefined;
+    private presentationCanvasValue: Value | undefined;
     /** First statement after the one engine is created. */
     private engineCreationInsertion: number | undefined;
     private nativeHostUiIdsCache: ReadonlySet<string> | undefined;
@@ -946,6 +950,7 @@ class Compiler
             (expression) => this.compileCondition(expression),
             (expression) => this.evaluateBrowserValue(expression),
             (expression) => this.isBrowserOnlyExpression(expression),
+            (identifier) => this.isDefaultLibraryIdentifier(identifier),
             (value, expression) =>
                 this.dataLowerer.narrowOptional(value, expression),
             (identifier) => this.lookup(identifier),
@@ -981,6 +986,10 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.reachedNodeParticles.nativeProvider &&
+            !this.reachedNodeParticles.sets.some((set) => set.native)) {
+            this.fail(this.sourceFile, "A reached native emitter provider must feed a built particle set; standalone provider options are not lowered.");
+        }
         assertDeterministicRandomUnreached(
             this,
             this.jsRandomReached,
@@ -1342,7 +1351,21 @@ class Compiler
      */
     private predeclareStoredObjectReferences(): void {
         const visit = (node: ts.Node): void => {
-            if (
+            const target = retainedNativeMutationTarget(this.symbols, node);
+            if (target) {
+                const targetType = this.checker.getTypeAtLocation(target);
+                // Existing accessor records keep their getter/setter lowering.
+                // Plain targets are retained by the group's generated writer.
+                const hasAccessors = targetType.getProperties().some((property) =>
+                    property.declarations?.some((declaration) =>
+                        ts.isAccessor(declaration) || ts.isMethodDeclaration(declaration)));
+                if (!hasAccessors) {
+                    const dataType = this.dataTypes.fromTsType(targetType, target);
+                    if (dataType?.kind === "struct") {
+                        this.dataTypes.markStoredObjectReferences(dataType);
+                    }
+                }
+            } else if (
                 (ts.isInterfaceDeclaration(node) ||
                     ts.isTypeAliasDeclaration(node)) &&
                 node.name
@@ -1945,6 +1968,10 @@ class Compiler
         call: ts.CallExpression,
     ): number | undefined {
         const callee = this.unwrap(call.expression);
+        if (ts.isIdentifier(callee) &&
+            this.symbols.importedName(callee) === "withNodeParticleEmitterProvider") {
+            return 0;
+        }
         if (
             ts.isPropertyAccessExpression(callee) &&
             callee.name.text === "addEventListener" &&
@@ -1983,6 +2010,29 @@ class Compiler
             !!symbol &&
             (this.sharedClosureSymbolsFor(target)?.has(symbol) ?? false)
         );
+    }
+
+    private nativeParticleProviderUse: boolean | undefined;
+
+    /** Closure ownership is decided before the first resource is emitted. */
+    private sourceUsesNativeParticleProvider(): boolean {
+        if (this.nativeParticleProviderUse !== undefined) return this.nativeParticleProviderUse;
+        let found = false;
+        const visit = (node: ts.Node): void => {
+            if (found) return;
+            if (ts.isCallExpression(node)) {
+                const callee = this.unwrap(node.expression);
+                if (ts.isIdentifier(callee) && this.symbols.importedName(callee) === "withNodeParticleEmitterProvider") {
+                    found = true;
+                    return;
+                }
+            }
+            ts.forEachChild(node, visit);
+        };
+        for (const file of this.program.getSourceFiles()) {
+            if (!file.isDeclarationFile) visit(file);
+        }
+        return this.nativeParticleProviderUse = found;
     }
 
     /**
@@ -2068,7 +2118,8 @@ class Compiler
                 }
                 return (
                     root !== parent.left &&
-                    !(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root))
+                    (!(ts.isIdentifier(root) && this.isDefaultLibraryIdentifier(root)) ||
+                        (isDeterministicRandomRead(this, parent.left) && this.sourceUsesNativeParticleProvider()))
                 );
             }
             return ts.isArrayLiteralExpression(parent);
@@ -2366,11 +2417,17 @@ class Compiler
         // put the generator back after a seeded window. It names the
         // function itself rather than a value, so it emits nothing and the
         // binding exists for the restore assignment to recognize.
-        if (isDeterministicRandomRead(declaration.initializer)) {
-            this.defineVariable(declaration.name, {
-                kind: "js-random",
-                cpp: "",
-            });
+        if (isDeterministicRandomRead(this, declaration.initializer)) {
+            const native = this.reachedNodeParticles.sets.some((set) => set.native);
+            if (native) {
+                this.emit(`auto ${cppName} = bbl::js::random_function();`);
+                this.defineVariable(declaration.name, {
+                    kind: "callback", cpp: cppName,
+                    nativeCallbackParameterTypes: [], nativeCallbackReturnType: { kind: "number" },
+                });
+            } else {
+                this.defineVariable(declaration.name, { kind: "js-random", cpp: "" });
+            }
             return;
         }
 
@@ -3908,6 +3965,13 @@ class Compiler
                         ) {
                             return true;
                         }
+                        const retainedTarget = retainedNativeMutationTarget(this.symbols, node);
+                        if (retainedTarget && isAlias(scan, retainedTarget)) {
+                            // The retained writer mutates this object later.
+                            // Choose its shared home before a typed alias can
+                            // otherwise snapshot the compile-time record.
+                            return true;
+                        }
                         const called =
                             this.checker.getResolvedSignature(
                                 node,
@@ -4302,6 +4366,11 @@ class Compiler
     private uiElementValue(expression: ts.Expression): Value | undefined {
         const owner = this.unwrap(expression);
         const asElement = (value: Value | undefined): Value | undefined => {
+            if (this.presentationHostCpp &&
+                value?.browserValue?.kind === "object" &&
+                value.browserValue.primaryCanvas) {
+                return Object.assign(value, this.primaryPresentationCanvas(owner));
+            }
             const storedMetadata = value
                 ? (this.uiElementMetadataByDataStorage.get(value.cpp) ??
                   (value.optionalStorageCpp
@@ -9280,7 +9349,12 @@ class Compiler
         // as the path it is written as. Unknown identifiers still fail
         // in lookup at the end of that chain, and an owner that is
         // itself unsupported fails naming the sub-path that failed.
-        const rawOwner = this.compileValue(ownerExpression);
+        const compiledOwner = this.compileValue(ownerExpression);
+        const rawOwner = this.presentationHostCpp &&
+            compiledOwner.browserValue?.kind === "object" &&
+            compiledOwner.browserValue.primaryCanvas
+            ? this.primaryPresentationCanvas(ownerExpression)
+            : compiledOwner;
         // A shared class instance read back out of a container is a `Ref`
         // with no compile-time shape of its own. Hydrating it here is what
         // gives the ordinary record path its fields, getters and setters,
@@ -10392,9 +10466,13 @@ class Compiler
                 return true;
             }
         }
-        const hasBrowserInput = call.arguments.some((argument) =>
-            this.isBrowserOnlyExpression(argument),
-        );
+        const hasBrowserInput = call.arguments.some((argument) => {
+            if (!this.isBrowserOnlyExpression(argument)) return false;
+            const value = this.evaluateBrowserValue(argument);
+            // A query-resolved primitive is ordinary input to a helper,
+            // including helpers in modules with no Babylon imports.
+            return !value || !["number", "boolean", "string", "null"].includes(value.kind);
+        });
         const returnsVoid = (observableResult.flags & ts.TypeFlags.Void) !== 0;
         if (
             !hasBrowserInput ||
@@ -11197,6 +11275,7 @@ class Compiler
     public compileFrameCallback(
         expression: ts.Expression,
         signature: FrameCallbackSignature = "delta",
+        retainCaptures = false,
     ): string {
         const unwrapped = this.unwrap(expression);
         if (ts.isIdentifier(unwrapped)) {
@@ -11207,7 +11286,7 @@ class Compiler
                     bound.cpp.length > 0 &&
                     bound.nativeCallbackParameterTypes?.length === 0
                 ) {
-                    const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+                    const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
                     const emitBody = () => {
                         this.useNativeValue(bound);
                         this.emit(`${bound.cpp}();`);
@@ -11223,7 +11302,7 @@ class Compiler
                     `A named deferred callback must resolve to a native zero-argument function (received ${bound?.kind ?? "unbound"}).`,
                 );
             }
-            return this.compileNamedFrameCallback(unwrapped, signature);
+            return this.compileNamedFrameCallback(unwrapped, signature, retainCaptures);
         }
         if (
             !ts.isArrowFunction(unwrapped) &&
@@ -11289,7 +11368,7 @@ class Compiler
         // guards statements later in the callback; it is not an inlined
         // function return that needs the breakable wrapper path.
         this.beginNativeFunctionBody(undefined, true);
-        const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
@@ -11407,6 +11486,7 @@ class Compiler
     private compileNamedFrameCallback(
         identifier: ts.Identifier,
         signature: Exclude<FrameCallbackSignature, "void">,
+        retainCaptures: boolean,
     ): string {
         const parameter =
             signature === "interval"
@@ -11427,11 +11507,21 @@ class Compiler
                     ? undefined
                     : this.variableScopes.length;
         }
-        const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        const captureByValue = retainCaptures || !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         this.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
+                const stored = this.lookupOptional(identifier);
+                const parameters = stored?.nativeCallbackParameterTypes;
+                if (stored?.kind === "callback" && stored.cpp.length > 0 &&
+                    parameters && parameters.length <= 1 &&
+                    parameters.every((type) => type?.kind === "number") &&
+                    (parameters.length === 0 || parameter)) {
+                    this.useNativeValue(stored);
+                    this.emit(`${stored.cpp}(${parameters.length === 0 ? "" : parameter});`);
+                    return;
+                }
                 const value = this.compileCallbackWithValues(
                     identifier,
                     parameter ? [{ kind: "number", cpp: parameter }] : [],
@@ -14396,8 +14486,9 @@ class Compiler
         // A scene-created overlay canvas is retained by the UI IR and owns
         // its own backing extent. Only the browser entry canvas maps to the
         // engine drawing surface below.
-        if (this.uiElementValue(unwrapped.expression)?.uiCanvas) {
-            return undefined;
+        const element = this.uiElementValue(unwrapped.expression);
+        if (element?.uiCanvas) {
+            return element.uiPrimaryCanvas && axis.client ? axis : undefined;
         }
         const ownerType = this.checker.getTypeAtLocation(unwrapped.expression);
         const members =
@@ -14422,12 +14513,23 @@ class Compiler
     public staticCanvasSize(expression: ts.Expression): number | undefined {
         const property = this.canvasSizeInfo(expression);
         if (!property) return undefined;
+        // A retained primary canvas can redraw after a window resize; its
+        // client extent is a host observation, including inside Math calls.
+        if (this.presentationHostCpp) return undefined;
         return property.axis === "width"
             ? this.options.width
             : this.options.height;
     }
 
     public canvasSizeValue(expression: ts.Expression): Value | undefined {
+        const unwrapped = this.unwrap(expression);
+        if (!this.defaultEngineCpp && ts.isPropertyAccessExpression(unwrapped) &&
+            CANVAS_SIZE_AXES.has(unwrapped.name.text)) {
+            const owner = this.evaluateBrowserValue(unwrapped.expression);
+            if (owner?.kind === "object" && owner.primaryCanvas) {
+                this.requirePresentationHost(expression);
+            }
+        }
         const property = this.canvasSizeInfo(expression);
         return property
             ? {
@@ -14648,6 +14750,14 @@ class Compiler
     public compilePlatformCall(call: ts.CallExpression): Value | undefined {
         const callee = this.unwrap(call.expression);
         if (ts.isPropertyAccessExpression(callee)) {
+            if (this.browserErasure.isPrimaryCanvas2DContextCall(
+                call, (expression) => this.evaluateBrowserValue(expression),
+            )) {
+                if (this.defaultEngineCpp && !this.presentationHostCpp) {
+                    this.fail(call, "The primary canvas already belongs to a Babylon engine; it cannot also acquire a Canvas2D context.");
+                }
+                this.requirePresentationHost(call);
+            }
             if (this.isNativeHostUiLookup(call)) {
                 const id = this.compileStringLiteral(call.arguments[0]!);
                 const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.requireDefaultEngine(call);
@@ -14763,6 +14873,8 @@ class Compiler
                             element.uiCanvasId,
                         );
                         return invocation("clear_rect", 4);
+                    case "fillRect":
+                        return invocation("fill_rect", 4);
                     case "beginPath":
                         return invocation("begin_path", 0);
                     case "moveTo":
@@ -15660,7 +15772,11 @@ class Compiler
         call: ts.CallExpression,
     ): Value | undefined {
         this.expectArgumentCount(call, 1, 1);
-        const recurring = this.animationFrameCallbackRearmsItself(
+        const argument = this.unwrap(call.arguments[0]!);
+        const stored = ts.isIdentifier(argument) ? this.lookupOptional(argument) : undefined;
+        // A materialized callback retains its own requeue operation, including
+        // conditional schedules and synchronous priming calls.
+        const recurring = !(stored?.kind === "callback" && stored.cpp.length > 0) && this.animationFrameCallbackRearmsItself(
             call.arguments[0]!,
         );
         const nested = this.frameCallbackDepth > 0;
@@ -15672,15 +15788,26 @@ class Compiler
             call.arguments[0]!,
             "timestamp",
         );
-        const callbacks = !recurring
-            ? "animation_frame_once_callbacks"
-            : this.engineStartMark
-              ? "post_render_animation_frame_callbacks"
-              : "animation_frame_callbacks";
+        if (!recurring) {
+            return { kind: "void", cpp: `bbl::request_animation_frame(${engine}, ${callback})` };
+        }
+        this.requireCompatibleFrameConductor("persistent", call);
+        const callbacks = this.engineStartMark
+            ? "post_render_animation_frame_callbacks"
+            : "animation_frame_callbacks";
         return {
             kind: "void",
             cpp: `${engine}.${callbacks}.push_back(${callback})`,
         };
+    }
+
+    private frameConductorOwner: "manager" | "persistent" | undefined;
+
+    public requireCompatibleFrameConductor(owner: "manager" | "persistent", site: ts.Node): void {
+        if (this.frameConductorOwner && this.frameConductorOwner !== owner) {
+            this.fail(site, "Autonomous animation managers cannot share a program with a persistent application RAF loop; that loop must retain its source requeue before the two callback orders can compose.");
+        }
+        this.frameConductorOwner = owner;
     }
 
     public emitPlatformEventListener(call: ts.CallExpression): boolean {
@@ -18624,6 +18751,49 @@ class Compiler
     }
 
     /**
+     * A Canvas2D/animation-only entry still needs a platform clock and window.
+     * Its host is declared in the entry preamble, including when first reached
+     * while compiling a callback, so no Babylon scene or engine is fabricated
+     * in the source value model.
+     */
+    public requirePresentationHost(node: ts.Node): string {
+        if (!this.defaultEngineCpp) {
+            if (this.options.workers) {
+                this.fail(node, "Standalone Canvas2D presentation is not lowered in worker realms.");
+            }
+            const name = this.allocateTemporaryCppName("presentation_host");
+            this.presentationHostCpp = name;
+            this.defaultEngineCpp = name;
+            // Preamble storage precedes every closure, even one currently
+            // being compiled. Its capture boundary therefore is entry scope.
+            this.nativeBindings.set(name, {
+                name, sequence: 0, borrowed: true, allowReference: false,
+            });
+        }
+        return this.requireDefaultEngine(node);
+    }
+
+    private primaryPresentationCanvas(node: ts.Node): Value {
+        const engine = this.requirePresentationHost(node);
+        if (!this.presentationCanvasValue) {
+            this.reachFeature("ui:rml", node);
+            this.reachFeature("backend:sdl", node);
+            this.reachFeature("renderer:canvas", node);
+            this.presentationCanvasValue = {
+                kind: "ui-element",
+                cpp: `bbl::ui_primary_canvas(${engine})`,
+                engineCpp: engine,
+                uiTag: "canvas",
+                uiCanvas: true,
+                uiPrimaryCanvas: true,
+                uiCanvasId: this.uiCanvasIds++,
+                truthinessCpp: "true",
+            };
+        }
+        return this.presentationCanvasValue;
+    }
+
+    /**
      * The scene-material manifest recorders live in
      * `compiler/scene-materials.ts`; the context surface the material
      * intrinsics stamp through delegates to one recorder instance, so
@@ -19615,6 +19785,65 @@ class Compiler
         };
     }
 
+    /** Emit the same worker-aware cleanup for synchronous and suspended scopes. */
+    public emitFinallyGuard(cleanup: readonly string[]): string {
+        this.reachJsData();
+        const guard = this.allocateTemporaryCppName("finally");
+        this.emit(`[[maybe_unused]] auto ${guard} = bbl::js::finally([&]() {`);
+        this.increaseIndent();
+        const workerAbort = this.workerAbortCpp();
+        if (workerAbort) this.emit(`if (${workerAbort}) return;`);
+        for (const line of cleanup) this.emit(line);
+        this.decreaseIndent();
+        this.emit("});");
+        return guard;
+    }
+
+    /** Keep a flat try/finally alive across the startEngine continuation. */
+    public emitEngineFinally(body: readonly string[], cleanup: readonly string[], site: ts.TryStatement): boolean {
+        const mark = this.engineStartMark;
+        if (!mark || site.catchClause) return false;
+        const start = body.findIndex((line) => line.startsWith("bbl::start_engine("));
+        if (start < 0) return false;
+        // The two lifetime guards can run while C++ is unwinding. A second
+        // exception would terminate rather than replace the source exception.
+        // Until finally has explicit completion lowering, admit plain cleanup
+        // writes and refuse calls/accessors whose exception effects are unknown.
+        const checkCleanup = (node: ts.Node): void => {
+            if (ts.isFunctionLike(node)) return;
+            const properties = ts.isPropertyAccessExpression(node)
+                ? [this.checker.getSymbolAtLocation(node.name)]
+                : ts.isElementAccessExpression(node)
+                    ? this.checker.getTypeAtLocation(node.expression).getProperties() : [];
+            const accessor = properties.some((property) => property?.declarations?.some(
+                (declaration) => ts.isGetAccessorDeclaration(declaration) || ts.isSetAccessorDeclaration(declaration),
+            ));
+            if (ts.isThrowStatement(node) || ts.isCallExpression(node) || ts.isNewExpression(node) || accessor) {
+                this.fail(node, "A finally block spanning startEngine requires non-throwing cleanup; calls, accessors and throw are not admitted.");
+            }
+            ts.forEachChild(node, checkCleanup);
+        };
+        if (site.finallyBlock) checkCleanup(site.finallyBlock);
+        if (body.slice(start + 1).some((line) =>
+            line.trim() === Compiler.frameYieldRequeueMarker ||
+            line.trim().startsWith(Compiler.startContinuationGatePrefix))) {
+            this.fail(site, "A finally block spanning startEngine cannot also span a later frame yield.");
+        }
+        const guard = this.emitFinallyGuard(cleanup);
+        for (const line of body.slice(0, start)) this.emit(line);
+        mark.index = this.body.length;
+        mark.indentLevel = this.indentLevel;
+        this.emit(body[start]!);
+        // The outer guard covers setup/start failures. The continuation
+        // guard finishes cleanup on its own normal, return or exception
+        // completion, while the outer guard remains safe to destroy later.
+        const completion = this.allocateTemporaryCppName("finally_completion");
+        this.emit(`auto ${completion} = bbl::js::finally([&]() { ${guard}.run(); });`);
+        for (const line of body.slice(start + 1)) this.emit(line);
+        this.emit(`${completion}.run();`);
+        return true;
+    }
+
     /**
      * Move everything after `bbl::start_engine(...)` into the callback the
      * conductor runs at the next frame boundary, registered before the loop
@@ -19777,6 +20006,12 @@ class Compiler
     }
 
     private renderCpp(features: Feature[]): string {
+        if (this.presentationHostCpp && !this.presentationCanvasValue) {
+            this.failAtFile("An engine-less animation manager needs a reached primary Canvas2D surface for native presentation.");
+        }
+        if (this.presentationHostCpp && this.defaultEngineCpp !== this.presentationHostCpp) {
+            this.failAtFile("A primary Canvas2D presentation host cannot also acquire a source-created GPU engine.");
+        }
         this.hoistEngineContinuation();
         if (
             this.body.some(
@@ -19822,7 +20057,13 @@ class Compiler
             nativeFunctionDefinitions: this.nativeFunctionDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
             voxelFileStorageReached: this.voxelFileStorageReached,
-            body: this.body,
+            body: this.presentationHostCpp
+                ? [
+                    `        auto ${this.presentationHostCpp} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
+                    ...this.body,
+                    `        bbl::start_engine(${this.presentationHostCpp});`,
+                ]
+                : this.body,
         });
     }
 

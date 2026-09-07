@@ -1997,6 +1997,7 @@ inline void write_render_capture(
 // Compiled exactly where a standalone loop exists to call it — a build
 // with neither standalone renderer would hold an unreachable definition.
 #if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
+    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) || \
     (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
     (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER)
 /**
@@ -2080,6 +2081,7 @@ inline void write_standalone_render_capture(
 // including only the shared header carries no undefined inline, and a
 // scene-only build compiles neither half.
 #if (defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER) || \
+    (defined(BBLITE_HAS_CANVAS_RENDERER) && BBLITE_HAS_CANVAS_RENDERER) || \
     (defined(BBLITE_HAS_EFFECT_RENDERER) && BBLITE_HAS_EFFECT_RENDERER) || \
     (defined(BBLITE_HAS_FRAME_GRAPH_RENDERER) && BBLITE_HAS_FRAME_GRAPH_RENDERER)
 inline void CaptureGate::maybe_write_standalone_render_capture(
@@ -2113,7 +2115,7 @@ inline void write_render_capture(
     const std::string&, const char*, const Scene&, const Engine&, const CameraRecord&,
     const upstream::RenderPlan&, const std::array<float, 16>&, int, int, long) {}
 #endif
-#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER
+#if BBLITE_HAS_SPRITE_RENDERER || BBLITE_HAS_CANVAS_RENDERER || BBLITE_HAS_EFFECT_RENDERER || BBLITE_HAS_FRAME_GRAPH_RENDERER
 inline void CaptureGate::maybe_write_standalone_render_capture(
     const char*, const Engine&, std::uint32_t, std::uint32_t, long) {}
 #endif

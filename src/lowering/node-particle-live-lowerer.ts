@@ -56,6 +56,7 @@ import {
     recordTypeOfMembers,
 } from "./pinned-numeric-lowerer.js";
 import { pinnedNumericMathCalls } from "./pinned-operators.js";
+import { lowerNodeParticleProviderShared, lowerNodeParticleProviderState } from "./node-particle-provider-lowerer.js";
 
 const buildModule = "src/particle/node/npe-build.ts";
 const systemModule = "src/particle/particle-system.ts";
@@ -104,8 +105,7 @@ export const SLOT_NAMES = [
 export type SlotName = (typeof SLOT_NAMES)[number];
 
 /**
- * The optional hooks a feature installs on a system, none of which the
- * live lowering serves -- asserted against the `ParticleSystem`
+ * The optional hooks a feature installs on a system -- asserted against the `ParticleSystem`
  * interface's optional members.
  */
 export const HOOK_NAMES = [
@@ -157,7 +157,7 @@ export interface LoweredLiveSystem {
 /** One buffer column: its pinned name, its storage and its C++ member. */
 interface ColumnSpec {
     name: string;
-    element: "f32" | "f64" | "u32";
+    element: "f32" | "f64" | "u32" | "u8";
     cpp: string;
 }
 
@@ -169,7 +169,13 @@ const COLUMN_STORAGE: Record<
     f32: { vector: "std::vector<float>", binding: "f32", zero: "0.0f" },
     f64: { vector: "std::vector<double>", binding: "f64-buffer", zero: "0.0" },
     u32: { vector: "std::vector<std::uint32_t>", binding: "u32", zero: "0u" },
+    u8: { vector: "std::vector<std::uint8_t>", binding: "u8", zero: "0u" },
 };
+
+const COLUMN_CONSTRUCTORS = new Map<string, ColumnSpec["element"]>([
+    ["Float32Array", "f32"], ["Float64Array", "f64"],
+    ["Uint32Array", "u32"], ["Uint8Array", "u8"],
+]);
 
 /** A `let` the build declares and a closure may capture and mutate. */
 interface Cell {
@@ -223,6 +229,7 @@ type StaticValue =
     | { k: "emitter" }
     | { k: "step-list" }
     | { k: "column"; column: ColumnSpec }
+    | { k: "column-constructor"; element: ColumnSpec["element"] }
     | { k: "record"; record: RecordValue }
     | { k: "cell"; cell: Cell }
     | { k: "closure"; closure: Closure }
@@ -357,6 +364,8 @@ function strictEquals(left: StaticValue, right: StaticValue): boolean {
 class SystemLowering {
     private readonly outputs = new Map<string, StaticValue>();
     private readonly slots = new Map<SlotName, Closure>();
+    private readonly hooks = new Map<HookName, Closure>();
+    private readonly dynamicColumns = new Map<string, ColumnSpec>();
     private readonly steps: Closure[] = [];
     private readonly systemInit = new Map<string, number>();
     /** Struct members by C++ name, in declaration order. */
@@ -374,9 +383,10 @@ class SystemLowering {
         private readonly owner: NodeParticleLiveLowerer,
         private readonly graph: LiveGraph,
         private readonly facts: LiveSystemFacts,
-        private readonly columns: readonly ColumnSpec[],
+        private readonly columns: ColumnSpec[],
         private readonly systemFields: ReadonlyMap<string, number | boolean>,
         public readonly namespace: string,
+        private readonly provider: boolean,
     ) {
         this.blocks = new Map(graph.blocks.map((block) => [block.id, block]));
     }
@@ -389,6 +399,8 @@ class SystemLowering {
         this.assertFacts();
         for (const closure of this.steps) this.lowerClosure(closure, "void");
         for (const closure of this.slots.values()) this.lowerClosure(closure, "void");
+        for (const closure of this.hooks.values()) this.lowerClosure(closure, "void");
+        if (this.provider) this.functions.push(lowerNodeParticleProviderState(this.context));
         const simulation = this.lowerSimulation();
         return this.emit(simulation);
     }
@@ -549,6 +561,8 @@ class SystemLowering {
         if (cached) return cached;
         if (name === "undefined") return { k: "undefined" };
         if (name === "Array") return { k: "array-builtin", name };
+        const columnElement = COLUMN_CONSTRUCTORS.get(name);
+        if (columnElement) return { k: "column-constructor", element: columnElement };
         const constant = this.context.moduleScopeConstant(file, name);
         if (constant) {
             const value = this.expression(constant, env, file, module);
@@ -779,6 +793,11 @@ class SystemLowering {
         }
         if (this.systemFields.has(name) && value.k === "number") {
             this.systemInit.set(name, value.value);
+            return;
+        }
+        if (name === "_seedLocalPosition" && value.k === "closure") {
+            value.closure.cpp ??= snakeCase(name);
+            this.hooks.set(name, value.closure);
             return;
         }
         this.context.contractError(
@@ -1038,6 +1057,8 @@ class SystemLowering {
                         : { k: "boolean", value };
                 }
                 if ((HOOK_NAMES as readonly string[]).includes(name)) {
+                    const closure = this.hooks.get(name as HookName);
+                    if (closure) return { k: "closure", closure };
                     return { k: "undefined" };
                 }
                 break;
@@ -1151,6 +1172,37 @@ class SystemLowering {
         args: readonly StaticValue[],
         site: ts.Node,
     ): StaticValue {
+        if (fn.module === bufferModule && fn.declaration.name?.text === "column") {
+            const [buffer, name, ctor] = args;
+            if (buffer?.k !== "buffer" || name?.k !== "string" || ctor?.k !== "column-constructor") {
+                return this.context.contractError(site, "column requires a buffer, static name and typed-array constructor");
+            }
+            this.context.expectShapeCount(fn.declaration, "buffer._columns.get(name)", "column lookup");
+            this.context.expectShapeCount(fn.declaration, "new ctor(buffer.capacity)", "column allocation");
+            this.context.expectShapeCount(fn.declaration, "buffer._columns.set(name, created)", "column identity");
+            this.context.expectShapeCount(fn.declaration, "buffer._all.push(created)", "column swap-remove membership");
+            this.context.assertStatementInventory(fn.declaration, fn.declaration.body!.statements,
+                "column", "optional columns preserve allocation and insertion order",
+                ["variable statement", "if statement", "variable statement", "expression statement", "expression statement", "return statement"]);
+            const reuse = fn.declaration.body!.statements.find(ts.isIfStatement)!;
+            this.context.assertExpressionShape(reuse.expression, "existing", "column reuse guard");
+            const returned = this.context.findNodes(reuse.thenStatement, ts.isReturnStatement);
+            if (reuse.elseStatement || returned.length !== 1 || !returned[0]!.expression) {
+                this.context.contractError(reuse, "column must return existing storage before allocation");
+            }
+            this.context.assertExpressionShape(returned[0]!.expression!, "existing as T", "column reused storage");
+            let column = this.dynamicColumns.get(name.value);
+            if (!column) {
+                column = { name: name.value, element: ctor.element,
+                    cpp: `column_${snakeCase(name.value.replace(/[^a-zA-Z0-9_]/g, "_"))}` };
+                if (this.columns.some((existing) => existing.cpp === column!.cpp)) {
+                    return this.context.contractError(site, `column '${name.value}' has a colliding native name`);
+                }
+                this.dynamicColumns.set(name.value, column);
+                this.columns.push(column);
+            }
+            return { k: "column", column };
+        }
         const scope = new Env(this.moduleEnv(fn.module));
         fn.declaration.parameters.forEach((parameter, index) => {
             if (!ts.isIdentifier(parameter.name)) {
@@ -1287,12 +1339,8 @@ class SystemLowering {
             }
         }
         for (const hook of HOOK_NAMES) {
-            if (facts.hooks[hook]) {
-                throw new Error(
-                    `The executed pin installed '${hook}' on set ${facts.set} ` +
-                        `system ${facts.system}; the live lowering has no such hook.`,
-                );
-            }
+            const installed = this.hooks.has(hook) || (this.provider && hook === "_prepareFrame");
+            if (facts.hooks[hook] !== installed) mismatch(`hook ${hook}`, facts.hooks[hook], installed);
         }
         const scalar = (name: string, expected: number): void => {
             const actual = this.systemInit.get(name) ?? this.systemFields.get(name);
@@ -1400,7 +1448,19 @@ class SystemLowering {
             }
         }
         for (const hook of [...HOOK_NAMES, "texture"]) {
-            bindings.set(`${local}.${hook}`, absentBinding());
+            if (hook === "_prepareFrame" && this.provider) {
+                bindings.set(`${local}.${hook}`, { cpp: "prepare_frame", type: "bool", staticBoolean: true });
+                calls.set(`${local}.${hook}`, () => "prepare_frame(state)");
+                continue;
+            }
+            const closure = this.hooks.get(hook as HookName);
+            if (closure) {
+                const cpp = closure.cpp!;
+                bindings.set(`${local}.${hook}`, { cpp, type: "bool", staticBoolean: true });
+                calls.set(`${local}.${hook}`, (args) => `${cpp}(state, ${args.join(", ")})`);
+            } else {
+                bindings.set(`${local}.${hook}`, absentBinding());
+            }
         }
     }
 
@@ -1557,7 +1617,7 @@ class SystemLowering {
                 return;
             }
             case "matrix":
-                bindings.set(name, { cpp: "emitter_world_matrix", type: "f32" });
+                bindings.set(name, { cpp: this.provider ? "state.emitter_world_matrix" : "emitter_world_matrix", type: "f32" });
                 return;
             case "emitter":
                 bindings.set(name, { cpp: "state.emitter", type: "vec3" });
@@ -1601,6 +1661,7 @@ class SystemLowering {
         // record result.
         const perCallSite =
             annotations.includes("NpeGetter") ||
+            annotations.includes("ParticleSystem") || annotations.includes("ParticleBuffer") ||
             (returns !== "void" && returns !== "number");
         if (!perCallSite) {
             const shared = this.owner.sharedFunction(fn, annotations);
@@ -1950,6 +2011,9 @@ ${scalarMembers.join("\n")}${
                       .join(", ")}};`
                 : ""
         }
+${this.provider ? `    std::array<float, 16> emitter_world_matrix{};
+    std::array<float, 16> next_emitter_matrix{};
+    bbl::js::Callback<std::array<float, 16>()> emitter_provider;` : ""}
 ${members.map(([, declaration]) => `    ${declaration}`).join("\n")}
 
     explicit State(std::size_t capacity_)
@@ -1959,10 +2023,10 @@ ${members.map(([, declaration]) => `    ${declaration}`).join("\n")}
           capacity(static_cast<double>(capacity_)) {}
 };
 
-// The emitter world matrix the build composed (mat4Translation of the
+${this.provider ? "" : `// The emitter world matrix the build composed (mat4Translation of the
 // emitter option), as the executed pin reported it.
 const std::array<float, 16> emitter_world_matrix = {
-    ${facts.emitterWorldMatrix.map((value) => floatLiteral(value)).join(", ")}};
+    ${facts.emitterWorldMatrix.map((value) => floatLiteral(value)).join(", ")}};`}
 
 ${this.prototypes.join("\n")}
 
@@ -1989,27 +2053,31 @@ State state(${this.capacity}u);
 export class NodeParticleLiveLowerer {
     private readonly shared = new Map<string, string>();
     private readonly functions = new Map<string, PinnedFunction>();
-    private registry?: Map<string, { module: string; exportName: string }>;
+    private readonly registries = new Map<string, Map<string, { module: string; exportName: string }>>();
     private columns?: ColumnSpec[];
     private systemFields?: Map<string, number | boolean>;
     private walkAsserted = false;
 
     public constructor(private readonly context: LoweringContext) {}
 
-    public lowerSystem(graph: LiveGraph, facts: LiveSystemFacts): LoweredLiveSystem {
+    public lowerSystem(graph: LiveGraph, facts: LiveSystemFacts, provider = false): LoweredLiveSystem {
         if (!this.walkAsserted) {
             this.assertBuildWalk();
             this.walkAsserted = true;
         }
         const namespace = `npe_${facts.set}_${facts.system}`;
+        if (provider && !this.shared.has("emitter_provider")) {
+            this.shared.set("emitter_provider", lowerNodeParticleProviderShared(this.context));
+        }
         const lowering = new SystemLowering(
             this.context,
             this,
             graph,
             facts,
-            this.bufferColumns(),
+            [...this.bufferColumns()],
             this.systemDefaults(),
             namespace,
+            provider,
         );
         return { namespace, source: lowering.lower() };
     }
@@ -2064,6 +2132,31 @@ struct Color4d {
             typeof block.serialized.contextualValue === "number"
                 ? block.serialized.contextualValue
                 : 0;
+        if (isLocal && block.className.endsWith("ShapeBlock")) {
+            const local = this.registryEntries(
+                "src/particle/node/npe-registry-local-shapes.ts", "loadLocalShapeEvaluator",
+            ).get(block.className);
+            if (!local) throw new Error(`No pinned local shape evaluator for '${block.className}'.`);
+            return local;
+        }
+        if (block.className === "ParticleInputBlock") {
+            const module = "src/particle/node/npe-registry-variants.ts";
+            const { declaration } = this.context.functionDeclaration(module, "loadVariantBlockEvaluator");
+            const clause = this.context.findNodes(declaration, ts.isCaseClause).find((candidate) =>
+                ts.isStringLiteral(candidate.expression) && candidate.expression.text === block.className);
+            const guard = clause ? this.context.findNodes(clause, ts.isIfStatement)[0] : undefined;
+            if (!guard || !ts.isBinaryExpression(guard.expression) ||
+                guard.expression.operatorToken.kind !== ts.SyntaxKind.EqualsEqualsEqualsToken) {
+                this.context.contractError(clause ?? declaration, "Expected the local particle-input variant guard.");
+            }
+            this.context.assertExpressionShape(guard.expression.left,
+                "block.serialized.contextualValue", "local particle-input variant source");
+            if (contextual === this.context.numericValue(guard.expression.right, declaration.getSourceFile())) {
+                const returned = this.context.findNodes(guard.thenStatement, ts.isReturnStatement)[0];
+                if (!returned) this.context.contractError(guard, "Local input variant returns no evaluator.");
+                return this.evaluatorReturn(module, returned);
+            }
+        }
         const input = (name: string): LiveGraphInput | undefined =>
             block.inputs.find((candidate) => candidate.name === name);
         const left = input("left");
@@ -2090,7 +2183,7 @@ struct Color4d {
                     `evaluator '${block.className}' (block ${block.id}) selects.`,
             );
         }
-        const evaluator = this.baseRegistry().get(block.className);
+        const evaluator = this.registryEntries(registryModule, "loadNpeBlockEvaluator").get(block.className);
         if (!evaluator) {
             throw new Error(
                 `The live node-particle lowering does not cover the block class ` +
@@ -2100,55 +2193,59 @@ struct Color4d {
         return evaluator;
     }
 
-    private baseRegistry(): Map<string, { module: string; exportName: string }> {
-        if (this.registry) return this.registry;
+    private registryEntries(module: string, symbol: string): Map<string, { module: string; exportName: string }> {
+        const key = `${module}#${symbol}`;
+        const cached = this.registries.get(key);
+        if (cached) return cached;
         const { declaration } = this.context.functionDeclaration(
-            registryModule,
-            "loadNpeBlockEvaluator",
+            module, symbol,
         );
         const switchStatement = this.context.findNodes(declaration, ts.isSwitchStatement)[0];
         if (!switchStatement) {
             this.context.contractError(declaration, "The registry is no longer a switch.");
         }
-        this.registry = new Map();
+        const entries = new Map<string, { module: string; exportName: string }>();
         for (const clause of switchStatement.caseBlock.clauses) {
             if (!ts.isCaseClause(clause) || !ts.isStringLiteral(clause.expression)) continue;
             const returned = clause.statements.find(ts.isReturnStatement);
-            const access = returned?.expression
-                ? this.context.unwrapExpression(returned.expression)
-                : undefined;
-            const awaited =
-                access && ts.isPropertyAccessExpression(access)
-                    ? this.context.unwrapExpression(access.expression)
-                    : undefined;
-            const imported =
-                awaited && ts.isAwaitExpression(awaited)
-                    ? this.context.unwrapExpression(awaited.expression)
-                    : undefined;
-            const specifier = imported && ts.isCallExpression(imported)
-                ? imported.arguments[0]
-                : undefined;
-            if (
-                !access ||
-                !ts.isPropertyAccessExpression(access) ||
-                !imported ||
-                !ts.isCallExpression(imported) ||
-                imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
-                !specifier ||
-                !ts.isStringLiteral(specifier)
-            ) {
-                this.context.contractError(
-                    clause,
-                    `The registry arm for '${clause.expression.text}' is not a dynamic import.`,
-                );
-            }
-            const module = this.context.store.resolveImport(registryModule, specifier.text);
-            if (!module) {
-                this.context.contractError(specifier, "The registry imports a module the pin does not ship.");
-            }
-            this.registry.set(clause.expression.text, { module, exportName: access.name.text });
+            if (!returned) this.context.contractError(clause, "Registry arm must return an evaluator.");
+            entries.set(clause.expression.text, this.evaluatorReturn(module, returned));
         }
-        return this.registry;
+        this.registries.set(key, entries);
+        return entries;
+    }
+
+    private evaluatorReturn(registry: string, returned: ts.ReturnStatement): { module: string; exportName: string } {
+        const access = returned.expression
+            ? this.context.unwrapExpression(returned.expression)
+            : undefined;
+        const awaited =
+            access && ts.isPropertyAccessExpression(access)
+                ? this.context.unwrapExpression(access.expression)
+                : undefined;
+        const imported =
+            awaited && ts.isAwaitExpression(awaited)
+                ? this.context.unwrapExpression(awaited.expression)
+                : undefined;
+        const specifier = imported && ts.isCallExpression(imported)
+            ? imported.arguments[0]
+            : undefined;
+        if (
+            !access ||
+            !ts.isPropertyAccessExpression(access) ||
+            !imported ||
+            !ts.isCallExpression(imported) ||
+            imported.expression.kind !== ts.SyntaxKind.ImportKeyword ||
+            !specifier ||
+            !ts.isStringLiteral(specifier)
+        ) {
+            this.context.contractError(returned, "The registry arm is not a dynamic import.");
+        }
+        const module = this.context.store.resolveImport(registry, specifier.text);
+        if (!module) {
+            this.context.contractError(specifier, "The registry imports a module the pin does not ship.");
+        }
+        return { module, exportName: access.name.text };
     }
 
     /**
@@ -2324,11 +2421,6 @@ struct Color4d {
             bufferModule,
             "createParticleBuffer",
         );
-        const constructors = new Map<string, ColumnSpec["element"]>([
-            ["Float32Array", "f32"],
-            ["Float64Array", "f64"],
-            ["Uint32Array", "u32"],
-        ]);
         const declared = new Map<string, ColumnSpec["element"]>();
         for (const statement of declaration.body!.statements) {
             if (!ts.isVariableStatement(statement)) continue;
@@ -2346,7 +2438,7 @@ struct Color4d {
                 ) {
                     this.context.contractError(column, "createParticleBuffer column");
                 }
-                const element = constructors.get(initializer.expression.text);
+                const element = COLUMN_CONSTRUCTORS.get(initializer.expression.text);
                 if (!element) {
                     this.context.contractError(
                         initializer,

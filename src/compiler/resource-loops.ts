@@ -277,6 +277,17 @@ export interface StaticIndexLoop {
     indexBinding: ts.Identifier;
     start: number;
     end: ts.Expression;
+    inclusive: boolean;
+}
+
+/** Count the admitted integer range without dropping an inclusive endpoint. */
+export function staticIndexLoopIterations(
+    shape: StaticIndexLoop,
+    end: number,
+): number | undefined {
+    if (!Number.isSafeInteger(end)) return undefined;
+    const count = Math.max(0, end - shape.start + Number(shape.inclusive));
+    return Number.isSafeInteger(count) ? count : undefined;
 }
 
 /** The counted form shared by the static unroller and composition analysis. */
@@ -290,7 +301,8 @@ export function staticIndexLoopShape(
         statement.initializer.declarations.length !== 1 ||
         !statement.condition ||
         !ts.isBinaryExpression(statement.condition) ||
-        statement.condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken ||
+        (statement.condition.operatorToken.kind !== ts.SyntaxKind.LessThanToken &&
+            statement.condition.operatorToken.kind !== ts.SyntaxKind.LessThanEqualsToken) ||
         !statement.incrementor
     ) {
         return undefined;
@@ -319,7 +331,12 @@ export function staticIndexLoopShape(
     ) {
         return undefined;
     }
-    return { indexBinding: declaration.name, start, end: statement.condition.right };
+    return {
+        indexBinding: declaration.name,
+        start,
+        end: statement.condition.right,
+        inclusive: statement.condition.operatorToken.kind === ts.SyntaxKind.LessThanEqualsToken,
+    };
 }
 
 export interface ParameterizedResourceLoop {
@@ -433,6 +450,7 @@ export function parameterizedResourceLoop(
     };
     const staticContext: PositiveIntegerContext = {
         resolveStaticExpression: resolve,
+        isDefaultLibraryIdentifier: (identifier) => context.isDefaultLibraryIdentifier(identifier),
         lookup: (identifier) => context.lookup(identifier),
         lookupOptional: (identifier) =>
             indices.has(context.symbols.valueSymbol(identifier)!)
@@ -593,13 +611,14 @@ export function parameterizedResourceLoop(
             const end = shape && !loopBoundMayChange(context, node.statement, shape.end)
                 ? boundValue(shape.end)
                 : undefined;
-            if (!shape || end === undefined || !Number.isSafeInteger(end)) {
+            const count = shape && end !== undefined
+                ? staticIndexLoopIterations(shape, end) : undefined;
+            if (!shape || count === undefined) {
                 safe = false;
                 return 0;
             }
             const symbol = context.symbols.valueSymbol(shape.indexBinding)!;
             indices.add(symbol);
-            const count = Math.max(0, end - shape.start);
             const work = count === 0 ? 0 : visit(node.statement, conditional);
             indices.delete(symbol);
             return Math.max(1, work) * count;
@@ -767,8 +786,8 @@ export function parameterizedResourceLoop(
     const end = shape && boundValue(shape.end);
     const iterations = ts.isForOfStatement(statement)
         ? forOfCount(statement)
-        : shape && end !== undefined && Number.isSafeInteger(end)
-            ? Math.max(0, end - shape.start)
+        : shape && end !== undefined
+            ? staticIndexLoopIterations(shape, end)
             : undefined;
     if (iterations === undefined) return undefined;
     const expansion = visit(statement, false);

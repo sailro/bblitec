@@ -106,6 +106,7 @@ export class StaticEvaluator {
         private readonly compileCondition: CompileCondition,
         private readonly evaluateBrowserValue: EvaluateBrowserValue,
         private readonly isBrowserOnlyExpression: IsBrowserOnlyExpression,
+        private readonly isDefaultLibraryIdentifier: (identifier: ts.Identifier) => boolean,
         private readonly narrowOptional: NarrowOptional,
         private readonly lookup: Lookup,
         private readonly lookupOptional: LookupOptional,
@@ -1591,6 +1592,7 @@ export class StaticEvaluator {
             unwrapped.arguments.length <= 1
         ) {
             const staticContext = {
+                isDefaultLibraryIdentifier: this.isDefaultLibraryIdentifier,
                 resolveStaticExpression: (
                     value: ts.Expression,
                 ) => this.resolveStaticExpression(value),

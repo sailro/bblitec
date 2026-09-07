@@ -885,6 +885,8 @@ export interface CompiledNodeParticles extends Omit<
   NodeParticleBakeRequest,
   "sets" | "billboards" | "registrations"
 > {
+  /** A reached wrapper emits its sampling callback even before a set is built. */
+  nativeProvider?: true;
   sets: NodeParticleSetRequest[];
   billboards: Array<{
     set: number;
@@ -1173,8 +1175,10 @@ export interface NodeParticleManifest {
     graph: string;
     emitter: readonly [number, number, number];
     textureBaseUrl?: string;
+    /** Provider callbacks and authored simulation steps execute natively. */
+    native?: true;
   }>;
-  /** How many `animateParticleSystem` calls the program replays. */
+  /** How many generation-time `animateParticleSystem` calls the bake replays. */
   steps: number;
   /** Whether the program installs a deterministic seed before them. */
   seeded: boolean;
@@ -1724,6 +1728,8 @@ export interface Value {
   uiRoot?: true;
   /** A retained UI element whose pixels come from the bounded Canvas2D IR. */
   uiCanvas?: true;
+  /** The native presentation host's primary browser canvas. */
+  uiPrimaryCanvas?: true;
   /**
    * Generation identity of one created canvas element, carried unchanged
    * into its 2D-context views and const bindings (whose `cpp` spellings
@@ -1742,6 +1748,13 @@ export interface Value {
    * Any mutation generation cannot enumerate clears it.
    */
   staticElements?: Value[];
+  /** The sampled provider options retain callback identity and their initial matrix. */
+  nodeParticleProvider?: {
+    callbackCpp: string;
+    initialMatrixCpp: string;
+    emitter: readonly [number, number, number];
+    textureBaseUrl?: string;
+  };
   /** Root binding whose static element snapshot this parameter alias shares. */
   staticElementsOwner?: Value;
   /** Shared by aliases even after their generation-known elements are withdrawn. */
@@ -2304,7 +2317,7 @@ export interface Value {
     | { kind: "number"; value: number }
     | { kind: "null" }
     | { kind: "dom-rect" }
-    | { kind: "object" }
+    | { kind: "object"; primaryCanvas?: true }
     | { kind: "search-params"; search: string }
     | { kind: "string"; value: string };
   cameraKind?: "arc-rotate" | "free" | "geospatial";
@@ -2534,6 +2547,7 @@ export type Feature =
   | "sprite:billboard-cutout"
   | "sprite:billboard-custom-shader"
   | "renderer:sprite"
+  | "renderer:canvas"
   | "renderer:effect"
   | "frame-graph:resources"
   | "renderer:frame-graph"

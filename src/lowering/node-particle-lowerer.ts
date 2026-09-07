@@ -34,6 +34,7 @@ import type { NodeParticleSystemBake } from "../pinned-node-particle.js";
 import {
     type LiveGraph,
     type LiveSystemFacts,
+    type LoweredLiveSystem,
     NodeParticleLiveLowerer,
 } from "./node-particle-live-lowerer.js";
 import type {
@@ -76,13 +77,13 @@ export interface NodeParticleSystemEmit {
      */
     asset?: CompileAsset;
     /**
-     * A LIVE system: the scene never stepped or froze it, and the pure-2D
-     * registrar animates it every frame. The bake row above then carries
+     * A native simulation, driven by source calls or a registrar's frame
+     * callback. The bake row above then carries
      * only what the atlas builder reads (the texture and its size); the
      * simulation is lowered from the graph and checked against the facts
      * the executed pin reported about its own build.
      */
-    live?: { graph: LiveGraph; facts: LiveSystemFacts };
+    live?: { graph: LiveGraph; facts: LiveSystemFacts; provider?: true };
 }
 
 /**
@@ -95,6 +96,7 @@ export interface NodeParticleSystemEmit {
  */
 export interface NodeParticleRegistrationEmit {
     systems: ReadonlyArray<{ set: number; system: number }>;
+    autoStart?: boolean;
 }
 
 /**
@@ -146,10 +148,10 @@ export function expandedSystems(
 /**
  * Lowers the pinned particle-to-billboard bridge.
  *
- * The reached slice is a frozen system: `createParticleBillboard` over a
- * texture the graph loaded, `syncParticleBillboard` once, and the facing
- * billboard system the scene adds. A live system -- one the pin animates
- * from `scene._beforeRender` -- is refused at its call site instead.
+ * Frozen columns fill their bridge once. Supported live graphs share the
+ * same atlas and blend machinery while their registrar animates and syncs
+ * from native columns each frame. Provider-backed systems additionally
+ * expose the source-ordered lifecycle operations emitted by the compiler.
  */
 export class NodeParticleLowerer {
     public constructor(private readonly context: LoweringContext) {}
@@ -995,8 +997,20 @@ export class NodeParticleLowerer {
             }
             liveRequests.add(request);
         });
-        const live = liveSystems.length > 0
-            ? this.liveSectionCpp(liveSystems, sprite2d, liveRequests)
+        const liveLowerer = new NodeParticleLiveLowerer(this.context);
+        const lowered = new Map(liveSystems.map((entry) => [
+            nodeParticleKey(entry.bake),
+            liveLowerer.lowerSystem(entry.live!.graph, entry.live!.facts, entry.live!.provider),
+        ]));
+        const simulation = liveSystems.length > 0
+            ? `${liveLowerer.sharedSource()}\n${[...lowered.values()].map((system) => system.source).join("\n\n")}`
+            : "";
+        const live = liveRequests.size > 0
+            ? this.liveSectionCpp(lowered, sprite2d, liveRequests)
+            : undefined;
+        const providers = liveSystems.filter((entry) => entry.live!.provider);
+        const native = providers.length > 0
+            ? this.nativeSectionCpp(providers, lowered, registrations)
             : undefined;
         const retained = sprite2d.some((binding) => binding.retainFrozen);
         const frozen = retained || systems.some((entry) => entry.bake.bufferColumns !== undefined)
@@ -1023,7 +1037,7 @@ export class NodeParticleLowerer {
 
 // ${provenance}
 #include <bblite/runtime.hpp>
-${frozen ? "#include <bblite/js_data.hpp>\n" : ""}\
+${frozen || native ? "#include <bblite/js_data.hpp>\n" : ""}\
 
 namespace bbl::upstream {
 
@@ -1083,7 +1097,7 @@ void register_node_particle_set_2d(
     SpriteRendererHandle renderer,
     int request);
 `
-}${live?.header ?? ""}${frozen?.header ?? ""}
+}${live?.header ?? ""}${native?.header ?? ""}${frozen?.header ?? ""}
 }  // namespace bbl::upstream
 `,
             source: `// ${provenance}
@@ -1238,13 +1252,14 @@ struct RegisteredSystem {
     int request;
     int set_index;
     int system_index;
+    bool auto_start;
 };
 
 const RegisteredSystem registered_systems[] = {
 ${registrations
     .flatMap((binding, request) =>
         binding.systems.map(
-            (entry) => `    {${request}, ${entry.set}, ${entry.system}},`,
+            (entry) => `    {${request}, ${entry.set}, ${entry.system}, ${binding.autoStart ?? true}},`,
         ),
     )
     .join("\n")}
@@ -1402,7 +1417,7 @@ void write_bridge_sprites(
     }
 }
 `
-}${live?.anonymous ?? ""}${frozen?.registrar ?? ""}
+}${simulation}${live?.anonymous ?? ""}${native?.anonymous ?? ""}${frozen?.registrar ?? ""}
 }  // namespace
 
 ${
@@ -1494,7 +1509,7 @@ void sync_node_particle_billboard(
 }`
 }
 ${
-    !registered
+    !registered || native
         ? ""
         : `
 void register_node_particle_set(
@@ -1559,7 +1574,7 @@ void register_node_particle_set_2d(
     }
 }
 `
-}${live?.publicFunctions ?? ""}${frozen?.publicFunctions ?? ""}
+}${live?.publicFunctions ?? ""}${native?.publicFunctions ?? ""}${frozen?.publicFunctions ?? ""}
 }  // namespace bbl::upstream
 `,
         };
@@ -1792,6 +1807,174 @@ bbl::js::Nullable<double> node_particle_frozen_column(
         };
     }
 
+    /** Native source operations and the pinned scene registrar over live columns. */
+    private nativeSectionCpp(
+        systems: readonly NodeParticleSystemEmit[],
+        lowered: ReadonlyMap<string, LoweredLiveSystem>,
+        registrations: readonly NodeParticleRegistrationEmit[],
+    ): { header: string; anonymous: string; publicFunctions: string } {
+        const { file, declaration } = this.context.functionDeclaration(sceneModule, "registerNodeParticleSet");
+        const frameMs = doubleLiteral(this.context.numericValue(
+            this.context.moduleScopeConstant(file, "FRAME_MS")!, file));
+        this.context.assertExpressionShape(
+            this.context.variableInitializer(declaration, "ratio"),
+            "deltaMs > 0 ? deltaMs / FRAME_MS : 1", "particle scene frame ratio");
+        const loop = this.context.findNodes(declaration, ts.isForOfStatement)[0];
+        if (!loop || !ts.isBlock(loop.statement)) {
+            this.context.contractError(declaration, "The particle scene registrar no longer walks its systems in a block.");
+        }
+        this.context.assertStatementInventory(loop, loop.statement.statements,
+            "registerNodeParticleSet", "the native registrar restates a per-system body",
+            ["variable statement", "expression statement", "if statement", "expression statement"]);
+        this.context.assertExpressionShape(loop.expression, "set.systems", "particle scene system order");
+        this.context.assertExpressionShape(this.context.variableInitializer(loop, "billboard"),
+            "createParticleBillboard(system)", "particle scene billboard creation");
+        const attach = loop.statement.statements[1] as ts.ExpressionStatement;
+        this.context.assertExpressionShape(attach.expression,
+            "(system._registerBillboard ?? addFacingBillboardSystem)(scene, billboard)", "particle scene attachment");
+        const start = loop.statement.statements[2] as ts.IfStatement;
+        if (!ts.isBlock(start.thenStatement) || start.elseStatement) {
+            this.context.contractError(start, "Particle auto-start must have one block and no else arm.");
+        }
+        this.context.assertExpressionShape(start.expression, "autoStart", "particle scene start condition");
+        this.context.assertStatementInventory(start, start.thenStatement.statements,
+            "registerNodeParticleSet", "auto-start restates one call", ["expression statement"]);
+        this.context.assertExpressionShape((start.thenStatement.statements[0] as ts.ExpressionStatement).expression,
+            "startParticleSystem(system)", "particle scene start");
+        this.context.assertExpressionShape((loop.statement.statements[3] as ts.ExpressionStatement).expression,
+            "scene._beforeRender.push((deltaMs) => { const ratio = deltaMs > 0 ? deltaMs / FRAME_MS : 1; animateParticleSystem(system, ratio); syncParticleBillboard(system, billboard); })",
+            "particle scene frame callback");
+        const rows = systems.map((entry) => {
+            const system = lowered.get(nodeParticleKey(entry.bake))!;
+            const ops = `NativeParticleOps<${system.namespace}::state>`;
+            return `    {${entry.bake.set}, ${entry.bake.system}, &${ops}::init, &${ops}::start, &${ops}::stop, &${ops}::animate, &${ops}::scalar, &${ops}::alive, &${ops}::capacity, &${ops}::sync},`;
+        });
+        return {
+            header: `
+/** The provider wrapper samples immediately; each started frame samples again. */
+std::array<float, 16> sample_node_particle_emitter(const bbl::js::Callback<bbl::js::F32Array()>& provider);
+void initialize_native_node_particle_set(int set, const bbl::js::Callback<bbl::js::F32Array()>& provider, const std::array<float, 16>& snapshot);
+void start_native_node_particle_system(int set, int system);
+void stop_native_node_particle_system(int set, int system);
+void animate_native_node_particle_system(int set, int system, double ratio);
+void set_native_node_particle_scalar(int set, int system, const char* name, double value);
+double native_node_particle_alive(int set, int system);
+double native_node_particle_capacity(int set, int system);
+`,
+            anonymous: `
+// syncParticleBillboard's checked props over simulated columns. Calling the
+// existing billboard writer preserves the atlas, capacity and dirty rules.
+template <typename State>
+void sync_native_particle_billboard(Engine& engine, BillboardSystemHandle billboard, const State& state) {
+    clear_billboard_sprites(engine, billboard);
+    for (std::size_t i = 0; i < static_cast<std::size_t>(state.alive); ++i) {
+        BillboardSpriteProps props;
+        props.position = Vec3{state.pos_x[i], state.pos_y[i], state.pos_z[i]};
+        props.size_world = Vec2{
+            static_cast<float>(static_cast<double>(state.size[i]) * state.scale_x[i]),
+            static_cast<float>(static_cast<double>(state.size[i]) * state.scale_y[i])};
+        props.has_size_world = true;
+        props.frame = 0.0f;
+        props.has_frame = true;
+        props.rotation = state.angle[i];
+        props.has_rotation = true;
+        props.color = Vec4{state.color_r[i], state.color_g[i], state.color_b[i], state.color_a[i]};
+        props.has_color = true;
+        add_billboard_sprite_index(engine, billboard, props);
+    }
+}
+
+template <auto& state>
+struct NativeParticleOps {
+    static void init(const bbl::js::Callback<bbl::js::F32Array()>& provider, const std::array<float, 16>& snapshot) {
+        state.emitter_provider = bbl::js::make_closure(provider, [](auto& callback) {
+            return sample_node_particle_emitter(callback);
+        });
+        initialize(state, snapshot);
+    }
+    static void start() { start_particle_system(state); }
+    static void stop() { stop_particle_system(state); }
+    static void animate(double ratio) { animate_particle_system(state, ratio); }
+    static void scalar(const char* name, double value) {
+        const std::string_view field(name);
+        if (field == "emitRate") state.emit_rate = value;
+        else if (field == "updateSpeed") state.update_speed = value;
+        else if (field == "targetStopDuration") state.target_stop_duration = value;
+        else throw std::runtime_error("Unknown native particle scalar.");
+    }
+    static double alive() { return state.alive; }
+    static double capacity() { return state.capacity; }
+    static void sync(Engine& engine, BillboardSystemHandle billboard) {
+        sync_native_particle_billboard(engine, billboard, state);
+    }
+};
+
+struct NativeParticleSystem {
+    int set;
+    int system;
+    void (*init)(const bbl::js::Callback<bbl::js::F32Array()>&, const std::array<float, 16>&);
+    void (*start)();
+    void (*stop)();
+    void (*animate)(double);
+    void (*scalar)(const char*, double);
+    double (*alive)();
+    double (*capacity)();
+    void (*sync)(Engine&, BillboardSystemHandle);
+};
+const NativeParticleSystem native_particle_systems[] = {
+${rows.join("\n")}
+};
+
+const NativeParticleSystem& native_particle_system(int set, int system) {
+    for (const auto& entry : native_particle_systems) {
+        if (entry.set == set && entry.system == system) return entry;
+    }
+    throw std::runtime_error("No native particle system for this index.");
+}
+`,
+            publicFunctions: `
+${registrations.length > 0 ? `
+void register_node_particle_set(Engine& engine, Scene& scene, int request) {
+    for (const RegisteredSystem& entry : registered_systems) {
+        if (entry.request != request) continue;
+        const auto& system = native_particle_system(entry.set_index, entry.system_index);
+        const BillboardSystemHandle billboard = create_node_particle_billboard(engine, entry.set_index, entry.system_index);
+        add_billboard_system(scene, billboard);
+        if (entry.auto_start) system.start();
+        scene.before_render.push_back([&engine, billboard, system = &system](float delta_ms) {
+            const double ratio = delta_ms > 0 ? static_cast<double>(delta_ms) / ${frameMs} : 1.0;
+            system->animate(ratio);
+            system->sync(engine, billboard);
+        });
+    }
+}
+` : ""}
+std::array<float, 16> sample_node_particle_emitter(const bbl::js::Callback<bbl::js::F32Array()>& provider) {
+    const auto provided = npe_sample_provider(provider);
+    std::array<float, 16> snapshot{};
+    npe_copy_matrix(provided, snapshot);
+    return snapshot;
+}
+
+void initialize_native_node_particle_set(int set, const bbl::js::Callback<bbl::js::F32Array()>& provider, const std::array<float, 16>& snapshot) {
+    bool found = false;
+    for (const auto& entry : native_particle_systems) {
+        if (entry.set != set) continue;
+        entry.init(provider, snapshot);
+        found = true;
+    }
+    if (!found) throw std::runtime_error("No native particle set for this index.");
+}
+void start_native_node_particle_system(int set, int system) { native_particle_system(set, system).start(); }
+void stop_native_node_particle_system(int set, int system) { native_particle_system(set, system).stop(); }
+void animate_native_node_particle_system(int set, int system, double ratio) { native_particle_system(set, system).animate(ratio); }
+void set_native_node_particle_scalar(int set, int system, const char* name, double value) { native_particle_system(set, system).scalar(name, value); }
+double native_node_particle_alive(int set, int system) { return native_particle_system(set, system).alive(); }
+double native_node_particle_capacity(int set, int system) { return native_particle_system(set, system).capacity(); }
+`,
+        };
+    }
+
     /**
      * The live half of the pure-2D registrar.
      *
@@ -1807,18 +1990,11 @@ bbl::js::Nullable<double> node_particle_frozen_column(
      * range `assertSprite2dSyncRules` checks against the pin.
      */
     private liveSectionCpp(
-        liveSystems: readonly NodeParticleSystemEmit[],
+        lowered: ReadonlyMap<string, LoweredLiveSystem>,
         sprite2d: readonly NodeParticleSprite2DEmit[],
         liveRequests: ReadonlySet<number>,
     ): { header: string; anonymous: string; publicFunctions: string } {
         this.assertLiveRules();
-        const lowerer = new NodeParticleLiveLowerer(this.context);
-        const lowered = new Map(
-            liveSystems.map((entry) => [
-                nodeParticleKey(entry.bake),
-                lowerer.lowerSystem(entry.live!.graph, entry.live!.facts),
-            ]),
-        );
         // One mapping row per bridge of a live binding, naming its row in
         // the bridge table; both tables list the bindings' systems in the
         // same nesting order, so the bridge row is the running count.
@@ -1875,10 +2051,6 @@ void set_node_particle_2d_origin(
 double node_particle_2d_alive(int request, int bridge);
 `,
             anonymous: `
-${lowerer.sharedSource()}
-
-${[...lowered.values()].map((system) => system.source).join("\n\n")}
-
 /**
  * One live bridge, as the pin's ParticleSprite2DBridge record keeps it: its
  * row in the bridge table for the fixed mapping, the origin as its own pair

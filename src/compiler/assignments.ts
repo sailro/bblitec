@@ -666,6 +666,10 @@ function emitNodeParticleScalarAssignment(
       "This particle system did not come from a built " + "node-particle set.",
     );
   }
+  if (context.reachedNodeParticles.sets[set]?.native) {
+    context.emit(`bbl::upstream::set_native_node_particle_scalar(${set}, ${system}, "${property}", ${context.compileNumber(expression.right, "double")});`);
+    return;
+  }
   requireParticleBakeWritable(context, { set, system }, expression);
   const value = staticNumberValue(context, expression.right);
   if (value === undefined) {
@@ -702,6 +706,11 @@ function emitNodeParticleTextureAssignment(
   target: Value,
 ): void {
   requireSimpleAssignment(context, expression, "node-particle system texture");
+  if (context.reachedNodeParticles.sets[target.nodeParticleSetIndex!]?.native &&
+      context.isRuntimeResourceConstruction()) {
+    context.fail(left,
+      "A provider-backed particle texture must be assigned before recurring frame callbacks; its native atlas is built once.");
+  }
   const texture = context.compileValue(expression.right);
   context.expectKind(texture, "texture", expression.right);
   if (!texture.pixelsTexture) {

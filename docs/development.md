@@ -197,6 +197,44 @@ capacity from CPU affinity and native capacity from CPU/RAM; one native job
 per scene and eight concurrent parity runs are the defaults. Single-scene
 builds can use the whole machine. Measure local workloads before overriding.
 
+Population native builds start scenes without usable history first, in registry
+order, then scenes with larger historical costs. Matching single-config Ninja
+trees provide the sum of each output's latest command duration; multiple outputs
+of one command count once. Incremental runs preserve older samples for unchanged
+outputs. Missing, unreadable, corrupt or unsupported history supplies no cost;
+with no usable history, or another generator, registry order is preserved.
+This changes queue order only, keeping the same jobs, memory budget and failures.
+
+The checkpoint-4 full-header rebuild on 2026-09-07 measured 716.2 s for 271
+scenes at 32 concurrent scenes and one job per scene. Reading their 1.49 MB of
+Ninja logs and modeling the existing worker queue gave:
+
+| Queue order | Modeled native stage |
+| --- | ---: |
+| Registry | 714.733 s |
+| Latest historical command costs | 415.920 s |
+| Older retained command samples (266 scenes) | 415.920 s |
+
+The longest scene was at registry position 263; its latest commands totaled
+415.920 s, including 382.751 s for its main translation unit. The model predicts
+a 298.813 s (41.8%) reduction by starting that work early. Compiler contention,
+memory pressure, configuration time
+and the next dirty-file set can change the result. Ordering by rebuild cost can
+be less useful for a warm run; unknown scenes get early feedback but can defer
+known expensive work when most history is missing. No rebuild was forced for
+this experiment. The checkpoint log is
+`artifacts/scene-checkpoint-4/full-sweep.log`; reproduce the read-only model with
+`node tools/model-build-scheduling.mjs <workspace-with-builds> 32` after building
+`dist/`. Its JSON includes each input log digest and modeled start/end times.
+
+The next full-header sweep measured 601.3 s for 272 native scenes with the
+same 32-by-1 budget, about 16% below the preceding 716.2 s stage. The longest
+scene started immediately, but its main translation unit grew from the retained
+382.751 s sample to 570.720 s. The observed saving is smaller than the model's:
+command durations did not remain fixed across these runs. Preserve both timing
+and workload context when comparing concurrency choices. Evidence is under
+`artifacts/scene-checkpoint-5/`, including the input-log model and process snapshots.
+
 ## Minimal-size shipping builds
 
 Shipping selects one scene/backend, static CRT/dependencies and

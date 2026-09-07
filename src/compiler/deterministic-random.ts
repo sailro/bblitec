@@ -1,7 +1,7 @@
 // `Math.random = <arrow>`: the deterministic seed a scene installs before
 // stepping a node-particle simulation.
 //
-// This is the one place a piece of the scene's own text travels to
+// For frozen simulations, this is the one place scene text travels to
 // generation rather than being lowered, and the reason is specific: the
 // simulation it seeds is EXECUTED by the pin under the browser
 // (`src/pinned-node-particle.ts`), so the sequence has to be drawn by the
@@ -11,32 +11,41 @@
 // it, and the corpus seeds through `Math.sin`, which is not reproducible off
 // V8 anyway.
 //
-// So the assignment lowers to NOTHING native. It parameterizes the bake and
+// In that path the assignment lowers to nothing native. It parameterizes the bake and
 // nothing else, which is only sound while no lowered code answers
 // `Math.random`: the native runtime would answer with the pinned mulberry32
 // and disagree with the browser. `assertDeterministicRandomUnreached` is
 // that check, run once the whole entry has been walked.
+// Provider-backed sets instead run the authored callback and simulation
+// natively, so their random assignments install native closures and saved
+// random functions retain their JavaScript identity and captured state.
 import ts from "typescript";
 import type { CompiledNodeParticles, Value } from "./types.js";
 import { transpileForBrowser } from "../typescript-transpile.js";
+import type { DataType } from "./data-types.js";
 
 export interface DeterministicRandomContext {
+    isDefaultLibraryIdentifier(identifier: ts.Identifier): boolean;
     readonly reachedNodeParticles: CompiledNodeParticles;
     /** The native name a source identifier is bound to in this scope. */
     lookup(identifier: ts.Identifier): Value;
     /** Mark an emitted local whose only reader moved to generation. */
     markEmittedLocalUnused(cppName: string, site: ts.Node): void;
+    compileForDataSink(expression: ts.Expression, type: DataType): string;
+    emit(line: string): void;
     fail(node: ts.Node, message: string): never;
 }
 
 /** Whether an expression is the bare `Math.random` function reference. */
 export function isDeterministicRandomRead(
+    context: Pick<DeterministicRandomContext, "isDefaultLibraryIdentifier">,
     expression: ts.Expression,
 ): boolean {
     return (
         ts.isPropertyAccessExpression(expression) &&
         ts.isIdentifier(expression.expression) &&
         expression.expression.text === "Math" &&
+        context.isDefaultLibraryIdentifier(expression.expression) &&
         expression.name.text === "random"
     );
 }
@@ -170,7 +179,7 @@ function capturedDeclarations(
             return;
         }
         if (ts.isIdentifier(node)) {
-            if (node.text === "Math") return;
+            if (node.text === "Math" && context.isDefaultLibraryIdentifier(node)) return;
             const symbol = checker.getSymbolAtLocation(node);
             if (!symbol || declared.has(symbol)) return;
             const declaration = symbol.valueDeclaration;
@@ -222,11 +231,7 @@ export function emitDeterministicRandomInstall(
     left: ts.PropertyAccessExpression,
     checker: ts.TypeChecker,
 ): boolean {
-    if (
-        !ts.isIdentifier(left.expression) ||
-        left.expression.text !== "Math" ||
-        left.name.text !== "random"
-    ) {
+    if (!isDeterministicRandomRead(context, left)) {
         return false;
     }
     if (expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
@@ -234,6 +239,19 @@ export function emitDeterministicRandomInstall(
             expression,
             "Math.random is replaced by an arrow function or not at all.",
         );
+    }
+    if (context.reachedNodeParticles.sets.some((set) => set.native)) {
+        if (context.reachedNodeParticles.sets.some((set) => !set.native)) {
+            context.fail(expression, "A Math.random override cannot span native and generation-only particle systems.");
+        }
+        const saved = ts.isIdentifier(expression.right) ? context.lookup(expression.right) : undefined;
+        const callback = saved?.kind === "js-random"
+            ? saved.cpp || "bbl::js::Callback<double()>{}"
+            : context.compileForDataSink(expression.right, {
+                kind: "function", parameters: [], result: { kind: "number" },
+            });
+        context.emit(`bbl::js::set_random_override(${callback});`);
+        return true;
     }
     // `Math.random = original`: the scene closing the seeded window it
     // opened. The driver restores the generator it saved, so pinned code

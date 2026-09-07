@@ -1,25 +1,10 @@
-// The node-particle family: a graph, the set built from it, and the frozen
-// simulation a scene steps before its first frame.
-//
-// Upstream's `src/particle/` is a CPU simulation whose behaviour is
-// assembled at load: `npe-build.ts` walks the graph and dynamically imports
-// one evaluator per block class, each installing closures onto the system.
-// There is no shape to fold there, and the value those closures produce is
-// fragile -- the corpus seeds `Math.random` through `Math.sin`, which is not
-// bit-portable off V8 -- so the simulation is EXECUTED at generation and its
-// particle state baked (`src/pinned-node-particle.ts` carries the argument).
-//
-// Everything downstream stays folded. `createParticleBillboard` and
-// `syncParticleBillboard` are lowered from their own pinned declarations, so
-// the atlas the pin derives, the blend its mode selects and the per-particle
-// write all keep the pin's shape; what this module records is the program
-// the scene ran, nothing more.
-//
-// What refuses here, each by name: a snippet id (a network read at page
-// load), a set registered on the scene (its `_beforeRender` hook animates
-// per frame, which a frozen bake cannot answer), the blend-mode and
-// Sprite2D-bridge builders, and a system stepped after its billboard was
-// synced.
+// The node-particle family records graph builds and source lifecycle calls.
+// Frozen systems execute the pin during generation, preserving V8-dependent
+// random sequences. Live pure-2D bindings and provider-backed systems lower
+// supported pinned evaluators into native simulation state. Providers also
+// retain source callbacks and execute authored setup/step calls natively.
+// Both paths share the pinned atlas, blend and particle-to-sprite bridges;
+// unsupported combinations refuse where their source operation is reached.
 import { createHash } from "node:crypto";
 import ts from "typescript";
 import { requireParticleBakeWritable } from "../particle-buffer.js";
@@ -57,6 +42,7 @@ import {
     pinnedDefaultVec2,
 } from "../../lowering/pinned-material-defaults.js";
 import type { IntrinsicCallContext } from "./context.js";
+import type { DataType } from "../data-types.js";
 
 export interface ParticleIntrinsicContext
     extends
@@ -84,6 +70,9 @@ export interface ParticleIntrinsicContext
         name: string,
     ): ts.Expression | undefined;
     emit(line: string): void;
+    allocateTemporaryCppName(label: string): string;
+    compileForDataSink(expression: ts.Expression, type: DataType): string;
+    compileNumber(expression: ts.Expression, precision?: "float" | "double"): string;
 }
 
 /** The four builders the corpus reaches, by their own export names. */
@@ -360,6 +349,19 @@ function emitterVector(
     return vector;
 }
 
+function buildOptions(
+    context: ParticleIntrinsicContext,
+    expression: ts.Expression | undefined,
+): { emitter: readonly [number, number, number]; textureBaseUrl?: string } {
+    if (!expression) return { emitter: [0, 0, 0] };
+    const options = context.expectObjectLiteral(expression);
+    validateObjectProperties(context, options, ["emitter", "textureBaseUrl"],
+        "Reached node-particle builds take 'emitter' and 'textureBaseUrl'; an emitter world matrix is not lowered.");
+    const emitter = emitterVector(context, context.objectProperty(options, "emitter"));
+    const base = context.objectProperty(options, "textureBaseUrl");
+    return { emitter, ...(base ? { textureBaseUrl: context.compileStaticString(base) } : {}) };
+}
+
 /** Which set and system a call's argument names, with its value. */
 function systemOf(
     context: ParticleIntrinsicContext,
@@ -436,6 +438,27 @@ export function compileParticleIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "withNodeParticleEmitterProvider": {
+            context.expectArgumentCount(call, 1, 2);
+            context.reachedNodeParticles.nativeProvider = true;
+            if (context.isRuntimeResourceConstruction()) {
+                context.fail(call, "A native emitter provider must be constructed before recurring frame callbacks; its set has one native identity.");
+            }
+            if (context.reachedNodeParticles.steps.some((step) => step.op === "random")) {
+                context.fail(call, "A native emitter provider cannot follow a generation-only Math.random override.");
+            }
+            const callback = context.compileForDataSink(call.arguments[0]!, {
+                kind: "function", parameters: [], result: { kind: "f32array" },
+            });
+            const callbackCpp = context.allocateTemporaryCppName("particle_provider");
+            context.emit(`auto ${callbackCpp} = ${callback};`);
+            const initialMatrixCpp = context.allocateTemporaryCppName("particle_emitter_initial");
+            context.emit(`const auto ${initialMatrixCpp} = bbl::upstream::sample_node_particle_emitter(${callbackCpp});`);
+            context.reachFeature("particle:node", call);
+            const options = buildOptions(context, call.arguments[1]);
+            return { kind: "record", cpp: "", recordProperties: {},
+                nodeParticleProvider: { callbackCpp, initialMatrixCpp, ...options } };
+        }
         case "parseNodeParticleSource": {
             context.expectArgumentCount(call, 1, 1);
             return {
@@ -493,28 +516,25 @@ export function compileParticleIntrinsic(
             );
             let emitter: readonly [number, number, number] = [0, 0, 0];
             let textureBaseUrl: string | undefined;
+            let provider: Value["nodeParticleProvider"];
             const optionsArgument = call.arguments[3];
             if (optionsArgument) {
-                const options = context.expectObjectLiteral(optionsArgument);
-                validateObjectProperties(
-                    context,
-                    options,
-                    ["emitter", "textureBaseUrl"],
-                    "Reached node-particle builds take 'emitter' and " +
-                        "'textureBaseUrl'; an emitter world matrix is not " +
-                        "lowered.",
-                );
-                emitter = emitterVector(
-                    context,
-                    context.objectProperty(options, "emitter"),
-                );
-                const base = context.objectProperty(
-                    options,
-                    "textureBaseUrl",
-                );
-                if (base) {
-                    textureBaseUrl = context.compileStaticString(base);
-                }
+                const providerCall = context.unwrap(optionsArgument);
+                const providerOptions = ts.isCallExpression(providerCall) &&
+                    ts.isIdentifier(providerCall.expression) &&
+                    context.symbols.importedName(providerCall.expression) === "withNodeParticleEmitterProvider"
+                    ? context.compileValue(optionsArgument) :
+                    ts.isIdentifier(providerCall) ? context.lookupOptional(providerCall) : undefined;
+                provider = providerOptions?.nodeParticleProvider;
+                const options = provider ?? buildOptions(context, optionsArgument);
+                emitter = options.emitter;
+                textureBaseUrl = options.textureBaseUrl;
+            }
+            if (provider && context.isRuntimeResourceConstruction()) {
+                context.fail(call, "A provider-backed particle set must be built before recurring frame callbacks; each build needs its own native identity.");
+            }
+            if (context.reachedNodeParticles.sets.some((set) => !!set.native !== !!provider)) {
+                context.fail(call, "Native provider-backed and generation-only particle sets cannot share one program; their simulations must observe one Math.random sequence.");
             }
             // A flow-map graph derives its view-projection from the
             // scene's camera during the build, so the driver replays that
@@ -538,7 +558,12 @@ export function compileParticleIntrinsic(
                 emitter,
                 ...(textureBaseUrl === undefined ? {} : { textureBaseUrl }),
                 ...(camera ? { camera } : {}),
+                ...(provider ? { native: true as const } : {}),
             });
+            if (provider) {
+                context.reachJsRandom();
+                context.emit(`bbl::upstream::initialize_native_node_particle_set(${context.reachedNodeParticles.sets.length - 1}, ${provider.callbackCpp}, ${provider.initialMatrixCpp});`);
+            }
             return {
                 kind: "node-particle-set",
                 cpp: "",
@@ -552,6 +577,9 @@ export function compileParticleIntrinsic(
         case "stopParticleSystem": {
             context.expectArgumentCount(call, 1, 1);
             const { set, system } = systemOf(context, call, 0);
+            if (context.reachedNodeParticles.sets[set]?.native) {
+                return { kind: "void", cpp: `bbl::upstream::${importedName === "startParticleSystem" ? "start" : "stop"}_native_node_particle_system(${set}, ${system})` };
+            }
             requireUnbaked(context, set, system, call);
             context.reachedNodeParticles.steps.push({
                 op: importedName === "startParticleSystem" ? "start" : "stop",
@@ -566,6 +594,9 @@ export function compileParticleIntrinsic(
             // billboard-free render paths read; no reached scene passes one.
             context.expectArgumentCount(call, 2, 2);
             const { set, system } = systemOf(context, call, 0);
+            if (context.reachedNodeParticles.sets[set]?.native) {
+                return { kind: "void", cpp: `bbl::upstream::animate_native_node_particle_system(${set}, ${system}, ${context.compileNumber(call.arguments[1]!, "double")})` };
+            }
             requireUnbaked(context, set, system, call);
             const ratio = compileStaticNumber(
                 context,
@@ -584,6 +615,9 @@ export function compileParticleIntrinsic(
         case "createParticleBillboard": {
             context.expectArgumentCount(call, 1, 1);
             const { value, set, system } = systemOf(context, call, 0);
+            if (context.reachedNodeParticles.sets[set]?.native) {
+                context.fail(call, "Provider-backed particle systems draw through registerNodeParticleSet; the explicit billboard bridge only carries frozen state.");
+            }
             if (!isFrozen(context, set, system)) {
                 context.reachedNodeParticles.billboards.push({ set, system });
             }
@@ -671,6 +705,10 @@ export function compileParticleIntrinsic(
                 context.reachedNodeParticles.sets[
                     set.nodeParticleSetIndex!
                 ]!;
+            if (request.native && (context.isRuntimeResourceConstruction() ||
+                context.reachedNodeParticles.registrations.some((entry) => entry.set === set.nodeParticleSetIndex))) {
+                context.fail(call, "Native particle blend modes must be enabled before registration and recurring frame callbacks; the enabler affects future billboards.");
+            }
             request.enableBlendModes = true;
             return set;
         }
@@ -704,6 +742,9 @@ export function compileParticleIntrinsic(
                 );
             }
             const index = set.nodeParticleSetIndex!;
+            if (context.reachedNodeParticles.sets[index]?.native && context.isRuntimeResourceConstruction()) {
+                context.fail(call, "A provider-backed particle set must be registered before recurring frame callbacks; repeated registration creates additional billboards and callbacks.");
+            }
             if (
                 context.reachedNodeParticles.registrations.some(
                     (entry) => entry.set === index,
@@ -752,6 +793,9 @@ export function compileParticleIntrinsic(
                 call.arguments[1]!,
             );
             const index = set.nodeParticleSetIndex!;
+            if (context.reachedNodeParticles.sets[index]?.native) {
+                context.fail(call, "Provider-backed particle systems draw through registerNodeParticleSet; the pure-2D provider bridge is not lowered.");
+            }
             if (
                 context.reachedNodeParticles.sprite2d.some(
                     (entry) => entry.set === index,
@@ -868,6 +912,7 @@ export function nodeParticleManifest(
             ...(set.textureBaseUrl === undefined
                 ? {}
                 : { textureBaseUrl: set.textureBaseUrl }),
+            ...(set.native ? { native: true as const } : {}),
         })),
         steps: program.steps.filter((step) => step.op === "animate").length,
         seeded: program.steps.some((step) => step.op === "random"),

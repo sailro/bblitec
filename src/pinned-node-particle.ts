@@ -198,6 +198,8 @@ export interface NodeParticleSetRequest {
     builder: NodeParticleBuilder;
     emitter: readonly [number, number, number];
     textureBaseUrl?: string;
+    /** Provider-backed systems execute source steps and frame updates natively. */
+    native?: true;
     /** The scene's camera when the build ran, when it had one. */
     camera?: NodeParticleCamera;
     /**
@@ -267,8 +269,10 @@ export interface NodeParticleFrozenBufferRequest {
  */
 export interface NodeParticleLiveBake {
     /** Index into the request's `sprite2d` list, and the bridge within it. */
-    request: number;
-    bridge: number;
+    request?: number;
+    bridge?: number;
+    /** Provider-backed systems execute source initialization and frame steps natively. */
+    provider?: true;
     set: number;
     system: number;
     graph: LiveGraph;
@@ -625,7 +629,7 @@ function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
                 `    visits[${index}] = [];`,
                 `    graphs[${index}].blocks = recordVisits(graphs[${index}].blocks, visits[${index}]);`,
                 `    sets[${index}] = await ${set.builder}(engine, scene,`,
-                `        graphs[${index}], {`,
+                `        graphs[${index}], ${set.native ? `withNodeParticleEmitterProvider(() => mat4Translation(${set.emitter.join(", ")}), ` : ""}{`,
                 `        emitter: { x: ${set.emitter[0]}, ` +
                     `y: ${set.emitter[1]}, z: ${set.emitter[2]} },`,
                 ...(set.textureBaseUrl === undefined
@@ -634,7 +638,7 @@ function buildCalls(sets: readonly NodeParticleSetRequest[]): string {
                           "        textureBaseUrl: " +
                               `${JSON.stringify(set.textureBaseUrl)},`,
                       ]),
-                "    });",
+                set.native ? "    }));" : "    });",
                 ...(set.enableBlendModes
                     ? [
                           `    sets[${index}] = ` +
@@ -658,6 +662,7 @@ function driverImports(sets: readonly NodeParticleSetRequest[]): string[] {
     if (sets.some((set) => set.graph.normalized)) {
         names.add("normalizeNodeParticleGraph");
     }
+    if (sets.some((set) => set.native)) names.add("withNodeParticleEmitterProvider");
     return [...names];
 }
 
@@ -747,13 +752,14 @@ ${stepProgram(request.steps)}
     const bufferRequests = ${JSON.stringify(request.buffers ?? [])};
     // A live binding's systems are not frozen: the renderer animates them
     // every frame, and the live lowering takes the built graph instead.
+    const nativeSets = ${JSON.stringify(request.sets.flatMap((set, index) => set.native ? [index] : []))};
     const expand = (requests) =>
         requests.map(({ set: setIndex, autoStart, live }, request) => ({
             request,
             autoStart: autoStart ?? true,
             systems: sets[setIndex].systems.map((system) => {
                 const origin = originOf(system);
-                if (!live && !frozen.some((entry) =>
+                if (!live && !nativeSets.includes(origin.set) && !frozen.some((entry) =>
                     entry.set === origin.set && entry.system === origin.system)) {
                     frozen.push({ set: origin.set, system: origin.system });
                 }
@@ -866,8 +872,11 @@ ${stepProgram(request.steps)}
         (request.sprite2d ?? []).flatMap((entry, index) => (entry.live ? [index] : [])),
     )};
     const emitters = ${JSON.stringify(request.sets.map((set) => set.emitter))};
-    for (const expansion of sprite2dExpansions) {
-        if (!liveRequests.includes(expansion.request)) continue;
+    const liveExpansions = sprite2dExpansions.filter((entry) => liveRequests.includes(entry.request));
+    for (const set of nativeSets) {
+        liveExpansions.push({ provider: true, systems: sets[set].systems.map(originOf) });
+    }
+    for (const expansion of liveExpansions) {
         for (let bridge = 0; bridge < expansion.systems.length; bridge++) {
             const entry = expansion.systems[bridge];
             const system = systemAt(entry.set, entry.system);
@@ -876,8 +885,10 @@ ${stepProgram(request.steps)}
             if (systemBlockId === undefined) {
                 throw new Error("node-particle bake: a live system has no SystemBlock root");
             }
-            const source = system.texture ? system.texture._recoverySource : null;
-            if (!system.texture || !source || source.kind !== "url") {
+            const sceneTextured = sceneTextures.some((texture) =>
+                texture.set === entry.set && texture.system === entry.system);
+            const source = system.texture && !sceneTextured ? system.texture._recoverySource : null;
+            if (!system.texture || (!sceneTextured && (!source || source.kind !== "url"))) {
                 throw new Error("node-particle bake: a live system's texture is not a loaded image");
             }
             const slots = {};
@@ -890,8 +901,7 @@ ${stepProgram(request.steps)}
             }
             const emitter = emitters[entry.set];
             live.push({
-                request: expansion.request,
-                bridge,
+                ...(expansion.provider ? { provider: true } : { request: expansion.request, bridge }),
                 set: entry.set,
                 system: entry.system,
                 graph: {
@@ -921,9 +931,9 @@ ${stepProgram(request.steps)}
                     visitOrder: visits[entry.set],
                 },
                 texture: {
-                    url: source.url,
-                    invertY: source.opts.invertY === true,
-                    sceneAssigned: false,
+                    url: source ? source.url : "",
+                    invertY: source ? source.opts.invertY === true : false,
+                    sceneAssigned: sceneTextured,
                     width: system.texture.width,
                     height: system.texture.height,
                     ...await textureBytes(source),

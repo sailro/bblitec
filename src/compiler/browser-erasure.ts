@@ -558,8 +558,21 @@ export class BrowserErasure {
         return false;
     }
 
+    public isPrimaryCanvas2DContextCall(
+        call: ts.CallExpression,
+        evaluate = (expression: ts.Expression) => this.evaluateBrowserValue(expression),
+    ): boolean {
+        const callee = this.context.unwrap(call.expression);
+        if (!ts.isPropertyAccessExpression(callee) ||
+            callee.name.text !== "getContext" || call.arguments.length !== 1) return false;
+        const canvas = evaluate(callee.expression);
+        const context = evaluate(call.arguments[0]!);
+        return canvas?.kind === "object" && !!canvas.primaryCanvas &&
+            context?.kind === "string" && context.value === "2d";
+    }
+
     private isNativeUiCall(call: ts.CallExpression): boolean {
-        if (this.context.isNativeHostUiLookup(call)) return true;
+        if (this.context.isNativeHostUiLookup(call) || this.isPrimaryCanvas2DContextCall(call)) return true;
         const callee = this.context.unwrap(call.expression);
         if (!ts.isPropertyAccessExpression(callee)) return false;
 
@@ -720,7 +733,16 @@ export class BrowserErasure {
                 return { kind: "number", value: 1 };
             }
             const bound = this.context.lookupOptional(unwrapped);
-            if (bound !== undefined) return bound.browserValue;
+            if (bound !== undefined) {
+                if (bound.browserValue !== undefined) return bound.browserValue;
+                // Inlining can bind a module constant before a browser
+                // helper evaluates it. Its native binding still carries
+                // the same immutable value; mutable parameters do not.
+                if (!bound.parameterBinding && bound.staticNumber !== undefined) {
+                    return { kind: "number", value: bound.staticNumber };
+                }
+                return undefined;
+            }
             // Not a name this scope binds. A module-level `const` is
             // generation-known and answers here too: a physics scene reads
             // the step its capture is pinned at as
@@ -999,7 +1021,7 @@ export class BrowserErasure {
                     // auto-run guard therefore selects the same branch in the
                     // native reference environment; keep it as an object so
                     // truthiness folds without pretending it equals `true`.
-                    return { kind: "object" };
+                    return { kind: "object", primaryCanvas: true };
                 }
                 // The receiver is evaluated rather than looked up, because
                 // the corpus writes the query read both ways: bound to a
