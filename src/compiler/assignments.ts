@@ -443,6 +443,7 @@ export function lightScalarSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
+  noteTextSceneCameraAssignment(node: ts.Node): void;
   noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
   isRuntimeResourceConstruction(): boolean;
   readonly checker: ts.TypeChecker;
@@ -1675,6 +1676,7 @@ export function emitPropertyAssignment(
       requireSimpleAssignment(context, expression, "scene camera");
       const camera = context.compileValue(expression.right);
       context.expectKind(camera, "camera", expression.right);
+      context.noteTextSceneCameraAssignment(left);
       // The scene keeps the camera VALUE, not a copy: a property
       // written after the assignment still reaches it, and one
       // executed port -- the node-particle flow-map build -- reads

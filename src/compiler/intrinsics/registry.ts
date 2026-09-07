@@ -154,6 +154,7 @@ type IntrinsicCompiler = (
 ) => Value | undefined;
 
 const intrinsicCompilers: readonly IntrinsicCompiler[] = [
+    compileTextIntrinsic,
     compileEngineIntrinsic,
     compileCameraIntrinsic,
     compileLightIntrinsic,
@@ -175,7 +176,6 @@ const intrinsicCompilers: readonly IntrinsicCompiler[] = [
     compilePickingIntrinsic,
     compileGizmoIntrinsic,
     compileVatIntrinsic,
-    compileTextIntrinsic,
 ];
 
 /**

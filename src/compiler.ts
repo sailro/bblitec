@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
@@ -1000,6 +1001,13 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.features.has("text:renderable")) {
+            const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
+            if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
+            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Text currently supports one registered scene; layered text update/draw ordering is not represented.");
+            if (this.textSceneLifecycle) this.fail(this.textSceneLifecycle.node, this.textSceneLifecycle.message);
+        }
         if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
             const unsupported = this.untrackedTaaCameraWrites[0];
             if (unsupported) this.fail(unsupported.node, `TAA requires tracked camera mutations: ${unsupported.reason}.`);
@@ -1926,6 +1934,39 @@ class Compiler
 
     public emitExpressionAsStatement(expression: ts.Expression): void {
         this.statements.emitExpression(this, expression);
+    }
+
+    public compileTextMutation(expression: ts.Expression): Value | undefined {
+        return compileTextMutation(this, expression);
+    }
+
+    private textAttachmentReached = false;
+    private textCameraMutation: ts.Node | undefined;
+    private textSceneLifecycle: { node: ts.Node; message: string } | undefined;
+
+    public noteTextSceneLifecycle(node: ts.Node, message = "Text scene disposal, removal and explicit rebuilding require retained binding topology that is not represented."): void {
+        this.textSceneLifecycle ??= { node, message };
+    }
+
+    public noteTextSceneCameraAssignment(node: ts.Node): void {
+        if (this.isRuntimeResourceConstruction() || this.engineStartMark !== undefined) this.textCameraMutation ??= node;
+    }
+
+    public assertTextPipelineMutable(node: ts.Node): void {
+        if (this.isRuntimeResourceConstruction() || this.textAttachmentReached || this.engineStartMark !== undefined) {
+            this.fail(node, "Text pipeline/order changes require definite initialization before text attachment; live pipeline rebinding and list rebuilding are not represented.");
+        }
+    }
+
+    public recordTextAttachment(node: ts.Node): void {
+        if (this.isRuntimeResourceConstruction() || this.engineStartMark !== undefined) this.fail(node, "Text attachment requires definite initialization; live text list rebuilding is not represented.");
+        this.textAttachmentReached = true;
+    }
+
+    public assertTextDisposal(node: ts.Node): void {
+        if (this.textAttachmentReached || this.isRuntimeResourceConstruction() || this.engineStartMark !== undefined) {
+            this.fail(node, "Text disposal requires setup before text attachment; destroying retained draw bindings is not represented.");
+        }
     }
 
     public emitDiscardedValue(value: Value): void {
@@ -4374,6 +4415,8 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        const text = this.compileTextMutation(expression);
+        if (text) { this.emitDiscardedValue(text); return; }
         if (this.compileCameraMutation(expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression)) return;
@@ -8912,9 +8955,12 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            value = this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
+        }
+        if (value.kind === "text-vector" && (ts.isConditionalExpression(this.unwrap(expression)) || ts.isBinaryExpression(this.unwrap(expression)))) {
+            this.fail(expression, "Conditional text transform objects require a runtime vector identity carrier; select the renderable before reading its transform.");
         }
         if (this.options.workers && value.kind === "boolean" && (value.cpp === "true" || value.cpp === "false")) {
             value = { ...value, staticBoolean: value.cpp === "true" };
@@ -11088,9 +11134,17 @@ class Compiler
                     "Reached callback conditions support numeric comparisons and logical operators.",
                 );
             }
-            const leftValue = this.compileValue(unwrapped.left);
-            const rightValue = this.compileValue(unwrapped.right);
-            if ([leftValue.kind, rightValue.kind].some((kind) => kind === "text-font" || kind === "text-data")) {
+            let leftValue = this.compileValue(unwrapped.left);
+            const textKind = (value: Value) => ["text-data", "text-renderable", "text-vector"].includes(value.kind);
+            if (textKind(leftValue)) leftValue = retainTextValue(this, leftValue);
+            let rightValue = this.compileValue(unwrapped.right);
+            if (textKind(rightValue)) rightValue = retainTextValue(this, rightValue);
+            if (textKind(leftValue) || textKind(rightValue)) {
+                if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Text entities support strict identity comparisons.");
+                const sameKind = leftValue.kind === rightValue.kind && leftValue.textTransform === rightValue.textTransform;
+                return sameKind ? `${leftValue.cpp} ${operator} ${rightValue.cpp}` : operator === "==" ? "false" : "true";
+            }
+            if ([leftValue.kind, rightValue.kind].some((kind) => kind === "text-font")) {
                 const token = unwrapped.operatorToken.kind;
                 if (token !== ts.SyntaxKind.EqualsEqualsEqualsToken && token !== ts.SyntaxKind.ExclamationEqualsEqualsToken) {
                     this.fail(unwrapped, "Static font/text data only supports strict identity comparison.");
@@ -13525,6 +13579,9 @@ class Compiler
         const registration = this.temporalSceneRegistration;
         const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
+        const textCamera = this.textCameraMutation;
+        const textAttachment = this.textAttachmentReached;
+        const textLifecycle = this.textSceneLifecycle;
         const result = probe();
         if (!answered(result)) {
             this.body.splice(start);
@@ -13533,6 +13590,9 @@ class Compiler
             this.temporalSceneRegistration = registration;
             this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
+            this.textCameraMutation = textCamera;
+            this.textAttachmentReached = textAttachment;
+            this.textSceneLifecycle = textLifecycle;
         }
         return result;
     }
@@ -14020,6 +14080,7 @@ class Compiler
         }
         const target = cameraNumberWrite(this, left);
         if (!target) return undefined;
+        this.textCameraMutation ??= left;
         noteCameraRecordWrite(this, target.camera, target.property,
             unary ? undefined : node.right, operator === "=" && !["target", "position", "up_vector"].includes(target.property));
         if (target.property === "position" || target.property === "up_vector") {
@@ -14039,6 +14100,7 @@ class Compiler
     }
 
     public noteCameraVectorSet(vector: NonNullable<Value["cameraVector"]>, site: ts.Node): void {
+        this.textCameraMutation ??= site;
         noteCameraRecordWrite(this, vector.owner, vector.field, undefined, false);
         if (vector.field !== "target") this.untrackedTaaCameraWrites.push({ node: site,
             reason: `camera.${vector.field} is not the arc camera's observable target` });
@@ -17076,10 +17138,8 @@ class Compiler
             this, owner, expression.name.text, expression,
         );
         if (frozenParticleProperty) return frozenParticleProperty;
-        if (owner.kind === "text-data" && (expression.name.text === "width" || expression.name.text === "height")) {
-            const number = owner.textData![expression.name.text];
-            return { kind: "number", cpp: doubleLiteral(number), staticNumber: number };
-        }
+        const textProperty = readTextProperty(this, owner, expression.name.text, expression);
+        if (textProperty) return textProperty;
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own
@@ -17976,6 +18036,11 @@ class Compiler
      * difference is the contract rather than an accident.
      */
     public pinValueToTemporary(value: Value, label: string, node?: ts.Expression): Value {
+        if (["text-data", "text-renderable", "text-vector"].includes(value.kind)) {
+            const retained = retainTextValue(this, value);
+            this.describeNativeValue(retained);
+            return retained;
+        }
         if (value.kind === "callback") {
             return this.materializeEscapingValue(value, label);
         }

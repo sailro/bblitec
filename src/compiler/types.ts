@@ -1193,6 +1193,8 @@ export interface NodeParticleManifest {
 export type ValueKind =
   | "text-font"
   | "text-data"
+  | "text-renderable"
+  | "text-vector"
   | "worker"
   | "worker-scope"
   | "worker-resize-observer"
@@ -1537,7 +1539,6 @@ export interface ClusteredContainerState {
 export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
   return (
     kind === "text-font" ||
-    kind === "text-data" ||
     kind === "tuple" ||
     kind === "record" ||
     // A worker-global alias resolves to the current realm; it has no copyable
@@ -1603,7 +1604,6 @@ export function sameCompiledValue(left: Value, right: Value): boolean {
   if (left === right) return true;
   if (left.kind !== right.kind) return false;
   if (left.kind === "text-font") return left.textFont === right.textFont;
-  if (left.kind === "text-data") return left.textData === right.textData;
   if (left.recordProperties || right.recordProperties) {
     return left.recordProperties === right.recordProperties;
   }
@@ -2127,6 +2127,8 @@ export interface Value {
    */
   handleIdentity?: string;
   engineCpp?: string;
+  /** A text vector alias retains the shared renderable, not copied components. */
+  textTransform?: import("./text-surface.js").TextTransform;
   /** A direct GPU readback belongs to the entry's single engine, including
    * its lexical aliases. Data-transported results have a checked runtime
    * owner instead and deliberately do not carry this compile-time fact. */
@@ -2353,6 +2355,8 @@ export interface Value {
 }
 
 export type Feature =
+  | "text:data"
+  | "text:renderable"
   | "animation:gltf-groups"
   | "animation:property"
   | "animation:property-blending"

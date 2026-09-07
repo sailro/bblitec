@@ -3061,7 +3061,9 @@ export class DataLowerer {
             // every mesh intrinsic and property assignment works on a
             // mesh read out of a struct or array exactly as it does on
             // a mesh local. The reached subset has one engine.
-            const engineCpp = dataType.handle === "picking-info"
+            const engineCpp = dataType.handle === "text-data" || dataType.handle === "text-renderable"
+                ? undefined
+                : dataType.handle === "picking-info"
                 ? `bbl::picking_engine(${cpp})`
                 : this.context.defaultEngine();
             return {

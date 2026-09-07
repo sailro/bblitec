@@ -42,10 +42,11 @@ test("static text materialization preserves every pinned initial byte, range and
     assert.equal(first!.height, 216);
     assert.equal(first!.font.sha256, "56a45233d29f11b4dfb86d248e921939d115778f87325e7ae8cc108383d6664d");
     assert.deepEqual(first!.instances, second!.instances);
-    assert.equal(sameCompiledValue({ kind: "text-data", cpp: "", textData: first }, { kind: "text-data", cpp: "", textData: second }), false);
-    assert.equal(sameCompiledValue({ kind: "text-data", cpp: "", textData: first }, { kind: "text-data", cpp: "", textData: first }), true);
-    assert.equal(compiled.manifest.features.some((feature) => feature.startsWith("text")), false);
-    assert.doesNotMatch(compiled.cpp, /distinct text identity|text alias identity|\(\s*==\s*\)/);
+    assert.equal(sameCompiledValue({ kind: "text-data", cpp: "first" }, { kind: "text-data", cpp: "second" }), false);
+    assert.equal(sameCompiledValue({ kind: "text-data", cpp: "first" }, { kind: "text-data", cpp: "first" }), true);
+    assert.ok(compiled.manifest.features.includes("text:data"));
+    assert.match(compiled.cpp, /distinct text identity/);
+    assert.doesNotMatch(compiled.cpp, /\(\s*==\s*\)/);
     const raw = (blob: TextBlob): Buffer => {
         const asset = compiled.manifest.assets.find((asset) => asset.output === blob.assetOutput)!;
         const bytes = Buffer.from(parseDataUrl(compiled.assetPayloads!.get(asset.source)!)!.bytes);
@@ -123,21 +124,22 @@ test("ordinary CLI asset packaging writes the font and every referenced text blo
     assert.ok(manifest.inputs.some((input) => input.endsWith("Roboto-Regular.ttf")));
 });
 
-test("dynamic layouts, updates and renderer creation retain explicit source refusals", () => {
+test("dynamic layouts and internal updates retain explicit source refusals", () => {
     for (const [body, refusal] of [
         [`const data=createDefaultTextData(font,Math.random()*40,"A");`, /Text font size must be a static number/],
         [`const data=createDefaultTextData(font,40,String(Math.random()));`, /static|string|literal/i],
         [`const scene=createSceneContext(engine); onBeforeRender(scene,()=>{const data=createDefaultTextData(font,40,"A");});`, /definite initialization/],
         [`const data=createDefaultTextData(font,40,"A");updateDefaultTextData(data,"B");`, /updateDefaultTextData.*not supported/],
-        [`const data=createDefaultTextData(font,40,"A");createTextRenderable(data);`, /createTextRenderable.*not supported/],
         [`const data=createDefaultTextData(font,40,"A",undefined,{maxWidth:Math.random()});`, /Text layout maxWidth must be a static number/],
         [`const color:[number,number,number,number]=[1,0,0,1];const alias=color;alias[0]=Math.random();createDefaultTextData(font,40,"A",color);`, /mutated or dynamic arrays/],
         [`const options={lineHeight:1.2};const alias=options;alias.lineHeight=Math.random();createDefaultTextData(font,40,"A",undefined,options);`, /direct static object literal/],
         [`createDefaultTextData(font,-0,"A");`, /not negative zero/],
-        [`const data=createDefaultTextData(font,40,"A");data.width=3;`, /Unsupported property assignment/],
+        [`const data=createDefaultTextData(font,40,"A");data.width=3;`, /read-only|replacement/],
     ] as const) assert.throws(() => compile(body), refusal);
     const source = "corpus/babylon-lite/lab/lite/src/lite/scene275.ts";
-    assert.throws(() => compileSource(readFileSync(source, "utf8"), { fileName: source }), /scene275.ts:30:19:.*createTextRenderable.*not supported/);
+    const exact = compileSource(readFileSync(source, "utf8"), { fileName: source });
+    assert.ok(exact.manifest.features.includes("text:renderable"));
+    assert.equal(exact.manifest.textData!.length, 2);
     for (const id of [180, 181]) {
         const source = `corpus/babylon-lite/lab/lite/src/lite/scene${id}.ts`;
         assert.throws(() => compileSource(readFileSync(source, "utf8"), { fileName: source }), /Unsupported property value 'textarea.value'/);

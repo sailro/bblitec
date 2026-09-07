@@ -632,13 +632,21 @@ and trailing image-processing contract.
 Static `loadFont` and `createDefaultTextData` execute the pinned font parser,
 shaper and packing modules at generation. Their manifest retains exact byte
 streams, padded atlas extents, used ranges, capacities, versions and provenance.
-Dynamic layout/update calls and `createTextRenderable` still refuse at source.
-The generated text CPU prerequisite provides retained data/renderable identities,
-TRS/Euler mutations, uniform updates and deferred scene ownership, but no PAL
-draw consumer is activated. Text registration storage requires `BBLITE_HAS_TEXT`.
-Async custom deferred builders, text attachment after scene disposal, high
-precision text matrices and renderer binding/resource updates remain outside
-this prerequisite. See [fidelity](fidelity.md#text-cpu-prerequisite).
+Dynamic layout/update calls still refuse at source. `createTextRenderable`
+creates a retained native entity; text data and renderables preserve identity
+through aliases, containers, helpers and captured callbacks. Transform component
+and bulk writes call the pinned setters, including Euler/quaternion cache rules;
+opacity remains live. Pipeline membership, depth behavior and order must settle
+before text attachment. Late attachment/disposal, copied conditional transform
+objects, reflective writes and internal buffer mutation refuse explicitly.
+
+Compiler projection supplies the pinned GPU lifecycle and pipeline descriptors,
+including per-stage constants, reflected resources and vertex layouts. Initial
+renderer admission is one text-only default scene with a static FreeCamera;
+mixed draw ordering, custom tasks, camera writers/controls and high precision
+text matrices remain refused. Text registration requires `BBLITE_HAS_TEXT`.
+PAL image validation is a separate integration gate; this compiler prerequisite
+does not register a corpus scene. See [fidelity](fidelity.md#text-cpu-prerequisite).
 
 ## Runtime scene mutation
 

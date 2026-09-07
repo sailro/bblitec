@@ -17,6 +17,8 @@ type Fail = (node: ts.Node, message: string) => never;
  * instead copy a shared identity, retaining their source object through data.
  */
 export type HandleKind =
+  | "text-data"
+  | "text-renderable"
   | "picking-info"
   | "offscreen-canvas"
   | "mesh"
@@ -52,6 +54,8 @@ export type HandleKind =
   | "navigation-obstacle";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  "text-data": "std::shared_ptr<bbl::TextDataState>",
+  "text-renderable": "std::shared_ptr<bbl::TextRenderableState>",
   "picking-info": "bbl::PickingInfo",
   "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
   mesh: "bbl::MeshHandle",
@@ -94,6 +98,9 @@ export function isHandleKind(kind: string): kind is HandleKind {
 
 /** The pinned type name each handle kind is declared as. */
 const pinnedHandleTypes: Record<string, HandleKind> = {
+  TextData: "text-data",
+  DefaultTextData: "text-data",
+  TextRenderable: "text-renderable",
   PickingInfo: "picking-info",
   Mesh: "mesh",
   AnimationGroup: "animation-group",
@@ -961,9 +968,9 @@ export class DataTypeRegistry {
     ) {
       return { kind: "handle", handle: "audio-context" };
     }
-    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid", "Font", "TextData", "DefaultTextData"])) {
+    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid", "Font"])) {
       // These interfaces carry compiler-owned identity, not plain-data
-      // storage: audio context/buses, a geometry plan, or pinned text data.
+      // storage: audio context/buses, a geometry plan, or a parsed font.
       return undefined;
     }
     if (type.symbol && isDomElementType(type.symbol)) {

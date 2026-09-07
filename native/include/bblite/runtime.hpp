@@ -862,6 +862,7 @@ private:
  */
 struct SceneState;
 struct TextRenderableState;
+struct TextDataState;
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
