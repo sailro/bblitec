@@ -19,7 +19,12 @@ import {
     shadowBindingSlotOrNull,
     variantBindings,
 } from "./pinned-pbr-variant-cpp.js";
-import type { ComposedNodeMaterial } from "./pinned-node-material.js";
+import type {
+    ComposedNodeAttribute,
+    ComposedNodeGeometryView,
+    ComposedNodeMaterial,
+    ComposedNodeTextureBinding,
+} from "./pinned-node-material.js";
 
 /**
  * One environment resource a composed stage names, joined onto the source the
@@ -167,6 +172,11 @@ function nodeMorphRow(composed: ComposedNodeMaterial): string {
     return `{true, ${morph.deltas}, ${morph.weights}}`;
 }
 
+/** A group-1 binding the pin allocated, or the header's own absent value. */
+function uboBindingLiteral(binding: number | null): string {
+    return binding === null ? "node_no_ubo" : String(binding);
+}
+
 /** One composed graph, plus the stem its two stages deploy under. */
 export interface NodeVariantManifestEntry {
     /** The graph's index in the scene's reach order. */
@@ -226,6 +236,190 @@ export function nodeCasterStageStems(
     };
 }
 
+/**
+ * The stems one graph's geometry-output module deploys under, per task.
+ *
+ * A third module of the same graph, under the same `node-` prefix and for the
+ * same reason. Keyed by the task as well as the graph because the emit walks
+ * the task's own attachment list -- two tasks over one graph are two modules.
+ */
+function nodeGeometryStageStems(
+    index: number,
+    taskIndex: number,
+): { vertexStem: string; fragmentStem: string } {
+    return {
+        vertexStem: `node-${index}-geom${taskIndex}.vert`,
+        fragmentStem: `node-${index}-geom${taskIndex}.frag`,
+    };
+}
+
+/** One composed geometry view, with the graph and task it belongs to. */
+export interface NodeGeometryVariantManifestEntry {
+    /** The graph's index in `node_variants`. */
+    variantIndex: number;
+    vertexStem: string;
+    fragmentStem: string;
+    composed: ComposedNodeGeometryView;
+}
+
+/**
+ * The tasks each graph composed a view for.
+ *
+ * One number rather than a per-graph count: composition hands every graph the
+ * same task list, so a graph that composed a different number of views is a
+ * composition bug this refuses rather than an index the header would have to
+ * search around.
+ */
+function geometryTaskCount(
+    geometryVariants: readonly NodeGeometryVariantManifestEntry[],
+): number {
+    const perGraph = new Map<number, number>();
+    for (const variant of geometryVariants) {
+        perGraph.set(
+            variant.variantIndex,
+            (perGraph.get(variant.variantIndex) ?? 0) + 1,
+        );
+    }
+    const counts = new Set(perGraph.values());
+    if (counts.size > 1) {
+        throw new Error(
+            "Node graphs composed geometry views for different numbers of " +
+                `tasks (${[...counts].join(", ")}).`,
+        );
+    }
+    return [...counts][0] ?? 0;
+}
+
+/** Every geometry view of every graph, in graph then task order. */
+export function nodeGeometryVariants(
+    variants: readonly NodeVariantManifestEntry[],
+): readonly NodeGeometryVariantManifestEntry[] {
+    return variants.flatMap((variant) =>
+        variant.composed.geometryViews.map((composed) => ({
+            variantIndex: variant.index,
+            ...nodeGeometryStageStems(variant.index, composed.taskIndex),
+            composed,
+        })));
+}
+
+/**
+ * The geometry-view table, or nothing at all for a scene composing none.
+ *
+ * Absent rather than empty because the ten shipped node scenes reach no
+ * geometry task: an empty array here would move every byte after it in their
+ * `node_variants.hpp`, and the neutrality proof for this arm is that it moved
+ * nothing they emit. `BBLITE_NODE_GEOMETRY_VARIANTS` is what tells the PALs
+ * which shape they are compiling against.
+ */
+function geometryTable(
+    rows: readonly string[],
+    tasks: number,
+    graphs: number,
+): string {
+    if (rows.length === 0) return "";
+    return `
+/**
+ * How many rows of \`node_variants\` above are graphs.
+ *
+ * The geometry views continue the same table after every graph, so this is
+ * where they start -- and it is the bound the render plan's own
+ * \`shader_variant\` is checked against, which \`node_variants.size()\` stopped
+ * being once the views joined.
+ */
+inline constexpr std::size_t node_graph_count = ${graphs};
+
+/**
+ * One geometry-output view of a graph: the module
+ * \`material/node/node-geometry-view.ts\` composes for ONE task's attachment
+ * list.
+ *
+ * A third module of the same graph, beside the colour view and the caster --
+ * but not a variation of either: \`ensureGeometryResources\` emits the graph
+ * again from its \`GeometryTextureOutputBlock\` terminal, so the vertex
+ * inputs, the texture pairs and the uniform block are the geometry emit's own.
+ * They are a \`node_variants\` row of their own for exactly that reason: what
+ * a compiled view declares is one row shape, so a bind site reads any view
+ * the same way. This table carries only what a geometry view has and the
+ * colour view has not, keyed by the pair that resolves it.
+ */
+struct NodeGeometryVariantEntry {
+    /** The graph in \`node_variants\` this view was emitted from. */
+    std::size_t variant;
+    /** The task's own \`shader_index\`, the runtime's registration order. */
+    std::size_t geometry_task;
+    /**
+     * \`NmeGeomParams\`' group-1 binding, or \`node_no_ubo\`.
+     *
+     * \`compileNodePipeline\` allocates it only when the emit raised
+     * \`_needsGpUbo\` -- a NORMALIZED_VIEW_DEPTH or LINEAR_VELOCITY
+     * attachment the graph left to the pin's own fallback -- so it is a
+     * property of the attachment list and the graph together, never of the
+     * task alone.
+     */
+    std::size_t geometry_params_binding;
+    /** The colour targets this view's \`FragmentOutput\` writes. */
+    std::size_t color_target_count;
+};
+
+inline constexpr std::array<
+    NodeGeometryVariantEntry,
+    ${rows.length}> node_geometry_variants{{
+${rows.join("\n")}
+}};
+
+/** The \`node_variants\` row one geometry view was emitted into: the views
+ *  follow the graphs in the order this table lists them. */
+inline constexpr std::size_t node_geometry_entry(
+    std::size_t geometry_variant) {
+    return node_graph_count + geometry_variant;
+}
+
+// Which makes the two tables one join, so a build where they grew out of
+// step -- and would resolve a neighbour's module for every geometry draw --
+// fails here rather than at a draw.
+static_assert(
+    node_graph_count + node_geometry_variants.size() ==
+        node_variants.size(),
+    "Every node_variants row past the graphs is one composed geometry view.");
+
+/** No geometry view of this graph was composed for that task. */
+inline constexpr std::size_t node_no_geometry_variant =
+    std::numeric_limits<std::size_t>::max();
+
+/**
+ * The geometry view one node draw resolves inside one task.
+ *
+ * Keyed by both because a graph drawn in two tasks composed two modules, and
+ * a graph a task never draws composed none -- so a draw that reaches a task
+ * with no row is a generation gap, and both backends refuse it by name rather
+ * than falling back to the colour view's single-target pipeline.
+ *
+ * Every graph composes a view for every task the scene registered, so the
+ * table is dense and this is an index rather than a scan -- it runs per node
+ * draw, per frame. The row it lands on is checked against the pair asked for,
+ * so a table that stopped being dense refuses instead of resolving a
+ * neighbour's view.
+ */
+inline constexpr std::size_t node_geometry_tasks = ${tasks};
+
+inline constexpr std::size_t node_geometry_variant_for(
+    std::size_t variant,
+    std::size_t geometry_task) {
+    if (geometry_task >= node_geometry_tasks) {
+        return node_no_geometry_variant;
+    }
+    const std::size_t index = variant * node_geometry_tasks + geometry_task;
+    if (
+        index >= node_geometry_variants.size() ||
+        node_geometry_variants[index].variant != variant ||
+        node_geometry_variants[index].geometry_task != geometry_task) {
+        return node_no_geometry_variant;
+    }
+    return index;
+}
+`;
+}
+
 /** The pin's own node mesh block, as its composed module declares it. */
 function nodeMeshStructBody(wgsl: string, label: string): string {
     const body = /struct MeshU\s*\{([\s\S]*?)\}/.exec(wgsl);
@@ -241,6 +435,11 @@ function nodeMeshStructBody(wgsl: string, label: string): string {
 export function pinnedNodeVariantsHeader(
     provenance: string,
     variants: readonly NodeVariantManifestEntry[],
+    // Derived from `variants`, but passed in: the same list decides the
+    // `BBLITE_NODE_GEOMETRY_VARIANTS` define, the render plan's node arm and
+    // the deployed modules, and one computed list is one predicate rather
+    // than four that a later edit could desynchronise.
+    geometryVariants: readonly NodeGeometryVariantManifestEntry[],
 ): string {
     if (variants.length === 0) {
         throw new Error("A node scene composed no graphs.");
@@ -248,15 +447,29 @@ export function pinnedNodeVariantsHeader(
     // `buildMeshStruct` takes no arguments, so every graph declares the same
     // block and the PAL uploads one struct. Compared as the pin's own text
     // rather than as generated C++: the check is that the pin did not start
-    // varying it, and the text is what would have varied.
-    const meshBodies = variants.map((variant) =>
-        nodeMeshStructBody(variant.composed.wgsl, `node-${variant.index}`)
-    );
-    for (const [index, body] of meshBodies.entries()) {
-        if (body !== meshBodies[0]) {
+    // varying it, and the text is what would have varied. Every emitted
+    // module joins, geometry views included -- they run the same builder.
+    const meshBodies = [
+        ...variants.map((variant) => ({
+            label: `node-${variant.index}`,
+            body: nodeMeshStructBody(
+                variant.composed.wgsl,
+                `node-${variant.index}`,
+            ),
+        })),
+        ...geometryVariants.map((variant) => ({
+            label: variant.fragmentStem,
+            body: nodeMeshStructBody(
+                variant.composed.wgsl,
+                variant.fragmentStem,
+            ),
+        })),
+    ];
+    for (const { label, body } of meshBodies) {
+        if (body !== meshBodies[0]!.body) {
             throw new Error(
-                `Node material ${variants[index]!.index} declares a mesh ` +
-                    "block the others do not; the PAL uploads one struct.",
+                `Node module ${label} declares a mesh block the others do ` +
+                    "not; the PAL uploads one struct.",
             );
         }
     }
@@ -266,25 +479,38 @@ export function pinnedNodeVariantsHeader(
     const uniformFloats: number[] = [];
     const entries: string[] = [];
     const envResources = new Map<string, EnvResource>();
-    for (const variant of variants) {
+    // Every compiled view contributes to the same three tables, so both loops
+    // below append through one writer: the colour, caster and geometry views
+    // of a graph are separate emits, and a row shape that drifted between
+    // them would desynchronise the ranges silently.
+    const pushViewRows = (composed: {
+        attributes: readonly ComposedNodeAttribute[];
+        textures: readonly ComposedNodeTextureBinding[];
+        uboFloats: readonly number[];
+    }): { firstAttribute: number; firstTexture: number; firstFloat: number } => {
         const firstAttribute = attributeRows.length;
-        for (const attribute of variant.composed.attributes) {
+        for (const attribute of composed.attributes) {
             attributeRows.push(
                 `    {${attribute.location}, ${stringLiteral(attribute.name)}},`,
             );
         }
         const firstTexture = textureRows.length;
-        for (const texture of variant.composed.textures) {
+        for (const texture of composed.textures) {
             textureRows.push(
                 `    {${stringLiteral(texture.name)}, ` +
                     `${texture.texture}, ${texture.sampler}},`,
             );
         }
+        const firstFloat = uniformFloats.length;
+        uniformFloats.push(...composed.uboFloats);
+        return { firstAttribute, firstTexture, firstFloat };
+    };
+    for (const variant of variants) {
+        const { firstAttribute, firstTexture, firstFloat } =
+            pushViewRows(variant.composed);
         const firstShadow = shadowRows.length;
         const variantShadowRows = nodeShadowRows(variant.composed);
         shadowRows.push(...variantShadowRows);
-        const firstFloat = uniformFloats.length;
-        uniformFloats.push(...variant.composed.uboFloats);
         const env = variant.composed.envBindings;
         const envRow = env
             ? `{true, ${env.iblTexture}, ${env.iblSampler}, ` +
@@ -298,11 +524,7 @@ export function pinnedNodeVariantsHeader(
                 `${variant.composed.alphaBlending}, ` +
                 `${firstAttribute}, ${variant.composed.attributes.length}, ` +
                 `${firstTexture}, ${variant.composed.textures.length}, ` +
-                `${
-                    variant.composed.uboBinding === null
-                        ? "node_no_ubo"
-                        : variant.composed.uboBinding
-                }, ` +
+                `${uboBindingLiteral(variant.composed.uboBinding)}, ` +
                 `${variant.composed.uboBytes}, ${firstFloat}, ` +
                 `${envRow}, ` +
                 `${morphRow}, ` +
@@ -312,6 +534,55 @@ export function pinnedNodeVariantsHeader(
         );
         collectEnvResources(variant.composed, envResources);
     }
+    // The geometry views' rows continue the same three tables and
+    // `node_variants` itself, AFTER every colour and caster row: a scene
+    // composing none leaves all four exactly as they were, which is what
+    // keeps the ten shipped node scenes' `node_variants.hpp` byte-identical.
+    //
+    // A geometry view is a compiled view like the other two, so it is a row
+    // of the same shape and every bind site reads it the same way. The four
+    // arms it does not have are stated as absent rather than left for a
+    // per-view branch to remember: `ensureGeometryResources` refuses a
+    // morph-target, environment or shadow-receiving geometry arm outright
+    // (`pinned-node-material.ts` names it in the refusal), and a view is
+    // never a caster. `ensureGeometryCompile` compiles at the pin's alpha
+    // mode 0 and passes the GRAPH's own `backFaceCulling` through, which is
+    // the pair the two remaining fields carry.
+    const graphCount = entries.length;
+    const geometryEntries = geometryVariants.map((variant) => {
+        const graph = variants.find(
+            (entry) => entry.index === variant.variantIndex,
+        );
+        if (!graph) {
+            throw new Error(
+                `A composed node geometry view names graph ` +
+                    `${variant.variantIndex}, which the scene did not reach.`,
+            );
+        }
+        const { firstAttribute, firstTexture, firstFloat } =
+            pushViewRows(variant.composed);
+        entries.push(
+            `    {${stringLiteral(variant.vertexStem)}, ` +
+                `${stringLiteral(variant.fragmentStem)}, ` +
+                `${graph.composed.backFaceCulling}, ` +
+                `false, ` +
+                `${firstAttribute}, ${variant.composed.attributes.length}, ` +
+                `${firstTexture}, ${variant.composed.textures.length}, ` +
+                `${uboBindingLiteral(variant.composed.uboBinding)}, ` +
+                `${variant.composed.uboBytes}, ${firstFloat}, ` +
+                `{false, 0, 0, 0, 0}, ` +
+                `{false, 0, 0}, ` +
+                `${shadowRows.length}, ` +
+                `0, ` +
+                `{false, false, "", "", 0}},`,
+        );
+        return (
+            `    {${variant.variantIndex}, ` +
+            `${variant.composed.taskIndex}, ` +
+            `${uboBindingLiteral(variant.composed.geometryParamsBinding)}, ` +
+            `${variant.composed.colorTargetCount}},`
+        );
+    });
     const envRows = [...envResources.values()].map(
         (resource) =>
             `    {${stringLiteral(resource.textureName)}, ` +
@@ -486,7 +757,7 @@ struct NodeVariantEntry {
 
 inline constexpr std::array<
     NodeVariantEntry,
-    ${variants.length}> node_variants{{
+    ${entries.length}> node_variants{{
 ${entries.join("\n")}
 }};
 
@@ -509,7 +780,13 @@ inline constexpr MaterialTextureSource node_binding_source(
 inline constexpr bool has_node_ubo(const NodeVariantEntry& entry) {
     return entry.ubo_binding != node_no_ubo && entry.ubo_bytes > 0;
 }
-
+${
+        geometryTable(
+            geometryEntries,
+            geometryTaskCount(geometryVariants),
+            graphCount,
+        )
+    }
 /** Every graph's node UBO, as the floats the pin's own writer places.
  *  The graph's named inputs decide these and no reached scene changes one,
  *  so the block is a constant rather than a per-frame write. */
@@ -522,7 +799,7 @@ ${uniformFloats.map((value) => `    ${floatLiteral(value)},`).join("\n")}
 ${
         mirroredStructFromWgsl(
             "NodeMeshUniforms",
-            meshBodies[0]!,
+            meshBodies[0]!.body,
             "src/material/node/node-pipeline.ts buildMeshStruct",
         )
     }

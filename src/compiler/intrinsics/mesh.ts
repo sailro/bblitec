@@ -2597,6 +2597,74 @@ export function compileMeshIntrinsic(
             };
         }
 
+        case "createCapsule": {
+            // The one builder in the family that resolves its options by
+            // TRUTHINESS (`options.height ? options.height : 1`) rather
+            // than by `??`, so an omitted option and an explicit zero are
+            // the same answer to the pin. Nothing is folded here: the
+            // record carries zero for an option the scene did not name,
+            // which is exactly the value the pinned ternary rejects, and
+            // the emitted body supplies every default itself -- including
+            // the two that fall back to another resolved local
+            // (`radiusTop` to `radius`, each cap to `capSubdivisions`).
+            const sceneMeshIndex = context.recordSceneMesh("from-data", {
+                hasUv2: false,
+                hasTangents: false,
+                hasColors: false,
+            });
+            context.expectArgumentCount(call, 1, 2);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            // The pin's own option order, which is the record's.
+            const fields = [
+                "height",
+                "radius",
+                "radiusTop",
+                "radiusBottom",
+                "tessellation",
+                "subdivisions",
+                "capSubdivisions",
+                "topCapSubdivisions",
+                "bottomCapSubdivisions",
+            ] as const;
+            const resolved: Record<string, string> = Object.fromEntries(
+                fields.map((name) => [name, doubleLiteral(0)]),
+            );
+            if (call.arguments[1]) {
+                const options = context.expectObjectLiteral(
+                    call.arguments[1],
+                );
+                validateObjectProperties(
+                    context,
+                    options,
+                    fields,
+                    "Reached capsules name their height, radius (or its " +
+                        "two ends), tessellation, subdivisions and cap " +
+                        "subdivisions.",
+                );
+                for (const name of fields) {
+                    const expression = context.objectProperty(options, name);
+                    if (!expression) continue;
+                    resolved[name] = context.compileNumber(
+                        expression,
+                        "double",
+                    );
+                }
+            }
+            context.reachFeature("mesh:capsule", call);
+            return {
+                kind: "mesh",
+                sceneMeshIndex,
+                cpp:
+                    `bbl::create_capsule(${engine.cpp}, ` +
+                    `bbl::CapsuleOptions{` +
+                    `${fields
+                        .map((name) => resolved[name])
+                        .join(", ")}})`,
+                engineCpp: engine.engineCpp ?? engine.cpp,
+            };
+        }
+
         case "createDisc": {
             // The reached subset is the whole pinned option set: radius,
             // tessellation and arc. Each default is the factory's own `??`

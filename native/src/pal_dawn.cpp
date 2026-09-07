@@ -348,6 +348,13 @@ struct DawnMeshResources {
     // follows the mesh's transform. Keyed by material beside the two
     // sibling families, for the same override reason.
     std::map<std::uint32_t, DawnDrawState> node_states;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    // The geometry arms keyed by composed view beside it, the same way the
+    // two material families' are: a geometry view walked the graph again
+    // and owns its own uniform block, so it cannot share the colour state's
+    // buffers or its bind group.
+    std::map<std::size_t, DawnDrawState> node_geometry_states;
+#endif
 #endif
     std::array<WGPUTexture, mesh_texture_slots> owned_textures{};
     std::array<WGPUTextureView, mesh_texture_slots> owned_views{};
@@ -1428,6 +1435,9 @@ struct DawnState : DawnDevice {
             mesh.standard_states.clear();
 #endif
 #if BBLITE_NODE_VARIANTS > 0
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            mesh.node_geometry_states.clear();
+#endif
             mesh.node_states.clear();
 #endif
             if (mesh.shared_composed_textures) {
@@ -4604,19 +4614,9 @@ void write_pinned_geometry_task(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& geometry_matrix,
     const FrameTaskRecord& task,
     DawnGeometryTask& geometry,
     const upstream::RenderDrawLists& draw_lists) {
-    if (!pinned_lists_have_pinned_draws(draw_lists)) return;
-    write_pinned_geometry_prologue(
-        state,
-        scene,
-        engine,
-        camera,
-        geometry,
-        geometry_matrix);
     for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
         for (const upstream::RenderDrawCommand& draw : list->commands) {
             if (
@@ -5932,28 +5932,9 @@ void write_standard_geometry_task(
     DawnState& state,
     const Scene& scene,
     const Engine& engine,
-    const CameraRecord& camera,
-    const std::array<float, 16>& geometry_matrix,
     const FrameTaskRecord& task,
     DawnGeometryTask& geometry,
     const upstream::RenderDrawLists& draw_lists) {
-    if (!pinned_lists_have_pinned_draws(draw_lists)) return;
-#if BBLITE_PBR_VARIANTS == 0
-    // With no PBR family compiled, `write_pinned_geometry_task` does not
-    // exist, so this side owns the frame prologue it would have run.
-    write_pinned_geometry_prologue(
-        state,
-        scene,
-        engine,
-        camera,
-        geometry,
-        geometry_matrix);
-#else
-    // The PBR write ran first at the shared call site and owns the
-    // prologue; only the Standard draws are resolved here.
-    (void)camera;
-    (void)geometry_matrix;
-#endif
     for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
         for (const upstream::RenderDrawCommand& draw : list->commands) {
             if (
@@ -6622,6 +6603,59 @@ bool append_variant_attribute(
         dawn_depth_compare(pal::pass_depth_compare(shadow_pass));
 }
 
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || \
+    BBLITE_NODE_GEOMETRY_VARIANTS > 0
+/**
+ * The MRT colour targets one geometry-output pipeline draws into, for
+ * whichever family composed it.
+ *
+ * All three answer this the same way: one target per attachment class the
+ * shared `geometry_target_classes` list carries, then the optional
+ * trailing colour output in the frame's own format, with the geometry
+ * pass's depth write forced on whatever the material's own alpha would
+ * have said. `blend` is the family's transparent blend state, or null for
+ * a draw that does not blend. The sample count is not touched: it reaches
+ * the descriptor as this backend's `samples` argument, which the caller
+ * already resolved from the task.
+ *
+ * The node family reaches the same body through a strict subset: a
+ * geometry view is compiled at the pin's alpha mode 0 (so `blend` is null
+ * and the depth write was already on) and `createNodeGeometryMaterialView`
+ * refuses `emitColor`, so its task carries no trailing output -- and if one
+ * ever did, the shared count assertion below refuses before a target is
+ * built.
+ *
+ * `targets` is the caller's storage because `fragment` holds a pointer into
+ * it until the pipeline is created.
+ */
+void apply_geometry_color_targets(
+    WGPUFragmentState& fragment,
+    WGPUDepthStencilState& depth_stencil,
+    std::vector<WGPUColorTargetState>& targets,
+    const DawnState& state,
+    const FrameTaskRecord& task,
+    std::size_t entry_color_target_count,
+    const char* family,
+    const WGPUBlendState* blend) {
+    const GeometryTargetClasses classes = geometry_target_classes(task);
+    require_geometry_target_count(classes, entry_color_target_count, family);
+    targets.reserve(classes.attachments.size() + 1u);
+    const auto push = [&](WGPUTextureFormat format) {
+        WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
+        target.format = format;
+        target.blend = blend;
+        targets.push_back(target);
+    };
+    for (const TextureFormatClass format_class : classes.attachments) {
+        push(texture_format(format_class));
+    }
+    if (classes.trailing_output) push(state.frame_color_format);
+    fragment.targetCount = targets.size();
+    fragment.targets = targets.data();
+    depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+}
+#endif
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * The render pipeline for one composed variant.
@@ -6761,35 +6795,19 @@ WGPURenderPipeline pinned_variant_pipeline(
     // draws in carries none either.
     fragment.targetCount = entry.no_color_output ? 0 : 1;
     fragment.targets = entry.no_color_output ? nullptr : &color_target;
-    // A geometry-output MRT variant draws into its task's own attachments:
-    // one target per attachment in the shared class list plus the
-    // optional trailing colour, with depth writes forced on. The list and
-    // its count assertion come from `geometry_target_classes`; only the
-    // API structs are built here.
+    // A geometry-output MRT variant draws into its task's own attachments,
+    // through the builder all three families share.
     std::vector<WGPUColorTargetState> geometry_targets;
     if (geometry_task) {
-        const GeometryTargetClasses classes =
-            geometry_target_classes(*geometry_task);
-        require_geometry_target_count(
-            classes,
+        apply_geometry_color_targets(
+            fragment,
+            depth_stencil,
+            geometry_targets,
+            state,
+            *geometry_task,
             entry.color_target_count,
-            "pinned");
-        geometry_targets.reserve(classes.attachments.size() + 1u);
-        for (const TextureFormatClass format_class : classes.attachments) {
-            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = texture_format(format_class);
-            if (traits.transparent) target.blend = &blend;
-            geometry_targets.push_back(target);
-        }
-        if (classes.trailing_output) {
-            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = state.frame_color_format;
-            if (traits.transparent) target.blend = &blend;
-            geometry_targets.push_back(target);
-        }
-        fragment.targetCount = geometry_targets.size();
-        fragment.targets = geometry_targets.data();
-        depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+            "pinned",
+            traits.transparent ? &blend : nullptr);
     }
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline =
@@ -6928,32 +6946,19 @@ WGPURenderPipeline standard_variant_pipeline(
     fragment.entryPoint = string_view("main");
     fragment.targetCount = entry.no_color_output ? 0 : 1;
     fragment.targets = entry.no_color_output ? nullptr : &color_target;
-    // The Standard sibling of the pinned MRT assembly above, over the
-    // same shared class list and count assertion.
+    // The Standard sibling of the pinned MRT assembly above, through the
+    // same shared builder.
     std::vector<WGPUColorTargetState> geometry_targets;
     if (geometry_task) {
-        const GeometryTargetClasses classes =
-            geometry_target_classes(*geometry_task);
-        require_geometry_target_count(
-            classes,
+        apply_geometry_color_targets(
+            fragment,
+            depth_stencil,
+            geometry_targets,
+            state,
+            *geometry_task,
             entry.color_target_count,
-            "standard");
-        geometry_targets.reserve(classes.attachments.size() + 1u);
-        for (const TextureFormatClass format_class : classes.attachments) {
-            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = texture_format(format_class);
-            if (traits.transparent) target.blend = &blend;
-            geometry_targets.push_back(target);
-        }
-        if (classes.trailing_output) {
-            WGPUColorTargetState target = WGPU_COLOR_TARGET_STATE_INIT;
-            target.format = state.frame_color_format;
-            if (traits.transparent) target.blend = &blend;
-            geometry_targets.push_back(target);
-        }
-        fragment.targetCount = geometry_targets.size();
-        fragment.targets = geometry_targets.data();
-        depth_stencil.depthWriteEnabled = WGPUOptionalBool_True;
+            "standard",
+            traits.transparent ? &blend : nullptr);
     }
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline =
@@ -6972,16 +6977,21 @@ WGPURenderPipeline standard_variant_pipeline(
 WGPUBindGroupLayout node_draw_layout_for(
     DawnState& state,
     std::size_t variant,
-    bool caster) {
-    const std::size_t slot = pal::node_variant_slot(variant, caster);
+    bool caster,
+    std::size_t geometry_variant = pal::no_node_geometry_variant) {
+    const std::size_t slot =
+        pal::node_draw_slot(variant, caster, geometry_variant);
     if (state.node_draw_layouts.size() < pal::node_variant_slots()) {
         state.node_draw_layouts.resize(pal::node_variant_slots(), nullptr);
     }
     if (state.node_draw_layouts[slot]) {
         return state.node_draw_layouts[slot];
     }
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[variant];
+    // The compiled view this slot draws: the graph's own row for a colour
+    // or caster slot, the geometry emit's row for a geometry one.
+    const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
+    [[maybe_unused]] const bool geometry_view =
+        geometry_variant != pal::no_node_geometry_variant;
     std::vector<WGPUBindGroupLayoutEntry> entries;
     WGPUBindGroupLayoutEntry mesh_entry = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
     mesh_entry.binding = 0;
@@ -6989,11 +6999,11 @@ WGPUBindGroupLayout node_draw_layout_for(
         WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     mesh_entry.buffer.type = WGPUBufferBindingType_Uniform;
     entries.push_back(mesh_entry);
-    if (upstream::has_node_ubo(entry)) {
+    if (upstream::has_node_ubo(view)) {
         WGPUBindGroupLayoutEntry node_entry =
             WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
         node_entry.binding =
-            static_cast<std::uint32_t>(entry.ubo_binding);
+            static_cast<std::uint32_t>(view.ubo_binding);
         node_entry.visibility =
             WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
         node_entry.buffer.type = WGPUBufferBindingType_Uniform;
@@ -7003,16 +7013,16 @@ WGPUBindGroupLayout node_draw_layout_for(
     // bindings the pin's pipeline builder allocated and with the visibility
     // its own BGL entry carries -- a UV chain can put the sample in either
     // stage, so the pin declares both and so does this.
-    for (std::size_t index = 0; index < entry.texture_count; ++index) {
+    for (std::size_t index = 0; index < view.texture_count; ++index) {
         const upstream::NodeVariantTexture& binding =
-            upstream::node_variant_textures[entry.first_texture + index];
-        WGPUBindGroupLayoutEntry view = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-        view.binding = binding.texture;
-        view.visibility =
+            upstream::node_variant_textures[view.first_texture + index];
+        WGPUBindGroupLayoutEntry texture = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+        texture.binding = binding.texture;
+        texture.visibility =
             WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
-        view.texture.sampleType = WGPUTextureSampleType_Float;
-        view.texture.viewDimension = WGPUTextureViewDimension_2D;
-        entries.push_back(view);
+        texture.texture.sampleType = WGPUTextureSampleType_Float;
+        texture.texture.viewDimension = WGPUTextureViewDimension_2D;
+        entries.push_back(texture);
         WGPUBindGroupLayoutEntry sampler = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
         sampler.binding = binding.sampler;
         sampler.visibility =
@@ -7020,7 +7030,30 @@ WGPUBindGroupLayout node_draw_layout_for(
         sampler.sampler.type = WGPUSamplerBindingType_Filtering;
         entries.push_back(sampler);
     }
-    if (entry.morph.present) {
+    // Everything past the graph's own bindings is per view, and the row
+    // this slot names is that view's: `ensureGeometryResources` refuses a
+    // graph whose geometry emit reaches morph targets, the environment or a
+    // shadow light, so a geometry view's row declares all three absent and
+    // the three arms below fall out on their own.
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (geometry_view) {
+        // The task's gpUniforms, at the binding `_buildGeomUbo` took --
+        // present only for a view whose emit raised `_needsGpUbo`.
+        const upstream::NodeGeometryVariantEntry& geometry =
+            upstream::node_geometry_variants[geometry_variant];
+        if (geometry.geometry_params_binding != upstream::node_no_ubo) {
+            WGPUBindGroupLayoutEntry params =
+                WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
+            params.binding = static_cast<std::uint32_t>(
+                geometry.geometry_params_binding);
+            params.visibility = WGPUShaderStage_Fragment;
+            params.buffer.type = WGPUBufferBindingType_Uniform;
+            params.buffer.minBindingSize = sizeof(PinnedGeometryParams);
+            entries.push_back(params);
+        }
+    }
+#endif
+    if (view.morph.present) {
         const auto storage = [&](std::uint32_t binding) {
             WGPUBindGroupLayoutEntry item =
                 WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
@@ -7029,10 +7062,10 @@ WGPUBindGroupLayout node_draw_layout_for(
             item.buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
             entries.push_back(item);
         };
-        storage(entry.morph.deltas_binding);
-        storage(entry.morph.weights_binding);
+        storage(view.morph.deltas_binding);
+        storage(view.morph.weights_binding);
     }
-    if (entry.env.present) {
+    if (view.env.present) {
         // The pin's own four, in the order `emitEnv` allocates them: the
         // specular cube and its sampler, then the BRDF LUT and its own.
         const auto texture = [&](
@@ -7054,19 +7087,19 @@ WGPUBindGroupLayout node_draw_layout_for(
             item.sampler.type = WGPUSamplerBindingType_Filtering;
             entries.push_back(item);
         };
-        texture(entry.env.ibl_texture, WGPUTextureViewDimension_Cube);
-        sampler(entry.env.ibl_sampler);
-        texture(entry.env.brdf_lut, WGPUTextureViewDimension_2D);
-        sampler(entry.env.brdf_sampler);
+        texture(view.env.ibl_texture, WGPUTextureViewDimension_Cube);
+        sampler(view.env.ibl_sampler);
+        texture(view.env.brdf_lut, WGPUTextureViewDimension_2D);
+        sampler(view.env.brdf_sampler);
     }
 #if BBLITE_NODE_SHADOWS
     if (caster) {
 #if BBLITE_SHADOWS_ESM
-        if (entry.caster.esm) {
+        if (view.caster.esm) {
             // The ESM caster adds one row; the PCF no-colour compile adds
             // none and keeps only the graph's shared bindings above.
             WGPUBindGroupLayoutEntry params = WGPU_BIND_GROUP_LAYOUT_ENTRY_INIT;
-            params.binding = entry.caster.params_binding;
+            params.binding = view.caster.params_binding;
             params.visibility = WGPUShaderStage_Fragment;
             params.buffer.type = WGPUBufferBindingType_Uniform;
             params.buffer.minBindingSize = upstream::shadow_params_block_bytes;
@@ -7079,7 +7112,7 @@ WGPUBindGroupLayout node_draw_layout_for(
         // reflected row the composed families' are, so the same builder
         // answers what type it carries and which stages read it.
         for (const upstream::PinnedShadowBinding& row :
-             pal::node_shadow_rows(entry)) {
+             pal::node_shadow_rows(view)) {
             entries.push_back(shadow_layout_entry(row));
         }
     }
@@ -7100,8 +7133,10 @@ WGPUBindGroupLayout node_draw_layout_for(
 WGPUPipelineLayout node_pipeline_layout_for(
     DawnState& state,
     std::size_t variant,
-    bool caster) {
-    const std::size_t slot = pal::node_variant_slot(variant, caster);
+    bool caster,
+    std::size_t geometry_variant = pal::no_node_geometry_variant) {
+    const std::size_t slot =
+        pal::node_draw_slot(variant, caster, geometry_variant);
     if (state.node_pipeline_layouts.size() < pal::node_variant_slots()) {
         state.node_pipeline_layouts.resize(pal::node_variant_slots(), nullptr);
     }
@@ -7110,7 +7145,7 @@ WGPUPipelineLayout node_pipeline_layout_for(
     }
     std::array<WGPUBindGroupLayout, 2> groups{
         pinned_frame_layout_for(state),
-        node_draw_layout_for(state, variant, caster),
+        node_draw_layout_for(state, variant, caster, geometry_variant),
     };
     WGPUPipelineLayoutDescriptor descriptor =
         WGPU_PIPELINE_LAYOUT_DESCRIPTOR_INIT;
@@ -7147,8 +7182,16 @@ WGPURenderPipeline node_variant_pipeline(
     // the caster -- which ESM generator's map it writes, whose recorded row
     // is the colour format.
     bool caster = false,
-    std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t slot = pal::node_variant_slot(variant, caster);
+    std::uint32_t esm_shadow_index = invalid_handle,
+    // The geometry-output task an MRT view draws in, with the composed view
+    // it resolved. A geometry module is composed for exactly ONE task, so
+    // the slot-keyed cache stays valid with that task's targets baked in.
+    [[maybe_unused]] const FrameTaskRecord* geometry_task = nullptr,
+    std::size_t geometry_variant = pal::no_node_geometry_variant) {
+    const bool geometry_view =
+        geometry_variant != pal::no_node_geometry_variant;
+    const std::size_t slot =
+        pal::node_draw_slot(variant, caster, geometry_variant);
     const std::size_t key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(
             slot,
@@ -7165,8 +7208,9 @@ WGPURenderPipeline node_variant_pipeline(
             pal::node_variant_slots(),
             nullptr);
     }
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[variant];
+    // The compiled view this slot draws: the graph's own row for a colour
+    // or caster slot, the geometry emit's row for a geometry one.
+    const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     if (!state.node_vertex_modules[slot]) {
         const upstream::NodeVariantStems stems =
             pal::node_variant_stems(slot);
@@ -7185,10 +7229,10 @@ WGPURenderPipeline node_variant_pipeline(
     // A node graph declaring the thin-instance columns would need a second
     // stream this pipeline does not bind, so the shared table's own marking
     // is what refuses it.
-    inputs.vertex.reserve(entry.attribute_count);
-    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+    inputs.vertex.reserve(view.attribute_count);
+    for (std::size_t index = 0; index < view.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
-            upstream::node_variant_attributes[entry.first_attribute + index];
+            upstream::node_variant_attributes[view.first_attribute + index];
         if (
             !append_variant_attribute(
                 input.name,
@@ -7217,7 +7261,8 @@ WGPURenderPipeline node_variant_pipeline(
     vertex_layout.attributes = inputs.vertex.data();
     WGPURenderPipelineDescriptor descriptor =
         WGPU_RENDER_PIPELINE_DESCRIPTOR_INIT;
-    descriptor.layout = node_pipeline_layout_for(state, variant, caster);
+    descriptor.layout =
+        node_pipeline_layout_for(state, variant, caster, geometry_variant);
     descriptor.vertex.module = state.node_vertex_modules[slot];
     descriptor.vertex.entryPoint = string_view("vs_main");
     descriptor.vertex.bufferCount = 1;
@@ -7225,12 +7270,18 @@ WGPURenderPipeline node_variant_pipeline(
     descriptor.primitive.topology = WGPUPrimitiveTopology_TriangleList;
     descriptor.primitive.frontFace = WGPUFrontFace_CCW;
     const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
-    const bool transparent = traits.transparent && !shadow_pass && !caster;
+    // A geometry view is compiled at the pin's alpha mode 0 whatever the
+    // graph's own blending says (`ensureGeometryCompile` passes it), so its
+    // pipeline neither blends nor drops depth writes.
+    const bool transparent =
+        traits.transparent && !shadow_pass && !caster && !geometry_view;
     // The graph's culling and alpha-combine state, decoded through the same
     // shared kind table as the other families. Shadow views force the pin's
-    // alpha mode 0 and therefore keep depth writes and no colour blending.
-    descriptor.primitive.cullMode =
-        dawn_cull_mode(traits.cull);
+    // alpha mode 0 and therefore keep depth writes and no colour blending,
+    // and so does the geometry view -- but its culling is still the graph's
+    // own `backFaceCulling`, which is the fact the plan's node kinds are
+    // bucketed by, so all three views read the one table.
+    descriptor.primitive.cullMode = dawn_cull_mode(traits.cull);
     WGPUDepthStencilState depth_stencil = WGPU_DEPTH_STENCIL_STATE_INIT;
     apply_pass_depth_state(depth_stencil, shadow_pass);
     depth_stencil.depthWriteEnabled = transparent
@@ -7258,9 +7309,28 @@ WGPURenderPipeline node_variant_pipeline(
     WGPUFragmentState fragment = WGPU_FRAGMENT_STATE_INIT;
     fragment.module = state.node_fragment_modules[slot];
     fragment.entryPoint = string_view("fs_main");
-    const bool pcf_caster = caster && !entry.caster.esm;
+    const bool pcf_caster = caster && !view.caster.esm;
     fragment.targetCount = pcf_caster ? 0 : 1;
     fragment.targets = pcf_caster ? nullptr : &color_target;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    // The task's own attachments, through the builder the two material
+    // families' MRT arms take. No blend and no trailing output: a geometry
+    // view is compiled at the pin's alpha mode 0 and
+    // `createNodeGeometryMaterialView` refuses `emitColor`.
+    std::vector<WGPUColorTargetState> geometry_targets;
+    if (geometry_view) {
+        apply_geometry_color_targets(
+            fragment,
+            depth_stencil,
+            geometry_targets,
+            state,
+            *geometry_task,
+            upstream::node_geometry_variants[geometry_variant]
+                .color_target_count,
+            "node",
+            nullptr);
+    }
+#endif
     descriptor.fragment = &fragment;
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
@@ -7268,13 +7338,11 @@ WGPURenderPipeline node_variant_pipeline(
     return map.emplace(key, pipeline).first->second;
 }
 
-/** The per-draw buffers a node graph needs, created once per mesh. */
-DawnDrawState& ensure_node_draw_buffers(
+/** The per-draw buffers one compiled node view needs, created once. */
+void fill_node_draw_buffers(
     DawnState& state,
-    DawnMesh& mesh,
-    std::uint32_t material,
-    const upstream::NodeVariantEntry& entry) {
-    DawnDrawState& draw_state = mesh.node_states.try_emplace(material, state).first->second;
+    DawnDrawState& draw_state,
+    const upstream::NodeVariantEntry& view) {
     const auto uniform_buffer = [&](std::uint64_t size) {
         WGPUBufferDescriptor descriptor = WGPU_BUFFER_DESCRIPTOR_INIT;
         descriptor.size = size;
@@ -7289,9 +7357,9 @@ DawnDrawState& ensure_node_draw_buffers(
         draw_state.mesh_uniforms =
             uniform_buffer(sizeof(upstream::NodeMeshUniforms));
     }
-    if (!draw_state.material_uniforms && upstream::has_node_ubo(entry)) {
+    if (!draw_state.material_uniforms && upstream::has_node_ubo(view)) {
         draw_state.material_uniforms =
-            uniform_buffer(static_cast<std::uint64_t>(entry.ubo_bytes));
+            uniform_buffer(static_cast<std::uint64_t>(view.ubo_bytes));
         // The constants the graph declared, written with the buffer that
         // holds them: nothing a reached scene does changes them.
         wgpuQueueWriteBuffer(
@@ -7299,11 +7367,44 @@ DawnDrawState& ensure_node_draw_buffers(
             draw_state.material_uniforms,
             0,
             &upstream::node_variant_uniform_floats[
-                entry.first_uniform_float],
-            entry.ubo_bytes);
+                view.first_uniform_float],
+            view.ubo_bytes);
     }
+}
+
+/** The per-draw buffers a node graph's colour or caster view needs. */
+DawnDrawState& ensure_node_draw_buffers(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::uint32_t material,
+    const upstream::NodeVariantEntry& entry) {
+    DawnDrawState& draw_state = mesh.node_states.try_emplace(material, state).first->second;
+    fill_node_draw_buffers(state, draw_state, entry);
     return draw_state;
 }
+
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+/**
+ * The same, for one geometry view.
+ *
+ * Keyed by the composed view rather than by the material: the view walked
+ * the graph again and its uniform block is its own, so it can share neither
+ * the colour state's buffers nor its bind group.
+ */
+DawnDrawState& ensure_node_geometry_draw_buffers(
+    DawnState& state,
+    DawnMesh& mesh,
+    std::size_t geometry_variant) {
+    DawnDrawState& draw_state = mesh.node_geometry_states
+        .try_emplace(geometry_variant, state).first->second;
+    fill_node_draw_buffers(
+        state,
+        draw_state,
+        upstream::node_variants[
+            upstream::node_geometry_entry(geometry_variant)]);
+    return draw_state;
+}
+#endif
 
 WGPUBindGroup build_node_draw_group(
     DawnState& state,
@@ -7315,54 +7416,63 @@ WGPUBindGroup build_node_draw_group(
     // Which of the graph's two compiled views, and the material that says
     // so -- an ESM caster view carries both the bit and its generator.
     bool caster = false,
-    [[maybe_unused]] const MaterialRecord* material = nullptr) {
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[variant];
+    [[maybe_unused]] const MaterialRecord* material = nullptr,
+    // The composed geometry view this draw is, when it is one; the task's
+    // gpUniforms comes with it because only the encode knows which task.
+    std::size_t geometry_variant = pal::no_node_geometry_variant,
+    [[maybe_unused]] WGPUBuffer geometry_params = nullptr) {
+    [[maybe_unused]] const bool geometry_view =
+        geometry_variant != pal::no_node_geometry_variant;
+    const std::size_t slot =
+        pal::node_draw_slot(variant, caster, geometry_variant);
+    // The compiled view this slot draws: the graph's own row for a colour
+    // or caster slot, the geometry emit's row for a geometry one.
+    const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     std::vector<WGPUBindGroupEntry> entries;
     WGPUBindGroupEntry mesh_entry = WGPU_BIND_GROUP_ENTRY_INIT;
     mesh_entry.binding = 0;
     mesh_entry.buffer = draw_state.mesh_uniforms;
     mesh_entry.size = sizeof(upstream::NodeMeshUniforms);
     entries.push_back(mesh_entry);
-    if (upstream::has_node_ubo(entry)) {
+    if (upstream::has_node_ubo(view)) {
         WGPUBindGroupEntry node_entry = WGPU_BIND_GROUP_ENTRY_INIT;
         node_entry.binding =
-            static_cast<std::uint32_t>(entry.ubo_binding);
+            static_cast<std::uint32_t>(view.ubo_binding);
         node_entry.buffer = draw_state.material_uniforms;
-        node_entry.size = static_cast<std::uint64_t>(entry.ubo_bytes);
+        node_entry.size = static_cast<std::uint64_t>(view.ubo_bytes);
         entries.push_back(node_entry);
     }
     // The images the scene supplied, uploaded with the mesh: the variant
     // table's order is the pin's allocation order, and the material's slots
     // were filled in that same order by `create_node_material`.
     const auto& shader_textures = mesh_shader_textures(mesh);
-    for (std::size_t index = 0; index < entry.texture_count; ++index) {
+    for (std::size_t index = 0; index < view.texture_count; ++index) {
         const upstream::NodeVariantTexture& binding =
-            upstream::node_variant_textures[entry.first_texture + index];
+            upstream::node_variant_textures[view.first_texture + index];
         if (index >= shader_textures.size()) {
             dawn_error(
                 "a node graph declares more textures than its material "
                 "carries.");
         }
         const DawnSampledTexture& supplied = shader_textures[index];
-        WGPUBindGroupEntry view = WGPU_BIND_GROUP_ENTRY_INIT;
-        view.binding = binding.texture;
-        view.textureView = supplied.view;
-        entries.push_back(view);
+        WGPUBindGroupEntry texture = WGPU_BIND_GROUP_ENTRY_INIT;
+        texture.binding = binding.texture;
+        texture.textureView = supplied.view;
+        entries.push_back(texture);
         WGPUBindGroupEntry sampler = WGPU_BIND_GROUP_ENTRY_INIT;
         sampler.binding = binding.sampler;
         sampler.sampler = supplied.sampler;
         entries.push_back(sampler);
     }
-    if (entry.morph.present) {
+    if (view.morph.present) {
 #if BBLITE_GPU_MORPH_STORAGE
         WGPUBindGroupEntry deltas = WGPU_BIND_GROUP_ENTRY_INIT;
-        deltas.binding = entry.morph.deltas_binding;
+        deltas.binding = view.morph.deltas_binding;
         deltas.buffer = mesh.morph_deltas;
         deltas.size = WGPU_WHOLE_SIZE;
         entries.push_back(deltas);
         WGPUBindGroupEntry weights = WGPU_BIND_GROUP_ENTRY_INIT;
-        weights.binding = entry.morph.weights_binding;
+        weights.binding = view.morph.weights_binding;
         weights.buffer = mesh.morph_weights;
         weights.size = WGPU_WHOLE_SIZE;
         entries.push_back(weights);
@@ -7372,7 +7482,7 @@ WGPUBindGroup build_node_draw_group(
             "mesh morph buffers.");
 #endif
     }
-    if (entry.env.present) {
+    if (view.env.present) {
         // `pushEnvBindGroupEntries` binds the scene's own EnvironmentTextures,
         // which is what the material families already sample here.
         if (!state.environment_cube_view || !state.brdf_view) {
@@ -7389,31 +7499,54 @@ WGPUBindGroup build_node_draw_group(
                               upstream::MaterialTextureSource source) {
             const PinnedResource resource =
                 state_resource_for(state, source);
-            WGPUBindGroupEntry view = WGPU_BIND_GROUP_ENTRY_INIT;
-            view.binding = texture_binding;
-            view.textureView = resource.view;
-            entries.push_back(view);
+            WGPUBindGroupEntry texture = WGPU_BIND_GROUP_ENTRY_INIT;
+            texture.binding = texture_binding;
+            texture.textureView = resource.view;
+            entries.push_back(texture);
             WGPUBindGroupEntry item = WGPU_BIND_GROUP_ENTRY_INIT;
             item.binding = sampler_binding;
             item.sampler = resource.sampler;
             entries.push_back(item);
         };
         pair(
-            entry.env.ibl_texture,
-            entry.env.ibl_sampler,
+            view.env.ibl_texture,
+            view.env.ibl_sampler,
             upstream::MaterialTextureSource::environment_cube);
         pair(
-            entry.env.brdf_lut,
-            entry.env.brdf_sampler,
+            view.env.brdf_lut,
+            view.env.brdf_sampler,
             upstream::MaterialTextureSource::brdf_lut);
     }
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    // The task's gpUniforms, the one binding no colour view declares. The
+    // arms above fall out on their own: a geometry view's row states its
+    // morph, environment, caster and receiver arms absent, because the pin
+    // refuses a geometry emit reaching any of them.
+    if (geometry_view) {
+        const upstream::NodeGeometryVariantEntry& geometry =
+            upstream::node_geometry_variants[geometry_variant];
+        if (geometry.geometry_params_binding != upstream::node_no_ubo) {
+            if (!geometry_params) {
+                dawn_error(
+                    "a node geometry view declares NmeGeomParams but its "
+                    "task built no gpUniforms buffer.");
+            }
+            WGPUBindGroupEntry params = WGPU_BIND_GROUP_ENTRY_INIT;
+            params.binding = static_cast<std::uint32_t>(
+                geometry.geometry_params_binding);
+            params.buffer = geometry_params;
+            params.size = sizeof(PinnedGeometryParams);
+            entries.push_back(params);
+        }
+    }
+#endif
 #if BBLITE_NODE_SHADOWS
     if (caster) {
 #if BBLITE_SHADOWS_ESM
-        if (entry.caster.esm) {
+        if (view.caster.esm) {
             // PCF's NODE_NO_COLOR_OUTPUT module adds no caster-only row.
             WGPUBindGroupEntry params = WGPU_BIND_GROUP_ENTRY_INIT;
-            params.binding = entry.caster.params_binding;
+            params.binding = view.caster.params_binding;
             params.buffer = esm_caster_params_buffer(state, material);
             if (!params.buffer) {
                 dawn_error(
@@ -7424,7 +7557,7 @@ WGPUBindGroup build_node_draw_group(
             entries.push_back(params);
         }
 #endif
-    } else if (entry.shadow_binding_count > 0) {
+    } else if (view.shadow_binding_count > 0) {
         // The receiver's rows, in the GRAPH's own group 1 -- whether a
         // given mesh receives is the `meshU.receivesShadow` lane, not a
         // selection, so every draw of this graph binds them.
@@ -7432,20 +7565,64 @@ WGPUBindGroup build_node_draw_group(
         const std::vector<ShadowGeneratorHandle> generators =
             shadow_generators_in_light_order(scene, engine);
         for (const upstream::PinnedShadowBinding& row :
-             pal::node_shadow_rows(entry)) {
+             pal::node_shadow_rows(view)) {
             entries.push_back(
                 shadow_group_entry(state, engine, generators, row));
         }
     }
 #endif
     WGPUBindGroupDescriptor descriptor = WGPU_BIND_GROUP_DESCRIPTOR_INIT;
-    descriptor.layout = node_draw_layout_for(state, variant, caster);
+    descriptor.layout =
+        node_draw_layout_for(state, variant, caster, geometry_variant);
     descriptor.entryCount = entries.size();
     descriptor.entries = entries.data();
     WGPUBindGroup group =
         wgpuDeviceCreateBindGroup(state.device, &descriptor);
     if (!group) dawn_error("node variant bind group creation failed.");
     return group;
+}
+
+/**
+ * One frame's composed node mesh blocks, memoised per mesh.
+ *
+ * A node mesh drawn in a geometry task is composed once for the colour pass
+ * and once more per task, and every compose walks `scene.lights` again
+ * (`pinned_mesh_light_selection`) for bytes the first walk already
+ * produced. The queue WRITES are not redundant -- each compiled view owns
+ * its own `mesh_uniforms` buffer -- so only the CPU compose is memoised
+ * here.
+ *
+ * Keyed by the scene as well as the mesh because an overlay layer's draws
+ * read their own scene's light selection and floating-origin frame, and the
+ * frame's writer walks the base scene, its overlays and its graph layers in
+ * turn. Held by that writer as a local: a mesh moves between frames, so a
+ * memo outliving one would answer with the previous frame's world.
+ */
+struct NodeMeshBlockCache {
+    const Scene* scene = nullptr;
+    std::vector<upstream::NodeMeshUniforms> blocks;
+    std::vector<std::uint8_t> composed;
+};
+
+const upstream::NodeMeshUniforms& node_mesh_block_for(
+    NodeMeshBlockCache& cache,
+    const Scene& scene,
+    const Engine& engine,
+    std::uint32_t mesh_index) {
+    if (cache.scene != &scene) {
+        cache.scene = &scene;
+        std::fill(cache.composed.begin(), cache.composed.end(), 0u);
+    }
+    if (cache.composed.size() <= mesh_index) {
+        cache.blocks.resize(mesh_index + 1u);
+        cache.composed.resize(mesh_index + 1u, 0u);
+    }
+    if (!cache.composed[mesh_index]) {
+        cache.blocks[mesh_index] =
+            node_mesh_block(scene, engine, mesh_index);
+        cache.composed[mesh_index] = 1u;
+    }
+    return cache.blocks[mesh_index];
 }
 
 /**
@@ -7456,12 +7633,8 @@ WGPUBindGroup build_node_draw_group(
  */
 void write_node_mesh_block(
     DawnState& state,
-    const Scene& scene,
-    const Engine& engine,
-    const upstream::RenderDrawCommand& draw,
+    const upstream::NodeMeshUniforms& block,
     const DawnDrawState& draw_state) {
-    const upstream::NodeMeshUniforms block =
-        node_mesh_block(scene, engine, draw.item.mesh.value);
     wgpuQueueWriteBuffer(
         state.queue,
         draw_state.mesh_uniforms,
@@ -7469,6 +7642,66 @@ void write_node_mesh_block(
         &block,
         sizeof(block));
 }
+
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+/**
+ * The node family's sibling of `write_pinned_geometry_task`.
+ *
+ * Every node draw in a geometry task's lists resolves the view composed for
+ * THIS task, writes its own mesh block, and builds a per-view group carrying
+ * the task's gpUniforms. Keyed per view by construction, so the per-view map
+ * cannot mix two tasks' groups.
+ */
+void write_node_geometry_task(
+    DawnState& state,
+    NodeMeshBlockCache& mesh_blocks,
+    const Scene& scene,
+    const Engine& engine,
+    const FrameTaskRecord& task,
+    DawnGeometryTask& geometry,
+    const upstream::RenderDrawLists& draw_lists) {
+    for (const auto* list : {&draw_lists.opaque, &draw_lists.transparent}) {
+        for (const upstream::RenderDrawCommand& draw : list->commands) {
+            if (
+                draw.item.material_kind !=
+                upstream::RenderMaterialKind::node) {
+                continue;
+            }
+            if (draw.item_index >= state.meshes.size()) continue;
+            const std::size_t geometry_variant =
+                pal::require_node_geometry_variant(
+                    draw.item.shader_variant,
+                    static_cast<std::size_t>(task.geometry.shader_index));
+            DawnMesh& mesh = state.meshes[draw.item_index];
+            DawnDrawState& draw_state = ensure_node_geometry_draw_buffers(
+                state,
+                mesh,
+                geometry_variant);
+            write_node_mesh_block(
+                state,
+                node_mesh_block_for(
+                    mesh_blocks,
+                    scene,
+                    engine,
+                    draw.item.mesh.value),
+                draw_state);
+            if (!draw_state.group) {
+                draw_state.group = build_node_draw_group(
+                    state,
+                    scene,
+                    engine,
+                    mesh,
+                    draw_state,
+                    draw.item.shader_variant,
+                    false,
+                    nullptr,
+                    geometry_variant,
+                    geometry.pinned_geometry_params);
+            }
+        }
+    }
+}
+#endif
 #endif
 
 
@@ -12879,6 +13112,12 @@ SceneRun run_dawn_engine(Engine& engine) {
         // this and never reads it.
         [[maybe_unused]] const Scene* pass_scene = &scene;
         std::vector<DawnMesh>* pass_meshes = &state.meshes;
+#if BBLITE_NODE_VARIANTS > 0
+        // This frame's node mesh blocks, composed once per mesh per scene
+        // and written into every view's own buffer below. A local, so the
+        // next frame composes them again against the meshes it moved.
+        NodeMeshBlockCache node_mesh_blocks;
+#endif
         const auto write_material_uniforms =
             [&](
                 const upstream::RenderDrawList& list,
@@ -12969,9 +13208,11 @@ SceneRun run_dawn_engine(Engine& engine) {
                                 upstream::node_variants.at(variant));
                         write_node_mesh_block(
                             state,
-                            *pass_scene,
-                            engine,
-                            draw,
+                            node_mesh_block_for(
+                                node_mesh_blocks,
+                                *pass_scene,
+                                engine,
+                                draw.item.mesh.value),
                             node_state);
                         // The group itself is built at encode: a receiving
                         // graph binds the generators' maps, which the frame
@@ -13306,7 +13547,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 ? engine.cameras[graph_scene.camera.value] : camera;
             const auto graph_extent = scene_surface_extent(
                 engine, graph_scene, width, height);
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_GEOMETRY_TASK_FAMILIES
             std::optional<std::array<float, 16>> graph_matrix;
 #endif
             pass_scene = &graph_scene;
@@ -13323,7 +13564,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 const FrameTaskRecord& task =
                     engine.frame_tasks[handle.value];
                 if (task.kind == FrameTaskKind::geometry) {
-#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0
+#if BBLITE_GEOMETRY_TASK_FAMILIES
                     if (!graph_matrix) {
                         const double graph_aspect = upstream::effective_aspect_ratio(
                             graph_camera, graph_extent.width, graph_extent.height);
@@ -13335,17 +13576,32 @@ SceneRun run_dawn_engine(Engine& engine) {
                             .draw_lists.transparent,
                         engine,
                         graph_camera);
+#if BBLITE_GEOMETRY_TASK_FAMILIES
+                    // The task's own frame state, written once and before
+                    // any family: its scene block, its gpUniforms buffer and
+                    // the previous-view-projection it tracks are properties
+                    // of the TASK, so which families the scene composed
+                    // decides only whether it is written at all.
+                    if (
+                        pinned_lists_have_pinned_draws(
+                            state.render_tasks[handle.value].draw_lists)) {
+                        write_pinned_geometry_prologue(
+                            state,
+                            graph_scene,
+                            engine,
+                            graph_camera,
+                            state.geometry_tasks[handle.value],
+                            *graph_matrix);
+                    }
+#endif
 #if BBLITE_PBR_VARIANTS > 0
                     // A task whose draws are PBR writes its blocks here:
-                    // the shared scene block, the task's gpUniforms, and
                     // each draw's mesh and material blocks against the MRT
                     // variant the selector table keys on this task.
                     write_pinned_geometry_task(
                         state,
                         graph_scene,
                         engine,
-                        graph_camera,
-                        *graph_matrix,
                         task,
                         state.geometry_tasks[handle.value],
                         state.render_tasks[handle.value].draw_lists);
@@ -13355,8 +13611,19 @@ SceneRun run_dawn_engine(Engine& engine) {
                         state,
                         graph_scene,
                         engine,
-                        graph_camera,
-                        *graph_matrix,
+                        task,
+                        state.geometry_tasks[handle.value],
+                        state.render_tasks[handle.value].draw_lists);
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                    // The node family's own MRT arm, third and last: the
+                    // view composed for this task, its mesh block and the
+                    // group carrying the task's gpUniforms.
+                    write_node_geometry_task(
+                        state,
+                        node_mesh_blocks,
+                        graph_scene,
+                        engine,
                         task,
                         state.geometry_tasks[handle.value],
                         state.render_tasks[handle.value].draw_lists);
@@ -15424,6 +15691,56 @@ SceneRun run_dawn_engine(Engine& engine) {
                                     draw_state_it->second.group,
                                     mesh.vertices,
                                     standard_streams,
+                                    mesh.indices,
+                                    mesh.index_count);
+                                continue;
+                            }
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                            // The node family's own MRT arm: the view
+                            // composed for this task, with the group the
+                            // write phase built around the task's
+                            // gpUniforms.
+                            if (
+                                draw.item.material_kind ==
+                                upstream::RenderMaterialKind::node) {
+                                const std::size_t geometry_variant =
+                                    pal::require_node_geometry_variant(
+                                        draw.item.shader_variant,
+                                        static_cast<std::size_t>(
+                                            task.geometry.shader_index));
+                                const auto draw_state_it =
+                                    mesh.node_geometry_states.find(
+                                        geometry_variant);
+                                if (
+                                    draw_state_it ==
+                                        mesh.node_geometry_states.end() ||
+                                    !draw_state_it->second.group) {
+                                    dawn_error(
+                                        "node geometry draw reached the "
+                                        "encoder with no bindings.");
+                                }
+                                encode_variant_draw(
+                                    task_pass,
+                                    node_variant_pipeline(
+                                        state,
+                                        draw.item.shader_variant,
+                                        draw.pipeline,
+                                        samples,
+                                        true,
+                                        false,
+                                        false,
+                                        invalid_handle,
+                                        &task,
+                                        geometry_variant),
+                                    bound_pipeline,
+                                    pinned_geometry_frame_group(state),
+                                    draw_state_it->second.group,
+                                    // A node graph reads the baked
+                                    // vertices under the identity world,
+                                    // like the Standard family.
+                                    mesh.vertices,
+                                    InstanceStreams{},
                                     mesh.indices,
                                     mesh.index_count);
                                 continue;

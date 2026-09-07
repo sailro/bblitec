@@ -39,7 +39,44 @@ export interface CameraIntrinsicContext
     requireEngine(value: Value, node: ts.Node): string;
     requireDefaultEngine(node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
+    vec3FromRecord(
+        value: Value,
+        node: ts.Node,
+        precision?: "float" | "double",
+    ): string;
     fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * A Vec3 argument a scene COMPUTES.
+ *
+ * `compileVec3` folds the literal shapes and resolves a record reached
+ * through a name, but scene 225 hands the geospatial centre straight out of
+ * its own lat/long helper -- a call whose value is the pin's `{ x, y, z }`
+ * record. It binds to a temporary first, because reading three lanes off
+ * the call expression would evaluate the call three times.
+ */
+function compileVec3Argument(
+    context: CameraIntrinsicContext,
+    expression: ts.Expression,
+): string {
+    if (!ts.isCallExpression(expression)) {
+        return context.compileVec3(expression, "double");
+    }
+    const value = context.compileValue(expression);
+    if (value.kind !== "data" || value.dataType?.kind !== "struct") {
+        context.fail(
+            expression,
+            "Expected a Vec3 record { x, y, z }.",
+        );
+    }
+    const name = context.allocateTemporaryCppName("vec3");
+    context.emit(`const auto ${name} = ${value.cpp};`);
+    return context.vec3FromRecord(
+        { ...value, cpp: name },
+        expression,
+        "double",
+    );
 }
 
 /**
@@ -208,6 +245,105 @@ export function compileCameraIntrinsic(
                     `${call.arguments[2] ? context.compileVec3(call.arguments[2]!, "double") : "bbl::Vec3d{0.0, 1.0, 0.0}"})`,
                 engineCpp: engine,
                 cameraKind: "free",
+            };
+        }
+
+        // src/camera/geospatial-camera.ts: the factory takes one option,
+        // the planet radius, and derives every limit and the resting pose
+        // from it. The record it builds is a JavaScript-number record like
+        // the other two factories', so the radius stays a double.
+        case "createGeospatialCamera": {
+            context.expectArgumentCount(call, 1, 1);
+            const engine = context.requireDefaultEngine(call);
+            const options = context.expectObjectLiteral(call.arguments[0]!);
+            const planetRadius = context.objectProperty(
+                options,
+                "planetRadius",
+            );
+            if (!planetRadius) {
+                context.fail(
+                    call.arguments[0]!,
+                    "createGeospatialCamera requires a planetRadius.",
+                );
+            }
+            context.reachFeature("camera:geospatial", call);
+            return {
+                kind: "camera",
+                cpp:
+                    `bbl::create_geospatial_camera(${engine}, ` +
+                    `${context.compileNumber(planetRadius, "double")})`,
+                engineCpp: engine,
+                cameraKind: "geospatial",
+            };
+        }
+
+        // The pin's own four-field delta: an omitted field keeps the
+        // camera's live value, which the generated setter resolves through
+        // the same present mask `setCameraLimits` uses.
+        case "setGeospatialOrientation": {
+            context.expectArgumentCount(call, 2, 2);
+            const camera = context.compileValue(call.arguments[0]!);
+            context.expectKind(camera, "camera", call.arguments[0]!);
+            if (camera.cameraKind !== "geospatial") {
+                context.fail(
+                    call.arguments[0]!,
+                    "setGeospatialOrientation requires a GeospatialCamera.",
+                );
+            }
+            const orientation = context.expectObjectLiteral(
+                call.arguments[1]!,
+            );
+            const scalars = ["yaw", "pitch", "radius"] as const;
+            let presentMask = 0;
+            const values = scalars.map((field, index) => {
+                const value = context.objectProperty(orientation, field);
+                if (!value) return "0.0";
+                presentMask |= 1 << index;
+                return context.compileNumber(value, "double");
+            });
+            const center = context.objectProperty(orientation, "center");
+            if (center) presentMask |= 1 << scalars.length;
+            context.reachFeature("camera:geospatial", call);
+            const engine = context.requireEngine(camera, call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::set_geospatial_orientation(${engine}, ` +
+                    `${camera.cpp}, ${presentMask}u, ` +
+                    `${values.join(", ")}, ` +
+                    `${center ? compileVec3Argument(context, center) : "bbl::Vec3d{}"})`,
+            };
+        }
+
+        // src/camera/geospatial-camera-controls.ts. The attach itself is
+        // the same one line every camera hook is -- the pinned function
+        // installs canvas listeners and one scene._beforeRender hook and
+        // makes no camera the scene's -- and the input half lives in the
+        // platform layer beside the other two cameras'.
+        case "attachGeospatialControls": {
+            context.expectArgumentCount(call, 3, 3);
+            const camera = context.compileValue(call.arguments[0]!);
+            context.expectKind(camera, "camera", call.arguments[0]!);
+            if (camera.cameraKind !== "geospatial") {
+                context.fail(
+                    call.arguments[0]!,
+                    "attachGeospatialControls requires a GeospatialCamera.",
+                );
+            }
+            const scene = context.compileValue(call.arguments[2]!);
+            context.expectKind(scene, "scene", call.arguments[2]!);
+            context.expectSameEngine(camera, scene, call);
+            context.reachFeature("camera:geospatial", call);
+            const engine = context.requireEngine(camera, call);
+            context.emit(
+                `bbl::attach_control(${engine}, ${camera.cpp});`,
+            );
+            return {
+                kind: "data",
+                cpp:
+                    `std::function<void()>{[&${engine}, camera = ${camera.cpp}]() { ` +
+                    `${engine}.cameras[camera.value].controls_enabled = false; }}`,
+                dataType: { kind: "function", parameters: [] },
             };
         }
 

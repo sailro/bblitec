@@ -96,7 +96,14 @@ implementation, follow the sizing/capture workflow in
   bindings before narrowing generated capability guards.
 - [ ] Reflect each node variant once into a shared binding map. Build node
   group-1 layouts from it, preserving nodeU's binding and actual stage
-  visibility rather than the PBR binding-0/1 convention.
+  visibility rather than the PBR binding-0/1 convention. Fold the node
+  geometry variants into that same table behind a task selector, which needs
+  the slot arithmetic to move with them, and compose a node mesh block once
+  per mesh per frame rather than once per pass.
+- [ ] Build one geometry colour-target builder per backend. The node arm is a
+  third near-verbatim copy of the classes-to-targets loop and a strict subset
+  of the two material-family copies, whose trailing-output, blend and
+  depth-write arms are already no-ops for a geometry view.
 - [ ] Gate optional generated code at its actual reach: CSM blocks/sizes,
   morph-shadow helpers, physics aggregate/trigger helpers, camera viewport
   helpers, mesh clone/builders, display gizmos and utility-layer overlays.
@@ -105,7 +112,9 @@ implementation, follow the sizing/capture workflow in
   generation-checked handles and source-material texture ownership. Release
   removed resources without invalidating retained source handles.
 - [ ] Share duplicated physics mask/dirty-marking paths. Retain body region
-  origins and indexed triangle-mesh backing storage where supported.
+  origins and indexed triangle-mesh backing storage where supported. Narrow
+  the proximity collector's search threshold to the best distance found so
+  far, so the narrowphase stops generating pairs the collector discards.
 - [ ] Consolidate gizmo widget builders/options and utility-layer records.
   Reuse per-frame bounds-walk scratch and indexed visitation instead of
   repeated allocation and linear duplicate searches.
@@ -133,8 +142,8 @@ implementation, follow the sizing/capture workflow in
 
 | Family | Remaining work and validation boundary |
 | --- | --- |
-| Cameras | Explicit off-center orthographic bounds, disable/restore behavior and wider environment combinations. Camera upperRadiusLimit sizing is implemented; add an observing gate rather than reimplement it. |
-| Imported hierarchy | Full root clone/rotation/scaling, imported light/camera descendants and morph clone weights. Give imported roots a consistent native node representation and preserve clone-of-clone outer transforms. |
+| Cameras | Explicit off-center orthographic bounds, disable/restore behavior and wider environment combinations. Camera upperRadiusLimit sizing is implemented; add an observing gate rather than reimplement it. Geospatial controls attach but every input arm refuses: the pin's frame integrator resets through chained assignments and null stores that the pinned numeric lowerer has no arm for, and drag-pan, zoom-to-cursor, pinch and fly-to additionally need a picking ray off the inverse view-projection. |
+| Imported hierarchy | Full root clone/rotation/scaling, imported light/camera descendants and morph clone weights. Give imported roots a consistent native node representation and preserve clone-of-clone outer transforms. A clone of a loaded mesh that sets its own position adds the loader's baked node transform instead of replacing it, measured at 15.992 MAD on a clone-and-place probe and reproduced with glTF alone. |
 | Rotation | Replace separate Euler/quaternion lanes with the pinned proxy model; lower quaternion-to-Euler conversion and measure mixed writes. |
 | Direct morph | Multiple targets and one shared weights object attached to several meshes. Scene-code morph targets under a PBR material compose no morph variant and render the bind pose without refusing: a scene-authored mesh's feature word comes from a synthetic primitive carrying no targets, and PBR's runtime mesh bits carry only thin-instance arms. Standard has the arm. Refusing precisely needs the material-family lane below. |
 | PBR | Remaining metallic-reflectance options, textured environment rotation, local cubemap blending and unimplemented asset extension fields. |
@@ -195,7 +204,7 @@ and shutdown on both backends. Run instructions are in
 
 ## P1 — Unregistered numbered scenes
 
-The current registry leaves these 23 numbered scenes unregistered. Helper
+The current registry leaves these 22 numbered scenes unregistered. Helper
 modules without a numbered scene entry are not integration candidates.
 
 | Scene | Integration scope still to establish |
@@ -205,20 +214,20 @@ modules without a numbered scene entry are not integration candidates.
 | 47 | Physics viewer, heightfield and switch-assigned mesh handling |
 | 49 | A `createCapsule` builder, a mesh parented to a mesh, `shapeProximity`/`shapeCast` over Bullet closest-point and convex-sweep entry points, and a conditional mixing a picked node with null. Four contracts. |
 | 104, 105 | Structural hierarchy guards/owner grouping and character controller |
-| 114 | A PBR morph arm and skeleton bit for scene-code geometry, a scene-authored skeleton, `createBoxData` as a data result, nullable `PickingInfo`, barycentric reads, and the pin's morph-only and basic deform-picking arms on both backends. Eight contracts; the skeleton half is shared with 231, over the existing PBR bone palette. |
+| 114 | A PBR morph arm for scene-code geometry, `createBoxData` as a data result, nullable `PickingInfo`, barycentric reads, and the pin's morph-only and basic deform-picking arms on both backends. Five contracts. |
 | 121 | Splat rows as a scene-readable buffer and live `updateData` re-upload in both PALs, over a typed array that is a view rather than an owner. Five contracts; the view change is runtime-wide, not scene-local. |
-| 149 | Delegating `blockLoader`, live node-material input handles, loaded-material reads, runtime per-material construction, and the node family's own geometry-view composition and MRT draw arm in both PALs. Seven contracts. |
+| 149 | Delegating `blockLoader` (the pin's `loadNodeBlockEmitterWithGeometry`, where the port accepts a local closed switch), live node-material input handles, loaded-material reads, runtime per-material node construction, and the geometry `LOCAL_POSITION` attachment, which needs a bound local-normal lane and a real node world. Five contracts. |
 | 153 | Canvas2D-only driver, fillRect, plain-data animation targets and update loop |
 | 164 | GPU device-loss lifecycle |
-| 180, 181 | Text subsystem plus live text controls/input |
+| 180 | The text subsystem plus live text controls and input. It reads `textarea.value` and re-layouts on `input`, so nothing folds: `layoutText` shapes through a vendored pure-JS shaper, and matching its glyph ids, advances and kerning natively is a re-derivation, not a port. It also needs the standalone text renderer path with no scene or camera, a dynamically imported weight-offset call and eight live DOM controls. |
+| 181 | The same text subsystem and live input as 180. |
 | 186 | Tuple flatten, live PBR `ormTexture`/`directIntensity` writes, and the PBR local-cubemap extension, which needs cube-array textures in both PALs and a 64 KB uniform block SDL_GPU pushes rather than binds. Three contracts, the third a subsystem. |
-| 225 | Geospatial camera kind, orientation math, world-matrix arm and `setGeospatialOrientation` render the frame; the control surface is the live writer of the orbit state, and its drag-pan, zoom-to-cursor and pinch arms need a picking ray off the inverse view-projection. Five contracts. The capture needs no input contract: the control tick is a no-op at zero input. |
 | 227, 228 | Multiple surfaces and swapchains |
 | 231 | An optional out-parameter, `uvOffset`, a mesh-driven vertex-alpha transparent bucket, and the scene-authored Standard skeleton: `createSkeleton`, `mesh.skeleton`, live palette upload, `enableStandardSkeleton` and a Standard skinned draw arm in both PALs. Nine contracts; the skeleton cluster is shared with 114. |
 | 241 | glTF anisotropy and diffuse transmission with their texture arms, specular textures onto the reflectance slots, five texture-transform pointer slots, and the metallic-roughness pointer the pin ignores rather than applies. Five contracts; no other corpus asset reaches anisotropy or diffuse transmission. |
 | 261 | Composite output identity, a source render-task reference as a descriptor option, a live blend-factor writer, a per-frame task execute hook, and camera projection jitter over a persistent per-task scene UBO. Five contracts. The last two have no refusal: with only the first three, generation succeeds and the scene renders unjittered and unblended. |
-| 275 | Font loading and 3D text |
-| 302 | Nullish coalescing in the browser-value evaluator, a primed self-rearming frame callback, a module-factory seeded `Math.random`, a `<=` counted-loop shape, a user function's statically-known numeric return surviving inlining, and the moving-emitter provider with its per-step world matrix. Six contracts, all generation-side. |
+| 275 | `loadFont` and `createDefaultTextData` folded by executing the pinned shaper at generation, a text scene entity carrying the pin's deferred registration, the alpha-to-coverage text arm, the pinned Slug shader family with its overridable constant, and a text draw path in both PALs. Six contracts; the payload folds to about 1.5k floats and pinned Tint accepts both stages today, but the sixth is a new draw subsystem and the fifth would be this compiler's first overridable shader constant. |
+| 302 | A primed self-rearming frame callback, a `<=` counted-loop shape, a user function's statically-known numeric return surviving inlining, and the moving-emitter provider with its per-step world matrix. Four contracts, all generation-side. |
 | 304 | FlowGraph runtimes and glTF interactivity |
 
 - [ ] Investigate the shared shark-pose residual in scenes 11/152 with a

@@ -391,6 +391,16 @@ export interface SceneMeshManifest {
   hasTangents?: boolean;
   hasColors?: boolean;
   /**
+   * `mesh.skeleton = createSkeleton(...)` reached this row.
+   *
+   * The pin's `_computeMeshFeatures` reads the mesh's own `skeleton` for
+   * MSH_HAS_SKELETON. A glTF primitive answers it from its node's `skin`,
+   * which is why `pinnedMeshFeaturesFromPrimitive` takes it as an option;
+   * a scene-code mesh has no primitive, so the assignment records it here
+   * and the compose pipeline passes it through the same option.
+   */
+  skinned?: true;
+  /**
    * At least one of those streams was handed a value the data model holds
    * as `Float32Array | undefined`, so which attributes this mesh carries is
    * a RUN-time answer.
@@ -1435,6 +1445,12 @@ export type ValueKind =
   // the bake reads them back.
   | "skeleton"
   | "bone"
+  // The `Skeleton` a scene builds itself with `createSkeleton`: the
+  // per-vertex joint and weight streams plus the bone palette, shared by
+  // every mesh assigned it. Its own kind rather than `skeleton` above,
+  // which is the loader-built bone-control handle over an asset's joint
+  // hierarchy -- one has bones to name, the other has matrices to upload.
+  | "scene-skeleton"
   // The gizmo family. A `UtilityLayer` is the pin's second SceneContext
   // over one engine -- the swapchain overlay both backends now record --
   // so it is a native handle holding that scene. The two display gizmos
@@ -2291,7 +2307,7 @@ export interface Value {
     | { kind: "object" }
     | { kind: "search-params"; search: string }
     | { kind: "string"; value: string };
-  cameraKind?: "arc-rotate" | "free";
+  cameraKind?: "arc-rotate" | "free" | "geospatial";
   msaaSamples?: 1 | 4;
   directMorphCompatible?: boolean;
   morphTarget?: {
@@ -2323,6 +2339,7 @@ export type Feature =
   | "camera:arc-rotate"
   | "camera:default"
   | "camera:free"
+  | "camera:geospatial"
   | "camera:orthographic"
   | "camera:view-projection"
   | "environment:ibl"
@@ -2389,6 +2406,7 @@ export type Feature =
   | "mesh:thin-instances-dynamic"
   | "mesh:thin-instance-gpu-culling"
   | "mesh:cylinder"
+  | "mesh:capsule"
   | "mesh:extrude"
   | "mesh:polyhedron"
   | "mesh:ribbon"
@@ -2406,6 +2424,10 @@ export type Feature =
   // that also thin-instances the baked mesh allocates one.
   | "mesh:vat"
   | "mesh:vat-instances"
+  // A skeleton a scene authored in code rather than one the glTF loader
+  // built from a skin. `createSkeleton` is the pin's own resource factory
+  // and `mesh.skeleton = ...` is what puts the mesh on the skinned arm.
+  | "mesh:skeleton"
   | "particle:node"
   | "navigation:recast"
   | "navigation:tile-cache"

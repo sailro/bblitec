@@ -168,6 +168,7 @@ import {
     isHandleKind,
     isPinnedType,
     isTypedArrayType,
+    opaqueEngineValue,
     passesByReference,
     passesByReferenceKind,
     type DataIterationElement,
@@ -185,7 +186,9 @@ import {
     type NativeFunctionContext,
 } from "./compiler/native-functions.js";
 import {
+    collectReboundSymbols,
     isModuleInitializerStatement,
+    planEntryModuleState,
     planImportedModuleInitializers,
 } from "./compiler/module-initializers.js";
 import { compileSpriteAtlasRecord } from "./compiler/sprite-atlas-record.js";
@@ -481,6 +484,103 @@ const KEY_EVENT_FIELDS = new Map<string, string>([
     ["metaKey", "meta_key"],
 ]);
 
+/**
+ * A nullable name's resource kind, keyed by the type's name alone.
+ *
+ * These rows are deliberately ungated, unlike `opaqueEngineValue`'s table:
+ * half of them are DOM types (`AudioContext`, `Element` and the three
+ * HTML element interfaces) that the pinned package does not declare, so
+ * `declaredInBabylonLite` would drop them. `nullableResourceKind` consults
+ * this where its name chain used to start -- after the workers-only
+ * `EngineContext` row and before the `createRenderTexture2D`-guarded
+ * `Texture2D` one, which no name here collides with.
+ *
+ * A Map, like the two tables above: the key is a type's symbol name, and an
+ * object literal would answer `Object.prototype` for one spelled `toString`.
+ */
+const NULLABLE_RESOURCE_TYPES = new Map<
+    string,
+    { kind: ValueKind; cppType: string }
+>([
+    [
+        "AudioEngine",
+        { kind: "audio-engine", cppType: "bbl::pal::AudioContextHandle" },
+    ],
+    [
+        "AudioContext",
+        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
+    ],
+    [
+        "BaseAudioContext",
+        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
+    ],
+    [
+        "OfflineAudioContext",
+        { kind: "audio-context", cppType: "bbl::pal::AudioContextHandle" },
+    ],
+    [
+        "AudioParam",
+        { kind: "audio-param", cppType: "bbl::pal::AudioParamHandle" },
+    ],
+    [
+        "AudioBuffer",
+        { kind: "audio-buffer", cppType: "bbl::pal::AudioBufferHandle" },
+    ],
+    [
+        "SpriteRenderer",
+        { kind: "sprite-renderer", cppType: "bbl::SpriteRendererHandle" },
+    ],
+    [
+        "Sprite2DLayer",
+        { kind: "sprite-layer", cppType: "bbl::Sprite2DLayerHandle" },
+    ],
+    ["Element", { kind: "ui-element", cppType: "bbl::UiElementHandle" }],
+    ["HTMLElement", { kind: "ui-element", cppType: "bbl::UiElementHandle" }],
+    [
+        "HTMLDivElement",
+        { kind: "ui-element", cppType: "bbl::UiElementHandle" },
+    ],
+    [
+        "HTMLCanvasElement",
+        { kind: "ui-element", cppType: "bbl::UiElementHandle" },
+    ],
+    [
+        "ObstacleHandle",
+        {
+            kind: "navigation-obstacle",
+            cppType: "bbl::pal::NavObstacleHandle",
+        },
+    ],
+    ["Mesh", { kind: "mesh", cppType: "bbl::MeshHandle" }],
+    ["AssetContainer", { kind: "asset", cppType: "bbl::AssetHandle" }],
+    [
+        "StorageBuffer",
+        { kind: "storage-buffer", cppType: "bbl::StorageBufferHandle" },
+    ],
+]);
+
+/**
+ * The two VAT rows, kept in their own table because they are classified
+ * AFTER the data model has been asked about the type.
+ *
+ * `fromTsType` is not a pure classifier -- reaching it can register a
+ * native record for the type it is handed -- so moving these two names in
+ * front of it would silently withdraw that call. They stay where they are.
+ *
+ * `VatHandle`: `let handle: VatHandle | null = null` then a guarded
+ * assignment inside the "did the asset carry a skinned mesh and clips" arm,
+ * the shape both VAT scenes are written in. `VatClip`: `let swim: VatClip |
+ * null = null` then the guarded row read, the per-instance scene's shape for
+ * holding one clip's row block.
+ */
+const NULLABLE_VAT_RESOURCE_TYPES = new Map<
+    string,
+    { kind: ValueKind; cppType: string }
+>([
+    ["VatHandle", { kind: "vat-handle", cppType: "bbl::VatHandle" }],
+    ["VatClip", { kind: "vat-clip", cppType: "bbl::VatClipRow" }],
+]);
+
 /** The closure key for a callback the program evaluates once, at module scope. */
 const unownedCallbackScope: object = {};
 
@@ -603,6 +703,11 @@ class Compiler
     public readonly nativeFunctions: NativeFunctionLowerer;
     private readonly browserErasure: BrowserErasure;
     private readonly browserUtilitySources = new Map<ts.SourceFile, boolean>();
+    /** One rebound-name walk per file, shared by every `identifierIsRebound`. */
+    private readonly reboundSymbolsByFile = new Map<
+        ts.SourceFile,
+        ReadonlySet<ts.Symbol>
+    >();
     private readonly sharedClosureSymbols = new WeakMap<
         ts.Node,
         ReadonlySet<ts.Symbol>
@@ -859,7 +964,9 @@ class Compiler
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
         this.emitImportedModuleInitializers();
-        for (const statement of this.entryStatements()) {
+        const entry = this.entryStatements();
+        this.emitEntryModuleState(entry);
+        for (const statement of entry) {
             this.emitStatement(statement);
             // The entry body is a function body like any other, and this is
             // where the corpus family writes its settled guard: a helper the
@@ -1412,6 +1519,40 @@ class Compiler
         });
     }
 
+    /**
+     * Creates storage for the entry module's own rebound top-level names.
+     *
+     * `main()` is a body, not the module: a scene written that way leaves its
+     * module-scope statements out of the emitted program entirely, so a `let`
+     * declared beside `main` and written by the functions `main` calls has
+     * nothing behind it. Reads folded back to the declaration's initializer
+     * -- which is what `staticConstants` does for the entry file -- would give
+     * every reader the value the first write replaced.
+     *
+     * The declaration is emitted here, before the entry body, which is where
+     * JavaScript creates that storage: after the imported modules it depends
+     * on have initialized and before `main` can run. It goes through the same
+     * declaration lowering a `let` inside `main` takes, so the shared-closure
+     * analysis decides its native form -- a plain local, or a `gc_shared` cell
+     * when a stored callback captures it -- and that lowering drops the symbol
+     * from `staticConstants` so every later read and write resolves through
+     * the binding.
+     *
+     * A scene with no `main` already emits its module-scope statements as the
+     * entry, so those are skipped here rather than declared twice.
+     */
+    private emitEntryModuleState(entry: readonly ts.Statement[]): void {
+        const emitted = new Set<ts.Statement>(entry);
+        for (const statement of planEntryModuleState(
+            this.program,
+            this.sourceFile,
+            this.checker,
+            this.symbols,
+        )) {
+            if (!emitted.has(statement)) this.emitStatement(statement);
+        }
+    }
+
     private entryStatements(): readonly ts.Statement[] {
         if (this.options.workers?.namespace) {
             return this.sourceFile.statements.filter(statement => !ts.isImportDeclaration(statement) &&
@@ -1607,34 +1748,8 @@ class Compiler
             return { kind: "engine", cppType: "std::shared_ptr<bbl::Engine>" };
         }
         const name = members[0]!.symbol?.name;
-        if (name === "AudioEngine") {
-            return {
-                kind: "audio-engine",
-                cppType: "bbl::pal::AudioContextHandle",
-            };
-        }
-        if (
-            name === "AudioContext" ||
-            name === "BaseAudioContext" ||
-            name === "OfflineAudioContext"
-        ) {
-            return {
-                kind: "audio-context",
-                cppType: "bbl::pal::AudioContextHandle",
-            };
-        }
-        if (name === "AudioParam") {
-            return {
-                kind: "audio-param",
-                cppType: "bbl::pal::AudioParamHandle",
-            };
-        }
-        if (name === "AudioBuffer") {
-            return {
-                kind: "audio-buffer",
-                cppType: "bbl::pal::AudioBufferHandle",
-            };
-        }
+        const named = name ? NULLABLE_RESOURCE_TYPES.get(name) : undefined;
+        if (named) return named;
         if (
             name === "Texture2D" &&
             this.identifierIsAssignedFromIntrinsic(
@@ -1645,53 +1760,6 @@ class Compiler
             return {
                 kind: "texture",
                 cppType: "bbl::SpriteRenderTextureHandle",
-            };
-        }
-        if (name === "SpriteRenderer") {
-            return {
-                kind: "sprite-renderer",
-                cppType: "bbl::SpriteRendererHandle",
-            };
-        }
-        if (name === "Sprite2DLayer") {
-            return {
-                kind: "sprite-layer",
-                cppType: "bbl::Sprite2DLayerHandle",
-            };
-        }
-        if (
-            name === "Element" ||
-            name === "HTMLElement" ||
-            name === "HTMLDivElement" ||
-            name === "HTMLCanvasElement"
-        ) {
-            return {
-                kind: "ui-element",
-                cppType: "bbl::UiElementHandle",
-            };
-        }
-        if (name === "ObstacleHandle") {
-            return {
-                kind: "navigation-obstacle",
-                cppType: "bbl::pal::NavObstacleHandle",
-            };
-        }
-        if (name === "Mesh") {
-            return {
-                kind: "mesh",
-                cppType: "bbl::MeshHandle",
-            };
-        }
-        if (name === "AssetContainer") {
-            return {
-                kind: "asset",
-                cppType: "bbl::AssetHandle",
-            };
-        }
-        if (name === "StorageBuffer") {
-            return {
-                kind: "storage-buffer",
-                cppType: "bbl::StorageBufferHandle",
             };
         }
         const mappedHandle = this.dataTypes.fromTsType(members[0]!, node);
@@ -1711,28 +1779,26 @@ class Compiler
                 cppType: "bbl::MaterialHandle",
             };
         }
-        // `let handle: VatHandle | null = null` then a guarded assignment
-        // inside the "did the asset carry a skinned mesh and clips" arm:
-        // the shape both VAT scenes are written in.
-        if (name === "VatHandle") {
-            return {
-                kind: "vat-handle",
-                cppType: "bbl::VatHandle",
-            };
-        }
-        // `let swim: VatClip | null = null` then the guarded row read: the
-        // per-instance scene's shape for holding one clip's row block.
-        if (name === "VatClip") {
-            return {
-                kind: "vat-clip",
-                cppType: "bbl::VatClipRow",
-            };
-        }
+        const vat = name ? NULLABLE_VAT_RESOURCE_TYPES.get(name) : undefined;
+        if (vat) return vat;
         if (name?.endsWith("Node")) {
             return {
                 kind: "audio-node",
                 cppType: "bbl::pal::AudioNodeHandle",
             };
+        }
+        // An engine value the plain-data model deliberately does not carry,
+        // held by one nullable name: `let g: RotationGizmo | null = null`
+        // and the guarded assignment that builds the widget on first use,
+        // which is how an editor scene keeps a gizmo out of its own static
+        // frame. Nothing below the classification is family-specific --
+        // the optional storage, the `if (!g)` guard reading `has_value()`,
+        // the assignment through `emitOptionalResourceAssignment` and the
+        // shared closure cell a stored callback needs are the same ones
+        // every resource row above already uses.
+        const opaque = opaqueEngineValue(members[0]!);
+        if (opaque) {
+            return opaque;
         }
         return undefined;
     }
@@ -3730,27 +3796,27 @@ class Compiler
         return mutated;
     }
 
-    /** A non-literal inferred struct needs storage only when its binding changes. */
+    /**
+     * A non-literal inferred struct needs storage only when its binding
+     * changes.
+     *
+     * The answer is a property of the file, not of the identifier, so the
+     * file's assigned names are resolved once and every later question is a
+     * set membership -- a scene asks this for most of its declarations, and
+     * a walk each turned that into a scan of the whole file per name.
+     * `false` keeps `++`/`--` out of the set, which is the answer every
+     * caller here has always had.
+     */
     private identifierIsRebound(identifier: ts.Identifier): boolean {
         const symbol = this.symbols.valueSymbol(identifier);
         if (!symbol) return false;
-        let rebound = false;
-        const visit = (node: ts.Node): void => {
-            if (rebound) return;
-            if (
-                ts.isBinaryExpression(node) &&
-                node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
-                node.operatorToken.kind <= ts.SyntaxKind.LastAssignment &&
-                ts.isIdentifier(node.left) &&
-                this.symbols.valueSymbol(node.left) === symbol
-            ) {
-                rebound = true;
-                return;
-            }
-            ts.forEachChild(node, visit);
-        };
-        ts.forEachChild(identifier.getSourceFile(), visit);
-        return rebound;
+        const file = identifier.getSourceFile();
+        let rebound = this.reboundSymbolsByFile.get(file);
+        if (!rebound) {
+            rebound = collectReboundSymbols(file, this.symbols, false);
+            this.reboundSymbolsByFile.set(file, rebound);
+        }
+        return rebound.has(symbol);
     }
 
     /**
@@ -18987,6 +19053,25 @@ class Compiler
             );
         }
         mesh.assetPbrMaterial = true;
+    }
+
+    /**
+     * `mesh.skeleton = ...` on a scene-code mesh.
+     *
+     * The pin's `_computeMeshFeatures` reads the mesh's own `skeleton`
+     * property for MSH_HAS_SKELETON, which is a per-mesh row of the
+     * material variant key. A glTF primitive answers it from its node's
+     * `skin`; a scene-code mesh has no primitive, so the assignment
+     * records it here and `appendSceneMesh` reads it back.
+     */
+    public recordSceneMeshSkinned(meshIndex: number): void {
+        const mesh = this.sceneMeshes[meshIndex];
+        if (!mesh) {
+            throw new Error(
+                `Scene mesh ${meshIndex} was not recorded before its skeleton assignment.`,
+            );
+        }
+        mesh.skinned = true;
     }
 
     public recordShadowCasters(

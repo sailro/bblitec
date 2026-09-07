@@ -158,3 +158,57 @@ test("pinned frozen bake preserves full-capacity typed columns and stable Float6
     assert.deepEqual(rgba(96, 8), [255, 96, 32, 255]);
     assert.equal(rgba(96, 56)[3], 0);
 });
+
+test("a seeded generator may come from a factory the driver re-declares", () => {
+    // The pin's own seed factory holds the state its returned function
+    // steps, so what travels is the declaration plus the call rather than a
+    // verbatim arrow. It is annotated TypeScript, and the driver runs
+    // JavaScript, so the declaration goes through the same transpile the
+    // other pinned-text drivers use.
+    const result = compile(`
+        function makeSeed(start = 7): () => number {
+            let state: number = start;
+            return () => {
+                state = (state * 1664525 + 1013904223) >>> 0;
+                return state / 4294967296;
+            };
+        }
+        Math.random = makeSeed(11);
+    `);
+    // Scene 300's own prefix installs a sine seed first, so this is the
+    // second `random` step, not the only one.
+    const randomSteps = result.nodeParticles!.steps.filter(
+        (step) => step.op === "random",
+    );
+    assert.equal(randomSteps.length, 2);
+    const random = randomSteps[1]!;
+    assert.ok(random.op === "random");
+    // The call is the expression the driver returns as the generator, and
+    // the argument travels as written.
+    assert.equal(random.arrow, "makeSeed(11)");
+    const declared = random.declarations.join("\n");
+    assert.match(declared, /function makeSeed\(start = 7\)/);
+    // The annotations are gone: this text is evaluated as JavaScript.
+    assert.doesNotMatch(declared, /\(\) => number/);
+    assert.doesNotMatch(declared, /let state: number/);
+    assert.match(declared, /state \* 1664525/);
+});
+
+test("a seed factory refuses what the driver could not run", () => {
+    for (const [body, expected] of [
+        [
+            `const makeSeed = () => () => 0.5;\nMath.random = makeSeed();`,
+            /must be a function declaration this compiler can read/,
+        ],
+        [
+            `async function makeSeed() { return () => 0.5; }\nMath.random = makeSeed();`,
+            /is not async/,
+        ],
+        [
+            `function makeSeed(start = 1) { let s = start; return () => (s = s + 1) / 4294967296; }\nconst chosen = 3;\nMath.random = makeSeed(chosen);`,
+            /numeric literal arguments only/,
+        ],
+    ] as const) {
+        assert.throws(() => compile(body), expected, body);
+    }
+});

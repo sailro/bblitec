@@ -107,6 +107,57 @@ test("the grown-array builders flow their pinned defaults and rounding", () => {
     assert.doesNotMatch(body, /at_grow/);
 });
 
+test("the capsule builder flows the pin's truthiness defaults and its reverse", () => {
+    // `createCapsuleData` is the one builder in the family that resolves
+    // its options by TRUTHINESS rather than by `??`, so an omitted option
+    // and an explicit zero are the same answer upstream: the record carries
+    // zero and the emitted body runs the pin's own ternary. Each assertion
+    // is a value the PIN states, so a pin that retunes a default fails here
+    // rather than at a parity number.
+    const context = new LoweringContext();
+    const lowered = new FactoryLowerer(context).lowerMeshFactories([
+        "mesh:capsule",
+    ]);
+    assert.ok(
+        lowered.source.includes("pinned_create_capsule_data"),
+        "pinned_create_capsule_data is not emitted",
+    );
+    // Nothing is folded at generation: the ternary and both of the pin's
+    // own constant defaults reach the emitted body.
+    assert.match(
+        lowered.source,
+        /options\.height \? options\.height : 1\.0/,
+    );
+    assert.match(
+        lowered.source,
+        /options\.radius \? options\.radius : 0\.25/,
+    );
+    // The two fallbacks that name another RESOLVED local rather than a
+    // constant, which is why the defaults cannot be folded into the record.
+    assert.match(
+        lowered.source,
+        /options\.radius_top \? options\.radius_top : radius/,
+    );
+    assert.match(
+        lowered.source,
+        /options\.top_cap_subdivisions \? options\.top_cap_subdivisions : capDetail/,
+    );
+    // The hoisted `let x; let y;` are declared by the loops that assign
+    // them, not as zeroed locals beside the arrays.
+    assert.doesNotMatch(lowered.source, /\n    double y = 0\.0;/);
+    // `indices = indices.reverse()` is the mutation alone.
+    assert.match(
+        lowered.source,
+        /std::reverse\(indices\.begin\(\), indices\.end\(\)\);/,
+    );
+    // A grown list rounds once, through the pin's own conversion.
+    assert.match(lowered.source, /bbl::js::u32_array_from\(indices\)/);
+    // A scene that reaches no capsule emits none of it.
+    const without = new FactoryLowerer(new LoweringContext())
+        .lowerMeshFactories([]);
+    assert.doesNotMatch(without.source, /capsule/i);
+});
+
 test("mesh factory tables flow from the pinned builders", () => {
     const context = new LoweringContext();
     const lowered = new FactoryLowerer(context).lowerMeshFactories();

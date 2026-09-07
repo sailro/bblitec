@@ -6,6 +6,7 @@ import {
     type SplatContainerKind,
 } from "./compiler/assets.js";
 import { CameraLowerer } from "./lowering/camera-lowerer.js";
+import { GeospatialCameraLowerer } from "./lowering/geospatial-camera-lowerer.js";
 import { LoweredSource, LoweringContext } from "./lowering/context.js";
 import { EnvironmentLowerer } from "./lowering/environment-lowerer.js";
 import { EngineLowerer } from "./lowering/engine-lowerer.js";
@@ -87,6 +88,7 @@ import type {
 import type { ScreenSpaceTaskManifest } from "./compiler/types.js";
 import { AnimationLowerer } from "./lowering/animation-lowerer.js";
 import { VatLowerer } from "./lowering/vat-lowerer.js";
+import { SkeletonLowerer } from "./lowering/skeleton-lowerer.js";
 import {
     sharedUpstreamStore,
     UpstreamSourceStore,
@@ -130,6 +132,7 @@ import type { PinnedVariantManifestEntry } from "./pinned-pbr-variant-output.js"
 import {
     pinnedNodeVariantsHeader,
     nodeCasterStageStems,
+    nodeGeometryVariants,
     nodeVariantsUseMorphStorage,
     type NodeVariantManifestEntry,
 } from "./pinned-node-material-cpp.js";
@@ -777,6 +780,11 @@ class GeneratedSourceWriter {
         // independent, and every `#if` nesting decision in both PALs rests
         // on the containment between them.
         const nodeVariantList = options.nodeVariants ?? [];
+        // Computed ONCE: the same list decides the capability define, the
+        // render plan's node arm, the emitted table and the deployed
+        // modules, and four derivations of it are four places to
+        // desynchronise.
+        const nodeGeometryViewList = nodeGeometryVariants(nodeVariantList);
         // A graph can contain MorphTargetsBlock even when no currently
         // attached mesh carries targets. The pin still binds its lazily
         // created zero-target pair, so the PAL buffer lifetime must compile
@@ -918,6 +926,15 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // until one is parsed, which also skips node_variants.hpp.
 #define BBLITE_NODE_VARIANTS ${(options.nodeVariants ?? []).length}
 
+// The geometry-output views those graphs composed, one per (graph, task).
+// A third module of the same graph, emitted from its own
+// GeometryTextureOutputBlock terminal, so its vertex inputs, texture pairs
+// and uniform block are the geometry emit's own. Zero until a node graph
+// meets a geometry-renderer task, which also skips the whole
+// node_geometry_variants table inside node_variants.hpp -- so both PALs
+// gate their MRT arm on this rather than on the graph count.
+#define BBLITE_NODE_GEOMETRY_VARIANTS ${nodeGeometryViewList.length}
+
 // Whether any draw goes through Babylon Lite's own group scheme: group 0
 // the per-pass scene and lights blocks, group 1 the per-draw ones. The
 // three composed families share that frame state, so the code building it
@@ -930,6 +947,12 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 // the two are separate questions and a reader can tell which one an #if is
 // asking.
 #define BBLITE_PINNED_MATERIAL_VARIANTS (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0)
+
+// Which families draw into a geometry-output task. All three compose an MRT
+// arm, but each does so only where its own variants exist, so the geometry
+// pass's shared frame state -- the task's view-projection and the gpUniforms
+// block built from it -- is reached by their disjunction.
+#define BBLITE_GEOMETRY_TASK_FAMILIES (BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || BBLITE_NODE_GEOMETRY_VARIANTS > 0)
 `,
         );
         // The pin's own depth convention, read from its declaration rather
@@ -1080,7 +1103,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
         const reachesCameraFactory =
             features.includes("camera:arc-rotate") ||
             features.includes("camera:default") ||
-            features.includes("camera:free");
+            features.includes("camera:free") ||
+            features.includes("camera:geospatial");
         if (
             reachesCameraFactory ||
             features.includes("camera:view-projection")
@@ -1093,10 +1117,19 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                     features.includes(
                         "renderer:high-precision-matrix",
                     ),
+                    features.includes("camera:geospatial"),
                 ),
                 generated,
                 "upstream/include/bblite/upstream/camera_math.hpp",
             );
+            if (features.includes("camera:geospatial")) {
+                this.writeSource(
+                    "upstream/src/camera_geospatial.cpp",
+                    new GeospatialCameraLowerer(context).lower(),
+                    generated,
+                    "upstream/include/bblite/upstream/camera_geospatial.hpp",
+                );
+            }
             if (reachesCameraFactory) {
                 this.writeSource(
                     "upstream/src/camera_controls.cpp",
@@ -1286,6 +1319,13 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
                 new VatLowerer(context).lower({
                     instances: features.includes("mesh:vat-instances"),
                 }),
+                generated,
+            );
+        }
+        if (features.includes("mesh:skeleton")) {
+            this.writeSource(
+                "upstream/src/skeleton.cpp",
+                new SkeletonLowerer(context).lower(),
                 generated,
             );
         }
@@ -1933,6 +1973,13 @@ ${wgsl}`,
                     transformNodes: features.includes(
                         "mesh:transform-node",
                     ),
+                    // Whether a geometry task's draw list admits the node
+                    // family. Keyed on the composed views rather than on
+                    // the graph count: a scene with node materials and no
+                    // geometry task composes none, and a draw list carrying
+                    // a node draw a task has no module for is a refusal
+                    // both backends would have to make at the encode.
+                    nodeGeometryViews: nodeGeometryViewList.length > 0,
                     orthographicCamera: features.includes(
                         "camera:orthographic",
                     ),
@@ -2970,6 +3017,7 @@ ${shadow.blurFragmentWgsl}`,
                     "src/pinned-node-material-cpp.ts " +
                         "pinnedNodeVariantsHeader",
                     options.nodeVariants!,
+                    nodeGeometryViewList,
                 ) + sharedNodeMirrors,
             );
             for (const variant of options.nodeVariants!) {
@@ -3015,6 +3063,22 @@ ${shadow.blurFragmentWgsl}`,
                         ],
                     });
                 }
+            }
+            // A geometry view is a third module of the same graph, one per
+            // task it is drawn in, and deploys exactly as the other two do.
+            for (const geometry of nodeGeometryViewList) {
+                composedShaders.push({
+                    output:
+                        `upstream/shaders/${geometry.fragmentStem}.native.wgsl`,
+                    data: geometry.composed.wgsl,
+                    family: "node",
+                    alsoStages: [
+                        {
+                            stem: geometry.vertexStem,
+                            entryPoint: SHADER_FAMILIES.node.vertex,
+                        },
+                    ],
+                });
             }
         }
         if (composedShaders.length > 0) {

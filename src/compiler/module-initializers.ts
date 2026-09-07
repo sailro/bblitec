@@ -18,6 +18,49 @@ export function isModuleInitializerStatement(
 }
 
 /**
+ * Every name `sourceFile` rebinds, resolved in one walk for the whole file.
+ *
+ * `countUpdateOperators` decides whether `++`/`--` joins the set. The
+ * module-state planner counts it -- `count++` at module scope is what makes
+ * the name storage rather than a folded constant -- and the declaration
+ * lowering's `identifierIsRebound` does not. The two answers are different
+ * answers, so sharing one walk keeps the arm a parameter rather than merging
+ * it: a caller that gains `++`/`--` here changes what every scene emits.
+ */
+export function collectReboundSymbols(
+    sourceFile: ts.SourceFile,
+    symbols: CompilerSymbols,
+    countUpdateOperators: boolean,
+): Set<ts.Symbol> {
+    const rebound = new Set<ts.Symbol>();
+    const record = (target: ts.Expression): void => {
+        if (!ts.isIdentifier(target)) return;
+        const symbol = symbols.valueSymbol(target);
+        if (symbol) rebound.add(symbol);
+    };
+    const visit = (node: ts.Node): void => {
+        if (
+            ts.isBinaryExpression(node) &&
+            node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment &&
+            node.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+        ) {
+            record(node.left);
+        } else if (
+            countUpdateOperators &&
+            (ts.isPostfixUnaryExpression(node) ||
+                ts.isPrefixUnaryExpression(node)) &&
+            (node.operator === ts.SyntaxKind.PlusPlusToken ||
+                node.operator === ts.SyntaxKind.MinusMinusToken)
+        ) {
+            record(node.operand);
+        }
+        ts.forEachChild(node, visit);
+    };
+    visit(sourceFile);
+    return rebound;
+}
+
+/**
  * Selects project modules whose top-level work must run natively.
  *
  * Immutable imported builders stay on the static evaluator path. Native
@@ -38,6 +81,31 @@ export function planImportedModuleInitializers(
         symbols,
     );
     return planner.plan();
+}
+
+/**
+ * The entry module's own mutable state: its top-level `let`/`var`
+ * declarations that the file rebinds.
+ *
+ * A scene whose entry is `main()` never emits its module-scope statements --
+ * the body of `main` is the program -- so nothing creates storage for a name
+ * the module's functions share. A `const` needs none: its initializer never
+ * stops being its value, and the static evaluator answers every read from it.
+ * A rebound `let` does, because after the first write the initializer
+ * describes a value that no longer exists.
+ */
+export function planEntryModuleState(
+    program: ts.Program,
+    sourceFile: ts.SourceFile,
+    checker: ts.TypeChecker,
+    symbols: CompilerSymbols,
+): readonly ts.VariableStatement[] {
+    return new ModuleInitializerPlanner(
+        program,
+        sourceFile,
+        checker,
+        symbols,
+    ).planEntryState();
 }
 
 class ModuleInitializerPlanner {
@@ -121,6 +189,50 @@ class ModuleInitializerPlanner {
                     (symbol) => mutatedState.has(symbol),
                 ),
         );
+    }
+
+    /**
+     * Entry-file top-level `let`/`var` statements the file rebinds.
+     *
+     * Not `moduleHasObservableInitializer`, which asks a different question
+     * for a different file: there the subject is an IMPORTED module and the
+     * search is confined to work JavaScript runs eagerly, because that is
+     * what decides whether the module leaves the lazy path. Here the subject
+     * is the entry itself, every function it declares is part of the program
+     * being emitted, and one write anywhere in the file is enough to make the
+     * name storage rather than a folded constant.
+     *
+     * Rebinding is the whole rule. A write THROUGH the name -- a property
+     * assignment or a mutating method on an object it holds -- leaves the
+     * binding pointing at the same object, so the declaration's own
+     * initializer still describes it and the data lowerer keeps owning that
+     * representation.
+     */
+    public planEntryState(): readonly ts.VariableStatement[] {
+        // `true`: at module scope an incremented name is storage too.
+        const rebound = collectReboundSymbols(
+            this.sourceFile,
+            this.symbols,
+            true,
+        );
+        const result: ts.VariableStatement[] = [];
+        for (const statement of this.sourceFile.statements) {
+            if (
+                !ts.isVariableStatement(statement) ||
+                (statement.declarationList.flags & ts.NodeFlags.Const) !== 0
+            ) {
+                continue;
+            }
+            const writes = statement.declarationList.declarations.some(
+                (declaration) => {
+                    if (!ts.isIdentifier(declaration.name)) return false;
+                    const symbol = this.symbols.valueSymbol(declaration.name);
+                    return symbol !== undefined && rebound.has(symbol);
+                },
+            );
+            if (writes) result.push(statement);
+        }
+        return result;
     }
 
     /**

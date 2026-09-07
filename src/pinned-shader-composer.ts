@@ -264,6 +264,30 @@ export async function importPinnedModule<T>(
     return (await pending) as T;
 }
 
+/**
+ * A geometry task's attachment names as the pin's own enum values.
+ *
+ * All three material families compose an MRT arm from the same manifest
+ * names, and the enum that resolves them is the pin's
+ * `frame-graph/geometry-types.ts` — so the lookup and its refusal live here
+ * rather than once per family. The import is memoized above, so asking three
+ * times costs one read.
+ */
+export async function geometryAttachmentTypes(
+    names: readonly string[],
+): Promise<readonly number[]> {
+    const types = await importPinnedModule<{
+        GeometryTextureType: Record<string, number>;
+    }>("frame-graph/geometry-types.js");
+    return names.map((name) => {
+        const value = types.GeometryTextureType[name];
+        if (value === undefined) {
+            throw new Error(`Unknown geometry texture type '${name}'.`);
+        }
+        return value;
+    });
+}
+
 const augmentedModules = new Map<string, Promise<unknown>>();
 
 /**

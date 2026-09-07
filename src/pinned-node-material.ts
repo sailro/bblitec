@@ -23,7 +23,12 @@
  */
 import type { JsonObject } from "./gltf-document.js";
 import type { NodeMaterialBlockEmitter } from "./compiler/types.js";
-import { importPinnedModule } from "./pinned-shader-composer.js";
+import type { PinnedGeometryTaskRequest } from "./pinned-material-arms.js";
+import {
+    geometryAttachmentTypes,
+    importPinnedModule,
+    importPinnedModuleWithExports,
+} from "./pinned-shader-composer.js";
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 
@@ -122,6 +127,8 @@ export interface ComposedNodeMaterial {
     shadowBindings: readonly ComposedNodeShadowBinding[];
     /** The graph's one native caster module, or none for a receiver only. */
     caster: ComposedNodeCaster | null;
+    /** One geometry-output module per task the graph is drawn in. */
+    geometryViews: readonly ComposedNodeGeometryView[];
 }
 
 /**
@@ -153,6 +160,39 @@ export type ComposedNodeCaster =
           wgsl: string;
       };
 
+/**
+ * One geometry-output view of a graph: a THIRD module of the same source.
+ *
+ * `node-geometry-view.ts` wraps the parsed material in a view carrying one
+ * task's attachment list, and `node-geometry-renderable.ts` emits the graph
+ * again from its `GeometryTextureOutputBlock` terminal — so the vertex inputs,
+ * the texture pairs and the uniform block are the GEOMETRY emit's own and need
+ * not match the colour view's. The probe over scene 149's graph reads
+ * `[uv, position]` on the colour view and `[position, normal, uv]` here.
+ */
+export interface ComposedNodeGeometryView {
+    /** The task's index in the manifest's `geometryOutputTasks` order. */
+    taskIndex: number;
+    /** The module both stages compile from, the pin's own text. */
+    wgsl: string;
+    uboBytes: number;
+    uboBinding: number | null;
+    /** The block as `ensureGeometryNodeUBO` filled it, recorded. */
+    uboFloats: readonly number[];
+    attributes: readonly ComposedNodeAttribute[];
+    textures: readonly ComposedNodeTextureBinding[];
+    /**
+     * `NmeGeomParams`' group-1 binding, or null for a view that needs none.
+     *
+     * `_needsGpUbo` is raised only by a NORMALIZED_VIEW_DEPTH attachment whose
+     * value the graph leaves to the pin's own world-position fallback, so it
+     * is a property of the attachment list and the graph together.
+     */
+    geometryParamsBinding: number | null;
+    /** The colour targets the composed `FragmentOutput` writes. */
+    colorTargetCount: number;
+}
+
 export interface ComposeNodeMaterialOptions {
     shadowLights?: readonly {
         lightIndex: number;
@@ -161,6 +201,14 @@ export interface ComposeNodeMaterialOptions {
     castsEsmShadow?: boolean;
     blockEmitters?: readonly NodeMaterialBlockEmitter[] | undefined;
     castsPcfShadow?: boolean;
+    /**
+     * The geometry-output tasks this graph is drawn in, in manifest order.
+     *
+     * A geometry task draws every mesh the scene admits, so a graph reached by
+     * one composes a view per task exactly as the PBR family composes an MRT
+     * variant per task.
+     */
+    geometryTasks?: readonly PinnedGeometryTaskRequest[];
 }
 
 /**
@@ -306,29 +354,127 @@ interface PinnedNodeEsmViewModule {
 }
 
 /**
+ * The pin's geometry view factory and the three module-local helpers behind
+ * it.
+ *
+ * `node-geometry-view.ts` exports only the factory, and the renderable exports
+ * only the per-mesh builder — the resource emit, the compile and the uniform
+ * block are module-local, which is exactly what
+ * `importPinnedModuleWithExports` exists for. Re-deriving any of the three
+ * would be re-deriving the graph's semantics.
+ */
+interface PinnedNodeGeometryViewModule {
+    createNodeGeometryMaterialView: (
+        source: unknown,
+        config: {
+            attachments: readonly number[];
+            emitColor: boolean;
+            gpUBO: unknown;
+            reverseCulling: boolean;
+            camera: unknown;
+        },
+    ) => unknown;
+}
+
+interface PinnedNodeGeometryResources {
+    _geomState: PinnedNodeBuildState;
+    _attrNames: readonly string[];
+    _needsGpUbo: boolean;
+}
+
+interface PinnedNodeGeometryCompile extends PinnedNodeCompiledBindings {
+    _wgsl: string;
+    _nodeUboSize: number;
+    _geometryGpBinding: number | null;
+}
+
+interface PinnedNodeGeometryRenderableModule {
+    ensureGeometryResources: (view: unknown) => PinnedNodeGeometryResources;
+    ensureGeometryCompile: (
+        view: unknown,
+        resources: PinnedNodeGeometryResources,
+        engine: unknown,
+        signature: {
+            _colorFormats: readonly string[];
+            _depthStencilFormat: string;
+            _depthCompare: string;
+            _sampleCount: number;
+        },
+    ) => PinnedNodeGeometryCompile;
+    ensureGeometryNodeUBO: (
+        resources: PinnedNodeGeometryResources,
+        compile: PinnedNodeGeometryCompile,
+        engine: unknown,
+        source: unknown,
+    ) => unknown;
+}
+
+/** The pin's own per-attachment default target format. */
+interface PinnedGeometryFormatsModule {
+    GEOMETRY_TEXTURE_DESCRIPTIONS: readonly { defaultFormat: string }[];
+}
+
+interface PinnedNodeParserModule {
+    findBlockByClassName: (graph: unknown, className: string) => unknown;
+}
+
+/** The queue writes a recording device hands back to its caller. */
+interface RecordedBufferWrite {
+    offset: number;
+    data: Float32Array;
+}
+
+/** A recording device, plus the writes the pin asked it to make. */
+interface CompositionEngine {
+    engine: unknown;
+    writes: RecordedBufferWrite[];
+}
+
+/**
  * A device that records instead of allocating.
  *
  * `compileNodePipeline` assembles the whole module before it touches one, and
- * the four entry points below are every device call on that path. A descriptor
- * is returned as itself so a caller that wanted to read one still can; nothing
- * in this port does.
+ * the first four entry points below are every device call on that path. A
+ * descriptor is returned as itself so a caller that wanted to read one still
+ * can; nothing in this port does.
+ *
+ * The buffer pair beside them is for the geometry view's uniform block:
+ * `ensureGeometryNodeUBO` scatters the graph's values into a scratch array and
+ * hands it to `queue.writeBuffer`, so recording that call is what makes the
+ * block the pin's own bytes rather than a scatter restated here. Nothing on
+ * the colour or caster paths reaches either.
  */
-function compositionEngine(): unknown {
+function compositionEngine(): CompositionEngine {
     const record = (kind: string) => (descriptor: unknown) => ({
         kind,
         descriptor,
     });
+    const writes: RecordedBufferWrite[] = [];
     return {
-        _device: {
-            createShaderModule: record("shaderModule"),
-            createBindGroupLayout: record("bindGroupLayout"),
-            createPipelineLayout: record("pipelineLayout"),
-            createRenderPipeline: record("renderPipeline"),
+        writes,
+        engine: {
+            _device: {
+                createShaderModule: record("shaderModule"),
+                createBindGroupLayout: record("bindGroupLayout"),
+                createPipelineLayout: record("pipelineLayout"),
+                createRenderPipeline: record("renderPipeline"),
+                createBuffer: record("buffer"),
+                queue: {
+                    writeBuffer: (
+                        _buffer: unknown,
+                        offset: number,
+                        data: Float32Array,
+                    ): void => {
+                        writes.push({ offset, data });
+                    },
+                },
+            },
+            // The two the pipeline descriptor reads. The format decides
+            // nothing in the text; the sample count reaches the descriptor
+            // alone.
+            format: "bgra8unorm",
+            msaaSamples: 4,
         },
-        // The two the pipeline descriptor reads. The format decides nothing in
-        // the text; the sample count reaches the descriptor alone.
-        format: "bgra8unorm",
-        msaaSamples: 4,
     };
 }
 
@@ -397,6 +543,24 @@ function refuse(label: string, what: string): never {
     );
 }
 
+/**
+ * Refuse every build flag outside the served set, naming it.
+ *
+ * One build state per emitted view: `emitGraph` runs again from the geometry
+ * terminal, so a graph whose colour arm stays inside the slice can still raise
+ * a flag on its geometry arm, and each state is checked where it is produced.
+ */
+function assertServedBuildFlags(
+    state: PinnedNodeBuildState,
+    label: string,
+): void {
+    for (const [flag, value] of Object.entries(state)) {
+        if (typeof value !== "boolean" || !value) continue;
+        if (servedFlags.has(flag)) continue;
+        refuse(label, `the pinned build flag '${flag}'`);
+    }
+}
+
 /** Refuse every arm outside the reached slice, naming the block. */
 function assertReachedSlice(
     material: PinnedNodeMaterial,
@@ -412,11 +576,30 @@ function assertReachedSlice(
                 "alpha-combine mode 2 is lowered",
         );
     }
-    for (const [flag, value] of Object.entries(material._state)) {
-        if (typeof value !== "boolean" || !value) continue;
-        if (servedFlags.has(flag)) continue;
-        refuse(label, `the pinned build flag '${flag}'`);
-    }
+    assertServedBuildFlags(material._state, label);
+}
+
+/**
+ * The vertex inputs one compiled view declares, at the locations the pin's
+ * own pipeline builder gave them.
+ *
+ * `buildVertexIn` numbers them `state.vertexAttributes.map((a, i) => ...)`, so
+ * the location is the position in the list rather than a field — and the same
+ * list is what `_vertexBuffers` and both PALs' vertex layouts are built from.
+ */
+function composedAttributes(
+    names: readonly string[],
+    label: string,
+): readonly ComposedNodeAttribute[] {
+    return names.map((name, index) => {
+        if (!supportedAttributes.has(name)) {
+            throw new Error(
+                `Node material '${label}' declares the vertex input ` +
+                    `'${name}', which our vertex does not carry.`,
+            );
+        }
+        return { location: index, name };
+    });
 }
 
 /**
@@ -437,6 +620,7 @@ export async function composeNodeMaterial(
         castsEsmShadow = false,
         blockEmitters = [],
         castsPcfShadow = false,
+        geometryTasks = [],
     } = options;
     // `emitShadow` types its slots `"esm" | "pcf"` and forks on
     // `shadowType === "pcf"`, so a cascaded slot would silently take the
@@ -456,7 +640,8 @@ export async function composeNodeMaterial(
     const module = await importPinnedModule<PinnedNodeMaterialModule>(
         "material/node/node-material.js",
     );
-    const engine = compositionEngine();
+    const device = compositionEngine();
+    const engine = device.engine;
     const emitterModules = new Map(
         blockEmitters.map(({ className, module }) => [className, module]),
     );
@@ -505,20 +690,9 @@ export async function composeNodeMaterial(
         },
     );
     assertReachedSlice(material, label);
-    const attributes = material._state.vertexAttributes.map(
-        (attribute, index) => {
-            if (!supportedAttributes.has(attribute._name)) {
-                throw new Error(
-                    `Node material '${label}' declares the vertex input ` +
-                        `'${attribute._name}', which our vertex does not ` +
-                        "carry.",
-                );
-            }
-            // The pipeline builder gives each attribute the location of its
-            // own index (`state.vertexAttributes.map((a, i) => ...)`), so the
-            // location is the position in this list rather than a field.
-            return { location: index, name: attribute._name };
-        },
+    const attributes = composedAttributes(
+        material._state.vertexAttributes.map(({ _name }) => _name),
+        label,
     );
     const uboFloats = new Array<number>(
         material._compile._nodeUboSize / 4,
@@ -576,7 +750,205 @@ export async function composeNodeMaterial(
             shadowType: binding._shadowType,
         })),
         caster,
+        geometryViews: await composeNodeGeometryViews(
+            material,
+            device,
+            label,
+            geometryTasks,
+        ),
     };
+}
+
+/**
+ * The geometry-output modules for one graph, one per task it is drawn in.
+ *
+ * Every step is the pin's own: `createNodeGeometryMaterialView` builds the
+ * view, `ensureGeometryResources` emits the graph again from its
+ * `GeometryTextureOutputBlock` terminal and assembles the `FragmentOutput`
+ * struct and its per-attachment writes, `ensureGeometryCompile` runs the same
+ * `compileNodePipeline` the colour view runs with the MRT output attached, and
+ * `ensureGeometryNodeUBO` fills the block. Nothing between the graph and the
+ * module is restated here.
+ */
+async function composeNodeGeometryViews(
+    material: PinnedNodeMaterial,
+    device: CompositionEngine,
+    label: string,
+    tasks: readonly PinnedGeometryTaskRequest[],
+): Promise<readonly ComposedNodeGeometryView[]> {
+    if (tasks.length === 0) return [];
+    const [view, renderable, types, parser] = await Promise.all([
+        importPinnedModule<PinnedNodeGeometryViewModule>(
+            "material/node/node-geometry-view.js",
+        ),
+        importPinnedModuleWithExports<PinnedNodeGeometryRenderableModule>(
+            "material/node/node-geometry-renderable.js",
+            [
+                "ensureGeometryResources",
+                "ensureGeometryCompile",
+                "ensureGeometryNodeUBO",
+            ],
+        ),
+        importPinnedModule<PinnedGeometryFormatsModule>(
+            "frame-graph/geometry-types.js",
+        ),
+        importPinnedModule<PinnedNodeParserModule>(
+            "material/node/node-parser.js",
+        ),
+    ]);
+    // The terminal the geometry emit walks from. `ensureGeometryResources`
+    // refuses a graph without one, but only as a bare pinned error code, and
+    // a scene that pointed a geometry task at an ordinary node material
+    // deserves to be told which graph and which terminal.
+    if (
+        !parser.findBlockByClassName(
+            material._graph,
+            "GeometryTextureOutputBlock",
+        )
+    ) {
+        throw new Error(
+            `Node material '${label}' is drawn by a geometry-output task but ` +
+                "declares no `GeometryTextureOutputBlock`, which is the " +
+                "terminal `material/node/node-geometry-renderable.ts` " +
+                "`ensureGeometryResources` emits the geometry view from.",
+        );
+    }
+    const composed: ComposedNodeGeometryView[] = [];
+    for (const task of tasks) {
+        const viewLabel = `${label} geometry ${task.index}`;
+        if (task.emitColor) {
+            throw new Error(
+                `Node material '${label}' is drawn by geometry task ` +
+                    `${task.index}, which carries a targetTexture. ` +
+                    "`material/node/node-geometry-view.ts` " +
+                    "`createNodeGeometryMaterialView` refuses `emitColor`: " +
+                    "the node geometry view composes no trailing colour " +
+                    "attachment.",
+            );
+        }
+        // The one geometry lane this port's vertex convention cannot serve
+        // through a node graph. `geomWrite` writes LOCAL_POSITION from
+        // whatever the graph connected, and every reached graph connects the
+        // `position` attribute -- which upstream is the mesh's LOCAL position
+        // beside a real `meshU.world`, and here is the node world already
+        // baked into the vertex beside an identity one. The Standard family
+        // meets the same wall and refuses it by name in
+        // `pal_gpu_shared.hpp` `standard_draw_world`; refusing it here keeps
+        // the node family from rendering a plausible-looking world position
+        // in a local-position attachment.
+        if (task.attachments.includes("LOCAL_POSITION")) {
+            throw new Error(
+                `Node material '${label}' is drawn by geometry task ` +
+                    `${task.index}, whose attachments include ` +
+                    "LOCAL_POSITION. `node-geometry-renderable.ts` " +
+                    "`geomWrite` writes that lane from the graph's own " +
+                    "input, which is the pin's LOCAL position attribute; " +
+                    "this port bakes each mesh's world into its vertices " +
+                    "and draws node graphs under an identity `meshU.world`, " +
+                    "so the lane would carry the world position instead. " +
+                    "`pal_gpu_shared.hpp` `standard_draw_world` refuses the " +
+                    "same shape for the Standard family.",
+            );
+        }
+        const attachments = await geometryAttachmentTypes(task.attachments);
+        const geometryView = view.createNodeGeometryMaterialView(material, {
+            attachments,
+            emitColor: false,
+            // Read only when the pin builds a real bind group, which this
+            // never does; `ensureGeometryCompile` allocates the binding from
+            // `_needsGpUbo` alone.
+            gpUBO: { kind: "buffer" },
+            // Both are geometry-task config the compiler refuses today
+            // (`compileGeometryTaskOptions` accepts name, samples,
+            // textureDescriptions, targetTexture and targetTextureClearColor
+            // only), so this is what the pin would have been handed.
+            reverseCulling: false,
+            camera: null,
+        });
+        let resources: PinnedNodeGeometryResources;
+        try {
+            resources = renderable.ensureGeometryResources(geometryView);
+        } catch (error) {
+            throw new Error(
+                `The pinned node geometry view refuses graph '${label}': ` +
+                    "`material/node/node-geometry-renderable.ts` " +
+                    "`ensureGeometryResources` composes no morph-target, " +
+                    "environment or shadow-receiving geometry arm. The pin " +
+                    `raised: ${
+                        error instanceof Error ? error.message : String(error)
+                    }`,
+            );
+        }
+        assertServedBuildFlags(resources._geomState, viewLabel);
+        const compile = renderable.ensureGeometryCompile(
+            geometryView,
+            resources,
+            device.engine,
+            {
+                // The task's own attachment formats, read from the pin's
+                // table exactly as `createGeometryRendererTask` reads it. A
+                // per-description `format` override reaches the recorded
+                // pipeline descriptor only, so it is not carried here; the
+                // composed text is the same either way, and one module is
+                // composed per (graph, task) so nothing shares a compile.
+                _colorFormats: attachments.map(
+                    (type) =>
+                        types.GEOMETRY_TEXTURE_DESCRIPTIONS[type]!
+                            .defaultFormat,
+                ),
+                // The task's own depth target, which
+                // `createGeometryRendererTask` allocates at `depth32float`
+                // for a task carrying no `depthTexture` -- the only shape
+                // the compiler lowers. It reaches the descriptor alone.
+                _depthStencilFormat: "depth32float",
+                _depthCompare: "greater-equal",
+                _sampleCount: 4,
+            },
+        );
+        // `ensureGeometryNodeUBO` scatters each named input's live value, or
+        // the graph's own default when the scene never touched it, at the
+        // offsets THIS compile's layout gave them -- which are not the colour
+        // view's. Running it against the recording device is what makes the
+        // block the pin's bytes.
+        device.writes.length = 0;
+        renderable.ensureGeometryNodeUBO(
+            resources,
+            compile,
+            device.engine,
+            material,
+        );
+        const written = device.writes;
+        const expected = compile._nodeUboSize > 0 ? 1 : 0;
+        if (
+            written.length !== expected ||
+            (written[0] !== undefined &&
+                (written[0].offset !== 0 ||
+                    written[0].data.length * 4 !== compile._nodeUboSize))
+        ) {
+            throw new Error(
+                `The pinned node geometry uniform block for '${viewLabel}' ` +
+                    "is no longer one write of the whole block, which is " +
+                    "what this port reads it back as.",
+            );
+        }
+        const uboFloats = [...(written[0]?.data ?? [])];
+        composed.push({
+            taskIndex: task.index,
+            wgsl: compile._wgsl,
+            uboBytes: compile._nodeUboSize,
+            uboBinding: compile._nodeUboBinding,
+            uboFloats,
+            attributes: composedAttributes(resources._attrNames, viewLabel),
+            textures: compile._textureBindings.map((binding) => ({
+                name: binding._name,
+                texture: binding._texBinding,
+                sampler: binding._sampBinding,
+            })),
+            geometryParamsBinding: compile._geometryGpBinding,
+            colorTargetCount: attachments.length,
+        });
+    }
+    return composed;
 }
 
 /**

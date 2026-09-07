@@ -46,11 +46,16 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         features: ["mesh:vat"],
     },
     {
+        source: "upstream/src/skeleton.cpp",
+        features: ["mesh:skeleton"],
+    },
+    {
         source: "upstream/src/camera_arc_rotate.cpp",
         features: [
             "camera:arc-rotate",
             "camera:default",
             "camera:free",
+            "camera:geospatial",
             "camera:view-projection",
         ],
     },
@@ -60,6 +65,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
             "camera:arc-rotate",
             "camera:default",
             "camera:free",
+            "camera:geospatial",
         ],
     },
     {
@@ -73,6 +79,10 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
     {
         source: "upstream/src/camera_orthographic.cpp",
         features: ["camera:orthographic"],
+    },
+    {
+        source: "upstream/src/camera_geospatial.cpp",
+        features: ["camera:geospatial"],
     },
     {
         source: "upstream/src/env_parse.cpp",
@@ -245,6 +255,7 @@ export const generatedSourceRules: readonly GeneratedSourceRule[] = [
         source: "upstream/src/mesh_factories.cpp",
         features: [
             "mesh:box",
+            "mesh:capsule",
             "mesh:cylinder",
             "mesh:disc",
             "mesh:polyhedron",

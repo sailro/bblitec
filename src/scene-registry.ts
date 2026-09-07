@@ -730,6 +730,87 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        // Retires when scene 149 registers -- a corpus scene drawing a node
+        // material in a geometry-renderer task. The Standard and PBR
+        // families each shipped their geometry arm as its own integration;
+        // this is the node family's.
+        //
+        // One graph drawn in two geometry tasks: three attachments
+        // including NORMALIZED_VIEW_DEPTH, so one composed view declares
+        // `NmeGeomParams`, and two attachments so the other declares none.
+        //
+        // MEASURED 0.000/0.000 on both backends, byte-identical between
+        // them.
+        //
+        // The gate OBSERVES the arm rather than reaching it: binding the
+        // colour view's rows for a geometry draw -- the silent-wrong case
+        // the arm exists to prevent, and what the plan's draw-list filter
+        // used to hide -- measures 0.773 full / 1.937 region.
+        id: "regression-node-geometry-output",
+        name: "Regression - Node Material Geometry Output",
+        source: "examples/regression-node-geometry-output.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Node Geometry Output",
+        buildDirectory:
+            "native/build-regression-node-geometry-output-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-node-geometry-output/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-node-geometry-output",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        // Retires when scene 114 or 231 registers. Both author a skeleton
+        // from scene code, and neither compiles yet: 114 still needs its
+        // picking contracts and 231 the Standard skinned draw arm.
+        //
+        // The scene-authored path is not the loader's. The glTF pose pass
+        // folds `invMeshWorld` into every palette entry and draws at
+        // identity, while the pin composes `finalWorld = mesh.world *
+        // influence` for an authored skeleton, so the mesh keeps its
+        // transform and the palette is the bones alone. Reusing the loader
+        // convention compiles and draws in the wrong place.
+        //
+        // MEASURED 0.000/0.000 on both backends, max 0, region 100% exact
+        // and byte-identical between them.
+        //
+        // The gate OBSERVES the skinning rather than reaching it: both rows
+        // stretch past the blue bind-edge rail to the yellow skinned-edge
+        // rail, so a bind-pose render stops at blue. The second row starts
+        // at zero shift and is ramped through `updateSkeletonBoneMatrices`,
+        // so a port that folded the palette at creation paints it
+        // unstretched.
+        id: "regression-scene-skeleton",
+        name: "Regression - Scene-Authored Skeleton",
+        source: "examples/regression-scene-skeleton.ts",
+        sourceOrigin: "bblitec-regression",
+        title: "Babylon Lite Native - Scene-Authored Skeleton",
+        buildDirectory:
+            "native/build-regression-scene-skeleton-release",
+        parity: {
+            reference: {
+                kind: "source",
+                path:
+                    "reference/regression-scene-skeleton/babylon-lite-golden.png",
+            },
+            outputDirectory:
+                "artifacts/parity/regression-scene-skeleton",
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [37, 42, 54],
+            backgroundThreshold: 30,
+            nativeEnvironment: adHocCaptureEnvironment(),
+        },
+    },
+    {
         // Retires when a corpus scene visibly executes post-creation spot
         // direction, angle and exponent writes. Position and range already
         // have corpus coverage; the remaining writes do not.
@@ -3564,6 +3645,30 @@ const sceneInputs: readonly SceneInput[] = [
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
             backgroundColor: [51, 51, 76],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene225",
+        name: "Scene 225 - Geospatial Camera",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene225.ts",
+        title: "Babylon Lite Native - Geospatial Camera",
+        parity: {
+            // The globe-orbit camera at a pinned centre/yaw/pitch/radius.
+            // Six pixels of the 921600 differ by one level and nothing
+            // else does, on both backends, which is what says the pinned
+            // orientation recompute -- normalizeRadians, the limit clamps,
+            // the pole clamp, the tangent basis, the yaw/pitch lookAt and
+            // the derived up and position -- agrees with the browser to
+            // the last stored float.
+            //
+            // No referenceSearch: the scene reads no query and freezes
+            // nothing. The controls attach but every input arm refuses, and
+            // the pin's own integrator moves the camera by nothing at zero
+            // input, so the registered pose is the scene's only pose.
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.001,
+            backgroundColor: [5, 5, 13],
             backgroundThreshold: 30,
         },
     },

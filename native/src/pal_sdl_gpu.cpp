@@ -2261,6 +2261,58 @@ const GpuState::EsmBlur* esm_caster_params_for(
     info.target_info.has_depth_stencil_target = true;
 }
 
+#if BBLITE_PBR_VARIANTS > 0 || BBLITE_STANDARD_VARIANTS > 0 || \
+    BBLITE_NODE_GEOMETRY_VARIANTS > 0
+/**
+ * The MRT colour targets one geometry-output pipeline draws into, for
+ * whichever family composed it.
+ *
+ * All three answer this the same way: one target per attachment class the
+ * shared `geometry_target_classes` list carries, then the optional
+ * trailing colour output in the frame's own format, at the task's sample
+ * count and with the geometry pass's depth write forced on whatever the
+ * material's own alpha would have said. `blend` is the family's transparent
+ * blend state, or null for a draw that does not blend.
+ *
+ * The node family reaches the same body through a strict subset: a geometry
+ * view is compiled at the pin's alpha mode 0 (so `blend` is null and the
+ * depth write was already on) and `createNodeGeometryMaterialView` refuses
+ * `emitColor`, so its task carries no trailing output -- and if one ever
+ * did, the shared count assertion below refuses before a target is built.
+ *
+ * `targets` is the caller's storage because `info` holds a pointer into it
+ * until the pipeline is created.
+ */
+void apply_geometry_color_targets(
+    SDL_GPUGraphicsPipelineCreateInfo& info,
+    std::vector<SDL_GPUColorTargetDescription>& targets,
+    const GpuState& state,
+    const FrameTaskRecord& task,
+    std::size_t entry_color_target_count,
+    const char* family,
+    const SDL_GPUColorTargetBlendState* blend) {
+    const GeometryTargetClasses classes = geometry_target_classes(task);
+    require_geometry_target_count(classes, entry_color_target_count, family);
+    targets.reserve(classes.attachments.size() + 1u);
+    const auto push = [&](SDL_GPUTextureFormat format) {
+        SDL_GPUColorTargetDescription target{};
+        target.format = format;
+        if (blend) target.blend_state = *blend;
+        targets.push_back(target);
+    };
+    for (const TextureFormatClass format_class : classes.attachments) {
+        push(texture_format(format_class));
+    }
+    if (classes.trailing_output) push(state.pinned_color_format);
+    info.target_info.color_target_descriptions = targets.data();
+    info.target_info.num_color_targets =
+        static_cast<Uint32>(targets.size());
+    info.multisample_state.sample_count =
+        task_sample_count(state, task.geometry.samples);
+    info.depth_stencil_state.enable_depth_write = true;
+}
+#endif
+
 #if BBLITE_PBR_VARIANTS > 0
 /**
  * Which of our resources the pin's own name for a binding refers to.
@@ -2519,46 +2571,18 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     info.target_info.color_target_descriptions =
         entry.no_color_output ? nullptr : &color_target;
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
-    // A geometry-output MRT variant draws into its task's own attachments:
-    // one target per attachment in the shared class list, plus the
-    // optional trailing colour output, at the task's sample count -- the
-    // same fixed-function state the transcribed geometry pipelines
-    // carried. The list and its count assertion come from
-    // `geometry_target_classes`; only the API structs are built here.
+    // A geometry-output MRT variant draws into its task's own attachments,
+    // through the builder all three families share.
     std::vector<SDL_GPUColorTargetDescription> geometry_targets;
     if (geometry_task) {
-        const GeometryTargetClasses classes =
-            geometry_target_classes(*geometry_task);
-        require_geometry_target_count(
-            classes,
+        apply_geometry_color_targets(
+            info,
+            geometry_targets,
+            state,
+            *geometry_task,
             entry.color_target_count,
-            "pinned");
-        geometry_targets.reserve(classes.attachments.size() + 1u);
-        for (const TextureFormatClass format_class : classes.attachments) {
-            SDL_GPUColorTargetDescription target{};
-            target.format = texture_format(format_class);
-            if (transparent) {
-                target.blend_state = blend_state_from(transparent_blend);
-            }
-            geometry_targets.push_back(target);
-        }
-        if (classes.trailing_output) {
-            SDL_GPUColorTargetDescription target{};
-            target.format = state.pinned_color_format;
-            if (transparent) {
-                target.blend_state = blend_state_from(transparent_blend);
-            }
-            geometry_targets.push_back(target);
-        }
-        info.target_info.color_target_descriptions =
-            geometry_targets.data();
-        info.target_info.num_color_targets =
-            static_cast<Uint32>(geometry_targets.size());
-        info.multisample_state.sample_count =
-            task_sample_count(state, geometry_task->geometry.samples);
-        // A geometry task always writes depth, whatever the material's own
-        // alpha would have said.
-        info.depth_stencil_state.enable_depth_write = true;
+            "pinned",
+            transparent ? &color_target.blend_state : nullptr);
     }
     OwnedSdlPipeline pipeline{
         SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
@@ -3075,10 +3099,11 @@ void ensure_node_slots(GpuState& state, std::size_t slot) {
     state.node_fragment_slots[slot] =
         read_pinned_stage_slots(std::string(stems.fragment));
 #if BBLITE_NODE_SHADOWS
-    // The graph's receiver rows, resolved per compiled view: the rows are
-    // the variant's, the slots are this view's own stages'.
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[pal::node_slot_variant(slot)];
+    // The view's receiver rows, resolved against its own stages' slots. A
+    // geometry view receives from nothing -- `ensureGeometryResources`
+    // refuses a graph whose geometry emit raised any shadow light -- so its
+    // row carries an empty range and this resolves to nothing.
+    const upstream::NodeVariantEntry& entry = pal::node_slot_view(slot);
     state.node_vertex_shadow_rows[slot] = resolve_stage_shadow_rows(
         state.node_vertex_slots[slot],
         pal::node_shadow_rows(entry));
@@ -3108,8 +3133,17 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     // the caster -- which ESM generator's map it writes, whose recorded row
     // is the colour format.
     bool caster = false,
-    std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t slot = pal::node_variant_slot(variant, caster);
+    std::uint32_t esm_shadow_index = invalid_handle,
+    // The geometry-output task an MRT view draws in, with the composed view
+    // it resolved. A geometry module is composed for exactly ONE task, so
+    // the slot-keyed cache stays valid with that task's targets baked in --
+    // the same reason the two material families key theirs on the variant.
+    [[maybe_unused]] const FrameTaskRecord* geometry_task = nullptr,
+    std::size_t geometry_variant = pal::no_node_geometry_variant) {
+    const bool geometry_view =
+        geometry_variant != pal::no_node_geometry_variant;
+    const std::size_t slot =
+        pal::node_draw_slot(variant, caster, geometry_variant);
     const std::size_t key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(
             slot,
@@ -3124,6 +3158,9 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     ensure_node_slots(state, slot);
     const upstream::NodeVariantEntry& entry =
         upstream::node_variants[variant];
+    // The compiled view this slot draws: the graph's own row for a colour
+    // or caster slot, the geometry emit's row for a geometry one.
+    const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     const upstream::NodeVariantStems stems = pal::node_variant_stems(slot);
     const PinnedStageSlots& vertex_slots = state.node_vertex_slots[slot];
     const PinnedStageSlots& fragment_slots =
@@ -3145,10 +3182,10 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
         "fs_main",
         static_cast<Uint32>(fragment_slots.storage.size()));
     std::vector<SDL_GPUVertexAttribute> attributes;
-    attributes.reserve(entry.attribute_count);
-    for (std::size_t index = 0; index < entry.attribute_count; ++index) {
+    attributes.reserve(view.attribute_count);
+    for (std::size_t index = 0; index < view.attribute_count; ++index) {
         const upstream::NodeVariantAttribute& input =
-            upstream::node_variant_attributes[entry.first_attribute + index];
+            upstream::node_variant_attributes[view.first_attribute + index];
         if (
             !append_variant_attribute(
                 input.name,
@@ -3176,7 +3213,11 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     }
 #endif
     const RenderPipelineKindTraits traits = pipeline_kind_traits(kind);
-    const bool transparent = traits.transparent && !shadow_pass && !caster;
+    // A geometry view is compiled at the pin's alpha mode 0 whatever the
+    // graph's own blending says (`ensureGeometryCompile` passes it), so its
+    // pipeline neither blends nor drops depth writes.
+    const bool transparent =
+        traits.transparent && !shadow_pass && !caster && !geometry_view;
     if (transparent) {
         color_target.blend_state = blend_state_from(transparent_blend);
     }
@@ -3198,8 +3239,12 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     // The graph's culling and alpha-combine state, decoded through the same
     // shared kind table as the other families. Shadow views force the pin's
     // alpha mode 0 and therefore keep depth writes and no colour blending.
-    info.rasterizer_state.cull_mode =
-        gpu_cull_mode(traits.cull);
+    // The geometry compile reads the GRAPH's own `backFaceCulling`
+    // (`ensureGeometryCompile`), which is the same fact the plan's node kinds
+    // are bucketed by -- both node cull arms carry it and neither the caster
+    // nor the geometry view changes it -- so all three views read the one
+    // shared kind table rather than a per-view exception.
+    info.rasterizer_state.cull_mode = gpu_cull_mode(traits.cull);
     info.rasterizer_state.front_face =
         SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE;
     info.rasterizer_state.enable_depth_clip = true;
@@ -3209,6 +3254,25 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     info.target_info.color_target_descriptions =
         pcf_caster ? nullptr : &color_target;
     info.target_info.num_color_targets = pcf_caster ? 0 : 1;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    // The task's own attachments, through the builder the two material
+    // families' MRT arms take, with the family named so a mismatch says
+    // which table was composed against which task. No blend and no
+    // trailing output: a geometry view is compiled at the pin's alpha mode
+    // 0 and `createNodeGeometryMaterialView` refuses `emitColor`.
+    std::vector<SDL_GPUColorTargetDescription> geometry_targets;
+    if (geometry_view) {
+        apply_geometry_color_targets(
+            info,
+            geometry_targets,
+            state,
+            *geometry_task,
+            upstream::node_geometry_variants[geometry_variant]
+                .color_target_count,
+            "node",
+            nullptr);
+    }
+#endif
     OwnedSdlPipeline pipeline{
         SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
     if (!pipeline) {
@@ -3244,27 +3308,51 @@ void draw_node_variant(
     // caster view over its receiver one.
     [[maybe_unused]] const MaterialRecord* material = nullptr,
     // The generator whose map this pass writes, when it writes one.
-    std::uint32_t esm_shadow_index = invalid_handle) {
+    std::uint32_t esm_shadow_index = invalid_handle,
+    // The geometry-output task this draw is inside, with the task's own
+    // gpUniforms in both the shapes a stage can read it: the block the
+    // register remap keeps as a uniform, and the buffer it demotes to
+    // storage once four uniform slots are spent.
+    [[maybe_unused]] const FrameTaskRecord* geometry_task = nullptr,
+    [[maybe_unused]] const PinnedGeometryParams* geometry_params = nullptr,
+    [[maybe_unused]] SDL_GPUBuffer* geometry_params_buffer = nullptr) {
 #if BBLITE_NODE_SHADOWS
     const bool caster = material &&
         (material->esm_shadow || material->no_color);
 #else
     const bool caster = false;
 #endif
-    const std::size_t slot = pal::node_variant_slot(variant, caster);
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    // The composed view for this (graph, task), or the shared refusal.
+    const std::size_t geometry_variant = geometry_task
+        ? pal::require_node_geometry_variant(
+              variant,
+              static_cast<std::size_t>(geometry_task->geometry.shader_index))
+        : pal::no_node_geometry_variant;
+#else
+    if (geometry_task) {
+        gpu_error(
+            "a node material in a geometry task in a build with no composed "
+            "node geometry views.");
+    }
+    const std::size_t geometry_variant = pal::no_node_geometry_variant;
+#endif
+    const std::size_t slot =
+        pal::node_draw_slot(variant, caster, geometry_variant);
     SDL_GPUGraphicsPipeline* variant_pipeline = node_variant_pipeline(
         state,
         variant,
         draw.pipeline,
         shadow_pass,
         caster,
-        esm_shadow_index);
+        esm_shadow_index,
+        geometry_task,
+        geometry_variant);
     if (variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
     }
-    const upstream::NodeVariantEntry& entry =
-        upstream::node_variants[variant];
+    const upstream::NodeVariantEntry& view = pal::node_slot_view(slot);
     const upstream::NodeMeshUniforms node_mesh =
         node_mesh_block(scene, engine, draw.item.mesh.value);
     const auto resolve = [&](
@@ -3279,10 +3367,22 @@ void draw_node_variant(
         if (block == "nodeU") {
             return {
                 &upstream::node_variant_uniform_floats[
-                    entry.first_uniform_float],
-                entry.ubo_bytes,
+                    view.first_uniform_float],
+                view.ubo_bytes,
             };
         }
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        // The task's gpUniforms, under the name the pin's own
+        // `_buildGeomUbo` declares for the node family.
+        if (block == "nmeGeom") {
+            if (!geometry_params) {
+                gpu_error(
+                    "node geometry view declares NmeGeomParams outside a "
+                    "geometry task.");
+            }
+            return {geometry_params, sizeof(*geometry_params)};
+        }
+#endif
 #if BBLITE_SHADOWS_ESM
         // The caster's own params block, the same one the two composed
         // families' casters read.
@@ -3354,10 +3454,10 @@ void draw_node_variant(
                 ? (declared.remove_prefix(9), true)
                 : false;
         if (prefixed) {
-            for (std::size_t index = 0; index < entry.texture_count; ++index) {
+            for (std::size_t index = 0; index < view.texture_count; ++index) {
                 const upstream::NodeVariantTexture& binding =
                     upstream::node_variant_textures[
-                        entry.first_texture + index];
+                        view.first_texture + index];
                 if (binding.name != declared) continue;
                 if (index >= shader_textures.size()) {
                     gpu_error(
@@ -3427,6 +3527,12 @@ void draw_node_variant(
                 morph_storage_buffer_for(mesh, name)) {
             return morph;
         }
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        // The gpUniforms block once the shader compile demoted it out of
+        // SDL_GPU's four uniform slots, exactly as the two material
+        // families' `gp` is.
+        if (name == "nmeGeom") return geometry_params_buffer;
+#endif
 #if BBLITE_NODE_SHADOWS
 #if BBLITE_SHADOWS_ESM
         if (name == "nmeShadowParams") {
@@ -3993,42 +4099,18 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         entry.no_color_output ? nullptr : &color_target;
     info.target_info.num_color_targets = entry.no_color_output ? 0 : 1;
     // A geometry-output MRT variant draws into its task's own
-    // attachments, exactly as the PBR sibling does; the class list and
-    // its count assertion are the shared `geometry_target_classes`.
+    // attachments, exactly as the PBR sibling does and through the same
+    // shared builder.
     std::vector<SDL_GPUColorTargetDescription> geometry_targets;
     if (geometry_task) {
-        const GeometryTargetClasses classes =
-            geometry_target_classes(*geometry_task);
-        require_geometry_target_count(
-            classes,
+        apply_geometry_color_targets(
+            info,
+            geometry_targets,
+            state,
+            *geometry_task,
             entry.color_target_count,
-            "standard");
-        geometry_targets.reserve(classes.attachments.size() + 1u);
-        for (const TextureFormatClass format_class : classes.attachments) {
-            SDL_GPUColorTargetDescription target{};
-            target.format = texture_format(format_class);
-            if (transparent) {
-                target.blend_state = blend_state_from(transparent_blend);
-            }
-            geometry_targets.push_back(target);
-        }
-        if (classes.trailing_output) {
-            SDL_GPUColorTargetDescription target{};
-            target.format = state.pinned_color_format;
-            if (transparent) {
-                target.blend_state = blend_state_from(transparent_blend);
-            }
-            geometry_targets.push_back(target);
-        }
-        info.target_info.color_target_descriptions =
-            geometry_targets.data();
-        info.target_info.num_color_targets =
-            static_cast<Uint32>(geometry_targets.size());
-        info.multisample_state.sample_count =
-            task_sample_count(state, geometry_task->geometry.samples);
-        // A geometry task always writes depth, whatever the material's own
-        // alpha would have said.
-        info.depth_stencil_state.enable_depth_write = true;
+            "standard",
+            transparent ? &color_target.blend_state : nullptr);
     }
     OwnedSdlPipeline pipeline{
         SDL_CreateGPUGraphicsPipeline(state.device, &info), {state.device}};
@@ -10904,11 +10986,11 @@ SceneRun run_gpu_engine(Engine& engine) {
                             }
 #endif
 #if BBLITE_NODE_VARIANTS > 0
-                            // A node graph in a task pass, which for the
-                            // reached slice is a shadow caster: the family's
-                            // own dispatcher again, and the view its
-                            // material carries decides which of the graph's
-                            // two compiled modules draws.
+                            // A node graph in a task pass: a shadow caster,
+                            // or -- when the task is a geometry-output one --
+                            // the graph's own MRT view. The family's own
+                            // dispatcher either way, with the task deciding
+                            // which of the graph's compiled modules draws.
                             if (
                                 draw_item.material_kind ==
                                 upstream::RenderMaterialKind::node) {
@@ -10931,10 +11013,13 @@ SceneRun run_gpu_engine(Engine& engine) {
                                             shadow_generator->filter ==
                                                 ShadowFilter::esm_directional
                                         ? shadow_generator->esm_index
-                                        : invalid_handle
+                                        : invalid_handle,
 #else
-                                    invalid_handle
+                                    invalid_handle,
 #endif
+                                    geometry_task,
+                                    geometry_params,
+                                    geometry_params_buffer
                                 );
                                 continue;
                             }

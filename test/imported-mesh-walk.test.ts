@@ -161,3 +161,109 @@ test("a visitor that collects something other than the node is refused", () => {
             /callback conditions/.test(error.message),
     );
 });
+
+// A `.babylon` container is not one root: the pinned loader returns
+// `[...lights, ...rootMeshes, ...rootTransformNodes]`, and the same flatten
+// walks past the lights into the roots. The generated loader records a mesh
+// per submesh of every visible node that declares no `parentId`, so the walk
+// and the record name the same meshes exactly when the file parents nothing
+// — which is read out of the document rather than assumed.
+function babylonDataUrl(document: Record<string, unknown>): string {
+    return (
+        "data:application/json;base64," +
+        Buffer.from(JSON.stringify(document), "utf8").toString("base64")
+    );
+}
+
+const flatBabylonDocument = {
+    meshes: [
+        {
+            name: "skull",
+            id: "skull",
+            positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+            normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+            indices: [0, 1, 2],
+        },
+    ],
+    lights: [{ type: 0, position: [0, 1, 0] }],
+};
+
+function compileBabylonWalk(
+    document: Record<string, unknown> = flatBabylonDocument,
+    options = "{ loadCamera: false, loadTextures: false }",
+) {
+    return compileSource(`
+        import {
+            createEngine,
+            createStandardMaterial,
+            loadBabylon,
+        } from "@babylonjs/lite";
+        import type { Mesh, SceneNode } from "@babylonjs/lite";
+
+        ${exactWalk}
+
+        async function main() {
+            const engine = await createEngine({});
+            const container = await loadBabylon(engine, ${JSON.stringify(
+                babylonDataUrl(document),
+            )}, ${options});
+            const meshes: Mesh[] = [];
+            for (const entity of container.entities) {
+                collectMeshes(entity, meshes);
+            }
+            for (const mesh of meshes) {
+                mesh.material = createStandardMaterial();
+            }
+        }
+        void main();
+    `);
+}
+
+test("a .babylon container's flatten answers with its own mesh list", () => {
+    const result = compileBabylonWalk();
+
+    assert.match(
+        result.cpp,
+        /for \(const bbl::MeshHandle [A-Za-z0-9_]+ : [A-Za-z0-9_.]*engine\.assets\[[^\]]+\]\.meshes\)/,
+    );
+    assert.doesNotMatch(
+        result.cpp,
+        /std::vector<bbl::MeshHandle> [A-Za-z0-9_]*meshes/,
+    );
+    assert.doesNotMatch(result.cpp, /collect_meshes/);
+});
+
+test("a .babylon container that parents a visible node refuses the flatten", () => {
+    assert.throws(
+        () =>
+            compileBabylonWalk({
+                ...flatBabylonDocument,
+                meshes: [
+                    ...flatBabylonDocument.meshes,
+                    {
+                        name: "jaw",
+                        id: "jaw",
+                        parentId: "skull",
+                        positions: [0, 0, 0, 1, 0, 0, 0, 1, 0],
+                        normals: [0, 0, 1, 0, 0, 1, 0, 0, 1],
+                        indices: [0, 1, 2],
+                    },
+                ],
+            }),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /parents 'jaw' under 'skull'/.test(error.message) &&
+            /records only for unparented nodes/.test(error.message),
+    );
+});
+
+test("loadBabylon refuses maxMeshes, which would shorten the container", () => {
+    assert.throws(
+        () => compileBabylonWalk(flatBabylonDocument, "{ maxMeshes: 1 }"),
+        (error: unknown) =>
+            error instanceof CompileError &&
+            /loadBabylon takes loadCamera and loadTextures/.test(
+                error.message,
+            ),
+    );
+});

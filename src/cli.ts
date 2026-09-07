@@ -1120,7 +1120,11 @@ async function main(): Promise<void> {
     // asset-or-scene-code disjunction is the whole answer either way.
     const gpuDeformation =
         specializationFeatures.gpuDeformation ||
-        result.manifest.features.includes("mesh:morph-targets");
+        result.manifest.features.includes("mesh:morph-targets") ||
+        // A scene-authored skeleton needs the same vertex layout: the
+        // joint and weight lanes the pin's own skinning stage reads live
+        // behind this define beside the morph deltas.
+        result.manifest.features.includes("mesh:skeleton");
     // Scene-code morph targets join the storage arm: the pinned morph
     // fragment (`morph-fragment-core`) reads its deltas and weights
     // from storage buffers, and with the transcribed standard fragment

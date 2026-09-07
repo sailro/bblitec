@@ -244,9 +244,13 @@ scene-less FrameGraphContext drivers compile independently when reached.
 ## Cameras and input
 
 ArcRotate/Free cameras, default framing, bounded orthographic projection,
-viewports and supported SDL controls are live. Canvas dimensions follow the
-drawable extent. Off-center orthographic planes and wider camera combinations
-remain unfinished; general browser input APIs are not implied.
+viewports and supported SDL controls are live. The geospatial (globe-orbit)
+camera compiles its orientation state, limits and per-change recompute, and
+attaches its control surface. None of that surface's input arms is wired to
+the platform, so a geospatial camera renders its pose and does not move.
+Canvas dimensions follow the drawable extent. Off-center orthographic planes
+and wider camera combinations remain unfinished; general browser input APIs
+are not implied.
 
 ## Asset loading and upload
 
@@ -288,6 +292,11 @@ reuse the normal transform mutation path.
 Bare visibility writes are read each frame for transparent and transmissive
 draws, including meshes hidden when lists were built. Opaque cached lists retain
 their deferred bare-write behavior; `setMeshVisible` invalidates those lists.
+A mesh parents to either a mesh or a transform node, through the two lanes a
+mesh record keeps for the pin's single `parent` field; a transform node parents
+only to another transform node, because its record holds no mesh lane. A bare
+`parent` write registers the child for invalidation, and `children.push` fills
+the traversal list separately, as upstream keeps them apart.
 Imported roots and runtime TransformNode values still have distinct paths;
 full imported-root cloning/rotation/scaling and arbitrary hierarchy visitor
 effects remain unfinished.
@@ -328,8 +337,15 @@ incompatible instance layouts for one program still refuse.
 
 Pinned NME graphs compose at generation with bounded graph inputs, textures
 and block-loader forms. Supported alpha-combine graphs draw transparently.
-Uniform input state is generally frozen. Node geometry-MRT output, wider input
-mutation and delegating block-loader forms remain unfinished.
+Uniform input state is generally frozen. A graph reached by a geometry-renderer
+task also composes the pin's geometry view — a third module per (graph, task),
+emitted from the graph's own `GeometryTextureOutputBlock` terminal with its own
+vertex inputs, texture pairs and uniform block — and both backends draw it into
+the task's attachments. That view carries no morph targets, environment or
+shadow lights, no trailing colour attachment, and no LOCAL_POSITION attachment
+(the lane reads the pin's local position attribute, which this port has baked
+into the vertex); each is refused by name. Wider input mutation and delegating
+block-loader forms remain unfinished.
 
 ### Material plugins
 
@@ -385,7 +401,10 @@ Supported pointer registrations enable position-edit behavior; display-only
 gizmos do not imply interaction. Retargeting and shape-specific options retain
 explicit limits. Geometry, follow scaling and bounds arithmetic are lowered
 from pinned source. Native resource creation, lifecycle and scene traversal
-remain checked structural adapters.
+remain checked structural adapters. A gizmo handle may be held by a nullable
+local or class field and created on first use, so an editor scene can keep a
+widget out of its own static frame; the name carries the widget's engine from
+the assignment, so reading it before one refuses.
 
 ## Physics
 

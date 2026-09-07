@@ -85,6 +85,7 @@ export class MeshBuilderLowerer {
         const heightMapGround = features.includes("mesh:ground-heightmap");
         const disc = features.includes("mesh:disc");
         const cylinder = features.includes("mesh:cylinder");
+        const capsule = features.includes("mesh:capsule");
         const polyhedron = features.includes("mesh:polyhedron");
         // The tube and the extrude both finish through the ribbon under
         // their own names -- which is how the pin composes them -- so
@@ -101,6 +102,7 @@ export class MeshBuilderLowerer {
         const torusModule = "src/mesh/create-torus.ts";
         const discModule = "src/mesh/create-disc.ts";
         const cylinderModule = "src/mesh/create-cylinder.ts";
+        const capsuleModule = "src/mesh/create-capsule.ts";
         const polyhedronModule = "src/mesh/create-polyhedron.ts";
         const ribbonModule = "src/mesh/create-ribbon.ts";
         const torusKnotModule = "src/mesh/create-torus-knot.ts";
@@ -197,6 +199,20 @@ export class MeshBuilderLowerer {
                     (args: readonly string[]) => string
                 >;
                 fixedTupleCalls?: ReadonlyMap<string, number>;
+                // A method the builder calls on a list it grew, plus
+                // whether that method hands the list back so a store over
+                // its own source is the mutation alone. `createCapsuleData`
+                // is the one that needs it: it finishes with
+                // `indices = indices.reverse()`.
+                methods?: ReadonlyMap<
+                    string,
+                    (
+                        receiver: string,
+                        args: readonly string[],
+                        binding: PinnedBinding,
+                    ) => string
+                >;
+                receiverReturningMethods?: ReadonlySet<string>;
             } = {},
         ): string => {
             if (!declaration.body) {
@@ -303,6 +319,13 @@ export class MeshBuilderLowerer {
                 listCalls: new Set(["computeNormals"]),
                 ...(extra.fixedTupleCalls
                     ? { fixedTupleCalls: extra.fixedTupleCalls }
+                    : {}),
+                ...(extra.methods ? { methods: extra.methods } : {}),
+                ...(extra.receiverReturningMethods
+                    ? {
+                          receiverReturningMethods:
+                              extra.receiverReturningMethods,
+                      }
                     : {}),
                 returnValue,
                 booleanOr,
@@ -482,6 +505,83 @@ MeshHandle create_cylinder(Engine& engine, CylinderOptions options) {
     return create_mesh_from_data(
         engine,
         "${this.context.pinnedFactoryMeshName("createCylinder")}",
+        data.positions,
+        data.normals,
+        data.indices,
+        data.uvs,
+        {},
+        {},
+        {});
+}
+`;
+        // The capsule. Every option it takes is resolved by a TRUTHINESS
+        // ternary rather than the `??` the rest of the family writes, so
+        // an absent option and an explicit zero are the SAME answer to the
+        // pin -- which is why the record carries zero for an option the
+        // scene omitted and the body's own ternary supplies the default.
+        // Nothing is folded at generation: `radiusTop` falls back to the
+        // resolved `radius` and each cap to `capDetail`, and those chains
+        // are the pin's to run.
+        const capsuleBuilderBody = !capsule
+            ? ""
+            : lowerPinnedMeshBuilder(
+                  this.context.sourceFile(capsuleModule),
+                  this.context.functionDeclaration(
+                      capsuleModule,
+                      "createCapsuleData",
+                  ).declaration,
+                  new Map([
+                      ["options.height", "options.height"],
+                      ["options.radius", "options.radius"],
+                      ["options.radiusTop", "options.radius_top"],
+                      ["options.radiusBottom", "options.radius_bottom"],
+                      ["options.tessellation", "options.tessellation"],
+                      ["options.subdivisions", "options.subdivisions"],
+                      [
+                          "options.capSubdivisions",
+                          "options.cap_subdivisions",
+                      ],
+                      [
+                          "options.topCapSubdivisions",
+                          "options.top_cap_subdivisions",
+                      ],
+                      [
+                          "options.bottomCapSubdivisions",
+                          "options.bottom_cap_subdivisions",
+                      ],
+                      ["vertexCount", "vertices.size() / 3"],
+                      ["indexCount", "indices.size()"],
+                  ]),
+                  new Map(),
+                  true,
+                  {
+                      // `indices = indices.reverse()`: the pin's own last
+                      // statement. `Array.prototype.reverse` reverses in
+                      // place and returns the same array, which is what
+                      // `std::reverse` over the whole range is.
+                      methods: new Map([
+                          [
+                              "reverse",
+                              (receiver: string): string =>
+                                  `std::reverse(${receiver}.begin(), ` +
+                                  `${receiver}.end())`,
+                          ],
+                      ]),
+                      receiverReturningMethods: new Set(["reverse"]),
+                  },
+              );
+        const capsuleFactory = !capsule
+            ? ""
+            : `static PinnedMeshData pinned_create_capsule_data(
+    CapsuleOptions options) {
+${capsuleBuilderBody}
+}
+
+MeshHandle create_capsule(Engine& engine, CapsuleOptions options) {
+    PinnedMeshData data = pinned_create_capsule_data(options);
+    return create_mesh_from_data(
+        engine,
+        "${this.context.pinnedFactoryMeshName("createCapsule")}",
         data.positions,
         data.normals,
         data.indices,
@@ -2315,6 +2415,7 @@ void set_thin_instance_colors(
             heightmapBody,
             discFactory,
             cylinderFactory,
+            capsuleFactory,
             polyhedronFactory,
             ribbonFactory,
             torusKnotFactory,
@@ -2353,6 +2454,7 @@ void set_thin_instance_colors(
                 "setMorphTargetWeights,createTorus,createMeshFromData",
                 ...(disc ? ["createDisc"] : []),
                 ...(cylinder ? ["createCylinder"] : []),
+                ...(capsule ? ["createCapsule"] : []),
                 ...(polyhedron ? ["createPolyhedron"] : []),
                 ...(ribbon ? ["createRibbon"] : []),
                 ...(torusKnot ? ["createTorusKnot"] : []),
@@ -2366,6 +2468,7 @@ void set_thin_instance_colors(
                     "setMorphTargetWeights, createTorus, createMeshFromData",
                     ...(disc ? ["createDisc"] : []),
                     ...(cylinder ? ["createCylinder"] : []),
+                    ...(capsule ? ["createCapsule"] : []),
                     ...(polyhedron ? ["createPolyhedron"] : []),
                     ...(ribbon ? ["createRibbon"] : []),
                     ...(torusKnot ? ["createTorusKnot"] : []),
@@ -2377,6 +2480,7 @@ void set_thin_instance_colors(
                     "src/mesh/create-torus.ts",
                     ...(disc ? ["src/mesh/create-disc.ts"] : []),
                     ...(cylinder ? ["src/mesh/create-cylinder.ts"] : []),
+                    ...(capsule ? ["src/mesh/create-capsule.ts"] : []),
                     ...(polyhedron
                         ? ["src/mesh/create-polyhedron.ts"]
                         : []),
@@ -2825,7 +2929,7 @@ MeshHandle create_torus(Engine& engine, TorusOptions options) {
         static_cast<std::uint32_t>(engine.meshes.size() - 1)};
 }
 
-${computeNormals}${discFactory}${cylinderFactory}${polyhedronFactory}${ribbonFactory}${torusKnotFactory}
+${computeNormals}${discFactory}${cylinderFactory}${capsuleFactory}${polyhedronFactory}${ribbonFactory}${torusKnotFactory}
 MeshHandle create_mesh_from_data(
     Engine& engine,
     const std::string& name,

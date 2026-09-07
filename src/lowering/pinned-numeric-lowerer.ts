@@ -369,6 +369,19 @@ export interface PinnedNumericScope {
      * of emitting a member the native struct does not have.
      */
     recordCalls?: ReadonlyMap<string, readonly string[]>;
+    /**
+     * Methods that mutate their receiver IN PLACE and hand it back, so the
+     * pin can write `a = a.reverse()` for what is one operation.
+     *
+     * `Array.prototype.reverse` is the shape: it reverses the array and
+     * returns that same array, and `createCapsuleData` stores the result
+     * over its own source. The native spelling in `methods` is the
+     * mutation, which has no value to store -- so the assignment around it
+     * is the identity and this set is what says which names it holds for.
+     * A method outside it keeps the ordinary store, which is what stops a
+     * copying method from silently losing its result.
+     */
+    receiverReturningMethods?: ReadonlySet<string>;
     /** This body uses `||` only to join boolean conditions. */
     booleanOr?: boolean;
     /** This body uses `&&` only to join boolean conditions. */
@@ -626,9 +639,24 @@ export class PinnedNumericLowerer {
         }
         if (ts.isForStatement(statement)) {
             const initializer = statement.initializer;
+            // A hoisted loop variable's `for` assigns rather than declares
+            // (`for (y = 0; ...)`); it is the same loop, and the index it
+            // binds lives for the same body either way.
+            const assigned =
+                initializer !== undefined &&
+                ts.isBinaryExpression(initializer) &&
+                initializer.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(initializer.left)
+                    ? { name: initializer.left.text, initial: initializer.right }
+                    : undefined;
+            const declaring =
+                initializer !== undefined &&
+                ts.isVariableDeclarationList(initializer)
+                    ? initializer
+                    : undefined;
             if (
-                !initializer ||
-                !ts.isVariableDeclarationList(initializer) ||
+                (!assigned && !declaring) ||
                 !statement.condition ||
                 !statement.incrementor
             ) {
@@ -638,7 +666,12 @@ export class PinnedNumericLowerer {
             // rather than the f64 every other local is.
             const { condition, incrementor } = statement;
             return this.withBindings(() => {
-                const declared = this.loopVariable(initializer);
+                const declared = assigned
+                    ? this.declaredLoopVariable(
+                          assigned.name,
+                          assigned.initial,
+                      )
+                    : this.loopVariable(declaring!);
                 return [
                     `${indent}for (${declared}; ` +
                         `${this.condition(condition)}; ` +
@@ -782,14 +815,89 @@ export class PinnedNumericLowerer {
         ) {
             this.fail(declaration, "for initializer");
         }
-        const name = declaration.name.text;
+        return this.declaredLoopVariable(
+            declaration.name.text,
+            declaration.initializer,
+        );
+    }
+
+    /** `for (<name> = <initial>; ...)`, whichever spelling declared it. */
+    private declaredLoopVariable(
+        name: string,
+        initial: ts.Expression,
+    ): string {
         const cpp = this.localName(name);
-        const initial = this.expression(declaration.initializer);
+        const value = this.expression(initial);
         this.scope.bindings.set(name, { cpp, type: "index" });
         return (
             `std::int64_t ${cpp} = ` +
-            `static_cast<std::int64_t>(${initial})`
+            `static_cast<std::int64_t>(${value})`
         );
+    }
+
+    /**
+     * A `let x: number;` hoisted above the loops that own it.
+     *
+     * `createCapsuleData` declares `x` and `y` once and then writes
+     * `for (y = 0; ...)` four times -- the same loop variable the rest of
+     * the family spells `for (let y = 0; ...)`, hoisted because two of
+     * those loops sit at the same level. Where every reference to the name
+     * lies inside a `for` whose own initializer assigns it, the hoisted
+     * declaration carries no value that outlives a loop, so it declares
+     * nothing here and each `for` declares its own index -- the same C++
+     * the inline spelling produces. A name read or written anywhere else
+     * keeps the ordinary zeroed local, because there the hoisting is what
+     * the body means.
+     */
+    private hoistedLoopVariable(
+        declaration: ts.VariableDeclaration,
+        name: string,
+    ): boolean {
+        const owner = ts.findAncestor(
+            declaration,
+            (node) =>
+                ts.isFunctionDeclaration(node) ||
+                ts.isFunctionExpression(node) ||
+                ts.isArrowFunction(node) ||
+                ts.isMethodDeclaration(node) ||
+                ts.isSourceFile(node),
+        );
+        if (!owner) return false;
+        const initializes = (node: ts.Node): boolean => {
+            if (!ts.isForStatement(node)) return false;
+            const initializer = node.initializer;
+            return (
+                initializer !== undefined &&
+                ts.isBinaryExpression(initializer) &&
+                initializer.operatorToken.kind ===
+                    ts.SyntaxKind.EqualsToken &&
+                ts.isIdentifier(initializer.left) &&
+                initializer.left.text === name
+            );
+        };
+        let owned = true;
+        let references = 0;
+        const visit = (node: ts.Node): void => {
+            if (!owned) return;
+            if (
+                ts.isIdentifier(node) &&
+                node.text === name &&
+                node !== declaration.name
+            ) {
+                references += 1;
+                if (
+                    !ts.findAncestor(node, (ancestor) =>
+                        ancestor === owner ? "quit" : initializes(ancestor),
+                    )
+                ) {
+                    owned = false;
+                }
+                return;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(owner);
+        return owned && references > 0;
     }
 
     private declarations(
@@ -924,6 +1032,11 @@ export class PinnedNumericLowerer {
             }
             const cpp = this.localName(name);
             if (!declaration.initializer) {
+                // A loop variable the pin hoisted above its `for`s owns no
+                // storage outside them, so the loops declare it instead.
+                if (this.hoistedLoopVariable(declaration, name)) {
+                    continue;
+                }
                 // `let key: number;` assigned on both arms of an if. Zeroed
                 // rather than left indeterminate so the emitted C++ stays
                 // warning-clean; every reached path writes it first. A
@@ -1351,6 +1464,11 @@ export class PinnedNumericLowerer {
 
     private expressionStatement(expression: ts.Expression): string {
         if (ts.isBinaryExpression(expression)) {
+            // `indices = indices.reverse()`: the method the caller declared
+            // receiver-returning already IS the store, so the assignment
+            // around it is the identity and only the mutation is emitted.
+            const inPlace = this.inPlaceSelfStore(expression);
+            if (inPlace) return inPlace;
             const operator = PINNED_ASSIGNMENT_OPERATORS.get(
                 expression.operatorToken.kind,
             );
@@ -1379,6 +1497,42 @@ export class PinnedNumericLowerer {
             return this.expression(expression);
         }
         return this.fail(expression, "expression statement");
+    }
+
+    /**
+     * `a = a.m(...)` where `m` mutates `a` and returns it.
+     *
+     * Only a store back over the method's OWN receiver qualifies: the
+     * identity the caller declared is "returns the receiver", so a store
+     * anywhere else would drop a value that still has somewhere to go and
+     * is left to the ordinary assignment path.
+     */
+    private inPlaceSelfStore(
+        expression: ts.BinaryExpression,
+    ): string | undefined {
+        if (
+            expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken ||
+            !this.scope.receiverReturningMethods
+        ) {
+            return undefined;
+        }
+        const call = this.unwrap(expression.right);
+        if (
+            !ts.isCallExpression(call) ||
+            !ts.isPropertyAccessExpression(call.expression) ||
+            !this.scope.receiverReturningMethods.has(
+                call.expression.name.text,
+            )
+        ) {
+            return undefined;
+        }
+        const receiver = this.unwrap(
+            call.expression.expression,
+        ).getText(this.file);
+        if (receiver !== this.unwrap(expression.left).getText(this.file)) {
+            return undefined;
+        }
+        return this.expression(call);
     }
 
     /**

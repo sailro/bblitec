@@ -74,7 +74,11 @@ inline void trace_camera_state(
     std::cerr
         << "[bblite trace] camera frame=" << frame
         << " kind="
-        << (camera.kind == CameraKind::free ? "free" : "arc-rotate")
+        << (camera.kind == CameraKind::free
+                ? "free"
+                : camera.kind == CameraKind::geospatial
+                      ? "geospatial"
+                      : "arc-rotate")
         << " alpha=" << camera.alpha
         << " beta=" << camera.beta
         << " radius=" << camera.radius

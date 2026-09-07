@@ -1,4 +1,5 @@
 import ts from "typescript";
+import type { DataType } from "../data-types.js";
 import type { Value } from "../types.js";
 import { handleFoundCpp } from "../properties.js";
 import type { IntrinsicCallContext } from "./context.js";
@@ -10,10 +11,60 @@ export interface SkeletonIntrinsicContext
     cppString(value: string): string;
     compileStringLiteral(expression: ts.Expression): string;
     compileCondition(expression: ts.Expression): string;
+    compileNumber(
+        expression: ts.Expression,
+        precision?: "float" | "double",
+    ): string;
+    // The typed-array sink in its general form rather than the mesh
+    // family's `compileTypedArrayArgument`, whose kind union does not
+    // carry the u16 joint stream `createSkeleton` takes.
+    compileForDataSink(
+        expression: ts.Expression,
+        dataType: DataType,
+    ): string;
     requireEngine(value: Value, node: ts.Node): string;
     expectSameEngine(left: Value, right: Value, node: ts.Node): void;
     gltfAlreadyLoaded(): boolean;
     fail(node: ts.Node, message: string): never;
+}
+
+/**
+ * The bone palette, read WITHOUT marking the caller's array escaped.
+ *
+ * The pin does not copy this one: `createSkeleton` publishes it as
+ * `skeleton.boneMatrices`, and `updateSkeletonBoneMatrices` uploads that
+ * same array. So a scene that keeps writing into it -- corpus scene 231
+ * rewrites its pose in place every frame -- is doing what upstream
+ * expects, and the ordinary typed-array sink's escape rule (which exists
+ * for a stream genuinely consumed into another data location, as the
+ * joint and weight streams are) would refuse it.
+ *
+ * The native side snapshots the palette at each call instead of aliasing
+ * the caller's array. That is invisible to the reached slice, because the
+ * pin uploads at exactly those two calls too: a write with no update
+ * reaches no GPU either way. The one place the two would differ is an
+ * update handed a DIFFERENT array of the same length, which upstream also
+ * writes back into the array `createSkeleton` was given; nothing reads a
+ * skeleton's palette back through this port, so there is nothing here to
+ * observe it with.
+ */
+function bonePaletteArgument(
+    context: SkeletonIntrinsicContext,
+    expression: ts.Expression,
+    label: string,
+): string {
+    const value = context.compileValue(expression);
+    if (
+        value.kind !== "data" ||
+        value.dataType?.kind !== "f32array"
+    ) {
+        context.fail(
+            expression,
+            `${label} takes the Float32Array of bone matrices ` +
+                "createSkeleton was given, 16 floats per bone.",
+        );
+    }
+    return value.cpp;
 }
 
 /**
@@ -39,6 +90,89 @@ export function compileSkeletonIntrinsic(
     call: ts.CallExpression,
 ): Value | undefined {
     switch (importedName) {
+        case "createSkeleton": {
+            // The pin's own resource factory: the per-vertex joint and
+            // weight streams plus the initial bone palette, uploaded as
+            // one rgba32float row. The two optional 8-bone streams are
+            // the pin's JOINTS_1/WEIGHTS_1 arm, which composes a second
+            // pair of vertex attributes and a longer skinning sum -- a
+            // different composed variant, not a wider argument list -- so
+            // passing them refuses by name.
+            context.expectArgumentCount(call, 5, 5);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const joints = context.compileForDataSink(
+                call.arguments[1]!,
+                { kind: "u16array" },
+            );
+            const weights = context.compileForDataSink(
+                call.arguments[2]!,
+                { kind: "f32array" },
+            );
+            const boneCount = context.compileNumber(
+                call.arguments[3]!,
+                "double",
+            );
+            const boneData = bonePaletteArgument(
+                context,
+                call.arguments[4]!,
+                "createSkeleton",
+            );
+            const engineCpp = engine.engineCpp ?? engine.cpp;
+            const skeleton =
+                context.allocateTemporaryCppName("skeleton");
+            context.emit(
+                `const bbl::SceneSkeletonHandle ${skeleton} = ` +
+                    `bbl::create_scene_skeleton(${engineCpp}, ` +
+                    `${joints}, ${weights}, ${boneCount}, ${boneData});`,
+            );
+            context.reachFeature("mesh:skeleton", call);
+            return {
+                kind: "scene-skeleton",
+                cpp: skeleton,
+                engineCpp,
+            };
+        }
+
+        case "updateSkeletonBoneMatrices": {
+            // The live half. The pose is read at the call, never folded
+            // at creation: scene 231 rewrites the same array every frame
+            // and hands it back, which is exactly what the pin's own
+            // mirror-then-upload does.
+            context.expectArgumentCount(call, 3, 3);
+            const engine = context.compileValue(call.arguments[0]!);
+            context.expectKind(engine, "engine", call.arguments[0]!);
+            const skeleton = context.compileValue(call.arguments[1]!);
+            context.expectKind(
+                skeleton,
+                "scene-skeleton",
+                call.arguments[1]!,
+            );
+            if (
+                skeleton.engineCpp !==
+                (engine.engineCpp ?? engine.cpp)
+            ) {
+                context.fail(
+                    call,
+                    "A skeleton and the engine updating it must be the " +
+                        "same engine.",
+                );
+            }
+            const boneData = bonePaletteArgument(
+                context,
+                call.arguments[2]!,
+                "updateSkeletonBoneMatrices",
+            );
+            context.reachFeature("mesh:skeleton", call);
+            return {
+                kind: "void",
+                cpp:
+                    `bbl::update_scene_skeleton_bone_matrices(` +
+                    `${context.requireEngine(skeleton, call)}, ` +
+                    `${skeleton.cpp}, ${boneData})`,
+            };
+        }
+
         case "enableBoneControl": {
             // `_installBoneControl(buildSkeletons, applyOverridesToTRS)` —
             // the call creates nothing, so it emits no statement; what it

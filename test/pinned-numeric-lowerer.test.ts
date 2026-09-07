@@ -30,6 +30,7 @@ function lower(
             | "tupleCalls"
             | "recordCalls"
             | "methods"
+            | "receiverReturningMethods"
             | "vec3Literal"
             | "returnValue"
         >
@@ -47,6 +48,9 @@ function lower(
         ...(extra.tupleCalls ? { tupleCalls: extra.tupleCalls } : {}),
         ...(extra.recordCalls ? { recordCalls: extra.recordCalls } : {}),
         ...(extra.methods ? { methods: extra.methods } : {}),
+        ...(extra.receiverReturningMethods
+            ? { receiverReturningMethods: extra.receiverReturningMethods }
+            : {}),
         ...(extra.vec3Literal ? { vec3Literal: extra.vec3Literal } : {}),
         ...(extra.returnValue ? { returnValue: extra.returnValue } : {}),
     });
@@ -519,4 +523,74 @@ test("pushes a record onto a record list by its C++ spelling", () => {
     assert.match(emitted, /ar1\.push_back\(pt\);/);
     assert.match(emitted, /ar1\.push_back\(path\[[^\]]*i[^\]]*\]\);/);
     assert.doesNotMatch(emitted, /object Object/);
+});
+
+// `createCapsuleData` declares `let x: number; let y: number;` once and
+// then writes `for (y = 0; ...)` four times -- the loop variable the rest
+// of the builder family spells inline, hoisted because two of its loops
+// sit at the same level. Where every reference lies inside a `for` that
+// assigns the name, the hoisted declaration owns no storage that outlives
+// a loop, so each loop declares its own index and the emitted C++ is the
+// one the inline spelling produces.
+test("a hoisted loop variable is declared by the loops that assign it", () => {
+    const emitted = lower(
+        "let y: number; for (y = 0; y < 3; y++) { n += y; } " +
+            "for (y = 1; y < 4; y++) { n += y; }",
+        [["n", { cpp: "n", type: "scalar" }]],
+    );
+    assert.doesNotMatch(emitted, /double y = 0\.0;/);
+    assert.equal(
+        emitted.match(/for \(std::int64_t y = /g)?.length,
+        2,
+    );
+});
+
+// The same declaration where the name is ALSO written outside a loop keeps
+// its zeroed local: there the hoisting is what the body means, and the two
+// `for`s would otherwise each start from a fresh index.
+test("a hoisted local read outside its loops keeps its own storage", () => {
+    const emitted = lower(
+        "let y: number; y = 2; for (y = 0; y < 3; y++) { n += y; } n += y;",
+        [["n", { cpp: "n", type: "scalar" }]],
+    );
+    assert.match(emitted, /double y = 0\.0;/);
+});
+
+// `indices = indices.reverse()`: `Array.prototype.reverse` reverses in
+// place and returns the same array, so the store around it is the identity
+// and only the mutation is emitted. A method the caller has NOT declared
+// receiver-returning keeps the ordinary store, which is what stops a
+// copying method from silently losing its result.
+test("stores an in-place method back over its own receiver as the mutation", () => {
+    const methods = new Map([
+        [
+            "reverse",
+            (receiver: string): string =>
+                `std::reverse(${receiver}.begin(), ${receiver}.end())`,
+        ],
+    ]);
+    const emitted = lower(
+        "indices = indices.reverse();",
+        [["indices", { cpp: "indices", type: "f64-list" }]],
+        { methods, receiverReturningMethods: new Set(["reverse"]) },
+    );
+    assert.equal(
+        emitted.trim(),
+        "std::reverse(indices.begin(), indices.end());",
+    );
+    // A method the caller has NOT declared receiver-returning keeps the
+    // ordinary store, so a COPYING method's result still lands somewhere.
+    const copied = lower(
+        "indices = indices.copy();",
+        [["indices", { cpp: "indices", type: "f64-list" }]],
+        {
+            methods: new Map([
+                [
+                    "copy",
+                    (receiver: string): string => `copy_of(${receiver})`,
+                ],
+            ]),
+        },
+    );
+    assert.equal(copied.trim(), "indices = copy_of(indices);");
 });
