@@ -121,6 +121,7 @@ export class AsyncLowerer {
         if (value.kind === "engine" && value.ownedEngineCpp) return "std::shared_ptr<bbl::Engine>";
         if (value.kind === "asset") return "bbl::AssetHandle";
         if (value.kind === "scene") return "bbl::Scene";
+        if (value.kind === "environment-textures") return "std::shared_ptr<const bbl::EnvironmentState>";
         return this.context.fail(node, `Promise result '${value.kind}' has no owned asynchronous representation.`);
     }
     private resultAt(value: Value, cpp: string): Value {
