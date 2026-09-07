@@ -280,9 +280,13 @@ alone.
 
 The compiler-created default colour task preserves scene stage order;
 application tasks follow explicit lists. Post-process modules come from the
-pin and uniform writers from their ASTs. Composite ownership must follow the
-actual task/output graph; assuming the final pass is always the public output
-is insufficient for temporal effects.
+pin and uniform writers from their ASTs. Composite public outputs resolve by
+observed target identity, independently of the final pass: a temporal effect
+may present before writing history. TAA's private `_factor` writer is lowered
+from the pin and starts at 1; its public `factor` is a separate value consumed
+by its execute hook. Neither that hook nor its persistent source-task camera
+jitter is represented yet, so native generation refuses TAA rather than
+running an incomplete pass list.
 
 A screen-space effect invalidates its temporal history on the pin's reset
 events: first allocation, owned-target reallocation, a source or depth

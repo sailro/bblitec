@@ -573,6 +573,13 @@ Reached leaf effects and composites execute pinned factories at generation.
 Their writers, target relationships and parameters drive live native passes.
 Source-relative intermediate sizes follow resize.
 
+Composite output identity is observed from the pinned facade independently
+of pass order. The compiler can transport a proven source render-task handle
+through a composite descriptor, and uniform writers can read private live
+task state. TAA uses these preparation contracts, but native generation
+explicitly refuses it until its per-frame execute hook and camera projection
+jitter over the source task's persistent scene UBO are represented.
+
 ### Screen-space effects
 
 Screen-space contact shadows and one-bounce global illumination run the pin's
@@ -581,8 +588,7 @@ target, reading its depth attachment through a depth-only view. Generation
 runs each factory to obtain its modules, layouts and pass order and lowers the
 temporal state machine and uniform packing from the pinned bodies; the live
 settings, the enabled toggle and a light's own direction are sampled every
-frame. The history copy and composite are ordinary post-process passes. TAA
-still needs camera-jitter and composite-output contracts.
+frame. The history copy and composite are ordinary post-process passes.
 
 ### Fullscreen effects
 

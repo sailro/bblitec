@@ -13,22 +13,16 @@ import type {
 import type { IntrinsicCallContext } from "./context.js";
 import type { CompiledRenderTargetOptions } from "./engine-options.js";
 import type { CompiledScreenSpaceTask } from "./screen-space-options.js";
+import type {
+    CompiledPostProcessComposite,
+    CompiledPostProcessTask,
+} from "./post-process-options.js";
 import { isScreenSpaceIntrinsic } from "../../pinned-screen-space.js";
 import { validateObjectProperties } from "../option-helpers.js";
 
 interface CompiledGeometryTask {
     cpp: string;
     manifest: GeometryOutputTaskManifest;
-}
-
-interface CompiledPostProcessTask {
-    cpp: string;
-    manifest: PostProcessTaskManifest;
-}
-
-interface CompiledPostProcessComposite {
-    cpp: string;
-    manifest: PostProcessCompositeManifest;
 }
 
 export interface EngineIntrinsicContext
@@ -302,6 +296,7 @@ export function compileEngineIntrinsic(
                 cpp:
                     `bbl::create_render_task(${engine.cpp}, ` +
                     `${scene.cpp}, ${options})`,
+                renderTask: true,
                 engineCpp:
                     engine.engineCpp ?? engine.cpp,
             };
@@ -498,6 +493,9 @@ function compilePostProcessIntrinsic(
             context.postProcessComposites.length,
         );
         context.recordPostProcessComposite(built.manifest);
+        for (const task of built.sourceTasks) {
+            context.expectSameEngine(engine, task, call);
+        }
         return {
             kind: "task",
             cpp:

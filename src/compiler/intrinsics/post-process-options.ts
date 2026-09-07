@@ -24,6 +24,7 @@ import type {
     PostProcessCompositeManifest,
     PostProcessOptionValue,
     PostProcessTaskManifest,
+    Value,
 } from "../types.js";
 import {
     compileTextureReference,
@@ -154,6 +155,7 @@ export function compilePostProcessTaskOptions(
 export interface CompiledPostProcessComposite {
     cpp: string;
     manifest: PostProcessCompositeManifest;
+    sourceTasks: readonly Value[];
 }
 
 /**
@@ -197,6 +199,18 @@ export function compilePostProcessCompositeOptions(
 
     const target = optionalRenderTarget(context, object, "targetTexture");
 
+    const sourceTasks = (composite.sourceTasks ?? []).map((option) => {
+        const expression = context.objectProperty(object, option);
+        if (!expression) context.fail(object, `${intrinsic} requires '${option}'.`);
+        const value = context.compileValue(expression);
+        context.expectKind(value, "task", expression);
+        if (!value.renderTask) {
+            context.fail(expression, `${intrinsic} '${option}' requires a proven scene render task.`);
+        }
+        context.expectSameEngine(source, value, expression);
+        return value;
+    });
+
     const extraTextures = composite.extraTextures.map((option) =>
         compileTextureReference(context, object, option, "color"),
     );
@@ -221,13 +235,14 @@ export function compilePostProcessCompositeOptions(
         object,
         composite,
         intrinsic,
-        COMPOSITE_PASS_SETTINGS,
+        [...COMPOSITE_PASS_SETTINGS, ...(composite.sourceTasks ?? [])],
     );
     return {
         cpp:
             `bbl::PostProcessCompositeInputs{${context.cppString(name)}, ` +
             `${source.cpp}, {${extraTextures.join(", ")}}, ${target.cpp}, ` +
-            `${camera}}`,
+            `${camera}, {${sourceTasks.map((task) => task.cpp).join(", ")}}}`,
+        sourceTasks,
         manifest: {
             compositeIndex,
             intrinsic,

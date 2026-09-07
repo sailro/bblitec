@@ -17238,11 +17238,11 @@ class Compiler
             // made from the source's own descriptor. The pin resolves that
             // in `prepareOutputTarget`; the record holds whichever it is,
             // so chaining a pass onto the one before it reads a field. A
-            // composite's output is its last pass's, which is what the pin
-            // assigns to `outputTexture` at the end of its own `record`.
+            // composite's public output may precede a history update pass;
+            // generation resolves it from the pinned facade's identity.
             return {
                 kind: "render-target",
-                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].post_process.passes.back().output_target`,
+                cpp: `${this.requireEngine(owner, expression)}.frame_tasks[${owner.cpp}.value].post_process.output_target`,
                 ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
             };
         }

@@ -2158,6 +2158,8 @@ export interface Value {
    * scene can name, so a setter on one is refused.
    */
   postProcessComposite?: PostProcessCompositeManifest;
+  /** Proven scene-render task factory result, including its constant aliases. */
+  renderTask?: true;
   /**
    * Set instead when a `task` value names a screen-space effect. Its
    * `outputTexture` is whichever target its composite ends on, and its

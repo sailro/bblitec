@@ -76,6 +76,12 @@ export class PostProcessLowerer {
     private blendModes = new Map<number, readonly string[]>();
 
     public lowerTaskRecords(): LoweredSource {
+        for (const composite of this.composites) {
+            const missing = postProcessComposite(composite.intrinsic)?.unsupportedRuntime;
+            if (missing) {
+                throw new Error(`${composite.intrinsic} requires ${missing}; native execution is not represented.${this.refusalSite}`);
+            }
+        }
         const effects = this.reachedEffects();
         this.assertTaskContracts();
         for (const effect of effects) {
@@ -446,6 +452,16 @@ export class PostProcessLowerer {
             if (slot.runtime) {
                 continue;
             }
+            if (slot.owner === "task") {
+                this.expectDefault(
+                    this.context.propertyInitializer(
+                        this.context.objectInitializer(declaration, "task"), slot.path,
+                    ),
+                    slot.fallback, file,
+                    { intrinsic: effect.intrinsic, option: slot.path },
+                );
+                continue;
+            }
             const { option, component } = slotOption(slot);
             const found = fallbacks.get(option);
             if (!found) {
@@ -692,6 +708,7 @@ TaskHandle create_post_process_task(
     for (PostProcessPassOptions& pass : options.passes) {
         resolve_post_process_pass_output(engine, pass);
     }
+    options.output_target = options.passes.at(options.output_pass).output_target;
     FrameTaskRecord task;
     task.kind = FrameTaskKind::post_process;
     task.post_process = std::move(options);
@@ -825,6 +842,10 @@ ${this.compositeFactories()}
                 }
                 return "inputs.target";
             }
+            if (texture.option === "swapchain") {
+                const handle = "swapchain_render_target(engine)";
+                return asTarget ? handle : `render_target_texture(${handle})`;
+            }
             const slot = compositeExtraIndex(
                 composite,
                 texture.option,
@@ -878,6 +899,8 @@ ${lines.join("\n")}    PostProcessTaskOptions options;
     options.passes = {
 ${passes.join(",\n")},
     };
+    options.output_pass = ${composite.outputPass}u;
+    options.source_tasks = std::move(inputs.source_tasks);
     return create_post_process_task(engine, std::move(options));
 }`;
     }
@@ -1069,7 +1092,7 @@ ${body}
             ],
         ]);
         for (const [slot, parameter] of effect.params.entries()) {
-            const key = `params.${parameter.path}`;
+            const key = `${parameter.owner ?? "params"}.${parameter.path}`;
             if (!bindings.has(key)) {
                 bindings.set(key, {
                     cpp: `task.params[${slot}]`,

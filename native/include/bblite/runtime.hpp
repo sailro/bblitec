@@ -1345,6 +1345,10 @@ struct PostProcessPassOptions {
 struct PostProcessTaskOptions {
     std::string name;
     std::vector<PostProcessPassOptions> passes;
+    /** The facade's output, independent of the order its passes execute. */
+    std::uint32_t output_pass = 0;
+    RenderTargetHandle output_target{};
+    std::vector<TaskHandle> source_tasks{};
 };
 
 /**
@@ -1367,6 +1371,8 @@ struct PostProcessCompositeInputs {
     /** The target the caller named, or an invalid handle for none. */
     RenderTargetHandle target{};
     CameraHandle camera{};
+    /** Source render tasks, in the composite descriptor's declared order. */
+    std::vector<TaskHandle> source_tasks{};
 };
 
 /**
