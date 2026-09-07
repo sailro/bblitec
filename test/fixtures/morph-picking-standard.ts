@@ -1,6 +1,6 @@
 import {createEngine,createSceneContext,createArcRotateCamera,createMeshFromData,
     createStandardMaterial,createMorphTargets,setMorphTargetWeights,addToScene,
-    registerScene,startEngine,createGpuPicker,pickAsync,disposePicker} from "babylon-lite";
+    registerScene,startEngine,createGpuPicker,pickAsync,disposePicker} from "@babylonjs/lite";
 
 async function main() {
     const canvas=document.getElementById('renderCanvas') as HTMLCanvasElement;
