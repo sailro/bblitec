@@ -7,6 +7,9 @@ import test from "node:test";
 import ts from "typescript";
 import { LoweringContext } from "../src/lowering/context.js";
 import { GizmoLowerer } from "../src/lowering/gizmo-lowerer.js";
+import { FactoryLowerer } from "../src/lowering/factory/material-factories.js";
+import { SceneLowerer } from "../src/lowering/scene-lowerer.js";
+import { lowerPointerDrag } from "../src/lowering/pointer-drag-lowerer.js";
 import {
     pinnedGizmoBoundsGeometry,
     pinnedGizmoFollowGeometry,
@@ -14,7 +17,7 @@ import {
 } from "../src/lowering/pinned-gizmo-geometry.js";
 import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { UpstreamSourceStore } from "../src/upstream-source.js";
-import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 const CAMERA = "src/gizmo/camera-gizmo.ts";
 const LIGHT = "src/gizmo/light-gizmo.ts";
@@ -275,6 +278,75 @@ test("gizmo geometry carriers and resource boundaries reject incompatible pinned
 });
 
 const nativeTools = optionalNativeFixtureTools();
+test("gizmo colors survive registration and first hover with the pinned channel values", {
+    skip: !nativeTools,
+}, () => {
+    const context = new GeometryContext();
+    const color = [.123456789012345, .375, .875];
+    const pinned = object(execute(context, [CORE], "createGizmoMaterials(args[0]);", [color]));
+    const colored = list(object(pinned.colored).diffuseColor);
+    const hover = list(object(pinned.hover).diffuseColor);
+    assert.equal(colored, color);
+    const gizmo = new GizmoLowerer(context, ["gizmo:axis-drag"]).lower().source;
+    const pointer = lowerPointerDrag(context);
+    const scene = new SceneLowerer(context).lowerCore().source;
+    const registration = ["void require_scene_engine(", "std::uint32_t material_family_bit(",
+        "std::uint32_t scene_material_families(", "void drain_scene_deferred_builders(",
+        "void register_scene("].map(signature => cppFunction(scene, signature)).join("\n");
+    const directory = resolve("artifacts/test-gizmo-material-colors");
+    mkdirSync(directory, {recursive: true});
+    const source = join(directory, "check.cpp"), executable = join(directory, "check.exe");
+    writeFileSync(source, `#include <bblite/runtime.hpp>
+#include <bblite/js_data.hpp>
+#include <cassert>
+namespace bbl {
+${cppFunction(new FactoryLowerer(context).lowerStandardMaterialFactory().source, "MaterialHandle create_standard_material(")}
+${cppFunction(gizmo, "MaterialHandle gizmo_material(")}
+${registration}
+Scene fixture_scene;
+Scene& utility_layer_scene(Engine&, UtilityLayerHandle) { return fixture_scene; }
+std::shared_ptr<PointerDragDispatcher> create_pointer_drag_dispatcher(Engine&, UtilityLayerHandle, bool) { return {}; }
+js::Callback<void()> register_pointer_drag(const std::shared_ptr<PointerDragDispatcher>&, PointerDragHandle) { return []() {}; }
+${cppFunction(pointer, "void initialize_pointer_gizmo(")}
+${cppFunction(pointer, "void pointer_drag_hover(")}
+}
+int main() {
+    bbl::Engine engine;
+    auto& scene = bbl::fixture_scene;
+    scene.engine = &engine;
+    const auto material = bbl::gizmo_material(engine, bbl::Vec3d{${color.join(",")}}, false);
+    engine.meshes.emplace_back();
+    engine.meshes[0].material = material;
+    scene.meshes.push_back(bbl::MeshHandle{0});
+    engine.edit_gizmos.emplace_back();
+    bbl::initialize_pointer_gizmo(engine, {}, bbl::EditGizmoHandle{0}, material, false);
+    bbl::register_scene(scene);
+    const double expected[] = {${colored.join(",")}};
+    const auto observed = *bbl::material_color(engine, material, bbl::MaterialColorSlot::diffuse_color);
+    for (int i=0; i<3; ++i) assert(observed[i] == expected[i]);
+    assert(engine.materials[material.value].diffuse_color.r == static_cast<float>(expected[0]));
+    assert(engine.materials[material.value].diffuse_color.g == static_cast<float>(expected[1]));
+    assert(engine.materials[material.value].diffuse_color.b == static_cast<float>(expected[2]));
+    bbl::pointer_drag_hover(engine, bbl::PointerDragHandle{0}, true);
+    const auto hovered = engine.edit_gizmos[0].hover_material;
+    assert(engine.meshes[0].material.value == hovered.value);
+    bbl::Scene hover_scene;
+    hover_scene.engine = &engine;
+    hover_scene.meshes = scene.meshes;
+    bbl::register_scene(hover_scene);
+    const double expected_hover[] = {${hover.join(",")}};
+    const auto observed_hover = *bbl::material_color(engine, hovered, bbl::MaterialColorSlot::diffuse_color);
+    for (int i=0; i<3; ++i) assert(observed_hover[i] == expected_hover[i]);
+    assert(engine.materials[hovered.value].diffuse_color.r == static_cast<float>(expected_hover[0]));
+    assert(engine.materials[hovered.value].diffuse_color.g == static_cast<float>(expected_hover[1]));
+    assert(engine.materials[hovered.value].diffuse_color.b == static_cast<float>(expected_hover[2]));
+}
+`);
+    runNativeFixtureCompiler(nativeTools!, ["/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", "/Od",
+        `/I${resolve("native/include")}`, source, `/Fe:${executable}`, `/Fo:${join(directory, "check.obj")}`]);
+    execFileSync(executable, [], {stdio: "pipe"});
+});
+
 test("AST-derived gizmo geometry and follow transforms match the executed pin, including semantic edits", {
     skip: !nativeTools,
 }, async () => {

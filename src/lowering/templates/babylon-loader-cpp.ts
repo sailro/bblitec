@@ -214,8 +214,6 @@ MaterialHandle load_material(
     std::unordered_map<std::string, std::uint32_t>& reflection_cubes) {
     MaterialRecord material;
     material.standard_material = true;
-    material.diffuse_color =
-        color3_or(source, "diffuse", Color3{1.0f, 1.0f, 1.0f});
     // loadBabylon copies RGB into a fresh array; exports may include an
     // unused fourth channel. Null/absent colors keep the factory default.
     if (const auto diffuse = source.find("diffuse");
@@ -228,6 +226,7 @@ MaterialHandle load_material(
     material.source_diffuse_color = std::make_shared<std::vector<double>>(
         std::initializer_list<double>{double_at(source, "diffuse", 0, 1),
             double_at(source, "diffuse", 1, 1), double_at(source, "diffuse", 2, 1)});
+    project_material_source_colors(material);
     material.specular_color =
         color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
     material.emissive_factor =
