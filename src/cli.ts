@@ -691,6 +691,16 @@ async function main(): Promise<void> {
     const splatSogRotation = splatContainerRotations.get("sog");
     const specializationFeatures =
         emitAssetSpecializations(outputPath, result.manifest.assets);
+    if (specializationFeatures.materialExtensionPayload) {
+        result.manifest.adaptations.push({
+            id: "packaged-gltf-material-extension-initialization",
+            category: "rendering",
+            sourceSemantics: "The pinned loader executes material extension handlers after decoding textures.",
+            nativeSemantics: "Packaging executes those handlers with textureInfo carriers, preserving their predicates, numeric values and ordered merge. Native loading hydrates anisotropy and diffuse-transmission records; GPU uploads and animated UV transforms remain live.",
+            risk: "low",
+            validation: ["glTF material extension payload semantic tests", "scene241 both-backend animation and camera gates"],
+        });
+    }
     if (specializationFeatures.eightInfluenceSkinning) {
         // The pinned loader reads the second influence pair and skins eight
         // influences (MSH_HAS_SKELETON_8); the generated loader reads four.
@@ -1401,6 +1411,7 @@ async function main(): Promise<void> {
             specializationFeatures.animationPointerMaterials,
         assetTransmission: specializationFeatures.assetTransmission,
         materialSpecular: specializationFeatures.materialSpecular,
+        materialExtensionPayload: specializationFeatures.materialExtensionPayload,
         // The one static `selectVariant` a scene reaches: the loader reads
         // the variant order and the per-primitive mappings out of the
         // document, so only the chosen name is compiled in.

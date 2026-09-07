@@ -334,6 +334,17 @@ export class NativeFunctionLowerer {
                 `Function '${callee.text}' expects at most ${signature.parameters.length} plain arguments.`,
             );
         }
+        if (signature.parameters.some((parameter, index) =>
+            call.arguments[index] === undefined &&
+            ts.isParameter(parameter.name.parent) &&
+            parameter.name.parent.questionToken !== undefined &&
+            parameter.name.parent.initializer === undefined
+        )) {
+            // The inline path binds omitted optional parameters to undefined.
+            // A native data parameter has no absent representation unless its
+            // mapped type explicitly carries one.
+            return undefined;
+        }
         if (
             signature.parameters.some(
                 (parameter, index) => {

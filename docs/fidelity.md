@@ -176,6 +176,13 @@ Loader metadata chooses material shape, textures and activation. In particular:
 
 Use the pinned material-input mapper and composer coverage checks instead of
 recreating those predicates in multiple loaders/variant passes.
+Anisotropy and diffuse-transmission option objects are packaged from that
+mapper's ordered extension merge. Native hydration owns texture resources and
+live transforms; it does not repeat the extension equations or merge policy.
+Occlusion pointers use the loader's independent occlusion transform when one
+exists, including a split UV0 transform that shares the ORM image. The pin
+does not resolve metallic-roughness texture pointers, so those transforms
+remain at their load-time values.
 
 ### Deformation and instancing
 

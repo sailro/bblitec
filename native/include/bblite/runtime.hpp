@@ -2160,6 +2160,7 @@ struct MeshRecord {
      * local. Both readers are in `pal_gpu_shared.hpp`.
      */
     bool scene_skeleton = false;
+    bool has_vertex_alpha = false;
     /**
      * `mesh.vat`. Set by `attachVat`, which also drops the live skeleton --
      * so a record carrying this one deforms from the baked texture and its
@@ -2932,6 +2933,8 @@ struct MaterialRecord {
     float ambient_level = 1.0f;
     float diffuse_u_scale = 1.0f;
     float diffuse_v_scale = 1.0f;
+    double standard_uv_offset_x = 0.0;
+    double standard_uv_offset_y = 0.0;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
     // Per-slot glTF texture transforms. Occlusion carries its own because the
@@ -2944,6 +2947,7 @@ struct MaterialRecord {
     TextureTransform base_color_transform{};
     TextureTransform orm_transform{};
     TextureTransform occlusion_transform{};
+    bool has_occlusion_transform = false;
     TextureTransform normal_transform{};
     TextureTransform emissive_transform{};
     TextureTransform clearcoat_transform{};
@@ -2955,6 +2959,11 @@ struct MaterialRecord {
     TextureTransform iridescence_thickness_transform{};
     TextureTransform transmission_transform{};
     TextureTransform thickness_transform{};
+    TextureTransform anisotropy_transform{};
+    TextureTransform translucency_color_transform{};
+    TextureTransform translucency_intensity_transform{};
+    TextureTransform metallic_reflectance_transform{};
+    TextureTransform reflectance_transform{};
     std::uint32_t diffuse_coord_index = 0;
     std::uint32_t specular_coord_index = 0;
     std::uint32_t ambient_coord_index = 0;
@@ -3130,6 +3139,9 @@ struct MaterialRecord {
     TextureData metallic_roughness_texture;
     TextureData metallic_reflectance_texture;
     TextureData reflectance_texture;
+    TextureData anisotropy_texture;
+    TextureData translucency_color_texture;
+    TextureData translucency_intensity_texture;
     TextureData normal_texture;
     /** KHR_materials_pbrSpecularGlossiness: RGB specular, A glossiness. */
     TextureData spec_gloss_texture;

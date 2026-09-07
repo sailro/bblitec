@@ -319,10 +319,13 @@ frame. Reuse the pinned registration and writer rules for further variants.
 Standard, PBR and Grid materials, shader materials, supported no-colour views,
 alpha/culling state and live property writes are available. PBR layers include
 clearcoat, sheen, iridescence, anisotropy and transmission where reached by
-supported source APIs or asset extensions. Support is per entry point: direct
-anisotropy does not imply glTF `KHR_materials_anisotropy` support.
+supported source APIs or asset extensions. glTF anisotropy and diffuse
+transmission execute the pinned loader handlers during packaging, preserving
+their option objects and independent texture transforms in native records.
 Explicit PBR lightmap/Standard UV/vertex-colour opt-ins remain distinct from
 asset-driven shape.
+`enableStandardUvOffset` enables live UV-offset assignments, and vertex-alpha
+meshes select the transparent draw bucket and matching Standard variant.
 
 Shader materials support bounded typed 2D/2D-array samplers, float/depth sample
 types and comparison mode, plus declared storage buffers and their reached
@@ -358,7 +361,10 @@ changes and PBR sampler plugins remain incomplete.
 
 Property clips and glTF channels use separate runtimes with deterministic
 seeking. Supported glTF slices include TRS, skinning, morph weights and reached
-animation-pointer material/visibility targets. Track interpolation and target
+animation-pointer material/visibility targets, including texture transforms
+on the reached extension slots. The pinned resolver deliberately ignores
+metallic-roughness texture transforms; those retain their load-time values.
+Track interpolation and target
 support are independent; a property-animation option does not establish glTF
 support for the same spelling.
 
@@ -368,7 +374,9 @@ GPU skinning, morph/storage morph, baked vertex animation and dynamic
 thin-instance pools are supported. The glTF skin path retains four influences
 when an asset supplies eight, recorded as an adaptation. Direct morph factories
 have a narrower target/shared-weight surface than loaded glTF morphs.
-Scene-authored skeletons and Standard skeleton palettes remain unfinished.
+Scene-authored skeletons retain their joint/weight arrays and live bone palettes.
+Standard materials require `enableStandardSkeleton`; both backends upload the
+palette for the pinned skinned vertex stage.
 
 The reached thin-instance pool includes set/count/matrix/colour/flush,
 add/remove and count reads. GPU-culling enablement records omission of its

@@ -237,6 +237,24 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "scene231",
+        name: "Scene 231 - Standard Material Deform Features",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene231.ts",
+        title: "Babylon Lite Native - Standard Material Deform Features",
+        parity: {
+            referenceSearch: "?seekTime=0.5",
+            // The source uploads 30 successive bone poses before freezing.
+            nativeEnvironment: {
+                BBLITE_SCREENSHOT_FRAME: "60",
+                BBLITE_MAX_FRAMES: "61",
+            },
+            maxFullMad: 0.001,
+            maxForegroundMad: 0.002,
+            backgroundColor: [37, 42, 54],
+            backgroundThreshold: 30,
+        },
+    },
+    {
         id: "scene216",
         name: "Scene 216 - PBR Fog",
         source: "corpus/babylon-lite/lab/lite/src/lite/scene216.ts",
@@ -1242,6 +1260,21 @@ const sceneInputs: readonly SceneInput[] = [
             referenceTimeSeconds: 0.5,
             maxFullMad: 0.001,
             maxForegroundMad: 0.001,
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+        },
+    },
+    {
+        id: "scene241",
+        name: "Scene 241 - Animation Pointer UVs",
+        source: "corpus/babylon-lite/lab/lite/src/lite/scene241.ts",
+        title: "Babylon Lite Native - Animation Pointer UVs",
+        parity: {
+            referenceSearch: "?seekTime=2",
+            // The source seeks and pauses its groups on callback ten.
+            nativeEnvironment: { BBLITE_SCREENSHOT_FRAME: "10" },
+            maxFullMad: 0.003,
+            maxForegroundMad: 0.01,
             backgroundColor: [51, 51, 77],
             backgroundThreshold: 30,
         },

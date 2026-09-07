@@ -147,6 +147,7 @@ test("transcribes MorphTargetsBlock storage bindings structurally", async () => 
         animationPointerMaterials: false,
         assetTransmission: false,
         materialSpecular: false,
+        materialExtensionPayload: false,
         selectedMaterialVariant: "",
         standardLights: 0,
         standardLightLists: false,

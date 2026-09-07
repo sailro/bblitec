@@ -99,7 +99,11 @@ const extensionWriters: ReadonlyArray<{
             roughness: "material.clearcoat_roughness",
             bumpTextureScale: "material.clearcoat_normal_scale",
         },
-        nestedWriters: { writeCcUvTransform: uvTransformSources() },
+        nestedWriters: { writeCcUvTransform: uvTransformSources({
+            ccIntUV: "material.clearcoat_transform",
+            ccRoughUV: "material.clearcoat_roughness_transform",
+            ccNormUV: "material.clearcoat_normal_transform",
+        }) },
     },
     {
         modulePath: "src/material/pbr/fragments/iridescence-fragment.ts",
@@ -112,7 +116,10 @@ const extensionWriters: ReadonlyArray<{
             minimumThickness: "material.iridescence_minimum_thickness",
             maximumThickness: "material.iridescence_maximum_thickness",
         },
-        nestedWriters: { writeUvTransform: uvTransformSources() },
+        nestedWriters: { writeUvTransform: uvTransformSources({
+            iridescenceUV: "material.iridescence_transform",
+            iridescenceThicknessUV: "material.iridescence_thickness_transform",
+        }) },
     },
     {
         // One lane and no transform: the lightmap's blend, UV set, gamma
@@ -152,11 +159,7 @@ const extensionWriters: ReadonlyArray<{
         },
     },
     {
-        // The one extension whose writer is a method on its own `pbrExt`
-        // literal rather than a top-level `writeXUBO`. Its texture arm --
-        // the `anisotropyUVm`/`anisotropyUVt` pair -- rides the second
-        // feature bit, which no reached call sets, so the nested transform
-        // writer folds away with the offsets it looks up.
+        // This writer owns its anisotropy UV transform inline.
         modulePath: "src/material/pbr/fragments/anisotropy-fragment.ts",
         symbolName: "pbrExt.writeUbo",
         sourceLocal: "aniso",
@@ -164,10 +167,8 @@ const extensionWriters: ReadonlyArray<{
         propertySources: {
             intensity: "material.anisotropy_intensity",
             direction: "material.anisotropy_direction",
-            // Named as absent so a variant that did declare the transform
-            // fields would fail here rather than read a record field that
-            // does not exist.
-            texture: null,
+            texture: "material",
+            ...uvTransformSources({ anisotropy: "material.anisotropy_transform" })("anisotropy"),
         },
         vectorProperties: { direction: 2 },
     },
@@ -188,7 +189,10 @@ const extensionWriters: ReadonlyArray<{
             _metallicReflectanceColor: "material.metallic_reflectance_color",
         },
         vectorProperties: { _metallicReflectanceColor: 3 },
-        nestedWriters: { writeReflUvTransform: uvTransformSources() },
+        nestedWriters: { writeReflUvTransform: uvTransformSources({
+            reflUV: "material.reflectance_transform",
+            mrReflUV: "material.metallic_reflectance_transform",
+        }) },
     },
     {
         modulePath: "src/material/pbr/fragments/subsurface-fragment.ts",
@@ -204,11 +208,14 @@ const extensionWriters: ReadonlyArray<{
             thickness: "material",
             min: "material.subsurface_minimum_thickness",
             max: "material.subsurface_maximum_thickness",
-            colorTexture: null,
-            intensityTexture: null,
+            colorTexture: "material.translucency_color_transform",
+            intensityTexture: "material.translucency_intensity_transform",
         },
         vectorProperties: { color: 3, diffusionDistance: 3 },
-        nestedWriters: { writeSsUvTransform: uvTransformSources() },
+        nestedWriters: { writeSsUvTransform: uvTransformSources({
+            translucencyColorUV: "material.translucency_color_transform",
+            translucencyIntensityUV: "material.translucency_intensity_transform",
+        }) },
     },
     {
         // Fills refractionParams, volumeParams and thicknessParams from three
@@ -2043,6 +2050,9 @@ export interface MaterialTextureSlotFeatures {
     lightmap: boolean;
     metallicReflectanceMap: boolean;
     reflectanceMap: boolean;
+    anisotropyMap?: boolean;
+    translucencyColorMap?: boolean;
+    translucencyIntensityMap?: boolean;
     /** A composed variant samples the spec-gloss pair, which replaces the
      *  metallic-roughness workflow rather than layering over it. */
     specularGlossiness: boolean;
@@ -2231,6 +2241,13 @@ function materialTextureSlotRows(
     // Appended after the layered extensions rather than beside the base
     // workflow it replaces, so a scene that compiles it shifts no existing
     // slot index -- the same reasoning the Standard bump pair follows.
+    for (const [enabled, source, textureName, samplerName, srgb] of [
+        [features.anisotropyMap, "anisotropy", "anisotropyTexture_", "anisotropySampler_", "linear"],
+        [features.translucencyColorMap, "translucency_color", "translucencyColorTexture_", "translucencyColorSampler_", "srgb"],
+        [features.translucencyIntensityMap, "translucency_intensity", "translucencyIntensityTexture_", "translucencyIntensitySampler_", "linear"],
+    ] as const) {
+        if (enabled) mesh.push({ source, srgb, fallback: "white", textureName, samplerName });
+    }
     if (features.specularGlossiness) {
         mesh.push({
             source: "spec_gloss",
@@ -2500,6 +2517,9 @@ enum class MaterialTextureSource {
     lightmap,
     metallic_reflectance,
     reflectance,
+    anisotropy,
+    translucency_color,
+    translucency_intensity,
     /** The dedicated uv2 occlusion map, when the record flags it. */
     occlusion_uv2,
     /** Standard bump map; a PBR material leaves the fallback. */
@@ -2754,6 +2774,7 @@ export function pinnedStandardVariantsHeader(
     context: LoweringContext,
     provenance: string,
     variants: readonly PinnedStandardVariantManifestEntry[],
+    uvOffset = false,
 ): string {
     if (variants.length === 0) {
         throw new Error(
@@ -2864,6 +2885,14 @@ export function pinnedStandardVariantsHeader(
                 "writeStandardUvTransformData fills.",
         );
     }
+    if (uvOffset) {
+        const enabler = context.functionDeclaration("src/material/standard/enable-standard-mesh-features.ts", "enableStandardUvOffset").declaration;
+        context.assertExpressionShape(
+            context.callExpression(enabler, "_installStandardUvOffsetResolver").arguments[0]!,
+            "(material) => material.uvOffset ?? null",
+            "Standard UV offset resolver",
+        );
+    }
     const uvWriterBody = lowerPinnedUboWriter(context, {
         modulePath: "src/material/standard/standard-pipeline.ts",
         symbolName: "writeStandardUvTransformData",
@@ -2879,12 +2908,13 @@ export function pinnedStandardVariantsHeader(
                 0: "material.uv_scale[0]",
                 1: "material.uv_scale[1]",
             },
+            ...(uvOffset ? { uvOffset: { 0: "material.uv_offset[0]", 1: "material.uv_offset[1]" } } : {}),
         },
-        // `enableStandardUvOffset()` is the pin's opt-in for a per-material
-        // UV offset; no reached scene calls it, so the resolver is the pin's
-        // own uninstalled null and the offset lanes fold to their defaults.
-        // A scene that enables it must extend this before wave D flips over.
-        absentHooks: ["_uvOffsetResolver"],
+        // The pin installs its per-material offset resolver only after the
+        // scene calls enableStandardUvOffset; otherwise the hook is null.
+        ...(uvOffset
+            ? { vectorHooks: { _uvOffsetResolver: { property: "uvOffset", lanes: 2 } }, scalarPrecision: "double" }
+            : { absentHooks: ["_uvOffsetResolver"] }),
         slots: [{ name: "u", offset: 0, lanes: 4 }],
     }).join("\n");
     const propsMembers = standardPropsFields.map((field) => {
@@ -3005,7 +3035,7 @@ using bbl::Color3;
 // (diffuse_color, specular_power, bump_level, ... are one-to-one, and
 // lightmap_level / reflection_coord_mode have no record field yet).
 struct StandardMaterialProps {
-${propsMembers.join("\n")}
+${propsMembers.join("\n")}${uvOffset ? "\n    std::array<double, 2> uv_offset{};" : ""}
 };
 
 // src/material/standard/standard-template.ts matUniforms

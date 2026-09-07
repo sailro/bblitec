@@ -992,6 +992,7 @@ export function spawnNativeMeasured(
     overrides: Record<string, string>,
     dropVariables: readonly string[] = [],
     captureStderr = false,
+    timeoutMs?: number,
 ): string {
     const inherited: Record<string, string> = {};
     for (const [name, value] of Object.entries(process.env)) {
@@ -1007,6 +1008,7 @@ export function spawnNativeMeasured(
         windowsHide: true,
         encoding: "utf8",
         maxBuffer: 64 * 1024 * 1024,
+        timeout: timeoutMs,
         env: { ...inherited, ...overrides },
     });
     if (result.error) throw result.error;

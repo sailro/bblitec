@@ -102,6 +102,10 @@ export interface UboWriterRequest {
      * value, decided the way the pin decides it.
      */
     absentHooks?: readonly string[];
+    /** Installed resolver calls whose numeric lanes map to a record property. */
+    vectorHooks?: Readonly<Record<string, { property: string; lanes: number }>>;
+    /** Preserve JavaScript numeric intermediates for writers with live f64 inputs. */
+    scalarPrecision?: "float" | "double";
 }
 
 interface WriterState {
@@ -347,10 +351,9 @@ function collectMutatedLocals(body: ts.Node): Set<string> {
  * `_uvOffsetResolver?.(material) ?? null` shape. The hook names come from the
  * request; the call's own result is the pin's uninstalled evaluation, null.
  */
-function initializerIsAbsentHookCall(
-    state: WriterState,
+function initializerHookName(
     expression: ts.Expression,
-): boolean {
+): string | undefined {
     let node = expression;
     // `hook?.(x) ?? null` — the fallback is itself null, so either side of the
     // `??` leaves the local null.
@@ -363,11 +366,8 @@ function initializerIsAbsentHookCall(
     ) {
         node = node.left;
     }
-    return (
-        ts.isCallExpression(node) &&
-        ts.isIdentifier(node.expression) &&
-        (state.request.absentHooks ?? []).includes(node.expression.text)
-    );
+    return ts.isCallExpression(node) && ts.isIdentifier(node.expression)
+        ? node.expression.text : undefined;
 }
 
 /** Whether an expression reads through a local that is null at generation. */
@@ -1170,7 +1170,7 @@ function emitPlainStatement(
                         continue;
                     }
                     state.locals.add(local);
-                    lines.push(`    const float ${local} = ${source};`);
+                    lines.push(`    const ${state.request.scalarPrecision ?? "float"} ${local} = ${source};`);
                 }
                 continue;
             }
@@ -1184,8 +1184,18 @@ function emitPlainStatement(
             const name = binding.name.text;
             // An uninstalled hook's result is the pin's own null; the local
             // carries that fact so reads through it fold to their defaults.
-            if (initializerIsAbsentHookCall(state, binding.initializer)) {
+            const hookName = initializerHookName(binding.initializer);
+            if (hookName && state.request.absentHooks?.includes(hookName)) {
                 state.nullLocals.add(name);
+                continue;
+            }
+            const vectorHook = hookName ? state.request.vectorHooks?.[hookName] : undefined;
+            if (vectorHook) {
+                if (!state.request.laneSources?.[vectorHook.property]) {
+                    throw new Error(`Pinned vector hook '${hookName}' has no mapped lanes.`);
+                }
+                state.vectorLocals.set(name, { lanes: vectorHook.lanes, kind: "array" });
+                state.vectorLocalOrigins.set(name, vectorHook.property);
                 continue;
             }
             // `const off = offsets.get("x") / 4` is the pin's own indexing, and
@@ -1281,8 +1291,8 @@ function emitPlainStatement(
             // single-assignment form expresses.
             lines.push(
                 state.mutatedLocals.has(name)
-                    ? `    float ${name} = ${value};`
-                    : `    const float ${name} = ${value};`,
+                    ? `    ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`
+                    : `    const ${state.request.scalarPrecision ?? "float"} ${name} = ${value};`,
             );
         }
         return lines;

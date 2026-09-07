@@ -2,6 +2,7 @@ import { readFile } from "node:fs/promises";
 import { downloadCachedResource } from "./asset-download-cache.js";
 import { isDataUrl, parseDataUrl } from "./data-url.js";
 import { dropExtension } from "./compressed-geometry.js";
+import { packageMaterialExtensions } from "./gltf-material-extension-payload.js";
 import {
     GLB_BINARY_CHUNK,
     GLB_JSON_CHUNK,
@@ -686,6 +687,7 @@ export async function packageGltf(
         dropExtension(document, BASISU_EXTENSION);
     }
 
+    await packageMaterialExtensions(document);
     const finalPadding = (4 - (binaryLength % 4)) % 4;
     if (finalPadding) {
         chunks.push(Buffer.alloc(finalPadding));

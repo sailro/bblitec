@@ -25,6 +25,7 @@ interface RecordFieldAssignment {
   /** The record field, or the pair a two-element source writes. */
   field: string | readonly [string, string];
   value: "color3" | "number" | "boolean" | "number2";
+  scalarPrecision?: "float" | "double";
   simpleOnly?: boolean;
   /** Stored as the logical inverse of what the source assigns. */
   invert?: boolean;
@@ -45,6 +46,24 @@ interface RecordFieldAssignment {
 const textureRecordFields = TEXTURE_UV_PROPERTIES;
 
 const recordFieldAssignments: readonly RecordFieldAssignment[] = [
+  {
+    kind: "mesh",
+    property: "hasVertexAlpha",
+    collection: "meshes",
+    field: "has_vertex_alpha",
+    value: "boolean",
+    simpleOnly: true,
+    feature: "mesh:vertex-alpha",
+  },
+  {
+    kind: "material",
+    property: "uvOffset",
+    collection: "materials",
+    field: ["standard_uv_offset_x", "standard_uv_offset_y"],
+    value: "number2",
+    scalarPrecision: "double",
+    simpleOnly: true,
+  },
   {
     // Mesh visibility is a live scene-node field in the pin. The native
     // renderer and camera-bounds traversal both read this record bit, so
@@ -2319,7 +2338,7 @@ export function emitPropertyAssignment(
         `${context.requireEngine(target, expression)}` +
         `.${recordField.collection}[${target.cpp}.value]`;
       if (recordField.value === "number2") {
-        const elements = context.unwrap(expression.right);
+        const elements = context.unwrap(context.resolveStaticExpression(expression.right));
         const fields = recordField.field;
         if (
           !ts.isArrayLiteralExpression(elements) ||
@@ -2333,7 +2352,7 @@ export function emitPropertyAssignment(
           );
         }
         for (const [index, field] of fields.entries()) {
-          const value = context.compileNumber(elements.elements[index]!);
+          const value = context.compileNumber(elements.elements[index]!, recordField.scalarPrecision ?? "float");
           context.emit(
             `${record}.${field} = ` +
               `${value};`,

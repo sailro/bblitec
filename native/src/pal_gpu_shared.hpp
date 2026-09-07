@@ -723,8 +723,8 @@ struct GpuVertex {
     float morph_normal_1[3];
     float morph_tangent_0[3];
     float morph_tangent_1[3];
-#if BBLITE_PBR_VARIANTS > 0
-    // The pin's own skinned vertex stage takes joint indices as integers where
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+    // The pin's own skinned vertex stages take joint indices as integers where
     // the transcribed one takes them as floats. Both are carried while the two
     // paths coexist, and this sits last so no existing attribute offset moves;
     // the float pair goes away with the transcription.
@@ -732,7 +732,7 @@ struct GpuVertex {
 #endif
 #endif
 };
-#if BBLITE_GPU_DEFORMATION && BBLITE_PBR_VARIANTS > 0
+#if BBLITE_GPU_DEFORMATION && (BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON))
 static_assert(sizeof(GpuVertex) == 216);
 #elif BBLITE_GPU_DEFORMATION
 static_assert(sizeof(GpuVertex) == 200);
@@ -900,6 +900,12 @@ inline const TextureData* material_slot_texture(
             return standard_material
                 ? nullptr
                 : &material.reflectance_texture;
+        case Source::anisotropy:
+            return standard_material ? nullptr : &material.anisotropy_texture;
+        case Source::translucency_color:
+            return standard_material ? nullptr : &material.translucency_color_texture;
+        case Source::translucency_intensity:
+            return standard_material ? nullptr : &material.translucency_intensity_texture;
         case Source::occlusion_uv2:
             return !standard_material && material.occlusion_texture_uv2
                 ? &material.occlusion_texture
@@ -1638,7 +1644,7 @@ inline std::vector<GpuVertex> transformed_vertices(
                     ? geometry.morph_tangents[1][vertex_index].z
                     : 0.0f,
             },
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
             {
                 static_cast<std::uint32_t>(vertex.joints[0]),
                 static_cast<std::uint32_t>(vertex.joints[1]),
@@ -2116,7 +2122,7 @@ inline GpuVertex gpu_vertex_from(const ModelVertex& vertex) {
         {},  // morph normal 1
         {},  // morph tangent 0
         {},  // morph tangent 1
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
         {},  // integer joint indices
 #endif
 #endif
@@ -2329,7 +2335,7 @@ inline PinnedVertexInput pinned_vertex_input(
     if (name == "weights") {
         return at(VertexInputLane::float4, offsetof(GpuVertex, weights));
     }
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     // The pin takes joint indices as integers; the transcribed stage takes
     // them as floats, so the vertex carries both while the two coexist.
     if (name == "joints") {
@@ -3840,7 +3846,9 @@ inline VatTextureLayout vat_texture_layout(
     const std::uint32_t width = bones * 4u;
     return VatTextureLayout{width, frames, width * 16u, width * 16u * frames};
 }
+#endif
 
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
 /**
  * The pin's bone-palette texture shape: `skeleton-updater.ts` writes
  * `invMeshWorld * jointWorld * IBM` per bone into one rgba32float row,
@@ -3985,6 +3993,22 @@ inline StandardVariantKey standard_variant_key(
         !engine.geometries[draw.item.geometry].morph_positions.empty()) {
         key.mesh_features |= upstream::std_msh_has_morph_targets;
     }
+#if defined(BBLITE_STANDARD_SKELETON)
+    key.features |= upstream::standard_skeleton_features(
+        static_cast<std::uint32_t>(key.mesh_features));
+#endif
+#if defined(BBLITE_STANDARD_VERTEX_ALPHA)
+    if (draw.item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& record = engine.meshes[draw.item.mesh.value];
+        key.features |= upstream::standard_color_alpha_features(
+            material.no_color || material.esm_shadow,
+            record.has_vertex_alpha,
+            upstream::standard_vertex_colors_enabled &&
+                draw.item.geometry < engine.geometries.size() &&
+                engine.geometries[draw.item.geometry].has_vertex_colors,
+            !record.instance_colors.empty());
+    }
+#endif
     key.resolved = true;
     return key;
 }

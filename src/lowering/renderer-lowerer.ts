@@ -73,6 +73,7 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import type { PinnedBinding } from "./pinned-numeric-lowerer.js";
 import { packagedWgsl } from "../pinned-wgsl-build.js";
 import { meshProfileBindingCpp, type MeshProfileTable } from "./resource-profiles.js";
+import { lowerStandardMeshAlpha } from "./standard-mesh-alpha.js";
 
 /**
  * The pinned fog falloff's own component reads, paired with the scene field
@@ -356,6 +357,8 @@ export class RendererLowerer {
     public constructor(private readonly context: LoweringContext) {}
 
     public lowerRenderPlan(options: {
+        standardVertexAlpha?: boolean;
+        standardVertexColors?: boolean;
         meshProfiles?: MeshProfileTable;
         fog?: boolean;
         imageSkybox?: boolean;
@@ -977,6 +980,8 @@ export class RendererLowerer {
     /** The emitted renderer_plan.hpp, verbatim from the adopted plan. */
     private renderPlanHeaderCpp(
         options: {
+            standardVertexAlpha?: boolean;
+            standardVertexColors?: boolean;
             meshProfiles?: MeshProfileTable;
             solidSkybox?: boolean;
             imageSkybox?: boolean;
@@ -992,6 +997,7 @@ export class RendererLowerer {
         return `#pragma once
 
 #include <bblite/runtime.hpp>
+${options.standardVertexAlpha ? "#include <bblite/js_data.hpp>\n" : ""}\
 // preferred_sample_count() lives in the always-emitted pinned_surface.hpp
 // (an effect-only scene compiles no render plan); included here so every
 // TU that renders through the plan still sees the one definition.
@@ -1003,7 +1009,7 @@ export class RendererLowerer {
 #include <array>
 #include <vector>
 
-namespace bbl::upstream {
+namespace bbl::upstream {${options.standardVertexAlpha ? lowerStandardMeshAlpha(this.context, options.standardVertexColors) : ""}
 
 enum class RenderMaterialKind {
     pbr,
@@ -1539,6 +1545,8 @@ ImageSkyboxUniforms build_image_skybox_uniforms(
     /** The emitted renderer_plan.cpp, verbatim from the adopted plan. */
     private renderPlanSourceCpp(
         options: {
+            standardVertexAlpha?: boolean;
+            standardVertexColors?: boolean;
             meshProfiles?: MeshProfileTable;
             nodeVisibility?: boolean;
             orthographicCamera?: boolean;
@@ -1664,7 +1672,17 @@ RenderItem bind_render_item(
             ? RenderBucket::alpha_blend
             : material.alpha_mode == MaterialAlphaMode::mask
                 ? RenderBucket::alpha_mask
-                : RenderBucket::opaque;
+                : RenderBucket::opaque;${options.standardVertexAlpha ? `
+    if (material.standard_material && item.mesh.value < engine.meshes.size()) {
+        const MeshRecord& mesh = engine.meshes[item.mesh.value];
+        const bool has_vertex_color = ${options.standardVertexColors ? "mesh.geometry < engine.geometries.size() && engine.geometries[mesh.geometry].has_vertex_colors" : "false"};
+        if (standard_color_alpha_features(
+                material.no_color || material.esm_shadow,
+                mesh.has_vertex_alpha, has_vertex_color,
+                !mesh.instance_colors.empty()) != 0u) {
+            item.bucket = RenderBucket::alpha_blend;
+        }
+    }` : ""}
     item.cull_mode = material.double_sided
         ? RenderCullMode::none
         : RenderCullMode::back;

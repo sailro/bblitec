@@ -180,11 +180,6 @@ struct GpuMesh {
     // `tangent.w` back to its authored sign, paired with the mirroring world
     // matrix in the pin's mesh block. `pinned_convention_vertices` states why.
     SDL_GPUBuffer* pinned_vertices = nullptr;
-    // The bone palette as the pin's own rgba32float texture, streamed each
-    // frame before the passes open. `write_pinned_bone_texture` states the
-    // layout.
-    SDL_GPUTexture* pinned_bone_texture = nullptr;
-    std::uint32_t pinned_bone_count = 0;
 #if BBLITE_VAT
     // The baked vertex-animation texture: the bone palette's own row,
     // frameCount rows tall. Uploaded once -- the bake is settled before the
@@ -202,6 +197,11 @@ struct GpuMesh {
     // The instance matrices in Babylon's own convention, for the pin's
     // thin-instance arm. `pinned_instance_matrices` states the conversion.
     SDL_GPUBuffer* pinned_instances = nullptr;
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+    // Both material families sample the pin's rgba32float bone palette.
+    SDL_GPUTexture* pinned_bone_texture = nullptr;
+    std::uint32_t pinned_bone_count = 0;
 #endif
     SDL_GPUBuffer* indices = nullptr;
     SDL_GPUBuffer* instances = nullptr;
@@ -250,6 +250,15 @@ struct GpuMesh {
 #if BBLITE_MATERIAL_REFLECTANCE_MAP
     SDL_GPUTexture* reflectance = nullptr;
 #endif
+#if BBLITE_MATERIAL_ANISOTROPY_MAP
+    SDL_GPUTexture* anisotropy = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP
+    SDL_GPUTexture* translucency_color = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP
+    SDL_GPUTexture* translucency_intensity = nullptr;
+#endif
 #if BBLITE_MATERIAL_SPEC_GLOSS
     SDL_GPUTexture* spec_gloss = nullptr;
 #endif
@@ -293,6 +302,15 @@ struct GpuMesh {
 #endif
 #if BBLITE_MATERIAL_REFLECTANCE_MAP
     SDL_GPUSampler* reflectance_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_ANISOTROPY_MAP
+    SDL_GPUSampler* anisotropy_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP
+    SDL_GPUSampler* translucency_color_sampler = nullptr;
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP
+    SDL_GPUSampler* translucency_intensity_sampler = nullptr;
 #endif
 #if BBLITE_MATERIAL_SPEC_GLOSS
     SDL_GPUSampler* spec_gloss_sampler = nullptr;
@@ -574,6 +592,18 @@ GpuMeshSlotMembers mesh_slot_members(
             return {
                 &GpuMesh::reflectance,
                 &GpuMesh::reflectance_sampler};
+#endif
+#if BBLITE_MATERIAL_ANISOTROPY_MAP
+        case Source::anisotropy:
+            return {&GpuMesh::anisotropy, &GpuMesh::anisotropy_sampler};
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_COLOR_MAP
+        case Source::translucency_color:
+            return {&GpuMesh::translucency_color, &GpuMesh::translucency_color_sampler};
+#endif
+#if BBLITE_MATERIAL_TRANSLUCENCY_INTENSITY_MAP
+        case Source::translucency_intensity:
+            return {&GpuMesh::translucency_intensity, &GpuMesh::translucency_intensity_sampler};
 #endif
 #if BBLITE_MATERIAL_SPEC_GLOSS
         case Source::spec_gloss:
@@ -935,6 +965,8 @@ struct GpuState {
     std::vector<PinnedStageShadowRows> pinned_vertex_shadow_rows;
     std::vector<PinnedStageShadowRows> pinned_fragment_shadow_rows;
 #endif
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     // Paired with every bone palette binding. The pin reads the palette with
     // textureLoad, so the sampler is never consulted; SDL_GPU still binds the
     // pair together.
@@ -1117,7 +1149,7 @@ struct GpuState {
      * parallel to its own render plan.
      */
     std::vector<std::vector<GpuMesh>> overlay_meshes;
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     /**
      * Which meshes this frame's bone-palette sweep has already streamed.
      *
@@ -2590,6 +2622,9 @@ SDL_GPUGraphicsPipeline* pinned_variant_pipeline(
     return state.pinned_pipelines.emplace(key, std::move(pipeline)).first->second.get();
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
 /** One rgba32float upload through this backend's copy pass. */
 void upload_pinned_float_texture(
     GpuState& state,
@@ -2709,6 +2744,9 @@ void write_pinned_bone_texture(
         palette.bytes);
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
 /**
  * The baked VAT as the pin's own texture.
@@ -3898,14 +3936,18 @@ PinnedResource standard_resource_for(
     const StandardRenderTextures& render_textures,
     const std::string& name,
     [[maybe_unused]] std::size_t variant,
-    // The name's index in the fragment stage's texture list -- the only
-    // stage a Standard draw binds textures for -- which is what makes the
-    // group-2 fallback below a cached-row read.
+    [[maybe_unused]] bool fragment,
+    // The name's index in its stage's texture list.
     [[maybe_unused]] std::size_t stage_slot) {
     for (
         const upstream::StandardBindingResource& row :
         upstream::standard_binding_resources) {
         if (name != row.texture_name && name != row.sampler_name) continue;
+#if defined(BBLITE_STANDARD_SKELETON)
+        if (row.source == upstream::MaterialTextureSource::bone_palette) {
+            return {mesh.pinned_bone_texture, state.pinned_bone_sampler};
+        }
+#endif
         if (row.reflection_cube) {
             return {mesh.reflection, state.sampler};
         }
@@ -3968,7 +4010,8 @@ PinnedResource standard_resource_for(
     // the common case.
     if (const PinnedResource shadow = shadow_resource_at(
             state,
-            state.standard_fragment_shadow_rows[variant],
+            (fragment ? state.standard_fragment_shadow_rows
+                      : state.standard_vertex_shadow_rows)[variant],
             stage_slot);
         shadow.texture != nullptr) {
         return shadow;
@@ -4257,27 +4300,33 @@ void draw_standard_variant(
         true,
         "standard variant",
         fragment_uniforms);
+    const auto bind_textures = [&](bool fragment) {
+        bind_stage_textures(
+            pass,
+            (fragment ? state.standard_fragment_slots
+                      : state.standard_vertex_slots)[variant],
+            fragment,
+            "standard variant",
+            [&](const std::string& name, std::size_t slot) {
+                const PinnedResource resource = standard_resource_for(
+                    state,
+                    mesh,
+                    material,
+                    render_textures,
+                    name,
+                    variant,
+                    fragment,
+                    slot);
+                return SDL_GPUTextureSamplerBinding{
+                    resource.texture,
+                    resource.sampler,
+                };
+            });
+    };
+    bind_textures(false);
+    bind_textures(true);
     const PinnedStageSlots& fragment_slots =
         state.standard_fragment_slots[variant];
-    bind_stage_textures(
-        pass,
-        fragment_slots,
-        true,
-        "standard variant fragment",
-        [&](const std::string& name, std::size_t slot) {
-            const PinnedResource resource = standard_resource_for(
-                state,
-                mesh,
-                material,
-                render_textures,
-                name,
-                variant,
-                slot);
-            return SDL_GPUTextureSamplerBinding{
-                resource.texture,
-                resource.sampler,
-            };
-        });
     // The gp block the shader compile demoted out of the uniform slots:
     // SDL_GPU caps those at four per stage and a geometry fragment spends all
     // four on scene, lights, mesh and mat.
@@ -5477,11 +5526,15 @@ void release_gpu_mesh(GpuState& state, GpuMesh& mesh) {
         SDL_ReleaseGPUBuffer(state.device, mesh.pinned_vertices);
         mesh.pinned_vertices = nullptr;
     }
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     if (mesh.pinned_bone_texture) {
         SDL_ReleaseGPUTexture(state.device, mesh.pinned_bone_texture);
         mesh.pinned_bone_texture = nullptr;
         mesh.pinned_bone_count = 0;
     }
+#endif
+#if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
     if (mesh.pinned_vat_texture) {
         SDL_ReleaseGPUTexture(state.device, mesh.pinned_vat_texture);
@@ -5862,7 +5915,7 @@ void release(GpuState& state) {
         state.shadow_filtering_sampler = nullptr;
     }
 #endif
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
     if (state.pinned_bone_sampler) {
         SDL_ReleaseGPUSampler(state.device, state.pinned_bone_sampler);
     }
@@ -9996,7 +10049,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                 render_plan.draw_lists.transparent,
                 engine,
                 camera);
-#if BBLITE_PBR_VARIANTS > 0
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
             // The pin's bone palettes for every draw the gate resolves,
             // streamed here because a copy pass cannot open inside the render
             // pass. The draw branch below keys its skinned handling on the
@@ -10012,47 +10065,75 @@ SceneRun run_gpu_engine(Engine& engine) {
                 std::vector<bool>& streamed = state.streamed_palettes;
                 streamed.assign(state.meshes.size(), false);
                 const auto stream_palettes =
-                    [&](const upstream::RenderDrawList& list) {
+                    [&](const Scene& palette_scene,
+                        std::vector<GpuMesh>& meshes,
+                        const upstream::RenderDrawList& list) {
                     for (
                         const upstream::RenderDrawCommand& draw :
                         list.commands) {
-                        if (draw.item_index >= state.meshes.size()) continue;
+                        if (draw.item_index >= meshes.size()) continue;
                         if (draw.item.mesh.value >= engine.meshes.size()) {
                             continue;
                         }
                         if (streamed[draw.item_index]) continue;
-                        streamed[draw.item_index] = true;
-                        const std::size_t palette_variant =
-                            pinned_variant_for_draw(scene, engine, draw);
-                        if (palette_variant == npos) continue;
-#if BBLITE_VAT
-                        // A baked draw streams its own texture here for
-                        // the same reason a live one does: a copy pass
-                        // cannot open inside a render pass.
-                        if (pinned_variant_vat(palette_variant)) {
-                            write_pinned_vat_texture(
-                                state,
-                                state.meshes[draw.item_index],
-                                engine.meshes[draw.item.mesh.value],
-                                engine);
-                            continue;
+                        bool skeleton_draw = false;
+#if defined(BBLITE_STANDARD_SKELETON)
+                        if (draw.item.material_kind ==
+                            upstream::RenderMaterialKind::standard) {
+                            const std::size_t variant = standard_variant_for_draw(
+                                palette_scene, engine, draw);
+                            skeleton_draw = variant != npos &&
+                                upstream::standard_variant_skeleton(
+                                    upstream::standard_variants[variant]);
                         }
 #endif
-                        if (!pinned_variant_skeleton(palette_variant)) {
-                            continue;
+#if BBLITE_PBR_VARIANTS > 0
+                        const std::size_t palette_variant =
+                            pinned_variant_for_draw(palette_scene, engine, draw);
+                        if (palette_variant != npos) {
+#if BBLITE_VAT
+                            // Copy passes must precede render passes for
+                            // baked palettes as well as live palettes.
+                            if (pinned_variant_vat(palette_variant)) {
+                                write_pinned_vat_texture(
+                                    state,
+                                    meshes[draw.item_index],
+                                    engine.meshes[draw.item.mesh.value],
+                                    engine);
+                                streamed[draw.item_index] = true;
+                                continue;
+                            }
+#endif
+                            skeleton_draw = pinned_variant_skeleton(palette_variant);
                         }
+#endif
+                        if (!skeleton_draw) continue;
                         write_pinned_bone_texture(
                             state,
-                            state.meshes[draw.item_index],
+                            meshes[draw.item_index],
                             engine.meshes[draw.item.mesh.value]);
+                        streamed[draw.item_index] = true;
                     }
                 };
-                stream_palettes(render_plan.draw_lists.opaque);
-                stream_palettes(render_plan.draw_lists.transparent);
+                stream_palettes(scene, state.meshes, render_plan.draw_lists.opaque);
+                stream_palettes(scene, state.meshes, render_plan.draw_lists.transparent);
                 for (const upstream::RenderDrawLists& task_lists :
                      task_draw_lists) {
-                    stream_palettes(task_lists.opaque);
-                    stream_palettes(task_lists.transparent);
+                    stream_palettes(scene, state.meshes, task_lists.opaque);
+                    stream_palettes(scene, state.meshes, task_lists.transparent);
+                }
+                for (std::size_t layer = 0;
+                     layer < overlay_plans.size() &&
+                     layer < state.overlay_meshes.size(); ++layer) {
+                    const Scene* overlay_scene =
+                        engine.registered_scenes[layer + 1u].get();
+                    if (!overlay_scene) continue;
+                    auto& meshes = state.overlay_meshes[layer];
+                    streamed.assign(meshes.size(), false);
+                    stream_palettes(*overlay_scene, meshes,
+                                    overlay_plans[layer].draw_lists.opaque);
+                    stream_palettes(*overlay_scene, meshes,
+                                    overlay_plans[layer].draw_lists.transparent);
                 }
             }
 #endif

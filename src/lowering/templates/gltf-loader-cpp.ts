@@ -5,7 +5,7 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -572,7 +572,7 @@ enum class MaterialTrackKind {
 // a tag rather than as a pointer into a vector that reallocates.
 enum class TextureTransformSlot {
     base_color,
-    orm,
+    occlusion,
     normal,
     emissive,
     clearcoat,
@@ -584,6 +584,17 @@ enum class TextureTransformSlot {
     iridescence_thickness,
     transmission,
     thickness,
+    anisotropy,
+    translucency_color,
+    translucency_intensity,
+    metallic_reflectance,
+    reflectance,
+};
+
+enum class TextureTransformResolution {
+    resolved,
+    ignored,
+    unsupported,
 };
 
 enum class TextureTransformComponent {
@@ -608,19 +619,21 @@ struct MaterialTrack {
 // deliberately absent: Babylon.js omits the extension path segment when it
 // registers that pointer, so the interpolation never attaches and the MR
 // transform stays at its load-time value. The pin matches that for parity, and
-// so does this. The extension slots mirror resolveExtTexture, and occlusion
-// resolves onto the ORM slot exactly as TX_SLOT does.
-bool material_transform_slot(
+// so does this. The extension slots mirror resolveExtTexture. Occlusion uses
+// its independent texture when the loader built one, otherwise the ORM slot.
+TextureTransformResolution material_transform_slot(
     const std::string& path,
     TextureTransformSlot& slot) {
-    if (path == "/pbrMetallicRoughness/baseColorTexture") {
+    if (path == "/pbrMetallicRoughness/metallicRoughnessTexture") {
+        return TextureTransformResolution::ignored;
+    } else if (path == "/pbrMetallicRoughness/baseColorTexture") {
         slot = TextureTransformSlot::base_color;
     } else if (path == "/emissiveTexture") {
         slot = TextureTransformSlot::emissive;
     } else if (path == "/normalTexture") {
         slot = TextureTransformSlot::normal;
     } else if (path == "/occlusionTexture") {
-        slot = TextureTransformSlot::orm;
+        slot = TextureTransformSlot::occlusion;
     } else if (
         path ==
         "/extensions/KHR_materials_clearcoat/clearcoatTexture") {
@@ -655,10 +668,20 @@ bool material_transform_slot(
     } else if (
         path == "/extensions/KHR_materials_volume/thicknessTexture") {
         slot = TextureTransformSlot::thickness;
+    } else if (path == "/extensions/KHR_materials_anisotropy/anisotropyTexture") {
+        slot = TextureTransformSlot::anisotropy;
+    } else if (path == "/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionColorTexture") {
+        slot = TextureTransformSlot::translucency_color;
+    } else if (path == "/extensions/KHR_materials_diffuse_transmission/diffuseTransmissionTexture") {
+        slot = TextureTransformSlot::translucency_intensity;
+    } else if (path == "/extensions/KHR_materials_specular/specularTexture") {
+        slot = TextureTransformSlot::metallic_reflectance;
+    } else if (path == "/extensions/KHR_materials_specular/specularColorTexture") {
+        slot = TextureTransformSlot::reflectance;
     } else {
-        return false;
+        return TextureTransformResolution::unsupported;
     }
-    return true;
+    return TextureTransformResolution::resolved;
 }
 
 TextureTransform& material_transform(
@@ -667,8 +690,9 @@ TextureTransform& material_transform(
     switch (slot) {
         case TextureTransformSlot::base_color:
             return material.base_color_transform;
-        case TextureTransformSlot::orm:
-            return material.orm_transform;
+        case TextureTransformSlot::occlusion:
+            return material.has_occlusion_transform
+                ? material.occlusion_transform : material.orm_transform;
         case TextureTransformSlot::normal:
             return material.normal_transform;
         case TextureTransformSlot::emissive:
@@ -689,6 +713,16 @@ TextureTransform& material_transform(
             return material.iridescence_thickness_transform;
         case TextureTransformSlot::transmission:
             return material.transmission_transform;
+        case TextureTransformSlot::anisotropy:
+            return material.anisotropy_transform;
+        case TextureTransformSlot::translucency_color:
+            return material.translucency_color_transform;
+        case TextureTransformSlot::translucency_intensity:
+            return material.translucency_intensity_transform;
+        case TextureTransformSlot::metallic_reflectance:
+            return material.metallic_reflectance_transform;
+        case TextureTransformSlot::reflectance:
+            return material.reflectance_transform;
         case TextureTransformSlot::thickness:
             break;
     }
@@ -1675,6 +1709,7 @@ MaterialHandle load_material(
             material.metallic_factor = 1.0f;
             material.roughness_factor = 1.0f;
         } else if (occlusion_on_uv2 || occlusion_needs_split) {
+            material.has_occlusion_transform = true;
             // The carrier's own transform, always -- both arms sample at a UV
             // the occlusion slot owns. Its BYTES are only wanted by the uv2
             // arm: the split one re-samples ormTexture at occlUV, over the
@@ -1788,12 +1823,14 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                     "KHR_materials_specular")) {
             const JsonObject& specular =
                 specular_value->as_object();
-            if (
-                optional(specular, "specularTexture") ||
-                optional(specular, "specularColorTexture")) {
-                throw std::runtime_error(
-                    "Reached KHR_materials_specular supports the specular and specular color factors only.");
-            }
+            const ts::JsonValue* specular_texture = optional(specular, "specularTexture");
+            const ts::JsonValue* specular_color_texture = optional(specular, "specularColorTexture");
+            material.metallic_reflectance_texture = texture_data(
+                buffer, container, views, images, textures, samplers, specular_texture);
+            material.reflectance_texture = texture_data(
+                buffer, container, views, images, textures, samplers, specular_color_texture);
+            apply_texture_transform(material.metallic_reflectance_transform, specular_texture);
+            apply_texture_transform(material.reflectance_transform, specular_color_texture);
             material.has_metallic_reflectance = true;
             // The pin keeps the material's own reflectance at its default and
             // scales it with metallicF0Factor, so the IOR fold this loader
@@ -2097,7 +2134,52 @@ ${materialSpecular ? `        if (const ts::JsonValue* specular_value =
                 iridescence_thickness_texture);
         }
     }
-    material.emissive_texture = texture_data(
+${options.materialExtensionPayload ? `    // Packaged option objects come from the pinned handlers' ordered merge.
+    // Native texture transforms remain independently mutable by animation.
+    if (const ts::JsonValue* payload_value = optional(material_json, "${GLTF_MATERIAL_EXTENSION_PAYLOAD}")) {
+        const JsonObject& payload = payload_value->as_object();
+        const auto color = [](const JsonObject& object, const char* key, Color3& field) {
+            if (const ts::JsonValue* value = optional(object, key)) {
+                const std::vector<float> lanes = float_array(value);
+                if (lanes.size() != 3) throw std::runtime_error("Invalid packaged material color.");
+                field = Color3{lanes[0], lanes[1], lanes[2]};
+            }
+        };
+        const auto texture = [&](const JsonObject& object, const char* key, TextureData& data, TextureTransform& transform) {
+            const ts::JsonValue* info = optional(object, key);
+            data = texture_data(buffer, container, views, images, textures, samplers, info);
+            apply_texture_transform(transform, info);
+        };
+        if (const ts::JsonValue* value = optional(payload, "anisotropy")) {
+            const JsonObject& anisotropy = value->as_object();
+            material.has_anisotropy = true;
+            material.anisotropy_intensity = float_or(anisotropy, "intensity", material.anisotropy_intensity);
+            const std::vector<float> direction = float_array(optional(anisotropy, "direction"));
+            if (direction.size() != 2) throw std::runtime_error("Invalid packaged anisotropy direction.");
+            material.anisotropy_direction = Vec2{direction[0], direction[1]};
+            texture(anisotropy, "texture", material.anisotropy_texture, material.anisotropy_transform);
+        }
+        if (const ts::JsonValue* value = optional(payload, "subsurface")) {
+            const JsonObject& subsurface = value->as_object();
+            const JsonObject& translucency = required(subsurface, "translucency").as_object();
+            material.has_subsurface = true;
+            material.subsurface_intensity = float_or(translucency, "intensity", material.subsurface_intensity);
+            color(translucency, "color", material.subsurface_color);
+            color(translucency, "diffusionDistance", material.subsurface_diffusion_distance);
+            if (const ts::JsonValue* thickness = optional(subsurface, "thickness")) {
+                material.subsurface_minimum_thickness = float_or(thickness->as_object(), "min", material.subsurface_minimum_thickness);
+                material.subsurface_maximum_thickness = float_or(thickness->as_object(), "max", material.subsurface_maximum_thickness);
+            }
+            texture(translucency, "colorTexture", material.translucency_color_texture, material.translucency_color_transform);
+            texture(translucency, "intensityTexture", material.translucency_intensity_texture, material.translucency_intensity_transform);
+        }
+    } else if (const ts::JsonValue* extensions = optional(material_json, "extensions")) {
+        if (optional(extensions->as_object(), "KHR_materials_anisotropy") ||
+            optional(extensions->as_object(), "KHR_materials_diffuse_transmission")) {
+            throw std::runtime_error("glTF material extensions require the pinned packaging pass.");
+        }
+    }
+` : ""}    material.emissive_texture = texture_data(
         buffer, container, views, images, textures, samplers, optional(material_json, "emissiveTexture"));
     apply_texture_transform(
         material.emissive_transform,
@@ -3785,10 +3867,9 @@ ${animationPointerMaterials ? `                    // Material targets. The pinn
                                         transform_infix.size());
                                 const std::string slot_path =
                                     property.substr(0, transform_start);
-                                if (
-                                    material_transform_slot(
-                                        slot_path,
-                                        track.slot)) {
+                                const auto resolution = material_transform_slot(slot_path, track.slot);
+                                if (resolution == TextureTransformResolution::ignored) continue;
+                                if (resolution == TextureTransformResolution::resolved) {
                                     if (component_name == "rotation") {
                                         track.component =
                                             TextureTransformComponent::rotation;
