@@ -9,7 +9,7 @@ namespace bbl::pal {
 /** Borrow task/cache inputs without changing the identities held by the pin. */
 template<class Upload>
 void prepare_temporal_scene_uniforms(
-    FrameTaskRecord& task, Engine& engine, CameraRecord* camera,
+    FrameTaskRecord& task, CameraRecord* camera,
     double target_width, double target_height, double canvas_width, double canvas_height,
     Upload&& upload) {
     if (!task.source_scene) throw std::runtime_error("Temporal source has no retained scene.");
@@ -34,11 +34,43 @@ void prepare_temporal_scene_uniforms(
     upstream::write_pass_scene_ubo(source, dimensions, inputs, camera,
         [](CameraRecord* value) { return upstream::scene_camera_change_key(*value); },
         [&](SourceInput&, double aspect) {
-            const auto block = pinned_scene_block(scene, engine, *camera,
-                upstream::build_view_projection(*camera, aspect));
-            std::memcpy(storage.clean.data(), &block, sizeof(block));
-            upload(storage.clean.data(), sizeof(block));
-            std::memcpy(storage.drawn.data(), storage.clean.data(), sizeof(block));
+            struct PackEngine { bool use_floating_origin; double width, height; } pack_engine{
+                BBLITE_FLOATING_ORIGIN != 0, canvas_width, canvas_height};
+            struct Fog { double mode, start, end, density; std::array<double, 3> color; };
+            struct Environment { double lod_generation_scale; bool has_harmonics; std::array<float, 36> harmonics{}; };
+            struct PackScene {
+                double exposure, contrast;
+                bool tone_mapping_enabled;
+                std::optional<Fog> fog{};
+                std::optional<std::array<double, 4>> clip_plane{};
+                std::optional<Environment> environment{};
+                std::optional<double> environment_rotation{};
+            } pack_scene{scene.environment.exposure, scene.environment.contrast, scene.environment.tone_mapping_enabled};
+            if (scene.state->fog_identity) pack_scene.fog = Fog{scene.fog_mode, scene.fog_start, scene.fog_end,
+                scene.fog_density, {scene.fog_color.r, scene.fog_color.g, scene.fog_color.b}};
+            // An absent clip plane is already represented by the zero vector;
+            // writing its four lanes over the packer's zero fill is identical.
+            pack_scene.clip_plane = {scene.clip_plane.x, scene.clip_plane.y, scene.clip_plane.z, scene.clip_plane.w};
+            if (scene.state->environment_identity) {
+                pack_scene.environment = Environment{scene.environment.lod_generation_scale, scene.environment.has_irradiance};
+                pack_scene.environment_rotation = scene.environment.rotation_y;
+                for (std::size_t band = 0; band < scene.environment.spherical_harmonics.size(); ++band) {
+                    const auto& color = scene.environment.spherical_harmonics[band];
+                    auto* values = pack_scene.environment->harmonics.data() + band * 4;
+                    values[0] = color.r; values[1] = color.g; values[2] = color.b;
+                }
+            }
+            upstream::pack_scene_uniforms(
+                [](CameraRecord& value, double ratio) { return upstream::build_view_projection(value, ratio); },
+                [](CameraRecord& value) { return upstream::build_view_matrix(upstream::camera_world_matrix(value)); },
+                [](CameraRecord& value) { return upstream::camera_world_matrix(value); },
+                storage.clean, pack_engine, pack_scene, *camera, aspect);
+            upstream::write_fog_scene_uniforms(storage.clean, pack_scene);
+            upstream::write_clip_scene_uniforms(storage.clean, pack_scene);
+            if (pack_scene.environment) upstream::write_environment_scene_uniforms(storage.clean, pack_scene);
+            const auto bytes = storage.clean.size() * sizeof(float);
+            upload(storage.clean.data(), bytes);
+            std::memcpy(storage.drawn.data(), storage.clean.data(), bytes);
         });
 }
 

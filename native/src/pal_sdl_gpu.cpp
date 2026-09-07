@@ -11431,7 +11431,7 @@ SceneRun run_gpu_engine(Engine& engine) {
                             ? &engine.cameras.at(task.render.camera.value)
                             : task.source_scene->camera.value < engine.cameras.size()
                                 ? &engine.cameras[task.source_scene->camera.value] : nullptr;
-                        prepare_temporal_scene_uniforms(task, engine, source_camera,
+                        prepare_temporal_scene_uniforms(task, source_camera,
                             target.width, target.height, graph_extent.width, graph_extent.height,
                             [](const float*, std::size_t) {});
 #endif

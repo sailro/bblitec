@@ -443,7 +443,7 @@ export function lightScalarSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
-  noteTemporalRecordBoundary(node: ts.Node, reason: string): void;
+  noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
   isRuntimeResourceConstruction(): boolean;
   readonly checker: ts.TypeChecker;
   readonly dataTypes: import("./data-types.js").DataTypeRegistry;
@@ -1440,6 +1440,8 @@ export function emitPropertyAssignment(
       );
       return;
     }
+    context.noteTemporalRecordBoundary(expression,
+      `authored imageProcessing.${property} writes require double-precision TAA cache-key transport`, "always");
     context.emit(
       `${scene.cpp}.environment.${property} ${operator} ${context.compileNumber(expression.right)};`,
     );

@@ -14936,7 +14936,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 restore_temporal_source_buffer(state, task, render_task);
                 WGPUBuffer lights = graph_layer == 0 ? nullptr : state.overlay_frames[graph_layer - 1].lights_uniforms;
                 task_pinned_frame_group(state, render_task, lights);
-                prepare_temporal_scene_uniforms(task, engine, source_camera, target.width, target.height,
+                prepare_temporal_scene_uniforms(task, source_camera, target.width, target.height,
                     graph_extent.width, graph_extent.height, [&](const float* data, std::size_t bytes) {
                         wgpuQueueWriteBuffer(state.queue, render_task.pinned_scene_uniforms, 0, data, bytes);
                     });
