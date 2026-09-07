@@ -314,13 +314,10 @@ inline int stage_uniform_slot(
  * and the resolver answers for the pair.
  */
 template <typename Resolve>
-inline void bind_stage_textures(
-    SDL_GPURenderPass* pass,
+inline std::vector<SDL_GPUTextureSamplerBinding> resolve_stage_textures(
     const PinnedStageSlots& slots,
-    bool fragment,
     const char* what,
     Resolve resolve) {
-    if (slots.textures.empty()) return;
     std::vector<SDL_GPUTextureSamplerBinding> bindings;
     bindings.reserve(slots.textures.size());
     for (std::size_t slot = 0; slot < slots.textures.size(); ++slot) {
@@ -336,6 +333,18 @@ inline void bind_stage_textures(
         }
         bindings.push_back(binding);
     }
+    return bindings;
+}
+
+template <typename Resolve>
+inline void bind_stage_textures(
+    SDL_GPURenderPass* pass,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    const char* what,
+    Resolve resolve) {
+    if (slots.textures.empty()) return;
+    const auto bindings = resolve_stage_textures(slots, what, resolve);
     if (fragment) {
         SDL_BindGPUFragmentSamplers(
             pass,

@@ -62,6 +62,9 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_shared.hpp"
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+#include "pal_sdl_gpu_temporal.hpp"
+#endif
 #if BBLITE_OFFSCREEN_SURFACES
 #include "pal_sdl_gpu_offscreen.hpp"
 #endif
@@ -1032,7 +1035,7 @@ struct GpuState {
 #if BBLITE_STANDARD_VARIANTS > 0
     // The Standard family's composed pipelines and slot maps, keyed and
     // cached exactly like the PBR ones.
-    std::map<std::size_t, OwnedSdlPipeline> standard_variant_pipelines;
+    std::map<std::pair<std::size_t, SDL_GPUSampleCount>, OwnedSdlPipeline> standard_variant_pipelines;
     std::vector<PinnedStageSlots> standard_vertex_slots;
     std::vector<PinnedStageSlots> standard_fragment_slots;
 #if BBLITE_STANDARD_SHADOWS
@@ -1351,14 +1354,11 @@ void bind_shader_material_textures(
  * to each stage's own list and only its capacity persists.
  */
 template <typename Resolve>
-void bind_stage_storage(
-    SDL_GPURenderPass* pass,
+void resolve_stage_storage(
     const PinnedStageSlots& slots,
-    bool fragment,
     const char* what,
     std::vector<SDL_GPUBuffer*>& scratch,
     Resolve resolve) {
-    if (slots.storage.empty()) return;
     scratch.clear();
     scratch.reserve(slots.storage.size());
     for (std::size_t slot = 0; slot < slots.storage.size(); ++slot) {
@@ -1372,6 +1372,18 @@ void bind_stage_storage(
         }
         scratch.push_back(buffer);
     }
+}
+
+template <typename Resolve>
+void bind_stage_storage(
+    SDL_GPURenderPass* pass,
+    const PinnedStageSlots& slots,
+    bool fragment,
+    const char* what,
+    std::vector<SDL_GPUBuffer*>& scratch,
+    Resolve resolve) {
+    if (slots.storage.empty()) return;
+    resolve_stage_storage(slots, what, scratch, resolve);
     if (fragment) {
         SDL_BindGPUFragmentStorageBuffers(
             pass,
@@ -4050,14 +4062,16 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
     // `depth32float` map, at one sample.
     bool shadow_pass = false,
     // Which ESM generator's map this pass writes, when it writes one.
-    std::uint32_t esm_shadow_index = invalid_handle) {
-    const std::size_t key = pal::variant_pipeline_key(
+    std::uint32_t esm_shadow_index = invalid_handle,
+    std::optional<SDL_GPUSampleCount> task_samples = {}) {
+    const std::size_t variant_key = pal::variant_pipeline_key(
         pal::esm_keyed_variant(
             variant,
             upstream::standard_variants.size(),
             esm_shadow_index),
         kind,
         {shadow_pass});
+    const auto key = std::make_pair(variant_key, task_samples.value_or(state.sample_count));
     const auto existing = state.standard_variant_pipelines.find(key);
     if (existing != state.standard_variant_pipelines.end()) {
         return existing->second.get();
@@ -4145,6 +4159,7 @@ SDL_GPUGraphicsPipeline* standard_variant_pipeline(
         gpu_front_face(traits.clockwise_front_face);
     info.rasterizer_state.enable_depth_clip = true;
     apply_pass_depth_state(info, state, shadow_pass);
+    if (task_samples && !shadow_pass && !geometry_task) info.multisample_state.sample_count = *task_samples;
     info.depth_stencil_state.enable_depth_write =
         entry.no_color_output || !transparent;
     info.target_info.color_target_descriptions =
@@ -4206,7 +4221,13 @@ void draw_standard_variant(
     // generator's own single-sample depth32float target.
     bool shadow_pass = false,
     // The generator whose map that pass writes, when it writes one.
-    std::uint32_t esm_shadow_index = invalid_handle) {
+    std::uint32_t esm_shadow_index = invalid_handle
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+    , std::vector<PreparedSdlDraw>* deferred = nullptr,
+    const std::shared_ptr<PersistentSceneUniforms>& deferred_scene = {},
+    std::optional<SDL_GPUSampleCount> task_samples = {}
+#endif
+    ) {
     const upstream::RenderItem& item = draw.item;
     SDL_GPUGraphicsPipeline* variant_pipeline =
         standard_variant_pipeline(
@@ -4215,8 +4236,16 @@ void draw_standard_variant(
             draw.pipeline,
             geometry_task,
             shadow_pass,
-            esm_shadow_index);
-    if (variant_pipeline != bound_pipeline) {
+            esm_shadow_index
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+            , task_samples
+#endif
+            );
+    if (
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+        deferred == nullptr &&
+#endif
+        variant_pipeline != bound_pipeline) {
         SDL_BindGPUGraphicsPipeline(pass, variant_pipeline);
         bound_pipeline = variant_pipeline;
     }
@@ -4297,6 +4326,58 @@ void draw_standard_variant(
         [&](const std::string& block, std::size_t) { return resolve(block); };
     const auto fragment_uniforms = vertex_uniforms;
 #endif
+    const PinnedStageSlots& vertex_slots = state.standard_vertex_slots[variant];
+    const PinnedStageSlots& fragment_slots = state.standard_fragment_slots[variant];
+    const auto textures = [&](bool fragment, const std::string& name, std::size_t slot) {
+        const PinnedResource resource = standard_resource_for(
+            state, mesh, material, render_textures, name, variant, fragment, slot);
+        return SDL_GPUTextureSamplerBinding{resource.texture, resource.sampler};
+    };
+    const auto fragment_storage = [&](const std::string& name,
+        [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
+        if (name == "gp") return geometry_params_buffer;
+#if BBLITE_STANDARD_SHADOWS
+        if (SDL_GPUBuffer* info = shadow_info_buffer_at(state, fragment_shadow_rows.storage[slot])) return info;
+#endif
+        return nullptr;
+    };
+    const auto vertex_storage = [&](const std::string& name,
+        [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
+        if (SDL_GPUBuffer* morph = morph_storage_buffer_for(mesh, name)) return morph;
+#if BBLITE_STANDARD_SHADOWS
+        if (SDL_GPUBuffer* info = shadow_info_buffer_at(state, vertex_shadow_rows.storage[slot])) return info;
+#endif
+        return nullptr;
+    };
+    const bool instanced_draw = pinned_record_instanced(record);
+    SDL_GPUBuffer* instance_colors = nullptr;
+#if BBLITE_GPU_INSTANCE_COLORS
+    if (pinned_record_instance_colored(record)) instance_colors = mesh.instance_colors;
+#endif
+#if defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA
+    if (deferred) {
+        PreparedSdlDraw prepared;
+        prepared.pipeline = variant_pipeline;
+        prepared.vertex_uniforms = prepare_sdl_uniforms(vertex_slots.uniforms, vertex_uniforms, deferred_scene);
+        prepared.fragment_uniforms = prepare_sdl_uniforms(fragment_slots.uniforms, fragment_uniforms, deferred_scene);
+        prepared.vertex_textures = resolve_stage_textures(vertex_slots, "standard variant",
+            [&](const std::string& name, std::size_t slot) { return textures(false, name, slot); });
+        prepared.fragment_textures = resolve_stage_textures(fragment_slots, "standard variant",
+            [&](const std::string& name, std::size_t slot) { return textures(true, name, slot); });
+        resolve_stage_storage(fragment_slots, "standard variant fragment", prepared.fragment_storage, fragment_storage);
+        resolve_stage_storage(vertex_slots, "standard variant vertex", prepared.vertex_storage, vertex_storage);
+        prepared.vertex_buffers.push_back({mesh.vertices, 0});
+        if (instanced_draw) {
+            prepared.vertex_buffers.push_back({mesh.instances, 0});
+            if (instance_colors) prepared.vertex_buffers.push_back({instance_colors, 0});
+        }
+        prepared.indices = {mesh.indices, 0};
+        prepared.index_count = mesh.index_count;
+        prepared.instance_count = instanced_draw ? mesh.instance_count : 1;
+        deferred->push_back(std::move(prepared));
+        return;
+    }
+#endif
     push_stage_uniforms(
         command,
         state.standard_vertex_slots[variant],
@@ -4317,25 +4398,11 @@ void draw_standard_variant(
             fragment,
             "standard variant",
             [&](const std::string& name, std::size_t slot) {
-                const PinnedResource resource = standard_resource_for(
-                    state,
-                    mesh,
-                    material,
-                    render_textures,
-                    name,
-                    variant,
-                    fragment,
-                    slot);
-                return SDL_GPUTextureSamplerBinding{
-                    resource.texture,
-                    resource.sampler,
-                };
+                return textures(fragment, name, slot);
             });
     };
     bind_textures(false);
     bind_textures(true);
-    const PinnedStageSlots& fragment_slots =
-        state.standard_fragment_slots[variant];
     // The gp block the shader compile demoted out of the uniform slots:
     // SDL_GPU caps those at four per stage and a geometry fragment spends all
     // four on scene, lights, mesh and mat.
@@ -4345,19 +4412,7 @@ void draw_standard_variant(
         true,
         "standard variant fragment",
         state.storage_binding_scratch,
-        [&](const std::string& name,
-            [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
-            if (name == "gp") return geometry_params_buffer;
-#if BBLITE_STANDARD_SHADOWS
-            if (SDL_GPUBuffer* info = shadow_info_buffer_at(
-                    state, fragment_shadow_rows.storage[slot])) {
-                return info;
-            }
-#endif
-            return nullptr;
-        });
-    const PinnedStageSlots& vertex_slots =
-        state.standard_vertex_slots[variant];
+        fragment_storage);
     // The morph arms' deltas and weights, by the pin's own names.
     bind_stage_storage(
         pass,
@@ -4365,36 +4420,10 @@ void draw_standard_variant(
         false,
         "standard variant vertex",
         state.storage_binding_scratch,
-        [&](const std::string& name,
-            [[maybe_unused]] std::size_t slot) -> SDL_GPUBuffer* {
-            (void)name;
-            if (SDL_GPUBuffer* morph =
-                    morph_storage_buffer_for(mesh, name)) {
-                return morph;
-            }
-#if BBLITE_STANDARD_SHADOWS
-            // A receiver whose vertex stage also overflows SDL_GPU's four
-            // uniform slots has its own receiver blocks demoted there too.
-            if (SDL_GPUBuffer* info = shadow_info_buffer_at(
-                    state, vertex_shadow_rows.storage[slot])) {
-                return info;
-            }
-#endif
-            return nullptr;
-        });
+        vertex_storage);
     // The Standard families carry no glTF X-mirror: the pin's world is the
     // identity (or the record's parent TRS for a pool), so the baked vertex
     // buffer is the pin's own convention already.
-    const bool instanced_draw = pinned_record_instanced(record);
-    SDL_GPUBuffer* instance_colors = nullptr;
-#if BBLITE_GPU_INSTANCE_COLORS
-    // The colour lane rides the pool: the composed variant declares it only
-    // for a record whose pool carries colours, so the same record test
-    // answers both streams.
-    if (pinned_record_instance_colored(record)) {
-        instance_colors = mesh.instance_colors;
-    }
-#endif
     bind_composed_mesh_vertex_buffers(
         pass,
         mesh.vertices,
@@ -6119,20 +6148,49 @@ std::size_t post_process_program(
  * that, because a swapchain texture cannot be read back and the capture reads
  * exactly what was presented; `capture_texture` is left naming the copy.
  */
+struct PreparedSdlPostProcessPass {
+    TaskHandle task{};
+    std::size_t child = 0;
+    SDL_GPUGraphicsPipeline* pipeline = nullptr;
+    SDL_GPUColorTargetInfo target{}, present_target{};
+    SDL_GPUViewport viewport{};
+    SDL_Rect scissor{};
+    bool has_viewport = false, presents = false;
+    bool vertex_uniforms = false, fragment_uniforms = false;
+    std::array<SDL_GPUTextureSamplerBinding, max_post_process_textures> textures{};
+    Uint32 texture_count = 0;
+};
+
+void write_sdl_post_process_uniforms(
+    GpuState& state, Engine& engine, TaskHandle handle, std::size_t index,
+    std::uint32_t width, std::uint32_t height) {
+    PostProcessPassOptions& pass = engine.frame_tasks[handle.value].post_process.passes[index];
+    auto& uniforms = state.post_process_tasks[handle.value][index].uniform_data;
+    if (uniforms.empty()) return;
+    const PostProcessExtent extent = resolve_post_process_extent(
+        engine.render_targets[pass.output_target.value], state.render_targets, pass, width, height);
+    std::fill(uniforms.begin(), uniforms.end(), 0.0f);
+    upstream::write_post_process_uniforms(engine, pass, extent.output_width, extent.output_height,
+        extent.source_width, extent.source_height, uniforms.data());
+}
+
+/** Resource and CPU work completes here; encoding only consumes this packet. */
 template <typename SourceTexture, typename TargetTexture>
-void record_post_process_pass(
+PreparedSdlPostProcessPass prepare_post_process_pass(
     GpuState& state,
     Engine& engine,
     TaskHandle handle,
-    SDL_GPUCommandBuffer* command,
     SDL_GPUTexture* swapchain,
     SDL_GPUTextureFormat swapchain_format,
     std::uint32_t width,
     std::uint32_t height,
     std::size_t index,
-    SDL_GPUTexture*& capture_texture,
     SourceTexture source_texture,
-    TargetTexture target_texture) {
+    TargetTexture target_texture,
+    bool write_uniforms = true) {
+    PreparedSdlPostProcessPass prepared;
+    prepared.task = handle;
+    prepared.child = index;
     PostProcessPassOptions& pass =
         engine.frame_tasks[handle.value].post_process.passes[index];
     const upstream::PostProcessShaderInfo& shader_info =
@@ -6150,8 +6208,6 @@ void record_post_process_pass(
         height);
     const std::uint32_t output_width = extent.output_width;
     const std::uint32_t output_height = extent.output_height;
-    const std::uint32_t source_width = extent.source_width;
-    const std::uint32_t source_height = extent.source_height;
     // A swapchain texture cannot be read back, so a pass
     // that presents renders into this readable copy and
     // blits it, which is also what the capture reads.
@@ -6210,43 +6266,15 @@ void record_post_process_pass(
     }
     const GpuPostProcessProgram& program =
         state.post_process_programs[gpu.program];
-    if (!gpu.uniform_data.empty()) {
-        std::fill(
-            gpu.uniform_data.begin(),
-            gpu.uniform_data.end(),
-            0.0f);
-        upstream::write_post_process_uniforms(
-            engine,
-            pass,
-            output_width,
-            output_height,
-            source_width,
-            source_height,
-            gpu.uniform_data.data());
-        const std::size_t uniform_bytes =
-            gpu.uniform_data.size() * sizeof(float);
-        // At most one block per stage, so the slot the
-        // compaction left it at is zero when it survived.
-        if (!program.vertex_slots.uniforms.empty()) {
-            SDL_PushGPUVertexUniformData(
-                command,
-                0,
-                gpu.uniform_data.data(),
-                static_cast<Uint32>(uniform_bytes));
-        }
-        if (!program.fragment_slots.uniforms.empty()) {
-            SDL_PushGPUFragmentUniformData(
-                command,
-                0,
-                gpu.uniform_data.data(),
-                static_cast<Uint32>(uniform_bytes));
-        }
-    }
+    if (write_uniforms) write_sdl_post_process_uniforms(state, engine, handle, index, width, height);
+    prepared.vertex_uniforms = !program.vertex_slots.uniforms.empty();
+    prepared.fragment_uniforms = !program.fragment_slots.uniforms.empty();
+    prepared.pipeline = program.pipeline.get();
     // No dirty flag on this backend: SDL_GPU uniforms are
     // pushed per command buffer, so the block is written
     // every frame either way. The flag is Dawn's, whose
     // uniform buffer persists between frames.
-    SDL_GPUColorTargetInfo pass_target{};
+    SDL_GPUColorTargetInfo& pass_target = prepared.target;
     pass_target.texture = presents
         ? state.post_process_present
         : target_texture(pass.output_target, false);
@@ -6258,20 +6286,14 @@ void record_post_process_pass(
     pass_target.clear_color =
         SDL_FColor{0.0f, 0.0f, 0.0f, 0.0f};
     pass_target.store_op = SDL_GPU_STOREOP_STORE;
-    SDL_GPURenderPass* post_pass =
-        SDL_BeginGPURenderPass(
-            command,
-            &pass_target,
-            1,
-            nullptr);
-    SDL_BindGPUGraphicsPipeline(post_pass, program.pipeline.get());
+    prepared.has_viewport = pass.has_viewport;
     if (pass.has_viewport) {
         const PixelViewport rectangle =
             upstream::resolve_post_process_viewport(
                 pass.viewport,
                 output_width,
                 output_height);
-        const SDL_GPUViewport gpu_viewport{
+        prepared.viewport = SDL_GPUViewport{
             static_cast<float>(rectangle.x),
             static_cast<float>(rectangle.y),
             static_cast<float>(rectangle.width),
@@ -6279,14 +6301,12 @@ void record_post_process_pass(
             0.0f,
             1.0f,
         };
-        SDL_SetGPUViewport(post_pass, &gpu_viewport);
-        const SDL_Rect scissor{
+        prepared.scissor = SDL_Rect{
             rectangle.x,
             rectangle.y,
             rectangle.width,
             rectangle.height,
         };
-        SDL_SetGPUScissor(post_pass, &scissor);
     }
     // The pin binds one sampler for every texture the
     // stage reads; this backend pairs each with its own
@@ -6295,15 +6315,15 @@ void record_post_process_pass(
         pass.sampling == PostProcessSampling::nearest
             ? state.post_process_nearest_sampler
             : state.post_process_bilinear_sampler;
-    std::array<
-        SDL_GPUTextureSamplerBinding,
-        max_post_process_textures>
-        bindings{};
+    if (gpu.texture_sources.size() > prepared.textures.size()) {
+        throw std::runtime_error("Post-process stage exceeds SDL_GPU's texture slot capacity.");
+    }
+    prepared.texture_count = static_cast<Uint32>(gpu.texture_sources.size());
     for (std::size_t slot = 0;
          slot < gpu.texture_sources.size();
          ++slot) {
         const int source = gpu.texture_sources[slot];
-        bindings[slot] = SDL_GPUTextureSamplerBinding{
+        prepared.textures[slot] = SDL_GPUTextureSamplerBinding{
             source_texture(
                 source < 0
                     ? pass.source
@@ -6312,26 +6332,46 @@ void record_post_process_pass(
                               source)]),
             pass_sampler};
     }
-    if (!gpu.texture_sources.empty()) {
+    prepared.presents = presents;
+    if (presents) {
+        prepared.present_target.texture = swapchain;
+        prepared.present_target.load_op = SDL_GPU_LOADOP_DONT_CARE;
+        prepared.present_target.store_op = SDL_GPU_STOREOP_STORE;
+    }
+    return prepared;
+}
+
+void encode_post_process_pass(
+    GpuState& state, SDL_GPUCommandBuffer* command,
+    const PreparedSdlPostProcessPass& prepared, SDL_GPUTexture*& capture_texture) {
+    // Repeated executions bind one persistent uniform buffer in the pin.
+    // Resolve its final bytes by task/child identity at submission encoding.
+    const auto& uniforms = state.post_process_tasks[prepared.task.value][prepared.child].uniform_data;
+    if (!uniforms.empty()) {
+        const Uint32 bytes = static_cast<Uint32>(uniforms.size() * sizeof(float));
+        if (prepared.vertex_uniforms) SDL_PushGPUVertexUniformData(command, 0, uniforms.data(), bytes);
+        if (prepared.fragment_uniforms) SDL_PushGPUFragmentUniformData(command, 0, uniforms.data(), bytes);
+    }
+    SDL_GPURenderPass* post_pass = SDL_BeginGPURenderPass(command, &prepared.target, 1, nullptr);
+    SDL_BindGPUGraphicsPipeline(post_pass, prepared.pipeline);
+    if (prepared.has_viewport) {
+        SDL_SetGPUViewport(post_pass, &prepared.viewport);
+        SDL_SetGPUScissor(post_pass, &prepared.scissor);
+    }
+    if (prepared.texture_count != 0) {
         SDL_BindGPUFragmentSamplers(
             post_pass,
             0,
-            bindings.data(),
-            static_cast<Uint32>(
-                gpu.texture_sources.size()));
+            prepared.textures.data(),
+            prepared.texture_count);
     }
     SDL_DrawGPUPrimitives(post_pass, 3, 1, 0, 0);
     SDL_EndGPURenderPass(post_pass);
-    if (presents) {
-        SDL_GPUColorTargetInfo present_target{};
-        present_target.texture = swapchain;
-        present_target.load_op =
-            SDL_GPU_LOADOP_DONT_CARE;
-        present_target.store_op = SDL_GPU_STOREOP_STORE;
+    if (prepared.presents) {
         SDL_GPURenderPass* present_pass =
             SDL_BeginGPURenderPass(
                 command,
-                &present_target,
+                &prepared.present_target,
                 1,
                 nullptr);
         SDL_BindGPUGraphicsPipeline(
@@ -6350,6 +6390,17 @@ void record_post_process_pass(
         SDL_EndGPURenderPass(present_pass);
         capture_texture = state.post_process_present;
     }
+}
+
+template <typename SourceTexture, typename TargetTexture>
+void record_post_process_pass(
+    GpuState& state, Engine& engine, TaskHandle handle, SDL_GPUCommandBuffer* command,
+    SDL_GPUTexture* swapchain, SDL_GPUTextureFormat swapchain_format,
+    std::uint32_t width, std::uint32_t height, std::size_t index,
+    SDL_GPUTexture*& capture_texture, SourceTexture source_texture, TargetTexture target_texture) {
+    const auto prepared = prepare_post_process_pass(state, engine, handle, swapchain,
+        swapchain_format, width, height, index, source_texture, target_texture);
+    encode_post_process_pass(state, command, prepared, capture_texture);
 }
 #endif
 
