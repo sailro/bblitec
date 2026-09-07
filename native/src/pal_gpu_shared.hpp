@@ -3840,7 +3840,9 @@ inline VatTextureLayout vat_texture_layout(
     const std::uint32_t width = bones * 4u;
     return VatTextureLayout{width, frames, width * 16u, width * 16u * frames};
 }
+#endif
 
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
 /**
  * The pin's bone-palette texture shape: `skeleton-updater.ts` writes
  * `invMeshWorld * jointWorld * IBM` per bone into one rgba32float row,

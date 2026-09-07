@@ -296,12 +296,9 @@ struct DawnMeshResources {
     // thin-instance arm. `pinned_instance_matrices` states the conversion;
     // aliased to `instances` for thin-instanced meshes, owned otherwise.
     WGPUBuffer pinned_instances = nullptr;
-    WGPUTexture pinned_bone_texture = nullptr;
     // Whether this frame's pinned draw reads the mirrored buffer: skinned
     // draws and palette-world animated meshes both do.
     bool pinned_mirrored_vertices = false;
-    WGPUTextureView pinned_bone_view = nullptr;
-    std::uint32_t pinned_bone_count = 0;
 #if BBLITE_VAT
     // The baked vertex-animation texture and the 32-byte settings block
     // beside it. The bake is settled before the first frame so the texture
@@ -320,6 +317,12 @@ struct DawnMeshResources {
     std::uint64_t pinned_vat_instance_version = 0;
 #endif
 #endif
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
+    WGPUTexture pinned_bone_texture = nullptr;
+    WGPUTextureView pinned_bone_view = nullptr;
+    std::uint32_t pinned_bone_count = 0;
 #endif
 
 #if BBLITE_STANDARD_VARIANTS > 0
@@ -1481,6 +1484,8 @@ struct DawnState : DawnDevice {
                 wgpuBufferRelease(mesh.pinned_vertices);
                 mesh.pinned_vertices = nullptr;
             }
+#endif
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
             if (mesh.pinned_bone_view) {
                 wgpuTextureViewRelease(mesh.pinned_bone_view);
             }
@@ -1489,6 +1494,9 @@ struct DawnState : DawnDevice {
             }
             mesh.pinned_bone_view = nullptr;
             mesh.pinned_bone_texture = nullptr;
+            mesh.pinned_bone_count = 0;
+#endif
+#if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
             if (mesh.pinned_vat_view) {
                 wgpuTextureViewRelease(mesh.pinned_vat_view);
@@ -4146,6 +4154,9 @@ PinnedResource pinned_resource_for(
     return PinnedResource{};
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0 || defined(BBLITE_STANDARD_SKELETON)
 WGPUTexture create_pinned_float_texture(
     DawnState& state,
     std::uint32_t width,
@@ -4212,6 +4223,9 @@ void write_pinned_bone_texture(
         &extent);
 }
 
+#endif
+
+#if BBLITE_PBR_VARIANTS > 0
 #if BBLITE_VAT
 /** One rgba32float upload of `height` rows through the queue. */
 void write_pinned_float_texture(
@@ -5681,6 +5695,10 @@ WGPUBindGroup build_standard_draw_group(
             if (row.reflection_cube) {
                 view = mesh.reflection;
                 sampler = state.default_sampler;
+#if defined(BBLITE_STANDARD_SKELETON)
+            } else if (row.source == upstream::MaterialTextureSource::bone_palette) {
+                view = mesh.pinned_bone_view;
+#endif
             } else if (
                 row.source ==
                     upstream::MaterialTextureSource::standard_emissive &&
@@ -5959,6 +5977,11 @@ void write_standard_geometry_task(
                         .c_str());
             }
             DawnMesh& mesh = state.meshes[draw.item_index];
+#if defined(BBLITE_STANDARD_SKELETON)
+            if (upstream::standard_variant_skeleton(upstream::standard_variants[variant])) {
+                write_pinned_bone_texture(state, mesh, engine.meshes[draw.item.mesh.value]);
+            }
+#endif
             const MaterialRecord* material =
                 draw.item.material.value < engine.materials.size()
                     ? &engine.materials[draw.item.material.value]
@@ -13164,6 +13187,13 @@ SceneRun run_dawn_engine(Engine& engine) {
                                 ? &engine.materials[
                                       draw.item.material.value]
                                 : nullptr;
+#if defined(BBLITE_STANDARD_SKELETON)
+                        if (upstream::standard_variant_skeleton(
+                                upstream::standard_variants[variant])) {
+                            write_pinned_bone_texture(
+                                state, draw_mesh, engine.meshes[draw.item.mesh.value]);
+                        }
+#endif
                         DawnDrawState& standard_state =
                             ensure_standard_draw_buffers(
                                 state,
