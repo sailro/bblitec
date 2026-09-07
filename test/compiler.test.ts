@@ -10,6 +10,7 @@ import {
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
+import { transpileCommonJs } from "../src/typescript-transpile.js";
 
 function assertCameraScalarWrite(cpp: string, field: string, value: RegExp): void {
     const stores = [...cpp.matchAll(new RegExp(`const double (\\w+) = (${value.source});\\s+bbl::write_camera_scalar\\([^\\n]+&bbl::CameraRecord::${field}, \\1\\);`, "g"))];
@@ -12153,6 +12154,40 @@ const containerFlattenClosure = `
             return meshes;
         }
 `;
+
+test("source collector packaging refuses rest, default and optional parameters", () => {
+    for (const original of [containerFlattenWalk, containerFlattenClosure]) {
+        for (const parameter of [
+            "...container: [AssetContainer]",
+            "container: AssetContainer = {} as AssetContainer",
+            "container?: AssetContainer",
+        ]) {
+            const walk = original.replace("container: AssetContainer", parameter)
+                .replaceAll("container.entities", "(container as unknown as AssetContainer).entities");
+            // The actual rest parameter receives [asset], so spreading its
+            // `.entities` throws. Passing asset directly to the packaged body
+            // would silently erase that source behavior.
+            if (parameter.startsWith("...")) {
+                const collect = new Function(transpileCommonJs(
+                    `${walk}\nreturn collectMeshes;`, "collector-rest.ts",
+                ))() as (container: {entities: object[]}) => object[];
+                assert.throws(() => collect({entities: []}), TypeError);
+            }
+            assert.throws(() => compileSource(`
+                import {createEngine, loadGltf, type AssetContainer, type Mesh} from "@babylonjs/lite";
+                ${walk}
+                const engine = await createEngine({});
+                const asset = await loadGltf(engine, "model.glb");
+                for (const mesh of collectMeshes(asset)) { keep(mesh); }
+                function keep(_mesh: Mesh): void {}
+            `, {fileName: "collector-parameter.ts"}), (error: unknown) => {
+                assert(error instanceof CompileError);
+                assert.match(error.message, /collector-parameter\.ts:\d+:\d+:/);
+                return true;
+            });
+        }
+    }
+});
 
 test("lowers the closure arrangement of the same container flatten", () => {
     // Scene 73 writes the walk as a closure over the result list with both

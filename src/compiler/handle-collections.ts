@@ -2948,6 +2948,9 @@ function isImportedMeshFlattenWalk(
         !declaration.body ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        declaration.parameters[0]!.dotDotDotToken ||
+        declaration.parameters[0]!.initializer ||
+        declaration.parameters[0]!.questionToken ||
         declaration.body.statements.length !== 4
     ) {
         return false;
@@ -3101,6 +3104,9 @@ function isClosureMeshFlattenCollector(
         declaration.typeParameters?.length ||
         declaration.parameters.length !== 1 ||
         !ts.isIdentifier(declaration.parameters[0]!.name) ||
+        declaration.parameters[0]!.dotDotDotToken ||
+        declaration.parameters[0]!.initializer ||
+        declaration.parameters[0]!.questionToken ||
         declaration.body.statements.length !== 4
     ) {
         return false;
