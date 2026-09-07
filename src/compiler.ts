@@ -4091,8 +4091,19 @@ class Compiler
             });
             return;
         }
-        if (value.kind === "data" && value.dataType?.kind === "tuple") {
-            const temporary = this.bindDataTuple(value, value.dataType.arity);
+        // A runtime index into a static numeric table leaves one table
+        // dimension. Its native row is the same Tuple<N> used by data tuples.
+        const tupleArity = value.dataType?.kind === "tuple"
+            ? value.dataType.arity
+            : value.dataType?.kind === "table" && value.dataType.dimensions.length === 1
+              ? value.dataType.dimensions[0]
+              : undefined;
+        if (value.kind === "data" && tupleArity !== undefined) {
+            if (bindings.length > tupleArity) {
+                this.fail(declaration.name,
+                    `Tuple has ${tupleArity} elements, destructuring expects ${bindings.length}.`);
+            }
+            const temporary = this.bindDataTuple(value, tupleArity);
             bindings.forEach((element, index) => {
                 bindElement(element, {
                     kind: "number",
