@@ -2662,6 +2662,18 @@ inline bool node_uses_local_attributes(std::size_t geometry_variant) {
 #endif
 }
 
+/** The node adapter binds source indices, including after a glTF material swap. */
+inline std::span<const std::uint32_t> node_source_indices(
+    const ModelGeometry& geometry,
+    std::vector<std::uint32_t>& scratch) {
+    if (!geometry.source_indices_reversed) return geometry.indices;
+    scratch = geometry.indices;
+    for (std::size_t index = 0; index < scratch.size(); index += 3) {
+        std::swap(scratch.at(index + 1), scratch.at(index + 2));
+    }
+    return scratch;
+}
+
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
 static_assert(
     no_node_geometry_variant == upstream::node_no_geometry_variant,

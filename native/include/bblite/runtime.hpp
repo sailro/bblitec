@@ -2051,6 +2051,8 @@ struct ModelGeometry {
     // Imported bind_vertices may already normalize/mirror them; keep this
     // optional lane independently, without duplicating the full vertex.
     std::vector<Vec3> local_normals;
+    /** The loader reversed source triangles for its baked material convention. */
+    bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
@@ -2126,6 +2128,7 @@ inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
     release_storage(geometry.bind_vertices);
     release_storage(geometry.local_normals);
+    geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
     release_storage(geometry.morph_bounds);
     release_storage(geometry.morph_normals);

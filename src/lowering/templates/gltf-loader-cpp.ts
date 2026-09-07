@@ -3215,7 +3215,8 @@ ${lowered.vertexColor}
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
-                }
+                }${retainLocalNormals ? `
+                geometry.source_indices_reversed = true;` : ""}
             }
             if (!normals) {
                 geometry.flat_normals = true;

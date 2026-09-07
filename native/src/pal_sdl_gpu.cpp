@@ -60,6 +60,9 @@
 #include "pal_sdl_gpu_effect.hpp"
 #endif
 #include "pal_render_capture.hpp"
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+#include "pal_node_capture_state.hpp"
+#endif
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
 #include <SDL3/SDL.h>
@@ -887,6 +890,9 @@ struct PinnedStageShadowRows {
 #endif
 
 struct GpuState {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    NodeCaptureState node_capture;
+#endif
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
     std::unique_ptr<SdlTextRenderer> text;
 #endif
@@ -3295,6 +3301,30 @@ SDL_GPUGraphicsPipeline* node_variant_pipeline(
     if (!pipeline) {
         gpu_error("SDL_CreateGPUGraphicsPipeline node variant");
     }
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (state.node_capture.capture.enabled()) {
+        NodeGpuPipelineCapture receipt;
+        receipt.id = state.node_capture.allocate(pipeline.get(), "node-pipeline");
+        receipt.variant = static_cast<std::uint32_t>(variant);
+        receipt.geometry_variant = geometry_view ? static_cast<int>(geometry_variant) : -1;
+        receipt.uses_local_attributes = node_uses_local_attributes(geometry_variant);
+        receipt.color_target_count = info.target_info.num_color_targets;
+        receipt.samples = 1u << static_cast<unsigned>(info.multisample_state.sample_count);
+        receipt.topology = info.primitive_type == SDL_GPU_PRIMITIVETYPE_TRIANGLELIST ? "triangle-list" : "unknown";
+        receipt.cull_mode = info.rasterizer_state.cull_mode == SDL_GPU_CULLMODE_NONE ? "none"
+            : info.rasterizer_state.cull_mode == SDL_GPU_CULLMODE_BACK ? "back" : "front";
+        receipt.front_face = info.rasterizer_state.front_face == SDL_GPU_FRONTFACE_COUNTER_CLOCKWISE ? "ccw" : "cw";
+        for (std::size_t i = 0; i < attributes.size(); ++i) {
+            const auto& attribute = attributes[i];
+            const char* format = attribute.format == SDL_GPU_VERTEXELEMENTFORMAT_FLOAT2 ? "float32x2"
+                : attribute.format == SDL_GPU_VERTEXELEMENTFORMAT_FLOAT3 ? "float32x3"
+                : attribute.format == SDL_GPU_VERTEXELEMENTFORMAT_FLOAT4 ? "float32x4" : "unknown";
+            receipt.attributes.push_back({std::string(upstream::node_variant_attributes[view.first_attribute + i].name),
+                format, attribute.location, attribute.buffer_slot, attribute.offset, vertex_buffer.pitch});
+        }
+        state.node_capture.capture.pipeline(std::move(receipt));
+    }
+#endif
     return state.node_variant_pipelines.emplace(key, std::move(pipeline)).first->second.get();
 }
 
@@ -3373,6 +3403,9 @@ void draw_node_variant(
     const upstream::NodeMeshUniforms node_mesh =
         node_mesh_block(scene, engine, draw.item.mesh.value,
             node_uses_local_attributes(geometry_variant));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    std::vector<std::uint8_t> captured_mesh_uniform;
+#endif
     const auto resolve = [&](
                              const std::string& block) -> PinnedStageBlock {
         if (block == "scene") {
@@ -3381,7 +3414,15 @@ void draw_node_variant(
         if (block == "nmeLights") {
             return {pinned_lights.data(), pinned_lights.size()};
         }
-        if (block == "meshU") return {&node_mesh, sizeof(node_mesh)};
+        if (block == "meshU") {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (state.node_capture.capture.enabled()) {
+                const auto* bytes = reinterpret_cast<const std::uint8_t*>(&node_mesh);
+                captured_mesh_uniform.assign(bytes, bytes + sizeof(node_mesh));
+            }
+#endif
+            return {&node_mesh, sizeof(node_mesh)};
+        }
         if (block == "nodeU") {
             return {
                 &upstream::node_variant_uniform_floats[
@@ -3454,6 +3495,9 @@ void draw_node_variant(
     // is one of the pin's environment resources and carries no slot this
     // table knows, so it joins through the source `node_binding_resources`
     // declares, the pair every other family already resolves.
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    std::vector<NodeGpuBindingCapture> captured_bindings;
+#endif
     const auto resolve_texture =
         [&](const std::string& name,
             [[maybe_unused]] bool fragment_stage,
@@ -3519,7 +3563,16 @@ void draw_node_variant(
         false,
         "node variant vertex",
         [&](const std::string& name, std::size_t texture_slot) {
-            return resolve_texture(name, false, texture_slot);
+            const auto binding = resolve_texture(name, false, texture_slot);
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (state.node_capture.capture.enabled()) {
+                captured_bindings.push_back({static_cast<std::uint32_t>(texture_slot), "vertex-texture:" + name,
+                    state.node_capture.identity(binding.texture, "bound-texture"), 0});
+                captured_bindings.push_back({static_cast<std::uint32_t>(texture_slot), "vertex-sampler:" + name,
+                    state.node_capture.identity(binding.sampler, "bound-sampler"), 0});
+            }
+#endif
+            return binding;
         });
     bind_stage_textures(
         pass,
@@ -3527,7 +3580,16 @@ void draw_node_variant(
         true,
         "node variant fragment",
         [&](const std::string& name, std::size_t texture_slot) {
-            return resolve_texture(name, true, texture_slot);
+            const auto binding = resolve_texture(name, true, texture_slot);
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (state.node_capture.capture.enabled()) {
+                captured_bindings.push_back({static_cast<std::uint32_t>(texture_slot), "fragment-texture:" + name,
+                    state.node_capture.identity(binding.texture, "bound-texture"), 0});
+                captured_bindings.push_back({static_cast<std::uint32_t>(texture_slot), "fragment-sampler:" + name,
+                    state.node_capture.identity(binding.sampler, "bound-sampler"), 0});
+            }
+#endif
+            return binding;
         });
     // Storage resources survive register compaction by name. MorphTargetsBlock
     // contributes the vertex pair below; shadow receiver blocks can join the
@@ -3595,6 +3657,22 @@ void draw_node_variant(
         &index_binding,
         SDL_GPU_INDEXELEMENTSIZE_32BIT);
     SDL_DrawGPUIndexedPrimitives(pass, mesh.index_count, 1, 0, 0, 0);
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (state.node_capture.capture.enabled()) {
+        NodeGpuDrawCapture receipt;
+        receipt.pipeline = state.node_capture.identity(variant_pipeline, "node-pipeline");
+        receipt.mesh = draw.item.mesh.value;
+        receipt.material = draw.item.material.value;
+        receipt.vertices = state.node_capture.identity(vertex_binding.buffer, "node-vertices");
+        receipt.indices = state.node_capture.identity(index_binding.buffer, "node-indices");
+        receipt.vertex_offset = vertex_binding.offset;
+        receipt.index_offset = index_binding.offset;
+        receipt.index_count = mesh.index_count;
+        receipt.bindings = std::move(captured_bindings);
+        receipt.pushed_uniform_bytes = std::move(captured_mesh_uniform);
+        state.node_capture.capture.draw(std::move(receipt));
+    }
+#endif
 }
 #endif
 
@@ -9029,15 +9107,26 @@ SceneRun run_gpu_engine(Engine& engine) {
                 gpu_mesh.owns_geometry_buffers = false;
 #endif
             } else {
+                std::vector<std::uint32_t> source_indices;
+                std::span<const std::uint32_t> indices = geometry.indices;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                if (item.material_kind == upstream::RenderMaterialKind::node) {
+                    indices = node_source_indices(geometry, source_indices);
+                }
+#endif
                 gpu_mesh.vertices = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_VERTEX,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
                 gpu_mesh.indices = upload_mesh_buffer(
                     SDL_GPU_BUFFERUSAGE_INDEX,
-                    geometry.indices.data(),
-                    geometry.indices.size() *
-                        sizeof(std::uint32_t));
+                    indices.data(), indices.size_bytes());
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                if (item.material_kind == upstream::RenderMaterialKind::node) {
+                    state.node_capture.upload(gpu_mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
+                    state.node_capture.upload(gpu_mesh.indices, "node-indices", indices.data(), indices.size_bytes());
+                }
+#endif
             }
 #if BBLITE_PBR_VARIANTS > 0
             if (
@@ -9541,6 +9630,9 @@ SceneRun run_gpu_engine(Engine& engine) {
         // transfer-buffer create/release per frame.
         GpuBufferUploadBatch frame_buffer_uploads(state.device);
         while (captures.keep_running(running, frame)) {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
             poll_platform_events(
                 engine,
@@ -9851,6 +9943,9 @@ SceneRun run_gpu_engine(Engine& engine) {
                         gpu_mesh.vertices,
                         vertices.data(),
                         vertices.size() * sizeof(GpuVertex));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                state.node_capture.update(gpu_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
+#endif
 #if BBLITE_PBR_VARIANTS > 0
                     if (gpu_mesh.pinned_vertices) {
                         const std::vector<GpuVertex> pinned =
@@ -9918,6 +10013,9 @@ SceneRun run_gpu_engine(Engine& engine) {
                     gpu_mesh.vertices,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                state.node_capture.update(gpu_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
+#endif
 #if BBLITE_PBR_VARIANTS > 0
                 if (gpu_mesh.pinned_vertices) {
                     const std::vector<GpuVertex> pinned =
@@ -10252,12 +10350,20 @@ SceneRun run_gpu_engine(Engine& engine) {
                     frame
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
                     , &state.text->owner->capture
+#elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                , nullptr
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                , &state.node_capture.capture
 #endif
                     );
                 captures.render_capture_saved = true;
             }
             };
 #if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (!state.node_capture.capture.enabled())
+#endif
             capture_render_state();
 #endif
             if (!scene.tasks.empty()) {
@@ -12432,6 +12538,9 @@ SceneRun run_gpu_engine(Engine& engine) {
                 }
                 capture_render_state();
 #endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                capture_render_state();
+#endif
                 if (capture_texture == state.color && capture_texture) {
                     SDL_GPUBlitInfo present{};
                     present.source = SDL_GPUBlitRegion{state.color, 0, 0, 0, 0, width, height};
@@ -13478,7 +13587,7 @@ SceneRun run_gpu_engine(Engine& engine) {
             draw_billboards(BillboardDepthMode::transparent);
 #endif
             SDL_EndGPURenderPass(pass);
-#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
+#if (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT) || BBLITE_NODE_GEOMETRY_VARIANTS > 0
             capture_render_state();
 #endif
             // Held across the loop rather than declared inside it, so

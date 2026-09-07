@@ -67,6 +67,42 @@ test("node geometry binds raw lanes and the pin world independently of ordinary 
     const childMesh = meshModule.initMeshTransform({}, ...childTrs);
     childMesh.parent = parentMesh;
     const localExpected = childMesh.worldMatrix;
+    const geometryModule = await importPinnedModule<{
+        buildNodeGeometryRenderable(scene: object, mesh: object, view: object): {
+            bind(engine: object, signature: object): { update(): void; draw(pass: object): number };
+        };
+    }>("material/node/node-geometry-renderable.js");
+    const uploaded = new Map<object, Uint8Array>();
+    const gpu = { positionBuffer: {}, normalBuffer: {}, uvBuffer: {}, indexBuffer: {}, indexFormat: "uint32", indexCount: 3 };
+    Object.assign(childMesh, { _gpu: gpu });
+    const recordingEngine = { _device: {
+        createBuffer: () => ({}), createBindGroup: () => ({}),
+        queue: { writeBuffer(buffer: object, _offset: number, values: Float32Array) {
+            uploaded.set(buffer, new Uint8Array(values.buffer, values.byteOffset, values.byteLength).slice());
+        } },
+    } };
+    const source = { _textureSlots: new Map() };
+    const vertexBindings: object[] = [];
+    // Execute the actual renderable adapter around an already composed view.
+    // It must bind original buffers and upload the actual source mesh world.
+    const renderable = geometryModule.buildNodeGeometryRenderable({
+        surface: { engine: recordingEngine }, lights: [], _meshAuxDisposables: new Map(),
+    }, childMesh, { source, _geometry: {
+        _attrNames: ["position", "normal", "uv"], _nodeUBOReady: true, _nodeUBO: null,
+        _compileBySig: { get: () => ({ _nodeUboBinding: null, _nodeUboSize: 0,
+            _textureBindings: [], _geometryGpBinding: null, _usesMeshAttributeFlags: false }) },
+    } });
+    const bound = renderable.bind(recordingEngine, {});
+    bound.update();
+    assert.equal(bound.draw({
+        setVertexBuffer: (_index: number, buffer: object) => vertexBindings.push(buffer),
+        setIndexBuffer: (buffer: object) => assert.equal(buffer, gpu.indexBuffer),
+        setBindGroup() {}, drawIndexed: (count: number) => assert.equal(count, 3),
+    }), 1);
+    assert.deepEqual(vertexBindings, [gpu.positionBuffer, gpu.normalBuffer, gpu.uvBuffer]);
+    assert.equal(uploaded.size, 1);
+    const uploadedWorld = [...uploaded.values()][0]!.subarray(0, 64);
+    assert.deepEqual(uploadedWorld, new Uint8Array(localExpected.buffer, localExpected.byteOffset, 64));
     const setTrs = (name: string, values: number[]): string =>
         `${name}.position = {${floats(values.slice(0, 3))}}; ${name}.rotation = {${floats(values.slice(3, 6))}}; ${name}.scaling = {${floats(values.slice(6))}};`;
     const context = new LoweringContext();
@@ -108,6 +144,7 @@ ${["std::array<float, 16> outer_draw_world(", "std::array<float, 16> draw_world(
 template <typename Block>
 ${cppFunction(pal, "inline void pinned_mesh_light_selection(")}
 ${cppFunction(pal, "inline upstream::NodeMeshUniforms node_mesh_block(")}
+${cppFunction(pal, "inline std::span<const std::uint32_t> node_source_indices(")}
 ${cppFunction(dawn, "struct NodeMeshBlockCache")} ;
 ${cppFunction(dawn, "const upstream::NodeMeshUniforms& node_mesh_block_for(")}
 }
@@ -138,6 +175,18 @@ int main() {
     }
     assert(pinned_vertex_input("position", false).offset == offsetof(GpuVertex, position));
     assert(pinned_vertex_input("normal", true).offset == offsetof(GpuVertex, normal));
+    for (const double determinant : {1.0, -1.0}) for (const bool clockwise_front_face : {false, true}) {
+        const std::vector<std::uint32_t> original{0, 1, 2, 0, 2, 3};
+        geometry.indices = original; geometry.source_indices_reversed = false;
+        ${cppFunction(loader, "if (\n                geometry.topology == MeshTopology::triangles &&\n                determinant < 0.0")}
+        const auto adapted = geometry.indices;
+        assert(geometry.source_indices_reversed == (determinant < 0 && !clockwise_front_face));
+        std::vector<std::uint32_t> scratch;
+        const auto source = node_source_indices(geometry, scratch);
+        assert(std::equal(source.begin(), source.end(), original.begin(), original.end()));
+        assert(geometry.indices == adapted);
+        assert(geometry.source_indices_reversed || (source.data() == geometry.indices.data() && scratch.empty()));
+    }
     ${checks.join("\n")}
     const auto rejects = [&] {
         try { (void)node_mesh_block(scene, engine, 0, true); } catch (const std::runtime_error&) { return true; }
