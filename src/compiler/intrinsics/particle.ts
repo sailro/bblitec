@@ -1,25 +1,10 @@
-// The node-particle family: a graph, the set built from it, and the frozen
-// simulation a scene steps before its first frame.
-//
-// Upstream's `src/particle/` is a CPU simulation whose behaviour is
-// assembled at load: `npe-build.ts` walks the graph and dynamically imports
-// one evaluator per block class, each installing closures onto the system.
-// There is no shape to fold there, and the value those closures produce is
-// fragile -- the corpus seeds `Math.random` through `Math.sin`, which is not
-// bit-portable off V8 -- so the simulation is EXECUTED at generation and its
-// particle state baked (`src/pinned-node-particle.ts` carries the argument).
-//
-// Everything downstream stays folded. `createParticleBillboard` and
-// `syncParticleBillboard` are lowered from their own pinned declarations, so
-// the atlas the pin derives, the blend its mode selects and the per-particle
-// write all keep the pin's shape; what this module records is the program
-// the scene ran, nothing more.
-//
-// What refuses here, each by name: a snippet id (a network read at page
-// load), a set registered on the scene (its `_beforeRender` hook animates
-// per frame, which a frozen bake cannot answer), the blend-mode and
-// Sprite2D-bridge builders, and a system stepped after its billboard was
-// synced.
+// The node-particle family records graph builds and source lifecycle calls.
+// Frozen systems execute the pin during generation, preserving V8-dependent
+// random sequences. Live pure-2D bindings and provider-backed systems lower
+// supported pinned evaluators into native simulation state. Providers also
+// retain source callbacks and execute authored setup/step calls natively.
+// Both paths share the pinned atlas, blend and particle-to-sprite bridges;
+// unsupported combinations refuse where their source operation is reached.
 import { createHash } from "node:crypto";
 import ts from "typescript";
 import { requireParticleBakeWritable } from "../particle-buffer.js";
@@ -455,6 +440,7 @@ export function compileParticleIntrinsic(
     switch (importedName) {
         case "withNodeParticleEmitterProvider": {
             context.expectArgumentCount(call, 1, 2);
+            context.reachedNodeParticles.nativeProvider = true;
             if (context.isRuntimeResourceConstruction()) {
                 context.fail(call, "A native emitter provider must be constructed before recurring frame callbacks; its set has one native identity.");
             }
@@ -719,6 +705,10 @@ export function compileParticleIntrinsic(
                 context.reachedNodeParticles.sets[
                     set.nodeParticleSetIndex!
                 ]!;
+            if (request.native && (context.isRuntimeResourceConstruction() ||
+                context.reachedNodeParticles.registrations.some((entry) => entry.set === set.nodeParticleSetIndex))) {
+                context.fail(call, "Native particle blend modes must be enabled before registration and recurring frame callbacks; the enabler affects future billboards.");
+            }
             request.enableBlendModes = true;
             return set;
         }

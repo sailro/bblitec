@@ -21,7 +21,7 @@ void initialize_native_node_particle_set(int set, bbl::js::Callback<bbl::js::F32
     provider = std::move(callback);
 }
 void start_native_node_particle_system(int set, int system) { assert(set == 0 && system == 0); started = true; }
-void stop_native_node_particle_system(int set, int system) { assert(set == 0 && system == 0); started = false; }
+void stop_native_node_particle_system(int set, int system) { assert(set == 0 && system == 0); }
 void animate_native_node_particle_system(int set, int system, double ratio) {
     assert(set == 0 && system == 0 && ratio == 1);
     if (started) assert(sample_node_particle_emitter(provider)[12] == 9);

@@ -885,6 +885,8 @@ export interface CompiledNodeParticles extends Omit<
   NodeParticleBakeRequest,
   "sets" | "billboards" | "registrations"
 > {
+  /** A reached wrapper emits its sampling callback even before a set is built. */
+  nativeProvider?: true;
   sets: NodeParticleSetRequest[];
   billboards: Array<{
     set: number;

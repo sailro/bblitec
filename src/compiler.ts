@@ -981,6 +981,10 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.reachedNodeParticles.nativeProvider &&
+            !this.reachedNodeParticles.sets.some((set) => set.native)) {
+            this.fail(this.sourceFile, "A reached native emitter provider must feed a built particle set; standalone provider options are not lowered.");
+        }
         assertDeterministicRandomUnreached(
             this,
             this.jsRandomReached,

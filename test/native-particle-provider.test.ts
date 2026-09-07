@@ -6,6 +6,11 @@ import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 import { bakeNodeParticles } from "../src/pinned-node-particle.js";
+import { LoweringContext } from "../src/lowering/context.js";
+import { NodeParticleLowerer } from "../src/lowering/node-particle-lowerer.js";
+import { BillboardLowerer } from "../src/lowering/billboard-lowerer.js";
+import { SpriteLowerer } from "../src/lowering/sprite-lowerer.js";
+import { RendererLowerer } from "../src/lowering/renderer-lowerer.js";
 
 function scene(body: string, helpers = ""): string {
     return `
@@ -14,6 +19,7 @@ function scene(body: string, helpers = ""): string {
             stopParticleSystem, animateParticleSystem, createParticleBillboard,
             registerNodeParticleSet, registerNodeParticleSet2D, createSpriteRenderer, onBeforeRender,
             createTexture2DFromPixels } from "@babylonjs/lite";
+        import { enableNodeParticleBlendModes } from "@babylonjs/lite";
         ${helpers}
         async function main() {
             const engine = await createEngine({});
@@ -58,7 +64,7 @@ const program = scene(`${provider}
     if (calls !== 3) throw new Error("zero speed skipped the provider");
     stopParticleSystem(system);
     animateParticleSystem(system, 1);
-    if (calls !== 3) throw new Error("stopped system sampled the provider");
+    if (calls !== 4) throw new Error("stopped system skipped the provider");
     if (system.buffer.alive !== 0 || system.buffer.capacity !== 640) throw new Error("native buffer reads differ");
     Math.random = original;
     if (Math.random() !== 0.6270739405881613) throw new Error("built-in random state was consumed by an override");
@@ -119,6 +125,21 @@ test("native and generation-only sets cannot split the shared random sequence", 
     }
 });
 
+test("native blend enabling cannot change an earlier registration retroactively", () => {
+    assert.throws(() => compileSource(scene(`${provider}
+        registerNodeParticleSet(scene, set);
+        enableNodeParticleBlendModes(set);
+    `)), /enabler affects future billboards/);
+    assert.throws(() => compileSource(scene(`${provider}
+        onBeforeRender(scene, () => enableNodeParticleBlendModes(set));
+    `)), /enabler affects future billboards/);
+});
+
+test("standalone providers refuse before missing runtime helpers", () => {
+    assert.throws(() => compileSource(scene(`withNodeParticleEmitterProvider(() => new Float32Array(16));`)),
+        /standalone provider options are not lowered/);
+});
+
 test("resolved query primitives remain native input to imported numeric helpers", () => {
     const result = compileSource(`
         import { createEngine, createBox } from "@babylonjs/lite";
@@ -161,6 +182,36 @@ test("authored moving-emitter modes carry pinned build facts without freezing na
         assert.equal(live.texture.sceneAssigned, true);
         assert.equal(live.texture.width, 64);
         assert.equal(live.texture.height, 64);
+        if (nativeTools) {
+            const context = new LoweringContext();
+            const particle = new NodeParticleLowerer(context).lower([{
+                bake: { set: 0, system: 0, capacity: live.facts.capacity,
+                    blendMode: live.facts.blendMode, updateSpeed: live.facts.updateSpeed,
+                    stepIsIdentity: false, texture: live.texture, spriteSheet: null,
+                    alive: 0, positions: [], sizes: [], colors: [], rotations: [], frames: null },
+                exactBlend: false, textureAsset: "fixture.png",
+                live: { graph: live.graph, facts: live.facts, provider: true },
+            }], [], [{ systems: [{ set: 0, system: 0 }], autoStart: search === "" }]);
+            const billboard = new BillboardLowerer(context, new RendererLowerer(context).compiledSceneUniformsWgsl()).lowerCore();
+            const sprite = new SpriteLowerer(context).lowerCore();
+            const output = resolve(`artifacts/node-particle-provider-bridge-check-${search ? "frozen" : "live"}`);
+            const headers = join(output, "bblite/upstream");
+            mkdirSync(headers, { recursive: true });
+            writeFileSync(join(headers, "node_particles.hpp"), particle.header);
+            writeFileSync(join(headers, "billboard_system.hpp"), billboard.header);
+            writeFileSync(join(headers, "sprite_layer.hpp"), sprite.header);
+            writeFileSync(join(output, "node_particles.cpp"), particle.source);
+            writeFileSync(join(output, "billboard_system.cpp"), billboard.source);
+            const executable = join(output, "check.exe");
+            runNativeFixtureCompiler(nativeTools, [
+                "/nologo", "/std:c++20", "/W4", "/WX", "/permissive-", "/EHsc", "/MD", "/O2", "/Gy",
+                `/DAUTO_START=${search === "" ? 1 : 0}`, "/I", "native/include", "/I", output,
+                `/Fo:${output}\\`, `/Fe:${executable}`, join(output, "node_particles.cpp"),
+                join(output, "billboard_system.cpp"), "test/fixtures/node-particle-provider-bridge-check.cpp",
+                "/link", "/OPT:REF",
+            ]);
+            assert.match(execFileSync(executable, { encoding: "utf8" }), /provider-bridge-check: ok/);
+        }
     }
 });
 
