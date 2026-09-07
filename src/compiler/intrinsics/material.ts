@@ -1820,6 +1820,8 @@ export function compileMaterialIntrinsic(
             return { kind: "void", cpp: "" };
         }
 
+        case "enableStandardSkeleton":
+        case "enableStandardUvOffset":
         case "enableStandardVertexColors": {
             // src/material/standard/enable-standard-vertex-colors.ts
             // installs the vertex-colour fragment factory globally, and
@@ -1829,7 +1831,14 @@ export function compileMaterialIntrinsic(
             // the generated Standard fragment carries the pinned slot.
             context.expectArgumentCount(call, 0, 0);
             context.reachFeature("material:standard", call);
-            context.reachFeature("material:standard-vertex-colors", call);
+            context.reachFeature(
+                importedName === "enableStandardSkeleton"
+                    ? "material:standard-skeleton"
+                    : importedName === "enableStandardUvOffset"
+                      ? "material:standard-uv-offset"
+                      : "material:standard-vertex-colors",
+                call,
+            );
             context.reachFeature("renderer:scene", call);
             return { kind: "void", cpp: "" };
         }

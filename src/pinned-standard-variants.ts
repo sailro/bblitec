@@ -74,6 +74,7 @@ import {
 import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
+import { PinnedNumericLowerer, type PinnedBinding } from "./lowering/pinned-numeric-lowerer.js";
 import {
     geometryAttachmentTypes,
     importPinnedModule,
@@ -140,6 +141,8 @@ export interface PinnedStandardVariant {
 }
 
 export interface PinnedStandardComposeOptions {
+    /** The pin's explicit Standard skeleton registration. */
+    skeleton?: boolean;
     /** The pin's `MSH_*` bits for the mesh this material is drawn on. */
     meshFeatures?: number;
     /** Bits a material view ORs in — `NO_COLOR_OUTPUT` is the reached one. */
@@ -279,6 +282,20 @@ async function registerStandardExtensions(): Promise<void> {
     return registered;
 }
 
+/** Optional mesh factories remain local to this scene's composition. */
+async function standardExtensions(skeleton = false): Promise<readonly StdExtDescriptor[]> {
+    await registerStandardExtensions();
+    const flags = await importPinnedModule<{
+        _getStdExtsSorted: () => readonly StdExtDescriptor[];
+    }>("material/standard/standard-flags.js");
+    const extensions = flags._getStdExtsSorted();
+    if (!skeleton) return extensions;
+    const module = await importPinnedModule<{ stdSkeletonExt: StdExtDescriptor }>(
+        "material/standard/fragments/std-skeleton-fragment.js",
+    );
+    return [...extensions, module.stdSkeletonExt].sort((a, b) => a._id.localeCompare(b._id));
+}
+
 /** The std extension ids the pin has registered, in its own sorted order. */
 export async function registeredStandardExtensionIds(): Promise<
     readonly string[]
@@ -335,13 +352,11 @@ export async function pinnedStandardMaterialFeatures(
 export async function pinnedStandardRenderableFeatures(
     material: PinnedStandardMaterialInput,
     meshFeatures: number,
+    skeleton = false,
 ): Promise<number> {
     const features = await pinnedStandardMaterialFeatures(material);
-    const flags = await importPinnedModule<{
-        _getStdExtsSorted: () => readonly StdExtDescriptor[];
-    }>("material/standard/standard-flags.js");
     let word = features;
-    for (const ext of flags._getStdExtsSorted()) {
+    for (const ext of await standardExtensions(skeleton)) {
         word |= ext._meshFeatures?.(meshFeatures, material) ?? 0;
     }
     return word;
@@ -470,11 +485,8 @@ export async function composePinnedStandardVariant(
             }>("shader/fragments/thin-instance-fragment.js"),
         ]);
     const meshFeatures = options.meshFeatures ?? 0;
-    if (
-        meshFeatures &
-        (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8 |
-            meshBits.MSH_VAT)
-    ) {
+    if ((meshFeatures & meshBits.MSH_VAT) ||
+        ((meshFeatures & (meshBits.MSH_HAS_SKELETON | meshBits.MSH_HAS_SKELETON_8)) && !options.skeleton)) {
         throw new Error(
             "Pinned Standard skeletons are not composable yet: upstream " +
                 "reaches them through enableStandardSkeleton(), which " +
@@ -534,7 +546,7 @@ export async function composePinnedStandardVariant(
     if (meshFeatures & meshBits.MSH_HAS_MORPH_TARGETS) {
         fragments.push(morph.createMorphFragment());
     }
-    for (const ext of flags._getStdExtsSorted()) {
+    for (const ext of await standardExtensions(options.skeleton)) {
         // 1.23 hands the material to `_meshFeatures` as well: the UV
         // transform reads `material._hasUvTx` from it. Passing what the pin
         // passes keeps a hook that reads it from seeing `undefined`.
@@ -1412,6 +1424,8 @@ function lowerStandardFeatureDerivation(
 
 /** What a scene reaches, as the Standard composition driver needs it. */
 export interface StandardSceneCompositionInput {
+    skeleton?: boolean;
+    vertexAlpha?: boolean;
     /** Materialized `.babylon` asset paths, in load order. */
     babylonAssets: readonly string[];
     /** The emit options that shape the generated loader's material records:
@@ -1733,6 +1747,7 @@ export async function composeSceneStandardVariants(
         NO_COLOR_OUTPUT: number;
         ESM_SHADOW_OUTPUT: number;
         MATERIAL_ALPHA_BLEND: number;
+        VERTEX_ALPHA: number;
     }>("material/standard/standard-flags.js");
     // The material feature values reachable, derivation by the pin itself.
     const materialInputs: PinnedStandardMaterialInput[] = [];
@@ -1901,6 +1916,7 @@ export async function composeSceneStandardVariants(
             const features = await pinnedStandardRenderableFeatures(
                 material,
                 meshFeatures,
+                input.skeleton,
             );
             const vertexColors = input.vertexColors &&
                     (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
@@ -1908,8 +1924,17 @@ export async function composeSceneStandardVariants(
                 : {};
             await add(material, meshFeatures, features, {
                 fog: input.fog,
+                skeleton: input.skeleton ?? false,
                 ...vertexColors,
             });
+            if (input.vertexAlpha && vertexColors.vertexColors) {
+                await add(material, meshFeatures,
+                    features | flags.VERTEX_ALPHA | flags.MATERIAL_ALPHA_BLEND, {
+                        fog: input.fog,
+                        skeleton: input.skeleton ?? false,
+                        vertexColors: { vertexAlpha: true },
+                    });
+            }
             // Every caster view a shadow generator draws through, from
             // the one contract `rebuildSingle` states: it derives
             // `receiveShadows` as `!shadowOutput && ...`, so a caster view
@@ -1938,6 +1963,7 @@ export async function composeSceneStandardVariants(
                     (features & ~view.clear) | view.set,
                     {
                         fog: false,
+                        skeleton: input.skeleton ?? false,
                         ...vertexColors,
                         passFeatures: view.set,
                     },
@@ -1950,6 +1976,7 @@ export async function composeSceneStandardVariants(
                     features,
                     {
                         fog: input.fog,
+                        skeleton: input.skeleton ?? false,
                         ...vertexColors,
                         geometry: {
                             attachments: task.attachments,
@@ -2113,8 +2140,8 @@ export function standardBuiltinBindingNames(): ReadonlySet<string> {
 }
 
 /** `standard_binding_resources`' rows, rendered from the list above. */
-function standardBindingResourceRows(): string {
-    return standardBuiltinBindings.map((binding) => {
+function standardBindingResourceRows(bindings = standardBuiltinBindings): string {
+    return bindings.map((binding) => {
         const comment = binding.origin
             .map((line) => `    // ${line}`)
             .join("\n");
@@ -2132,6 +2159,9 @@ function standardBindingResourceRows(): string {
 
 /** Inputs for the native-support block appended to standard_variants.hpp. */
 export interface PinnedStandardSupportOptions {
+    skeleton?: boolean;
+    vertexAlpha?: boolean;
+    uvOffset?: boolean;
     selectors: readonly PinnedStandardSelector[];
     /** `material:standard-uv-transform` reached: scene code called the pin's
      *  own `enableMaterialUvTransform(material)`, so the derived feature word
@@ -2182,6 +2212,48 @@ export function pinnedStandardSupportBlock(
             "src/material/mesh-features.ts",
             name,
         );
+    const skeletonModule = "src/material/standard/fragments/std-skeleton-fragment.ts";
+    let skeletonBlock = "";
+    const builtinBindings = [...standardBuiltinBindings];
+    if (options.skeleton) {
+        const { file, declaration } = context.methodDeclaration(skeletonModule, "stdSkeletonExt._meshFeatures");
+        if (!declaration.body || !ts.isBlock(declaration.body)) throw new Error("Pinned Standard skeleton feature hook has no block body.");
+        const bindings = new Map<string, PinnedBinding>([
+            ["meshFeatures", { cpp: "mesh_features", type: "scalar" }],
+            ...["MSH_HAS_SKELETON", "MSH_HAS_SKELETON_8", "MSH_HAS_THIN_INSTANCES"].map((name): [string, PinnedBinding] => [name, { cpp: `${mesh(name)}u`, type: "scalar" }]),
+            ...["HAS_SKELETON", "HAS_SKELETON_8"].map((name): [string, PinnedBinding] => [name, { cpp: `${flag(name)}u`, type: "scalar" }]),
+        ]);
+        const lowerer = new PinnedNumericLowerer(file, { bindings, calls: new Map(),
+            returnValue: (expression) => {
+                if (!expression) throw new Error("Pinned skeleton feature hook returned no value.");
+                return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;
+            },
+        });
+        skeletonBlock = `
+#define BBLITE_STANDARD_SKELETON 1
+// ${context.provenance(skeletonModule, "stdSkeletonExt._meshFeatures")}
+inline std::uint32_t standard_skeleton_features(std::uint32_t mesh_features) {
+${declaration.body.statements.flatMap((statement) => lowerer.statement(statement, "    ")).join("\n")}
+}
+inline bool standard_variant_skeleton(const StandardVariantEntry& variant) {
+    return (variant.features & ${flag("HAS_SKELETON")}u) != 0u;
+}
+`;
+        const fragment = context.functionDeclaration("src/shader/fragments/skeleton-fragment.ts", "createSkeletonFragment").declaration;
+        let boneName: string | undefined;
+        const visit = (node: ts.Node): void => {
+            if (ts.isPropertyAssignment(node) && node.name.getText() === "_vertexBindings" && ts.isArrayLiteralExpression(node.initializer)) {
+                const entry = node.initializer.elements[0];
+                if (node.initializer.elements.length !== 1 || !entry || !ts.isObjectLiteralExpression(entry)) throw new Error("Pinned skeleton binding shape changed.");
+                const name = entry.properties.find((property) => ts.isPropertyAssignment(property) && property.name.getText() === "_name");
+                if (name && ts.isPropertyAssignment(name) && ts.isStringLiteral(name.initializer)) boneName = name.initializer.text;
+            }
+            ts.forEachChild(node, visit);
+        };
+        visit(fragment);
+        if (!boneName) throw new Error("Pinned skeleton fragment declares no palette binding.");
+        builtinBindings.push({ texture: boneName, sampler: "", source: "bone_palette", reflectionCube: false, origin: ["skeleton-fragment.ts; textureLoad reads the live palette."] });
+    }
     const derivation = lowerStandardFeatureDerivation(
         context,
         options.uvTransform,
@@ -2389,7 +2461,7 @@ inline StandardMaterialProps standard_material_props(
     props.uv_scale = {
         material.diffuse_u_scale,
         material.diffuse_v_scale,
-    };
+    };${options.uvOffset ? "\n    props.uv_offset = {material.diffuse_u_offset, material.diffuse_v_offset};" : ""}
     return props;
 }
 
@@ -2405,11 +2477,11 @@ struct StandardBindingResource {
     bool reflection_cube;
 };
 
-inline constexpr std::array<StandardBindingResource, ${standardBuiltinBindings.length}>
+inline constexpr std::array<StandardBindingResource, ${builtinBindings.length}>
     standard_binding_resources{{
-${standardBindingResourceRows()}
+${standardBindingResourceRows(builtinBindings)}
 }};
-${pluginBindingBlock}
+${pluginBindingBlock}${skeletonBlock}
 struct StandardVariantSelector {
     /** standard_material_features(record), plus the no-color pass bit for a
      *  depth-only view's rows. */

@@ -2963,7 +2963,11 @@ ${shadow.blurFragmentWgsl}`,
                     "src/pinned-pbr-variant-cpp.ts " +
                         "pinnedStandardVariantsHeader",
                     options.pinnedStandardVariants!,
+                    features.includes("material:standard-uv-offset"),
                 ) + sharedMirrors + pinnedStandardSupportBlock(context, {
+                    skeleton: features.includes("material:standard-skeleton"),
+                    vertexAlpha: features.includes("mesh:vertex-alpha") && features.includes("material:standard-vertex-colors"),
+                    uvOffset: features.includes("material:standard-uv-offset"),
                     selectors: options.pinnedStandardSelectors ?? [],
                     uvTransform: features.includes(
                         "material:standard-uv-transform",

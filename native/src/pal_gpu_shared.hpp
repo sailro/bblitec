@@ -3987,6 +3987,10 @@ inline StandardVariantKey standard_variant_key(
         !engine.geometries[draw.item.geometry].morph_positions.empty()) {
         key.mesh_features |= upstream::std_msh_has_morph_targets;
     }
+#if defined(BBLITE_STANDARD_SKELETON)
+    key.features |= upstream::standard_skeleton_features(
+        static_cast<std::uint32_t>(key.mesh_features));
+#endif
     key.resolved = true;
     return key;
 }

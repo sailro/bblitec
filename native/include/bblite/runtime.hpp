@@ -2160,6 +2160,7 @@ struct MeshRecord {
      * local. Both readers are in `pal_gpu_shared.hpp`.
      */
     bool scene_skeleton = false;
+    bool has_vertex_alpha = false;
     /**
      * `mesh.vat`. Set by `attachVat`, which also drops the live skeleton --
      * so a record carrying this one deforms from the baked texture and its
@@ -2932,6 +2933,8 @@ struct MaterialRecord {
     float ambient_level = 1.0f;
     float diffuse_u_scale = 1.0f;
     float diffuse_v_scale = 1.0f;
+    float diffuse_u_offset = 0.0f;
+    float diffuse_v_offset = 0.0f;
     float diffuse_u_offset = 0.0f;
     float diffuse_v_offset = 0.0f;
     // Per-slot glTF texture transforms. Occlusion carries its own because the

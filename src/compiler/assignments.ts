@@ -46,6 +46,23 @@ const textureRecordFields = TEXTURE_UV_PROPERTIES;
 
 const recordFieldAssignments: readonly RecordFieldAssignment[] = [
   {
+    kind: "mesh",
+    property: "hasVertexAlpha",
+    collection: "meshes",
+    field: "has_vertex_alpha",
+    value: "boolean",
+    simpleOnly: true,
+    feature: "mesh:vertex-alpha",
+  },
+  {
+    kind: "material",
+    property: "uvOffset",
+    collection: "materials",
+    field: ["diffuse_u_offset", "diffuse_v_offset"],
+    value: "number2",
+    simpleOnly: true,
+  },
+  {
     // Mesh visibility is a live scene-node field in the pin. The native
     // renderer and camera-bounds traversal both read this record bit, so
     // the plain assignment is the complete reached contract.
@@ -2319,7 +2336,7 @@ export function emitPropertyAssignment(
         `${context.requireEngine(target, expression)}` +
         `.${recordField.collection}[${target.cpp}.value]`;
       if (recordField.value === "number2") {
-        const elements = context.unwrap(expression.right);
+        const elements = context.unwrap(context.resolveStaticExpression(expression.right));
         const fields = recordField.field;
         if (
           !ts.isArrayLiteralExpression(elements) ||

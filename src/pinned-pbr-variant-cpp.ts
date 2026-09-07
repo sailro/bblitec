@@ -2754,6 +2754,7 @@ export function pinnedStandardVariantsHeader(
     context: LoweringContext,
     provenance: string,
     variants: readonly PinnedStandardVariantManifestEntry[],
+    uvOffset = false,
 ): string {
     if (variants.length === 0) {
         throw new Error(
@@ -2864,6 +2865,14 @@ export function pinnedStandardVariantsHeader(
                 "writeStandardUvTransformData fills.",
         );
     }
+    if (uvOffset) {
+        const enabler = context.functionDeclaration("src/material/standard/enable-standard-mesh-features.ts", "enableStandardUvOffset").declaration;
+        context.assertExpressionShape(
+            context.callExpression(enabler, "_installStandardUvOffsetResolver").arguments[0]!,
+            "(material) => material.uvOffset ?? null",
+            "Standard UV offset resolver",
+        );
+    }
     const uvWriterBody = lowerPinnedUboWriter(context, {
         modulePath: "src/material/standard/standard-pipeline.ts",
         symbolName: "writeStandardUvTransformData",
@@ -2879,12 +2888,15 @@ export function pinnedStandardVariantsHeader(
                 0: "material.uv_scale[0]",
                 1: "material.uv_scale[1]",
             },
+            ...(uvOffset ? { uvOffset: { 0: "material.uv_offset[0]", 1: "material.uv_offset[1]" } } : {}),
         },
         // `enableStandardUvOffset()` is the pin's opt-in for a per-material
         // UV offset; no reached scene calls it, so the resolver is the pin's
         // own uninstalled null and the offset lanes fold to their defaults.
         // A scene that enables it must extend this before wave D flips over.
-        absentHooks: ["_uvOffsetResolver"],
+        ...(uvOffset
+            ? { vectorHooks: { _uvOffsetResolver: { property: "uvOffset", lanes: 2 } } }
+            : { absentHooks: ["_uvOffsetResolver"] }),
         slots: [{ name: "u", offset: 0, lanes: 4 }],
     }).join("\n");
     const propsMembers = standardPropsFields.map((field) => {
@@ -3005,7 +3017,7 @@ using bbl::Color3;
 // (diffuse_color, specular_power, bump_level, ... are one-to-one, and
 // lightmap_level / reflection_coord_mode have no record field yet).
 struct StandardMaterialProps {
-${propsMembers.join("\n")}
+${propsMembers.join("\n")}${uvOffset ? "\n    std::array<float, 2> uv_offset{};" : ""}
 };
 
 // src/material/standard/standard-template.ts matUniforms

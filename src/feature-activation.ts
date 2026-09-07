@@ -539,6 +539,18 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
             "src/material/standard/fragments/std-vertex-color-fragment.ts",
         consumers: CMAKE,
     },
+    "material:standard-skeleton": {
+        provenance: "src/material/standard/enable-standard-mesh-features.ts enableStandardSkeleton",
+        consumers: ["variant table"],
+    },
+    "material:standard-uv-offset": {
+        provenance: "src/material/standard/enable-standard-mesh-features.ts enableStandardUvOffset",
+        consumers: ["variant table"],
+    },
+    "mesh:vertex-alpha": {
+        provenance: "src/material/standard/standard-renderable.ts rebuildSingle",
+        consumers: ["variant table", "renderer plan"],
+    },
     "mesh:box": {
         provenance: "src/mesh/create-box.ts",
         consumers: CMAKE,

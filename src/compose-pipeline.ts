@@ -1037,6 +1037,8 @@ export async function composeScenePipeline({
                 vertexColors: result.manifest.features.includes(
                     "material:standard-vertex-colors",
                 ),
+                skeleton: result.manifest.features.includes("material:standard-skeleton"),
+                vertexAlpha: result.manifest.features.includes("mesh:vertex-alpha"),
                 noColorViews: result.manifest.features.includes(
                     "material:no-color-view",
                 ),
