@@ -16298,7 +16298,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 state.render_targets[copy.target.value];
             const auto [source_texture, source_view] =
                 source_texture_view(copy.source);
-            const auto surface_pane = target_record.swapchain
+            const auto surface_pane = target_record.swapchain && !force_full_viewport
                 ? scene_surface_pane(engine, graph_scene, width, height) : std::nullopt;
             WGPURenderPassColorAttachment blit_attachment =
                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;

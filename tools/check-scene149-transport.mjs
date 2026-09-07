@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { GLB_BINARY_CHUNK, glbJsonText, instantiatedPrimitiveRecords } from "../dist/src/gltf-document.js";
+import { GLB_BINARY_CHUNK, GLTF_SOURCE_ALBEDO_IDENTITIES, glbJsonText, instantiatedPrimitiveRecords } from "../dist/src/gltf-document.js";
 import { importPinnedModule } from "../dist/src/pinned-shader-composer.js";
 
 const sha = bytes => createHash("sha256").update(bytes).digest("hex");
@@ -75,7 +75,7 @@ export async function readScene149Reference(referenceDirectory, generatedDirecto
     const binary = glb.subarray(binaryHeader + 8, binaryHeader + 8 + glb.readUInt32LE(binaryHeader));
     const primitives = instantiatedPrimitiveRecords(document);
     assert.equal(primitives.length, 285);
-    const associations = document.__bblitecSourceAlbedoIdentities?.materials;
+    const associations = document[GLTF_SOURCE_ALBEDO_IDENTITIES]?.materials;
     assert.equal(associations?.length, document.materials.length + 1);
     const parser = await importPinnedModule("loader-gltf/gltf-parser.js");
     const browserResources = identity.observation.resources.filter(resource => resource.kind === "buffer");
