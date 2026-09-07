@@ -290,6 +290,9 @@ export interface PinnedBinding {
 }
 
 export interface PinnedNumericScope {
+    /** An explicitly validated platform boundary within an otherwise lowered
+     * body. Undefined retains the ordinary translator and its refusals. */
+    statement?: (statement: ts.Statement, lowerer: PinnedNumericLowerer, indent: string) => readonly string[] | undefined;
     /** Unbounded platform inputs require the full JS ToInt32 conversion. */
     checkedBitwiseCoercions?: boolean;
     /** Identifiers already bound when the body starts (parameters, locals). */
@@ -535,6 +538,8 @@ export class PinnedNumericLowerer {
     }
 
     public statement(statement: ts.Statement, indent: string): string[] {
+        const adapted = this.scope.statement?.(statement, this, indent);
+        if (adapted !== undefined) return [...adapted];
         if (ts.isContinueStatement(statement) && !statement.label) {
             return [`${indent}continue;`];
         }

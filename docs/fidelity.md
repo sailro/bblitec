@@ -457,6 +457,19 @@ live groups/counts while preserving width, height, packed CPU storage and versio
 state; DefaultTextData additionally releases its owned atlas leases. Native
 fixtures observe the pin's lifetime, aliases, byte streams and disposal order.
 
+`TextGpuLowerer` emits the pin's resource capacity, version, group-cache and draw
+decisions through synchronous backend operations. Style synchronization precedes
+atlas/group synchronization, then instance uploads, then the existing UBO writer.
+Shared TextData retains a group's original UBO/style bindings when a second
+renderable updates it unless the pin's own invalidation conditions rebuild that
+group. Packed instance words stay bytes throughout these uploads. CPU controls
+compare resource identities, every uploaded byte, idle work, partial uploads,
+growth, failure/publication order and draw ranges against the actual pinned
+functions. They also observe text-owner alpha-to-coverage membership; effective
+pipeline coverage remains the composed pipeline's decision. Static producer
+ranges are required: these helpers do not admit dynamic source text layouts,
+late styling installation or arbitrary native payload mutation.
+
 The deferred scene drain now checks existing registration before construction,
 consumes snapshots repeatedly, and publishes only after successful construction.
 The text adapter retains scene-owned renderables through a weak scene reference,

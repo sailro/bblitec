@@ -39,11 +39,43 @@ ${this.quaternionMath()}
 ${lowerMat4MultiplyWriterCpp(this.context)}
 } // namespace text_detail
 ${this.factory()}
+${this.alphaToCoverage()}
 ${this.transforms()}
 ${this.uniforms()}
 ${this.disposal()}
 ${this.attachment()}
 } // namespace bbl
+`;
+    }
+
+    private alphaToCoverage(): string {
+        const c: LoweringContext = this.context;
+        const path = "src/render/alpha-to-coverage.ts";
+        const { file, declaration } = c.functionDeclaration(path, "setAlphaToCoverage");
+        c.assertStatementInventory(declaration, declaration.body!.statements, "setAlphaToCoverage", "text membership", ["expression statement", "if statement"]);
+        c.assertExpressionShape((declaration.body!.statements[0] as ts.ExpressionStatement).expression, "assertSupportedTarget(target)", "Text alpha-to-coverage validation");
+        const branch = declaration.body!.statements[1] as ts.IfStatement;
+        if (!ts.isBlock(branch.thenStatement) || !branch.elseStatement || !ts.isBlock(branch.elseStatement))
+            c.contractError(branch, "Text alpha-to-coverage membership branches changed.");
+        c.assertStatementInventory(branch, branch.thenStatement.statements, "enabled membership", "text membership", ["if statement", "expression statement"]);
+        const lazy = branch.thenStatement.statements[0] as ts.IfStatement;
+        c.assertExpressionShape(lazy.expression, "!_enabledTargets", "Lazy alpha-to-coverage resolver");
+        if (!ts.isBlock(lazy.thenStatement) || lazy.elseStatement) c.contractError(lazy, "Alpha-to-coverage resolver installation changed.");
+        c.assertStatementInventory(lazy, lazy.thenStatement.statements, "resolver installation", "text pipeline resolver", ["expression statement", "expression statement"]);
+        c.assertExpressionShape((lazy.thenStatement.statements[0] as ts.ExpressionStatement).expression, "_enabledTargets = new WeakSet()", "Alpha-to-coverage weak membership");
+        c.assertExpressionShape((lazy.thenStatement.statements[1] as ts.ExpressionStatement).expression, "_registerAlphaToCoverageResolver(_isAlphaToCoverageEnabled)", "Alpha-to-coverage pipeline resolver");
+        c.assertExpressionShape((branch.thenStatement.statements[1] as ts.ExpressionStatement).expression, "_enabledTargets.add(target)", "Text enabled membership");
+        c.assertStatementInventory(branch, branch.elseStatement.statements, "disabled membership", "text membership", ["expression statement"]);
+        c.assertExpressionShape((branch.elseStatement.statements[0] as ts.ExpressionStatement).expression, "_enabledTargets?.delete(target)", "Text disabled membership");
+        const getter = c.functionDeclaration(path, "getAlphaToCoverage").declaration;
+        c.assertStatementInventory(getter, getter.body!.statements, "getAlphaToCoverage", "text membership read", ["expression statement", "return statement"]);
+        c.assertExpressionShape((getter.body!.statements[0] as ts.ExpressionStatement).expression, "assertSupportedTarget(target)", "Text alpha-to-coverage validation");
+        c.assertExpressionShape((getter.body!.statements[1] as ts.ReturnStatement).expression!, "_enabledTargets?.has(target) ?? false", "Text alpha-to-coverage membership read");
+        const lowerer = new PinnedNumericLowerer(file, {bindings:new Map([["enabled",{cpp:"enabled",type:"bool"}]]),calls:new Map()});
+        return `// ${this.context.provenance("src/render/alpha-to-coverage.ts", "setAlphaToCoverage", "membership of the admitted text owner")}
+// The composed pipeline consumes this membership; its resolver needs no native WeakSet.
+inline void set_text_alpha_to_coverage(TextRenderableState& r, bool enabled) { r.alpha_to_coverage = ${lowerer.expression(branch.expression)}; }
+inline bool get_text_alpha_to_coverage(const TextRenderableState& r) { return r.alpha_to_coverage; }
 `;
     }
 
