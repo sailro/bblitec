@@ -25,6 +25,7 @@ interface RecordFieldAssignment {
   /** The record field, or the pair a two-element source writes. */
   field: string | readonly [string, string];
   value: "color3" | "number" | "boolean" | "number2";
+  scalarPrecision?: "float" | "double";
   simpleOnly?: boolean;
   /** Stored as the logical inverse of what the source assigns. */
   invert?: boolean;
@@ -60,6 +61,7 @@ const recordFieldAssignments: readonly RecordFieldAssignment[] = [
     collection: "materials",
     field: ["standard_uv_offset_x", "standard_uv_offset_y"],
     value: "number2",
+    scalarPrecision: "double",
     simpleOnly: true,
   },
   {
@@ -2350,7 +2352,7 @@ export function emitPropertyAssignment(
           );
         }
         for (const [index, field] of fields.entries()) {
-          const value = context.compileNumber(elements.elements[index]!, recordField.property === "uvOffset" ? "double" : "float");
+          const value = context.compileNumber(elements.elements[index]!, recordField.scalarPrecision ?? "float");
           context.emit(
             `${record}.${field} = ` +
               `${value};`,

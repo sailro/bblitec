@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import test from "node:test";
 import { compileSource } from "../src/compiler.js";
 import { LoweringContext } from "../src/lowering/context.js";
-import { lowerStandardMeshAlpha } from "../src/lowering/standard-mesh-alpha.js";
+import { lowerStandardMeshAlpha, pinnedStandardMeshAlpha } from "../src/lowering/standard-mesh-alpha.js";
 import { lowerStandardUvTransformWriter } from "../src/lowering/standard-uv-transform-lowerer.js";
 import { pinnedSharedVariantDecls, pinnedStandardVariantsHeader } from "../src/pinned-pbr-variant-cpp.js";
 import { composePinnedStandardVariant, pinnedStandardVariantManifestEntry } from "../src/pinned-standard-variants.js";
@@ -117,12 +117,17 @@ int main() { ${checks.join("\n")} }
 
 test("Standard vertex-alpha decisions distinguish meshes, shadows, and instance colors", { skip: !nativeTools }, async () => {
     const context = new LoweringContext();
+    const decide = await pinnedStandardMeshAlpha();
     const flags = await importPinnedModule<{ VERTEX_ALPHA: number; MATERIAL_ALPHA_BLEND: number }>("material/standard/standard-flags.js");
     const checks: string[] = [];
     for (const shadow of [false, true]) for (const alpha of [false, true]) {
         for (const vertex of [false, true]) for (const instance of [false, true]) {
             const expected = !shadow && alpha && (vertex || instance)
                 ? flags.MATERIAL_ALPHA_BLEND | (vertex ? flags.VERTEX_ALPHA : 0) : 0;
+            assert.deepEqual(decide(shadow, alpha, vertex, instance), {
+                colorAlphaBlend: expected !== 0,
+                features: expected,
+            });
             checks.push(`assert(standard_color_alpha_features(${shadow}, ${alpha}, ${vertex}, ${instance}) == ${expected}u);`);
         }
     }

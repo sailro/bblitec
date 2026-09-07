@@ -75,6 +75,9 @@ import { LoweringContext } from "./lowering/context.js";
 import { sharedUpstreamStore } from "./upstream-source.js";
 import { lowerStandardUvTransformWriter } from "./lowering/standard-uv-transform-lowerer.js";
 import { PinnedNumericLowerer, type PinnedBinding } from "./lowering/pinned-numeric-lowerer.js";
+import { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
+import { pinnedStandardMeshAlpha } from "./lowering/standard-mesh-alpha.js";
+export { pinnedNumericConstant } from "./lowering/pinned-numeric-constant.js";
 import {
     geometryAttachmentTypes,
     importPinnedModule,
@@ -440,7 +443,6 @@ export async function composePinnedStandardVariant(
                 _getStdExtsSorted: () => readonly StdExtDescriptor[];
                 STD_SCENE_FOG: number;
                 HAS_DIFFUSE_TEXTURE: number;
-                VERTEX_ALPHA: number;
                 MATERIAL_ALPHA_BLEND: number;
                 ESM_SHADOW_OUTPUT: number;
                 NO_COLOR_OUTPUT: number;
@@ -540,10 +542,13 @@ export async function composePinnedStandardVariant(
     // `rebuildSingle` adds the vertex-alpha bits before the extension loop,
     // so `_frag(features, ...)` sees them exactly as it does upstream.
     const shadowOutput = ((features | passFeatures) & (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !== 0;
-    const colorAlphaBlend = !shadowOutput && (options.vertexAlpha ?? options.vertexColors?.vertexAlpha ?? false);
-    if (colorAlphaBlend && (options.vertexColors || (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR))) {
-        features |= flags.MATERIAL_ALPHA_BLEND | (options.vertexColors ? flags.VERTEX_ALPHA : 0);
-    }
+    const colorAlpha = (await pinnedStandardMeshAlpha())(
+        shadowOutput,
+        options.vertexAlpha ?? options.vertexColors?.vertexAlpha ?? false,
+        options.vertexColors !== undefined,
+        (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0,
+    );
+    features |= colorAlpha.features;
     const fragments: unknown[] = [];
     if (meshFeatures & meshBits.MSH_HAS_MORPH_TARGETS) {
         fragments.push(morph.createMorphFragment());
@@ -562,7 +567,7 @@ export async function composePinnedStandardVariant(
         fragments.push(
             vertexColor.createStdVertexColorFragment(
                 (features & flags.HAS_DIFFUSE_TEXTURE) !== 0,
-                colorAlphaBlend,
+                colorAlpha.colorAlphaBlend,
             ),
         );
     }
@@ -855,43 +860,6 @@ function standardInstanceColorSlot(): string {
             );
     instanceColorSlot = context.stringValue(only.initializer, file);
     return instanceColorSlot;
-}
-
-/** A numeric pinned constant, evaluated from its own declaration. */
-export function pinnedNumericConstant(
-    context: LoweringContext,
-    modulePath: string,
-    name: string,
-): number {
-    const file = context.sourceFile(modulePath);
-    const evaluate = (expression: ts.Expression): number => {
-        const unwrapped = context.unwrapExpression(expression);
-        if (ts.isNumericLiteral(unwrapped)) {
-            return Number.parseInt(unwrapped.text, 10);
-        }
-        if (ts.isBinaryExpression(unwrapped)) {
-            const left = evaluate(unwrapped.left);
-            const right = evaluate(unwrapped.right);
-            switch (unwrapped.operatorToken.kind) {
-                case ts.SyntaxKind.LessThanLessThanToken:
-                    return left << right;
-                case ts.SyntaxKind.BarToken:
-                    return left | right;
-                default:
-                    break;
-            }
-        }
-        if (ts.isIdentifier(unwrapped)) {
-            return evaluate(
-                context.variableInitializer(file, unwrapped.text),
-            );
-        }
-        throw new Error(
-            `Pinned constant ${name} in ${modulePath} is not a shift/or ` +
-                "expression over numeric literals.",
-        );
-    };
-    return evaluate(context.variableInitializer(file, name));
 }
 
 /**
@@ -1749,8 +1717,8 @@ export async function composeSceneStandardVariants(
         NO_COLOR_OUTPUT: number;
         ESM_SHADOW_OUTPUT: number;
         MATERIAL_ALPHA_BLEND: number;
-        VERTEX_ALPHA: number;
     }>("material/standard/standard-flags.js");
+    const decideAlpha = await pinnedStandardMeshAlpha();
     // The material feature values reachable, derivation by the pin itself.
     const materialInputs: PinnedStandardMaterialInput[] = [];
     if (input.sceneMaterials) {
@@ -1924,21 +1892,24 @@ export async function composeSceneStandardVariants(
                     (meshFeatures & meshBits.MSH_HAS_VERTEX_COLOR) !== 0
                 ? { vertexColors: { vertexAlpha: false } }
                 : {};
-            await add(material, meshFeatures, features, {
+            const baseOptions = {
                 fog: input.fog,
                 skeleton: input.skeleton ?? false,
                 ...vertexColors,
-            });
-            const alphaFeatures = features | flags.MATERIAL_ALPHA_BLEND |
-                (vertexColors.vertexColors ? flags.VERTEX_ALPHA : 0);
-            const alphaReachable = input.vertexAlpha &&
-                (vertexColors.vertexColors || (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR));
+            };
+            await add(material, meshFeatures, features, baseOptions);
+            const alpha = decideAlpha(
+                (features & (flags.NO_COLOR_OUTPUT | flags.ESM_SHADOW_OUTPUT)) !== 0,
+                input.vertexAlpha ?? false,
+                vertexColors.vertexColors !== undefined,
+                (meshFeatures & meshBits.MSH_HAS_INSTANCE_COLOR) !== 0,
+            );
+            const alphaFeatures = features | alpha.features;
+            const alphaReachable = alpha.colorAlphaBlend;
             if (alphaReachable) {
                 await add(material, meshFeatures,
                     alphaFeatures, {
-                        fog: input.fog,
-                        skeleton: input.skeleton ?? false,
-                        ...vertexColors,
+                        ...baseOptions,
                         vertexAlpha: true,
                     });
             }
@@ -1969,36 +1940,28 @@ export async function composeSceneStandardVariants(
                     meshFeatures & ~meshBits.MSH_RECEIVE_SHADOWS,
                     (features & ~view.clear) | view.set,
                     {
+                        ...baseOptions,
                         fog: false,
-                        skeleton: input.skeleton ?? false,
-                        ...vertexColors,
                         passFeatures: view.set,
                     },
                 );
             }
             for (const task of input.geometryTasks) {
+                const geometryOptions = {
+                    ...baseOptions,
+                    geometry: { attachments: task.attachments, emitColor: task.emitColor },
+                };
                 await add(
                     material,
                     meshFeatures,
                     features,
-                    {
-                        fog: input.fog,
-                        skeleton: input.skeleton ?? false,
-                        ...vertexColors,
-                        geometry: {
-                            attachments: task.attachments,
-                            emitColor: task.emitColor,
-                        },
-                    },
+                    geometryOptions,
                     task.index,
                 );
                 if (alphaReachable) {
                     await add(material, meshFeatures, alphaFeatures, {
-                        fog: input.fog,
-                        skeleton: input.skeleton ?? false,
-                        ...vertexColors,
+                        ...geometryOptions,
                         vertexAlpha: true,
-                        geometry: { attachments: task.attachments, emitColor: task.emitColor },
                     }, task.index);
                 }
             }
