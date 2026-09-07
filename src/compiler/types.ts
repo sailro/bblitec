@@ -22,6 +22,7 @@ import type {
 } from "../ui-style-rule.js";
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
+import type { CompiledTextData, TextFontSource } from "../pinned-text-data.js";
 
 export type {
   NativeHostUiClassStyle,
@@ -104,6 +105,8 @@ export interface CompileManifest {
   nodeMaterials: CompiledNodeMaterial[];
   /** The scene's node-particle program, summarized. */
   nodeParticles?: NodeParticleManifest;
+  /** Static pinned shaper output, without a native text-renderer activation. */
+  textData?: CompiledTextData[];
   /**
    * The pinned tone-mapping export the scene assigned, when it assigned one.
    * Absent means the pin's own default, which is what `pbr-renderable.ts`
@@ -1188,6 +1191,8 @@ export interface NodeParticleManifest {
 }
 
 export type ValueKind =
+  | "text-font"
+  | "text-data"
   | "worker"
   | "worker-scope"
   | "worker-resize-observer"
@@ -1531,6 +1536,8 @@ export interface ClusteredContainerState {
 
 export function isCompileTimeOnlyValue(kind: ValueKind): boolean {
   return (
+    kind === "text-font" ||
+    kind === "text-data" ||
     kind === "tuple" ||
     kind === "record" ||
     // A worker-global alias resolves to the current realm; it has no copyable
@@ -1595,6 +1602,8 @@ export function isNodeParticleValue(kind: ValueKind): boolean {
 export function sameCompiledValue(left: Value, right: Value): boolean {
   if (left === right) return true;
   if (left.kind !== right.kind) return false;
+  if (left.kind === "text-font") return left.textFont === right.textFont;
+  if (left.kind === "text-data") return left.textData === right.textData;
   if (left.recordProperties || right.recordProperties) {
     return left.recordProperties === right.recordProperties;
   }
@@ -1705,6 +1714,9 @@ export function commonResourceValue(value: Value, candidates: readonly Value[]):
 }
 
 export interface Value {
+  /** Generation-only identities, retained through aliases and inlined helpers. */
+  textFont?: { source: TextFontSource; bytes: Uint8Array };
+  textData?: CompiledTextData;
   ownedEngineCpp?: string;
   promiseResult?: Value;
   promiseType?: string;

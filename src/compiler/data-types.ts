@@ -961,9 +961,9 @@ export class DataTypeRegistry {
     ) {
       return { kind: "handle", handle: "audio-context" };
     }
-    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid"])) {
+    if (isPinnedType(type, ["AudioEngine", "CsgSolid", "Csg2Solid", "Font", "TextData", "DefaultTextData"])) {
       // These interfaces carry compiler-owned identity, not plain-data
-      // storage: audio context/buses or a generation-only geometry plan.
+      // storage: audio context/buses, a geometry plan, or pinned text data.
       return undefined;
     }
     if (type.symbol && isDomElementType(type.symbol)) {

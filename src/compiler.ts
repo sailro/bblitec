@@ -281,7 +281,7 @@ export type {
     PostProcessTaskManifest,
     ShaderMaterialVariantName,
 } from "./compiler/types.js";
-import { isCompileTimeOnlyValue } from "./compiler/types.js";
+import { isCompileTimeOnlyValue, sameCompiledValue } from "./compiler/types.js";
 import { ClosureCaptures, nativeCompanionKeys, renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./compiler/closure-captures.js";
 import {
     parameterizedResourceLoop,
@@ -301,6 +301,7 @@ import {
     isDeterministicRandomRead,
 } from "./compiler/deterministic-random.js";
 import { nodeParticleManifest } from "./compiler/intrinsics/particle.js";
+import type { CompiledTextData } from "./pinned-text-data.js";
 import { readFrozenParticleProperty } from "./compiler/particle-buffer.js";
 import {
     physicsEventInfoType,
@@ -767,6 +768,7 @@ class Compiler
     private readonly featureSites = new Map<Feature, string>();
     public readonly assets = new Map<string, CompileAsset>();
     public readonly assetPayloads = new Map<string, string>();
+    public readonly reachedTextData: CompiledTextData[] = [];
     /** The source-keyed record for the most recent `loadGltf` call. */
     private lastGltfContainerAsset: CompileAsset | undefined;
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
@@ -1096,6 +1098,7 @@ class Compiler
                         ),
                 ),
                 nodeMaterials: this.reachedNodeMaterials,
+                ...(this.reachedTextData.length > 0 ? { textData: this.reachedTextData } : {}),
                 ...(this.reachedNodeParticles.sets.length > 0
                     ? {
                           nodeParticles: nodeParticleManifest(
@@ -11087,6 +11090,14 @@ class Compiler
             }
             const leftValue = this.compileValue(unwrapped.left);
             const rightValue = this.compileValue(unwrapped.right);
+            if ([leftValue.kind, rightValue.kind].some((kind) => kind === "text-font" || kind === "text-data")) {
+                const token = unwrapped.operatorToken.kind;
+                if (token !== ts.SyntaxKind.EqualsEqualsEqualsToken && token !== ts.SyntaxKind.ExclamationEqualsEqualsToken) {
+                    this.fail(unwrapped, "Static font/text data only supports strict identity comparison.");
+                }
+                const equal = sameCompiledValue(leftValue, rightValue);
+                return (token === ts.SyntaxKind.EqualsEqualsEqualsToken ? equal : !equal) ? "true" : "false";
+            }
             const staticLeft =
                 leftValue.kind === "number" && !leftValue.parameterBinding
                     ? leftValue.staticNumber
@@ -17065,6 +17076,10 @@ class Compiler
             this, owner, expression.name.text, expression,
         );
         if (frozenParticleProperty) return frozenParticleProperty;
+        if (owner.kind === "text-data" && (expression.name.text === "width" || expression.name.text === "height")) {
+            const number = owner.textData![expression.name.text];
+            return { kind: "number", cpp: doubleLiteral(number), staticNumber: number };
+        }
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own
