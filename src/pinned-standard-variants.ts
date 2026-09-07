@@ -2239,7 +2239,7 @@ export function pinnedStandardSupportBlock(
             ...["MSH_HAS_SKELETON", "MSH_HAS_SKELETON_8", "MSH_HAS_THIN_INSTANCES"].map((name): [string, PinnedBinding] => [name, { cpp: `${mesh(name)}u`, type: "scalar" }]),
             ...["HAS_SKELETON", "HAS_SKELETON_8"].map((name): [string, PinnedBinding] => [name, { cpp: `${flag(name)}u`, type: "scalar" }]),
         ]);
-        const lowerer = new PinnedNumericLowerer(file, { bindings, calls: new Map(),
+        const lowerer = new PinnedNumericLowerer(file, { bindings, calls: new Map(), booleanOr: true,
             returnValue: (expression) => {
                 if (!expression) throw new Error("Pinned skeleton feature hook returned no value.");
                 return `static_cast<std::uint32_t>(${lowerer.expression(expression)})`;

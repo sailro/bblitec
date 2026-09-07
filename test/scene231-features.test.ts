@@ -47,7 +47,7 @@ test("optional output arrays preserve allocation and supplied-buffer identity", 
 });
 
 test("Standard skeleton composition requires its opt-in and does not leak it", async () => {
-    const bits = await importPinnedModule<{ MSH_HAS_SKELETON: number }>("material/mesh-features.js");
+    const bits = await importPinnedModule<{ MSH_HAS_SKELETON: number; MSH_VAT: number }>("material/mesh-features.js");
     const plain = await composePinnedStandardVariant({ diffuseTexture: {} });
     const skinned = await composePinnedStandardVariant({ diffuseTexture: {} }, {
         meshFeatures: bits.MSH_HAS_SKELETON, skeleton: true,
@@ -56,7 +56,25 @@ test("Standard skeleton composition requires its opt-in and does not leak it", a
     assert.match(skinned.vertexWgsl, /textureLoad/);
     assert.match(skinned.fragmentKey, /std-skeleton/);
     await assert.rejects(composePinnedStandardVariant({}, { meshFeatures: bits.MSH_HAS_SKELETON }), /enableStandardSkeleton/);
+    await assert.rejects(composePinnedStandardVariant({}, { meshFeatures: bits.MSH_VAT, skeleton: true }), /vertex animation textures are not supported/);
     assert.deepEqual(await composePinnedStandardVariant({ diffuseTexture: {} }), plain);
+});
+
+test("Standard shadow composition suppresses mesh vertex alpha", async () => {
+    const flags = await importPinnedModule<{
+        VERTEX_ALPHA: number; MATERIAL_ALPHA_BLEND: number;
+        NO_COLOR_OUTPUT: number; ESM_SHADOW_OUTPUT: number;
+    }>("material/standard/standard-flags.js");
+    const material = { diffuseTexture: {} };
+    const alpha = await composePinnedStandardVariant(material, { vertexColors: { vertexAlpha: true } });
+    const alphaBits = flags.VERTEX_ALPHA | flags.MATERIAL_ALPHA_BLEND;
+    assert.equal(alpha.features & alphaBits, alphaBits);
+    for (const passFeatures of [flags.NO_COLOR_OUTPUT, flags.ESM_SHADOW_OUTPUT]) {
+        const shadow = await composePinnedStandardVariant(material, { passFeatures, vertexColors: { vertexAlpha: true } });
+        const opaqueShadow = await composePinnedStandardVariant(material, { passFeatures, vertexColors: { vertexAlpha: false } });
+        assert.equal(shadow.features & alphaBits, 0);
+        assert.deepEqual(shadow, opaqueShadow);
+    }
 });
 
 test("live Standard UV offsets match the pinned writer, including inversion", { skip: !nativeTools }, async () => {
