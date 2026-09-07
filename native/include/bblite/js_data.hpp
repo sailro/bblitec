@@ -635,6 +635,11 @@ class Array {
     template <typename Iterator>
     Array(Iterator first, Iterator last)
         : values_(make_gc_shared<Storage>(first, last)) {}
+    /** Rewrap a native producer's retained JavaScript array without copying it. */
+    explicit Array(std::shared_ptr<Storage> values) : values_(std::move(values)) {
+        if (!values_) throw std::runtime_error("Array requires retained storage.");
+    }
+    [[nodiscard]] const std::shared_ptr<Storage>& retained_storage() const { return values_; }
 
     [[nodiscard]] std::size_t size() const { return values_->size(); }
     [[nodiscard]] bool empty() const { return values_->empty(); }

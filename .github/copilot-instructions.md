@@ -1,75 +1,39 @@
 # Repository instructions
 
-`bblitec` compiles a reachable, statically analyzable subset of pinned Babylon
-Lite TypeScript into C++20. SDL3 provides platform services; SDL_GPU and Dawn
-are independently validated GPU backends.
+Read [README](../README.md#documentation) and its canonical pages before feature
+work. Use its ownership table: facts live in one page, support in Features,
+adaptations in Fidelity, unfinished work in TODO. Keep docs concise; no
+checkpoint logs, completed-work lists or duplicated test narratives.
 
-## Read before changing code
+## Source and implementation
 
-Read [README](../README.md), the canonical pages it lists, and
-[TODO](../TODO.md) before feature work. Follow the active
-[audit](../audit.md) when auditing. Previous reviews do not exempt any area
-from rechecking.
+- Read the reached upstream source and architecture at the pin in
+  `upstream/babylon-lite.json`. Source takes precedence over prose.
+- The target is Babylon Lite, not legacy Babylon.js.
+- Reuse pinned functions/composers and shared AST/typed lowering. Generate
+  Babylon behavior; keep platform/library adaptation in PAL.
+- Derive activation from API reach and actual loader predicates. Avoid
+  scene-name/source-text detection and fallback transcriptions.
+- Preserve source/Tint pins unless an upgrade is requested.
+- Preserve corpus inputs, references and thresholds as evidence. Deliberate
+  adoption/recapture must retain source provenance.
+- Fix source, never generated output. Use typed records/unions/narrowing;
+  explicit TypeScript any, broad casts and silent fallbacks are forbidden.
+- Preserve C++20 warning-clean output, provenance and feature isolation.
+  GPU initialization failure is an error.
+- Unsupported source/ownership combinations must refuse explicitly.
 
-The [documentation index](../README.md#documentation) assigns each page's scope.
+## Work and validation
 
-Keep each fact in its owning page and link to it elsewhere. Documentation
-states current behavior and actionable limitations; Git preserves history.
+State exact scene IDs in a checkpoint; distinguish assessed, implemented and
+integrated work. Follow [development](../docs/development.md#validation) for
+focused checks, simplify records and final validation. Use
+[debugging](../docs/debugging.md) for unexplained differences. An integrated
+scene needs current measurements and interaction checks on both backends.
 
-## Source and fidelity
+Finish generation before native builds and never rebuild dist during its runs.
+Coordinate shared dependency installation as described in development. Check
+command exit codes without hiding failures in pipelines. There is no hosted CI.
 
-- Before porting a feature, read its upstream architecture page and source at
-  the commit in `upstream/babylon-lite.json`. Upstream docs live under
-  `docs/lite/architecture/`; source takes precedence when the two disagree.
-- The target and browser reference are Babylon Lite. An upstream comparison
-  with legacy Babylon.js does not define this compiler's behavior.
-- Reuse pinned functions, composers and AST lowering before writing behavior.
-  Do not transcribe shader equations or introduce a fallback copy. Record
-  unavoidable substitutions in generated `fidelity.json`.
-- Babylon semantics belong in generated code; platform/library adaptation
-  belongs in PAL. See architecture for existing exceptions and open work.
-- Use the pinned loader's actual predicates and lazy feature registration.
-  Asset metadata and API calls may reach the same feature through different
-  upstream paths; do not invent source-text or scene-name detectors.
-- Keep source and Tint pins unchanged unless an upstream migration is part of
-  the task. A migration requires regeneration and compatibility validation.
-- Corpus inputs, golden applications, thresholds and reference images are
-  evidence. Do not edit them to make compilation or parity pass. Deliberate
-  adoption or recapture must preserve source provenance and hashes.
-- Fix source files, never generated output. `generated/` is disposable.
-
-## Implementation
-
-- Explicit TypeScript `any`, broad casts and success-shaped fallbacks are
-  forbidden. Use typed records, unions and checked narrowing.
-- Keep user-code lowering generic and symbol-based. Reuse compiler contexts,
-  static evaluation and lowerer contracts before adding another recognizer.
-- Preserve provenance, feature isolation and C++20 compatibility. Generated
-  C++ must build warning-clean under the documented compiler settings.
-- GPU initialization failure is an error; there is no software fallback.
-- A scene is integrated only after both backends meet its gates and an
-  interactive camera/input check succeeds.
-
-## Workflow and validation
-
-Diagnose rendering differences with captures. Start at
-`npm run scene -- diff <id>` and follow the debugging page; statistics alone
-do not establish a precision floor or a root cause.
-
-Generation must finish before native builds. Do not build multiple CMake trees
-against one vcpkg install concurrently. Use the current shell's quoting rules
-and inspect command exit codes; output filtering must not hide failures.
-
-Run `/simplify` over the complete change before the final validation sweep.
-Apply findings that can be fixed; record an actual dependency and destination
-for anything left open. The current diff needs a matching review record from
-`npm run simplify:record`; `npm run simplify:verify` checks it.
-
-Use the smallest relevant checks during development, then complete the
-[validation workflow](../docs/development.md) appropriate to the change.
-`scenes:process` already includes compilation, shaders and native builds;
-`scenes:parity` measures both backends. There is no hosted CI.
-
-On this Windows workspace, set `CMAKE_COMMAND` to the Visual Studio CMake path
-documented in the user's `AGENTS.md` before native scene commands when CMake
-is absent from `PATH`.
+Apply the user's task scope and validation instructions; do not launch a new
+repository audit as a substitute for requested implementation.

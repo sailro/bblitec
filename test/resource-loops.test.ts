@@ -636,7 +636,7 @@ test("parameterizes invariant material shape while keeping per-instance uniform 
     assert.equal(result.cpp.match(/bbl::create_standard_material\(/g)?.length, 1);
     assert.equal(result.manifest.sceneMaterialCount, 300);
     assert.equal(result.manifest.sceneMeshes.length, 300);
-    assert.match(result.cpp, /\.diffuse_color = bbl::Color3\{static_cast<float>\(\(v_\w+_i \/ 300\.0\)\)/);
+    assert.match(result.cpp, /set_material_diffuse_color\([^;]+bbl::js::Array<double>\{\(v_\w+_i \/ 300\.0\), 0\.5, 1\.0\}/);
 });
 
 test("repeats PBR pairing and receiver facts without duplicating runtime construction", () => {

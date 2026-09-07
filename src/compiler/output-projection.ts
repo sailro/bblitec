@@ -62,6 +62,7 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat-sog": [],
     "loader:splat-spz": [],
     "material:pbr": [],
+    "material:source-texture-read": [],
     "material:clearcoat": [],
     "material:sheen": [],
     "material:sheen-albedo-scaling": [],
@@ -76,6 +77,7 @@ export const featureSources: Record<Feature, string[]> = {
     "material:no-color-view": [],
     "material:grid": [],
     "material:node": [],
+    "material:node-inputs": [],
     "material:shader": [],
     // Storage buffers are owned by the common runtime record and uploaded by
     // whichever already-reached scene renderer is selected.
@@ -461,6 +463,9 @@ export function renderMainCpp(projection: MainCppProjection): string {
     const jsDataInclude =
         (jsDataReached || jsRandomReached
             ? "#include <bblite/js_data.hpp>\n"
+            : "") +
+        (features.includes("material:node-inputs")
+            ? "#include <bblite/node_material.hpp>\n"
             : "") +
         (features.includes("data:json")
             ? "#include <bblite/js_json.hpp>\n"

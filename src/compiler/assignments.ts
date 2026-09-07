@@ -443,6 +443,7 @@ export function lightScalarSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
+  noteNodeInputAdmissionFailure(node: ts.Node, message: string): void;
   noteTextSceneCameraAssignment(node: ts.Node): void;
   noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
   isRuntimeResourceConstruction(): boolean;
@@ -550,6 +551,9 @@ export interface AssignmentContext extends DeterministicRandomContext {
    */
   reachFeature(feature: Feature, site: ts.Node): void;
   reachJsData(): void;
+  noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void;
+  noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
+  noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always?: boolean): void;
   /** `mesh.receiveShadows = true`, by scene-mesh index. */
   recordShadowReceiver(sceneMeshIndex: number): void;
   recordDynamicShadowReceivers(): void;
@@ -1938,6 +1942,7 @@ export function emitPropertyAssignment(
 
     if (target.kind === "mesh" && property === "material") {
       context.noteTemporalRecordBoundary(expression, "mesh material replacement after scene registration");
+      context.noteMaterialColorRenderBoundary(expression, "mesh material replacement after registration");
       requireSimpleAssignment(context, expression, "mesh material");
       const material = context.compileValue(expression.right);
       context.expectKind(material, "material", expression.right);
@@ -2114,6 +2119,7 @@ export function emitPropertyAssignment(
     }
 
     if (target.kind === "texture" && property in textureRecordFields) {
+      context.noteNodeInputAdmissionFailure(expression, "Node input bindings do not represent texture producer metadata mutation; configure the texture at construction.");
       const field = textureRecordFields[property]!;
       requireSimpleAssignment(context, expression, `texture ${property}`);
       // A `loadTexture2D` image takes these writes too: upstream one
@@ -2214,7 +2220,7 @@ export function emitPropertyAssignment(
       // the record takes a copy and the local is recorded as spent:
       // a transform write afterwards would move the local where the
       // pin would have moved the material's own texture object.
-      if (texture.kind === "texture" && texture.pixelsTexture) {
+      if (texture.kind === "texture" && texture.textureStorage === "pixels") {
         context.reachFeature(
           "material:standard-diffuse-pixels-texture",
           expression,
@@ -2400,6 +2406,29 @@ export function emitPropertyAssignment(
             "names a field pair with a scalar value.",
         );
       }
+      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
+        context.noteMaterialColorRenderBoundary(expression, "whole color replacement after registration");
+        const shape = context.resolveStaticExpression(expression.right);
+        const legacyTuple = (!ts.isArrayLiteralExpression(context.unwrap(expression.right)) &&
+          context.checker.isTupleType(context.checker.getTypeAtLocation(expression.right))) ||
+          (ts.isIdentifier(expression.right) && context.lookupOptional(expression.right)?.kind === "tuple");
+        if (ts.isObjectLiteralExpression(shape) || legacyTuple) {
+          context.noteMaterialColorObjectWrite(expression.right, "diffuseColor");
+        } else {
+          // A named or returned array can also be mutated through its other
+          // owner. A fresh literal has no external alias until a getter is read.
+          if (!ts.isArrayLiteralExpression(context.unwrap(expression.right))) {
+            context.noteMaterialColorRead("diffuseColor");
+          }
+          if (ts.isArrayLiteralExpression(shape) && shape.elements.length !== 3) context.fail(expression.right,
+            "Material diffuseColor requires a three-channel numeric array.");
+          const owner = context.allocateTemporaryCppName("material_color_owner");
+          context.emit(`const auto ${owner} = ${target.cpp};`);
+          const values = context.compileForDataSink(expression.right, {kind: "vector", element: {kind: "number"}});
+          context.emit(`bbl::set_material_diffuse_color(${context.requireEngine(target, expression)}, ${owner}, ${values});`);
+          return;
+        }
+      }
       const value =
         recordField.value === "color3"
           ? context.compileColor3(expression.right)
@@ -2440,6 +2469,11 @@ export function emitPropertyAssignment(
         `${record}.${recordField.field} ` +
           `${recordField.simpleOnly ? "=" : operator} ${stored};`,
       );
+      if (recordField.kind === "material" && recordField.property === "diffuseColor") {
+        // This legacy object adapter has no numeric-array identity. Its
+        // render field must not be replaced later by the factory's array.
+        context.emit(`${record}.source_diffuse_color.reset();`);
+      }
       if (recordField.kind === "material" && recordField.property === "alpha") {
         // The pin reads `mat.alpha < 1` live when it builds
         // renderables, so a post-creation write moves the

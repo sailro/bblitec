@@ -10,6 +10,7 @@ import {
     UpstreamSourceStore,
 } from "../src/upstream-source.js";
 import { CompileError, compileSource } from "../src/compiler.js";
+import { transpileCommonJs } from "../src/typescript-transpile.js";
 
 function assertCameraScalarWrite(cpp: string, field: string, value: RegExp): void {
     const stores = [...cpp.matchAll(new RegExp(`const double (\\w+) = (${value.source});\\s+bbl::write_camera_scalar\\([^\\n]+&bbl::CameraRecord::${field}, \\1\\);`, "g"))];
@@ -69,6 +70,7 @@ test("compiles the Babylon Lite primitives example", () => {
             "entry-main-wrapper-erasure",
             "browser-setup-erasure",
             "synchronous-aot-await",
+            "plain-data-value-model",
             "sdl-platform-boundary",
             "sdl-gpu-shader-backends",
             "guarded-cpu-vertex-normalization",
@@ -88,7 +90,7 @@ test("compiles the Babylon Lite primitives example", () => {
     ]);
     assert.match(result.cpp, /bbl::create_box/);
     assert.match(result.cpp, /bbl::create_ground/);
-    assert.match(result.cpp, /\.diffuse_color =/);
+    assert.match(result.cpp, /bbl::set_material_diffuse_color\(/);
     assert.match(result.cpp, /bbl::start_engine/);
     assert.doesNotMatch(result.cpp, /document|getElementById|Promise/);
     assert.match(result.cmake, /mesh_factories\.cpp/);
@@ -579,7 +581,7 @@ test("carries a handle annotation on a declaration the intrinsic produced", () =
     `);
 
     assert.match(result.cpp, /bbl::create_box/);
-    assert.match(result.cpp, /\.diffuse_color = bbl::Color3\{/);
+    assert.match(result.cpp, /bbl::set_material_diffuse_color\([^;]+bbl::js::Array<double>\{/);
     assert.match(result.cpp, /-2\.6/);
 });
 
@@ -915,7 +917,7 @@ test("lowers imported typed user functions and constants", () => {
     );
     assert.match(
         result.cpp,
-        /v_fn1_scene\.environment\.exposure = static_cast<float>\(1\.25\)/,
+        /v_fn\d+_scene\.environment\.exposure = static_cast<float>\(1\.25\)/,
     );
     assert.ok(result.manifest.features.includes("light:directional"));
 });
@@ -6202,12 +6204,13 @@ test("specializes if/else without breaking lexical block shadowing", () => {
         },
     );
 
-    assert.match(result.cpp, /double v_fn0_exposure = 1\.25/);
-    assert.match(result.cpp, /double v_fn0_block\d+_exposure = 1\.0/);
+    const scope = /double (v_fn\d+)_exposure = 1\.25/.exec(result.cpp)?.[1];
+    assert.ok(scope);
+    assert.match(result.cpp, new RegExp(`double ${scope}_block\\d+_exposure = 1\\.0`));
     assert.doesNotMatch(result.cpp, /\} else \{/);
     assert.match(
         result.cpp,
-        /\.contrast = static_cast<float>\(v_fn0_exposure\)/,
+        new RegExp(`\\.contrast = static_cast<float>\\(${scope}_exposure\\)`),
     );
 });
 
@@ -6235,9 +6238,12 @@ test("lowers numeric for and while loops", () => {
         },
     );
 
-    assert.equal(result.cpp.match(/v_fn0_samples \+= [012]\.0/g)?.length, 3);
-    assert.match(result.cpp, /while \(v_fn0_remaining > 0\.0\)/);
-    assert.match(result.cpp, /v_fn0_remaining--/);
+    const writes = [...result.cpp.matchAll(/(v_fn\d+)_samples \+= ([012])\.0/g)];
+    assert.deepEqual(writes.map(write => write[2]), ["0", "1", "2"]);
+    const scope = writes[0]![1];
+    assert.ok(writes.every(write => write[1] === scope));
+    assert.match(result.cpp, new RegExp(`while \\(${scope}_remaining > 0\\.0\\)`));
+    assert.match(result.cpp, new RegExp(`${scope}_remaining--`));
 });
 
 test("reevaluates inlined call setup inside loop conditions", () => {
@@ -6458,11 +6464,11 @@ test("unrolls for-of over static arrays", () => {
     );
 
     assert.equal(
-        result.cpp.match(/samples \+= v_fn0_block\d+_bonus/g)?.length,
+        result.cpp.match(/samples \+= v_fn\d+_block\d+_bonus/g)?.length,
         3,
     );
-    assert.match(result.cpp, /double v_fn0_block\d+_bonus = 1\.0/);
-    assert.match(result.cpp, /double v_fn0_block\d+_bonus = 3\.0/);
+    assert.match(result.cpp, /double v_fn\d+_block\d+_bonus = 1\.0/);
+    assert.match(result.cpp, /double v_fn\d+_block\d+_bonus = 3\.0/);
 });
 
 test("unrolls a counted loop over a container it built and never resized", () => {
@@ -11994,7 +12000,7 @@ const containerFlattenWalk = `
         }
 `;
 
-test("lowers a proven container flatten to the loader's own mesh list", () => {
+test("lowers a proven container flatten through its source-order carrier", () => {
     const result = compileSource(`
         import {
             createEngine,
@@ -12012,11 +12018,10 @@ ${containerFlattenWalk}
         }
     `);
 
-    // The walk is answered by the asset's flattened meshes, so nothing in
-    // the emitted body walks an entity tree the loader resolved away.
+    // The generated permutation retains source order without a native tree.
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [\w]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.match(
         result.cpp,
@@ -12025,10 +12030,7 @@ ${containerFlattenWalk}
 });
 
 test("lowers a continue in the consuming loop over a proven container flatten", () => {
-    // A `continue` observes nothing of the walk's unclaimed order: the loop
-    // still reaches every renderable and each one skips only the rest of its
-    // own iteration, so it emits the native `continue` the range-for already
-    // spells -- the same lowering as the condition inverted under an `if`.
+    // Continue preserves the source permutation and skips the current body.
     const result = compileSource(`
         import {
             createEngine,
@@ -12052,7 +12054,7 @@ ${containerFlattenWalk}
 
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [\w]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.match(result.cpp, /\bcontinue;/);
     assert.match(
@@ -12062,9 +12064,7 @@ ${containerFlattenWalk}
 });
 
 test("refuses a break in the consuming loop over a proven container flatten", () => {
-    // Where a `break` stops is a question about the walk's order, and a
-    // worklist reaches siblings in the reverse of the loader's document
-    // order, so the refusal stays exactly on `break`.
+    // Partial traversal cannot carry the whole-asset mutation/count proof.
     assert.throws(
         () =>
             compileSource(`
@@ -12155,6 +12155,40 @@ const containerFlattenClosure = `
         }
 `;
 
+test("source collector packaging refuses rest, default and optional parameters", () => {
+    for (const original of [containerFlattenWalk, containerFlattenClosure]) {
+        for (const parameter of [
+            "...container: [AssetContainer]",
+            "container: AssetContainer = {} as AssetContainer",
+            "container?: AssetContainer",
+        ]) {
+            const walk = original.replace("container: AssetContainer", parameter)
+                .replaceAll("container.entities", "(container as unknown as AssetContainer).entities");
+            // The actual rest parameter receives [asset], so spreading its
+            // `.entities` throws. Passing asset directly to the packaged body
+            // would silently erase that source behavior.
+            if (parameter.startsWith("...")) {
+                const collect = new Function(transpileCommonJs(
+                    `${walk}\nreturn collectMeshes;`, "collector-rest.ts",
+                ))() as (container: {entities: object[]}) => object[];
+                assert.throws(() => collect({entities: []}), TypeError);
+            }
+            assert.throws(() => compileSource(`
+                import {createEngine, loadGltf, type AssetContainer, type Mesh} from "@babylonjs/lite";
+                ${walk}
+                const engine = await createEngine({});
+                const asset = await loadGltf(engine, "model.glb");
+                for (const mesh of collectMeshes(asset)) { keep(mesh); }
+                function keep(_mesh: Mesh): void {}
+            `, {fileName: "collector-parameter.ts"}), (error: unknown) => {
+                assert(error instanceof CompileError);
+                assert.match(error.message, /collector-parameter\.ts:\d+:\d+:/);
+                return true;
+            });
+        }
+    }
+});
+
 test("lowers the closure arrangement of the same container flatten", () => {
     // Scene 73 writes the walk as a closure over the result list with both
     // type guards inlined, which is the recursive visitor with its parts
@@ -12180,7 +12214,7 @@ ${containerFlattenClosure}
 
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [\w]+ : [\w.]*assets\[[^\]]*\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [\w]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     assert.match(
         result.cpp,

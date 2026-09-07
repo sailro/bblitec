@@ -320,6 +320,8 @@ struct MeshHandle {
 
 struct MaterialHandle {
     std::uint32_t value = invalid_handle;
+
+    [[nodiscard]] bool operator==(const MaterialHandle&) const = default;
 };
 
 /** One GPU-readable byte buffer created by the shader-material API. */
@@ -863,6 +865,10 @@ private:
 struct SceneState;
 struct TextRenderableState;
 struct TextDataState;
+struct NodeInputState;
+using NodeInputHandle = std::shared_ptr<NodeInputState>;
+struct NodeMaterialInputsState;
+struct NodeMaterialGroupState;
 struct GpuPickerRecord {
     std::weak_ptr<SceneState> scene;
     bool disposed = false;
@@ -1660,11 +1666,15 @@ struct RenderTargetTexture {
 struct SolidTexture {
     Color4 color{};
     std::array<std::uint8_t, 4> texel{};
+    // Solid textures enter StoredTexture's FileTexture arm; share its ID space.
+    std::uint64_t identity = 0;
 };
 
 struct PbrMaterialOptions {
     SolidTexture base_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+    bool has_base_color_texture = false;
+    std::shared_ptr<std::vector<double>> source_base_color_factor{};
     SolidTexture orm{};
     float metallic_factor = 1.0f;
     float roughness_factor = 1.0f;
@@ -2039,6 +2049,12 @@ enum class MeshTopology : std::uint8_t {
 struct ModelGeometry {
     std::vector<ModelVertex> vertices;
     std::vector<ModelVertex> bind_vertices;
+    // Source NORMAL values for a draw that reads raw local attributes.
+    // Imported bind_vertices may already normalize/mirror them; keep this
+    // optional lane independently, without duplicating the full vertex.
+    std::vector<Vec3> local_normals;
+    /** The loader reversed source triangles for its baked material convention. */
+    bool source_indices_reversed = false;
     std::vector<std::vector<Vec3>> morph_positions;
     // Each morph target's own delta AABB, filled on first use by the
     // shadow header's ensure_morph_target_ranges and then kept. Upstream
@@ -2113,6 +2129,8 @@ void release_storage(std::vector<T>& storage) {
 inline void release_geometry_storage(ModelGeometry& geometry) {
     release_storage(geometry.vertices);
     release_storage(geometry.bind_vertices);
+    release_storage(geometry.local_normals);
+    geometry.source_indices_reversed = false;
     release_storage(geometry.morph_positions);
     release_storage(geometry.morph_bounds);
     release_storage(geometry.morph_normals);
@@ -3050,6 +3068,14 @@ struct MaterialRecord {
     std::string name;
     Color3 diffuse_color{};
     Color4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+    // Public source arrays are distinct from the packed float render fields.
+    // Null means the producer omitted the property; copies retain JS identity.
+    std::shared_ptr<std::vector<double>> source_base_color_factor{};
+    std::shared_ptr<std::vector<double>> source_diffuse_color{};
+    // The family-specific public albedo property retains its original
+    // Texture2D producer arm and identity, separately from upload data.
+    std::optional<StoredTexture> source_albedo_texture{};
+    bool source_colors_registered = false;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
     float alpha = 1.0f;
@@ -3240,6 +3266,7 @@ struct MaterialRecord {
     // Its variant rides `shader_variant` below, which indexes whichever
     // family's table the material belongs to.
     bool node_material = false;
+    std::shared_ptr<NodeMaterialInputsState> node_inputs;
     bool grid_material = false;
     bool alpha_to_coverage = false;
     bool shader_alpha_testing = false;
@@ -3270,6 +3297,10 @@ struct MaterialRecord {
     MaterialAlphaMode alpha_mode = MaterialAlphaMode::opaque;
     float alpha_cutoff = 0.5f;
     TextureData base_color_texture;
+    /** PBR source slot presence; a factor-baked texture also fills the slot. */
+    bool has_public_base_color_texture = false;
+    /** Source Standard diffuse Texture2D format; separate from renderer defaults. */
+    bool diffuse_texture_srgb = false;
     TextureData metallic_roughness_texture;
     TextureData metallic_reflectance_texture;
     TextureData reflectance_texture;
@@ -3635,6 +3666,9 @@ struct SceneSkeletonRecord {
 
 struct AssetRecord {
     std::vector<MeshHandle> meshes;
+    // Source traversal permutations, separate from loader-order storage.
+    // A cloned root shares the indices and maps them to its own mesh handles.
+    std::shared_ptr<const std::vector<std::vector<std::size_t>>> source_mesh_walks{};
     std::vector<LightHandle> lights;
     /**
      * The cameras the `_camera` loader feature instantiated, one per
@@ -4587,6 +4621,22 @@ struct Engine {
     std::uint64_t next_file_texture_identity = 1;
 };
 
+inline std::vector<MeshHandle> asset_mesh_walk(
+    const Engine& engine, AssetHandle asset, std::size_t walk_index) {
+    const auto& record = engine.assets.at(asset.value);
+    if (!record.source_mesh_walks) {
+        throw std::runtime_error("Source mesh walk metadata is missing.");
+    }
+    const auto& indices = record.source_mesh_walks->at(walk_index);
+    if (indices.size() != record.meshes.size()) {
+        throw std::runtime_error("Source mesh walk does not cover the loaded mesh set.");
+    }
+    std::vector<MeshHandle> result;
+    result.reserve(indices.size());
+    for (const auto index : indices) result.push_back(record.meshes.at(index));
+    return result;
+}
+
 inline void AnimationFrameRequest::operator()(double timestamp) const {
     if (!state->pending) return;
     state->pending = false;
@@ -4724,7 +4774,77 @@ enum class MaterialTextureSlot : std::uint8_t {
     orm,
     emissive,
     occlusion,
+    diffuse,
 };
+
+enum class MaterialColorSlot { base_color_factor, diffuse_color };
+
+inline void project_material_source_colors(MaterialRecord& material) {
+    if (material.source_base_color_factor) {
+        const auto& source = *material.source_base_color_factor;
+        if (source.size() != 4) throw std::runtime_error("PBR baseColorFactor requires four numeric channels.");
+        material.base_color_factor = Color4{static_cast<float>(source[0]), static_cast<float>(source[1]),
+            static_cast<float>(source[2]), static_cast<float>(source[3])};
+    }
+    if (material.source_diffuse_color) {
+        const auto& source = *material.source_diffuse_color;
+        if (source.size() != 3) throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+        material.diffuse_color = Color3{static_cast<float>(source[0]), static_cast<float>(source[1]), static_cast<float>(source[2])};
+    }
+}
+
+template <typename Array = js::Array<double>>
+[[nodiscard]] js::Nullable<Array> material_color(
+    const Engine& engine, MaterialHandle material, MaterialColorSlot slot) {
+    const auto& record = engine.materials.at(material.value);
+    const auto& values = slot == MaterialColorSlot::base_color_factor
+        ? record.source_base_color_factor : record.source_diffuse_color;
+    return values ? js::Nullable<Array>{Array(values)} : js::Nullable<Array>{};
+}
+
+[[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine, MaterialHandle material);
+
+template <typename Array>
+inline void set_material_diffuse_color(
+    Engine& engine, MaterialHandle material, const Array& values) {
+    if (values.size() != 3) {
+        throw std::runtime_error("Material diffuseColor requires three numeric channels.");
+    }
+    auto& record = engine.materials.at(material.value);
+    if (record.source_colors_registered || material_color_has_bound_group(engine, material)) {
+        throw std::runtime_error("Replacing a registered material color requires per-group UBO snapshots.");
+    }
+    record.source_diffuse_color = values.retained_storage();
+    record.diffuse_color = Color3{static_cast<float>(values[0]),
+        static_cast<float>(values[1]), static_cast<float>(values[2])};
+}
+
+[[nodiscard]] inline bool material_texture_present(
+    const Engine& engine,
+    MaterialHandle material,
+    MaterialTextureSlot slot) {
+    const MaterialRecord& record = engine.materials.at(material.value);
+    if (slot == MaterialTextureSlot::base_color) {
+        return !record.standard_material && record.has_public_base_color_texture;
+    }
+    if (slot == MaterialTextureSlot::diffuse) {
+        return record.standard_material &&
+            (record.base_color_texture.has_image() || record.has_diffuse_render_texture);
+    }
+    throw std::runtime_error("Material source presence is not represented for this texture slot.");
+}
+
+[[nodiscard]] inline StoredTexture material_source_texture(
+    const Engine& engine,
+    MaterialHandle material,
+    MaterialTextureSlot slot) {
+    if (!material_texture_present(engine, material, slot)) return FileTexture{};
+    const MaterialRecord& record = engine.materials.at(material.value);
+    if (!record.source_albedo_texture) {
+        throw std::runtime_error("This material texture producer has no retained source identity.");
+    }
+    return *record.source_albedo_texture;
+}
 
 /**
  * Adapt a material-owned texture slot to the source-level Texture2D value.
@@ -4741,8 +4861,21 @@ enum class MaterialTextureSlot : std::uint8_t {
     FileTexture texture;
     switch (slot) {
         case MaterialTextureSlot::base_color:
+        case MaterialTextureSlot::diffuse:
+            if (slot == MaterialTextureSlot::diffuse && record.has_diffuse_render_texture) {
+                throw std::runtime_error("Reading a Standard diffuse render attachment as a retained file texture is not supported.");
+            }
             texture.data = record.base_color_texture;
-            texture.srgb = record.base_color_srgb;
+            texture.srgb = slot == MaterialTextureSlot::diffuse
+                ? record.diffuse_texture_srgb : record.base_color_srgb;
+            if (slot == MaterialTextureSlot::base_color &&
+                record.has_public_base_color_texture && !texture.data.has_image()) {
+                texture.data.bytes.assign(record.base_color_fallback.begin(), record.base_color_fallback.end());
+                texture.data.rgba_width = 1;
+                texture.data.rgba_height = 1;
+            }
+            texture.width = texture.data.rgba_width;
+            texture.height = texture.data.rgba_height;
             break;
         case MaterialTextureSlot::normal:
             texture.data = record.normal_texture;
@@ -4909,6 +5042,21 @@ struct Surface {
     std::shared_ptr<bool> disposed = std::make_shared<bool>(false);
 };
 
+enum class SceneDeferredFailure { synchronous_throw, promise_rejection };
+
+/** Async wrappers reject after the map has invoked the rest of its batch. */
+struct SceneDeferredBuilder {
+    js::Callback<void()> callback;
+    SceneDeferredFailure failure_mode = SceneDeferredFailure::synchronous_throw;
+    template <typename F>
+        requires (!std::is_same_v<std::remove_cvref_t<F>, SceneDeferredBuilder>)
+    SceneDeferredBuilder(F&& body,
+        SceneDeferredFailure mode = SceneDeferredFailure::synchronous_throw)
+        : callback(std::forward<F>(body)), failure_mode(mode) {}
+    void operator()() const { callback(); }
+    void gc_trace(const js::TraceVisitor& visitor) const { visitor(callback); }
+};
+
 /** The mutable state shared by every native copy of one SceneContext. */
 struct SceneState {
     Engine* engine = nullptr;
@@ -4965,7 +5113,8 @@ struct SceneState {
     bool seeks_animation_managers = false;
     /** The same, for the baked meshes this scene's registration reaches. */
     bool seeks_vat = false;
-    std::vector<js::Callback<void()>> deferred_builders;
+    std::vector<SceneDeferredBuilder> deferred_builders;
+    std::vector<std::shared_ptr<NodeMaterialGroupState>> node_material_groups;
     EnvironmentState environment;
     /** `createSceneContext`: fog is null and _envTextures is absent. */
     std::uint64_t fog_identity = 0;
@@ -5033,7 +5182,7 @@ struct Scene {
     std::vector<js::Callback<void(float)>>& animation_seekers;
     bool& seeks_animation_managers;
     bool& seeks_vat;
-    std::vector<js::Callback<void()>>& deferred_builders;
+    std::vector<SceneDeferredBuilder>& deferred_builders;
     EnvironmentState& environment;
     double& fixed_delta_ms;
     std::uint64_t& render_topology_version;
@@ -5121,6 +5270,15 @@ private:
           fog_color(state->fog_color),
           clip_plane(state->clip_plane) {}
 };
+
+[[nodiscard]] inline bool material_color_has_bound_group(const Engine& engine, MaterialHandle material) {
+    return std::any_of(engine.registered_scenes.begin(), engine.registered_scenes.end(),
+        [&](const std::shared_ptr<Scene>& scene) {
+            return scene && std::any_of(scene->meshes.begin(), scene->meshes.end(), [&](MeshHandle mesh) {
+                return mesh.value < engine.meshes.size() && engine.meshes[mesh.value].material.value == material.value;
+            });
+        });
+}
 
 inline Scene configure_scene_render_defaults(Scene scene, bool enabled, std::uint32_t samples) {
     scene.state->default_render_task = enabled;
@@ -5680,7 +5838,7 @@ MaterialHandle create_shader_material(
  */
 struct NodeMaterialTexture {
     std::string name;
-    FileTexture texture;
+    StoredTexture texture;
 };
 
 NodeMaterialTexture node_material_texture(
@@ -5700,6 +5858,7 @@ MaterialHandle create_node_material(
     Engine& engine,
     std::uint32_t variant,
     std::vector<NodeMaterialTexture> textures);
+void queue_node_material_group(Scene& scene, MeshHandle mesh);
 void set_shader_uniform_values(
     Engine& engine,
     MaterialHandle material,
@@ -5856,6 +6015,7 @@ void set_pbr_subsurface(
     float maximum_thickness,
     FileTexture thickness_texture);
 SolidTexture create_solid_texture(Engine& engine, float r, float g, float b, float a = 1.0f);
+FileTexture solid_texture_file(const SolidTexture& texture);
 FileTexture load_file_texture(
     Engine& engine,
     const std::string& path,

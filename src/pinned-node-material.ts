@@ -22,7 +22,10 @@
  * adds one refuses rather than composing a module this port cannot serve.
  */
 import type { JsonObject } from "./gltf-document.js";
-import type { NodeMaterialBlockEmitter } from "./compiler/types.js";
+import type {
+    CompiledNodeMaterial,
+    NodeMaterialBlockEmitter,
+} from "./compiler/types.js";
 import type { PinnedGeometryTaskRequest } from "./pinned-material-arms.js";
 import {
     geometryAttachmentTypes,
@@ -105,6 +108,8 @@ export interface ComposedNodeMaterial {
     attributes: readonly ComposedNodeAttribute[];
     /** The texture pairs the graph declares, in the pin's allocation order. */
     textures: readonly ComposedNodeTextureBinding[];
+    /** Public input handles, as the actual pinned factory exposes them. */
+    inputs: readonly { name: string; type: string }[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
     /** Whether the graph selects BJS alpha-combine mode for its draw. */
@@ -200,6 +205,7 @@ export interface ComposeNodeMaterialOptions {
     }[];
     castsEsmShadow?: boolean;
     blockEmitters?: readonly NodeMaterialBlockEmitter[] | undefined;
+    pinnedBlockLoader?: CompiledNodeMaterial["pinnedBlockLoader"];
     castsPcfShadow?: boolean;
     /**
      * The geometry-output tasks this graph is drawn in, in manifest order.
@@ -317,6 +323,7 @@ interface PinnedNodeMaterial {
         string,
         { _offsetBytes: number; _values: Float32Array }
     >;
+    inputs: Readonly<Record<string, { type: string }>>;
 }
 
 interface PinnedNodeMaterialModule {
@@ -619,6 +626,7 @@ export async function composeNodeMaterial(
         shadowLights = [],
         castsEsmShadow = false,
         blockEmitters = [],
+        pinnedBlockLoader,
         castsPcfShadow = false,
         geometryTasks = [],
     } = options;
@@ -642,10 +650,17 @@ export async function composeNodeMaterial(
     );
     const device = compositionEngine();
     const engine = device.engine;
+    if (pinnedBlockLoader && blockEmitters.length > 0) {
+        throw new Error("A node material cannot combine pinned and closed block loaders.");
+    }
     const emitterModules = new Map(
         blockEmitters.map(({ className, module }) => [className, module]),
     );
-    const blockLoader = blockEmitters.length > 0
+    const blockLoader = pinnedBlockLoader === "geometry"
+        ? (await importPinnedModule<{
+              loadNodeBlockEmitterWithGeometry(className: string): Promise<unknown>;
+          }>("material/node/node-geometry-block-loader.js")).loadNodeBlockEmitterWithGeometry
+        : blockEmitters.length > 0
         ? async (className: string): Promise<unknown> => {
               const emitterModule = emitterModules.get(className);
               if (!emitterModule) {
@@ -726,6 +741,7 @@ export async function composeNodeMaterial(
             texture: binding._texBinding,
             sampler: binding._sampBinding,
         })),
+        inputs: Object.entries(material.inputs).map(([name, input]) => ({ name, type: input.type })),
         backFaceCulling: material._graph.backFaceCulling,
         alphaBlending: material._graph.needsAlphaBlending,
         envBindings: env
@@ -824,30 +840,6 @@ async function composeNodeGeometryViews(
                     "`createNodeGeometryMaterialView` refuses `emitColor`: " +
                     "the node geometry view composes no trailing colour " +
                     "attachment.",
-            );
-        }
-        // The one geometry lane this port's vertex convention cannot serve
-        // through a node graph. `geomWrite` writes LOCAL_POSITION from
-        // whatever the graph connected, and every reached graph connects the
-        // `position` attribute -- which upstream is the mesh's LOCAL position
-        // beside a real `meshU.world`, and here is the node world already
-        // baked into the vertex beside an identity one. The Standard family
-        // meets the same wall and refuses it by name in
-        // `pal_gpu_shared.hpp` `standard_draw_world`; refusing it here keeps
-        // the node family from rendering a plausible-looking world position
-        // in a local-position attachment.
-        if (task.attachments.includes("LOCAL_POSITION")) {
-            throw new Error(
-                `Node material '${label}' is drawn by geometry task ` +
-                    `${task.index}, whose attachments include ` +
-                    "LOCAL_POSITION. `node-geometry-renderable.ts` " +
-                    "`geomWrite` writes that lane from the graph's own " +
-                    "input, which is the pin's LOCAL position attribute; " +
-                    "this port bakes each mesh's world into its vertices " +
-                    "and draws node graphs under an identity `meshU.world`, " +
-                    "so the lane would carry the world position instead. " +
-                    "`pal_gpu_shared.hpp` `standard_draw_world` refuses the " +
-                    "same shape for the Standard family.",
             );
         }
         const attachments = await geometryAttachmentTypes(task.attachments);

@@ -1656,10 +1656,8 @@ MaterialHandle gizmo_material(
     bool double_sided) {
     const MaterialHandle material = create_standard_material(engine);
     MaterialRecord& record = engine.materials[material.value];
-    record.diffuse_color = Color3{
-        static_cast<float>(color.x),
-        static_cast<float>(color.y),
-        static_cast<float>(color.z)};
+    set_material_diffuse_color(engine, material,
+        js::Array<double>{color.x, color.y, color.z});
     record.specular_color = Color3{
         static_cast<float>(${components[0]}),
         static_cast<float>(${components[1]}),
@@ -3023,9 +3021,11 @@ ${this.widgetPart(
     private materialWrites(
         scope: ts.Node,
         local: string,
-        target: string,
+        material: string,
         lowerer: PinnedNumericLowerer,
+        retainedColor: { source: string; cpp: string },
     ): string {
+        const target = `engine.materials[${material}.value]`;
         const fields = new Map<string, "color3" | "number" | "boolean">([
             ["diffuseColor", "color3"],
             ["emissiveColor", "color3"],
@@ -3099,9 +3099,8 @@ ${this.widgetPart(
                     }
                 } else {
                     // A colour the pin spells out, or the resolved option
-                    // it hands over whole -- which is the same value read
-                    // lane by lane, because a native colour is three
-                    // members where the pin's is three elements.
+                    // it hands over whole. Diffuse colours retain the
+                    // double channels until registration projects them.
                     const components = ts.isArrayLiteralExpression(value)
                         ? value.elements.map((element) =>
                               lowerer.expression(element),
@@ -3117,14 +3116,28 @@ ${this.widgetPart(
                                 "a three-component colour.",
                         );
                     }
-                    lines.push(
-                        `    ${target}.${natives.get(member)!} = Color3{`,
-                        ...components.map(
-                            (component, lane) =>
-                                `        static_cast<float>(${component})` +
-                                `${lane === 2 ? "};" : ","}`,
-                        ),
-                    );
+                    if (member === "diffuseColor") {
+                        if (!ts.isArrayLiteralExpression(value)) {
+                            this.context.assertExpressionShape(value, retainedColor.source,
+                                "Bounding-box materials share their source color array");
+                        }
+                        const channels = ts.isArrayLiteralExpression(value)
+                            ? `js::Array<double>{${components.join(", ")}}`
+                            : retainedColor.cpp;
+                        lines.push(
+                            `    set_material_diffuse_color(engine, ${material}, ` +
+                                `${channels});`,
+                        );
+                    } else {
+                        lines.push(
+                            `    ${target}.${natives.get(member)!} = Color3{`,
+                            ...components.map(
+                                (component, lane) =>
+                                    `        static_cast<float>(${component})` +
+                                    `${lane === 2 ? "};" : ","}`,
+                            ),
+                        );
+                    }
                 }
             }
             ts.forEachChild(node, visit);
@@ -3638,14 +3651,16 @@ std::array<float, 16> bbox_mat4_from_quat(
         const materialWrites = this.materialWrites(
             factory,
             "material",
-            "engine.materials[gizmo.material.value]",
+            "gizmo.material",
             materialLowerer,
+            { source: "color", cpp: "source_color" },
         );
         const bodyMaterialWrites = this.materialWrites(
             factory,
             "bodyMaterial",
-            "engine.materials[gizmo.body_material.value]",
+            "gizmo.body_material",
             materialLowerer,
+            { source: "color", cpp: "source_color" },
         );
 
         // ---- the group counts, from the pin's own build loops ----
@@ -4574,6 +4589,7 @@ BoundingBoxGizmoHandle create_bounding_box_gizmo(
     const Vec3d color = color_option.value_or(Vec3d{${colorDefault
         .map((component) => this.context.doubleLiteral(component))
         .join(", ")}});
+    const js::Array<double> source_color{color.x, color.y, color.z};
     const double edge_thickness = edge_thickness_option.value_or(
         ${this.context.doubleLiteral(edgeThicknessDefault)});
     const double scale_box_size = scale_box_size_option.value_or(
@@ -5258,13 +5274,13 @@ CameraGizmoHandle create_camera_gizmo(
     CameraGizmoRecord gizmo;
     gizmo.layer = layer;
     gizmo.material = create_standard_material(engine);
-    engine.materials[gizmo.material.value].diffuse_color =
-        Color3{0.5f, 0.5f, 0.5f};
+    set_material_diffuse_color(engine, gizmo.material,
+        js::Array<double>{0.5, 0.5, 0.5});
     engine.materials[gizmo.material.value].specular_color =
         Color3{0.1f, 0.1f, 0.1f};
     gizmo.frustum_material = create_standard_material(engine);
-    engine.materials[gizmo.frustum_material.value].diffuse_color =
-        Color3{1.0f, 1.0f, 1.0f};
+    set_material_diffuse_color(engine, gizmo.frustum_material,
+        js::Array<double>{1.0, 1.0, 1.0});
     engine.materials[gizmo.frustum_material.value].emissive_factor =
         Color3{1.0f, 1.0f, 1.0f};
     engine.materials[gizmo.frustum_material.value].disable_lighting = true;
@@ -5420,8 +5436,8 @@ LightGizmoHandle create_light_gizmo(
     LightGizmoRecord gizmo;
     gizmo.layer = layer;
     gizmo.material = create_standard_material(engine);
-    engine.materials[gizmo.material.value].diffuse_color =
-        Color3{0.5f, 0.5f, 0.5f};
+    set_material_diffuse_color(engine, gizmo.material,
+        js::Array<double>{0.5, 0.5, 0.5});
     engine.materials[gizmo.material.value].specular_color =
         Color3{0.1f, 0.1f, 0.1f};
     gizmo.root = create_transform_node(

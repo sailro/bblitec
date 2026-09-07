@@ -29,6 +29,7 @@ import {
 import { findRepositoryRoot } from "./upstream-source.js";
 import type { AssetSpecializationFeatures } from "./asset-specializer.js";
 import { glbDocument } from "./gltf-document.js";
+import { nodeGeometryAssetRefusal } from "./node-geometry-assets.js";
 import type { CompileAsset, CompileResult } from "./compiler.js";
 import type { GeneratedTree } from "./generated-tree.js";
 import type { MeshProfileTable } from "./lowering/resource-profiles.js";
@@ -1116,6 +1117,13 @@ export async function composeScenePipeline({
     // and pipeline builder. The index is the scene's reach order, which is
     // what `create_node_material` was given.
     const nodeVariants: NodeVariantManifestEntry[] = [];
+    if (result.manifest.nodeMaterials.length > 0 && geometryTasks.length > 0) {
+        for (const asset of uniqueGltfAssets) {
+            const document = glbDocument(resolve(outputPath, "assets", asset.output));
+            const reason = document ? await nodeGeometryAssetRefusal(document) : "an unreadable glTF document";
+            if (reason) throw new Error(`Node geometry views do not represent ${reason} in '${asset.output}'.${refusalReachedFrom(result.manifest.featureSites, "renderer:geometry-output")}`);
+        }
+    }
     const repositoryRoot = result.manifest.nodeMaterials.length > 0
         ? findRepositoryRoot(dirname(resolve(result.manifest.source)))
         : "";
@@ -1163,6 +1171,7 @@ export async function composeScenePipeline({
                 shadowLights: graphShadowLights,
                 castsEsmShadow,
                 blockEmitters: material.blockEmitters,
+                pinnedBlockLoader: material.pinnedBlockLoader,
                 castsPcfShadow,
                 // A geometry-output task draws every mesh the scene admits,
                 // so a graph in a scene carrying one is drawn by it and
@@ -1171,23 +1180,12 @@ export async function composeScenePipeline({
                 geometryTasks,
             },
         );
-        // The graph decides which bindings exist and the scene decides which
-        // it supplies; only here are both known. Upstream raises the mismatch
-        // at the first render, so raising it at generation is the same
-        // contract moved to the moment that can carry a source-free message
-        // naming the binding — plus the scene call site that first reached
-        // the node-material family, from the manifest's featureSites record.
-        const nodeSite = refusalReachedFrom(
-            result.manifest.featureSites,
-            "material:node",
-        );
-        for (const binding of composed.textures) {
-            if (material.textureNames.includes(binding.name)) continue;
-            throw new Error(
-                `Node material '${label}' samples the texture binding ` +
-                    `'${binding.name}', which the scene's 'textures' record ` +
-                    `does not supply.${nodeSite}`,
-            );
+        // Slot initialization may follow construction. The native builder
+        // observes missing textures at the pin's binding point, in source
+        // deferred-builder order, rather than while composing its shader.
+        if (result.manifest.features.includes("material:node-inputs")) {
+            const unsupported = composed.inputs.find((input) => input.type !== "texture2d");
+            if (unsupported) throw new Error(`Node input '${unsupported.name}' (${unsupported.type}) requires numeric input state that is not represented.${refusalReachedFrom(result.manifest.featureSites, "material:node-inputs")}`);
         }
         // Extra keys are inert upstream: parseNodeMaterialFromSnippet walks
         // the COMPILED texture bindings and looks each one up in

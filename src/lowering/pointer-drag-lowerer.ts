@@ -232,7 +232,8 @@ void initialize_pointer_gizmo(Engine& engine, UtilityLayerHandle layer, EditGizm
     drag.plane_drag = plane;
     drag.colored_material = material;
     drag.hover_material = create_standard_material(engine);
-    engine.materials[drag.hover_material.value].diffuse_color = Color3{${hoverColor.map((value) => `${context.doubleLiteral(value)}f`).join(", ")}};
+    set_material_diffuse_color(engine, drag.hover_material,
+        js::Array<double>{${hoverColor.map((value) => context.doubleLiteral(value)).join(", ")}});
     engine.materials[drag.hover_material.value].double_sided = plane;
     for (const auto mesh : utility_layer_scene(engine, layer).meshes) {
         if (engine.meshes[mesh.value].transform_parent.value == drag.root.value && engine.meshes[mesh.value].visible) drag.visible_meshes.push_back(mesh);

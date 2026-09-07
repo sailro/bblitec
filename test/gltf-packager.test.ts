@@ -8,6 +8,7 @@ import test from "node:test";
 import { specializeGltf } from "../src/asset-specializer.js";
 import { resolveGeometryExtensions } from "../src/compressed-geometry.js";
 import { packageGltf } from "../src/gltf-packager.js";
+import { GLTF_SOURCE_ALBEDO_IDENTITIES } from "../src/gltf-document.js";
 import { readUpstreamPin } from "../src/upstream-source.js";
 import { buildGlb, readGlbFixture } from "./glb-fixture.js";
 
@@ -48,6 +49,11 @@ test("packages external glTF buffers and images into a GLB", async () => {
         assert.deepEqual(document.materials[0]?.normalTexture, {
             index: 0,
             scale: 0.35,
+        });
+        assert.equal(GLTF_SOURCE_ALBEDO_IDENTITIES in document, false);
+        const observed = readGlbFixture(Buffer.from(await packageGltf("scene.gltf", directory, true)));
+        assert.deepEqual(observed.document[GLTF_SOURCE_ALBEDO_IDENTITIES], {
+            materials: [0, 1], fallbackTexels: {0: [255, 255, 255, 255], 1: [255, 255, 255, 255]},
         });
     } finally {
         rmSync(directory, { recursive: true, force: true });

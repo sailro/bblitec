@@ -214,8 +214,19 @@ MaterialHandle load_material(
     std::unordered_map<std::string, std::uint32_t>& reflection_cubes) {
     MaterialRecord material;
     material.standard_material = true;
-    material.diffuse_color =
-        color3_or(source, "diffuse", Color3{1.0f, 1.0f, 1.0f});
+    // loadBabylon copies RGB into a fresh array; exports may include an
+    // unused fourth channel. Null/absent colors keep the factory default.
+    if (const auto diffuse = source.find("diffuse");
+        diffuse != source.end() && !diffuse->is_null()) {
+        if (!diffuse->is_array() || diffuse->size() < 3 ||
+            !(*diffuse)[0].is_number() || !(*diffuse)[1].is_number() || !(*diffuse)[2].is_number()) {
+            throw std::runtime_error("Babylon material diffuse requires three numeric channels.");
+        }
+    }
+    material.source_diffuse_color = std::make_shared<std::vector<double>>(
+        std::initializer_list<double>{double_at(source, "diffuse", 0, 1),
+            double_at(source, "diffuse", 1, 1), double_at(source, "diffuse", 2, 1)});
+    project_material_source_colors(material);
     material.specular_color =
         color3_or(source, "specular", Color3{1.0f, 1.0f, 1.0f});
     material.emissive_factor =
@@ -354,14 +365,24 @@ ${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
             ? MaterialAlphaMode::blend
             : MaterialAlphaMode::opaque;
     engine.materials.push_back(std::move(material));
-    return MaterialHandle{
+    const MaterialHandle handle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
+    if (engine.materials[handle.value].base_color_texture.has_image()) {
+        // TEX_SLOTS starts a fresh loadTexture2D per material/slot; equal
+        // URLs do not make the returned source Texture2D objects equal.
+        auto texture = material_texture(engine, handle, MaterialTextureSlot::diffuse);
+        texture.identity = engine.next_file_texture_identity++;
+        engine.materials[handle.value].source_albedo_texture = std::move(texture);
+    }
+    return handle;
 }
 
 MaterialHandle default_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
     material.diffuse_color = Color3{1.0f, 1.0f, 1.0f};
+    material.source_diffuse_color = std::make_shared<std::vector<double>>(
+        std::initializer_list<double>{1, 1, 1});
     engine.materials.push_back(std::move(material));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};

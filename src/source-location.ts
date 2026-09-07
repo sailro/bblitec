@@ -18,9 +18,10 @@ export interface SourceLocation {
 
 /** Where `node` starts, as the 1-based position diagnostics print. */
 export function sourceLocation(node: ts.Node): SourceLocation {
-    const file = node.getSourceFile();
+    const original = ts.getOriginalNode(node);
+    const file = original.getSourceFile();
     const position = file.getLineAndCharacterOfPosition(
-        node.getStart(file),
+        original.getStart(file),
     );
     return {
         file,

@@ -475,6 +475,8 @@ export function pinnedNodeVariantsHeader(
     }
     const attributeRows: string[] = [];
     const textureRows: string[] = [];
+    const inputRows: string[] = variants.flatMap((variant) => variant.composed.inputs.map((input) =>
+        `    {${variant.index}, ${stringLiteral(input.name)}, ${stringLiteral(input.type)}},`));
     const shadowRows: string[] = [];
     const uniformFloats: number[] = [];
     const entries: string[] = [];
@@ -633,6 +635,17 @@ struct NodeVariantTexture {
     std::uint32_t texture;
     std::uint32_t sampler;
 };
+
+/** Factory input objects retain identity independently of the shared graph. */
+struct NodeVariantInput {
+    std::uint32_t variant;
+    std::string_view name;
+    std::string_view type;
+};
+
+inline constexpr std::array<NodeVariantInput, ${inputRows.length}> node_variant_inputs{{
+${inputRows.join("\n")}
+}};
 
 inline constexpr std::array<
     NodeVariantTexture,

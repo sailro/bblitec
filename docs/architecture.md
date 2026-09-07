@@ -3,241 +3,106 @@
 ## Pipeline
 
 ```text
-entry TypeScript + local modules
-  -> ts.Program / TypeChecker / resolved imports
-  -> static evaluation, browser adaptation, typed values and reached APIs
-  -> asset materialization + pinned loader/composer execution
-  -> dedicated AST lowerers + generated runtime adapters
-  -> C++20, WGSL, assets, feature manifests and provenance
-  -> native build -> SDL3 + SDL_GPU or Dawn
+TypeScript entry + reached modules
+  -> resolved symbols and bounded typed values
+  -> asset materialization and pinned composition
+  -> AST lowerers and generated adapters
+  -> C++20 + WGSL + assets + provenance
+  -> SDL3 platform services + SDL_GPU or Dawn
 ```
 
-The compiler supports one pin, recorded in `upstream/babylon-lite.json`.
+The pin is defined by `upstream/babylon-lite.json`.
 `upstream-source.ts` reconstructs TypeScript from package source maps;
-`pinned-wgsl-build.ts` applies the pin's package shader transform. Read the
-pinned source when its architecture docs disagree. Upgrade commands belong
-in [development](development.md).
+`pinned-wgsl-build.ts` applies the package shader transform.
 
 ## Ownership
 
-| Layer | Responsibility | Main source |
+| Layer | Owns | Source |
 | --- | --- | --- |
-| Entry compiler | User-code semantics, static values, feature/asset collection and main emission | `src/compiler.ts`, `src/compiler/` |
-| Pipeline | Materialization, composition and emitted artifacts | `src/cli.ts`, `src/compose-pipeline.ts`, `src/upstream-lower.ts` |
-| Pinned execution | Execute actual loaders, composers or asset producers with explicit recording seams | `src/pinned-*.ts`, `src/executed-module-assets.ts` |
-| Lowerers | Translate supported pinned ASTs; assert contracts for structural adapters | `src/lowering/`, especially `context.ts` and `pinned-function-lowerer.ts` |
-| Native data model | Typed handles, scene records, TypeScript values and scheduling | `native/include/bblite/` |
-| Shared PAL | SDL window/input/files, frame orchestration and shared upload representation | `native/src/pal.cpp`, `pal_window.hpp`, `pal_gpu_shared.hpp` |
-| GPU PALs | Device objects, pipelines, bindings, uploads, pass encoding and presentation | `native/src/pal_sdl_gpu*`, `native/src/pal_dawn*` |
-| Other PALs | Third-party/platform adaptation | `native/src/pal_ui_rml.cpp`, audio, physics and navigation PALs |
+| Entry compiler | User-code semantics, typed values, reach and main emission | `src/compiler.ts`, `src/compiler/` |
+| Pipeline | Assets, composition and output | `src/cli.ts`, `compose-pipeline.ts`, `upstream-lower.ts` |
+| Pinned execution | Actual producers/loaders/composers with recording seams | `src/pinned-*.ts`, `executed-module-assets.ts` |
+| Lowerers | Pinned AST translation and structural contracts | `src/lowering/` |
+| Runtime data | Handles, JS identities, scene state, scheduling | `native/include/bblite/` |
+| Shared PAL | OS services and backend-neutral transport | `native/src/pal*.hpp` |
+| GPU PALs | Device resources, bindings, encoding, presentation | `pal_sdl_gpu*`, `pal_dawn*` |
+| Subsystem PALs | Library adaptation | UI, audio, physics and navigation PALs |
 
-The ownership rule is to generate Babylon behavior and handwrite only the
-platform/library boundary. The current tree still contains structural
-transcriptions and substitutions; [fidelity](fidelity.md) states their
-guarantees and [audit](../audit.md) tracks the rechecked exceptions. Emitting a
-C++ string from TypeScript does not itself prove it was transpiled.
-
-`generated/` is disposable. Fidelity lists source-to-native artifacts,
-including feature activation and shader provenance. This page groups ownership
-by concept instead of maintaining a duplicate file inventory.
+Generate Babylon semantics; handwrite platform/library adaptation. Structural
+transcriptions still need explicit source contracts. A C++ string emitter is
+not proof of AST translation. [Fidelity](fidelity.md) owns adaptations and the
+generated evidence inventory.
 
 ## Compiler architecture
 
-`compiler/program.ts` owns the TypeScript program. `symbols.ts` resolves
-import aliases to pinned intrinsics. `expressions.ts`, `statements.ts`,
-`assignments.ts` and `properties.ts` dispatch user-code constructs;
-`static-evaluator.ts` and static-resolution helpers fold known values.
-`compiler/intrinsics/` contains focused API families.
+`compiler/program.ts` owns the TypeScript program; `symbols.ts` resolves
+intrinsics. Expression/statement/assignment/property modules dispatch constructs.
+Static evaluation folds proven values; `intrinsics/` separates API families.
 
-`data-types.ts` maps native data shapes and emits definitions.
-`data-lowering.ts` handles typed sinks and container operations. Fully
-data-typed functions use `native-functions.ts` and can be emitted once,
-including supported recursive call groups. Handle-dependent functions use
-`user-functions.ts` and inline in isolated symbol scopes. Classes, module
-initialization, closure storage and handle collections have dedicated modules.
-The compiler has typed values and several local IRs; a complete typed
-user-code IR and general escape graph remain unfinished.
+`data-types.ts` defines storage; `data-lowering.ts` handles typed sinks.
+Data-typed functions use `native-functions.ts`, including supported recursion;
+handle-dependent helpers inline through `user-functions.ts`. Dedicated modules
+own classes, module initialization, closures and collections. A general typed
+user-code IR/escape graph remains unfinished.
 
-Use `LoweringContext` for pinned declarations, expressions, diagnostics and
-statement inventories. Reuse `lowerPinnedFunction` for supported bodies and
-the shared UBO writer lowerer for buffer writes. Contract assertions detect
-the shapes they inspect; they do not prove an entire restated body equivalent.
-The pinned numeric translator names a callee's result shape through separate
-sets (matrix, list, tuple, record and typed call shapes) rather than one, and
-its `vec3Literal` hook predates the record-literal hook its newer callers use;
-a body whose callee's shape no set names fails at the call.
-
-Static custom WGSL uses the tokenizer/parser and `ShaderIrProgram` where the
-supported grammar applies. Reflected strict-source paths remain for grammar
-outside that subset. Formatting is not shader identity. A new shader construct
-should extend the existing parser/reflection boundary before adding text
-rewrites.
+Reuse `LoweringContext`, `lowerPinnedFunction`, numeric lowering and the
+shared UBO writer. Custom WGSL uses typed IR/parser or strict reflected-source
+contracts. Extend those boundaries before adding text recognizers.
 
 ## Scene orchestration
 
-`src/scene-command.ts` dispatches commands through the shared scene resolver.
-The registry holds curated reference pose, thresholds and diagnostics;
-unregistered repository-local TypeScript paths derive defaults. Build identity
-ties native binaries and deployed shader snapshots to generated inputs.
-Canonical commands and diagnostic artifacts are in
-[development](development.md) and [debugging](debugging.md).
+`scene-command.ts` resolves IDs/paths through the registry. Registry data owns
+poses, thresholds and diagnostics. Generated default task graphs belong to shared
+scene identity and materialize once per enabled scene. Dedicated scene/sprite/
+effect/frame-graph drivers run contexts in registration order.
 
-## Generated behavior
-
-- Procedural builders, cameras, transforms, render-plan decisions and uniform
-  writers are generated through feature lowerers.
-- glTF packaging runs pinned compression/normalization hooks before native
-  loading. The generated loader retains live scene construction, transforms,
-  animation and upload inputs.
-- Material composers execute the pin's PBR, Standard and node machinery.
-  Generated binding/layout tables connect their stages to both PALs.
-- UI analysis emits retained operations; RmlUi handles live layout and emits
-  backend-neutral draw frames. Host-page companions are reviewed input data.
-- Physics and audio preserve a generated Babylon-facing layer over substituted
-  third-party engines. Navigation uses the pinned native Recast/Detour source.
-
-The detailed feature surface and activation paths belong in
-[features](features.md); adaptations belong in [fidelity](fidelity.md).
+Property and glTF animation have separate generated runtimes with shared scene
+seeking. Loaders retain local deformation data and required world bounds.
+Generated composition selects mesh-feature variants; PALs transport their bytes.
 
 ## Runtime and memory
 
-Engine records generally use indexed storage and typed handles. Local C++
-values use RAII; shared JavaScript identities use `bbl::js::Ref<T>` and shared
-container storage. The non-atomic reference count assumes scene code executes
-on the frame thread. GPU objects are backend-owned and released through their
-API's deferred-lifetime rules.
+Typed handles index engine records. RAII owns local values; `bbl::js::Ref<T>`
+and shared container storage preserve JS identities. Non-atomic JS references
+stay on their owning frame/realm thread. Resolve handles again after operations
+that can grow backing storage; do not retain invalidated vector references.
 
-Worker applications keep each generated module instance and its JavaScript
-identities on an owning realm thread. A separate OS thread owns the window,
-RmlUi layout and presentation. Native messages, document snapshots, dimensions
-and fenced GPU image leases cross those boundaries; engine records and
-`bbl::js::Ref` do not. Module-worker compilation, typed structured cloning and
-canvas transfer are implemented for the bounded
-[Worker service](#worker-service-design). The unchanged Offscreen application
-exercises these services; its published scene gates are still pending. See
-[backends](backends.md#experimental-offscreen-surfaces) for the GPU boundary.
+Managed records, containers and explicit callback environments expose ownership
+edges to cycle collection at frame boundaries and scope teardown. Acyclic values
+release immediately. Opaque native owners remain conservative roots. Structural
+mutation must preserve or refuse outstanding aliases.
 
-Managed records, containers and explicit callback environments expose owning
-edges to cycle collection at frame boundaries and generated-scope teardown.
-Acyclic identities still release immediately. Native opaque owners remain
-conservative roots; this does not establish lifetime safety for arbitrary
-unsupported extensions. Avoid raw references into growing engine vectors;
-retain handles and resolve them after operations that may append. Structural
-container mutation must preserve or explicitly reject an outstanding alias.
-
-Physics worlds, navigation plugins/crowds and audio sessions own their native
-resources independently. Closing one owner preserves other live owners. Audio
-handles and PCM views can retain their data after graph retirement; closing a
-session stops its devices and releases its context graph.
-
-`Borrowed` platform-event payloads are valid during one dispatch. The compiler
-rejects retaining an actual borrowed event through containers, fields,
-closures, listeners or timers. Owned scalar copies can escape. Timers and RAF
-callbacks run through the shared frame conductor; retained closures must not
-capture expired stack state or own themselves indefinitely.
-
-The checked array/DataView/string surface and file-size caps define supported
-runtime bounds. A checked failure is an explicit adaptation where JavaScript
-would yield `undefined`; see fidelity.
+Physics worlds, navigation plugins/crowds and audio sessions own resources
+independently. Audio data can outlive retired graph membership. Borrowed events
+exist for one dispatch; retained state must copy owned values. GPU lifetimes
+follow each backend's in-flight ownership rules.
 
 ### Worker service design
 
-The service implements reusable dedicated module workers. Rendering is an
-optional consumer: computation workers need no Engine, SDL or GPU. Its AOT
-admission surface is bounded; compiling the Offscreen application does not
-establish complete browser Worker compatibility.
+AOT entry factories create independent module state. Each realm owns tasks,
+microtasks, timers, promises and JS identities. Computation workers need no GPU.
+Typed sender/receiver codecs preserve admitted aliases/cycles and ordered messages.
 
-The governing references are the HTML Standard's
-[Worker processing model](https://html.spec.whatwg.org/multipage/workers.html#worker-processing-model),
-[event loops](https://html.spec.whatwg.org/multipage/webappapis.html#event-loop-processing-model),
-[message ports](https://html.spec.whatwg.org/multipage/web-messaging.html#message-ports),
-[structured serialization and transfer](https://html.spec.whatwg.org/multipage/structured-data.html#structuredserializewithtransfer),
-and [OffscreenCanvas](https://html.spec.whatwg.org/multipage/canvas.html#the-offscreencanvas-interface).
-The following table describes the implemented boundaries and remaining limits.
+The OS thread owns window/layout/presentation. Only owned messages, document
+snapshots, dimensions and fenced image leases cross threads; engine records and
+JS references do not. Source callbacks run on their realm. Canvas transfer
+validates before detachment and preserves exclusive context ownership.
 
-| Boundary | Implementation | Limit or remaining acceptance work |
-| --- | --- | --- |
-| Execution | Each realm owns an Engine-independent task/microtask/timer loop. Native inboxes wake idle waits; animation callbacks run on their owning loop. | Only admitted APIs enter this scheduler; it is not a general browser event loop. |
-| Async control flow | Worker compilation uses typed coroutine activations and owner-loop promises. Engine creation, scene registration and first rendered frame preserve reached `await` continuations. | Broader Promise APIs and unhandled-rejection behavior need explicit admission and observing tests. |
-| Realm state | Entry factories create per-instance module bindings. Mutable JS runtime state and non-atomic identities remain in a scoped thread-local realm. | Native owners must not retain JS callbacks across realm boundaries; opaque callback lifetime review remains necessary. |
-| Compilation | Resolved Worker/URL constructors discover local module graphs and their provenance. Factories, assets and features are composed into one executable. | Graphics realms currently must have identical generated rendering products; heterogeneous product domains refuse. Classic workers and runtime-selected scripts are not admitted. |
-| Messaging | Sender serialization and receiver reconstruction preserve supported graph cycles, aliases and ordered delivery. Source callbacks execute on the receiver loop. | Codecs are typed and bounded, not the complete structured-clone type catalogue. MessagePort transfer and shared memory remain unsupported. |
-| Transfer | Canvas wrappers model placeholder creation, sender detachment and exclusive rendering-context ownership. Transfer validation precedes serialization; a canvas with a context cannot transfer. | Native rendering admits dimensions in [1, 16384]; this is a documented resource bound, not full browser allocation behavior. |
-| Shutdown | `close()` finishes the current callback/microtasks and discards later work. `terminate()` wakes inboxes and reaches cancellation checks in compiled busy loops; owner teardown releases suspended activations. | Blocking native operations require their own interruptible contract; arbitrary third-party work is not preemptible. |
-| Presentation and DOM | The OS host projects native document snapshots, composes registered GPU canvases through retained UI and forwards owned events. Source callbacks and resize messages stay in the application/worker realms. | The Window API subset requires a native host UI companion and includes canvas layout, callback-only ResizeObserver and resolution media-query notifications. Broader DOM/event contracts need admission. Full-page and canvas gates freeze each engine independently. |
+Display notifications coalesce per busy realm; they do not accumulate catch-up
+frames. Surface publication does not own worker time or message delivery.
+`close` finishes the current callback/microtasks; `terminate` wakes waits and
+uses compiled cancellation points. Arbitrary native calls are not preemptible.
 
-The Window supplies display-driven animation notifications to subscribed realm
-inboxes. Each busy realm coalesces pending notifications to one latest timestamp;
-it does not accumulate missed frames or execute a catch-up burst. Rendering
-requests another callback after yielding, separate from nested `setTimeout`
-clamping. This preserves frame-based source animation without a fixed 60 Hz
-timer or scene-specific angular correction. Ordinary worker-free renderers keep
-their existing swapchain pacing.
-
-The renderer's bounded GPU image pool and fence leases remain usable below
-these boundaries. Surface publication must not own the worker's lifetime or
-clock. JS messages may not adopt the pool's frame-dropping policy. A worker
-with no graphics must neither allocate a device nor wait for a presentation
-tick. Worker-free applications retain the existing compiled path, without new
-threads, cancellation checks, atomic JS reference counts or queue locks.
-
-The service must not interpret the demo's `init`, `resize`, `ready` or `error`
-payloads. In particular, `ready` is an application message, distinct from a
-Worker error event. The pinned `startEngine` resolves after its first
-`renderFrame`; an actual window presentation is a separate capture condition.
-The compositor may continue presenting worker output while the main realm is
-busy, but it must not execute the blocked realm's DOM callbacks on its behalf.
-
-Local module workers are the first AOT admission surface. SharedWorker,
-SharedArrayBuffer/Atomics, MessageChannel transfer, classic/importScripts and
-runtime-selected script loading each need explicit feature support; reaching
-an unimplemented form must produce a source-located refusal. This scope must
-not become a hardcoded assumption that a worker has one parent, one canvas or
-one renderer in the reusable event-loop and transport layers.
-
-The acceptance cases belong in [TODO](../TODO.md#p1--worker-service).
-
-## Animation and deformation
-
-Property animation and glTF animation have separate generated runtimes and
-share scene-level deterministic seeking. glTF loaders preserve local data for
-animated nodes, skin/morph inputs and independently stored world bounds for
-framing. Both renderers consume the shared deformation/instance representation;
-the pin's shader composition selects corresponding mesh-feature arms.
-Support and limitations are listed once in features.
+The service does not interpret application message names. First rendered frame,
+application readiness and OS presentation are distinct events. Worker-free paths
+omit worker scheduling/locks. [Features](features.md#program-compilation) owns
+admission, [backends](backends.md#offscreen-surfaces) owns image transport and
+[TODO](../TODO.md#worker-and-platform) owns expansion.
 
 ## Renderer
 
-Both backends consume generated render plans and uniform data. The shared
-frame conductor owns runtime options, clocks, capture gates, callback ordering
-and SDL input. Backend-specific code owns resource creation and command
-encoding; [backends](backends.md) defines that seam and its removal contract.
-
-Rendering contexts run in registration order: scenes, SpriteRenderers,
-EffectRenderers and scene-less frame graphs have dedicated drivers. Their
-feature gates must remove unused translation units and generated headers.
-The window outlives a renderer rebuild, preserving size, focus and identity.
-
-Default render-task configuration and creation state belong to shared scene
-identity, including scenes carried through runtime collections. One generated
-helper materializes the render/resolve/present graph once per enabled scene,
-using that scene's owning engine and sample count.
-
-Live topology and buffer updates must be safe for in-flight work. Some rebuild
-paths synchronize; dynamic uploads need not globally idle the GPU. Capture
-deferral is governed by the bounded shared capture gate. Do not infer one
-universal synchronization policy from one backend path.
-
-## Repository invariants
-
-Preserve pinned evidence, typed lowering, deterministic output, source
-provenance, backend symmetry and explicit refusal boundaries. Validate changed
-behavior through compiler tests and relevant native/parity checks. Re-audit
-existing mechanisms when required; historical reviews are not exemptions.
-
-## Backend rationale
-
-SDL_GPU provides offline shader builds and a small native deployment. Dawn
-provides a separate WebGPU implementation with a compiler stack closely
-related to the browser reference. Their differential helps localize defects;
-agreement alone cannot rule out a bug shared by both paths.
+Generated tables and writers determine layouts, uniforms and fixed-function
+state. GPU objects stay in their backend; shared transport contains no foreign
+API handles. The OS window survives renderer rebuilds. Live topology/uploads
+must preserve in-flight resources; synchronization is specific to the affected
+path, not a universal GPU-idle rule. See [backends](backends.md).

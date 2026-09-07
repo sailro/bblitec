@@ -5,6 +5,7 @@ import {
 } from "../../pinned-address-modes.js";
 import { LoweredSource } from "../context.js";
 import { MeshBuilderLowerer } from "./mesh-builders.js";
+import { assertAsyncSceneBuilder } from "../scene-deferred.js";
 
 /**
  * The `SolidTexture` to `TextureData` normalization, emitted once per
@@ -42,6 +43,15 @@ const solidTextureDataFunction = `
     data.sampler.max_lod = 0.0f;
     return data;
 }
+
+[[maybe_unused]] static FileTexture retained_solid_texture(const SolidTexture& texture) {
+    FileTexture normalized;
+    normalized.data = solid_texture_data(texture);
+    normalized.width = 1;
+    normalized.height = 1;
+    normalized.identity = texture.identity;
+    return normalized;
+}
 `;
 
 /**
@@ -76,16 +86,14 @@ export interface StandardMaterialSetters {
  */
 export class FactoryLowerer extends MeshBuilderLowerer {
     public lowerNodeMaterialFactory(): LoweredSource {
+        assertAsyncSceneBuilder(this.context, this.context.functionDeclaration("src/scene/scene-core.ts", "addToScene").declaration);
         const modulePath = "src/material/node/node-material.ts";
         const { declaration } = this.context.functionDeclaration(
             modulePath,
             "parseNodeMaterialFromSnippet",
         );
-        // The record the pin returns. Everything on it except the family tag
-        // and the alpha-blending flag is compiled away — the WGSL, the UBO
-        // layout and the bindings are composition's output, and the `inputs`
-        // handles that would mutate the block are not lowered — so the two
-        // that survive are the two asserted here.
+        // Composition owns the WGSL and layouts. Each runtime construction
+        // still owns fresh public input handles and private texture slots.
         const material = this.context.objectInitializer(
             declaration,
             "material",
@@ -100,6 +108,15 @@ export class FactoryLowerer extends MeshBuilderLowerer {
             "_buildGroup",
             "NodeMaterial mesh group builder",
         );
+        for (const [property, variable] of [
+            ["inputs", "inputs"], ["_textureSlots", "textureSlots"],
+        ]) {
+            this.context.assertExpressionShape(
+                this.context.propertyInitializer(material, property!),
+                variable!,
+                `NodeMaterial retained ${property}`,
+            );
+        }
         return {
             modulePath,
             symbolName: "parseNodeMaterialFromSnippet",
@@ -110,7 +127,7 @@ export class FactoryLowerer extends MeshBuilderLowerer {
                     "parseNodeMaterialFromSnippet",
                 )
             }
-#include <bblite/runtime.hpp>
+#include <bblite/node_material.hpp>
 #include <bblite/upstream/node_variants.hpp>
 
 #include <algorithm>
@@ -131,41 +148,42 @@ NodeMaterialTexture node_material_texture(
 NodeMaterialTexture node_material_texture(
     std::string name,
     const PixelsTexture& texture) {
-    FileTexture normalized;
-    normalized.data.bytes = texture.rgba;
-    normalized.data.rgba_width = texture.width;
-    normalized.data.rgba_height = texture.height;
-    normalized.data.sampler = texture.sampler;
-    normalized.data.uv_transform = texture.uv_transform;
-    normalized.data.uv_invert_y = texture.uv_invert_y;
-    normalized.srgb = texture.srgb;
-    normalized.width = texture.width;
-    normalized.height = texture.height;
-    return node_material_texture(
-        std::move(name),
-        std::move(normalized));
+    return NodeMaterialTexture{std::move(name), texture};
 }
 
 NodeMaterialTexture node_material_texture(
     std::string name,
     const SolidTexture& texture) {
-    FileTexture normalized;
-    normalized.data = solid_texture_data(texture);
-    normalized.width = 1;
-    normalized.height = 1;
     return node_material_texture(
         std::move(name),
-        std::move(normalized));
+        retained_solid_texture(texture));
 }
 
 NodeMaterialTexture node_material_texture(
     std::string name,
     const StoredTexture& texture) {
-    return std::visit(
-        [&](const auto& stored) {
-            return node_material_texture(std::move(name), stored);
-        },
-        texture);
+    return NodeMaterialTexture{std::move(name), texture};
+}
+
+static FileTexture bound_node_texture(const StoredTexture& texture) {
+    return std::visit([](const auto& stored) -> FileTexture {
+        if constexpr (std::is_same_v<std::decay_t<decltype(stored)>, FileTexture>) {
+            return stored;
+        } else {
+            FileTexture normalized;
+            normalized.data.bytes = stored.rgba;
+            normalized.data.rgba_width = stored.width;
+            normalized.data.rgba_height = stored.height;
+            normalized.data.sampler = stored.sampler;
+            normalized.data.uv_transform = stored.uv_transform;
+            normalized.data.uv_invert_y = stored.uv_invert_y;
+            normalized.srgb = stored.srgb;
+            normalized.width = stored.width;
+            normalized.height = stored.height;
+            normalized.identity = stored.identity;
+            return normalized;
+        }
+    }, texture);
 }
 
 // The graph was compiled at generation by the pin's own emitter and
@@ -184,11 +202,18 @@ MaterialHandle create_node_material(
     material.alpha_mode = entry.alpha_blending
         ? MaterialAlphaMode::blend
         : MaterialAlphaMode::opaque;
+    material.node_inputs = std::make_shared<NodeMaterialInputsState>();
+    auto& owner = *material.node_inputs;
+    for (const auto& input : upstream::node_variant_inputs) {
+        if (input.variant != variant) continue;
+        auto handle = std::make_shared<NodeInputState>();
+        handle->type = input.type;
+        owner.inputs.set(std::string(input.name), handle);
+    }
     // The graph's declared bindings, in the pin's own allocation order,
     // resolved by name against what the scene supplied -- the join
     // parseNodeMaterialFromSnippet performs when it fills _textureSlots.
-    // A binding the record omits is the pin's own render-time error, raised
-    // here at material creation instead.
+    // Missing values remain null until the deferred mesh builder reads them.
     for (std::size_t index = 0; index < entry.texture_count; ++index) {
         const upstream::NodeVariantTexture& binding =
             upstream::node_variant_textures.at(entry.first_texture + index);
@@ -198,17 +223,66 @@ MaterialHandle create_node_material(
             [&](const NodeMaterialTexture& candidate) {
                 return candidate.name == binding.name;
             });
-        if (supplied == textures.end()) {
-            throw std::runtime_error(
-                "NodeMaterial: texture binding '" +
-                std::string(binding.name) +
-                "' not set. Provide it via options.textures.");
+        auto handle = std::make_shared<NodeInputState>();
+        handle->type = "texture2d";
+        if (supplied != textures.end()) {
+            handle->texture = supplied->texture;
         }
-        material.shader_textures.push_back(std::move(supplied->texture));
+        owner.inputs.set(std::string(binding.name), handle);
+        owner.texture_slots.emplace_back(binding.name, std::move(handle));
     }
     engine.materials.push_back(std::move(material));
     return MaterialHandle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
+}
+
+void queue_node_material_group(Scene& scene, MeshHandle mesh) {
+    Engine& engine = *scene.engine;
+    const MaterialHandle material = engine.meshes.at(mesh.value).material;
+    if (material.value >= engine.materials.size() ||
+        !engine.materials[material.value].node_material) return;
+    auto& groups = scene.state->node_material_groups;
+    const auto found = std::find_if(groups.begin(), groups.end(),
+        [material](const auto& group) {
+            return group->initial_material.value == material.value;
+        });
+    if (found != groups.end()) {
+        (*found)->meshes.push_back(mesh);
+        return;
+    }
+    auto group = std::make_shared<NodeMaterialGroupState>();
+    group->initial_material = material;
+    group->meshes.push_back(mesh);
+    groups.push_back(group);
+    const std::weak_ptr<SceneState> owner = scene.state;
+    scene.deferred_builders.emplace_back([owner, group] {
+        const auto state = owner.lock();
+        if (!state || state->disposed) return;
+        Engine& engine = *state->engine;
+        std::vector<std::uint32_t> captured;
+        for (const MeshHandle mesh : group->meshes) {
+            // _buildGroup is keyed by the material at addToScene, but its
+            // builder reads each mesh's current material when it runs.
+            const auto current = engine.meshes.at(mesh.value).material;
+            if (std::find(captured.begin(), captured.end(), current.value) !=
+                captured.end()) continue;
+            auto& record = engine.materials.at(current.value);
+            if (!record.node_inputs) {
+                throw std::runtime_error("Deferred node group lost its node material.");
+            }
+            std::vector<FileTexture> textures;
+            for (const auto& [name, slot] : record.node_inputs->texture_slots) {
+                if (!slot->texture) {
+                    throw std::runtime_error(
+                        "NodeMaterial: texture binding '" + name +
+                        "' not set. Provide it via options.textures.");
+                }
+                textures.push_back(bound_node_texture(*slot->texture));
+            }
+            record.shader_textures = std::move(textures);
+            captured.push_back(current.value);
+        }
+    }, SceneDeferredFailure::promise_rejection);
 }
 
 } // namespace bbl
@@ -882,7 +956,7 @@ FileTexture load_file_texture(
 }
 
 SolidTexture create_solid_texture(
-    Engine&,
+    Engine& engine,
     float r,
     float g,
     float b,
@@ -896,6 +970,7 @@ SolidTexture create_solid_texture(
             std::lround(std::clamp(value, 0.0f, 1.0f) * 255.0f));
     };
     SolidTexture texture;
+    texture.identity = engine.next_file_texture_identity++;
     texture.texel = {quantize(r), quantize(g), quantize(b), quantize(a)};
     texture.color = Color4{
         static_cast<float>(texture.texel[0]) / 255.0f,
@@ -904,6 +979,10 @@ SolidTexture create_solid_texture(
         static_cast<float>(texture.texel[3]) / 255.0f,
     };
     return texture;
+}
+
+FileTexture solid_texture_file(const SolidTexture& texture) {
+    return retained_solid_texture(texture);
 }
 
 } // namespace bbl
@@ -1034,7 +1113,9 @@ void set_material_base_color_file(
     FileTexture texture) {
     MaterialRecord& record = engine.materials[material.value];
     record.base_color_srgb = texture.srgb;
+    record.source_albedo_texture = texture;
     record.base_color_texture = std::move(texture.data);
+    record.has_public_base_color_texture = true;
 }
 
 // createPbrMaterial preserves its Texture2D props, and the pinned PBR
@@ -1263,6 +1344,12 @@ MaterialHandle create_pbr_material(
     material.base_color_srgb = false;
     material.orm_fallback = options.orm.texel;
     material.base_color_factor = options.base_color_factor;
+    material.has_public_base_color_texture = options.has_base_color_texture;
+    if (options.has_base_color_texture) {
+        material.source_albedo_texture = retained_solid_texture(options.base_color);
+    }
+    material.source_base_color_factor = std::move(options.source_base_color_factor);
+    project_material_source_colors(material);
     material.roughness_factor = options.roughness_factor;
     material.metallic_factor = options.metallic_factor;
     material.direct_intensity = options.direct_intensity;
@@ -1615,6 +1702,8 @@ TextureData& take_standard_diffuse_slot(
     MaterialRecord& record = standard_slot_material(engine, material);
     record.has_diffuse_render_texture = false;
     record.base_color_texture = TextureData{};
+    record.diffuse_texture_srgb = false;
+    record.source_albedo_texture.reset();
     return record.base_color_texture;
 }
 ` : ""}${solid ? solidTextureDataFunction : ""}${diffuse ? `
@@ -1668,6 +1757,8 @@ void set_standard_diffuse_pixels_texture(
     slot.sampler = texture.sampler;
     slot.uv_transform = texture.uv_transform;
     slot.uv_invert_y = texture.uv_invert_y;
+    standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
+    standard_slot_material(engine, material).source_albedo_texture = texture;
 }
 ` : ""}${solid ? `
 // The same slot, filled by a createSolidTexture2D texture -- the fourth
@@ -1685,6 +1776,7 @@ void set_standard_diffuse_solid_texture(
     const SolidTexture& texture) {
     take_standard_diffuse_slot(engine, material) =
         solid_texture_data(texture);
+    standard_slot_material(engine, material).source_albedo_texture = retained_solid_texture(texture);
 }
 ` : ""}${diffuseFile ? `
 // The same slot, filled by a loaded image -- the third source it takes, and
@@ -1698,6 +1790,8 @@ void set_standard_diffuse_file_texture(
     MaterialHandle material,
     const FileTexture& texture) {
     take_standard_diffuse_slot(engine, material) = texture.data;
+    standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
+    standard_slot_material(engine, material).source_albedo_texture = texture;
 }
 ` : ""}${emissiveFile ? `
 // setStandardEmissiveTexture over a loaded image. The render-texture arm
@@ -1822,6 +1916,8 @@ MaterialHandle create_standard_material(Engine& engine) {
     MaterialRecord material;
     material.standard_material = true;
     material.diffuse_color = ${tuple("diffuseColor")};
+    material.source_diffuse_color = std::make_shared<std::vector<double>>(
+        std::initializer_list<double>{${this.context.numericTuple(this.context.propertyInitializer(object, "diffuseColor"), file).join(", ")}});
     material.alpha = ${scalar("alpha")};
     material.specular_color = ${tuple("specularColor")};
     material.specular_power = ${scalar("specularPower")};

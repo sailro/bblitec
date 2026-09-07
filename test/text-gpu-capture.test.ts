@@ -4,29 +4,14 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import test from "node:test";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { gpuCaptureSerializer } from "./gpu-capture-fixture.js";
 
 test("text GPU capture retains actual write ranges, allocation identities and independent frame receipts", (t) => {
     const native = optionalNativeFixtureTools(false);
     if (!native) { t.skip("Native fixture compiler unavailable."); return; }
     const directory = resolve("artifacts/test-text-gpu-capture");
     mkdirSync(directory, { recursive: true });
-    // Extract the production serializer exactly, as temporal-capture.test.ts
-    // does, so this CPU fixture does not need the unrelated renderer/PAL graph.
-    const capture = readFileSync("native/src/pal_render_capture.hpp", "utf8").replaceAll("\r\n", "\n");
-    const writerStart = capture.indexOf("class JsonWriter {");
-    const writerEnd = capture.indexOf("\n};", writerStart) + 3;
-    const serializerStart = capture.indexOf("inline void write_text_gpu_capture(");
-    const serializerEnd = capture.indexOf("\n}\n", serializerStart) + 3;
-    assert.ok(writerStart >= 0 && writerEnd > writerStart && serializerStart >= 0 && serializerEnd > serializerStart);
-    writeFileSync(resolve(directory, "text-capture-serializer.hpp"), `#include <bblite/runtime.hpp>
-#include <cmath>
-#include <iomanip>
-#include <sstream>
-namespace bbl::pal {
-${capture.slice(writerStart, writerEnd)}
-${capture.slice(serializerStart, serializerEnd)}
-}
-`);
+    writeFileSync(resolve(directory, "text-capture-serializer.hpp"), gpuCaptureSerializer("text"));
     const executable = resolve(directory, "check.exe");
     runNativeFixtureCompiler(native, [
         "/nologo", "/std:c++20", "/EHsc", "/W4", "/WX", `/I${resolve("native/src")}`,

@@ -1,6 +1,7 @@
 import ts from "typescript";
 import { LoweredSource, LoweringContext } from "./context.js";
 import { assertEnvironmentTextureIdentity } from "./scene-uniform-identity.js";
+import { assertAsyncSceneBuilder } from "./scene-deferred.js";
 import {
     COLOR_CHANNEL_HELPERS_CPP,
     lowerShPrescaleCpp,
@@ -364,6 +365,7 @@ ParsedEnvironment parse_env_file(const std::vector<std::uint8_t>& bytes) {
                 symbolName,
             );
         assertEnvironmentTextureIdentity(this.context, declaration, "src/loader-env/env-helpers.ts");
+        assertAsyncSceneBuilder(this.context, declaration);
         const exposure = this.numericAssignment(
             declaration,
             "scene.imageProcessing.exposure",
@@ -626,12 +628,12 @@ void add_dds_environment_background(
     read_dds_skybox(scene.environment, options.skybox_url);
     scene.environment.enable_noise = options.enable_noise;
     const float requested_skybox_size = options.skybox_size;
-    scene.deferred_builders.push_back(
+    scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
             apply_scene_size(
                 scene,
                 static_cast<double>(requested_skybox_size));
-        });
+        }, SceneDeferredFailure::promise_rejection);
 }
 `
         : ""
@@ -679,12 +681,12 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
     }
     const float requested_skybox_size =
         options.skybox_size > 0.0f ? options.skybox_size : ${this.context.floatLiteral(sceneSize.skyboxDefault)};
-    scene.deferred_builders.push_back(
+    scene.deferred_builders.emplace_back(
         [&scene, requested_skybox_size]() {
             apply_scene_size(
                 scene,
                 static_cast<double>(requested_skybox_size));
-        });
+        }, SceneDeferredFailure::promise_rejection);
     scene.environment.exposure = ${this.context.floatLiteral(exposure)};
     scene.environment.contrast = ${this.context.floatLiteral(contrast)};
     scene.environment.tone_mapping_enabled = true;
@@ -710,6 +712,7 @@ void load_environment(Scene& scene, EnvironmentOptions options) {
                 DDS_BACKGROUND_MODULE,
                 "addDdsEnvironmentBackground",
             );
+        assertAsyncSceneBuilder(this.context, declaration);
         for (const called of [
             "computeSceneSize",
             "buildDdsSkyboxRenderable",

@@ -9,6 +9,7 @@ import { executeModuleGraph } from "../src/executed-module-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
+import { pinnedNodeVariantsHeader } from "../src/pinned-node-material-cpp.js";
 
 const scene83 = "corpus/babylon-lite/lab/lite/src/lite/scene83.ts";
 const scene83Graph =
@@ -26,7 +27,7 @@ function gitBlobHash(bytes: Buffer): string {
         .digest("hex");
 }
 
-function compileLoader(loader: string) {
+function compileLoader(loader: string, name = "loadBlock") {
     return compileSource(`
         import {
             createEngine,
@@ -39,12 +40,100 @@ function compileLoader(loader: string) {
             const engine = await createEngine({});
             await parseNodeMaterialFromSnippet(engine, "", {
                 json: { blocks: [] },
-                blockLoader: loadBlock,
+                blockLoader: ${name},
             });
         }
         main();
     `);
 }
+
+test("recognizes the pinned geometry loader by import symbol and keeps its graph identity", () => {
+    for (const name of ["loadNodeBlockEmitterWithGeometry", "loadBlock"]) {
+        const result = compileLoader(
+            `import { loadNodeBlockEmitterWithGeometry as ${name} } from "babylon-lite";`,
+            name,
+        );
+        assert.equal(result.manifest.nodeMaterials[0]!.pinnedBlockLoader, "geometry");
+        assert.equal(result.manifest.nodeMaterials[0]!.blockEmitters, undefined);
+    }
+    const result = compileSource(`
+        import { createEngine, parseNodeMaterialFromSnippet,
+            loadNodeBlockEmitterWithGeometry as geometry } from "babylon-lite";
+        async function main() {
+            const engine = await createEngine({});
+            const graph = { blocks: [] };
+            await parseNodeMaterialFromSnippet(engine, "", { json: graph });
+            await parseNodeMaterialFromSnippet(engine, "", { json: graph, blockLoader: geometry });
+            await parseNodeMaterialFromSnippet(engine, "", { json: graph, blockLoader: geometry });
+        }
+        main();
+    `);
+    assert.deepEqual(result.manifest.nodeMaterials.map((material) => material.pinnedBlockLoader),
+        [undefined, "geometry"]);
+    assert.deepEqual([...result.cpp.matchAll(/create_node_material\([^,]+, (\d+)u,/g)]
+        .map((match) => Number(match[1])), [0, 1, 1]);
+
+    assert.throws(() => compileLoader(`
+        async function loadNodeBlockEmitterWithGeometry(className: string): Promise<unknown> {
+            return className;
+        }
+    `, "loadNodeBlockEmitterWithGeometry"), /one closed switch statement/);
+    for (const declaration of [
+        'import type { loadNodeBlockEmitterWithGeometry as loadBlock } from "babylon-lite";',
+        'import { type loadNodeBlockEmitterWithGeometry as loadBlock } from "babylon-lite";',
+    ]) {
+        assert.throws(() => compileLoader(declaration), /blockLoader/);
+    }
+});
+
+test("executes pinned geometry delegation while preserving ordinary graphs and later refusals", async () => {
+    const graph = await executeModuleGraph({
+        modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene149-nme.ts",
+        exportName: "SCENE149_NME_JSON",
+    });
+    const options = { pinnedBlockLoader: "geometry" } as const;
+    const composed = await composeNodeMaterial(graph, "scene149-loader", {
+        ...options,
+        geometryTasks: [{ index: 0, attachments: ["WORLD_POSITION", "VIEW_NORMAL", "ALBEDO"], emitColor: false }],
+    });
+    assert.deepEqual(composed.textures.map(({ name }) => name), ["albedo"]);
+    assert.deepEqual(composed.inputs, [{ name: "albedo", type: "texture2d" }]);
+    const inputHeader = pinnedNodeVariantsHeader("input metadata", [0, 1].map((index) => ({
+        index, vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag`, composed,
+    })), []);
+    assert.match(inputHeader, /std::array<NodeVariantInput, 2> node_variant_inputs/);
+    assert.match(inputHeader, /\{0, "albedo", "texture2d"\}/);
+    assert.match(inputHeader, /\{1, "albedo", "texture2d"\}/);
+    assert.equal(composed.geometryViews[0]!.colorTargetCount, 3);
+    assert.deepEqual(composed.geometryViews[0]!.attributes.map(({ name }) => name),
+        ["position", "normal", "uv"]);
+    await assert.rejects(() => composeNodeMaterial(graph, "scene149-default"),
+        /no emitter registered for block "GeometryTextureOutputBlock"/);
+
+    const ordinary = await executeModuleGraph({
+        modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene60-nme.ts",
+        exportName: "SCENE60_NME_JSON",
+    });
+    assert.deepEqual(await composeNodeMaterial(ordinary, "ordinary", options),
+        await composeNodeMaterial(ordinary, "ordinary"));
+    await assert.rejects(() => composeNodeMaterial({
+        blocks: [{ id: 1, customType: "BABYLON.MissingEmitterBlock", inputs: [], outputs: [] }],
+    }, "missing-emitter", options), /no emitter registered for block "MissingEmitterBlock"/);
+    const local = await composeNodeMaterial(graph, "scene149-local", {
+        ...options,
+        geometryTasks: [{ index: 0, attachments: ["LOCAL_POSITION"], emitColor: false }],
+    });
+    assert.deepEqual(local.geometryViews[0]!.attributes.map(({ name }) => name),
+        ["position", "normal", "uv"]);
+    await assert.rejects(() => composeNodeMaterial(graph, "scene149-color-refusal", {
+        ...options,
+        geometryTasks: [{ index: 0, attachments: ["ALBEDO"], emitColor: true }],
+    }), /refuses `emitColor`/);
+    await assert.rejects(() => composeNodeMaterial(ordinary, "conflicting-loaders", {
+        ...options,
+        blockEmitters: [{ className: "InputBlock", module: "material/node/blocks/input-block.js" }],
+    }), /cannot combine pinned and closed block loaders/);
+});
 
 function compressedJsonHelpers(options: {
     decoderExtra?: string;
@@ -370,13 +459,11 @@ test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
     );
     assert.match(shared, /data\.sampler\.max_lod = 0\.0f;/);
 
-    // ...and that the node slot reaches it rather than carrying its own
-    // copy. The FileTexture wrapper's own 1x1 extent stays here, because
-    // that is the node factory's shape and not the texture data's.
+    // The node slot uses the same retained FileTexture adapter as other sinks.
     const source = factories.lowerNodeMaterialFactory().source;
     assert.match(
         source,
-        /const SolidTexture& texture\) \{\s*FileTexture normalized;\s*normalized\.data = solid_texture_data\(texture\);/,
+        /const SolidTexture& texture\) \{\s*return node_material_texture\(\s*std::move\(name\),\s*retained_solid_texture\(texture\)\);/,
     );
     assert.match(
         source,
@@ -385,22 +472,22 @@ test("normalizes a solid node texture to the pinned 1x1 file contract", () => {
     assert.doesNotMatch(source, /normalized\.data\.sampler\.min_filter/);
 });
 
-test("dispatches stored node textures without losing pixels metadata", () => {
+test("retains node texture producers until deferred binding normalizes pixels metadata", () => {
     const source = new FactoryLowerer(
         new LoweringContext(),
     ).lowerNodeMaterialFactory().source;
 
     assert.match(
         source,
-        /const PixelsTexture& texture\) \{[\s\S]*normalized\.data\.bytes = texture\.rgba;[\s\S]*normalized\.data\.rgba_width = texture\.width;[\s\S]*normalized\.data\.rgba_height = texture\.height;/,
+        /const PixelsTexture& texture\) \{\s*return NodeMaterialTexture\{std::move\(name\), texture\};/,
     );
     assert.match(
         source,
-        /normalized\.data\.sampler = texture\.sampler;\s*normalized\.data\.uv_transform = texture\.uv_transform;\s*normalized\.data\.uv_invert_y = texture\.uv_invert_y;/,
+        /normalized\.data\.sampler = stored\.sampler;\s*normalized\.data\.uv_transform = stored\.uv_transform;\s*normalized\.data\.uv_invert_y = stored\.uv_invert_y;/,
     );
     assert.match(
         source,
-        /const StoredTexture& texture\) \{\s*return std::visit\([\s\S]*node_material_texture\(std::move\(name\), stored\);/,
+        /const StoredTexture& texture\) \{\s*return NodeMaterialTexture\{std::move\(name\), texture\};/,
     );
 });
 

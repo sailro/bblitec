@@ -28,6 +28,8 @@ export class SceneLowerer {
       sceneNodeTransforms?: boolean;
       /** Retained text entities participate in scene disposal. */
       text?: boolean;
+      /** Node materials capture texture slots in deferred scene groups. */
+      nodeMaterials?: boolean;
     } = {},
   ): LoweredSource {
     const modulePath = "src/scene/scene-core.ts";
@@ -1643,6 +1645,7 @@ ${
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <exception>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -1735,6 +1738,7 @@ void add_to_scene(Scene& scene, MeshHandle mesh) {
     ++scene.render_topology_version;
     scene.material_family_mask |=
         material_family_bit(*scene.engine, mesh);
+${options.nodeMaterials ? "    queue_node_material_group(scene, mesh);\n" : ""}\
 }
 
 // A static glTF mesh normally bakes its node world into each vertex. Once
@@ -1913,6 +1917,7 @@ AssetHandle clone_asset_root(Engine& engine, AssetHandle asset) {
     const std::vector<MeshHandle> source_meshes = source.meshes;
     const auto clone_animation = source.clone_mesh_animation;
     AssetRecord clone;
+    clone.source_mesh_walks = source.source_mesh_walks;
     clone.root_position = source.root_position;
     clone.root_rotation = source.root_rotation;
     clone.root_scaling_reset = source.root_scaling_reset;
@@ -2353,9 +2358,18 @@ void drain_scene_deferred_builders(Scene& scene) {
     while (!scene.deferred_builders.empty()) {
         auto builders = std::move(scene.deferred_builders);
         scene.deferred_builders.clear();
+        // Array.map stops on a synchronous throw. Async wrappers instead
+        // reject, allowing every callback in this batch to run first.
+        std::exception_ptr failure;
         for (const auto& builder : builders) {
-            builder();
+            try {
+                builder();
+            } catch (...) {
+                if (builder.failure_mode == SceneDeferredFailure::synchronous_throw) throw;
+                if (!failure) failure = std::current_exception();
+            }
         }
+        if (failure) std::rethrow_exception(failure);
     }
 }
 
@@ -2369,6 +2383,18 @@ void register_scene(Scene& scene) {
         });
     if (found != scene.engine->registered_scenes.end()) return;${managerSeek}${vatSeek}
     drain_scene_deferred_builders(scene);
+    // The source builders read public material arrays when registration
+    // creates their UBOs; direct later array writes do not bump _uboVersion.
+    for (const auto mesh : scene.meshes) {
+        const auto material = scene.engine->meshes.at(mesh.value).material;
+        if (material.value < scene.engine->materials.size()) {
+            auto& record = scene.engine->materials[material.value];
+            if (!record.source_colors_registered) {
+                project_material_source_colors(record);
+                record.source_colors_registered = true;
+            }
+        }
+    }
     scene.material_family_mask = scene_material_families(scene);
 ${options.text ? `    std::stable_sort(scene.state->text_renderables.begin(), scene.state->text_renderables.end(),
         [](const auto& a, const auto& b) { return a->order < b->order; });\n` : ""}\
@@ -2409,6 +2435,7 @@ ${options.text ? "    scene.state->text_renderables.clear();\n" : ""}\
     scene.before_render.clear();
     scene.animation_seekers.clear();
     scene.deferred_builders.clear();
+${options.nodeMaterials ? "    scene.state->node_material_groups.clear();\n" : ""}\
     scene.camera = {};
 }
 

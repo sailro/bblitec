@@ -71,6 +71,9 @@
 #endif
 #include "pal_owned_gpu_record.hpp"
 #include "pal_render_capture.hpp"
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+#include "pal_node_capture_state.hpp"
+#endif
 
 #include <algorithm>
 #include <array>
@@ -761,6 +764,9 @@ void release_variant_family(
 #endif
 
 struct DawnState : DawnDevice {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    NodeCaptureState node_capture;
+#endif
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
     std::unique_ptr<DawnTextRenderer> text;
 #endif
@@ -6614,9 +6620,10 @@ bool append_variant_attribute(
     std::string_view name,
     std::uint32_t location,
     bool uses_local_position,
-    VariantVertexAttributes& inputs) {
+    VariantVertexAttributes& inputs,
+    bool uses_local_normal = false) {
     const PinnedVertexInput input =
-        pinned_vertex_input(name, uses_local_position);
+        pinned_vertex_input(name, uses_local_position, uses_local_normal);
     if (!input.mapped) return false;
     WGPUVertexAttribute attribute{};
     attribute.shaderLocation = location;
@@ -7327,8 +7334,9 @@ WGPURenderPipeline node_variant_pipeline(
             !append_variant_attribute(
                 input.name,
                 input.location,
-                false,
-                inputs)) {
+                node_uses_local_attributes(geometry_variant),
+                inputs,
+                node_uses_local_attributes(geometry_variant))) {
             dawn_error(
                 (std::string("node variant declares an unmapped vertex ") +
                  "input '" + std::string(input.name) + "'.")
@@ -7425,6 +7433,31 @@ WGPURenderPipeline node_variant_pipeline(
     WGPURenderPipeline pipeline =
         wgpuDeviceCreateRenderPipeline(state.device, &descriptor);
     if (!pipeline) dawn_error("node variant pipeline creation failed.");
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (state.node_capture.capture.enabled()) {
+        NodeGpuPipelineCapture receipt;
+        receipt.id = state.node_capture.allocate(pipeline, "node-pipeline");
+        receipt.variant = static_cast<std::uint32_t>(variant);
+        receipt.geometry_variant = geometry_view ? static_cast<int>(geometry_variant) : -1;
+        receipt.uses_local_attributes = node_uses_local_attributes(geometry_variant);
+        receipt.color_target_count = static_cast<std::uint32_t>(fragment.targetCount);
+        receipt.samples = descriptor.multisample.count;
+        receipt.topology = descriptor.primitive.topology == WGPUPrimitiveTopology_TriangleList ? "triangle-list" : "unknown";
+        receipt.cull_mode = descriptor.primitive.cullMode == WGPUCullMode_None ? "none"
+            : descriptor.primitive.cullMode == WGPUCullMode_Back ? "back" : "front";
+        receipt.front_face = descriptor.primitive.frontFace == WGPUFrontFace_CCW ? "ccw" : "cw";
+        for (std::size_t i = 0; i < vertex_layout.attributeCount; ++i) {
+            const auto& attribute = vertex_layout.attributes[i];
+            const char* format = attribute.format == WGPUVertexFormat_Float32x2 ? "float32x2"
+                : attribute.format == WGPUVertexFormat_Float32x3 ? "float32x3"
+                : attribute.format == WGPUVertexFormat_Float32x4 ? "float32x4" : "unknown";
+            receipt.attributes.push_back({std::string(upstream::node_variant_attributes[view.first_attribute + i].name),
+                format, attribute.shaderLocation, 0, static_cast<std::size_t>(attribute.offset),
+                static_cast<std::size_t>(vertex_layout.arrayStride)});
+        }
+        state.node_capture.capture.pipeline(std::move(receipt));
+    }
+#endif
     return map.emplace(key, pipeline).first->second;
 }
 
@@ -7441,6 +7474,9 @@ void fill_node_draw_buffers(
         WGPUBuffer buffer =
             wgpuDeviceCreateBuffer(state.device, &descriptor);
         if (!buffer) dawn_error("node uniform buffer creation failed.");
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        state.node_capture.allocate(buffer, "node-uniform", static_cast<std::size_t>(descriptor.size));
+#endif
         return buffer;
     };
     if (!draw_state.mesh_uniforms) {
@@ -7459,6 +7495,10 @@ void fill_node_draw_buffers(
             &upstream::node_variant_uniform_floats[
                 view.first_uniform_float],
             view.ubo_bytes);
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+        state.node_capture.write(draw_state.material_uniforms,
+            &upstream::node_variant_uniform_floats[view.first_uniform_float], view.ubo_bytes);
+#endif
     }
 }
 
@@ -7669,7 +7709,66 @@ WGPUBindGroup build_node_draw_group(
     WGPUBindGroup group =
         wgpuDeviceCreateBindGroup(state.device, &descriptor);
     if (!group) dawn_error("node variant bind group creation failed.");
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (state.node_capture.capture.enabled()) {
+        state.node_capture.allocate(group, "node-bind-group");
+        auto& captured = state.node_capture.groups[group];
+        captured.clear();
+        for (const auto& binding : entries) {
+            NodeGpuBindingCapture receipt;
+            receipt.binding = binding.binding;
+            if (binding.buffer) {
+                receipt.role = binding.binding == 0 ? "meshU" : "buffer";
+                receipt.resource = state.node_capture.identity(binding.buffer, "bound-buffer");
+            } else if (binding.sampler) {
+                receipt.role = "sampler";
+                receipt.resource = state.node_capture.identity(binding.sampler, "bound-sampler");
+            } else if (binding.textureView) {
+                receipt.role = "texture";
+                receipt.view = state.node_capture.identity(binding.textureView, "bound-texture-view");
+                for (const auto& supplied : shader_textures) {
+                    if (supplied.view == binding.textureView) {
+                        receipt.resource = state.node_capture.identity(supplied.texture, "bound-texture");
+                        break;
+                    }
+                }
+            }
+            captured.push_back(std::move(receipt));
+        }
+    }
+#endif
     return group;
+}
+
+// The draw wrapper observes the same arguments passed to the shared encoder.
+// It never reselects the variant, attributes, buffers, or per-view group.
+void encode_node_variant_draw(
+    [[maybe_unused]] DawnState& state,
+    [[maybe_unused]] const upstream::RenderDrawCommand& draw,
+    WGPURenderPassEncoder pass, WGPURenderPipeline pipeline,
+    WGPURenderPipeline& bound_pipeline, WGPUBindGroup frame_group,
+    WGPUBindGroup draw_group, WGPUBuffer vertex_buffer,
+    InstanceStreams instances, WGPUBuffer index_buffer, std::uint32_t index_count) {
+    encode_variant_draw(pass, pipeline, bound_pipeline, frame_group, draw_group,
+        vertex_buffer, instances, index_buffer, index_count);
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    if (state.node_capture.capture.enabled()) {
+        NodeGpuDrawCapture receipt;
+        receipt.pipeline = state.node_capture.identity(pipeline, "node-pipeline");
+        receipt.group = state.node_capture.identity(draw_group, "node-bind-group");
+        receipt.mesh = draw.item.mesh.value;
+        receipt.material = draw.item.material.value;
+        receipt.vertices = state.node_capture.identity(vertex_buffer, "node-vertices");
+        receipt.indices = state.node_capture.identity(index_buffer, "node-indices");
+        receipt.index_count = index_count;
+        receipt.instance_count = instances.count;
+        receipt.bindings = state.node_capture.groups.at(draw_group);
+        for (const auto& binding : receipt.bindings) {
+            if (binding.role == "meshU") receipt.mesh_uniform = binding.resource;
+        }
+        state.node_capture.capture.draw(std::move(receipt));
+    }
+#endif
 }
 
 /**
@@ -7690,29 +7789,36 @@ WGPUBindGroup build_node_draw_group(
  */
 struct NodeMeshBlockCache {
     const Scene* scene = nullptr;
-    std::vector<upstream::NodeMeshUniforms> blocks;
-    std::vector<std::uint8_t> composed;
+    struct Mode {
+        std::vector<upstream::NodeMeshUniforms> blocks;
+        std::vector<std::uint8_t> composed;
+    };
+    std::array<Mode, 2> modes;
 };
 
 const upstream::NodeMeshUniforms& node_mesh_block_for(
     NodeMeshBlockCache& cache,
     const Scene& scene,
     const Engine& engine,
-    std::uint32_t mesh_index) {
+    std::uint32_t mesh_index,
+    bool uses_local_attributes = false) {
     if (cache.scene != &scene) {
         cache.scene = &scene;
-        std::fill(cache.composed.begin(), cache.composed.end(), 0u);
+        for (auto& mode : cache.modes) {
+            std::fill(mode.composed.begin(), mode.composed.end(), std::uint8_t{0});
+        }
     }
-    if (cache.composed.size() <= mesh_index) {
-        cache.blocks.resize(mesh_index + 1u);
-        cache.composed.resize(mesh_index + 1u, 0u);
+    auto& mode = cache.modes[uses_local_attributes ? 1u : 0u];
+    if (mode.composed.size() <= mesh_index) {
+        mode.blocks.resize(mesh_index + 1u);
+        mode.composed.resize(mesh_index + 1u, 0u);
     }
-    if (!cache.composed[mesh_index]) {
-        cache.blocks[mesh_index] =
-            node_mesh_block(scene, engine, mesh_index);
-        cache.composed[mesh_index] = 1u;
+    if (!mode.composed[mesh_index]) {
+        mode.blocks[mesh_index] =
+            node_mesh_block(scene, engine, mesh_index, uses_local_attributes);
+        mode.composed[mesh_index] = 1u;
     }
-    return cache.blocks[mesh_index];
+    return mode.blocks[mesh_index];
 }
 
 /**
@@ -7731,6 +7837,9 @@ void write_node_mesh_block(
         0,
         &block,
         sizeof(block));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+    state.node_capture.write(draw_state.mesh_uniforms, &block, sizeof(block));
+#endif
 }
 
 #if BBLITE_NODE_GEOMETRY_VARIANTS > 0
@@ -7773,7 +7882,8 @@ void write_node_geometry_task(
                     mesh_blocks,
                     scene,
                     engine,
-                    draw.item.mesh.value),
+                    draw.item.mesh.value,
+                    node_uses_local_attributes(geometry_variant)),
                 draw_state);
             if (!draw_state.group) {
                 draw_state.group = build_node_draw_group(
@@ -9967,7 +10077,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         frame_options,
         "Dawn",
         /*supports_single_sample=*/true,
-        /*supports_copy_task=*/false);
+        /*supports_copy_task=*/true);
     // Keep every planned wrapper alive through event dispatch. A UI callback
     // may replace the root or finish registering an awaited auxiliary scene;
     // either change rebuilds the backend before stale plans are used again.
@@ -10466,6 +10576,13 @@ SceneRun run_dawn_engine(Engine& engine) {
             mesh.indices = mesh.shared_geometry->index_buffer;
 #endif
         } else {
+            std::vector<std::uint32_t> source_indices;
+            std::span<const std::uint32_t> indices = geometry.indices;
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (item.material_kind == upstream::RenderMaterialKind::node) {
+                indices = node_source_indices(geometry, source_indices);
+            }
+#endif
             mesh.vertices = create_buffer(
                 state,
                 WGPUBufferUsage_Vertex,
@@ -10474,8 +10591,13 @@ SceneRun run_dawn_engine(Engine& engine) {
             mesh.indices = create_buffer(
                 state,
                 WGPUBufferUsage_Index,
-                geometry.indices.data(),
-                geometry.indices.size() * sizeof(std::uint32_t));
+                indices.data(), indices.size_bytes());
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (item.material_kind == upstream::RenderMaterialKind::node) {
+                state.node_capture.upload(mesh.vertices, "node-vertices", vertices.data(), vertices.size() * sizeof(GpuVertex));
+                state.node_capture.upload(mesh.indices, "node-indices", indices.data(), indices.size_bytes());
+            }
+#endif
         }
 #if BBLITE_PBR_VARIANTS > 0
         if (
@@ -12453,6 +12575,9 @@ SceneRun run_dawn_engine(Engine& engine) {
     }
 #endif
     while (captures.keep_running(running, frame)) {
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            state.node_capture.capture.begin_frame(static_cast<std::uint64_t>(frame));
+#endif
 #if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         poll_platform_events(
             engine,
@@ -12864,6 +12989,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                     0,
                     vertices.data(),
                     vertices.size() * sizeof(GpuVertex));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                state.node_capture.update(dawn_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
+#endif
 #if BBLITE_PBR_VARIANTS > 0
                 if (dawn_mesh.pinned_vertices) {
                     const std::vector<GpuVertex> pinned =
@@ -12927,6 +13055,9 @@ SceneRun run_dawn_engine(Engine& engine) {
                 0,
                 vertices.data(),
                 vertices.size() * sizeof(GpuVertex));
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                state.node_capture.update(dawn_mesh.vertices, vertices.data(), vertices.size() * sizeof(GpuVertex));
+#endif
 #if BBLITE_PBR_VARIANTS > 0
             if (dawn_mesh.pinned_vertices) {
                 const std::vector<GpuVertex> pinned =
@@ -13110,12 +13241,20 @@ SceneRun run_dawn_engine(Engine& engine) {
                 frame
 #if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
                 , &state.text->owner->capture
+#elif BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                , nullptr
+#endif
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+                , &state.node_capture.capture
 #endif
                 );
             captures.render_capture_saved = true;
         }
         };
 #if (!defined(BBLITE_HAS_TAA) || !BBLITE_HAS_TAA) && (!defined(BBLITE_HAS_TEXT) || !BBLITE_HAS_TEXT)
+#if BBLITE_NODE_GEOMETRY_VARIANTS > 0
+            if (!state.node_capture.capture.enabled())
+#endif
         capture_render_state();
 #endif
         wgpuQueueWriteBuffer(
@@ -14247,7 +14386,8 @@ SceneRun run_dawn_engine(Engine& engine) {
                             node_material);
                         node_state.group_key = node_slot;
                     }
-                    encode_variant_draw(
+                    encode_node_variant_draw(
+                        state, draw,
                         list_pass,
                         node_variant_pipeline(
                             state,
@@ -15920,7 +16060,8 @@ SceneRun run_dawn_engine(Engine& engine) {
                                         "node geometry draw reached the "
                                         "encoder with no bindings.");
                                 }
-                                encode_variant_draw(
+                                encode_node_variant_draw(
+                                    state, draw,
                                     task_pass,
                                     node_variant_pipeline(
                                         state,
@@ -16098,6 +16239,8 @@ SceneRun run_dawn_engine(Engine& engine) {
             }
 #endif
             const CopyTaskOptions& copy = task.copy;
+            if (frame_options.skip_copy_task(copy)) continue;
+            const bool force_full_viewport = frame_options.full_copy_viewport(copy);
             if (
                 copy.resolve_target.value != invalid_handle &&
                 copy.target.value == invalid_handle) {
@@ -16155,7 +16298,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                 state.render_targets[copy.target.value];
             const auto [source_texture, source_view] =
                 source_texture_view(copy.source);
-            const auto surface_pane = target_record.swapchain
+            const auto surface_pane = target_record.swapchain && !force_full_viewport
                 ? scene_surface_pane(engine, graph_scene, width, height) : std::nullopt;
             WGPURenderPassColorAttachment blit_attachment =
                 WGPU_RENDER_PASS_COLOR_ATTACHMENT_INIT;
@@ -16189,7 +16332,7 @@ SceneRun run_dawn_engine(Engine& engine) {
                     0.0f, 1.0f);
                 wgpuRenderPassEncoderSetScissorRect(blit_pass,
                     surface_pane->x, surface_pane->y, surface_pane->width, surface_pane->height);
-            } else if (copy.has_viewport) {
+            } else if (copy.has_viewport && !force_full_viewport) {
 #if defined(BBLITE_HAS_GEOMETRY_OUTPUT) && BBLITE_HAS_GEOMETRY_OUTPUT
                 const PixelViewport pixel_viewport =
                     upstream::resolve_copy_viewport(
@@ -16255,7 +16398,7 @@ SceneRun run_dawn_engine(Engine& engine) {
         pass_meshes = &state.meshes;
         }
 
-#if (defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA) || (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT)
+#if (defined(BBLITE_HAS_TAA) && BBLITE_HAS_TAA) || (defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT) || BBLITE_NODE_GEOMETRY_VARIANTS > 0
         capture_render_state();
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER

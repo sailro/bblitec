@@ -23,6 +23,7 @@ import type {
 import type { DataType, TypedArrayKind } from "./data-types.js";
 import type { SceneNodeTransformDescriptor } from "../scene-node-transform-descriptor.js";
 import type { CompiledTextData, TextFontSource } from "../pinned-text-data.js";
+import type { CompiledMeshWalk } from "../gltf-mesh-walks.js";
 
 export type {
   NativeHostUiClassStyle,
@@ -103,6 +104,8 @@ export interface CompileManifest {
   customShaderPrograms: CompiledShaderProgram[];
   /** Every node-material graph the scene parsed, in reach order. */
   nodeMaterials: CompiledNodeMaterial[];
+  /** Ordered collectors projected separately from native document-order meshes. */
+  meshWalks?: CompiledMeshWalk[];
   /** The scene's node-particle program, summarized. */
   nodeParticles?: NodeParticleManifest;
   /** Static pinned shaper output, without a native text-renderer activation. */
@@ -645,6 +648,8 @@ export interface ScenePbrMaterialManifest {
    * value happens to be neutral white.
    */
   baseColorFactor?: readonly [number, number, number, number];
+  /** Present array whose contents remain runtime UBO data. */
+  baseColorFactorRuntime?: true;
   hasOrmTexture: boolean;
   metallicFactor: number;
   roughnessFactor: number;
@@ -834,9 +839,12 @@ export type CompiledNodeMaterial = {
   shadowLights: readonly NodeShadowLight[];
   /**
    * The exact closed class-to-emitter map a scene-supplied blockLoader
-   * declares. Absent means the pin's own default registry.
+   * declares. With neither loader field set, composition uses the pin's
+   * default registry.
    */
   blockEmitters?: readonly NodeMaterialBlockEmitter[];
+  /** Execute the pin's geometry-aware loader, including its registry delegation. */
+  pinnedBlockLoader?: "geometry";
 } & (
   | { kind: "literal"; graph: Record<string, unknown> }
   | {
@@ -934,6 +942,8 @@ export interface HandleCollectionInfo {
 }
 
 export interface CompileAsset {
+  /** Indices into CompileManifest.meshWalks demanded for this asset. */
+  meshWalks?: number[];
   source: string;
   output: string;
   kind:
@@ -1191,6 +1201,7 @@ export interface NodeParticleManifest {
 }
 
 export type ValueKind =
+  | "node-input"
   | "text-font"
   | "text-data"
   | "text-renderable"
@@ -2407,6 +2418,7 @@ export type Feature =
   | "loader:splat-sog"
   | "loader:splat-spz"
   | "material:pbr"
+  | "material:source-texture-read"
   | "material:clearcoat"
   | "material:sheen"
   | "material:sheen-albedo-scaling"
@@ -2421,6 +2433,7 @@ export type Feature =
   | "material:no-color-view"
   | "material:grid"
   | "material:node"
+  | "material:node-inputs"
   | "material:shader"
   | "material:shader-storage"
   | "material:standard"

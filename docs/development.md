@@ -1,429 +1,189 @@
-# Development guide
+# Development
 
-## Requirements
+## Setup
 
-Node.js 22.12+, CMake 3.24+, Ninja, a C++20 compiler, vcpkg, PowerShell,
-and a GPU. Browser captures and executed asset bakes need Chrome/Edge with
-WebGPU. Windows development uses clang-cl when installed, otherwise MSVC;
-shipping uses MSVC. Dawn, Tint, DXC, LabSound and RmlUi are pinned local builds.
-
-## Core workflow
+Requires Node.js 22.12+, CMake 3.24+, Ninja, C++20, vcpkg, PowerShell, a GPU
+and WebGPU-capable Chrome/Edge. Windows development uses clang-cl when
+available, otherwise MSVC; shipping uses MSVC.
 
 ```powershell
 npm ci
 npm run dev:setup
 npm run doctor
-npm test
-npm run sweep
 ```
 
-`dev:setup` installs the development dependencies and missing tool artifacts.
-After a maintained dependency patch changes, explicitly rebuild that library;
-an existing install is not evidence that it contains the current patches.
+Rebuild installed dependencies when their maintained patches change.
+For RmlUi: `pwsh -File tools/build-rmlui.ps1`.
 
-```powershell
-pwsh -File tools/build-rmlui.ps1
-npm run scene -- process all
-```
-
-On Windows, scene commands discover Visual Studio's CMake, Ninja, compiler,
-SDK and vcpkg. Explicit environment variables override discovery. If CMake is
-not on PATH in this workspace, set the documented fallback before native work:
+Set CMake before native commands in this workspace:
 
 ```powershell
 $env:CMAKE_COMMAND = 'C:\Program Files\Microsoft Visual Studio\18\Community\Common7\IDE\CommonExtensions\Microsoft\CMake\CMake\bin\cmake.exe'
 ```
 
-| Command | Purpose |
+## Core workflow
+
+Commands follow `npm run scene --`. A scene is a registry ID or a
+repository-local TypeScript path; `all` selects the registry.
+
+| Command | Action |
 | --- | --- |
-| `scene -- list` / `show <id>` | Registry and selected scene configuration |
-| `scene -- compile <id\|source.ts\|all>` | Generate C++, shaders, assets and manifests |
-| `scene -- build <id\|source.ts\|all>` | Configure/build existing generated output |
-| `scene -- process <id\|source.ts\|all>` | Compile, compile shaders, configure and build in order |
-| `scene -- parity <id\|all> --differential` | Compare both renderers with the golden and each other |
-| `scene -- validate <id\|all>` | Process, parity and published status verification |
-| `scene -- clean --orphans` | Remove generated/build entries not owned by the registry |
+| `list` / `show <scene>` | Inspect scene configuration |
+| `compile <scene\|all>` | Generate C++, WGSL, assets and manifests |
+| `build <scene\|all>` | Build and deploy generated output |
+| `process <scene\|all>` | Generate, compile shaders, build |
+| `parity <scene\|all> --differential` | Compare both renderers and golden |
+| `validate <scene\|all>` | Process, parity, published-status check |
+| `clean --orphans` | Remove outputs outside the registry |
 
-Commands above are arguments to `npm run scene --`. `npm run sweep` is
-`scene -- validate all`. `npm test` is separate. For analysis commands, use
-[the diagnostic ladder](debugging.md#the-ladder).
+`npm run sweep` runs `validate all`; `npm test` is separate.
+Build `dist/` once with `npm run build`, then use
+`node dist/src/scene-command.js ...` for a sequence. Never rebuild it while
+its commands run. Inspect exit codes directly and retain logs in `artifacts/`.
 
-Run generation before shader/native builds. Do not rebuild `dist/` while a
-scene command is running from it. For a sequence, run `npm run build` once,
-then `node dist/src/scene-command.js ...`. Read command exit codes and retain
-full logs; a shell pipeline's last command can hide an earlier failure.
+Ad-hoc sources derive `generated/<stem>`, `native/build-<stem>-release`,
+`reference/<stem>` and `artifacts/parity/<stem>`. Without configured thresholds,
+their image comparisons are diagnostic-only.
 
 ## Integrating a curated parity scene
 
-Read the feature's pinned upstream documentation and source before porting.
-Use the exact scene and reached module/asset graph as evidence. Fix compiler,
-lowerer or PAL support; do not edit corpus inputs or goldens to make a gate pass.
-
-### What a registered scene owns
-
-| File | Contract |
-| --- | --- |
-| `src/scene-registry.ts` | Source, title, capture pose, thresholds, host UI and attribution |
-| `upstream/babylon-lite-corpus.json` | Pinned source/asset origins and SHA-256 digests |
-| `reference/<id>/babylon-lite-golden.png` | Browser reference |
-| `reference/exact-corpus-manifest.json` | Source, module, reference and query provenance |
-| `docs/status.md` | Verified measured row |
-| `docs/images/scenes/<id>.png` | Preview made by `tools/create-status-preview.mjs` |
-| Registry/corpus tests | Membership, counts and relationships between paired goldens |
-
-Set thresholds from measurements on both backends. `referenceTimeSeconds`
-derives the native seek; `referenceFrame` derives the fixed capture frame.
-`referenceSearch` must match the query used by both generation and browser
-navigation. Set `canvasThresholds` when UI residuals could conceal 3D regressions.
-Finish with [both-backend and interaction checks](debugging.md#before-calling-a-scene-done).
-
 ### Sizing a capability before implementing it
 
-Compile the unregistered source first. Read all corpus usages and asset-borne
-forms, then identify the pin's activation boundary: core code, explicit API
-registration or loader-discovered asset predicate. A first compiler error
-identifies only the first blocker. Any isolated probe belongs under `examples/`;
-keep the original corpus unchanged and remove disposable probes afterwards.
+Compile the unchanged source first. Identify reached APIs and asset forms;
+the first compiler error is only the first blocker. State exact checkpoint
+scene IDs and distinguish assessment from implementation. Keep probes separate
+from corpus inputs; fix compiler/lowerer/PAL sources.
 
-## Adding a lowerer and its curated fixture
-
-Use a focused lowerer and existing `LoweringContext`, pinned-function/numeric
-lowerers, AST contracts, shader composition and IR. Derive behavior instead of
-transcribing formulas. Reach the capability at the pin's own trigger and extend
-the feature/provenance inventory. Add a focused semantic regression before the
-curated fixture. Unsupported shapes must fail with source locations; recorded
-adaptations belong in generated `fidelity.json`.
-
-## Updating Babylon Lite
-
-Read the upstream release/source delta, then update the pin, package lock,
-corpus catalog and reference provenance together. The package's
-`babylonLiteRelease.sourceVersion` is the source commit; a release tag can
-refer to a different object. `README.md` is the only prose pin copy.
-
-Run `npm run test:upstream`, then generate the whole registry: contract tests
-do not reach every scene path. Check renamed options, moved extension
-registration, added statements in restated bodies, and package WGSL transforms.
-Preserve semantic contracts when retargeting AST assertions.
-
-Use `npm run corpus:manifest -- --previous-version <version> --previous-commit
-<sha>` to inspect explainable module digest changes; add `--write` only after
-review. `--previous-tree` selects the prior source tree (default `HEAD`).
-Run `npm run corpus:verify` after changing corpus files/manifests. It verifies
-origins independently; `--offline` identifies uncached records as unverifiable.
-Recapture intentionally changed references, investigate moved pixels, then run
-the full validation sequence.
-
-## Ad-hoc scenes
-
-```powershell
-npm run scene -- process examples/my-scene.ts
-npm run scene -- parity examples/my-scene.ts --recapture-reference
-```
-
-Repository-local sources derive `generated/<stem>`,
-`native/build-<stem>-release`, `reference/<stem>` and `artifacts/parity/<stem>`.
-Add registry entries for durable gates or custom configuration. Ad-hoc parity
-without thresholds reports measurements as diagnostic-only.
-
-## Generation and assets
-
-Generation records reached repository inputs in `manifest.json`; feature,
-shader and adaptation evidence is described in [architecture](architecture.md).
-Remote assets use `.cache/assets`; executed bakes use `artifacts/bake-cache`,
-keyed by the pin, input bytes, parameters, producer and execution runtime.
-`BBLITE_BAKE_CACHE=0` bypasses bake replay; `CHROME_PATH` selects Chromium.
-Generated output is disposable. Fix its source, never the generated file.
-
-## Shader compilation
-
-`process --shader d3d12|vulkan|metal|all` selects offline output; the default is
-the host target. `BBLITE_SHADER_TARGET` is its environment equivalent. `build`
-does not compile shaders. Dawn-only processing consumes generated WGSL and
-skips offline compilation unless an explicit shader target requests it.
-
-Tint/DXC caches live under `artifacts/shader-cache`. Keys include source,
-entry/profile, target, transformation script and participating compiler binaries.
-The outer stage checkpoint must include the same dependencies before skipping
-the compiler. Changed or missing products invalidate reuse. Build after shader
-changes to deploy the new payload. Set `TINT_PATH` and `DXC_PATH` for overrides.
-Cached Tint reflection diagnostics use `source.wgsl` for the input file while
-retaining line/column locations and warning text. This label refers to the
-module declared in the scene's `composition.json`, independent of cache fill order.
-Diagnostics precede inspector output in the cached file so process stream timing
-cannot change its bytes.
-
-## Native builds
-
-Ninja is the development default. `--backend sdl_gpu|dawn|both` selects compiled
-renderers; Windows defaults to both and requires installed Dawn. Other hosts
-default to SDL_GPU. `--compiler auto|clangcl|msvc` and `BBLITE_DEV_COMPILER`
-select the Windows compiler. `BBLITE_CMAKE_GENERATOR` overrides Ninja.
-
-Development shares one full vcpkg install at
-`artifacts/vcpkg-installed/development-full`; installation is serialized before
-parallel scene configures, which use `VCPKG_MANIFEST_INSTALL=OFF`. Shipping
-uses exact static dependencies. Do not concurrently reconcile one vcpkg install
-from independent workflows. `BBLITE_VCPKG_INSTALLED_ROOT` relocates the cache.
-
-`tools/setup-worktree.ps1 -Path <path> -Branch <branch>` creates a worktree with
-shared disposable caches and separate generated/build outputs. `-Commit <sha>`
-selects an existing revision. Use `-SharedVcpkg` only for serialized builds.
-Remove these worktrees through the script's `-Remove`, which unlinks junctions
-before deletion. Never recursively delete through their cache junctions.
-
-Native outputs include reached assets and shaders beside the executable.
-Ninja writes the executable in the build root; multi-config generators use
-`Release/`. CMake presets in `native/CMakePresets.json` support manual builds.
-
-## Build switches
-
-| Variable | Purpose |
+| File | Required scene data |
 | --- | --- |
-| `BBLITE_GENERATED_DIR` | Required generated scene directory |
-| `BBLITE_BACKEND` | `SDL_GPU`, `DAWN` or `BOTH` |
-| `BBLITE_DAWN_DIR`, `BBLITE_SDL_DIR` | Installed renderer/platform library overrides |
-| `BBLITE_LABSOUND_DIR`, `BBLITE_RMLUI_DIR` | Optional subsystem artifact overrides |
-| `BBLITE_AUDIO_CAPTURE` | Offline WAV capability; default off in minimal builds |
-| `BBLITE_PCH` | Per-tree precompiled headers; default on in development |
-| `BBLITE_MINSIZE` | Size optimization, LTO, dead stripping and Windows linker map |
-| `VCPKG_TARGET_TRIPLET` | Development `x64-windows`; shipping `x64-windows-static` |
+| `src/scene-registry.ts` | Source, title, pose, thresholds, diagnostics |
+| `upstream/babylon-lite-corpus.json` | Origins and digests |
+| `reference/<id>/babylon-lite-golden.png` | Pinned-browser reference |
+| `reference/exact-corpus-manifest.json` | Source/module/image/query provenance |
+| `docs/status.md` | Measured row |
+| `docs/images/scenes/<id>.png` | Preview from `tools/create-status-preview.mjs` |
 
-### Concurrency
+Update registry/corpus membership tests. Match `referenceSearch`,
+`referenceTimeSeconds` and `referenceFrame` across generation and capture.
+Use canvas thresholds when UI could conceal rendering regressions.
+New scenes require full/foreground MAD below 0.5 on both backends and
+[interaction checks](debugging.md#before-calling-a-scene-done).
 
-Population stages use `BBLITE_PARALLEL_COMPILES`, `BBLITE_PARALLEL_SCENES`,
-`BBLITE_SCENE_BUILD_JOBS` and `BBLITE_PARALLEL_PARITY`. Defaults derive compile
-capacity from CPU affinity and native capacity from CPU/RAM; one native job
-per scene and eight concurrent parity runs are the defaults. Single-scene
-builds can use the whole machine. Measure local workloads before overriding.
+## Validation
 
-Population native builds start scenes without usable history first, in registry
-order, then scenes with larger historical costs. Matching single-config Ninja
-trees provide the sum of each output's latest command duration; multiple outputs
-of one command count once. Incremental runs preserve older samples for unchanged
-outputs. Missing, unreadable, corrupt or unsupported history supplies no cost;
-with no usable history, or another generator, registry order is preserved.
-This changes queue order only, keeping the same jobs, memory budget and failures.
-
-The checkpoint-4 full-header rebuild on 2026-09-07 measured 716.2 s for 271
-scenes at 32 concurrent scenes and one job per scene. Reading their 1.49 MB of
-Ninja logs and modeling the existing worker queue gave:
-
-| Queue order | Modeled native stage |
-| --- | ---: |
-| Registry | 714.733 s |
-| Latest historical command costs | 415.920 s |
-| Older retained command samples (266 scenes) | 415.920 s |
-
-The longest scene was at registry position 263; its latest commands totaled
-415.920 s, including 382.751 s for its main translation unit. The model predicts
-a 298.813 s (41.8%) reduction by starting that work early. Compiler contention,
-memory pressure, configuration time
-and the next dirty-file set can change the result. Ordering by rebuild cost can
-be less useful for a warm run; unknown scenes get early feedback but can defer
-known expensive work when most history is missing. No rebuild was forced for
-this experiment. The checkpoint log is
-`artifacts/scene-checkpoint-4/full-sweep.log`; reproduce the read-only model with
-`node tools/model-build-scheduling.mjs <workspace-with-builds> 32` after building
-`dist/`. Its JSON includes each input log digest and modeled start/end times.
-
-The next full-header sweep measured 601.3 s for 272 native scenes with the
-same 32-by-1 budget, about 16% below the preceding 716.2 s stage. The longest
-scene started immediately, but its main translation unit grew from the retained
-382.751 s sample to 570.720 s. The observed saving is smaller than the model's:
-command durations did not remain fixed across these runs. Preserve both timing
-and workload context when comparing concurrency choices. Evidence is under
-`artifacts/scene-checkpoint-5/`, including the input-log model and process snapshots.
-
-## Minimal-size shipping builds
-
-Shipping selects one scene/backend, static CRT/dependencies and
-`BBLITE_MINSIZE=ON`. Optional subsystems and codecs derive from generated
-features. PNG/JPEG/WebP are selected by packaged image content. Visual
-capture is controlled by `BBLITE_VISUAL_CAPTURE`: off by default for minimal
-builds, on for development. Enabling it adds PNG and capture code; requesting
-capture at runtime in a build without it fails explicitly. Navigation selects
-Recast/Detour, adding crowds and tile-cache libraries only when reached.
-
-```powershell
-pwsh -File tools/build-sdl-min.ps1
-pwsh -File tools/build-dawn-min.ps1
-pwsh -File tools/build-labsound.ps1 -StaticRuntime
-pwsh -File tools/build-rmlui.ps1 -StaticRuntime
-```
-
-Build only dependencies the chosen scene needs. Trimmed SDL variants enable
-audio (`-EnableAudio`) or gamepads (`-EnableGamepad`) when reached; their
-capability file is checked at configure. Decoded audio or enabled offline
-capture needs LabSound's separate `-StaticRuntime -EnableCodecs` artifact.
-Core retained UI uses `rmlui-static`; `ui:inline-svg` additionally needs
-`build-rmlui.ps1 -StaticRuntime -EnableSvg` and `rmlui-static-svg`.
-FreeType is in vcpkg's `ui` feature; LunaSVG is in `ui-svg`. Development keeps
-one complete RmlUi artifact. Static and dynamic CRT libraries cannot be mixed.
-
-Configure the generated scene with the static triplet, static CRT, exact
-backend and matching dependency directories. For example:
-
-```powershell
-& $env:CMAKE_COMMAND -S native -B native/build-scene1-min-sdl `
-  -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
-  -DVCPKG_TARGET_TRIPLET=x64-windows-static `
-  '-DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded$<$<CONFIG:Debug>:Debug>' `
-  -DBBLITE_GENERATED_DIR="$PWD/generated/scene1" `
-  -DBBLITE_BACKEND=SDL_GPU -DBBLITE_MINSIZE=ON `
-  -DBBLITE_SDL_DIR="$PWD/artifacts/tools/sdl-min"
-& $env:CMAKE_COMMAND --build native/build-scene1-min-sdl --config Release --parallel
-```
-
-Before packaging, build one sprite scene and one audio scene with
-`--compiler msvc` or as minimal trees: clang-cl does not report MSVC's
-narrowing warnings, and the development precompiled header can satisfy an
-include the static tree lacks.
-
-Attribute sizes with `node tools/map-size-report.mjs <executable.map>`.
-Compare core UI, SVG, audio and physics shapes as well as a visual-only scene.
-Installed dependency size, linked executable size and packaged payload size
-are separate measurements.
-
-## Worker application checks
-
-The registered `offscreen` scene compiles the unchanged pinned application,
-worker and shared builder. After normal development setup, build only this
-scene and run its targeted checks from the repository root:
-
-```powershell
-npm run scene -- process offscreen
-npm run scene -- parity offscreen --differential
-node tools/check-offscreen-window.mjs
-```
-
-The interaction script accepts an optional executable path. It replays held
-button presses through the application's own SDL event tape, checks worker
-progress during the source's repeated 200 ms busy work, main-view recovery,
-expanded-button centering, responsive resize to 700×560 and normal shutdown.
-It opens test-owned windows without controlling desktop input. Captures, traces
-and `window-check.json` go to `artifacts/offscreen-integration/`.
-`node tools/measure-offscreen-cadence.mjs` separately compares warm original
-Window/Worker RAF cadence with both native canvas sequences. It uses a visible
-test browser, then short sequential native runs, and writes `cadence.json`.
-The scene's unchanged per-frame camera increment converts those rates to
-angular speed; it is not a correction applied by the runtime.
-Launch the original controls normally with:
-
-```powershell
-$env:BBLITE_GPU_BACKEND = 'sdl_gpu' # or dawn
-& native/build-offscreen-release/bblite_native.exe
-```
-
-The RmlUi transform-key ownership patch is required for centering across a
-held press and text change. Rebuild that dependency with
-`pwsh -File tools/build-rmlui.ps1 -Jobs 1` when updating an older install.
-Native ownership and performance boundaries are in
-[backends](backends.md#offscreen-surfaces).
-
-## Runtime switches
-
-`node tools/check-break-meshes-timing.mjs` compares the unchanged Break Meshes
-demo in browser BBL, SDL_GPU and Dawn. It shatters a mesh, checks the original
-12.5 ms step across controlled 60/240-fps timestamps, and compares live simulation
-rates on the same display. Its reference asserts both original fixed overrides;
-removing them must fail this comparison. Reports go to
-`artifacts/break-meshes-timing/`; build the native executable first. Controlled
-timestamps do not change the display refresh rate. The separate
-`test/physics-timing.test.ts` compares Havok/native constant-velocity travel with
-both explicit fixed steps and BBL's default variable steps.
-
-| Variable | Purpose |
-| --- | --- |
-| `BBLITE_GPU_BACKEND=dawn` | Runtime choice in a dual build |
-| `BBLITE_GPU_DEBUG=1` | GPU validation; prefer diagnostic `--gpu-debug` |
-| `BBLITE_SCREENSHOT`, `BBLITE_SCREENSHOT_FRAME`, `BBLITE_MAX_FRAMES` | Capture and frame limit |
-| `BBLITE_ANIMATION_SEEK_SECONDS`, `BBLITE_FRAME_DELTA_MS` | Deterministic pose and frame step |
-| `BBLITE_ASSET_DIR`, `BBLITE_GPU_SHADER_DIR` | Diagnostic payload overrides |
-| `BBLITE_CAPTURE_UI=0` | Canvas-only attribution |
-| `BBLITE_RUNTIME_TRACE=1`, `BBLITE_INPUT_REPLAY` | State trace and deterministic input tape |
-| `BBLITE_WINDOW_TRACE=1` | Worker Window presentation timestamps and per-canvas frame sequences, without verbose scene tracing |
-| `BBLITE_CAPTURE_ENGINE_FRAME=<index>` | Capture each independent engine at this zero-based rendered frame; retain all final images until Window capture |
-| `BBLITE_LOCAL_STORAGE_ROOT` | Isolated diagnostic storage |
-| `BBLITE_FILE_DIALOG_SAVE_PATH`, `BBLITE_FILE_DIALOG_OPEN_PATH` | Non-interactive file-dialog paths |
-
-ArcRotate uses pointer orbit/pan/wheel; free cameras also use WASD/arrows and
-Space/Shift. Diagnostic switches and artifacts are in [debugging](debugging.md).
-
-## Parity
-
-Curated parity requires its committed golden. Only `--recapture-reference`
-replaces it. Browser captures use the pinned package and fixed full-page pose,
-including retained UI; corpus sources stay unchanged. `--seek <t>` changes both
-sides and requires intentional reference recapture when a golden exists.
-Use `--without ground|background` for ungated native-only isolation.
-
-`--backend sdl_gpu|dawn` chooses one renderer; `--differential` runs both and
-accepts only `--gpu-debug` alongside it. `--exe`/`BBLITE_NATIVE_EXE` select a
-specific executable. `--actual` compares an existing PNG. `--no-fail` is a
-diagnostic override, never proof that a gate passed.
-
-## Instrumented browser capture
-
-See [capture and uniforms](debugging.md#the-ladder) for browser GPU state.
-
-## Native render capture
-
-See [paired captures](debugging.md#the-ladder).
-
-## Build identity
-
-Before measurement, tools compare the executable's embedded digest against
-generated/native sources and check deployed assets/shaders against generation.
-Explicit payload overrides are diagnostic paths outside that deployment check.
-Build configuration comes from the CMake cache.
-
-Generation rewrites only changed bytes. Scene stamps cover compiler, pin,
-arguments, runtime/browser identity and reached inputs; per-file size/mtime
-checks allow a warm skip. These are incremental-build checks, not tamper-proof
-content verification. Native-source changes refresh the build stamp without
-regenerating Babylon behavior. `--cold` forces generation/shader/configure work.
-
-## Proving a change moved nothing
-
-For a compiler-only mechanical refactor, regenerate every scene before taking
-each `scene -- neutrality-generated <baseline>` digest (`--write` creates it).
-Equal generated bytes plus unchanged native sources establish output neutrality.
-
-For native/shader changes, preserve prior differential reports, run the full
-sweep and use `scene -- neutrality <baseline-directory>`. Known repeatability
-exceptions are per scene/backend; investigate other moved cells. A fresh clone
-or pull requires regenerated output and current patched dependencies first.
-
-Before completing compiler, shader, loader or PAL work:
+Use focused checks during implementation and early population generation for
+shared changes. Finish the declared batch before its expensive validation:
 
 ```powershell
 npm run simplify:verify
 npm test
-npm run scenes:process
-npm run scenes:parity
-npm run status:verify
+npm run sweep
+node dist/src/scene-command.js neutrality <saved-baseline-directory>
 ```
 
-Run simplify over the complete change before the expensive sweep, apply its
-findings, then record the four review angles at the path printed by
-`npm run simplify:record`. Records are keyed to the diff. `npm run lint:exports`
-is advisory: generated subprocess code can call exports invisible to ts-prune.
+The sweep includes `scenes:process`, `scenes:parity` and `status:verify`.
+Preserve prior differential reports before changes. Investigate moved cells
+outside measured scene/backend repeatability exceptions.
 
-## Shipping demo packages
+Simplify covers the complete diff. Apply findings before the sweep;
+`npm run simplify:record` identifies the required record. Keep records limited
+to angles, findings and unresolved actions. Put run logs/timings in artifacts
+or the PR. Documentation-only edits need link and affected metadata checks;
+rendering runs are needed when executable inputs or measurement contracts change.
+`lint:exports` is advisory because generated subprocess callers may be invisible.
 
-`npm run package:demo -- -Scene <id> -BuildDirectory <dir>` verifies the exact
-minimal shape and packages reached assets, backend shaders and dependency
-notices. SDL_GPU packages DXIL plus slot sidecars; Dawn packages native WGSL
-with its static FXC-only runtime. Compiler intermediates and runtime DLLs do
-not belong in the ZIP. Output: `artifacts/releases/`.
+## Proving a change moved nothing
+
+For mechanical compiler refactors, use
+`neutrality-generated <file> --write` to save generated-byte baselines.
+Regenerate the full registry before each comparison. For native/shader changes,
+use the saved differential reports and the validation sequence above.
+
+## Native builds
+
+`--backend sdl_gpu|dawn|both` selects renderers; Windows defaults to both and
+requires Dawn. `--compiler auto|clangcl|msvc` selects the Windows compiler.
+`BBLITE_DEV_COMPILER` and `BBLITE_CMAKE_GENERATOR` override compiler/generator.
+
+Development shares `artifacts/vcpkg-installed/development-full`. Reconcile
+that install once, then parallelize builds with `VCPKG_MANIFEST_INSTALL=OFF`.
+Never reconcile one install concurrently. `BBLITE_VCPKG_INSTALLED_ROOT`
+relocates it. `tools/setup-worktree.ps1 -Path <path> -Branch <branch>` creates
+isolated outputs and shared caches; `-SharedVcpkg` requires coordinated install
+access. Use the script's `-Remove` to unlink cache junctions before deletion.
+
+### Concurrency
+
+| Variable | Stage |
+| --- | --- |
+| `BBLITE_PARALLEL_COMPILES` | Generation workers |
+| `BBLITE_PARALLEL_SCENES` | Concurrent native scenes |
+| `BBLITE_SCENE_BUILD_JOBS` | Jobs per scene; population default 1 |
+| `BBLITE_PARALLEL_PARITY` | Image comparisons; default 8, audio serialized |
+
+Capacity derives from CPU affinity and CPU/RAM. Native scheduling starts unknown
+costs first, then expensive scenes using Ninja history. Measure before overriding
+defaults and coordinate independent workflows. Inspect scheduling with
+`node tools/model-build-scheduling.mjs <workspace> <workers>`.
+Batch shared-header edits before population builds.
+
+## Shader compilation
+
+`process --shader d3d12|vulkan|metal|all` selects offline output; default is the
+host target. `BBLITE_SHADER_TARGET` is the environment equivalent. Dawn consumes
+WGSL and skips offline compilation unless requested. `build` deploys shaders
+but does not compile them. `TINT_PATH`/`DXC_PATH` override tools.
+
+Assets use `.cache/assets`, executed bakes `artifacts/bake-cache`, and
+Tint/DXC `artifacts/shader-cache`. `BBLITE_BAKE_CACHE=0` bypasses bake replay;
+`CHROME_PATH` selects Chromium. `--cold` forces generation/shader/configure
+work without deleting content caches.
+
+## Build identity
+
+Measured runs check the binary's generated/native digest, deployed payload and
+CMake configuration. Generation skips unchanged inputs and writes changed bytes
+only; native edits refresh build stamps. Explicit payload overrides are
+diagnostic and bypass normal deployment checks. Size/mtime reuse checks are
+incremental-build checks, not tamper-proof verification.
+
+## Minimal-size shipping builds
+
+Use `BBLITE_MINSIZE=ON`, one backend, MSVC, static CRT and
+`VCPKG_TARGET_TRIPLET=x64-windows-static`. Set `BBLITE_GENERATED_DIR` and
+matching `BBLITE_SDL_DIR`/`BBLITE_DAWN_DIR`, `BBLITE_LABSOUND_DIR`,
+`BBLITE_RMLUI_DIR`. Never mix static and dynamic CRT libraries.
+
+Build reached dependencies with `tools/build-sdl-min.ps1`,
+`build-dawn-min.ps1`, `build-labsound.ps1 -StaticRuntime` and
+`build-rmlui.ps1 -StaticRuntime`. SDL audio/gamepads require their enable flags;
+decoded audio needs LabSound `-EnableCodecs`; inline SVG needs RmlUi
+`-EnableSvg`. Generated features select codecs/navigation libraries.
+`BBLITE_VISUAL_CAPTURE`/`BBLITE_AUDIO_CAPTURE` are optional in minimal builds;
+disabled runtime requests fail.
+
+Validate sprite and audio shapes with MSVC; clang-cl/PCHs can conceal narrowing
+and include issues. Package with
+`npm run package:demo -- -Scene <id> -BuildDirectory <dir>`.
+Output goes to `artifacts/releases/`; use
+`node tools/map-size-report.mjs <executable.map>` for linker attribution.
+
+## Updating Babylon Lite
+
+Update the pin, package lock, corpus catalog and reference provenance together.
+`babylonLiteRelease.sourceVersion` supplies the source commit. Run
+`test:upstream`, full generation, `corpus:verify` and validation.
+Use `corpus:manifest -- --previous-version <version> --previous-commit <sha>`
+to inspect changes before `--write`. `--offline` cannot verify uncached origins.
 
 ## Windows troubleshooting
 
-- Run `doctor` for missing tools and dependency paths.
-- Rebuild maintained dependencies after their patches change.
-- `LNK1168`: stop the executable locking the output.
-- Long vcpkg paths: use a short `--x-buildtrees-root` installation option.
-- Compiler/generator/toolchain mismatch: recreate the affected disposable tree.
-- Stale payload/stamp: process that scene before measuring it.
-- GPU failures: use `--gpu-debug` to print validation errors without SDL prompts.
+- Missing tools/dependencies: run `doctor` and check path overrides.
+- Patched dependency: rebuild its installed library.
+- `LNK1168`: stop the executable holding the output.
+- Long vcpkg paths: use a short `--x-buildtrees-root`.
+- Wrong compiler/generator: recreate the affected disposable build tree.
+- Stale binary/payload: process the scene.
+- GPU validation: use `--gpu-debug` to avoid blocking SDL assertion prompts.
+
+Runtime/capture switches are listed once in [debugging](debugging.md).

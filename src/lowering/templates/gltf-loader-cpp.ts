@@ -5,7 +5,7 @@ import { DEFORMATION_BONE_SLOTS } from "../../shader-builtins-standard.js";
 import { COLOR_CHANNEL_HELPERS_CPP } from "../gltf/sh-prescale.js";
 // The document key packaging names the converted Gaussian-splat rows under,
 // from the module that owns the document schema both sides read.
-import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD } from "../../gltf-document.js";
+import { GAUSSIAN_SPLAT_DOCUMENT_KEY, GLTF_MATERIAL_EXTENSION_PAYLOAD, GLTF_MESH_WALKS, GLTF_SOURCE_ALBEDO_IDENTITIES } from "../../gltf-document.js";
 import type { GltfLoaderOptions } from "../gltf-lowerer.js";
 /**
  * The generated glTF loader.
@@ -264,6 +264,9 @@ export function gltfLoaderCpp(
         deformPicking = false,
         pinnedSkeletonPalette = false,
         dynamicThinInstances = false,
+        retainLocalNormals = false,
+        sourceTextureReads = false,
+        sourceMeshWalks = false,
         nonTrianglePrimitives = false,
         gaussianSplats = false,
         animationMask = false,
@@ -344,6 +347,34 @@ std::size_t unsigned_or(const JsonObject& object, const std::string& key, std::s
     const ts::JsonValue* value = optional(object, key);
     return value ? unsigned_value(*value) : fallback;
 }
+${sourceMeshWalks ? `
+void load_source_mesh_walks(AssetRecord& asset, const JsonObject& document) {
+    const auto* packed = optional(document, ${JSON.stringify(GLTF_MESH_WALKS)});
+    if (!packed) return; // This file has no reached source collector.
+    auto walks = std::make_shared<std::vector<std::vector<std::size_t>>>();
+    for (const auto& row : packed->as_array()) {
+        auto& walk = walks->emplace_back();
+        const auto& entries = row.as_array();
+        if (entries.empty()) continue; // Collector demanded by another asset.
+        if (entries.size() != asset.meshes.size()) {
+            throw std::runtime_error("Invalid glTF source mesh walk size.");
+        }
+        std::vector<bool> seen(asset.meshes.size(), false);
+        walk.reserve(entries.size());
+        for (const auto& entry : entries) {
+            const double number = entry.as_number();
+            if (!(number >= 0 && number < static_cast<double>(asset.meshes.size())) || std::floor(number) != number) {
+                throw std::runtime_error("Invalid glTF source mesh walk index.");
+            }
+            const auto index = unsigned_value(entry);
+            if (seen[index]) throw std::runtime_error("Repeated glTF source mesh walk index.");
+            seen[index] = true;
+            walk.push_back(index);
+        }
+    }
+    asset.source_mesh_walks = std::move(walks);
+}
+` : ""}
 
 float float_or(const JsonObject& object, const std::string& key, float fallback) {
     const ts::JsonValue* value = optional(object, key);
@@ -1504,12 +1535,21 @@ MaterialHandle load_material(
     bool animated_base_color) {
     MaterialRecord material;
     material.name = string_or(material_json, "name");
+    // buildDefaultPbrTextures always creates a source Texture2D, including
+    // the factor-baked 1x1 fallback. Renderer image presence is not source
+    // property presence.
+    material.has_public_base_color_texture = true;
+    std::vector<double> source_base{1, 1, 1, 1};
     material.emissive_factor = ${materialDefaults.emissiveFactor.identity};
     material.specular_aa = true;
     if (const ts::JsonValue* pbr_value = optional(material_json, "pbrMetallicRoughness")) {
         const JsonObject& pbr = pbr_value->as_object();
-        const std::vector<float> base = float_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
-        if (base.size() == 4) material.base_color_factor = Color4{base[0], base[1], base[2], base[3]};
+        auto source_factor = double_array(optional(pbr, "${materialDefaults.baseColorFactorKey}"));
+        if (source_factor.size() == 4) {
+            source_base = std::move(source_factor);
+            material.base_color_factor = Color4{static_cast<float>(source_base[0]),
+                static_cast<float>(source_base[1]), static_cast<float>(source_base[2]), static_cast<float>(source_base[3])};
+        }
         material.metallic_factor = float_or(pbr, "${materialDefaults.metallicFactor.key}", ${materialDefaults.metallicFactor.literal});
         material.roughness_factor = float_or(pbr, "${materialDefaults.roughnessFactor.key}", ${materialDefaults.roughnessFactor.literal});
         const ts::JsonValue* base_color_texture =
@@ -1581,6 +1621,11 @@ MaterialHandle load_material(
                 material.base_color_factor.b = 1.0f;
             }
         }
+    }
+    // The pointer feature seeds its public array even without a pbr block.
+    if (animated_base_color || gltf_has_base_color_factor(
+        material.base_color_texture.has_image(), source_base)) {
+        material.source_base_color_factor = std::make_shared<std::vector<double>>(std::move(source_base));
     }
     const ts::JsonValue* normal_texture =
         optional(material_json, "normalTexture");
@@ -2304,6 +2349,37 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
     }
     std::vector<MaterialHandle> materials;
     materials.reserve(material_json.size());
+${sourceTextureReads ? `
+    // Association IDs come from the pin's image cache and Texture2D wrappers
+    // at packaging. Each load allocates fresh public producer identities.
+    const auto& source_albedo = required(document, "${GLTF_SOURCE_ALBEDO_IDENTITIES}").as_object();
+    const auto& source_associations = required(source_albedo, "materials").as_array();
+    const auto& source_fallbacks = required(source_albedo, "fallbackTexels").as_object();
+    if (source_associations.size() != material_json.size() + 1) {
+        throw std::runtime_error("Invalid glTF albedo association count.");
+    }
+    std::unordered_map<std::size_t, std::uint64_t> source_texture_identities;
+    const auto retain_source_albedo = [&](MaterialHandle handle, std::size_t material_index) {
+        const auto association = unsigned_value(source_associations.at(material_index));
+        auto [identity, inserted] = source_texture_identities.try_emplace(association, 0);
+        if (inserted) identity->second = engine.next_file_texture_identity++;
+        auto texture = material_texture(engine, handle, MaterialTextureSlot::base_color);
+        texture.identity = identity->second;
+        if (const auto* fallback = optional(source_fallbacks, std::to_string(association))) {
+            const auto& lanes = fallback->as_array();
+            if (lanes.size() != 4) throw std::runtime_error("Invalid glTF albedo fallback texel.");
+            std::vector<std::uint8_t> texel(4);
+            for (std::size_t lane = 0; lane < texel.size(); ++lane) {
+                const auto byte = unsigned_value(lanes[lane]);
+                if (byte > 255) throw std::runtime_error("Invalid glTF albedo fallback byte.");
+                texel[lane] = static_cast<std::uint8_t>(byte);
+            }
+            texture.data.bytes = std::move(texel);
+            texture.width = texture.data.rgba_width = 1;
+            texture.height = texture.data.rgba_height = 1;
+        }
+        engine.materials.at(handle.value).source_albedo_texture = std::move(texture);
+    };` : ""}
     const std::vector<bool> animated_base_color =
         collect_animated_base_color(document, material_json.size());
     for (std::size_t index = 0; index < material_json.size(); ++index) {
@@ -2311,6 +2387,7 @@ AssetHandle load_gltf(Engine& engine, const std::string& path) {
             engine, material_json[index].as_object(), buffer, container, views,
             image_json, texture_json, sampler_json,
             animated_base_color[index]));
+${sourceTextureReads ? `        retain_source_albedo(materials.back(), index);` : ""}
     }
 
     std::vector<int> parents(node_json.size(), -1);
@@ -2883,7 +2960,10 @@ ${nonTrianglePrimitives
                 retains_runtime_instance_vertices;
             if (retains_local_vertices) {
                 geometry.bind_vertices.resize(positions.count);
-            }
+            }${retainLocalNormals ? `
+            if (normals) {
+                geometry.local_normals.resize(positions.count);
+            }` : ""}
             // A primitive with no material index takes the pin's default
             // material -- getMat(undefined) assembles one from an empty
             // object -- created once and appended after the document's,
@@ -2895,6 +2975,7 @@ ${nonTrianglePrimitives
                     engine, JsonObject{}, buffer, container, views,
                     image_json, texture_json, sampler_json,
                     false));
+${sourceTextureReads ? `                retain_source_albedo(materials.back(), material_json.size());` : ""}
             }
             const bool clockwise_front_face =
                 determinant < 0.0 &&
@@ -2925,7 +3006,8 @@ ${nonTrianglePrimitives
                         read_component(buffer, container, views, *normals, index, 0),
                         read_component(buffer, container, views, *normals, index, 1),
                         read_component(buffer, container, views, *normals, index, 2),
-                    };
+                    };${retainLocalNormals ? `
+                    geometry.local_normals[index] = local_normal;` : ""}
                     live_local_normal = normalize(Vec3{
                         -local_normal.x,
                         local_normal.y,
@@ -3197,7 +3279,8 @@ ${lowered.vertexColor}
                 !clockwise_front_face) {
                 for (std::size_t index = 0; index < geometry.indices.size(); index += 3) {
                     std::swap(geometry.indices[index + 1], geometry.indices[index + 2]);
-                }
+                }${retainLocalNormals ? `
+                geometry.source_indices_reversed = true;` : ""}
             }
             if (!normals) {
                 geometry.flat_normals = true;
@@ -4930,6 +5013,12 @@ ${animationPointerMaterials ? `            for (const MaterialTrack& track :
                             mix(a.z, b.z),
                             mix(a.w, b.w),
                         };
+                        if (material.source_base_color_factor) {
+                            // The pin's pointer writer copies its sampled F32
+                            // output into the existing public number array.
+                            const auto& value = material.base_color_factor;
+                            *material.source_base_color_factor = {value.r, value.g, value.b, value.a};
+                        }
                         break;
                     case MaterialTrackKind::emissive_factor:
                         material.emissive_base_factor = Color3{
@@ -5453,6 +5542,7 @@ ${managedGroups ? `        // The clips a manager owns, advanced each by its own
             "no animations.");
     }` : ""}
     if (asset.meshes.empty()${gaussianSplats ? " && asset.gaussian_splats.empty()" : ""}) throw std::runtime_error("glTF contains no renderable meshes.");
+${sourceMeshWalks ? "    load_source_mesh_walks(asset, document);" : ""}
     engine.assets.push_back(std::move(asset));
     return AssetHandle{static_cast<std::uint32_t>(engine.assets.size() - 1)};
 }

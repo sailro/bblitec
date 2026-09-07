@@ -448,6 +448,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/pbr/pbr-material.ts",
         consumers: CMAKE,
     },
+    "material:source-texture-read": {
+        provenance: "src/material/pbr/pbr-material.ts#createPbrMaterial + " +
+            "src/material/standard/standard-material.ts#diffuseTexture + src/loader-gltf/load-gltf.ts#uploadMeshes",
+        consumers: ["loader flag", "generation gate"],
+    },
     "material:clearcoat": {
         provenance: "src/material/pbr/set-clearcoat.ts",
         consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],
@@ -537,6 +542,10 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
     "material:node": {
         provenance: "src/material/node/node-material.ts",
         consumers: ["features.cmake", "variant table"],
+    },
+    "material:node-inputs": {
+        provenance: "src/material/node/node-material.ts inputs and texture slots",
+        consumers: ["variant table"],
     },
     "material:standard": {
         provenance: "src/material/standard/create-standard-material.ts",

@@ -1,5 +1,8 @@
 import ts from "typescript";
 import { compileTextMutation, readTextProperty, retainTextValue } from "./compiler/text-surface.js";
+import { compileNodeInputMutation, readNodeInputProperty } from "./compiler/node-input-surface.js";
+import { checkNodeGeometryMutation } from "./compiler/node-geometry-admission.js";
+import type { CompiledMeshWalk } from "./gltf-mesh-walks.js";
 import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
 import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
 import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
@@ -774,6 +777,7 @@ class Compiler
     private lastGltfContainerAsset: CompileAsset | undefined;
     public readonly reachedShaderPrograms: CompiledShaderProgram[] = [];
     public readonly reachedNodeMaterials: CompiledNodeMaterial[] = [];
+    public readonly meshWalks: CompiledMeshWalk[] = [];
     public readonly reachedNodeParticles: CompiledNodeParticles = {
         sets: [],
         steps: [],
@@ -835,7 +839,8 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
-    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text"; node: ts.Node; message: string }> = [];
+    private readonly deferredAdmissionFailures: Array<{ capability: "taa" | "text" | "node-input" | "node-geometry" | "material-colors" | "baseColorFactor" | "diffuseColor"; node: ts.Node; message: string }> = [];
+    private readonly materialColorReads: Array<"baseColorFactor" | "diffuseColor"> = [];
     private temporalSceneRegistration: ts.Node | undefined;
     private readonly temporalRegisteredScenes: Array<Value["sceneTopologyState"]> = [];
     private temporalControlAttachment: ts.Node | undefined;
@@ -911,6 +916,7 @@ class Compiler
     private readonly runtimeMaterialProfiles = new Set<number>();
     private runtimeMeshProfileCount = 0;
     private readonly runtimeShaderProfiles = new Set<number>();
+    private readonly runtimeNodeProfiles = new Set<number>();
     private reachedPlainSpriteLayer = false;
     /** A standalone SpriteRenderer needs the pure-2D vertex permutation. */
     private reachedPureSpriteVertex = false;
@@ -1001,6 +1007,28 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.reachedNodeMaterials.length > 0 && this.geometryOutputTasks.length > 0 && this.features.has("loader:gltf")) {
+            const boundary = this.deferredAdmissionFailures.find(failure => failure.capability === "node-geometry");
+            if (boundary) this.fail(boundary.node, boundary.message);
+            if (this.features.has("animation:property")) this.fail(this.sourceFile,
+                "Node geometry views with glTF do not represent property-animation transform producers.");
+        }
+        if (this.features.has("material:node")) {
+            const admission = this.deferredAdmissionFailures.find((failure) => failure.capability === "node-input");
+            if (admission) this.fail(admission.node, admission.message);
+            if (this.features.has("material:node-inputs") && this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Node input bindings support one registered scene until per-scene binding snapshots are represented.");
+        }
+        const colorAdmission = this.deferredAdmissionFailures.find(failure =>
+            (failure.capability === "baseColorFactor" || failure.capability === "diffuseColor") &&
+            this.materialColorReads.includes(failure.capability));
+        if (colorAdmission) this.fail(colorAdmission.node, colorAdmission.message);
+        if (this.materialColorReads.length) {
+            const boundary = this.deferredAdmissionFailures.find(failure => failure.capability === "material-colors");
+            if (boundary) this.fail(boundary.node, boundary.message);
+            if (this.temporalRegisteredScenes.length > 1) this.fail(this.sourceFile,
+                "Numeric material-color reads currently support one registered scene; independent material-group UBO snapshots are not represented.");
+        }
         if (this.features.has("text:renderable")) {
             const camera = this.textCameraMutation ?? this.temporalControlAttachment ?? this.untrackedTaaCameraWrites[0]?.node;
             if (camera) this.fail(camera, "Text currently requires a static camera; live camera writers and controls are not represented.");
@@ -1107,6 +1135,7 @@ class Compiler
                         ),
                 ),
                 nodeMaterials: this.reachedNodeMaterials,
+                ...(this.meshWalks.length ? {meshWalks: this.meshWalks} : {}),
                 ...(this.reachedTextData.length > 0 ? { textData: this.reachedTextData } : {}),
                 ...(this.reachedNodeParticles.sets.length > 0
                     ? {
@@ -1939,6 +1968,30 @@ class Compiler
 
     public compileTextMutation(expression: ts.Expression): Value | undefined {
         return compileTextMutation(this, expression);
+    }
+
+    public compileNodeInputMutation(expression: ts.Expression): Value | undefined {
+        return compileNodeInputMutation(this, expression);
+    }
+
+    public checkNodeGeometryMutation(expression: ts.Expression): void {
+        checkNodeGeometryMutation(this, expression);
+    }
+
+    public noteNodeGeometryMutation(node: ts.Node): void {
+        this.deferredAdmissionFailures.push({ capability: "node-geometry", node,
+            message: "Node geometry views require static imported mesh transforms; mutation, cloning and unproven transform aliases are not represented." });
+    }
+
+    public assertNodeInputMutable(node: ts.Node): void {
+        if (this.frameCallbackDepth > 0 || this.engineStartMark !== undefined || this.temporalSceneRegistration) {
+            this.fail(node, "Node input texture changes require setup before scene registration; captured bind-group replacement is not represented.");
+        }
+    }
+
+    public noteNodeInputAdmissionFailure(node: ts.Node, message: string): void {
+        if (this.features.has("material:node")) this.fail(node, message);
+        this.deferredAdmissionFailures.push({ capability: "node-input", node, message });
     }
 
     private textAttachmentReached = false;
@@ -3873,7 +3926,9 @@ class Compiler
                             ts.SyntaxKind.FirstAssignment &&
                         node.operatorToken.kind <=
                             ts.SyntaxKind.LastAssignment &&
-                        ((ts.isElementAccessExpression(node.left) &&
+                        (((ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) &&
+                            scan.containsAlias(node.right)) ||
+                          (ts.isElementAccessExpression(node.left) &&
                             scan.namesAlias(
                                 this.unwrap(node.left.expression),
                             )) ||
@@ -4415,6 +4470,9 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        this.checkNodeGeometryMutation(expression);
+        const input = this.compileNodeInputMutation(expression);
+        if (input) { this.emitDiscardedValue(input); return; }
         const text = this.compileTextMutation(expression);
         if (text) { this.emitDiscardedValue(text); return; }
         if (this.compileCameraMutation(expression)) return;
@@ -4607,7 +4665,7 @@ class Compiler
         const binding = left && ts.isIdentifier(left) ? this.lookupOptional(left) : undefined;
         const previous = binding ?? target;
         const previousState = previous.collectionCardinality ?? previous.staticElementsOwner?.collectionCardinality;
-        const sourceValue = this.collectionMetadataValue(source);
+        const sourceValue = this.knownValueWithoutEvaluation(source);
         const sourceState = sourceValue?.collectionCardinality ?? sourceValue?.staticElementsOwner?.collectionCardinality;
         const right = this.unwrap(source);
         const nativeConstructor = ts.isNewExpression(right) &&
@@ -8950,12 +9008,13 @@ class Compiler
     }
 
     public compileValue(expression: ts.Expression): Value {
+        this.checkNodeGeometryMutation(expression);
         const boundary = this.nextNativeBindingSequence;
         const dependencies = new Set<NativeCaptureBinding>();
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            value = this.compileNodeInputMutation(expression) ?? this.compileTextMutation(expression) ?? this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
         }
@@ -9103,7 +9162,7 @@ class Compiler
     public constArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
-        if (this.collectionMetadataValue(expression)?.collectionCardinality?.untrackedAliases) return undefined;
+        if (this.knownValueWithoutEvaluation(expression)?.collectionCardinality?.untrackedAliases) return undefined;
         const unwrapped = this.unwrap(expression);
         if (!ts.isIdentifier(unwrapped)) return undefined;
         const declarations =
@@ -9835,6 +9894,10 @@ class Compiler
         importedName: string,
         call: ts.CallExpression,
     ): Value | undefined {
+        if (importedName === "parseNodeMaterialFromSnippet" &&
+            (this.frameCallbackDepth > 0 || this.engineStartMark !== undefined || this.temporalSceneRegistration)) {
+            this.fail(call, "Node material construction requires setup before scene registration; live group rebuilding is not represented.");
+        }
         if (this.runtimeMaterialProfiles.size > 0 &&
             (importedName === "createPbrMaterial" || importedName === "loadGltf")) {
             this.fail(call, "Runtime material construction leaves no generation-known physical material slot for a later PBR material or glTF load.");
@@ -9848,6 +9911,7 @@ class Compiler
             this.isRuntimeResourceConstruction();
         const firstMaterial = this.sceneMaterials.count;
         const firstShader = this.reachedShaderPrograms.length;
+        const firstNode = this.reachedNodeMaterials.length;
         const value = compileRegisteredIntrinsic(this, importedName, call);
         if (!profile || !value) return value;
         for (let index = firstMaterial; index < this.sceneMaterials.count; ++index) {
@@ -9855,6 +9919,9 @@ class Compiler
         }
         for (let index = firstShader; index < this.reachedShaderPrograms.length; ++index) {
             this.runtimeShaderProfiles.add(index);
+        }
+        for (let index = firstNode; index < this.reachedNodeMaterials.length; ++index) {
+            this.runtimeNodeProfiles.add(index);
         }
         if (value.kind === "mesh" && value.sceneMeshIndex !== undefined) {
             const index = value.sceneMeshIndex;
@@ -10007,6 +10074,7 @@ class Compiler
             );
         }
         this.reachFeature("texture:pixels", call);
+        this.noteNodeInputAdmissionFailure(call, "Node input bindings do not represent later GPU writes to a texture producer.");
         return {
             kind: "void",
             cpp:
@@ -11139,6 +11207,12 @@ class Compiler
             if (textKind(leftValue)) leftValue = retainTextValue(this, leftValue);
             let rightValue = this.compileValue(unwrapped.right);
             if (textKind(rightValue)) rightValue = retainTextValue(this, rightValue);
+            if (leftValue.kind === "texture" && rightValue.kind === "texture") {
+                if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Texture2D values support identity comparisons.");
+                const stored = (value: Value, node: ts.Expression) =>
+                    this.dataLowerer.compileKnownValueForSink(value, { kind: "handle", handle: "texture" }, node);
+                return `${stored(leftValue, unwrapped.left)} ${operator} ${stored(rightValue, unwrapped.right)}`;
+            }
             if (textKind(leftValue) || textKind(rightValue)) {
                 if (operator !== "==" && operator !== "!=") this.fail(unwrapped, "Text entities support strict identity comparisons.");
                 const sameKind = leftValue.kind === rightValue.kind && leftValue.textTransform === rightValue.textTransform;
@@ -12659,7 +12733,7 @@ class Compiler
     public probeStaticArrayLiteral(
         expression: ts.Expression,
     ): ts.ArrayLiteralExpression | undefined {
-        if (this.collectionMetadataValue(expression)?.collectionCardinality?.untrackedAliases) return undefined;
+        if (this.knownValueWithoutEvaluation(expression)?.collectionCardinality?.untrackedAliases) return undefined;
         // A list a scene selects between with a generation-known condition
         // is still a static list. Scene 140 writes both of its option
         // arrays that way -- `sg ? [sg] : undefined` for the shadow lights
@@ -13576,6 +13650,7 @@ class Compiler
         const start = this.body.length;
         const cameras = this.untrackedTaaCameraWrites.length;
         const admissions = this.deferredAdmissionFailures.length;
+        const colorReads = this.materialColorReads.length;
         const registration = this.temporalSceneRegistration;
         const registeredScenes = this.temporalRegisteredScenes.length;
         const controls = this.temporalControlAttachment;
@@ -13586,6 +13661,7 @@ class Compiler
             this.body.splice(start);
             this.untrackedTaaCameraWrites.length = cameras;
             this.deferredAdmissionFailures.length = admissions;
+            this.materialColorReads.length = colorReads;
             this.temporalSceneRegistration = registration;
             this.temporalRegisteredScenes.length = registeredScenes;
             this.temporalControlAttachment = controls;
@@ -13919,7 +13995,7 @@ class Compiler
             // ordinals. Closed-directory discovery can happen inside a loop.
             this.currentGltfAssetCount(),
             this.reachedShaderPrograms.length - this.runtimeShaderProfiles.size,
-            this.reachedNodeMaterials.length,
+            this.reachedNodeMaterials.length - this.runtimeNodeProfiles.size,
             this.reachedEffects_.length,
             this.geometryOutputTasks.length,
             this.postProcessTasks.length,
@@ -14113,10 +14189,30 @@ class Compiler
         this.deferredAdmissionFailures.push({ capability: "taa", node, message });
     }
 
+    public noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void {
+        this.materialColorReads.push(property);
+    }
+
+    public noteMaterialColorObjectWrite(node: ts.Node, property: "baseColorFactor" | "diffuseColor"): void {
+        this.deferredAdmissionFailures.push({capability: property, node,
+            message: `Reading material.${property} requires retained numeric-array producers; the legacy color producer cannot preserve its source shape.`});
+    }
+
+    public noteMaterialColorRenderBoundary(node: ts.Node, reason: string, always = false): void {
+        if (always || this.frameCallbackDepth > 0 || this.engineStartMark !== undefined || this.temporalSceneRegistration) {
+            this.deferredAdmissionFailures.push({capability: "material-colors", node,
+                message: `Numeric material-color reads do not yet represent per-group UBO snapshots for ${reason}.`});
+        }
+    }
+
     public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime", scene?: Value): void {
         const runtime = this.frameCallbackDepth > 0 || this.engineStartMark !== undefined;
         if (mode === "always" || runtime || (mode !== "registration" && this.temporalSceneRegistration)) {
             this.noteTemporalAdmissionFailure(node, `TAA task record epochs are not represented for ${runtime ? `runtime ${reason}` : reason}.`);
+        }
+        if (runtime || (mode !== "registration" && this.temporalSceneRegistration) || reason === "rebuildSceneRenderables") {
+            this.deferredAdmissionFailures.push({ capability: "node-input", node,
+                message: `Node material binding snapshots do not cover ${runtime ? `runtime ${reason}` : reason}.` });
         }
         if (mode === "registration") {
             this.temporalSceneRegistration ??= node;
@@ -17138,6 +17234,8 @@ class Compiler
         if (frozenParticleProperty) return frozenParticleProperty;
         const textProperty = readTextProperty(this, owner, expression.name.text, expression);
         if (textProperty) return textProperty;
+        const inputProperty = readNodeInputProperty(this, owner, expression.name.text, expression);
+        if (inputProperty) return inputProperty;
         // A live pure-2D binding's bridges, and the one path scene code
         // reads through one: `bridge.system.buffer.alive`, the simulated
         // count the generated registrar keeps. `bridges` is the pin's own
@@ -18728,19 +18826,20 @@ class Compiler
         invalidate(owner);
     }
 
-    private collectionMetadataValue(expression: ts.Expression): Value | undefined {
+    /** Read carried facts only; accessors and runtime expressions are not evaluated. */
+    public knownValueWithoutEvaluation(expression: ts.Expression): Value | undefined {
         const node = this.unwrap(expression);
         if (ts.isIdentifier(node)) return this.lookupOptional(node);
         if (node.kind === ts.SyntaxKind.ThisKeyword) return this.activeThis();
         if (ts.isPropertyAccessExpression(node)) {
-            const owner = this.collectionMetadataValue(node.expression);
+            const owner = this.knownValueWithoutEvaluation(node.expression);
             if (!owner?.recordGetters?.[node.name.text]) return owner?.recordProperties?.[node.name.text];
         }
         return undefined;
     }
 
     public knownCollectionCardinality(expression: ts.Expression): number | undefined {
-        const carried = this.collectionMetadataValue(expression);
+        const carried = this.knownValueWithoutEvaluation(expression);
         const carriedState = carried?.collectionCardinality ?? carried?.staticElementsOwner?.collectionCardinality;
         if (carriedState) {
             return carriedState.untrackedAliases ||
@@ -18759,7 +18858,7 @@ class Compiler
             }
             return count;
         }
-        const value = this.collectionMetadataValue(node);
+        const value = this.knownValueWithoutEvaluation(node);
         const state = value?.collectionCardinality ?? value?.staticElementsOwner?.collectionCardinality;
         if (state) {
             return state.untrackedAliases ||
@@ -18773,7 +18872,7 @@ class Compiler
 
     /** A known size whose members no longer have individual static aliases. */
     public runtimeCollectionCardinality(expression: ts.Expression): number | undefined {
-        const value = this.collectionMetadataValue(expression);
+        const value = this.knownValueWithoutEvaluation(expression);
         return value && !value.tupleElements &&
             !(value.staticElementsOwner?.staticElements ?? value.staticElements)
             ? this.knownCollectionCardinality(expression)

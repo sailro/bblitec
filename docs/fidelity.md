@@ -1,531 +1,216 @@
-# Fidelity strategy
+# Fidelity
 
-The reference is the original scene running against pinned Babylon Lite.
-Compiler semantics, GPU behavior and substituted libraries are separate sources
-of differences. A low image error or agreement between the native backends
-does not prove the absence of shared defects.
+The reference is the unchanged scene running on the pinned Babylon Lite package.
+This page owns intentional adaptations and source/native semantic boundaries.
+[Features](features.md) owns admission; [backends](backends.md) owns GPU transport.
 
 ## Semantic contract
 
-| Generated artifact | Purpose |
+| Artifact | Evidence |
 | --- | --- |
-| `manifest.json` | Reached features, source graph, assets and adaptations |
-| `fidelity.json` | Intentional source/native semantic differences, risk and validation |
-| `upstream/provenance.json` | Pinned modules and symbols |
-| `upstream/feature-activation.json` | Activation reasons, source origins and consumers |
-| `upstream/renderer-fidelity.json` | Renderer invariants, formats and shader contracts |
-| `upstream/shaders/composition.json` | Composed modules deployed |
-| `upstream/shaders/shader-material-reflection.json` | Custom shader interfaces and layout |
-| `*.native.wgsl`, `*.slots`, Tint reflection | Deployed shader text and compiled binding evidence |
-| `upstream/shaders/shader-compiler.json` | Offline target and compiler identity |
+| `manifest.json` | Reached graph, features and assets |
+| `fidelity.json` | Intentional adaptations and their risks |
+| `upstream/provenance.json` | Pinned modules/symbols |
+| `upstream/feature-activation.json` | Reach reasons and consumers |
+| `upstream/renderer-fidelity.json` | Renderer invariants/formats |
+| `upstream/shaders/composition.json` | Composed modules |
+| Shader reflection, `*.native.wgsl`, `*.slots` | Actual interfaces/bindings |
+| `upstream/shaders/shader-compiler.json` | Offline compiler/target identity |
 
-Preserve original corpus/golden sources and hashes. Resolve uncertainty from
-pinned loaders, factories and composers before interpreting the file format or
-image. Record an intentional divergence; do not label an unexplained residual
-an adaptation or precision floor.
+Executing pinned code unchanged is not automatically an adaptation. Assertions
+around a restated body do not establish complete semantic equivalence. Do not
+label an unexplained residual a precision floor or intentional divergence.
 
-The supported API surface is in [features](features.md). Important adaptation
-families include:
-
-| Boundary | Difference |
+| Boundary | Native adaptation |
 | --- | --- |
-| AOT/browser | Assets materialize during compilation; ordinary AOT asset awaits settle immediately; worker builds use owner-loop promises and continuations; reference queries fold; bounded browser instrumentation erases |
-| Workers/Window | AOT module factories, typed clone codecs and native task loops replace browser execution; retained layout is snapshotted, ResizeObserver delivery polls at 16 ms, and independent GPU canvases share a host device |
-| Executed producers | Chromium produces atlas pixels, fragile computed buffers, prefiltered assets and frozen particles; output can depend on the compiling browser |
-| Frame time | The fixed-step clock, the sprite renderer's per-frame hook and the sprite-layer and billboard effect clocks carry the browser's double delta; scene and frame-graph callbacks receive the engine API's float |
-| Plain-data model | Native storage/aliasing, checked access and sparse initialization differ from unrestricted JavaScript |
-| Skinning | A loaded eight-influence skin retains four influences |
-| GPU culling | Reached thin-instance culling can use the pin's all-active-instance fallback without its compute/indirect optimization |
-| JSON | Reached typed codecs and bounded dynamic parsing replace general JavaScript serialization; cyclic stringify is rejected |
-| Storage | localStorage uses the host preference directory rather than browser-origin storage |
-| Files | Native object-URL tokens and synchronized picker completion replace browser asynchronous dialogs |
-| UI | RmlUi/FreeType and retained Canvas2D replace browser layout/rasterization |
-| Physics/audio | Bullet and LabSound replace Havok and the browser audio engine |
-
-A pinned computation executed unchanged over the same inputs is not
-automatically a semantic divergence. Conversely, shape assertions around a
-handwritten translation do not make it an AST-derived implementation.
-
-Provider-backed node particles execute source callbacks and supported pinned
-evaluators natively, including authored pre-frame steps. Provider validation,
-matrix copying, setup and frame updates are lowered from the pin; billboard
-registration order and synchronization are asserted adapters over the existing
-billboard storage. Native/pinned fixtures compare all local particle columns
-and random draw counts through 180 frames, including deaths and swap-removal.
-Frozen particle bakes retain their existing Chromium execution path. Mixed
-native/frozen sets refuse because splitting their shared random stream between
-generation and runtime would change its ordering.
-
-Autonomous property-animation managers lower clock arithmetic and lifecycle
-state writes from the pinned manager. The PAL supplies ordered, cancellable
-frame requests; notification captures retain their source-owned data. The
-native presentation loop also hosts a reached primary Canvas2D surface when
-the source creates no engine. Persistent application RAF loops currently refuse
-composition with autonomous managers because their optimized registration does
-not retain each source requeue. Canvas2D rectangle coverage uses analytic
-backing-pixel coverage through the existing retained UI mesh, so browser raster
-quantization remains an explicit UI adaptation. Semantic fixtures compare the
-pinned and native manager lifecycle; image gates validate both native backends.
+| AOT assets | Materialization and ordinary asset awaits occur at generation; reference queries fold |
+| Executed producers | Chromium creates selected pixels/buffers/bakes; results depend on its execution environment |
+| Workers/Window | AOT factories, typed cloning and native realm loops; snapshotted layout and 16 ms ResizeObserver polling |
+| Plain data | Typed native storage, checked access and bounded sparse/JSON behavior |
+| Storage/files | Host preference storage, native URL tokens and synchronized picker completion |
+| UI | RmlUi/FreeType and retained Canvas2D replace browser layout/rasterization; see [UI](ui.md) |
+| Skinning | Loaded eight-influence skins retain four influences |
+| GPU culling | Reached thin instances can use the pin's all-active fallback |
+| Splats | Sorting is synchronous on the render thread |
+| Physics/audio | Bullet replaces Havok; LabSound replaces browser audio |
 
 ## Shader contract
 
-### Where a shader comes from
+PBR/Standard use pinned composers; node materials use the pinned graph compiler;
+plugins use the pin's splicer/bridges. Sprites, effects and post-processes use
+pinned builders/literals with declared specialization. Composition failures
+must not select a fallback shader.
 
-| Family | Origin |
-| --- | --- |
-| PBR and Standard colour/geometry | Pinned composer and extension registry |
-| Node materials | Pinned graph compiler and block emitters |
-| Material/splat plugins | Scene declarations folded, then pin's own splicer/bridges |
-| Sprites, splats, effects, post-processes | Pinned literals/builders/composers, with declared specialization |
-| Specialized shared vertex | Pinned PBR template and shared deformation/instance fragments, projected through typed shader IR |
-
-Do not introduce additional shader transcriptions or use a fallback shader when
-composition fails. Bindings, vertex interfaces and uniform layouts must match
-the actual deployed module. Detailed transport is owned by
-[backends](backends.md).
-
-The shared diagnostic/depth/background vertex stage keeps its pre-baked world
-and fixed PAL binding layout. When deformation is enabled, it uses four bone
-influences in a 64-matrix uniform palette and either two-target attributes or
-the pinned storage-morph payload. Its attribute path retains tangent deltas and
-a pre-morph bitangent. `shared-material-vertex-transport` records these
-adaptations; ordinary colour materials retain their own pinned composers.
+The specialized shared vertex path uses a baked world and fixed PAL bindings.
+Its deformation path uses four influences with a 64-matrix palette and supported
+attribute/storage morph transport. `shared-material-vertex-transport` records
+these differences from ordinary color material composition.
 
 ### Numeric width
 
-Preserve JavaScript-number precision through an expression and narrow where
-upstream stores into a float32/half destination. Camera scalars, local TRS
-calculations and procedural builder expressions are sensitive to early
-rounding. Static tuple/record values must be rendered at each sink's requested
-width; runtime values still need a more explicit width representation.
-
-Use the runtime's JavaScript `round_js` rule for `Math.round`.
-`hypot_js` uses the recorded sum-of-squares approximation. RGBD decode
-results are half-float texture data because that is the pin's storage format.
-High-precision camera/node support does not imply every native matrix is F64.
-
-Numeric ArrayBuffer views retain shared byte storage and copy each scalar with
-`memcpy`, avoiding typed references into a byte allocation. Stores apply the
-existing JavaScript integer conversions or float narrowing; compound writes
-retain the evaluated owner and prior value before the right operand runs.
-Prefix updates return the numeric result before destination narrowing.
-Owned vector storage remains available to existing native consumers, while
-numeric buffer views explicitly refuse contiguous typed access and methods
-that have not been adapted. Native/JavaScript fixtures observe overlapping
-views, escaped backing storage, replacement, argument order and ToIndex bounds.
-
-The CPU vertex bake projects the pin's WGSL normal/tangent normalization through
-typed shader IR with float32 intermediates and division. It retains its strict
-length-above-`1e-6` gate (zero otherwise) after the baked world transform.
-`guarded-cpu-vertex-normalization` records this adaptation; substituting the
-JavaScript tuple/object normalizers would change precision, epsilon and the
-degenerate result.
+Preserve JavaScript double precision until the source's Float32 allocation or
+store. Matrix layout, multiplication order, coordinate transforms and rounding
+are part of the contract. Numeric equality and byte equality differ for signed
+zero; record which comparison a control establishes.
 
 ### The reference pose
 
-Reference query, frame and seek time belong in the scene registry and are used
-by generation and both capture paths. Deterministic RAF, timer and CSS-animation
-time must agree. A frozen scene keeps presenting its final state while capture
-is pending. Diagnose a timer/frame mismatch from event traces before changing
-the scene or its threshold.
-
-Independent-engine captures declare their count and zero-based frame in the
-registry. The browser adapter delegates to the pinned `startEngine`, supplies
-60 Hz frame timestamps and cancels the next draw after the requested frame.
-It waits for GPU completion and subsequent rendering opportunities so a
-transferred canvas's final image reaches its placeholder. Native renderers
-retain their final GPU images at the same per-engine frame; the Window captures
-only when every canvas has reached it. This pins render deltas and frame counts,
-not arbitrary inter-realm message/timer schedules. Full-page references use the
-unchanged upstream HTML, with only the bundled module URL redirected to the
-normal TypeScript transpile. Capture adapter and host-page hashes accompany
-the application's source and golden hashes in the corpus manifest.
-
-Canvas-only captures of these pages retain all canvas rectangles at their
-original positions over black, excluding page chrome. Per-draw instrumented
-capture does not yet aggregate independent realms and refuses explicitly.
+Match source/module hashes, query, seek/frame, canvas size and UI. Native
+deterministic clocks are capture controls. They do not justify changing authored
+time steps or updating a golden to conceal drift.
 
 ### Depth
 
-The main scene follows the pinned reverse-Z projection, clear and compare.
-Shadow targets are the explicit standard-Z exception. Read compare, clear and
-bias state from the pin; neither backend should hardcode a competing convention.
-An unsupported material-specific compare must refuse.
+Main color uses the selected native depth convention; shadow passes retain their
+own convention. SDL may choose depth-only formats where the browser uses
+depth24plus-stencil8. Stencil use, compare/write, winding and readback
+reconstruction require separate contracts.
 
 ### Shadows
 
-A caster uses the biased light matrix; the receiver samples through the
-unbiased one. Shadow maps/receiver bindings follow each generator's actual
-type, light index and reflected byte layout. CSM uses one depth array with
-per-layer caster passes, preserving one resource owner.
-
-Material receive state is a composition choice; imported/runtime mesh
-collections retain supported alternatives and select through live records.
-The source setter still accepts a bounded static value. Node graphs have their
-own reflected receiver and no-colour/ESM caster paths.
-
-Morph-bound providers must affect both fitted bounds and the refresh version.
-A scene that reaches a provider may still fail to observe its effect, so use
-a focused changed-bound control when validating that mechanism.
-
-CSM fitting, caster bias and receiver packing are lowered from the pinned ASTs.
-Number-array values retain JavaScript-number precision; Float32Array stores
-narrow at their original boundary. Native cache/resource carriers remain
-structural adapters. Unsupported thin-instance caster cases must not be
-presented as precision differences; broader carrier and gating work remains
-in [TODO](../TODO.md).
+Preserve pinned caster bounds, filtering, pass state and sampled-depth meaning.
+Shader agreement alone does not establish CSM bounds, instance coverage or
+correct binding of mixed ordinary/comparison samplers.
 
 ### Background and environment
 
-DDS, environment-cube, solid and image skyboxes have different pinned shader,
-culling, rotation and noise arms. Dither depends on interpolated world position;
-moving a transform from a shader uniform into CPU-baked vertices can change it
-without visibly moving the geometry.
-
-Environment sizing resolves against the live scene bounds and camera options.
-Preserve object-local bounds and world transforms through the loader; a tight
-box around already-baked vertices is not generally the same input.
-
-HDR preserves mip zero and runs the pinned GGX prefilter for higher mips.
-DDS preserves its stored chain and projects harmonics from the pin.
-RGBD environment uploads retain their required orientation; BRDF LUT uploads
-have their separate orientation. Do not infer one from the other.
+Background geometry, cube orientation, mip policy, encoding and samplers follow
+the reached pinned path. Image processing and scene-color capture are separate
+passes; keep their source order.
 
 ### glTF material inputs
 
-Loader metadata chooses material shape, textures and activation. In particular:
+Derive extension predicates and texture/factor choices from the loader, not
+format assumptions. Pinned extension handlers own UV selection, transforms and
+merging. Native animation targets retain independent texture slots; the pin
+does not resolve metallic-roughness texture-transform pointers.
 
-- Extension presence, explicit factory registration and enabled/factor state
-  are different questions.
-- Texture-less factors can be baked into quantized texels; animated pointer
-  targets can require white fallback texels plus live uniform fields instead.
-- Each slot owns its encoding, sampler, UV set and transform. A family-wide
-  default cannot replace texture-object state.
-- glTF clearcoat and source-created clearcoat differ in the pin's F0-remap arm.
-- IOR/reflectance, occlusion ownership and animation-pointer registration must
-  come from the loader's actual builder rules.
-
-Use the pinned material-input mapper and composer coverage checks instead of
-recreating those predicates in multiple loaders/variant passes.
-Anisotropy and diffuse-transmission option objects are packaged from that
-mapper's ordered extension merge. Native hydration owns texture resources and
-live transforms; it does not repeat the extension equations or merge policy.
-Occlusion pointers use the loader's independent occlusion transform when one
-exists, including a split UV0 transform that shares the ORM image. The pin
-does not resolve metallic-roughness texture pointers, so those transforms
-remain at their load-time values.
+Public color/texture presence and identity differ from render fallbacks.
+Retain original color arrays in double precision and project them at the source
+registration boundary. Babylon material loading copies the first three diffuse
+channels into a fresh array; unused export channels are not public diffuse lanes.
 
 ### Deformation and instancing
 
-Vertex packing, mesh world, skin palette, local-position and instance-parent
-matrices form one contract. The glTF family mirrors coordinates; Standard
-does not inherit that convention. A changed skin/picking result must be
-compared at the buffer/palette level before blaming the fragment shader.
+Vertex layout, mesh world, palette and instance-parent matrices must agree.
+Loaded glTF coordinate mirroring is not a universal Standard-mesh convention.
+Native Euler/quaternion lanes differ from the pin's single rotation proxy;
+mixed writes and wider sharing need explicit admission.
 
-The native Euler and quaternion lanes are not the pin's single proxy-backed
-rotation representation. Mixed writes and wider clone/morph sharing require
-additional lowering. Four-influence skinning is an explicit adaptation.
+Imported node geometry preserves raw source attributes/indices and per-view
+worlds. Its world receipts can be numerically identical with signed-zero
+differences; no general bit-identity claim follows.
 
 ### Textures and compressed textures
 
-Mips, sRGB decode, factor texels, sampler modes and upload orientation follow
-the pinned texture/loader path. KTX/Basis data uploads its own block payload and
-mip chain; it must not be decoded and regenerated opportunistically.
-
-A texture object's `invertY` can be a UV-transform decision rather than a row
-flip. This matters for compressed textures and sampled render targets. Use the
-correct colour/depth texture-view branch and sampler.
+Keep pinned mips, encoding, samplers and upload orientation. KTX/Basis payloads
+retain their block data/mips. `invertY` may select a UV transform rather than
+a row flip; color and depth views are distinct resources.
 
 ### Gaussian splats
 
-The pinned loader builds row buffers and optional harmonics. Plugin order and
-shader specialization come from the pin. Sort state, world transform and GPU
-picking must refer to the same rendered cloud. Transform baking and live row
-updates retain the pin's data layout and buffer identity. The loader retains
-rows when baking, `splatsData` or `updateData` is reached; a successful update
-publishes new geometry and a version for draw/picking refresh. Existing aliases
-retain replaced row buffers. Native buffers without a retained owner refuse
-at the update boundary; copying their wrappers cannot extend the source lifetime.
-Both PALs refresh the existing four data textures
-before the next draw or pick. An immediate pick keeps the preceding order;
-the next frame applies the pin's depth-transform sort gate to the new centres.
-The native sort remains synchronous on the render thread, as recorded in the
-generated `splat-synchronous-sort` adaptation. Multiple plugin sets and some
-contributor combinations remain unfinished.
-
-`test/fixtures/splat-update-picking.ts` observes an actual cloud hit, moves all
-rows away and immediately picks again, then restores the rows and immediately
-requires the cloud hit. Run it with `npm run scene -- parity
-test/fixtures/splat-update-picking.ts --differential --gpu-debug` after processing
-the fixture. Its runtime assertions verify update-to-pick ordering on both PALs.
+Draw, sort and picking share the rendered cloud. Updates retain source buffer
+identity and preserve aliases to replaced storage. Refresh data textures before
+the next draw or immediate pick; frame sorting follows the pin's transform gate.
+Borrowed buffers without an owning lifetime refuse.
 
 ### Animation and hierarchy
 
-Property and glTF tracks keep separate interpolation/target support.
-Visibility has the pin's mutation and render-list refresh semantics; filtering
-only at initial registration can lose later-visible meshes, while filtering at
-every draw can bypass the pin's invalidation boundary.
-
-Loaded materials/meshes retain their own animation-pointer targets. Imported
-root cloning and parent transforms must preserve post-deformation ownership,
-rather than applying an outer transform in whichever stage is convenient.
+Property/glTF tracks have separate target/interpolation contracts. Preserve
+mutation and render-list invalidation boundaries. Autonomous managers use pinned
+clock/lifecycle logic with ordered cancellable native frame requests. Persistent
+application RAF composition remains bounded by source requeue semantics.
 
 ### Frame graph and post-process passes
 
-A pipeline matches its output target's format, depth presence and sample count.
-A borrowed depth attachment keeps the pin's load operation. Each colour task
-owns its camera/aspect-derived scene block. Partial swapchain copies preserve
-preceding content; their capture cannot be replaced by their source texture
-alone.
+A task owns its output formats, sample count, camera/aspect block and load/store
+operations. Partial swapchain copies preserve earlier content. Composite output
+identity can differ from its last pass, especially when history is written
+after presentation.
 
-The compiler-created default colour task preserves scene stage order;
-application tasks follow explicit lists. Post-process modules come from the
-pin and uniform writers from their ASTs. Composite public outputs resolve by
-observed target identity, independently of the final pass: a temporal effect
-may present before writing history. TAA's private `_factor` writer is lowered
-from the pin and starts at 1; its public `factor` is a separate value consumed
-by its execute hook. The complete pinned execute body updates the private
-factor, uploads it, runs blend/present/history passes, clears the first-update
-flag and then advances jitter. Its synchronous hooks preserve partial state
-when an operation fails. Rebuild resets occur only after resource recording
-succeeds.
+TAA preserves pinned cache keys, clean scratch, successful uploaded bytes,
+private factor, hook ordering and partial failure state. Missing cameras leave
+cache/storage unchanged. Late uniform writes affect earlier encoded draws in
+the same submission. See [transport](backends.md#temporal-post-process-transport).
 
-Each TAA source task retains its clean scene-uniform scratch, the last uploaded
-bytes and its cache key. The pinned cache compares camera identity and change
-key, effective aspect, fog/environment identity, exposure and contrast. A
-cache hit keeps the old bytes; a missing camera returns before packing or
-changing the key. Base packing zeros the entire scratch before reading
-matrices and writing universal fields. Registered fog, clip-plane and
-environment contributors run afterward; absent contributors leave zeroes,
-including eye padding and spherical-harmonic lanes. Matrix uploads narrow
-F64 values only at the pinned F32 stores. Cache writes precede packing, so a
-packing or upload failure does not roll back the key. The uploaded-byte shadow
-changes only after a successful write.
+Fog/environment keys represent object replacement, not equal values. Camera
+versions follow source setters, including repeated writes and target aliases.
+A task camera override controls packing; TAA's change test uses its source
+scene camera.
 
-Jitter derives its Halton sequence and matrix writes from the pinned bodies,
-leaving the clean scratch intact. The pin encodes source and post-process
-passes before one queue submission: a later jitter write changes the source
-uniform bytes read by that same submission. Preserving that ordering requires
-the final uploaded bytes, even for draws encoded before the write; treating
-it as next-frame-only jitter changes the image. Native CPU hooks retain their
-original order and execute once. Raw-word fixtures compare signed zero as
-well as values; backend implementation is described in
-[temporal transport](backends.md#temporal-post-process-transport).
-
-Scene-uniform fog and environment keys describe object replacement, not equal
-field values. New scenes start with absent keys. Fresh inline fog configs get
-a new key per setter call. Environment loaders publish new keys only after
-texture assembly succeeds, while repeated glTF scene setup
-reuses its captured key. Image-processing and background mutations keep that
-key. The supported source shapes and invalidation boundaries are listed in
-[features](features.md#post-process-passes).
-
-TAA camera transform versions follow the pinned setters rather than matrix
-comparison: equal scalar/component writes are silent, an away-and-back write
-increments twice, and target `.set` always dirties once. The lowered limit
-hook preserves recursive clamp writes and assignment completion values;
-controls and admitted camera animation lanes use the same setters. Projection
-changes remain polled by the pin's camera key. Retained direct target aliases
-keep their original camera. Source packing honours the render task's camera
-override; TAA's camera-change test reads its source task's scene camera, as
-the pinned execute hook does.
-
-A screen-space effect invalidates its temporal history on the pin's reset
-events: first allocation, owned-target reallocation, a source or depth
-texture identity change, a reset version change, the disabled-to-enabled
-transition and a singular view-projection inverse; camera motion keeps
-history. Native texture identity is the
-backend's allocation of a target's textures, so a frame-graph rebuild that
-recreates unchanged-size targets invalidates history where the browser's
-retained textures would not. Owned targets round their scaled extents by the
-pin's own rule, distinct from a composite intermediate's floor. SDL_GPU
-reconstructs depth from its device-preferred sampled depth format; Dawn keeps
-the browser's `depth24plus-stencil8`. The producer and resolve passes clear
-their targets before the fullscreen draw as the pin's recorded `loadOp` does,
-although the draw covers every texel; SDL_GPU could discard them instead, a
-departure from the recorded pass this port does not take.
+Screen-space history resets follow source allocation, identity, version, enable
+and inverse-matrix predicates. Native recreation of unchanged-size textures can
+invalidate history that a browser retained. SDL sampled-depth formats can also
+differ from Dawn's browser-compatible depth format.
 
 ## Picking contract
 
-Basic and detailed picking use the pin's pipeline modules and identify the
-actual mesh/cloud/billboard rather than its name. Sampled depth reconstructs a
-world-space point. Detailed barycentrics/normal lookup must use the geometry
-space the pin expects, including skinned versus CPU-baked transforms.
+Use pinned projection modules and originating resource identity. Readback
+continuations run after producing draws. Result aliases preserve identity and
+barycentric width; mesh queries validate engine lifetime.
 
-Picking results use a shared native carrier so aliases and data transport
-preserve JavaScript result identity and barycentric precision. GPU readback
-binds the carrier to its originating engine before the existing pinned
-continuation runs. Mesh-name and normal queries check that engine's wrapper
-lifetime; use after destruction or relocation explicitly throws. Full
-post-engine mesh retention remains outside this adaptation.
-
-Regular deformation picking executes the pin's projection factory for the
-skeleton/morph combinations present in the composed mesh rows. Basic and
-detailed passes bind each projection's own palette/storage layout. Pending
-weight writes and current bone poses upload before the pick is encoded, so
-a write followed by a pick observes the new pose without an intervening frame. Their
-world matrix uses the same shared transport choice as visible draws: authored
-local deformation precedes the mesh's live world; loaded skin palettes already
-carry that world. Detailed rest-normal lookup retains the node world separately
-and leaves the undeformed local varying in the pin's expected geometry space.
-
-Detailed picking requires the device's primitive-index capability; native
-throws where the pin's feature probe can leave it unavailable. Four-influence
-regular deformation does not imply eight-influence, thin-instance or VAT
-coverage. A deformed thin-instance candidate explicitly refuses. The pin's VAT
-projection refusal remains intact. Readback and subsequent continuations must
-occur after the render work that produced their buffers.
+Upload pending morph weights/current bone poses before immediate picks.
+Visible and picking draws must agree on geometry/world/palette space.
+Detailed picking requires primitive-index support; native throws when unavailable
+where the browser probe can leave the feature absent. Supported regular
+deformation does not imply thin-instance/VAT or eight-influence coverage.
 
 ## Physics contract
 
-BBL uses variable frame deltas by default, with a 100 ms ceiling. With both
-`scene.fixedDeltaMs` and the world timestep at `0`, physics follows elapsed frame
-time, as described in the pinned [physics documentation](https://github.com/BabylonJS/Babylon-Lite/blob/64710b56f9dfe175d919c635812f84c8872d467c/docs/lite/architecture/42-physics.md#timestep--delta-time-propagation).
-This keeps simulation speed consistent at ordinary frame rates; different step
-sizes can still produce different collision trajectories.
+The generated Babylon layer targets Bullet; the browser uses Havok.
+Identical trajectories are not guaranteed. Solver substitutions include substeps,
+speculative contacts, rebound reconstruction, damping/speed conversion and rest
+stabilization. The rebound rule is fitted behavior, not ported Havok internals.
 
-Explicit scene/world fixed overrides advance once per rendered frame; they do
-not create a fixed-frequency scheduler. The unchanged Break Meshes demo overrides
-its world step to 12.5 ms, so it advances 0.75 simulated seconds per wall second
-at 60 fps and 3 at 240 fps. Browser and native must preserve those same authored
-settings. A comparison against an edited browser demo cannot establish upstream
-fidelity.
+Default physics follows variable frame delta, capped at 100 ms. Explicit
+scene/world fixed steps advance once per rendered frame; there is no automatic
+fixed-frequency accumulator. Applications must supply fixed-step scheduling.
+Preserve authored overrides in browser/native comparisons.
 
-The pinned [headless documentation](https://github.com/BabylonJS/Babylon-Lite/blob/64710b56f9dfe175d919c635812f84c8872d467c/docs/lite/05-headless-null-engine.md#fixed-timestep--determinism)
-recommends accumulating elapsed time and consuming it in fixed steps for
-reproducible simulation. The application supplies that scheduling through
-`stepScene`; the normal rendered physics loop has no automatic accumulator.
-The documented headless prototype also lacks mesh/convex-hull collider support,
-so it cannot directly replace the rendered Break Meshes simulation.
+Body insertion/configuration order, center-of-mass offsets, collider ownership,
+trigger events and combine modes are explicit library boundaries. Degenerate
+boxes expand below Bullet's margin with a positive-face limitation.
+Triangle-mesh storage outlives its shape; dynamic concave bodies refuse.
+Floating-origin regions are separate worlds and do not collide with one another.
 
-The Babylon-facing physics layer is generated; the solver is Bullet, while
-the browser uses Havok. This substitution cannot establish identical
-trajectories by construction. Backend equality localizes a difference below
-shared rendering, but does not distinguish loader, generated physics and
-Bullet behavior on its own.
-
-The PAL contains measured solver adaptations: fixed substeps, speculative
-contacts, delayed/reconstructed rebound, damping/speed translation and
-contact-rest stabilization. The rebound rule is fitted from reference drops;
-it is not a transpilation of Havok internals. Retain that distinction in
-diagnostics and in any future effort to remove handwritten engine behavior.
-
-Additional library-boundary contracts are:
-
-- Body add/re-add and transform application preserve the pin's configuration
-  order despite Bullet's add-time state.
-- Degenerate boxes expand below Bullet's margin and offset their centre. The
-  chosen positive-face preservation is a known thin-ceiling limitation.
-- Convex hulls preserve centre of mass, inertia and principal-axis frame.
-- An authored centre of mass moves the body frame Bullet integrates and
-  offsets the collider by the same transform through a per-body compound
-  child, since Bullet centres a shape on the body origin while Havok carries
-  the centre as a separate body-local point.
-- Triangle-mesh backing storage outlives Bullet's shape; dynamic concave mesh
-  bodies refuse.
-- Shape trigger flags propagate to body collision flags; overlap-set changes
-  generate enter/exit events.
-- Friction/restitution combine modes and static/dynamic-friction limitations
-  remain explicit.
-- Floating-origin regions are separate solver worlds; bodies in different
-  regions do not collide.
-
-Validate solver-independent rest/shape properties separately from motion.
-Use per-step position/velocity traces for flight, landing, rebound and sleep;
-compare against the pinned Havok sequence at the same step. Keep an observing
-fixture for a mechanism that a registered scene merely reaches. No tuning of
-source scenes or thresholds substitutes for this evidence. Residual classes
-and unfinished physics capabilities are tracked in TODO; published pixels
-belong in status.
+Compare rest/shape properties separately from per-step flight, contact, rebound
+and sleep traces. Remaining capabilities and residuals belong in [TODO](../TODO.md).
 
 ## Text contract
 
-`TextLowerer` translates observable component/bulk setters, the cached Euler
-proxy, quaternion conversion and matrix multiplication from the pinned bodies.
-Transform lanes retain JS double width; ordinary text world matrices and uniform
-stores narrow to float at the pin's allocation/write boundaries. The identity
-matrix shortcut also preserves zero signs. The three UBO updates retain their
-independent camera/world/aspect, viewport and opacity conditions. CPU fixtures
-execute the real pinned functions with recording resource seams and compare all
-written bytes, including unchanged frames and frames with no camera.
+Pinned producers shape/pack static text. Lowered transforms retain doubles until
+source float stores; uniform updates preserve their independent invalidation
+conditions. TextData retains distinct mutable identity even when blobs deduplicate.
 
-Each materialized TextData has distinct mutable identity even when packaged
-blobs deduplicate. Its renderables retain the same data owner; group bind caches
-belong to that data, not to individual renderables. Renderable disposal releases
-its three buffer leases without disposing the data. TextData disposal clears
-live groups/counts while preserving width, height, packed CPU storage and version
-state; DefaultTextData additionally releases its owned atlas leases. Native
-fixtures observe the pin's lifetime, aliases, byte streams and disposal order.
+Group caches belong to TextData. Shared data can retain the first renderable's
+UBO/style bindings until source invalidation rebuilds a group. Disposal releases
+the appropriate buffer/atlas leases while retained CPU data follows source
+lifetime. Runtime upload/style/group order and per-stage constants follow the pin.
 
-`TextGpuLowerer` emits the pin's resource capacity, version, group-cache and draw
-decisions through synchronous backend operations. Style synchronization precedes
-atlas/group synchronization, then instance uploads, then the existing UBO writer.
-Shared TextData retains a group's original UBO/style bindings when a second
-renderable updates it unless the pin's own invalidation conditions rebuild that
-group. Packed instance words stay bytes throughout these uploads. CPU controls
-compare resource identities, every uploaded byte, idle work, partial uploads,
-growth, failure/publication order and draw ranges against the actual pinned
-functions. They also observe text-owner alpha-to-coverage membership; effective
-pipeline coverage remains the composed pipeline's decision. Static producer
-ranges are required: these helpers do not admit dynamic source text layouts,
-late styling installation or arbitrary native payload mutation.
+Deferred registration checks existing scene identity, drains snapshots and
+publishes after successful construction. Synchronous throws stop a batch;
+admitted async wrappers allow the batch's remaining calls before rejection.
+Arbitrary asynchronous builders are outside this boundary.
 
-The deferred scene drain now checks existing registration before construction,
-consumes snapshots repeatedly, and publishes only after successful construction.
-The text adapter retains scene-owned renderables through a weak scene reference,
-preserves duplicate additions, and refuses attachment after scene disposal.
-The pin's arbitrary async builders and late-cleanup continuations are not admitted.
-The PALs adapt those operations to their device APIs. Dawn retains buffer and
-texture leases in the actual bind group. SDL retains the same group ownership
-with a uniform shadow and pushes its bytes for each draw; storage and texture
-slots come from compiled reflection. Both consume the actual pinned pipeline
-descriptor and unchanged Slug WGSL. Numeric override constants remain separate
-for vertex and fragment stages; Tint specializes offline stages and Dawn
-receives the constants in its pipeline descriptor.
-
-The SDL default pass uses its selected depth-only format (`depth32float` or
-`depth24plus`) in place of the browser's `depth24plus-stencil8`; admitted text
-does not use stencil. Depth comparison and writes remain source-selected.
-`BBLITE_RENDER_CAPTURE` records successful uploads, allocated extents, written
-ranges, retained binding identities, per-draw pipeline state and SDL pushed
-uniform bytes after the captured frame's text draws. Unwritten allocation tails
-are excluded from the byte evidence.
-
-Scene275 and the shared-data/ordinary-blend controls compare those receipts
-with actual pinned browser operations, including mapped quad bytes, idle work,
-unattached-camera input and a resized canvas. Image gates apply independently
-to both backends. CPU lifecycle controls additionally cover failure
-and replacement paths that the static source admission does not expose. The
-supported source surface and remaining exclusions are in
-[features](features.md#text).
+Both backends consume unchanged Slug WGSL and pinned pipeline descriptors.
+SDL depth-format substitution and UI font rendering are separate adaptations.
+Capture commands and unobserved byte-range limits belong in [debugging](debugging.md).
 
 ## Audio contract
 
-The platform seam is Web Audio: the pinned engine creates its graph over an
-AudioContext, and LabSound implements reached nodes/parameters behind
-`pal_audio.hpp`. Runtime audio must remain renderer-independent and
-feature-selected.
-
-Graph topology and scheduling are not proof of matching PCM. The offline
-`BBLITE_AUDIO_CAPTURE` path allows waveform comparison; a durable browser
-versus native PCM gate remains unfinished. Master-volume changes require the
-pin's ramp component rather than an un-ramped gain assignment.
+LabSound implements the reached Web Audio boundary and remains independent of
+the renderer. Matching graph topology/scheduling does not establish PCM fidelity.
+A durable browser/native offline PCM gate and master-volume ramp support remain
+unfinished; see [TODO](../TODO.md).
 
 ## What is measured: the full page
 
-Parity includes the scene canvas and reached retained UI. UI layout/font
-differences can dominate composite MAD, so scenes declaring canvas thresholds
-also gate the canvas-only attribution pair. A canvas-only result does not
-replace the full-page result. [UI](ui.md) owns its supported and degraded
-browser behavior.
+Parity includes the canvas and reached UI. Declared canvas thresholds also gate
+UI-free attribution; those measurements do not replace full-page results.
+[Status](status.md) owns numeric values; [debugging](debugging.md) owns measurement
+commands and interpretation.
 
 ## Parity reports
 
-Reports carry backend identity, full/foreground MAD, exact and bounded-byte
-ratios, per-channel bias and spatial attribution. These are evidence for
-localization, not automatic diagnoses. Shared CPU/shader inputs can produce
-matching defects on both backends.
-
-[Debugging](debugging.md) owns commands, capture formats and the diagnostic
-ladder. [Status](status.md) owns published measurements;
-[development](development.md) owns validation and freshness requirements.
+Reports carry backend/build identity, full/foreground MAD, byte ratios, bias and
+spatial attribution. They localize differences rather than diagnose their cause.

@@ -34,6 +34,25 @@ export class BabylonLowerer {
                 );
             }
         }
+        const diffuseAssignment = this.context.findNodes(declaration,
+            (node): node is ts.BinaryExpression => ts.isBinaryExpression(node) &&
+                this.context.expressionMatchesShape(node.left, "mat.diffuseColor"));
+        if (diffuseAssignment.length !== 1) this.context.contractError(declaration, "Expected one Babylon diffuse-color assignment.");
+        this.context.assertExpressionShape(diffuseAssignment[0]!,
+            "mat.diffuseColor = [md.diffuse[0], md.diffuse[1], md.diffuse[2]]", "Babylon copies RGB into its own array");
+        const diffuseGuard = diffuseAssignment[0]!.parent.parent.parent;
+        if (!ts.isIfStatement(diffuseGuard)) this.context.contractError(diffuseAssignment[0]!, "Expected the optional Babylon diffuse-color guard.");
+        this.context.assertExpressionShape(diffuseGuard.expression, "md.diffuse", "Babylon diffuse-color presence");
+        const standard = this.context.functionDeclaration("src/material/standard/create-standard-material.ts", "createStandardMaterial").declaration;
+        this.context.assertExpressionShape(this.context.propertyInitializer(this.context.returnObject(standard), "diffuseColor"),
+            "[1, 1, 1]", "Standard factory RGB defaults");
+        const textureLoads = this.context.findNodes(declaration, (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.getText() === "texturePromises.push" && this.context.hasCall(node, "loadTexture2D"));
+        if (textureLoads.length !== 1) this.context.contractError(declaration, "Expected one per-slot Texture2D publication path.");
+        this.context.assertExpressionShape(textureLoads[0]!,
+            "texturePromises.push(loadTexture2D(engine, texUrl).then((tex) => slot.set(mat, tex)))",
+            "Babylon material retains each fresh texture factory result");
         if (
             !this.context.hasNode(
                 declaration,

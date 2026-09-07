@@ -79,14 +79,13 @@ function compileWalk(
     `);
 }
 
-test("the recursive-visitor flatten answers with the container's mesh list", () => {
+test("the recursive-visitor flatten retains pinned preorder", () => {
     const result = compileWalk();
 
-    // The consumer loops the asset's materialized meshes, which is the
-    // same collection `getContainerMeshes` answers with.
+    // The consumer uses the observed preorder separately from flat storage.
     assert.match(
         result.cpp,
-        /for \(const bbl::MeshHandle [A-Za-z0-9_]+ : [A-Za-z0-9_.]*engine\.assets\[[^\]]+\]\.meshes\)/,
+        /for \(const bbl::MeshHandle [A-Za-z0-9_]+ : bbl::asset_mesh_walk\([^\n]+, 0\)\)/,
     );
     // Neither half of the folded pair survives: no native list is
     // declared for the empty `Mesh[]`, and the driver loop emits nothing.

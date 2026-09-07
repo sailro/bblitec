@@ -6,6 +6,7 @@ import { pinnedNumericMathCalls } from "./pinned-operators.js";
 import { pinnedTrsComposition } from "./pinned-trs.js";
 import type { CompiledTextData, TextBlob } from "../pinned-text-data.js";
 import { stringLiteral as cppStringLiteral } from "../cpp-literals.js";
+import { assertAsyncSceneBuilder } from "./scene-deferred.js";
 
 const module = "src/text/text-renderable.ts";
 const scalar = (cpp: string): PinnedBinding => ({ cpp, type: "scalar" });
@@ -363,18 +364,19 @@ inline void dispose_default_text_data(const TextData& data) {
         const add = c.functionDeclaration(module, "addTextRenderable").declaration;
         c.expectShapeCount(add, "addDeferredSceneRenderables(scene, () => { return { renderables: [renderable], dispose: () => disposeTextRenderable(renderable) }; })", "Retained text deferred attachment");
         const deferred = c.functionDeclaration("src/scene/scene-core.ts", "addDeferredSceneRenderables").declaration;
+        assertAsyncSceneBuilder(c, deferred);
         c.expectShapeCount(deferred, "ctx._renderables.push(...built.renderables)", "Deferred scene publication");
         c.expectShapeCount(deferred, "ctx._disposables.push(built.dispose)", "Deferred scene disposal ownership");
         return `#if defined(BBLITE_HAS_TEXT) && BBLITE_HAS_TEXT
 inline void add_text_renderable(Scene& scene, TextRenderable renderable) {
     if (scene.disposed) throw std::runtime_error("Text attachment after scene disposal requires the pinned async late-cleanup lifecycle.");
     const std::weak_ptr<SceneState> owner = scene.state;
-    scene.deferred_builders.push_back([owner, renderable = std::move(renderable)] {
+    scene.deferred_builders.emplace_back([owner, renderable = std::move(renderable)] {
         if (const auto state = owner.lock()) {
             state->text_renderables.push_back(renderable);
             state->disposables.push_back([renderable] { dispose_text_renderable(renderable); });
         }
-    });
+    }, SceneDeferredFailure::promise_rejection);
 }
 #endif
 `;

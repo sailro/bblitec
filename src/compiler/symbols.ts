@@ -158,6 +158,7 @@ export class CompilerSymbols {
         const namespace = declarations?.find(ts.isNamespaceImport);
         const clause =
             declarations?.find(ts.isImportClause) ??
+            named?.parent.parent ??
             namespace?.parent;
         const importDeclaration = named
             ? named.parent.parent.parent

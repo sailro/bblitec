@@ -286,6 +286,7 @@ export interface ExpressionContext
     ): Value | undefined;
     reachFeature(feature: Feature, site?: ts.Node): void;
     reachJsData(): void;
+    noteMaterialColorRead(property: "baseColorFactor" | "diffuseColor"): void;
     enterRuntimeControlFlow(): void;
     leaveRuntimeControlFlow(): void;
     isInRuntimeIteration(): boolean;
@@ -590,6 +591,11 @@ export class ExpressionLowerer {
                 unwrapped,
                 "read",
             );
+            const property = data ?? this.context.compilePropertyAccess(unwrapped);
+            if (assertedNonNull && property.kind === "data" &&
+                property.dataType?.kind === "optional" && property.dataType.inner.kind === "handle" && property.dataType.inner.handle === "node-input") {
+                return this.context.dataLowerer.narrowOptional(property, expression, true);
+            }
             if (data) {
                 return data.kind === "data" &&
                     !ts.isPropertyAccessChain(unwrapped) &&
@@ -600,7 +606,7 @@ export class ExpressionLowerer {
                       )
                     : data;
             }
-            return this.context.compilePropertyAccess(unwrapped);
+            return property;
         }
         if (ts.isNewExpression(unwrapped)) {
             const browserFile = compileBrowserFileConstructor(
@@ -806,7 +812,12 @@ export class ExpressionLowerer {
                         key.staticString,
                     );
                 ts.setTextRange(property, unwrapped);
+                ts.setOriginalNode(property, unwrapped);
                 ts.setTextRange(
+                    property.name,
+                    unwrapped.argumentExpression,
+                );
+                ts.setOriginalNode(
                     property.name,
                     unwrapped.argumentExpression,
                 );

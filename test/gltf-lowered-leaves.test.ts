@@ -1657,7 +1657,7 @@ test("the emitted loader carries every round-4 lowered default", () => {
         'slot.rotation = float_or(transform, "rotation", 0.0f);',
         'float_or(normal_texture->as_object(), "scale", 1.0f);',
         "material.emissive_factor = Color3{0.0f, 0.0f, 0.0f};",
-        'float_array(optional(pbr, "baseColorFactor"));',
+        'double_array(optional(pbr, "baseColorFactor"));',
         'float_array(optional(material_json, "emissiveFactor"));',
         '"clearcoatFactor",\n                clearcoat_texture ? 1.0f : 0.0f);',
         '"sheenRoughnessFactor",\n                0.0f);',

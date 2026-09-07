@@ -11,6 +11,7 @@ import {
 } from "./animation-interpolation.js";
 import { lowerGltfExtensionDefaults } from "./extension-defaults.js";
 import { lowerGltfFactorBake } from "./factor-bake.js";
+import { lowerGltfMaterialColorPresence } from "./material-color-presence.js";
 import {
     lowerIblEnvironmentScalarsCpp,
     lowerIblPolynomialCpp,
@@ -74,6 +75,13 @@ export interface GltfLoaderOptions {
      *  primitive was loaded, so retain that primitive's local vertices for
      *  the instanced draw path instead of reusing its baked world vertices. */
     dynamicThinInstances?: boolean;
+    /** Node geometry views bind the source NORMAL attribute beside a real
+     * world matrix, so retain it before the native bake/mirror/normalize. */
+    retainLocalNormals?: boolean;
+    /** Scene code reads the original public albedo Texture2D producer. */
+    sourceTextureReads?: boolean;
+    /** Hydrate source collector permutations observed on the pinned hierarchy. */
+    sourceMeshWalks?: boolean;
     nonTrianglePrimitives?: boolean;
     /**
      * The asset carries Gaussian-splat clouds: packaging ran the pinned
@@ -527,6 +535,30 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
     public lowerLoaderAdapter(
         options: GltfLoaderOptions = {},
     ): LoweredSource {
+        if (options.retainLocalNormals) {
+            const { declaration } = this.context.functionDeclaration(
+                "src/loader-gltf/load-gltf.ts", "buildTightGltfMesh");
+            const data = declaration.parameters[1]?.name;
+            if (!data || !ts.isIdentifier(data) || !this.context.hasNode(
+                declaration,
+                node => {
+                    if (!ts.isPropertyAssignment(node) ||
+                        !ts.isIdentifier(node.name) || node.name.text !== "normalBuffer") return false;
+                    const call = this.context.unwrapExpression(node.initializer);
+                    if (!ts.isCallExpression(call) || !ts.isIdentifier(call.expression) ||
+                        call.expression.text !== "createMappedBuffer") return false;
+                    const argument = call.arguments[1];
+                    if (!argument) return false;
+                    const values = this.context.unwrapExpression(argument);
+                    return ts.isPropertyAccessExpression(values) &&
+                        ts.isIdentifier(values.expression) && values.expression.text === data.text &&
+                        values.name.text === "_normals";
+                },
+            )) {
+                this.context.contractError(declaration,
+                    "Expected the glTF normal buffer to upload source _normals without transformation.");
+            }
+        }
         if (options.animationBlending) {
             this.assertWeightedGltfMixer();
         }
@@ -704,6 +736,15 @@ ParsedGlbContainer parse_glb_container(const ts::ArrayBuffer& buffer) {
                 "src/loader-gltf/gltf-pbr-builder.ts",
             ),
         );
+        const materialColorPresence = lowerGltfMaterialColorPresence(
+            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder.ts"),
+        );
+        if (materialColorPresence !== lowerGltfMaterialColorPresence(
+            this.context.sourceFile("src/loader-gltf/gltf-pbr-builder-ext.ts"), "assemblePbrPropsExt",
+        )) {
+            throw new Error("Pinned glTF builders require distinct public material color presence adapters.");
+        }
+        factorBake.helpers += "\n" + materialColorPresence;
         const materialDefaults = lowerGltfMaterialDefaults({
             material: this.context.sourceFile(
                 "src/loader-gltf/gltf-material.ts",

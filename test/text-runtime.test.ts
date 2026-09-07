@@ -13,6 +13,16 @@ import { readAssetBytesSync } from "../src/compiler/asset-bytes-sync.js";
 import { resolveBundledAsset } from "../src/compiler/assets.js";
 import { stringLiteral } from "../src/cpp-literals.js";
 import { cppFunction, optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
+import { assertAsyncSceneBuilder } from "../src/lowering/scene-deferred.js";
+
+test("deferred adapters require the actual async wrapper boundary", () => {
+    const context = new LoweringContext();
+    const source = context.functionDeclaration("src/scene/scene-core.ts", "addDeferredSceneRenderables").declaration;
+    assertAsyncSceneBuilder(context, source);
+    const changed = ts.createSourceFile("changed-scene.ts", source.getText().replace("async ()", "()"), ts.ScriptTarget.Latest, true);
+    const declaration = changed.statements.find(ts.isFunctionDeclaration)!;
+    assert.throws(() => assertAsyncSceneBuilder(context, declaration), /Expected one async deferred scene builder/);
+});
 
 interface Vector { x: number; y: number; z: number; set(x: number, y: number, z: number): void }
 interface Quaternion extends Vector { w: number; version: number; set(x: number, y: number, z: number, w?: number): void }
@@ -158,7 +168,7 @@ int main() {
 test("deferred scene registration observes snapshot order, identity guards, failure and retained text disposal", async (t) => {
     const native=optionalNativeFixtureTools(false);
     if(!native){t.skip("Native fixture compiler unavailable.");return;}
-    interface PinScene { _deferredBuilders: Array<()=>void>; _renderables: Renderable[]; _disposables: Array<()=>void> }
+    interface PinScene { _deferredBuilders: Array<()=>void | Promise<void>>; _renderables: Renderable[]; _disposables: Array<()=>void> }
     const pin = await importPinnedModule<{
         createSceneContext(surface: object, options: object): PinScene;
         registerScene(scene: PinScene): Promise<void>;
@@ -180,6 +190,27 @@ test("deferred scene registration observes snapshot order, identity guards, fail
     await assert.rejects(pin.registerScene(scene),/builder/);
     assert.equal(order,"abcde"); assert.equal(surface._renderingContexts.length,0); assert.equal(scene._deferredBuilders.length,1);
     await pin.registerScene(scene); assert.equal(order,"abcdeg");
+    // Async wrappers reject without aborting Array.map's remaining calls.
+    // The next drain still waits for a successful retry of this failed batch.
+    const rejectedSurface={engine:{},_renderingContexts:[] as PinScene[]};
+    const rejectedScene=pin.createSceneContext(rejectedSurface,{defaultRenderTask:false});
+    let rejectedOrder="";
+    rejectedScene._deferredBuilders.push(async()=>{
+        rejectedOrder+="a";
+        rejectedScene._deferredBuilders.push(()=>{rejectedOrder+="c";});
+        throw new Error("first rejection");
+    },async()=>{rejectedOrder+="b";throw new Error("second rejection");});
+    await assert.rejects(pin.registerScene(rejectedScene),/first rejection/);
+    assert.equal(rejectedOrder,"ab");
+    assert.equal(rejectedScene._deferredBuilders.length,1);
+    assert.equal(rejectedSurface._renderingContexts.length,0);
+    await pin.registerScene(rejectedScene);assert.equal(rejectedOrder,"abc");
+    unregisterRenderingContext(rejectedSurface,rejectedScene);
+    rejectedScene._deferredBuilders.push(async()=>{rejectedOrder+="d";},()=>{
+        rejectedOrder+="e";throw new Error("synchronous throw");
+    },async()=>{rejectedOrder+="f";});
+    await assert.rejects(pin.registerScene(rejectedScene),/synchronous throw/);
+    assert.equal(rejectedOrder,"abcde");
     const r=text.createTextRenderable({_instanceCount:1});
     const other=text.createTextRenderable({_instanceCount:1},{order:-5});
     text.addTextRenderable(scene,r); text.addTextRenderable(scene,r); text.addTextRenderable(scene,other);
@@ -222,6 +253,27 @@ int main(){
     try { register_scene(scene); return 4; } catch(const std::runtime_error&) {}
     if(order!="abcde" || !engine.registered_scenes.empty() || scene.deferred_builders.size()!=1) return 5;
     register_scene(scene); if(order!="abcdeg") return 6;
+    Scene rejected;rejected.engine=&engine;
+    std::string rejected_order;
+    rejected.deferred_builders.emplace_back([&]{
+        rejected_order+="a";
+        rejected.deferred_builders.push_back([&]{rejected_order+="c";});
+        throw std::runtime_error("first rejection");
+    },SceneDeferredFailure::promise_rejection);
+    rejected.deferred_builders.emplace_back([&]{rejected_order+="b";throw std::runtime_error("second rejection");},SceneDeferredFailure::promise_rejection);
+    try {register_scene(rejected);return 12;} catch(const std::runtime_error& error) {
+        if(std::string(error.what())!="first rejection")return 13;
+    }
+    if(rejected_order!="ab" || rejected.deferred_builders.size()!=1 || engine.registered_scenes.size()!=1)return 14;
+    register_scene(rejected);if(rejected_order!="abc")return 15;
+    unregister_scene(rejected);
+    rejected.deferred_builders.emplace_back([&]{rejected_order+="d";},SceneDeferredFailure::promise_rejection);
+    rejected.deferred_builders.push_back([&]{rejected_order+="e";throw std::runtime_error("synchronous throw");});
+    rejected.deferred_builders.emplace_back([&]{rejected_order+="f";},SceneDeferredFailure::promise_rejection);
+    try {register_scene(rejected);return 16;} catch(const std::runtime_error& error) {
+        if(std::string(error.what())!="synchronous throw")return 17;
+    }
+    if(rejected_order!=${stringLiteral(rejectedOrder)})return 18;
     auto data=create_text_data({});
     auto r=create_text_renderable(data);
     TextRenderableOptions options; options.order=-5;
