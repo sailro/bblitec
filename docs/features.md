@@ -578,9 +578,16 @@ of pass order. The compiler can transport a proven source render-task handle
 through a composite descriptor, and uniform writers can read private live
 task state. TAA's pinned execute and rebuild bodies are lowered over retained
 task state with synchronous renderer hooks; observing fixtures cover pass
-failures and reset order. Native generation still explicitly refuses TAA
+failures and reset order. Its arc-camera writers retain target aliases and
+lower the pin's observable setters, limit hooks, inertia and admitted camera
+animation writes. TAA requires task construction and attachment before initial
+scene registration. It refuses later graph recording/topology changes,
+untracked camera producers, parent or target replacement, and target copies
+into plain data aggregates. Computed target stores, unlowered mutation
+operators and erased `Object.assign` calls also refuse. Native generation still explicitly refuses TAA
 until camera projection jitter and the source task's persistent scene UBO
-are represented.
+are represented. TAA accepts one startup control attachment; duplicate or
+recurring attachments need per-attachment inertia callback ownership.
 
 ### Screen-space effects
 

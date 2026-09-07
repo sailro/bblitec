@@ -9,6 +9,8 @@ import {
 export interface SceneIntrinsicContext
     extends IntrinsicCallContext,
         CameraDeferralContext {
+    noteTemporalRecordBoundary(node: ts.Node, reason: string, mode?: "runtime" | "registration" | "always"): void;
+    noteTemporalCameraControl(node: ts.Node): void;
     compileNumber(
         expression: ts.Expression,
         precision?: "float" | "double",
@@ -56,6 +58,10 @@ export function compileSceneIntrinsic(
     importedName: string,
     call: ts.CallExpression,
 ): Value | undefined {
+    if (["unregisterScene", "addToScene", "removeFromScene", "addTask", "addTaskAtStart"].includes(importedName)) {
+        context.noteTemporalRecordBoundary(call, `${importedName} after scene registration`);
+    }
+    if (importedName === "rebuildSceneRenderables") context.noteTemporalRecordBoundary(call, importedName, "always");
     switch (importedName) {
         case "addToScene": {
             context.expectArgumentCount(call, 2, 2);
@@ -239,6 +245,7 @@ export function compileSceneIntrinsic(
                 "frame-graph-context",
                 call.arguments[0]!,
             );
+            context.noteTemporalRecordBoundary(call, importedName, "registration");
             return {
                 kind: "void",
                 cpp: `bbl::register_frame_graph_context(${frameGraph.cpp})`,
@@ -275,6 +282,7 @@ export function compileSceneIntrinsic(
                 sceneArgument,
             );
             context.expectSameEngine(camera, scene, call);
+            context.noteTemporalCameraControl(call);
             const deferrals = call.arguments[3]
                 ? compileCameraDeferralOptions(context, call.arguments[3]) : [];
             if (importedName === "attachFreeControl") {
@@ -446,6 +454,7 @@ export function compileSceneIntrinsic(
                 "scene",
                 call.arguments[0]!,
             );
+            context.noteTemporalRecordBoundary(call, importedName, "registration");
             return {
                 kind: "void",
                 cpp: `bbl::register_scene(${scene.cpp})`,

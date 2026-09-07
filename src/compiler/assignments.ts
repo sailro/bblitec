@@ -443,6 +443,7 @@ export function lightScalarSetter(
 }
 
 export interface AssignmentContext extends DeterministicRandomContext {
+  noteTemporalRecordBoundary(node: ts.Node, reason: string): void;
   isRuntimeResourceConstruction(): boolean;
   readonly checker: ts.TypeChecker;
   readonly dataTypes: import("./data-types.js").DataTypeRegistry;
@@ -1932,6 +1933,7 @@ export function emitPropertyAssignment(
     }
 
     if (target.kind === "mesh" && property === "material") {
+      context.noteTemporalRecordBoundary(expression, "mesh material replacement after scene registration");
       requireSimpleAssignment(context, expression, "mesh material");
       const material = context.compileValue(expression.right);
       context.expectKind(material, "material", expression.right);

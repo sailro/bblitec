@@ -300,6 +300,18 @@ new keys only after texture assembly succeeds, while repeated glTF scene setup
 reuses its captured key. Image-processing and background mutations keep that
 key. Direct null fog writes and environment-object transport remain refused.
 
+TAA camera transform versions follow the pinned setters rather than matrix
+comparison: equal scalar/component writes are silent, an away-and-back write
+increments twice, and target `.set` always dirties once. The lowered limit
+hook preserves recursive clamp writes and assignment completion values;
+controls and admitted camera animation lanes use the same setters. Projection
+changes remain polled by the pin's camera key. Retained direct target aliases
+keep their original camera. Replacement/parenting, copying an observable
+target into a plain aggregate, and untracked camera producers are refused.
+Authored rebuilds, graph changes after registration and TAA creation after
+registration or frame execution are refused until task record epochs and
+earlier source UBO history are represented.
+
 A screen-space effect invalidates its temporal history on the pin's reset
 events: first allocation, owned-target reallocation, a source or depth
 texture identity change, a reset version change, the disabled-to-enabled

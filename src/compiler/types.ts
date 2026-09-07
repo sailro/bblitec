@@ -2125,6 +2125,12 @@ export interface Value {
     transform: SceneNodeTransformDescriptor;
     bound?: true;
   };
+  /** An observable camera vector retains its original camera handle. */
+  cameraVector?: {
+    owner: Value & { engineCpp: string };
+    field: "position" | "target" | "up_vector";
+    bound?: true;
+  };
   geometryTask?: GeometryOutputTaskManifest;
   /**
    * Set on a `render-texture` or `render-target-texture` whose texture is

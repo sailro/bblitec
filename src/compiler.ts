@@ -161,6 +161,8 @@ import {
     type DataLoweringContext,
     isNeverResized,
 } from "./compiler/data-lowering.js";
+import { cameraNumberWrite, isCameraExpression } from "./compiler/camera-writes.js";
+import { noteCameraRecordWrite } from "./compiler/intrinsics/camera.js";
 import {
     DataTypeRegistry,
     dataTypesEqual,
@@ -584,6 +586,11 @@ const NULLABLE_VAT_RESOURCE_TYPES = new Map<
 
 /** The closure key for a callback the program evaluates once, at module scope. */
 const unownedCallbackScope: object = {};
+const CAMERA_MUTATION_OPERATORS = new Map<ts.SyntaxKind, string>([
+    [ts.SyntaxKind.EqualsToken, "="], [ts.SyntaxKind.PlusEqualsToken, "+"],
+    [ts.SyntaxKind.MinusEqualsToken, "-"], [ts.SyntaxKind.AsteriskEqualsToken, "*"],
+    [ts.SyntaxKind.SlashEqualsToken, "/"],
+]);
 
 /** Whether a node is written inside another. */
 function isDeclaredInside(node: ts.Node, target: ts.Node | undefined): boolean {
@@ -825,6 +832,10 @@ class Compiler
     public readonly postProcessTasks: PostProcessTaskManifest[] = [];
     public readonly postProcessComposites: PostProcessCompositeManifest[] = [];
     private readonly sceneUniformIdentityLimitations = new Map<ts.Node, string>();
+    private readonly untrackedTaaCameraWrites: Array<{ node: ts.Node; reason: string }> = [];
+    private readonly untrackedTemporalRecords: Array<{ node: ts.Node; reason: string }> = [];
+    private temporalSceneRegistration: ts.Node | undefined;
+    private temporalControlAttachment: ts.Node | undefined;
     public readonly screenSpaceTasks: ScreenSpaceTaskManifest[] = [];
     private readonly sceneMaterials = new SceneMaterialRecorder();
     private readonly sceneMaterialGltfAssetsBefore: number[] = [];
@@ -987,6 +998,16 @@ class Compiler
         }
         this.emitDeferredPhysicsCallbacks();
         this.emitNativeHostUi();
+        if (this.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask")) {
+            const unsupported = this.untrackedTaaCameraWrites[0];
+            if (unsupported) this.fail(unsupported.node, `TAA requires tracked camera mutations: ${unsupported.reason}.`);
+            const record = this.untrackedTemporalRecords[0];
+            if (record) this.fail(record.node, `TAA task record epochs are not represented for ${record.reason}.`);
+            for (const feature of ["camera:free", "camera:geospatial", "camera:orthographic", "loader:gltf-cameras"] as const) {
+                if (this.features.has(feature)) this.fail(this.sourceFile,
+                    `TAA camera version transport does not cover '${feature}'.`);
+            }
+        }
         if (this.reachedNodeParticles.nativeProvider &&
             !this.reachedNodeParticles.sets.some((set) => set.native)) {
             this.fail(this.sourceFile, "A reached native emitter provider must feed a built particle set; standalone provider options are not lowered.");
@@ -2505,6 +2526,7 @@ class Compiler
         );
         let value = this.compileValue(declaration.initializer);
         value = this.bindSceneNodeVector(value);
+        value = this.bindCameraVector(value);
         if (forwardCallback) {
             this.completeForwardFunctionResult(
                 declaration,
@@ -4343,6 +4365,7 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        if (this.compileCameraMutation(expression)) return;
         if (emitCanvasAssignment(this, expression)) return;
         if (this.options.workers && this.emitUiPropertyAssignment(expression)) return;
         if (emitStructuralPropertyAssignment(this, expression)) {
@@ -8880,7 +8903,7 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
+            value = this.compileCameraMutation(expression) ?? this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
         }
@@ -13480,9 +13503,17 @@ class Compiler
         answered: (result: T) => boolean = (result) => result !== undefined,
     ): T {
         const start = this.body.length;
+        const cameras = this.untrackedTaaCameraWrites.length;
+        const records = this.untrackedTemporalRecords.length;
+        const registration = this.temporalSceneRegistration;
+        const controls = this.temporalControlAttachment;
         const result = probe();
         if (!answered(result)) {
             this.body.splice(start);
+            this.untrackedTaaCameraWrites.length = cameras;
+            this.untrackedTemporalRecords.length = records;
+            this.temporalSceneRegistration = registration;
+            this.temporalControlAttachment = controls;
         }
         return result;
     }
@@ -13743,6 +13774,7 @@ class Compiler
         }
         if (value.kind === "record") {
             if (value.sceneNodeVector) this.useNativeValue(value.sceneNodeVector.owner, seen);
+            if (value.cameraVector) this.useNativeValue(value.cameraVector.owner, seen);
             for (const field of Object.values(value.recordProperties ?? {})) this.useNativeValue(field, seen);
         }
         if (value.kind === "tuple") {
@@ -13942,7 +13974,75 @@ class Compiler
     }
 
     public emitDataPostfix(expression: ts.PostfixUnaryExpression): boolean {
+        if (this.compileCameraMutation(expression)) return true;
         return this.dataLowerer.emitPostfixUnary(expression);
+    }
+
+    private compileCameraMutation(expression: ts.Expression): Value | undefined {
+        const node = this.unwrap(expression);
+        const unary = ts.isPrefixUnaryExpression(node) || ts.isPostfixUnaryExpression(node);
+        if (unary ? node.operator !== ts.SyntaxKind.PlusPlusToken && node.operator !== ts.SyntaxKind.MinusMinusToken :
+            !ts.isBinaryExpression(node) || node.operatorToken.kind < ts.SyntaxKind.FirstAssignment || node.operatorToken.kind > ts.SyntaxKind.LastAssignment) return undefined;
+        const left = this.unwrap(unary ? node.operand : (node as ts.BinaryExpression).left);
+        const operator = unary ? (node.operator === ts.SyntaxKind.PlusPlusToken ? "+" :
+            node.operator === ts.SyntaxKind.MinusMinusToken ? "-" : undefined) :
+            ts.isBinaryExpression(node) ? CAMERA_MUTATION_OPERATORS.get(node.operatorToken.kind) : undefined;
+        if ((!operator || ts.isElementAccessExpression(left)) && (ts.isPropertyAccessExpression(left) || ts.isElementAccessExpression(left))) {
+            const owner = this.unwrap(left.expression);
+            if (this.resolveRecordValue(owner)?.cameraVector || isCameraExpression(this, owner) ||
+                (ts.isPropertyAccessExpression(owner) && ["target", "position", "upVector"].includes(owner.name.text) && isCameraExpression(this, owner.expression))) {
+                this.untrackedTaaCameraWrites.push({ node: left, reason: "this camera mutation syntax does not invoke its pinned setter" });
+            }
+        }
+        if (!operator || (!unary && !ts.isBinaryExpression(node))) return undefined;
+        if (ts.isPropertyAccessExpression(left) && ["target", "position", "upVector", "parent"].includes(left.name.text) &&
+            isCameraExpression(this, left.expression)) {
+            this.untrackedTaaCameraWrites.push({ node: left, reason: `replacing camera.${left.name.text} changes its observable owner` });
+        }
+        const target = cameraNumberWrite(this, left);
+        if (!target) return undefined;
+        noteCameraRecordWrite(this, target.camera, target.property,
+            unary ? undefined : node.right, operator === "=" && !["target", "position", "up_vector"].includes(target.property));
+        if (target.property === "position" || target.property === "up_vector") {
+            this.untrackedTaaCameraWrites.push({ node: left, reason: `camera.${target.property} is not the arc camera's observable target` });
+        }
+        let previous: string | undefined;
+        if (operator !== "=") {
+            previous = this.allocateTemporaryCppName("camera_previous");
+            this.emit(`const double ${previous} = ${target.current};`);
+        }
+        const right = unary ? "1.0" : this.compileNumber(node.right, "double");
+        const value = this.allocateTemporaryCppName("camera_value");
+        this.emit(`const double ${value} = ${operator === "=" ? right : `(${previous} ${operator} ${right})`};`);
+        this.emit(target.write(value));
+        return { kind: "number", cpp: unary && ts.isPostfixUnaryExpression(node) ? previous! : value,
+            dataType: { kind: "number" } };
+    }
+
+    public noteCameraVectorSet(vector: NonNullable<Value["cameraVector"]>, site: ts.Node): void {
+        noteCameraRecordWrite(this, vector.owner, vector.field, undefined, false);
+        if (vector.field !== "target") this.untrackedTaaCameraWrites.push({ node: site,
+            reason: `camera.${vector.field} is not the arc camera's observable target` });
+    }
+
+    public noteCameraVectorCopy(value: Value, site: ts.Node): void {
+        if (value.cameraVector) this.untrackedTaaCameraWrites.push({ node: site,
+            reason: "an observable camera vector cannot be copied into a plain data aggregate" });
+    }
+
+    public noteTemporalRecordBoundary(node: ts.Node, reason: string, mode: "runtime" | "registration" | "always" = "runtime"): void {
+        const runtime = this.frameCallbackDepth > 0 || this.engineStartMark !== undefined;
+        if (mode === "always" || runtime || (mode !== "registration" && this.temporalSceneRegistration)) {
+            this.untrackedTemporalRecords.push({ node, reason: runtime ? `runtime ${reason}` : reason });
+        }
+        if (mode === "registration") this.temporalSceneRegistration ??= node;
+    }
+
+    public noteTemporalCameraControl(node: ts.Node): void {
+        if (this.temporalControlAttachment || this.frameCallbackDepth > 0 || this.engineStartMark !== undefined) {
+            this.untrackedTaaCameraWrites.push({ node, reason: "TAA supports one startup control attachment until per-attachment inertia callbacks are represented" });
+        }
+        this.temporalControlAttachment ??= node;
     }
 
     private bindAudioMainBusStorage(value: Value): void {
@@ -14746,6 +14846,13 @@ class Compiler
     }
 
     public isBrowserInstrumentationCall(call: ts.CallExpression): boolean {
+        if (ts.isPropertyAccessExpression(call.expression) && call.expression.name.text === "assign" &&
+            ts.isIdentifier(call.expression.expression) && call.expression.expression.text === "Object" &&
+            this.isDefaultLibraryIdentifier(call.expression.expression)) {
+            // This erased browser helper cannot invoke observable setters,
+            // including through a helper-returned camera/vector argument.
+            this.untrackedTaaCameraWrites.push({ node: call, reason: "Object.assign does not lower observable camera setters" });
+        }
         return this.browserErasure.isBrowserInstrumentationCall(call);
     }
 
@@ -17158,25 +17265,17 @@ class Compiler
             // Not a field but three of them: the record this synthesizes
             // is what makes `camera.position.x`, `camera.target.x`, and
             // destructuring either vector read the same components.
-            const record = `${this.requireEngine(owner, expression)}.cameras[${owner.cpp}.value]`;
+            const engine = this.requireEngine(owner, expression);
             const vector =
                 expression.name.text === "upVector"
                     ? "up_vector"
                     : expression.name.text;
-            const component = (name: "x" | "y" | "z"): Value => ({
-                kind: "number",
-                cpp: `${record}.${vector}.${name}`,
-                dataType: { kind: "number" },
-                ...(owner.engineCpp ? { engineCpp: owner.engineCpp } : {}),
-            });
+            const cameraVector = { owner: { ...owner, engineCpp: engine }, field: vector } as const;
             return {
                 kind: "record",
                 cpp: "",
-                recordProperties: {
-                    x: component("x"),
-                    y: component("y"),
-                    z: component("z"),
-                },
+                cameraVector,
+                recordProperties: this.cameraVectorProperties(cameraVector),
             };
         }
         if (
@@ -17938,6 +18037,25 @@ class Compiler
             .some((property) => this.recordHasMutableContainer(property, seen));
     }
 
+    private bindCameraVector(value: Value): Value {
+        const vector = value.cameraVector;
+        if (!vector || vector.bound) return value;
+        const cpp = this.allocateTemporaryCppName("camera_vector_owner");
+        this.emit(`[[maybe_unused]] const auto ${cpp} = ${vector.owner.cpp};`);
+        const owner = { ...vector.owner, cpp };
+        this.describeNativeValue(owner);
+        const cameraVector = { ...vector, owner, bound: true as const };
+        return { ...value, cameraVector, recordProperties: this.cameraVectorProperties(cameraVector) };
+    }
+
+    private cameraVectorProperties(vector: NonNullable<Value["cameraVector"]>): Record<string, Value> {
+        const record = `${vector.owner.engineCpp}.cameras[${vector.owner.cpp}.value].${vector.field}`;
+        return Object.fromEntries(["x", "y", "z"].map((axis) => [axis, {
+            kind: "number", cpp: `${record}.${axis}`, dataType: { kind: "number" },
+            engineCpp: vector.owner.engineCpp,
+        } satisfies Value]));
+    }
+
     private sceneNodeVectorProperties(
         owner: Value & { engineCpp: string },
         transform: SceneNodeTransformDescriptor,
@@ -17978,6 +18096,9 @@ class Compiler
         preserveIdentity = false,
         node?: ts.Expression,
     ): Value {
+        if (record.cameraVector) {
+            return this.bindCameraVector(record);
+        }
         if (record.sceneNodeVector) {
             return this.bindSceneNodeVector(record);
         }
@@ -19700,7 +19821,15 @@ class Compiler
 
     public recordPostProcessComposite(
         manifest: PostProcessCompositeManifest,
+        site: ts.Node,
     ): void {
+        if (manifest.intrinsic === "createTaaPostProcessTask" &&
+            (this.frameCallbackDepth > 0 || this.engineStartMark !== undefined)) {
+            this.fail(site, "TAA task creation after frame execution is not lowered; its source must retain scene UBO history from its first frame.");
+        }
+        if (manifest.intrinsic === "createTaaPostProcessTask" && this.temporalSceneRegistration) {
+            this.fail(site, "TAA tasks must be constructed and attached before initial scene registration; later task record epochs are not lowered.");
+        }
         this.postProcessComposites.push(manifest);
     }
 

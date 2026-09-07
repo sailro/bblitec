@@ -1088,7 +1088,8 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             reachesCameraFactory ||
             features.includes("camera:view-projection")
         ) {
-            const cameraLowerer = new CameraLowerer(context);
+            const cameraLowerer = new CameraLowerer(context,
+                options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"));
             this.writeSource(
                 "upstream/src/camera_arc_rotate.cpp",
                 cameraLowerer.lowerArcRotateFactory(
@@ -1279,6 +1280,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
             this.writeSource(
                 "upstream/src/animation_property.cpp",
                 new AnimationLowerer(context).lowerPropertyAnimation({
+                    cameraVersions: options.postProcessComposites.some((composite) => composite.intrinsic === "createTaaPostProcessTask"),
                     blending: features.includes(
                         "animation:property-blending",
                     ),

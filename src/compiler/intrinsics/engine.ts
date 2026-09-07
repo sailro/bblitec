@@ -70,6 +70,7 @@ export interface EngineIntrinsicContext
     ): void;
     recordPostProcessComposite(
         manifest: PostProcessCompositeManifest,
+        site: ts.Node,
     ): void;
     compileScreenSpaceTaskOptions(
         intrinsic: string,
@@ -492,7 +493,7 @@ function compilePostProcessIntrinsic(
             call.arguments[0]!,
             context.postProcessComposites.length,
         );
-        context.recordPostProcessComposite(built.manifest);
+        context.recordPostProcessComposite(built.manifest, call);
         for (const task of built.sourceTasks) {
             context.expectSameEngine(engine, task, call);
         }

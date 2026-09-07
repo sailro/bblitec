@@ -378,13 +378,13 @@ test("Sandblox-shaped camera construction stays live and reaches its sources", (
     assert.match(result.cmake, /upstream\/src\/camera_controls\.cpp/);
     assert.match(result.cmake, /upstream\/src\/renderer_plan\.cpp/);
     assert.match(result.cpp, /\.far_plane = 10000\.0;/);
-    assert.match(result.cpp, /\.alpha \+= 0\.25;/);
-    assert.match(result.cpp, /\.beta = 1\.1;/);
-    assert.match(result.cpp, /\.radius \+= 0\.5;/);
-    assert.match(result.cpp, /\.target\.x = 2\.0;/);
+    assert.match(result.cpp, /const double (\w+) = \([^;]+ \+ 0\.25\);\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha, \1\);/);
+    assert.match(result.cpp, /const double (\w+) = 1\.1;\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::beta, \1\);/);
+    assert.match(result.cpp, /const double (\w+) = \([^;]+ \+ 0\.5\);\s+bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::radius, \1\);/);
+    assert.match(result.cpp, /const double (\w+) = 2\.0;\s+bbl::write_camera_vector_component\([^;]+ &bbl::CameraRecord::target, &bbl::Vec3d::x, \1\);/);
     assert.match(
         result.cpp,
-        /\.alpha \+= 0\.25;[\s\S]*bbl::upstream::build_view_projection\(/,
+        /bbl::write_camera_scalar\([^;]+ &bbl::CameraRecord::alpha,[\s\S]*bbl::upstream::build_view_projection\(/,
     );
 });
 

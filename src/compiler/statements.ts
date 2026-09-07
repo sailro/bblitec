@@ -40,6 +40,8 @@ import {
 } from "./handle-collections.js";
 
 export interface StatementLoweringContext {
+    resolveRecordValue(expression: ts.Expression): Value | undefined;
+    noteCameraVectorSet(vector: NonNullable<Value["cameraVector"]>, site: ts.Node): void;
     workerCheckpointCpp(): string | undefined;
     workerAbortCpp(): string | undefined;
     readonly checker: ts.TypeChecker;
@@ -3675,6 +3677,21 @@ export class StatementLowerer {
         return `${target} = bbl::js::${helper}(${target}, ${right});`;
     }
 
+    private emitCameraVectorSet(context: StatementLoweringContext, call: ts.CallExpression,
+        vector: NonNullable<Value["cameraVector"]>): boolean {
+        if (call.arguments.length !== 3) context.fail(call, "Camera vector.set expects exactly three numeric arguments.");
+        context.noteCameraVectorSet(vector, call);
+        const handle = context.allocateTemporaryCppName("camera_set_owner");
+        context.emit(`const auto ${handle} = ${vector.owner.cpp};`);
+        const values = call.arguments.map((argument) => {
+            const value = context.allocateTemporaryCppName("camera_set_value");
+            context.emit(`const double ${value} = ${context.compileNumber(argument, "double")};`);
+            return value;
+        });
+        context.emit(`bbl::set_camera_vector(${vector.owner.engineCpp}.cameras[${handle}.value], &bbl::CameraRecord::${vector.field}, bbl::Vec3d{${values.join(", ")}});`);
+        return true;
+    }
+
     private emitMemberSetCall(
         context: StatementLoweringContext,
         call: ts.CallExpression,
@@ -3686,6 +3703,8 @@ export class StatementLowerer {
             return false;
         }
         const owner = call.expression.expression;
+        const cameraAlias = context.resolveRecordValue(owner)?.cameraVector;
+        if (cameraAlias) return this.emitCameraVectorSet(context, call, cameraAlias);
         const alias = ts.isIdentifier(owner)
             ? context.lookupOptional(owner)?.sceneNodeVector
             : undefined;
@@ -3704,28 +3723,10 @@ export class StatementLowerer {
                 owner.name.text,
             )
         ) {
-            if (call.arguments.length !== 3) {
-                context.fail(
-                    call,
-                    `${owner.name.text}.set expects exactly three numeric arguments.`,
-                );
-            }
-            // The camera's own position and target are JavaScript
-            // numbers upstream; the record keeps them as doubles so the
-            // composed view matrix rounds where the pin's cache does.
-            const vector = `bbl::Vec3d{${call.arguments
-                .map((argument) =>
-                    context.compileNumber(argument, "double"),
-                )
-                .join(", ")}}`;
-            const field =
-                owner.name.text === "upVector"
-                    ? "up_vector"
-                    : owner.name.text;
-            context.emit(
-                `${context.requireEngine(target, call)}.cameras[${target.cpp}.value].${field} = ${vector};`,
-            );
-            return true;
+            return this.emitCameraVectorSet(context, call, {
+                owner: { ...target, engineCpp: context.requireEngine(target, call) },
+                field: owner.name.text === "upVector" ? "up_vector" : owner.name.text === "position" ? "position" : "target",
+            });
         }
         if (target.kind === "light") {
             return this.compileLightVectorSet(

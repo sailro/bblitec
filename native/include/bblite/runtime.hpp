@@ -3453,6 +3453,12 @@ struct GeospatialLimits {
 // float64 under the high-precision matrix a floating-origin engine asks
 // for, which is the width `getViewMatrix` then reads the basis back at.
 struct CameraRecord {
+    double world_matrix_version = 0.0;
+    double projection_revision = 0.0;
+    double projection_fov = std::numeric_limits<double>::quiet_NaN();
+    double projection_near = std::numeric_limits<double>::quiet_NaN();
+    double projection_far = std::numeric_limits<double>::quiet_NaN();
+    bool limits_installed = false;
     CameraKind kind = CameraKind::arc_rotate;
     Vec3d position{};
     double alpha = -pi_double / 2.0;
@@ -6592,6 +6598,10 @@ void set_animation_additive_from_frame(
     AnimationGroupHandle group,
     float reference_frame);
 void attach_control(Engine& engine, CameraHandle camera);
+void write_camera_scalar(CameraRecord& camera, double CameraRecord::*field, double value);
+void write_camera_vector_component(CameraRecord& camera, Vec3d CameraRecord::*vector,
+    double Vec3d::*component, double value);
+void set_camera_vector(CameraRecord& camera, Vec3d CameraRecord::*vector, Vec3d value);
 void set_camera_limits(
     Engine& engine,
     CameraHandle camera,

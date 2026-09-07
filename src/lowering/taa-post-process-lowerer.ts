@@ -131,9 +131,30 @@ ${body}
 }`;
     }
 
+    private leafDrawCount(): string {
+        const module = "src/frame-graph/post-process-task.ts";
+        const { file, declaration } = this.context.propertyFunction(module, "createPostProcessTask", "execute", { unique: true });
+        const last = declaration.body.statements.at(-1);
+        if (!last || !ts.isReturnStatement(last) || !last.expression) this.context.contractError(declaration, "Post-process leaf needs a draw count.");
+        const count = this.context.numericValue(last.expression, file);
+        const parsed = ts.createSourceFile("post-process-leaf.ts", `const body = () => ${declaration.body.getText(file)}`, ts.ScriptTarget.Latest, true);
+        this.context.assertExpressionShape(this.context.variableInitializer(parsed, "body"), `() => {
+            applyColorAttachmentState(task._colorAttachment, task.outputTexture, task.clear);
+            const pass = engine._currentEncoder!.beginRenderPass(task._renderPassDescriptor);
+            applyViewport(pass, task.viewport, task.outputTexture);
+            pass.setPipeline(task._pipeline!);
+            pass.setBindGroup(0, task._bindGroup!);
+            pass.draw(3);
+            pass.end();
+            return ${count};
+        }`, "Deferred post-process leaf device operations");
+        return `inline constexpr double post_process_leaf_draw_count() { return ${this.context.doubleLiteral(count)}; }`;
+    }
+
     public header(): string {
         return `// ${this.context.provenance(MODULE, FACTORY, "record and execute")}
 namespace bbl::upstream {
+${this.leafDrawCount()}
 ${this.initialize()}
 
 ${this.record()}

@@ -191,9 +191,10 @@ int main() {
 });
 
 class EditedStore extends UpstreamSourceStore {
-    constructor(private readonly edit: (source: string) => string) { super(); }
+    constructor(private readonly edit: (source: string) => string,
+        private readonly editedModule = "src/post-process/taa.ts") { super(); }
     override getSourceFile(module: string): ts.SourceFile {
-        return module === "src/post-process/taa.ts"
+        return module === this.editedModule
             ? ts.createSourceFile(module, this.edit(super.getSource(module)), ts.ScriptTarget.Latest, true)
             : super.getSourceFile(module);
     }
@@ -211,4 +212,14 @@ test("TAA lifecycle consumes changed pinned reset arithmetic and refuses new dev
         /TAA record resource prefix changed/);
     assert.throws(() => header((source) => source.replace("blend.updateUniforms();", "blend.updateUniforms(42);")),
         /TAA blend upload gained arguments/);
+});
+
+test("deferred post-process leaf draw counts come from the fully asserted pinned device body", async () => {
+    const composite = await composeComposite(request);
+    const header = (edit: (source: string) => string) => new TaaPostProcessLowerer(
+        new LoweringContext(new EditedStore(edit, "src/frame-graph/post-process-task.ts")), composite).header();
+    assert.match(header((source) => source), /post_process_leaf_draw_count\(\) \{ return 1.0; \}/);
+    assert.match(header((source) => source.replace("return 1;", "return 2;")), /post_process_leaf_draw_count\(\) \{ return 2.0; \}/);
+    assert.throws(() => header((source) => source.replace("pass.draw(3);", "pass.draw(6);")), /Deferred post-process leaf device operations/);
+    assert.throws(() => header((source) => source.replace("pass.end();", "pass.end(); unknownOperation();")), /Deferred post-process leaf device operations/);
 });
