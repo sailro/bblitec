@@ -42,6 +42,15 @@ const solidTextureDataFunction = `
     data.sampler.max_lod = 0.0f;
     return data;
 }
+
+[[maybe_unused]] static FileTexture retained_solid_texture(const SolidTexture& texture) {
+    FileTexture normalized;
+    normalized.data = solid_texture_data(texture);
+    normalized.width = 1;
+    normalized.height = 1;
+    normalized.identity = texture.identity;
+    return normalized;
+}
 `;
 
 /**
@@ -976,12 +985,7 @@ SolidTexture create_solid_texture(
 }
 
 FileTexture solid_texture_file(const SolidTexture& texture) {
-    FileTexture normalized;
-    normalized.data = solid_texture_data(texture);
-    normalized.width = 1;
-    normalized.height = 1;
-    normalized.identity = texture.identity;
-    return normalized;
+    return retained_solid_texture(texture);
 }
 
 } // namespace bbl
@@ -1112,6 +1116,7 @@ void set_material_base_color_file(
     FileTexture texture) {
     MaterialRecord& record = engine.materials[material.value];
     record.base_color_srgb = texture.srgb;
+    record.source_albedo_texture = texture;
     record.base_color_texture = std::move(texture.data);
     record.has_public_base_color_texture = true;
 }
@@ -1343,6 +1348,9 @@ MaterialHandle create_pbr_material(
     material.orm_fallback = options.orm.texel;
     material.base_color_factor = options.base_color_factor;
     material.has_public_base_color_texture = options.has_base_color_texture;
+    if (options.has_base_color_texture) {
+        material.source_albedo_texture = retained_solid_texture(options.base_color);
+    }
     material.source_base_color_factor = std::move(options.source_base_color_factor);
     project_material_source_colors(material);
     material.roughness_factor = options.roughness_factor;
@@ -1698,6 +1706,7 @@ TextureData& take_standard_diffuse_slot(
     record.has_diffuse_render_texture = false;
     record.base_color_texture = TextureData{};
     record.diffuse_texture_srgb = false;
+    record.source_albedo_texture.reset();
     return record.base_color_texture;
 }
 ` : ""}${solid ? solidTextureDataFunction : ""}${diffuse ? `
@@ -1752,6 +1761,7 @@ void set_standard_diffuse_pixels_texture(
     slot.uv_transform = texture.uv_transform;
     slot.uv_invert_y = texture.uv_invert_y;
     standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
+    standard_slot_material(engine, material).source_albedo_texture = texture;
 }
 ` : ""}${solid ? `
 // The same slot, filled by a createSolidTexture2D texture -- the fourth
@@ -1769,6 +1779,7 @@ void set_standard_diffuse_solid_texture(
     const SolidTexture& texture) {
     take_standard_diffuse_slot(engine, material) =
         solid_texture_data(texture);
+    standard_slot_material(engine, material).source_albedo_texture = retained_solid_texture(texture);
 }
 ` : ""}${diffuseFile ? `
 // The same slot, filled by a loaded image -- the third source it takes, and
@@ -1783,6 +1794,7 @@ void set_standard_diffuse_file_texture(
     const FileTexture& texture) {
     take_standard_diffuse_slot(engine, material) = texture.data;
     standard_slot_material(engine, material).diffuse_texture_srgb = texture.srgb;
+    standard_slot_material(engine, material).source_albedo_texture = texture;
 }
 ` : ""}${emissiveFile ? `
 // setStandardEmissiveTexture over a loaded image. The render-texture arm

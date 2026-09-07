@@ -41,6 +41,7 @@ test("generated solid texture storage preserves identity, payload and independen
     const factory = new FactoryLowerer(new LoweringContext()).lowerFileTextureFactory().source;
     writeFileSync(join(directory, "factory.hpp"), `namespace bbl {
 ${cppFunction(factory, "[[maybe_unused]] static TextureData solid_texture_data(")}
+${cppFunction(factory, "[[maybe_unused]] static FileTexture retained_solid_texture(")}
 ${cppFunction(factory, "SolidTexture create_solid_texture(")}
 ${cppFunction(factory, "FileTexture solid_texture_file(")}
 }`);

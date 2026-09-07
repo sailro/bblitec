@@ -2220,7 +2220,7 @@ export function emitPropertyAssignment(
       // the record takes a copy and the local is recorded as spent:
       // a transform write afterwards would move the local where the
       // pin would have moved the material's own texture object.
-      if (texture.kind === "texture" && texture.pixelsTexture) {
+      if (texture.kind === "texture" && texture.textureStorage === "pixels") {
         context.reachFeature(
           "material:standard-diffuse-pixels-texture",
           expression,

@@ -448,6 +448,11 @@ const runtimeFeatureTable: Record<Feature, RuntimeFeatureEntry> = {
         provenance: "src/material/pbr/pbr-material.ts",
         consumers: CMAKE,
     },
+    "material:source-texture-read": {
+        provenance: "src/material/pbr/pbr-material.ts#createPbrMaterial + " +
+            "src/material/standard/standard-material.ts#diffuseTexture + src/loader-gltf/load-gltf.ts#uploadMeshes",
+        consumers: ["loader flag", "generation gate"],
+    },
     "material:clearcoat": {
         provenance: "src/material/pbr/set-clearcoat.ts",
         consumers: ["features.cmake", "render_capabilities.hpp", "variant table"],

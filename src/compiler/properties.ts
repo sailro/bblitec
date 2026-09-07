@@ -594,19 +594,15 @@ export const propertyRules: readonly PropertyRule[] = [
     record: ["materials", "name"],
   },
   {
-    // A loaded PBR material exposes its Texture2D objects through these five
-    // public slots. `material_texture` preserves the object identity of a
-    // slot while adapting the renderer's TextureData record to the common
-    // StoredTexture value used by source arrays. The racer walks the names
-    // through a readonly tuple, so the ordinary statically-resolved element
-    // access reaches the same rows as a spelled-out property read.
+    // Albedo reads retain the actual producer arm and Texture2D identity.
     owner: "material",
     property: "baseColorTexture",
     value: "texture",
-    helper: "bbl::material_texture",
+    helper: "bbl::material_source_texture",
+    feature: "material:source-texture-read",
     helperTakesEngine: true,
     helperArgument: "bbl::MaterialTextureSlot::base_color",
-    textureStorage: "file",
+    dataType: {kind: "handle", handle: "texture"},
     optionalFound: (ownerCpp, engineCpp) =>
       `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::base_color)`,
   },
@@ -623,10 +619,11 @@ export const propertyRules: readonly PropertyRule[] = [
     owner: "material",
     property: "diffuseTexture",
     value: "texture",
-    helper: "bbl::material_texture",
+    helper: "bbl::material_source_texture",
+    feature: "material:source-texture-read",
     helperTakesEngine: true,
     helperArgument: "bbl::MaterialTextureSlot::diffuse",
-    textureStorage: "file",
+    dataType: {kind: "handle", handle: "texture"},
     optionalFound: (ownerCpp, engineCpp) =>
       `bbl::material_texture_present(${engineCpp}, ${ownerCpp}, bbl::MaterialTextureSlot::diffuse)`,
   },
@@ -1088,18 +1085,19 @@ export function readProperty(
         "addThinInstance first.",
     );
   }
-  if (rule.feature) {
+  const parent = expression.parent;
+  const simpleWriteTarget = parent && ts.isBinaryExpression(parent) && parent.left === expression &&
+    parent.operatorToken.kind === ts.SyntaxKind.EqualsToken;
+  if (rule.feature && !(rule.feature === "material:source-texture-read" && simpleWriteTarget)) {
     context.reachFeature(rule.feature, expression);
   }
   if (rule.helperReturnsFreshData) {
     context.reachJsData();
   }
   if (owner.kind === "material" && (property === "baseColorFactor" || property === "diffuseColor")) {
-    const parent = expression.parent;
     // Assignment probing asks the property table for the LHS shape too;
     // replacing that property does not read its previous array value.
-    if (!parent || !ts.isBinaryExpression(parent) || parent.left !== expression ||
-        parent.operatorToken.kind !== ts.SyntaxKind.EqualsToken) {
+    if (!simpleWriteTarget) {
       context.noteMaterialColorRead(property);
     }
   }

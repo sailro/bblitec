@@ -3067,6 +3067,9 @@ struct MaterialRecord {
     // Null means the producer omitted the property; copies retain JS identity.
     std::shared_ptr<std::vector<double>> source_base_color_factor{};
     std::shared_ptr<std::vector<double>> source_diffuse_color{};
+    // The family-specific public albedo property retains its original
+    // Texture2D producer arm and identity, separately from upload data.
+    std::optional<StoredTexture> source_albedo_texture{};
     bool source_colors_registered = false;
     // Babylon keeps the material-wide alpha separate from the PBR base-color
     // factor. The fragment multiplies both when the factor field is composed.
@@ -4800,6 +4803,18 @@ inline void set_material_diffuse_color(
             (record.base_color_texture.has_image() || record.has_diffuse_render_texture);
     }
     throw std::runtime_error("Material source presence is not represented for this texture slot.");
+}
+
+[[nodiscard]] inline StoredTexture material_source_texture(
+    const Engine& engine,
+    MaterialHandle material,
+    MaterialTextureSlot slot) {
+    if (!material_texture_present(engine, material, slot)) return FileTexture{};
+    const MaterialRecord& record = engine.materials.at(material.value);
+    if (!record.source_albedo_texture) {
+        throw std::runtime_error("This material texture producer has no retained source identity.");
+    }
+    return *record.source_albedo_texture;
 }
 
 /**

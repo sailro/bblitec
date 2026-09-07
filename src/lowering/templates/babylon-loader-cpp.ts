@@ -356,8 +356,16 @@ ${bumpTexture ? `    if (const auto texture = source.find("bumpTexture");
             ? MaterialAlphaMode::blend
             : MaterialAlphaMode::opaque;
     engine.materials.push_back(std::move(material));
-    return MaterialHandle{
+    const MaterialHandle handle{
         static_cast<std::uint32_t>(engine.materials.size() - 1)};
+    if (engine.materials[handle.value].base_color_texture.has_image()) {
+        // TEX_SLOTS starts a fresh loadTexture2D per material/slot; equal
+        // URLs do not make the returned source Texture2D objects equal.
+        auto texture = material_texture(engine, handle, MaterialTextureSlot::diffuse);
+        texture.identity = engine.next_file_texture_identity++;
+        engine.materials[handle.value].source_albedo_texture = std::move(texture);
+    }
+    return handle;
 }
 
 MaterialHandle default_material(Engine& engine) {

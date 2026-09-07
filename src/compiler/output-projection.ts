@@ -62,6 +62,7 @@ export const featureSources: Record<Feature, string[]> = {
     "loader:splat-sog": [],
     "loader:splat-spz": [],
     "material:pbr": [],
+    "material:source-texture-read": [],
     "material:clearcoat": [],
     "material:sheen": [],
     "material:sheen-albedo-scaling": [],

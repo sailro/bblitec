@@ -127,6 +127,14 @@ the original public factor only where the pinned builder or animation-pointer
 feature supplies it, including the distinction between explicit white and an
 omitted factory option.
 
+Albedo texture reads retain the original `StoredTexture` producer arm and
+identity: materials sharing one source texture compare equal, distinct factories
+remain distinct even with equal bytes, and replacing a slot preserves old aliases.
+Solid producers use the common one-texel adapter. The glTF loader requires
+packaged source-texture associations when these reads are reached; a present
+texture without retained producer identity fails explicitly. The other existing
+PBR texture-slot adapters are unchanged.
+
 Numeric color reads currently require one static scene registration. Later
 material-group construction, rebuilds and whole color replacement after
 registration refuse because separate group UBO snapshots are not represented.

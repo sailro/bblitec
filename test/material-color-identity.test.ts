@@ -48,6 +48,15 @@ async function main() {
     function nextColor(): number[] {active = another; return [.125,.25,.5];}
     active.diffuseColor = nextColor();
     if (standard.diffuseColor[0] !== .125 || another.diffuseColor[0] !== 1) throw new Error("assignment owner before RHS");
+    let previous: number[] = [];
+    for (let i=0;i<300;i++) {
+        const row=createStandardMaterial();
+        const channels=[i/300,.5,1];
+        row.diffuseColor=channels;
+        const observed=color(row);
+        if(observed!==channels || observed===previous || observed[0]!==i/300) throw new Error("runtime color row identity/value");
+        previous=observed;
+    }
 }
 `;
 
@@ -78,7 +87,10 @@ test("compiled material colors retain source identity, double width, fallback an
     const variants = await composeScenePbrVariants(compiled.manifest.scenePbrMaterials!, arms);
     assert.ok(variants.some(variant => variant.fragmentWgsl.includes("material.baseColorFactor")));
     const lowerer = new FactoryLowerer(new LoweringContext());
-    const factories = cppFunction(lowerer.lowerPbrMaterialFactory().source, "MaterialHandle create_pbr_material(") + "\n" +
+    const pbrFactory = lowerer.lowerPbrMaterialFactory().source;
+    const factories = cppFunction(pbrFactory, "[[maybe_unused]] static TextureData solid_texture_data(") + "\n" +
+        cppFunction(pbrFactory, "[[maybe_unused]] static FileTexture retained_solid_texture(") + "\n" +
+        cppFunction(pbrFactory, "MaterialHandle create_pbr_material(") + "\n" +
         cppFunction(lowerer.lowerStandardMaterialFactory().source, "MaterialHandle create_standard_material(");
     const sceneSource = new SceneLowerer(new LoweringContext()).lowerCore().source;
     const registration = ["void require_scene_engine(","std::uint32_t material_family_bit(","std::uint32_t scene_material_families(",

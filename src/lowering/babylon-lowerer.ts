@@ -34,6 +34,13 @@ export class BabylonLowerer {
                 );
             }
         }
+        const textureLoads = this.context.findNodes(declaration, (node): node is ts.CallExpression =>
+            ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression) &&
+            node.expression.getText() === "texturePromises.push" && this.context.hasCall(node, "loadTexture2D"));
+        if (textureLoads.length !== 1) this.context.contractError(declaration, "Expected one per-slot Texture2D publication path.");
+        this.context.assertExpressionShape(textureLoads[0]!,
+            "texturePromises.push(loadTexture2D(engine, texUrl).then((tex) => slot.set(mat, tex)))",
+            "Babylon material retains each fresh texture factory result");
         if (
             !this.context.hasNode(
                 declaration,
