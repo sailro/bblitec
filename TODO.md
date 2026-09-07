@@ -27,7 +27,11 @@ Scenes 186, 227 and 228 have assessments only; implementation is unfinished.
 
 - [ ] Replace positional/source-text recognizers with typed user-code IR, one
   symbol/alias resolver and an escape/retaining-sink model. Mutable callback
-  captures and dynamic-import continuations need one ownership contract.
+  captures and dynamic-import continuations need one ownership contract. The
+  node-particle and flow-graph lowerers each carry a pinned-body partial
+  evaluator (environment, module scope, free-name ladder, statement walk);
+  share one core and emit flow-graph node functions as members of the
+  generated runtime class once both generated trees are proven byte-identical.
 - [ ] Extend namespace/default imports, discriminated/numeric-literal unions,
   stored subclass dispatch, generic method instantiation and runtime
   definite assignment across try/finally.

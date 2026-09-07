@@ -4776,6 +4776,55 @@ const sceneInputs: readonly SceneInput[] = [
         },
     },
     {
+        id: "mosquito-amber",
+        name: "Mosquito in Amber",
+        source: "corpus/babylon-lite/lab/lite/src/demos/mosquito-amber.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Mosquito in Amber",
+        parity: {
+            // Scene 176's transmissive amber as the demo ships it: a fixed
+            // camera, the studio HDR as IBL plus a blurred PBR skybox and
+            // the frame-graph scene-texture transmission copy. Nothing
+            // animates, so the convention's frame 180 is the settled load.
+            // Both backends measure what scene 176 measures (0.016 SDL_GPU,
+            // 0.014 Dawn), so the gates are that scene's.
+            referenceFrame: 180,
+            maxFullMad: 0.018,
+            maxForegroundMad: 0.018,
+            dawnThresholds: { maxFullMad: 0.016, maxForegroundMad: 0.016 },
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
+        id: "calculator",
+        name: "Calculator",
+        source: "corpus/babylon-lite/lab/lite/src/demos/calculator.ts",
+        sourceOrigin: "babylon-lite-application",
+        title: "Babylon Lite Native - Calculator",
+        nativeHostUi: "ui/calculator-host.json",
+        parity: {
+            // The graph's onStart cascade runs on the first before-render
+            // tick and the demo's auto-rotate turns the camera a fixed
+            // angle per frame, so the pose is a frame count from a fixed
+            // clock. The canvas is byte-close on both backends (canvas-only
+            // 0.000 / 0.002); the full-page residual is the retained chrome
+            // (the same companion as Bath Day's over a longer credit):
+            // the boxes match the golden to the pixel and the 11.52 px
+            // credit text runs 8 px narrower, so it is glyph rasterization,
+            // not layout. Both backends measure the same, so one gate pair
+            // covers both.
+            referenceFrame: 180,
+            maxFullMad: 0.25,
+            maxForegroundMad: 1.05,
+            canvasThresholds: { maxFullMad: 0.01, maxForegroundMad: 0.01 },
+            backgroundColor: [51, 51, 77],
+            backgroundThreshold: 30,
+            nativeEnvironment: fixedCaptureEnvironment(),
+        },
+    },
+    {
         id: "regression-timer-callback-cells",
         name: "Regression - Timer Callback Cells",
         source: "examples/regression-timer-callback-cells.ts",
