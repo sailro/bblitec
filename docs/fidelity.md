@@ -29,7 +29,8 @@ families include:
 
 | Boundary | Difference |
 | --- | --- |
-| AOT/browser | Assets materialize during compilation; supported promises settle synchronously; reference queries fold; bounded browser instrumentation erases |
+| AOT/browser | Assets materialize during compilation; ordinary AOT asset awaits settle immediately; worker builds use owner-loop promises and continuations; reference queries fold; bounded browser instrumentation erases |
+| Workers/Window | AOT module factories, typed clone codecs and native task loops replace browser execution; retained layout is snapshotted, ResizeObserver delivery polls at 16 ms, and independent GPU canvases share a host device |
 | Executed producers | Chromium produces atlas pixels, fragile computed buffers, prefiltered assets and frozen particles; output can depend on the compiling browser |
 | Frame time | The fixed-step clock, the sprite renderer's per-frame hook and the sprite-layer and billboard effect clocks carry the browser's double delta; scene and frame-graph callbacks receive the engine API's float |
 | Plain-data model | Native storage/aliasing, checked access and sparse initialization differ from unrestricted JavaScript |
@@ -96,6 +97,22 @@ by generation and both capture paths. Deterministic RAF, timer and CSS-animation
 time must agree. A frozen scene keeps presenting its final state while capture
 is pending. Diagnose a timer/frame mismatch from event traces before changing
 the scene or its threshold.
+
+Independent-engine captures declare their count and zero-based frame in the
+registry. The browser adapter delegates to the pinned `startEngine`, supplies
+60 Hz frame timestamps and cancels the next draw after the requested frame.
+It waits for GPU completion and subsequent rendering opportunities so a
+transferred canvas's final image reaches its placeholder. Native renderers
+retain their final GPU images at the same per-engine frame; the Window captures
+only when every canvas has reached it. This pins render deltas and frame counts,
+not arbitrary inter-realm message/timer schedules. Full-page references use the
+unchanged upstream HTML, with only the bundled module URL redirected to the
+normal TypeScript transpile. Capture adapter and host-page hashes accompany
+the application's source and golden hashes in the corpus manifest.
+
+Canvas-only captures of these pages retain all canvas rectangles at their
+original positions over black, excluding page chrome. Per-draw instrumented
+capture does not yet aggregate independent realms and refuses explicitly.
 
 ### Depth
 

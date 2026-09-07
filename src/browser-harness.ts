@@ -82,6 +82,8 @@ export const webgpuComputeBrowserArgs = [
 ] as const;
 
 export interface BrowserPageOptions {
+    /** A separate visible test window can measure the display's real cadence. */
+    headless?: boolean;
     /** What a failed ephemeral listen names:
      *  "Unable to start the <serverName>." */
     serverName: string;
@@ -128,7 +130,7 @@ export async function withBrowserPage<T>(
     try {
         browser = await chromium.launch({
             executablePath: resolveBrowserPath(options.browserRequirement),
-            headless: true,
+            headless: options.headless ?? true,
             ...(options.browserArgs
                 ? { args: [...options.browserArgs] }
                 : {}),

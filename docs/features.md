@@ -72,6 +72,8 @@ selected at both generated-source and dependency boundaries. See
 | JSON | Generated stringify codecs and dynamic parsed values with source-level shape checks; unsupported replacers/cyclic serialization refuse |
 | Exceptions | `throw`, bounded catch handling and finally cleanup; catch bindings must satisfy the compiler's supported/erased binding rules |
 | Browser state | Reference query folding, bounded browser erasure, immediate AOT asset promises and live canvas extents |
+| Dedicated workers | Local module Worker/URL construction, per-instance module state, typed cloned messages, once listeners, errors, close/terminate, owner-loop timers and bounded promise continuations |
+| Worker graphics | Transferred OffscreenCanvas, independent engine contexts, source-driven resize and display-paced rendering; Window host companion, ResizeObserver and resolution media queries |
 | Storage/files | Per-user localStorage, bounded Blob/object URLs, one-file open and download; [UI](ui.md#file-transfer-controls) owns controls |
 | UI | Supported retained DOM/CSS/Canvas2D operations; [UI](ui.md) owns their complete compatibility boundary |
 
@@ -91,7 +93,16 @@ defines which retained graphs are traced and which native owners remain roots.
 No arbitrary JavaScript execution or dynamic modules run in the native
 executable. AOT `await` and frame-yield continuations have different semantics;
 the latter schedule work across the frame conductor rather than blocking a
-browser promise loop.
+browser promise loop. Worker builds instead select owner-loop promises and
+coroutine activations for their reached async functions. Assets are still
+materialized during compilation; this does not provide arbitrary runtime fetch.
+
+Worker message codecs admit typed plain data, arrays, cycles, repeated
+references and copied buffers. Source transfer lists currently admit
+OffscreenCanvas; ArrayBuffer transfer, MessagePort, shared memory, classic
+workers and runtime-selected scripts need further admission. Graphics realms
+must use identical generated rendering products. The detailed execution and
+ownership boundaries are in [architecture](architecture.md#worker-service-design).
 
 ## Asset materialization
 
@@ -220,6 +231,10 @@ module's binding numbers. See [backends](backends.md) for layouts and
 [development](development.md) for cache/toolchain commands.
 
 ## Engine, scene, and frame loop
+
+Immutable engine aliases and engines returned by inlined helpers retain the
+original engine identity. Rebinding such aliases and creating multiple engines
+within one entry point remain unsupported.
 
 Engine/scene registration, ordered rendering contexts, fixed or live frame
 time, supported before-render/update callbacks, timers and frame gates run

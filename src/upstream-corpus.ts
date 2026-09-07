@@ -25,7 +25,14 @@ export interface CorpusScene extends CorpusFile {
 export interface CorpusApplication {
     id: string;
     entry: string;
-    reference: { source: string; sha256: string };
+    reference: {
+        source: string; sha256: string;
+        capture?: {
+            frame: number; independentEngines: number;
+            moduleSha256: string; adapterSha256: string;
+            hostPage: string; hostPageSha256: string;
+        };
+    };
     files: CorpusFile[];
 }
 
@@ -38,8 +45,8 @@ export interface BabylonLiteCorpusManifest {
     modules?: CorpusFile[];
     /**
      * Corpus files held as immutable evidence ahead of any registration:
-     * the staged numbered scenes (plus their upstream debug helpers) and
-     * the upstream LICENSE. They carry the same byte pin as everything
+     * numbered scenes, their debug helpers, application source/host graphs
+     * and the upstream LICENSE. They carry the same byte pin as everything
      * else so a drift cannot sit unnoticed until the file is integrated;
      * a row moves to `scenes` when its scene registers.
      */

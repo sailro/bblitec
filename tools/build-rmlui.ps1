@@ -34,6 +34,7 @@ param(
     [string]$Vcpkg = $(if ($env:VCPKG_ROOT) { Join-Path $env:VCPKG_ROOT "vcpkg.exe" } else { "" }),
     [switch]$StaticRuntime,
     [switch]$EnableSvg,
+    [ValidateRange(0, 1024)][int]$Jobs = 0,
     [string]$CMake = $env:CMAKE_COMMAND
 )
 
@@ -218,7 +219,8 @@ Sync-PinnedCheckout $source $pin.repository $pin.commit "RmlUi"
 foreach ($patch in @(
     "rmlui-premultiplied-rounding.patch",
     "rmlui-css-box-model.patch",
-    "rmlui-fractional-letter-spacing.patch"
+    "rmlui-fractional-letter-spacing.patch",
+    "rmlui-transform-key-ownership.patch"
 )) {
     & $CMake `
         "-DRMLUI_SOURCE_DIR=$source" `
@@ -292,7 +294,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "RmlUi CMake configuration failed."
 }
 
-& $CMake --build $build --config Release --parallel
+$buildArguments = @("--build", $build, "--config", "Release", "--parallel")
+if ($Jobs) { $buildArguments += "$Jobs" }
+& $CMake @buildArguments
 if ($LASTEXITCODE -ne 0) {
     throw "RmlUi build failed."
 }

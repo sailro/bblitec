@@ -122,11 +122,17 @@ Maintained patches under `native/patches/` adapt the installed RmlUi:
 | `rmlui-css-box-model.patch` | Solid background under borders; shrink-to-fit sizing beside an absolute horizontal offset |
 | `rmlui-premultiplied-rounding.patch` | Browser-oriented colour/opacity rounding while preserving premultiplied constraints |
 | `rmlui-fractional-letter-spacing.patch` | Fractional accumulation in the default font engine's width/geometry path |
+| `rmlui-transform-key-ownership.patch` | Transition keys own their mutable transforms; preparing animation must not replace a shared stylesheet percentage with the element's old pixel offset |
 
 These are compatibility choices. RmlUi documents padding-area background
 painting, and CSS does not prescribe the browser's exact byte-rounding
 algorithm. Do not characterize every difference as a violation of RmlUi's
 contract. The letter-spacing patch does not cover its separate HarfBuzz sample.
+The transform ownership regression checks resizing after a press/release
+transition and another element sharing the same selector. Without the patch,
+`translateX(-50%)` retains the pre-transition width and loses centering when
+text grows. Interpolation still resolves relative units at transition start;
+fully responsive relative-unit interpolation during a transition is not covered.
 
 After changing a maintained patch, rebuild the installed RmlUi library before
 testing UI scenes. Regeneration alone does not update dependency binaries;
@@ -154,6 +160,14 @@ Canvas overlays render below retained DOM chrome regardless of arbitrary
 z-index interleaving. This is a recorded limitation for translucent flashes.
 
 ## Capture and parity
+
+The Offscreen host companion describes the settled pinned HTML. Its two equal
+`minmax(0,1fr)` grid tracks use equivalent flex panes with the original 2 px gap;
+the max-width rule switches both to stacked panes. Loading-overlay scripts are
+not part of this settled native companion. Source TypeScript owns the button
+text, active attribute, worker status and resize messages. Native circles using
+percentage border radii, box shadows and platform text rasterization retain
+the limitations below; full-page and separate canvas gates measure them.
 
 [Fidelity](fidelity.md#what-is-measured-the-full-page) owns the full-page versus
 canvas-only measurement contract; [status](status.md) publishes results and

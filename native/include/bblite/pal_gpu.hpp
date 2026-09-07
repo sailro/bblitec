@@ -1,4 +1,5 @@
 #pragma once
+#include <bblite/pal_frame_driver.hpp>
 
 namespace bbl {
 struct Engine;
@@ -8,10 +9,10 @@ namespace bbl::pal {
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER && \
     defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
-bool run_gpu_engine(Engine& engine);
+SceneRun run_gpu_engine(Engine& engine);
 #else
-inline bool run_gpu_engine(Engine&) {
-    return false;
+inline SceneRun run_gpu_engine(Engine&) {
+    BBLITE_RUN_RETURN(false);
 }
 #endif
 
@@ -19,10 +20,10 @@ inline bool run_gpu_engine(Engine&) {
 // compiles neither and the declaration follows the same condition.
 #if defined(BBLITE_HAS_DAWN) && BBLITE_HAS_DAWN && \
     defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
-bool run_dawn_engine(Engine& engine);
+SceneRun run_dawn_engine(Engine& engine);
 #else
-inline bool run_dawn_engine(Engine&) {
-    return false;
+inline SceneRun run_dawn_engine(Engine&) {
+    BBLITE_RUN_RETURN(false);
 }
 #endif
 

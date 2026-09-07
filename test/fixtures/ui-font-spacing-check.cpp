@@ -21,6 +21,8 @@ struct Recorder final : Rml::RenderInterface {
 };
 
 struct System final : Rml::SystemInterface {
+    double elapsed = 0;
+    double GetElapsedTime() override { return elapsed; }
     bool LogMessage(Rml::Log::Type, const Rml::String& message) override {
         std::cerr << message << '\n';
         return false;
@@ -116,6 +118,40 @@ int main() {
     const auto& overridden = document->GetElementById("override")->GetComputedValues();
     assert(overridden.display() == Rml::Style::Display::Inline);
     assert(overridden.font_weight() == Rml::Style::FontWeight::Normal && overridden.font_size() == 12.0f);
+    document->SetStyleSheetContainer(Rml::Factory::InstanceStyleSheetString(
+        ".centered{position:absolute;left:50%;top:0;width:200px;height:40px;transform:translateX(-50%);transition:transform 0.05s;}"
+        ".centered:active{transform:translateX(-50%) translateY(1px);}"
+    ));
+    document->SetInnerRML("<div id='control' class='centered'>Short</div><div id='sibling' class='centered'>Sibling</div>");
+    auto* control = document->GetElementById("control");
+    auto* sibling = document->GetElementById("sibling");
+    const auto update = [&] { layout->Update(); layout->Render(); };
+    const auto centered = [&](Rml::Element& element) {
+        const auto offset = element.GetAbsoluteOffset(Rml::BoxArea::Border);
+        const auto size = element.GetBox().GetSize(Rml::BoxArea::Border);
+        Rml::Vector2f center{400.0f, offset.y + size.y * 0.5f};
+        assert(element.Project(center));
+        assert(std::abs(center.x - (offset.x + size.x * 0.5f)) < 0.01f);
+    };
+    update();
+    centered(*control);
+    control->SetPseudoClass("active", true);
+    system.elapsed = 0.01;
+    update();
+    system.elapsed = 0.1;
+    update();
+    control->SetPseudoClass("active", false);
+    system.elapsed = 0.11;
+    update();
+    system.elapsed = 0.2;
+    update();
+    // A transition must not mutate the shared authored percentage into the
+    // old pixel width, either on this element or another selector match.
+    control->SetProperty("width", "300px");
+    sibling->SetProperty("width", "400px");
+    update();
+    centered(*control);
+    centered(*sibling);
     Rml::Shutdown();
     std::cout << "ui-font-spacing-check: ok\n";
 }

@@ -1,0 +1,15 @@
+diff --git a/Source/Core/ElementAnimation.cpp b/Source/Core/ElementAnimation.cpp
+--- a/Source/Core/ElementAnimation.cpp
++++ b/Source/Core/ElementAnimation.cpp
+@@ -653,6 +653,11 @@ bool ElementAnimation::InternalAddKey(float time, const Property& in_property, Elem
+ 
+ 	if (property.unit == Unit::TRANSFORM)
+ 	{
++		// Preparing keys resolves relative units and mutates the primitive list.
++		// The authored property is shared by the stylesheet and other elements;
++		// retain its percentages so they still follow later layout changes.
++		if (const auto& transform = property.value.GetReference<TransformPtr>())
++			property.value = MakeShared<Transform>(*transform);
+ 		result = PrepareTransforms(keys, element, (int)keys.size() - 1);
+ 	}
+ 	else if (property.unit == Unit::DECORATOR)

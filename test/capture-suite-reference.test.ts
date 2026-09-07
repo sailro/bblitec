@@ -265,7 +265,7 @@ test("serves entry modules from their source-relative URL", async () => {
     const helper = resolve(root, "nested", "helper.ts");
     mkdirSync(resolve(root, "nested"));
     writeFileSync(entry, 'import "./helper.js";\n');
-    writeFileSync(helper, "export const value = 1;\n");
+    writeFileSync(helper, "export const value: number = 1;\n");
 
     const server = createSuiteSceneServer(
         'import "./helper.js";\n',
@@ -310,6 +310,12 @@ test("serves entry modules from their source-relative URL", async () => {
             await helperResponse.text(),
             /export const value = 1/,
         );
+        // Literal Worker(new URL("./helper.ts", import.meta.url)) keeps its
+        // extension. Serve executable JavaScript at that URL too.
+        const workerResponse = await fetch(`${base}${entryPath.replace(/entry\.js$/, "helper.ts")}`);
+        assert.equal(workerResponse.status, 200);
+        assert.match(workerResponse.headers.get("content-type") ?? "", /javascript/);
+        assert.match(await workerResponse.text(), /export const value = 1/);
     } finally {
         await new Promise<void>((done) =>
             server.close(() => done()),

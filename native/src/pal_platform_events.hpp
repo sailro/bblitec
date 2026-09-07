@@ -2,6 +2,7 @@
 #pragma once
 
 #include <bblite/runtime.hpp>
+#include <bblite/pal_offscreen.hpp>
 
 #include <SDL3/SDL.h>
 
@@ -152,6 +153,7 @@ inline void dispatch_platform_mouse_button(
  * `UiMove@x:y` and `+UiMouseLeft@x:y`/`-UiMouseLeft@x:y` use that same
  * SDL path for hover and held drags, including camera controls.
  * `WheelUp`/`WheelDown` dispatch a browser-sized wheel notch, and
+ * `WindowResize@width:height` resizes this application's window, while
  * `WindowClose` queues the host close request. All forms reach the ordinary
  * platform callbacks without mutating generated source or scene state.
  * The engine owns the tape position and held buttons so a scene replacement
@@ -192,6 +194,9 @@ public:
     }
 
     void dispatch(long frame, SDL_Window* window, Engine& engine) {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+        if (OffscreenRun::current()) return; // The Window owns the input tape.
+#endif
         if (codes_.empty() || frame < 0 || frame == last_frame_) return;
         last_frame_ = frame;
         const std::size_t index = engine.input_replay_next_frame;
@@ -200,6 +205,13 @@ public:
         unsigned int& mouse_buttons_ = engine.input_replay_mouse_buttons;
         const std::string& code = codes_[index];
         if (code.empty() || code == "-") return;
+        if (const auto size = pointer_position(code, "WindowResize@")) {
+            if (!window || size->first <= 0 || size->second <= 0 || size->first > 16384 || size->second > 16384 ||
+                !SDL_SetWindowSize(window, static_cast<int>(size->first), static_cast<int>(size->second))) {
+                throw std::runtime_error("Unable to apply deterministic window resize.");
+            }
+            return;
+        }
         if (code == "WindowClose") {
             SDL_Event close_event{};
             close_event.type = SDL_EVENT_WINDOW_CLOSE_REQUESTED;
@@ -490,6 +502,15 @@ inline std::string_view keyboard_event_code(SDL_Scancode scancode) {
 inline bool sync_engine_canvas_size(
     SDL_Window* window,
     Engine& engine) {
+    if (const auto* offscreen = OffscreenRun::current()) {
+        const auto extent = offscreen->extent();
+        const int width = static_cast<int>(extent.width);
+        const int height = static_cast<int>(extent.height);
+        const bool changed = engine.options.width != width || engine.options.height != height;
+        engine.options.width = width;
+        engine.options.height = height;
+        return changed;
+    }
     int client_width = 0;
     int client_height = 0;
     int width = 0;
@@ -866,6 +887,11 @@ inline void poll_platform_events(
     bool test_pass,
     UiEventFilter&& ui_filter,
     DispatchedHook&& dispatched) {
+    if (auto* offscreen = OffscreenRun::current()) {
+        running = running && !offscreen->closed();
+        sync_engine_canvas_size(nullptr, engine);
+        return;
+    }
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
         if (

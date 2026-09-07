@@ -158,6 +158,41 @@ implementation, follow the sizing/capture workflow in
 | Audio | Durable browser/native offline PCM gate; master-volume ramps and broader Babylon sound/bus/spatial/analysis/lifecycle APIs. |
 | UI/platform | General text input/forms, retained UI under other drivers, device loss, multiple surfaces and a renderer-independent Canvas2D-only driver. |
 
+## P1 — Worker service
+
+The [dedicated Worker service](docs/architecture.md#worker-service-design)
+implements local module factories, independent realms, task/microtask/timer
+ordering, typed promises, cloned message graphs, canvas transfer and owned
+shutdown. Computation, repeated-instance, nested-worker, cancellation and
+graphics consumers have targeted checks. Remaining API expansion:
+
+- [ ] Compose heterogeneous generated graphics products into explicit domains;
+  the current shared renderer accepts identical product sets across realms.
+- [ ] Admit ArrayBuffer transfer lists, MessagePort/MessageChannel and broader
+  structured-clone types, with atomic validation/detachment across mixed lists.
+- [ ] Extend Promise APIs and unhandled-rejection delivery; add explicit
+  WorkerGlobalScope error-listener and broader EventTarget option contracts.
+- [ ] Extend Window host input/DOM admission, including keyboard/focus/default
+  actions across asynchronous realm boundaries, and observer entry payloads.
+- [ ] Add per-realm draw instrumentation and a shared capture census; the
+  current deterministic image gate covers independent engines, while per-draw
+  capture explicitly refuses this configuration.
+- [ ] Treat shared memory, classic workers and runtime-selected scripts as
+  separate feature contracts; preserve the worker-free runtime path.
+
+## P1 — Offscreen (Worker) application
+
+The unchanged pinned application is registered as `offscreen`. It owns both
+views, the original blocking button and the Worker message protocol. Full-page
+and separate canvas gates freeze both engines at frame 180. Targeted native
+replay checks blocking, unblocking, expanded-button centering, responsive resize
+and shutdown on both backends. Run instructions are in
+[development](docs/development.md#worker-application-checks).
+
+- [ ] Add a controlled cross-display DPR transition check; source DPR watchers
+  and resize messages are implemented, but the current replay changes window
+  dimensions on one display.
+
 ## P1 — Unregistered numbered scenes
 
 The current registry leaves these 23 numbered scenes unregistered. Helper

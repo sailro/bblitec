@@ -43,6 +43,22 @@ export function compileAdaptations(
     features: Feature[],
 ): CompileAdaptation[] {
     const adaptations: CompileAdaptation[] = [];
+    if (features.includes("platform:workers")) {
+        adaptations.push({
+            id: "native-dedicated-worker-realms", category: "platform", risk: "medium",
+            sourceSemantics: "Browser dedicated module workers have isolated globals, ordered messages, structured clone, task queues and termination.",
+            nativeSemantics: "Local AOT module factories execute in isolated native realms with owner-thread promises, timers, copied message graphs and transferred canvas endpoints. Clone codecs admit typed plain data and copied buffers; source transfer lists currently admit OffscreenCanvas only. Compiled cancellation checks interrupt source busy loops. Classic workers, dynamic URLs, MessagePort transfer, shared memory and the complete browser Promise/WorkerGlobalScope API are not admitted.",
+            validation: ["worker compilation, clone, promise, event-loop and service fixtures", "unchanged Offscreen application on SDL_GPU and Dawn"],
+        });
+    }
+    if (features.includes("platform:window")) {
+        adaptations.push({
+            id: "native-window-canvas-host", category: "platform", risk: "medium",
+            sourceSemantics: "The browser owns DOM layout, canvas presentation, ResizeObserver delivery and display-driven animation in Window and worker realms.",
+            nativeSemantics: "The OS thread composes leased GPU canvas images through RmlUi. Application-owned document snapshots and layout polling bridge the admitted Window APIs; observer delivery polls at 16 ms rather than implementing the complete browser rendering algorithm. Source event callbacks run on the application realm. Independent renderers coalesce display notifications, with no CPU image transport. Allocation is bounded to 16384 pixels per dimension; placeholder sizing and source resize messages remain separate from the presentation mailbox.",
+            validation: ["offscreen ownership/backpressure fixture", "two-engine deterministic full-page and canvas gates", "block/unblock and responsive resize replay"],
+        });
+    }
     if (context.hasMainEntry) {
         adaptations.push({
             id: "entry-main-wrapper-erasure",

@@ -1041,7 +1041,7 @@ ${metallicReflectanceCapabilityDefines(pbrBindingNames)}
 
         this.writeSource(
             "upstream/src/engine.cpp",
-            new EngineLowerer(context).lowerCore(),
+            new EngineLowerer(context).lowerCore(features.includes("platform:workers")),
             generated,
         );
         this.writeSource(

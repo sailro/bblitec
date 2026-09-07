@@ -16,6 +16,7 @@ type Fail = (node: ts.Node, message: string) => never;
  * and remains a texture when read back out.
  */
 export type HandleKind =
+  | "offscreen-canvas"
   | "mesh"
   | "animation-group"
   | "audio-buffer"
@@ -48,6 +49,7 @@ export type HandleKind =
   | "navigation-obstacle";
 
 const handleCppTypes: Record<HandleKind, string> = {
+  "offscreen-canvas": "std::shared_ptr<bbl::pal::OffscreenCanvas>",
   mesh: "bbl::MeshHandle",
   "animation-group": "bbl::AnimationGroupHandle",
   "audio-buffer": "bbl::pal::AudioBufferHandle",
@@ -214,6 +216,8 @@ export interface DataStructField {
   readOnly?: boolean;
   /** A discriminated-union field absent from at least one inactive arm. */
   defaultWhenMissing?: boolean;
+  /** Which union tags actually own this field (wire serialization observes absence). */
+  presentForTags?: { discriminant: string; values: string[] };
   /**
    * The source declared the property with `?`, so JavaScript can observe it
    * as absent rather than as null. `JSON.stringify` is the observer: it
@@ -878,6 +882,9 @@ export class DataTypeRegistry {
     if (type.symbol && isDomElementType(type.symbol)) {
       return { kind: "handle", handle: "ui-element" };
     }
+    if (type.symbol?.name === "OffscreenCanvas" && declaredInDomLibrary(type.symbol)) {
+      return { kind: "handle", handle: "offscreen-canvas" };
+    }
     if (
       type.symbol &&
       (type.symbol.declarations ?? []).some(ts.isClassDeclaration)
@@ -1337,14 +1344,22 @@ export class DataTypeRegistry {
           ? { readOnly: true }
           : {}),
         ...(propertyTypes.length < type.types.length
-          ? { defaultWhenMissing: true }
+          ? { defaultWhenMissing: true, presentForTags: {
+              discriminant: discriminant.name,
+              values: propertiesByMember.flatMap(properties => {
+                if (!properties.some(property => property.name === propertyName)) return [];
+                const tag = properties.find(property => property.name === discriminant.name)!;
+                const tagType = this.checker.getTypeOfSymbolAtLocation(tag, tag.valueDeclaration ?? tag.declarations?.[0] ?? node);
+                return (tagType.flags & ts.TypeFlags.StringLiteral) !== 0 ? [(tagType as ts.StringLiteralType).value] : [];
+              }),
+            } }
           : {}),
       });
     }
     const key = fields
       .map(
         (field) =>
-          `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}`,
+          `${field.sourceName}:${field.name}:${this.typeKey(field.type)}:${field.defaultWhenMissing ? "default" : "required"}:${field.readOnly ? "readonly" : "mutable"}:${JSON.stringify(field.presentForTags)}`,
       )
       .join(",");
     const existing = this.structsByKey.get(key);
@@ -2734,7 +2749,7 @@ export class DataTypeRegistry {
    * Renders the generated enum, struct, and table definitions in
    * dependency order inside `namespace bblscene`.
    */
-  public renderPreamble(): string {
+  public renderPreamble(structuredClone = false): string {
     const used = this.reachableNamedTypes();
     if (
       used.structs.size === 0 &&
@@ -2757,7 +2772,7 @@ export class DataTypeRegistry {
         "};",
         "",
       );
-      if (this.runtimeEnumParsers.has(definition.name)) {
+      if (structuredClone || this.runtimeEnumParsers.has(definition.name)) {
         lines.push(
           `inline ${definition.name} ${definition.name}_from_string(const std::string& value) {`,
           ...definition.members.map(
@@ -2769,7 +2784,7 @@ export class DataTypeRegistry {
           "",
         );
       }
-      if (this.runtimeEnumSerializers.has(definition.name)) {
+      if (structuredClone || this.runtimeEnumSerializers.has(definition.name)) {
         lines.push(
           `inline std::string ${definition.name}_to_string(${definition.name} value) {`,
           ...definition.members.map(
@@ -2778,6 +2793,13 @@ export class DataTypeRegistry {
           ),
           `    throw std::runtime_error("Invalid ${definition.name} enum value.");`,
           "}",
+          "",
+        );
+      }
+      if (structuredClone) {
+        lines.push(
+          `inline std::string clone_enum_value(${definition.name} value) { return ${definition.name}_to_string(value); }`,
+          `inline void clone_enum_value(${definition.name}& value, const std::string& text) { value = ${definition.name}_from_string(text); }`,
           "",
         );
       }
@@ -2811,6 +2833,11 @@ export class DataTypeRegistry {
           }
         }
       }
+      const cloneTags = new Set(structuredClone
+        ? definition.fields.flatMap(field => field.presentForTags ? [field.presentForTags.discriminant] : [])
+        : []);
+      const cloneFields = structuredClone ? [...definition.fields].sort((left, right) =>
+        Number(cloneTags.has(right.sourceName)) - Number(cloneTags.has(left.sourceName))) : [];
       lines.push(
         `struct ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""} {`,
         ...definition.fields.map(
@@ -2819,6 +2846,22 @@ export class DataTypeRegistry {
         `    friend void gc_trace_edges([[maybe_unused]] const ${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, [[maybe_unused]] const bbl::js::TraceVisitor& visitor) {`,
         ...definition.fields.map((field) => `        visitor(record.${field.name});`),
         "    }",
+        ...(structuredClone ? ["", ...["const ", ""].flatMap(qualifier => [
+          `    template <typename Visitor> friend void clone_fields(${qualifier}${definition.name}${this.isReferenceStruct(definition.name) ? "Data" : ""}& record, Visitor&& visitor) {`,
+          ...cloneFields.map(field => {
+            if (field.presentForTags) {
+              const tag = definition.fields.find(candidate => candidate.sourceName === field.presentForTags!.discriminant)!;
+              if (tag.type.kind !== "enum") throw new Error("Union clone discriminator is not an enum.");
+              const enumType = tag.type;
+              const enumDefinition = [...this.enumsByKey.values()].find(candidate => candidate.name === enumType.name)!;
+              const condition = field.presentForTags.values.map(value =>
+                `record.${tag.name} == ${enumType.name}::${this.enumMemberIdentifier(enumDefinition, value)}`).join(" || ");
+              return `        visitor.when(${JSON.stringify(field.sourceName)}, record.${field.name}, ${condition});`;
+            }
+            return `        visitor(${JSON.stringify(field.sourceName)}, record.${field.name}${field.defaultWhenMissing ? ", true" : ""});`;
+          }),
+          "    }",
+        ])] : []),
         "};",
         "",
       );

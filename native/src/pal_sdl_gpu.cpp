@@ -2,7 +2,7 @@
 #include <bblite/pal_image.hpp>
 #include <bblite/pal_gpu.hpp>
 #include <bblite/runtime.hpp>
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 #include <bblite/pal_ui.hpp>
 #endif
 #include <bblite/upstream/camera_controls.hpp>
@@ -62,7 +62,10 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_gpu.h>
 #include "pal_sdl_gpu_shared.hpp"
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if BBLITE_OFFSCREEN_SURFACES
+#include "pal_sdl_gpu_offscreen.hpp"
+#endif
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 #include "RmlUi_SDL_GPU/ShadersCompiledSPV.h"
 #include "pal_ui_backdrop_sdl.hpp"
 #endif
@@ -791,7 +794,7 @@ struct GpuGeometryTask {
     bool depth_borrowed = false;
 };
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 /** SDL_GPU-owned realization of the backend-neutral RmlUi frame. */
 struct UiSdlGpuResources {
     UiBackdropSdlResources backdrop;
@@ -849,7 +852,7 @@ struct GpuState {
 #endif
     SDL_Window* window = nullptr;
     SDL_GPUDevice* device = nullptr;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     UiSdlGpuResources ui;
 #endif
     SDL_GPUGraphicsPipeline* grid_pipeline = nullptr;
@@ -1365,7 +1368,7 @@ SDL_GPUTextureFormat texture_format(TextureFormatClass format);
 SDL_GPUTextureFormat geometry_texture_format(
     const GeometryTextureDescription& description);
 
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
 enum class UiSdlShader {
     color_fragment,
     texture_fragment,
@@ -5509,7 +5512,7 @@ void prune_shared_composed_material_textures(GpuState& state) {
 }
 
 void release(GpuState& state) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     release_ui_sdl_resources(state);
 #endif
     release_frame_graph_textures(state);
@@ -5859,7 +5862,11 @@ void release(GpuState& state) {
         }
     }
     if (state.window && state.device) SDL_ReleaseWindowFromGPUDevice(state.device, state.window);
+#if BBLITE_OFFSCREEN_SURFACES
+    if (state.device && !OffscreenRun::current()) SDL_DestroyGPUDevice(state.device);
+#else
     if (state.device) SDL_DestroyGPUDevice(state.device);
+#endif
     if (state.window) release_run_window(state.window);
     quit_run_sdl();
 }
@@ -6900,7 +6907,7 @@ inline void record_cloud_pick_draw(
 #endif
 #endif
 
-bool run_gpu_engine(Engine& engine) {
+SceneRun run_gpu_engine(Engine& engine) {
     const FrameOptions frame_options = read_frame_options();
     const bool cpu_profile =
         environment_variable("BBLITE_CPU_PROFILE") == "1";
@@ -6946,7 +6953,7 @@ bool run_gpu_engine(Engine& engine) {
     cpu_startup_mark("sdl-init");
 
     GpuState state;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
     UiRmlRuntime* ui_runtime = nullptr;
 #endif
 #if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
@@ -6969,9 +6976,32 @@ bool run_gpu_engine(Engine& engine) {
         sprite_render_textures.clear();
     };
 #endif
-    try {
+    // Declared outside the renderer scope so its upload batches and other
+    // run-local GPU resources are destroyed before their device is released.
+    const auto run_cleanup = js::finally([&]() noexcept {
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
+        destroy_ui_rml_runtime(ui_runtime);
+#endif
+#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
+        release_sprite_passes();
+#endif
+        release(state);
+    });
+    {
         const bool hidden_test_pass =
             frame_options.test_pass;
+#if BBLITE_OFFSCREEN_SURFACES
+        auto* offscreen = OffscreenRun::current();
+        if (offscreen) {
+            auto* shared = dynamic_cast<SdlOffscreenDevice*>(&offscreen->device());
+            if (!shared) throw std::runtime_error("Offscreen surface does not own an SDL GPU device.");
+            state.device = shared->device;
+            sync_engine_canvas_size(nullptr, engine);
+            if (!frame_options.screenshot_path.empty()) {
+                throw std::runtime_error("Capture offscreen output from its presentation host.");
+            }
+        } else {
+#endif
         state.window = acquire_run_window(
             engine.options,
             hidden_test_pass
@@ -6990,6 +7020,10 @@ bool run_gpu_engine(Engine& engine) {
             nullptr);
         if (!state.device) gpu_error("SDL_CreateGPUDevice");
         if (!SDL_ClaimWindowForGPUDevice(state.device, state.window)) gpu_error("SDL_ClaimWindowForGPUDevice");
+#if BBLITE_OFFSCREEN_SURFACES
+        }
+        SdlOffscreenTarget offscreen_target(state.device);
+#endif
         for (const SDL_GPUTextureFormat candidate : {
                  SDL_GPU_TEXTUREFORMAT_D32_FLOAT,
                  SDL_GPU_TEXTUREFORMAT_D24_UNORM,
@@ -7005,8 +7039,11 @@ bool run_gpu_engine(Engine& engine) {
             }
         }
         const SDL_GPUTextureFormat swapchain_format =
+#if BBLITE_OFFSCREEN_SURFACES
+            offscreen ? SDL_GPU_TEXTUREFORMAT_B8G8R8A8_UNORM :
+#endif
             SDL_GetGPUSwapchainTextureFormat(state.device, state.window);
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         ui_runtime = create_ui_rml_runtime(
             engine,
             state.window,
@@ -7048,7 +7085,11 @@ bool run_gpu_engine(Engine& engine) {
             state.sample_count = SDL_GPU_SAMPLECOUNT_4;
         }
         const bool benchmark_mode = frame_options.benchmark_requested;
-        if (benchmark_mode && SDL_WindowSupportsGPUPresentMode(
+        if (
+#if BBLITE_OFFSCREEN_SURFACES
+            state.window &&
+#endif
+            benchmark_mode && SDL_WindowSupportsGPUPresentMode(
                 state.device,
                 state.window,
                 SDL_GPU_PRESENTMODE_IMMEDIATE)) {
@@ -7060,7 +7101,11 @@ bool run_gpu_engine(Engine& engine) {
                 gpu_error("SDL_SetGPUSwapchainParameters");
             }
         }
-        if (!SDL_SetGPUAllowedFramesInFlight(state.device, 3)) {
+        if (
+#if BBLITE_OFFSCREEN_SURFACES
+            !offscreen &&
+#endif
+            !SDL_SetGPUAllowedFramesInFlight(state.device, 3)) {
             gpu_error("SDL_SetGPUAllowedFramesInFlight");
         }
         cpu_startup_mark("window-device");
@@ -9316,7 +9361,7 @@ bool run_gpu_engine(Engine& engine) {
         PlatformInputReplay input_replay;
         const std::string screenshot_path = frame_options.screenshot_path;
         const long screenshot_frame = frame_options.screenshot_frame;
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
         const bool capture_ui = frame_options.capture_ui;
 #endif
         const bool benchmark = frame_options.benchmarking();
@@ -9348,7 +9393,7 @@ bool run_gpu_engine(Engine& engine) {
         // transfer-buffer create/release per frame.
         GpuBufferUploadBatch frame_buffer_uploads(state.device);
         while (captures.keep_running(running, frame)) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
             poll_platform_events(
                 engine,
                 running,
@@ -9364,6 +9409,9 @@ bool run_gpu_engine(Engine& engine) {
                 hidden_test_pass,
                 [](const SDL_Event&) { return true; },
                 camera_pointer_hook);
+#endif
+#if BBLITE_OFFSCREEN_SURFACES
+            if (offscreen && !running) break;
 #endif
             input_replay.dispatch(frame, state.window, engine);
             if (request_renderer_restart_if_scene_set_changed(
@@ -9384,11 +9432,27 @@ bool run_gpu_engine(Engine& engine) {
             // loop body; `pal_dawn.cpp` starts its own at the same point so
             // the published pair stays comparable.
             const double start = monotonic_milliseconds();
+#if BBLITE_OFFSCREEN_SURFACES
+            SDL_GPUTexture* offscreen_texture = nullptr;
+            if (offscreen) {
+                offscreen_texture = offscreen_target.acquire(
+                    static_cast<Uint32>(engine.options.width),
+                    static_cast<Uint32>(engine.options.height), *offscreen);
+                if (!offscreen_texture) { BBLITE_FRAME_YIELD(false); continue; }
+            }
+#endif
             SDL_GPUCommandBuffer* command = SDL_AcquireGPUCommandBuffer(state.device);
             if (!command) gpu_error("SDL_AcquireGPUCommandBuffer");
             SDL_GPUTexture* swapchain = nullptr;
             Uint32 width = 0;
             Uint32 height = 0;
+#if BBLITE_OFFSCREEN_SURFACES
+            if (offscreen) {
+                width = static_cast<Uint32>(engine.options.width);
+                height = static_cast<Uint32>(engine.options.height);
+                swapchain = offscreen_texture;
+            } else
+#endif
             if (!SDL_WaitAndAcquireGPUSwapchainTexture(
                     command,
                     state.window,
@@ -9426,7 +9490,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
                 break;
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
             // Browser layout observes DOM changes made by this turn's RAF
             // callbacks before painting the frame.
             update_ui_rml_runtime(*ui_runtime, width, height);
@@ -12058,7 +12122,7 @@ bool run_gpu_engine(Engine& engine) {
                     present.filter = SDL_GPU_FILTER_NEAREST;
                     SDL_BlitGPUTexture(command, &present);
                 }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
                 SDL_GPUTexture* ui_target =
                     capture_frame && capture_ui
                         ? capture_texture
@@ -12114,7 +12178,13 @@ bool run_gpu_engine(Engine& engine) {
                         height,
                         screenshot_path);
                     captures.screenshot_saved = true;
-                } else if (!SDL_SubmitGPUCommandBuffer(command)) {
+                }
+#if BBLITE_OFFSCREEN_SURFACES
+                else if (offscreen) {
+                    offscreen_target.publish(command, *offscreen);
+                }
+#endif
+                else if (!SDL_SubmitGPUCommandBuffer(command)) {
                     gpu_error("SDL_SubmitGPUCommandBuffer frame graph");
                 }
             } else {
@@ -13297,7 +13367,7 @@ bool run_gpu_engine(Engine& engine) {
                 }
             }
 #endif
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
             if (capture_frame && capture_ui) {
                 // Render the UI into the readback texture, then present that
                 // exact result below.
@@ -13325,7 +13395,7 @@ bool run_gpu_engine(Engine& engine) {
                 blit.filter = SDL_GPU_FILTER_NEAREST;
                 SDL_BlitGPUTexture(command, &blit);
             }
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI && !(defined(BBLITE_WORKERS) && BBLITE_WORKERS)
             if (!(capture_frame && capture_ui)) {
                 // A canvas-only attribution capture omits the UI from
                 // `visible_color` but still draws it over the presented
@@ -13348,7 +13418,13 @@ bool run_gpu_engine(Engine& engine) {
                     height,
                     screenshot_path);
                 captures.screenshot_saved = true;
-            } else if (!SDL_SubmitGPUCommandBuffer(command)) {
+            }
+#if BBLITE_OFFSCREEN_SURFACES
+            else if (offscreen) {
+                offscreen_target.publish(command, *offscreen);
+            }
+#endif
+            else if (!SDL_SubmitGPUCommandBuffer(command)) {
                 gpu_error("SDL_SubmitGPUCommandBuffer");
             }
             }
@@ -13414,6 +13490,7 @@ bool run_gpu_engine(Engine& engine) {
             if (benchmark && completed_frame >= warmup) {
                 samples.push_back(end - start);
             }
+            BBLITE_FRAME_YIELD(true);
         }
         report_benchmark(
             samples,
@@ -13422,36 +13499,11 @@ bool run_gpu_engine(Engine& engine) {
         if (!SDL_WaitForGPUIdle(state.device)) {
             gpu_error("SDL_WaitForGPUIdle");
         }
-    } catch (...) {
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-        destroy_ui_rml_runtime(ui_runtime);
-        ui_runtime = nullptr;
-#endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-        release_sprite_passes();
-#endif
-        release(state);
-        throw;
     }
-    // Teardown sits after the try, as in every sibling run loop: the
-    // run-lifetime objects declared inside it -- the upload batch, whose
-    // transfer buffer has to go back to a live device, and the pick hook
-    // guard -- have unwound by the time the device is destroyed. Inside
-    // the try they outlived `release(state)` on this path, and the batch
-    // released through a dead device: the application gates' intermittent
-    // exit crash.
-#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
-    destroy_ui_rml_runtime(ui_runtime);
-    ui_runtime = nullptr;
-#endif
-#if defined(BBLITE_HAS_SPRITE_RENDERER) && BBLITE_HAS_SPRITE_RENDERER
-    release_sprite_passes();
-#endif
-    release(state);
-    return true;
+    BBLITE_RUN_RETURN(true);
 #else
     (void)engine;
-    return false;
+    BBLITE_RUN_RETURN(false);
 #endif
 }
 

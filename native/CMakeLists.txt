@@ -295,6 +295,21 @@ add_executable(
     ${BBLITE_GENERATED_SOURCES}
 )
 
+set(BBLITE_OFFSCREEN_SURFACES OFF)
+if("platform:workers" IN_LIST BBLITE_RUNTIME_FEATURES)
+    target_compile_definitions(bblite_native PRIVATE BBLITE_WORKERS=1)
+endif()
+if("platform:window" IN_LIST BBLITE_RUNTIME_FEATURES)
+    set(BBLITE_OFFSCREEN_SURFACES ON)
+    if(BBLITE_BACKEND_SDL_GPU)
+        target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_sdl.cpp")
+    endif()
+    if(BBLITE_BACKEND_DAWN)
+        target_sources(bblite_native PRIVATE "${BBLITE_NATIVE_ROOT}/src/pal_window_presenter_dawn.cpp")
+    endif()
+endif()
+target_compile_definitions(bblite_native PRIVATE BBLITE_OFFSCREEN_SURFACES=$<BOOL:${BBLITE_OFFSCREEN_SURFACES}>)
+
 if(MSVC)
     # Lowered value-returning lambdas keep a defensive fallthrough throw after
     # their translated control flow. LTCG can prove that some of those guards

@@ -4,6 +4,9 @@
 #include <bblite/js_data.hpp>
 #include <bblite/pal.hpp>
 #include <bblite/pal_gpu.hpp>
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+#include <bblite/pal_async_engine.hpp>
+#endif
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
 #include <bblite/pal_audio.hpp>
 #endif
@@ -287,6 +290,7 @@ const char* renderer_name(RendererKind kind) {
 // are both compiled in, and `pal_gpu.hpp`'s inline stub returning false
 // otherwise -- so "did this build compile it" is the only question these
 // return values answer.
+#if !defined(BBLITE_WORKERS) || !BBLITE_WORKERS
 bool run_sdl_gpu(Engine& engine, RendererKind kind) {
     switch (kind) {
         case RendererKind::sprites:
@@ -312,10 +316,42 @@ bool run_dawn(Engine& engine, RendererKind kind) {
     }
     return pal::run_dawn_engine(engine);
 }
+#else
+js::Promise<js::PromiseVoid> run_realm_frames(std::shared_ptr<Engine> engine, js::Promise<js::PromiseVoid> ready) {
+    try {
+        for (;;) {
+            const auto kind = renderer_kind(*engine);
+            if (kind != RendererKind::scene) throw std::runtime_error(std::string(renderer_name(kind)) + " does not yet support realm animation tasks.");
+            engine->renderer_restart_requested = false;
+            const bool dawn = pal::environment_variable("BBLITE_GPU_BACKEND") == "dawn";
+#if defined(BBLITE_HAS_SDL_GPU) && BBLITE_HAS_SDL_GPU
+            auto driver = dawn ? pal::run_dawn_engine(*engine) : pal::run_gpu_engine(*engine);
+#else
+            static_cast<void>(dawn);
+            auto driver = pal::run_dawn_engine(*engine);
+#endif
+            driver.ready().observe([ready](const js::PromiseVoid&) { ready.resolve(js::PromiseVoid{}); },
+                [](std::exception_ptr) {}); // The finished result owns the error path below.
+            driver.start();
+            if (!(co_await driver.finished())) throw std::runtime_error("The selected realm rendering backend is not compiled.");
+            if (!engine->renderer_restart_requested) break;
+        }
+    } catch (const pal::WorkerTerminated&) { throw; }
+    catch (...) {
+        if (ready.pending()) ready.reject(std::current_exception());
+        else pal::EventLoop::current().post([error = std::current_exception()] { std::rethrow_exception(error); });
+    }
+    co_return js::PromiseVoid{};
+}
+#endif
 
 } // namespace
 
 void pal::run_engine(Engine& engine) {
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+    static_cast<void>(engine);
+    throw std::logic_error("A Worker-enabled application must use asynchronous engine startup.");
+#else
     SdlWindowRun window_run;
 #if defined(BBLITE_HAS_AUDIO) && BBLITE_HAS_AUDIO
     // Finish this engine's audio before releasing its window services.
@@ -328,6 +364,14 @@ void pal::run_engine(Engine& engine) {
 #endif
     for (;;) {
         const RendererKind kind = renderer_kind(engine);
+        if (pal::OffscreenRun::current()) {
+            if (kind != RendererKind::scene) {
+                throw std::runtime_error("Offscreen presentation currently supports scene renderers only.");
+            }
+#if defined(BBLITE_HAS_UI) && BBLITE_HAS_UI
+            throw std::runtime_error("Offscreen presentation does not yet support a retained UI runtime.");
+#endif
+        }
         engine.renderer_restart_requested = false;
         // bblitec requires a GPU. A backend that reaches its device and fails
         // throws, and the throw propagates: there is no software path to
@@ -358,6 +402,16 @@ void pal::run_engine(Engine& engine) {
         }
         if (!engine.renderer_restart_requested) return;
     }
+#endif
 }
+
+#if defined(BBLITE_WORKERS) && BBLITE_WORKERS
+js::Promise<js::PromiseVoid> pal::start_realm_engine(std::shared_ptr<Engine> engine) {
+    engine->stopped = false;
+    js::Promise<js::PromiseVoid> ready;
+    run_realm_frames(std::move(engine), ready);
+    return ready;
+}
+#endif
 
 } // namespace bbl

@@ -59,9 +59,15 @@ const NATIVE_DOM_BRIDGE_KINDS = new Set<Value["kind"]>([
     "platform-keyboard-event",
     "platform-mouse-event",
     "ui-element",
+    "worker",
+    "worker-scope",
+    "worker-message-event",
+    "worker-error-event",
+    "offscreen-canvas",
 ]);
 
 export interface BrowserErasureContext {
+    isNativeWorkerExpression(expression: ts.Expression): boolean;
     unwrap(expression: ts.Expression): ts.Expression;
     canvasSizeProperty(
         expression: ts.Expression,
@@ -259,6 +265,7 @@ export class BrowserErasure {
     }
 
     public isBrowserOnlyExpression(expression: ts.Expression): boolean {
+        if (this.context.isNativeWorkerExpression(expression)) return false;
         const unwrapped = this.context.unwrap(expression);
         if (this.context.isNativeUiValueExpression(unwrapped)) return false;
         // Scene-created DOM is not a browser object in the native program: it

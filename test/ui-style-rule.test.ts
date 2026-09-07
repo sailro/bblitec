@@ -64,4 +64,7 @@ test("selector descriptors share validation, CSS, and C++ spellings", () => {
         "button.disabled",
     );
     assert.equal(uiStyleSelectorCppKind("tag-class"), "TagClass");
+    assert.equal(uiStyleSelector({ kind: "tag-attribute", tag: "button", primary: "data-active", secondary: "true", active: true }),
+        'button[data-active="true"]:active');
+    assert.equal(uiStyleSelectorCppKind("tag-attribute"), "TagAttribute");
 });

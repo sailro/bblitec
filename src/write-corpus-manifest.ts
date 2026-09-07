@@ -164,6 +164,7 @@ export function rewriteExactCorpusManifest(
             parity.referenceTimeSeconds,
             parity.referenceAnimationGroups,
             parity.referenceFrame,
+            parity.independentEngines,
         );
         const digest = sha256(composed);
         if (digest !== row.moduleSha256) {
@@ -177,6 +178,7 @@ export function rewriteExactCorpusManifest(
                       parity.referenceTimeSeconds,
                       parity.referenceAnimationGroups,
                       parity.referenceFrame,
+                      parity.independentEngines,
                   )
                 : composed;
             assertExplainedByPin(row, previousComposed, previous, current);

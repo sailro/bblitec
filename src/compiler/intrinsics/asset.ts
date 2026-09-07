@@ -26,6 +26,7 @@ interface CompiledEnvironmentOptions {
     skyboxUrl: string;
     skyboxSize: string;
     brdfUrl: string;
+    brdfPathCpp?: string;
     skipSkybox: boolean;
     skipGround: boolean;
 }
@@ -922,7 +923,7 @@ export function compileAssetIntrinsic(
                     `${groundAsset ? `bbl::asset_path(${context.cppString(groundAsset.output)})` : context.cppString("")}, ` +
                     `${skyboxAsset ? `bbl::asset_path(${context.cppString(skyboxAsset.output)})` : context.cppString("")}, ` +
                     `${options.skyboxSize}, ` +
-                    `${brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString("")}, ` +
+                    `${options.brdfPathCpp ?? (brdfAsset ? `bbl::asset_path(${context.cppString(brdfAsset.output)})` : context.cppString(""))}, ` +
                     `${skyboxUsesEnvironment ? "true" : "false"}, ` +
                     `${solidSkybox ? "true" : "false"}, ` +
                     `${options.skipGround ? "false" : "true"}})`,

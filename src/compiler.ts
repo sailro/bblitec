@@ -1,4 +1,9 @@
 import ts from "typescript";
+import { compileWorkerApplication, usesWorkers } from "./compiler/worker-modules.js";
+import { compileWorkerValue, isNativeWorkerExpression } from "./compiler/workers.js";
+import { compileCanvasValue, emitCanvasAssignment } from "./compiler/canvas.js";
+import { writesUnobservedCanvasMetadata } from "./compiler/canvas-instrumentation.js";
+import { AsyncLowerer } from "./compiler/async.js";
 import { sourceLocation } from "./source-location.js";
 import {
     nativeHostUiStyleRules,
@@ -161,6 +166,7 @@ import {
     dataTypesEqual,
     doubleLiteral as dataDoubleLiteral,
     isHandleKind,
+    isPinnedType,
     isTypedArrayType,
     passesByReference,
     passesByReferenceKind,
@@ -209,6 +215,7 @@ import {
     writesThroughTrackedRoot,
     resolveFunctionDeclaration,
     rootIdentifier,
+    unwrapExpression,
     tryResolveFunctionDeclaration,
     type SupportedFunction,
     type UserFunctionContext,
@@ -328,7 +335,9 @@ interface UiGridProjection {
 }
 
 interface LoweredUiStyleRule {
-    kind: UiStyleSelectorKind;
+    // Source-created sheets participate in static grid proofs. Attribute
+    // selectors are currently admitted only in audited host companions.
+    kind: Exclude<UiStyleSelectorKind, "tag-attribute">;
     primary: string;
     secondary?: string;
     tag?: string;
@@ -529,24 +538,33 @@ export function compileSource(
 ): CompileResult {
     const fileName = options.fileName ?? "input.ts";
     const frontend = createCompilerProgram(source, fileName);
+    const compile = (input: typeof frontend, workers?: ResolvedCompileOptions["workers"]): CompileResult => {
     const compiler = new Compiler(
-        frontend.program,
-        frontend.sourceFile,
-        frontend.checker,
+        input.program,
+        input.sourceFile,
+        input.checker,
         {
-            fileName,
+            fileName: workers?.namespace ? input.sourceFile.fileName : fileName,
             title: options.title ?? "Babylon Lite Native",
             width: options.width ?? 1280,
             height: options.height ?? 720,
             search: options.search ?? "",
-            ...(options.nativeHostUi
+            ...(workers ? { workers } : {}),
+            ...(options.nativeHostUi && !workers?.namespace
                 ? { nativeHostUi: options.nativeHostUi }
                 : {}),
         },
     );
     const result = compiler.compile();
-    result.manifest.inputs = frontend.localFiles;
+    result.manifest.inputs = input.localFiles;
     return result;
+    };
+    return usesWorkers(frontend)
+        ? compileWorkerApplication(frontend, compile, (node, message) => {
+            const { file, line, character } = sourceLocation(node);
+            throw new CompileError(file.fileName, line, character, message);
+        })
+        : compile(frontend);
 }
 
 class Compiler
@@ -578,6 +596,7 @@ class Compiler
         new HandleCollections(this);
     private readonly statements = new StatementLowerer();
     public readonly userFunctions: UserFunctionLowerer;
+    private readonly asyncLowerer = new AsyncLowerer(this);
     public readonly dataTypes: DataTypeRegistry;
     public readonly dataLowerer: DataLowerer;
     public readonly classLowerer: ClassLowerer;
@@ -676,6 +695,7 @@ class Compiler
     private readonly nativeBindings = new Map<string, NativeCaptureBinding>();
     private readonly nativeStoredValues = new WeakSet<Value>();
     private readonly nativeDependencyStack: Set<NativeCaptureBinding>[] = [];
+    private readonly realmEngineCaptures = new Map<string, readonly NativeCaptureBinding[]>();
     private readonly managedCaptures: ClosureCaptures[] = [];
     private readonly body: string[] = [];
     /**
@@ -809,6 +829,7 @@ class Compiler
             this.checker,
             (identifier) => this.symbols.valueSymbol(identifier),
             (expression) =>
+                compileCanvasValue(this, expression) ??
                 this.canvasSizeValue(expression) ??
                 this.enumMemberValue(expression) ??
                 this.dataLowerer.compileDataPath(expression, "read") ??
@@ -833,6 +854,7 @@ class Compiler
     }
 
     public compile(): CompileResult {
+        if (this.options.workers) this.reachFeature("platform:workers", this.sourceFile);
         this.collectSourceCppNames();
         this.collectStaticConstants();
         this.predeclareStoredObjectReferences();
@@ -1026,7 +1048,8 @@ class Compiler
     private emitNativeHostUi(): void {
         const hostUi = this.options.nativeHostUi;
         if (!hostUi) return;
-        const engine = this.defaultEngineCpp;
+        if (this.options.workers) this.reachFeature("platform:window", this.sourceFile);
+        const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.defaultEngineCpp;
         if (!engine) {
             this.failAtFile(
                 "A native host UI companion requires a scene engine.",
@@ -1090,7 +1113,7 @@ class Compiler
                     `${rule.hover ? "true" : "false"}, ` +
                     `${doubleLiteral(rule.maxWidth ?? -1)}, ` +
                     `${this.cppString(this.lowerUiAttributeLiteral("style", rule.style))}` +
-                    `${rule.focusVisible ? ", true" : ""});`,
+                    `${rule.active ? `, ${rule.focusVisible ? "true" : "false"}, true` : rule.focusVisible ? ", true" : ""});`,
             );
         }
 
@@ -1150,7 +1173,8 @@ class Compiler
         for (const element of hostUi.elements) {
             appendElement(element);
         }
-        const insertion = this.engineCreationInsertion ?? this.body.length;
+        if (this.options.workers) emitted.push(`${indent}bbl::pal::update_window_document();`);
+        const insertion = this.options.workers ? 0 : this.engineCreationInsertion ?? this.body.length;
         this.body.splice(insertion, 0, ...emitted);
     }
 
@@ -1389,6 +1413,10 @@ class Compiler
     }
 
     private entryStatements(): readonly ts.Statement[] {
+        if (this.options.workers?.namespace) {
+            return this.sourceFile.statements.filter(statement => !ts.isImportDeclaration(statement) &&
+                !ts.isFunctionDeclaration(statement) && !ts.isExportDeclaration(statement));
+        }
         const main = this.sourceFile.statements.find(
             (statement): statement is ts.FunctionDeclaration =>
                 ts.isFunctionDeclaration(statement) &&
@@ -1575,6 +1603,9 @@ class Compiler
                   ? [type]
                   : [];
         if (members.length !== 1) return undefined;
+        if (this.options.workers && isPinnedType(members[0]!, ["EngineContext"])) {
+            return { kind: "engine", cppType: "std::shared_ptr<bbl::Engine>" };
+        }
         const name = members[0]!.symbol?.name;
         if (name === "AudioEngine") {
             return {
@@ -1666,10 +1697,11 @@ class Compiler
         const mappedHandle = this.dataTypes.fromTsType(members[0]!, node);
         if (
             mappedHandle?.kind === "handle" &&
-            mappedHandle.handle === "pointer-drag"
+            (mappedHandle.handle === "pointer-drag" ||
+                (this.options.workers && mappedHandle.handle === "offscreen-canvas"))
         ) {
             return {
-                kind: "pointer-drag",
+                kind: mappedHandle.handle,
                 cppType: this.dataTypes.cppType(mappedHandle),
             };
         }
@@ -2324,7 +2356,7 @@ class Compiler
             declaration.initializer,
             "createEngine",
         );
-        if (engineCall) {
+        if (engineCall && !this.options.workers) {
             const engine = this.compileEngineCreation(engineCall, cppName);
             this.defineVariable(declaration.name, engine);
             return;
@@ -2421,6 +2453,19 @@ class Compiler
             // and return a browser handle. The call itself is not necessarily
             // recognizable as browser-only before inlining, but its resulting
             // binding is still a valid erased browser value.
+            this.defineVariable(declaration.name, value);
+            return;
+        }
+        if (value.kind === "engine") {
+            // createEngine already emitted the owning engine. A helper's
+            // return value or an alias names that same identity; copying it
+            // would separate the scene registry from callbacks retaining it.
+            if (this.identifierIsRebound(declaration.name)) {
+                this.fail(
+                    declaration,
+                    "Reassigning an engine alias is not supported.",
+                );
+            }
             this.defineVariable(declaration.name, value);
             return;
         }
@@ -2706,15 +2751,6 @@ class Compiler
             delete stored.staticBoolean;
         }
         this.defineVariable(declaration.name, stored);
-        if (value.kind === "engine") {
-            if (this.defaultEngineCpp) {
-                this.fail(
-                    declaration,
-                    "The prototype currently supports one engine per entry point.",
-                );
-            }
-            this.defaultEngineCpp = cppName;
-        }
     }
 
     /**
@@ -2914,6 +2950,10 @@ class Compiler
         let recursive = false;
         const visit = (node: ts.Node): void => {
             if (recursive) return;
+            if (this.options.workers && ts.isIdentifier(node) && this.symbols.valueSymbol(node) === symbol) {
+                recursive = true;
+                return;
+            }
             if (
                 ts.isCallExpression(node) &&
                 ts.isIdentifier(node.expression) &&
@@ -2922,7 +2962,7 @@ class Compiler
                 recursive = true;
                 return;
             }
-            if (node !== callback && ts.isFunctionLike(node)) {
+            if (!this.options.workers && node !== callback && ts.isFunctionLike(node)) {
                 return;
             }
             ts.forEachChild(node, visit);
@@ -3030,6 +3070,9 @@ class Compiler
         this.defineVariable(name, {
             ...storage,
             callbackDeclaration: callback,
+            nativeCallbackParameterTypes: parameters.map(parameter => parameter.type),
+            nativeCallbackStaticArguments: parameters.map(() => undefined),
+            ...(returnType ? { nativeCallbackReturnType: returnType } : {}),
         });
         let parameterDeclarations: string[] = [];
         const emitCallbackBody = (): void => {
@@ -4164,6 +4207,8 @@ class Compiler
     }
 
     public emitAssignment(expression: ts.BinaryExpression): void {
+        if (emitCanvasAssignment(this, expression)) return;
+        if (this.options.workers && this.emitUiPropertyAssignment(expression)) return;
         if (emitStructuralPropertyAssignment(this, expression)) {
             return;
         }
@@ -8449,6 +8494,15 @@ class Compiler
             return false;
         }
         const property = expression.left.name.text;
+        const dataset = this.unwrap(expression.left.expression);
+        if (this.options.workers && ts.isPropertyAccessExpression(dataset) && dataset.name.text === "dataset") {
+            const element = this.uiElementValue(dataset.expression);
+            if (element) {
+                const name = `data-${property.replace(/[A-Z]/g, letter => `-${letter.toLowerCase()}`)}`;
+                this.emit(`bbl::ui_set_attribute(${this.requireEngine(element, dataset)}, ${element.cpp}, ${this.cppString(name)}, ${this.uiStringCpp(expression.right, "Dataset assignment")});`);
+                return true;
+            }
+        }
         const directElement = this.uiElementValue(expression.left.expression);
         if (directElement) {
             const engine = this.requireEngine(directElement, expression.left);
@@ -8685,9 +8739,12 @@ class Compiler
         this.nativeDependencyStack.push(dependencies);
         let value: Value;
         try {
-            value = this.expressions.compileValue(expression);
+            value = this.compileWorkerValue(expression) ?? this.expressions.compileValue(expression);
         } finally {
             this.nativeDependencyStack.pop();
+        }
+        if (this.options.workers && value.kind === "boolean" && (value.cpp === "true" || value.cpp === "false")) {
+            value = { ...value, staticBoolean: value.cpp === "true" };
         }
         // CSG values retain materialized geometry plans, not the native mesh
         // handles read while producing them. A later consumer can therefore
@@ -8700,6 +8757,14 @@ class Compiler
             }
         }
         if (retained.size && !this.nativeStoredValues.has(value)) value.nativeCaptures = [...retained];
+        if (this.options.workers && value.engineCpp) {
+            if (value.kind === "engine" && value.ownedEngineCpp) {
+                const owner = this.nativeBindings.get(value.ownedEngineCpp);
+                if (owner) this.realmEngineCaptures.set(value.engineCpp, [owner]);
+            }
+            const owners = this.realmEngineCaptures.get(value.engineCpp);
+            if (owners) value.nativeCompanionCaptures = { ...value.nativeCompanionCaptures, engineCpp: owners };
+        }
         this.useNativeValue(value);
         // A generation-known list of strings travels on the value, exactly
         // as one string travels on `staticString`. It has to: an inlined
@@ -8720,6 +8785,57 @@ class Compiler
             }
         }
         return value;
+    }
+
+    public compileWorkerValue(expression: ts.Expression): Value | undefined {
+        if (this.options.workers) {
+            const canvas = compileCanvasValue(this, expression);
+            if (canvas) return canvas;
+            const promise = this.asyncLowerer.compile(expression);
+            if (promise) return promise;
+        }
+        return compileWorkerValue(this, expression);
+    }
+
+    public emitAwaitExpression(expression: ts.Expression): boolean {
+        if (!this.options.workers) return false;
+        const node = unwrapExpression(expression);
+        if (!ts.isAwaitExpression(node)) return false;
+        this.compileValue(expression);
+        return true;
+    }
+
+    public withOwnedCallbackBody<T>(body: () => T): T {
+        this.frameCallbackDepth++;
+        try { return body(); }
+        finally { this.frameCallbackDepth--; }
+    }
+
+    public isNativeWorkerExpression(expression: ts.Expression): boolean {
+        return isNativeWorkerExpression(this, expression);
+    }
+
+    public workerCheckpointCpp(): string | undefined {
+        return this.options.workers ? "bbl::pal::EventLoop::current().checkpoint()" : undefined;
+    }
+
+    public workerAbortCpp(): string | undefined {
+        return this.options.workers ? "bbl::pal::EventLoop::current().aborting()" : undefined;
+    }
+
+    public compileAsyncEngineStart(engine: Value, node: ts.Node): Value | undefined {
+        if (!this.options.workers) return undefined;
+        if (!engine.ownedEngineCpp) this.fail(node, "Asynchronous engine startup requires an owned engine.");
+        return { kind: "promise", cpp: `bbl::pal::start_realm_engine(${engine.ownedEngineCpp})`,
+            promiseResult: { kind: "void", cpp: "" }, promiseType: "bbl::js::PromiseVoid" };
+    }
+
+    public compileWorkerCallback(expression: ts.Expression, event: "message" | "error"): string {
+        const name = this.allocateTemporaryCppName("worker_event");
+        const type = event === "message" ? "const bbl::pal::WorkerMessage&" : "bbl::pal::WorkerErrorEvent&";
+        const callback = this.compilePlatformCallback(expression, { name, cppType: type },
+            [{ kind: event === "message" ? "worker-message-event" : "worker-error-event", cpp: name }]);
+        return `bbl::js::Callback<void(${type})>(${callback.identity}u, ${callback.cpp})`;
     }
 
     /**
@@ -8940,6 +9056,8 @@ class Compiler
     public compilePropertyAccess(
         expression: ts.PropertyAccessExpression,
     ): Value {
+        const canvas = compileCanvasValue(this, expression);
+        if (canvas) return canvas;
         if (
             expression.name.text === "activeElement" &&
             ts.isIdentifier(expression.expression) &&
@@ -9526,8 +9644,20 @@ class Compiler
     }
 
     public isRuntimeResourceConstruction(): boolean {
+        if (this.options.workers && this.engineCreationExecution &&
+            this.frameCallbackDepth === this.engineCreationExecution.callback &&
+            this.runtimeControlFlowDepth === this.engineCreationExecution.control &&
+            this.runtimeIterationDepth === this.engineCreationExecution.iteration &&
+            this.returnFrames.filter(frame => frame.kind === "native").length === this.engineCreationExecution.native) {
+            // Resource order is relative to this newly allocated engine.
+            // A worker message can invoke the same factory again, creating
+            // another engine with the same independently owned slot layout.
+            return false;
+        }
         return !this.definiteCollectionMutation();
     }
+
+    private engineCreationExecution?: { callback: number; control: number; iteration: number; native: number };
 
     /**
      * Some applications update an established thin-instance pool
@@ -10022,6 +10152,7 @@ class Compiler
         skyboxUrl: string;
         skyboxSize: string;
         brdfUrl: string;
+        brdfPathCpp?: string;
         skipSkybox: boolean;
         skipGround: boolean;
     } {
@@ -10071,7 +10202,9 @@ class Compiler
         // A helper receiving retained controls has native effects even when
         // its returned interface consists entirely of void methods (focus,
         // navigation, click). Do not erase that interface as browser chrome.
-        if (call.arguments.some((argument) => {
+        if (call.arguments.some((argument, index) => {
+            if (this.options.workers && this.isCanvasElement(argument) &&
+                writesUnobservedCanvasMetadata(this.checker, this.program, call, index, this.options.nativeHostUi)) return false;
             if (this.isNativeUiValueExpression(argument)) return true;
             const value = this.unwrap(argument);
             const type = ts.isIdentifier(value)
@@ -11008,7 +11141,7 @@ class Compiler
                     bound.cpp.length > 0 &&
                     bound.nativeCallbackParameterTypes?.length === 0
                 ) {
-                    const captureByValue = this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+                    const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
                     const emitBody = () => {
                         this.useNativeValue(bound);
                         this.emit(`${bound.cpp}();`);
@@ -11016,9 +11149,12 @@ class Compiler
                     const compiled = this.captureManagedClosureLines(emitBody, !captureByValue);
                     return renderClosure(compiled, "");
                 }
+                if (this.options.workers && (bound?.kind === "callback" || !bound)) {
+                    return this.compilePlatformCallback(unwrapped, undefined, [], undefined, true, false).cpp;
+                }
                 this.fail(
                     unwrapped,
-                    "A named deferred callback must resolve to a native zero-argument function.",
+                    `A named deferred callback must resolve to a native zero-argument function (received ${bound?.kind ?? "unbound"}).`,
                 );
             }
             return this.compileNamedFrameCallback(unwrapped, signature);
@@ -11087,7 +11223,7 @@ class Compiler
         // guards statements later in the callback; it is not an inlined
         // function return that needs the breakable wrapper path.
         this.beginNativeFunctionBody(undefined, true);
-        const captureByValue = this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         let compiled: CapturedClosure;
         try {
             const emitBody = () => {
@@ -11225,7 +11361,7 @@ class Compiler
                     ? undefined
                     : this.variableScopes.length;
         }
-        const captureByValue = this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
+        const captureByValue = !!this.options.workers || this.frameCallbackDepth > 0 || this.managedCaptures.length > 0;
         this.frameCallbackDepth += 1;
         let compiled: CapturedClosure;
         try {
@@ -11791,12 +11927,22 @@ class Compiler
                 "The prototype currently supports one engine per entry point.",
             );
         }
-        this.emit(
-            `auto ${cppName} = bbl::create_engine(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}});`,
-        );
+        let canvasArgument = "";
+        if (this.options.workers) {
+            const canvas = this.compileValue(call.arguments[0]!);
+            if (canvas.kind !== "offscreen-canvas" && canvas.kind !== "ui-element") this.fail(call.arguments[0]!, "The realm engine requires a native canvas context.");
+            canvasArgument = `, ${canvas.kind === "ui-element" ? `bbl::pal::window_canvas(${canvas.cpp})` : canvas.cpp}`;
+        }
+        this.emit(`auto ${cppName} = ${this.options.workers ? "bbl::pal::create_realm_engine" : "bbl::create_engine"}(bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}${canvasArgument});`);
         this.engineCreationInsertion = this.body.length;
-        this.defaultEngineCpp = cppName;
-        const nativeBinding = this.registerNativeBinding(cppName, true);
+        if (this.options.workers) this.engineCreationExecution = {
+            callback: this.frameCallbackDepth, control: this.runtimeControlFlowDepth,
+            iteration: this.runtimeIterationDepth, native: this.returnFrames.filter(frame => frame.kind === "native").length,
+        };
+        const engineCpp = this.options.workers ? `(*${cppName})` : cppName;
+        this.defaultEngineCpp = engineCpp;
+        const nativeBinding = this.registerNativeBinding(cppName, !this.options.workers);
+        if (this.options.workers) this.nativeBindings.set(engineCpp, nativeBinding);
         // The policy travels as reached features, which is what every other
         // emission decision reads: `useHighPrecisionMatrix` is what the
         // pin's process-global allocator swaps on, and this port composes
@@ -11812,8 +11958,9 @@ class Compiler
         }
         return {
             kind: "engine",
-            cpp: cppName,
-            engineCpp: cppName,
+            cpp: engineCpp,
+            engineCpp,
+            ...(this.options.workers ? { ownedEngineCpp: cppName } : {}),
             msaaSamples,
             nativeCaptures: [nativeBinding],
         };
@@ -13393,7 +13540,7 @@ class Compiler
             (cppIdentifierPattern.test(value.cpp) ? value.cpp : value.optionalStorageCpp ?? value.cpp);
         if (isCompileTimeOnlyValue(value.kind) || value.kind === "browser" ||
             !cppIdentifierPattern.test(storage) || ["true", "false", "nullptr"].includes(storage)) return;
-        value.nativeCaptures = [this.registerNativeBinding(storage, value.kind === "engine",
+        value.nativeCaptures = [this.registerNativeBinding(storage, value.kind === "engine" && !value.ownedEngineCpp,
             value.sharedStorageCpp === undefined)];
         for (const key of nativeCompanionKeys) {
             const companion = value[key];
@@ -13679,10 +13826,11 @@ class Compiler
      * declaration and the assignment alike.
      */
     private optionalResourceCpp(value: Value): string {
+        const cpp = value.ownedEngineCpp ?? value.cpp;
         return value.optionalFoundCpp !== undefined &&
             value.optionalFoundCpp !== "true"
-            ? `(${value.optionalFoundCpp} ? std::optional{${value.cpp}} : std::nullopt)`
-            : value.cpp;
+            ? `(${value.optionalFoundCpp} ? std::optional{${cpp}} : std::nullopt)`
+            : cpp;
     }
 
     public assignOptionalResourceValue(
@@ -13718,7 +13866,7 @@ class Compiler
         }
         this.emit(`${storage} = ${this.optionalResourceCpp(value)};`);
         this.assignAudioMainBus(target, value, node);
-        if (value.engineCpp !== undefined) {
+        if (value.engineCpp !== undefined && target.kind !== "engine") {
             target.engineCpp = value.engineCpp;
         }
         // A declaration without an initializer is represented by optional
@@ -14436,7 +14584,7 @@ class Compiler
         if (ts.isPropertyAccessExpression(callee)) {
             if (this.isNativeHostUiLookup(call)) {
                 const id = this.compileStringLiteral(call.arguments[0]!);
-                const engine = this.requireDefaultEngine(call);
+                const engine = this.options.workers ? "bbl::pal::window_document_engine()" : this.requireDefaultEngine(call);
                 this.reachFeature("ui:rml", call);
                 return {
                     kind: "ui-element",
@@ -16232,6 +16380,9 @@ class Compiler
         scopeIndex: number,
         frameLocal: boolean,
     ): void {
+        // Worker-enabled callbacks own their captures, including shared cells
+        // for mutable bindings. Borrowed platform-event checks still apply.
+        if (this.options.workers) return;
         if (
             frameLocal &&
             this.deferredCaptureFloor !== undefined &&
@@ -17185,6 +17336,10 @@ class Compiler
     }
 
     public defineVariable(identifier: ts.Identifier, value: Value): void {
+        if (this.options.workers && value.kind === "engine" && value.optionalStorageCpp && !value.ownedEngineCpp) {
+            const ownedEngineCpp = value.cpp;
+            value = { ...value, ownedEngineCpp, cpp: `(*${ownedEngineCpp})`, engineCpp: `(*${ownedEngineCpp})` };
+        }
         if (value.kind === "data" && (value.dataType?.kind === "vector" ||
             value.dataType?.kind === "map" || value.dataType?.kind === "set")) {
             const owner = value.staticElementsOwner ?? value;
@@ -19563,6 +19718,11 @@ class Compiler
         }
         this.markUnreadNumericLocals();
         return renderMainCpp({
+            ...(this.options.workers ? { workers: {
+                namespace: this.options.workers.namespace,
+                declarations: this.options.workers.declarations(),
+                ...(features.includes("platform:window") ? { windowOptions: `bbl::EngineOptions{${this.cppString(this.options.title)}, ${this.options.width}, ${this.options.height}}` } : {}),
+            } } : {}),
             features,
             jsDataReached: this.jsDataReached,
             imageDecodeReached: this.imageDecodeReached,
@@ -19572,7 +19732,7 @@ class Compiler
             throwReached: this.throwReached,
             postProcessCompositeCount: this.postProcessComposites.length,
             screenSpaceTaskCount: this.screenSpaceTasks.length,
-            renderDataPreamble: () => this.dataTypes.renderPreamble(),
+            renderDataPreamble: () => this.dataTypes.renderPreamble(!!this.options.workers),
             nativeFunctionPrototypes: this.nativeFunctionPrototypes,
             nativeFunctionDefinitions: this.nativeFunctionDefinitions,
             staticNativeDeclarations: this.staticNativeDeclarations,
