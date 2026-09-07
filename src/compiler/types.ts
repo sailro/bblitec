@@ -834,9 +834,12 @@ export type CompiledNodeMaterial = {
   shadowLights: readonly NodeShadowLight[];
   /**
    * The exact closed class-to-emitter map a scene-supplied blockLoader
-   * declares. Absent means the pin's own default registry.
+   * declares. With neither loader field set, composition uses the pin's
+   * default registry.
    */
   blockEmitters?: readonly NodeMaterialBlockEmitter[];
+  /** Execute the pin's geometry-aware loader, including its registry delegation. */
+  pinnedBlockLoader?: "geometry";
 } & (
   | { kind: "literal"; graph: Record<string, unknown> }
   | {

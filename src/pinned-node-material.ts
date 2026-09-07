@@ -22,7 +22,10 @@
  * adds one refuses rather than composing a module this port cannot serve.
  */
 import type { JsonObject } from "./gltf-document.js";
-import type { NodeMaterialBlockEmitter } from "./compiler/types.js";
+import type {
+    CompiledNodeMaterial,
+    NodeMaterialBlockEmitter,
+} from "./compiler/types.js";
 import type { PinnedGeometryTaskRequest } from "./pinned-material-arms.js";
 import {
     geometryAttachmentTypes,
@@ -200,6 +203,7 @@ export interface ComposeNodeMaterialOptions {
     }[];
     castsEsmShadow?: boolean;
     blockEmitters?: readonly NodeMaterialBlockEmitter[] | undefined;
+    pinnedBlockLoader?: CompiledNodeMaterial["pinnedBlockLoader"];
     castsPcfShadow?: boolean;
     /**
      * The geometry-output tasks this graph is drawn in, in manifest order.
@@ -619,6 +623,7 @@ export async function composeNodeMaterial(
         shadowLights = [],
         castsEsmShadow = false,
         blockEmitters = [],
+        pinnedBlockLoader,
         castsPcfShadow = false,
         geometryTasks = [],
     } = options;
@@ -642,10 +647,17 @@ export async function composeNodeMaterial(
     );
     const device = compositionEngine();
     const engine = device.engine;
+    if (pinnedBlockLoader && blockEmitters.length > 0) {
+        throw new Error("A node material cannot combine pinned and closed block loaders.");
+    }
     const emitterModules = new Map(
         blockEmitters.map(({ className, module }) => [className, module]),
     );
-    const blockLoader = blockEmitters.length > 0
+    const blockLoader = pinnedBlockLoader === "geometry"
+        ? (await importPinnedModule<{
+              loadNodeBlockEmitterWithGeometry(className: string): Promise<unknown>;
+          }>("material/node/node-geometry-block-loader.js")).loadNodeBlockEmitterWithGeometry
+        : blockEmitters.length > 0
         ? async (className: string): Promise<unknown> => {
               const emitterModule = emitterModules.get(className);
               if (!emitterModule) {

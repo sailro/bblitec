@@ -26,7 +26,7 @@ function gitBlobHash(bytes: Buffer): string {
         .digest("hex");
 }
 
-function compileLoader(loader: string) {
+function compileLoader(loader: string, name = "loadBlock") {
     return compileSource(`
         import {
             createEngine,
@@ -39,12 +39,91 @@ function compileLoader(loader: string) {
             const engine = await createEngine({});
             await parseNodeMaterialFromSnippet(engine, "", {
                 json: { blocks: [] },
-                blockLoader: loadBlock,
+                blockLoader: ${name},
             });
         }
         main();
     `);
 }
+
+test("recognizes the pinned geometry loader by import symbol and keeps its graph identity", () => {
+    for (const name of ["loadNodeBlockEmitterWithGeometry", "loadBlock"]) {
+        const result = compileLoader(
+            `import { loadNodeBlockEmitterWithGeometry as ${name} } from "babylon-lite";`,
+            name,
+        );
+        assert.equal(result.manifest.nodeMaterials[0]!.pinnedBlockLoader, "geometry");
+        assert.equal(result.manifest.nodeMaterials[0]!.blockEmitters, undefined);
+    }
+    const result = compileSource(`
+        import { createEngine, parseNodeMaterialFromSnippet,
+            loadNodeBlockEmitterWithGeometry as geometry } from "babylon-lite";
+        async function main() {
+            const engine = await createEngine({});
+            const graph = { blocks: [] };
+            await parseNodeMaterialFromSnippet(engine, "", { json: graph });
+            await parseNodeMaterialFromSnippet(engine, "", { json: graph, blockLoader: geometry });
+            await parseNodeMaterialFromSnippet(engine, "", { json: graph, blockLoader: geometry });
+        }
+        main();
+    `);
+    assert.deepEqual(result.manifest.nodeMaterials.map((material) => material.pinnedBlockLoader),
+        [undefined, "geometry"]);
+    assert.deepEqual([...result.cpp.matchAll(/create_node_material\([^,]+, (\d+)u,/g)]
+        .map((match) => Number(match[1])), [0, 1, 1]);
+
+    assert.throws(() => compileLoader(`
+        async function loadNodeBlockEmitterWithGeometry(className: string): Promise<unknown> {
+            return className;
+        }
+    `, "loadNodeBlockEmitterWithGeometry"), /one closed switch statement/);
+    for (const declaration of [
+        'import type { loadNodeBlockEmitterWithGeometry as loadBlock } from "babylon-lite";',
+        'import { type loadNodeBlockEmitterWithGeometry as loadBlock } from "babylon-lite";',
+    ]) {
+        assert.throws(() => compileLoader(declaration), /blockLoader/);
+    }
+});
+
+test("executes pinned geometry delegation while preserving ordinary graphs and later refusals", async () => {
+    const graph = await executeModuleGraph({
+        modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene149-nme.ts",
+        exportName: "SCENE149_NME_JSON",
+    });
+    const options = { pinnedBlockLoader: "geometry" } as const;
+    const composed = await composeNodeMaterial(graph, "scene149-loader", {
+        ...options,
+        geometryTasks: [{ index: 0, attachments: ["WORLD_POSITION", "VIEW_NORMAL", "ALBEDO"], emitColor: false }],
+    });
+    assert.deepEqual(composed.textures.map(({ name }) => name), ["albedo"]);
+    assert.equal(composed.geometryViews[0]!.colorTargetCount, 3);
+    assert.deepEqual(composed.geometryViews[0]!.attributes.map(({ name }) => name),
+        ["position", "normal", "uv"]);
+    await assert.rejects(() => composeNodeMaterial(graph, "scene149-default"),
+        /no emitter registered for block "GeometryTextureOutputBlock"/);
+
+    const ordinary = await executeModuleGraph({
+        modulePath: "corpus/babylon-lite/lab/lite/src/shared/scene60-nme.ts",
+        exportName: "SCENE60_NME_JSON",
+    });
+    assert.deepEqual(await composeNodeMaterial(ordinary, "ordinary", options),
+        await composeNodeMaterial(ordinary, "ordinary"));
+    await assert.rejects(() => composeNodeMaterial({
+        blocks: [{ id: 1, customType: "BABYLON.MissingEmitterBlock", inputs: [], outputs: [] }],
+    }, "missing-emitter", options), /no emitter registered for block "MissingEmitterBlock"/);
+    await assert.rejects(() => composeNodeMaterial(graph, "scene149-local-refusal", {
+        ...options,
+        geometryTasks: [{ index: 0, attachments: ["LOCAL_POSITION"], emitColor: false }],
+    }), /attachments include LOCAL_POSITION/);
+    await assert.rejects(() => composeNodeMaterial(graph, "scene149-color-refusal", {
+        ...options,
+        geometryTasks: [{ index: 0, attachments: ["ALBEDO"], emitColor: true }],
+    }), /refuses `emitColor`/);
+    await assert.rejects(() => composeNodeMaterial(ordinary, "conflicting-loaders", {
+        ...options,
+        blockEmitters: [{ className: "InputBlock", module: "material/node/blocks/input-block.js" }],
+    }), /cannot combine pinned and closed block loaders/);
+});
 
 function compressedJsonHelpers(options: {
     decoderExtra?: string;

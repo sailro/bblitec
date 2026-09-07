@@ -1163,6 +1163,7 @@ export async function composeScenePipeline({
                 shadowLights: graphShadowLights,
                 castsEsmShadow,
                 blockEmitters: material.blockEmitters,
+                pinnedBlockLoader: material.pinnedBlockLoader,
                 castsPcfShadow,
                 // A geometry-output task draws every mesh the scene admits,
                 // so a graph in a scene carrying one is drawn by it and

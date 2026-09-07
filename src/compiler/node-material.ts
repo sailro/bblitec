@@ -94,7 +94,8 @@ function nodeMaterialKey(material: CompiledNodeMaterial): string {
     const document = material.kind === "literal"
         ? `literal:${JSON.stringify(material.graph)}`
         : `module:${material.module}#${material.exportName}`;
-    return `${document}|emitters:${JSON.stringify(material.blockEmitters ?? [])}`;
+    return `${document}|emitters:${JSON.stringify(material.blockEmitters ?? [])}` +
+        `|loader:${material.pinnedBlockLoader ?? "default"}`;
 }
 
 const nodeBlockModulePrefixes = babylonPackages.map(
@@ -117,7 +118,7 @@ function pinnedNodeBlockModuleInventory(): ReadonlySet<string> {
 }
 
 /**
- * Resolve the one custom-loader shape generation can replay exactly.
+ * Resolve the pinned geometry loader or the closed custom-loader shape.
  *
  * A caller may close its bundle over a switch of block class names, with
  * each case returning only one pinned `material/node/blocks/*` module's
@@ -129,9 +130,15 @@ function pinnedNodeBlockModuleInventory(): ReadonlySet<string> {
 function compileBlockLoader(
     context: NodeMaterialContext,
     expression: ts.Expression | undefined,
-): readonly NodeMaterialBlockEmitter[] | undefined {
-    if (!expression) return undefined;
+): Pick<CompiledNodeMaterial, "blockEmitters" | "pinnedBlockLoader"> {
+    if (!expression) return {};
     const loader = unwrapLoaderExpression(expression);
+    if (ts.isIdentifier(loader) &&
+        context.symbols.babylonImportName(loader) === "loadNodeBlockEmitterWithGeometry") {
+        // The pin owns both its geometry case and the registry fallback. Do
+        // not turn that delegation into a scene-authored closed switch.
+        return { pinnedBlockLoader: "geometry" };
+    }
     const declaration = ts.isIdentifier(loader)
         ? resolveFunctionDeclaration(
               context.checker,
@@ -142,7 +149,8 @@ function compileBlockLoader(
     if (!declaration) {
         context.fail(
             expression,
-            "A node material blockLoader must name a local closed switch " +
+            "A node material blockLoader must name the pinned " +
+                "loadNodeBlockEmitterWithGeometry or a local closed switch " +
                 "over pinned block emitter modules.",
         );
     }
@@ -284,7 +292,7 @@ function compileBlockLoader(
                 "to a pinned block emitter.",
         );
     }
-    return emitters;
+    return { blockEmitters: emitters };
 }
 
 /**
@@ -323,8 +331,8 @@ export function compileNodeMaterialOptions(
             "blockLoader",
         ],
         "Reached node materials take an inline 'json' graph, its " +
-            "'textures', its 'shadowGenerators', and a closed pinned " +
-            "blockLoader only; skinning and instancing are not lowered.",
+            "'textures', its 'shadowGenerators', and a pinned geometry or " +
+            "closed blockLoader only; skinning and instancing are not lowered.",
     );
     const jsonExpression = context.objectProperty(object, "json");
     if (!jsonExpression) {
@@ -343,7 +351,7 @@ export function compileNodeMaterialOptions(
         context.objectProperty(object, "shadowGenerators"),
         context.objectProperty(object, "shadowLightIndices"),
     );
-    const blockEmitters = compileBlockLoader(
+    const blockLoader = compileBlockLoader(
         context,
         context.objectProperty(object, "blockLoader"),
     );
@@ -362,7 +370,7 @@ export function compileNodeMaterialOptions(
                   graph: document.graph,
                   textureNames,
                   shadowLights,
-                  ...(blockEmitters ? { blockEmitters } : {}),
+                  ...blockLoader,
               }
             : {
                   kind: "module",
@@ -370,7 +378,7 @@ export function compileNodeMaterialOptions(
                   exportName: document.exportName,
                   textureNames,
                   shadowLights,
-                  ...(blockEmitters ? { blockEmitters } : {}),
+                  ...blockLoader,
               };
     // Two calls naming the same document compose one module and one variant,
     // so a repeat reach returns the first index. Linear over the reached
