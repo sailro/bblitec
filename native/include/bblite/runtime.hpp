@@ -1342,6 +1342,8 @@ struct TaaPostProcessState {
     double halton_index;
     std::vector<float> halton{};
     std::array<float, 16> jitter_scratch{};
+    /** Diagnostic completed executions across GPU resource rebuilds. */
+    std::uint64_t execution_count = 0;
 };
 
 /**

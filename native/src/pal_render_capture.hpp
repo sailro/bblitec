@@ -1729,6 +1729,54 @@ inline void write_effect_state(JsonWriter& json, const Engine& engine) {
 #endif
 
 #if defined(BBLITE_HAS_PBR_RENDERER) && BBLITE_HAS_PBR_RENDERER
+/** Retained temporal bytes are observed directly; capture must never repack their cache. */
+inline void write_temporal_tasks(JsonWriter& json, const Scene& scene, const Engine& engine) {
+    json.begin_array();
+    for (const TaskHandle handle : scene.tasks) {
+        if (handle.value >= engine.frame_tasks.size()) continue;
+        const FrameTaskRecord& task = engine.frame_tasks[handle.value];
+        if (!task.scene_uniforms && !task.post_process.taa) continue;
+        json.begin_object();
+        json.field("taskIndex", handle.value);
+        if (task.scene_uniforms) {
+            const PersistentSceneUniforms& uniforms = *task.scene_uniforms;
+            json.field("name", task.render.name);
+            json.field("clean", uniforms.clean.data(), uniforms.clean.size());
+            json.field("drawn", uniforms.drawn.data(), uniforms.drawn.size());
+            json.key("cache");
+            json.begin_object();
+            json.field("cameraKey", uniforms.cache.camera_key);
+            json.field("fogIdentity", uniforms.cache.fog);
+            json.field("environmentIdentity", uniforms.cache.environment);
+            json.field("aspect", uniforms.cache.aspect);
+            json.field("exposure", uniforms.cache.exposure);
+            json.field("contrast", uniforms.cache.contrast);
+            json.end_object();
+        }
+        if (task.post_process.taa) {
+            const TaaPostProcessState& state = *task.post_process.taa;
+            json.field("name", task.post_process.name);
+            json.field("executions", state.execution_count);
+            json.field("factor", state.factor);
+            json.field("disableOnCameraMove", state.disable_on_camera_move);
+            json.field("firstUpdate", state.first_update);
+            json.field("lastCameraVersion", state.last_camera_version);
+            json.field("haltonIndex", state.halton_index);
+            json.field("halton", state.halton.data(), state.halton.size());
+            json.field("jitterScratch", state.jitter_scratch.data(), state.jitter_scratch.size());
+            if (!task.post_process.passes.empty() && !task.post_process.passes.front().params.empty()) {
+                json.field("blendFactor", task.post_process.passes.front().params.front());
+            }
+            json.key("sourceTasks");
+            json.begin_array();
+            for (const TaskHandle source : task.post_process.source_tasks) json.value(source.value);
+            json.end_array();
+        }
+        json.end_object();
+    }
+    json.end_array();
+}
+
 /**
  * Write the whole frame of a scene.
  *
@@ -1787,6 +1835,9 @@ inline void write_render_capture(
     json.field("effectWrapperCount", engine.effect_wrappers.size());
 #endif
     json.end_object();
+
+    json.key("temporalTasks");
+    write_temporal_tasks(json, scene, engine);
 
     json.key("camera");
     json.begin_object();
