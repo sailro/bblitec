@@ -281,6 +281,13 @@ actual mesh/cloud/billboard rather than its name. Sampled depth reconstructs a
 world-space point. Detailed barycentrics/normal lookup must use the geometry
 space the pin expects, including skinned versus CPU-baked transforms.
 
+Picking results use a shared native carrier so aliases and data transport
+preserve JavaScript result identity and barycentric precision. GPU readback
+binds the carrier to its originating engine before the existing pinned
+continuation runs. Mesh-name and normal queries check that engine's wrapper
+lifetime; use after destruction or relocation explicitly throws. Full
+post-engine mesh retention remains outside this adaptation.
+
 Detailed picking requires the device's primitive-index capability; native
 throws where the pin's feature probe can leave it unavailable. Supported
 skinned detailed arms do not imply morph-only/basic, thin-instance or VAT

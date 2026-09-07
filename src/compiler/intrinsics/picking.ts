@@ -8,6 +8,12 @@ import {
     type HitRecordContext,
 } from "./hit-record.js";
 
+/** Readback and picker retirement change native state only; repeated calls do
+ * not allocate a generation-owned composition row. */
+export const runtimeOnlyPickingIntrinsics: ReadonlySet<string> = new Set([
+    "pickAsync", "disposePicker", "getPickedNormal",
+]);
+
 export interface PickingIntrinsicContext
     extends IntrinsicCallContext, HitRecordContext {
     readonly dataTypes: DataTypeRegistry;
@@ -17,7 +23,6 @@ export interface PickingIntrinsicContext
         precision?: "float" | "double",
     ): string;
     requireEngine(value: Value, node: ts.Node): string;
-    requireDefaultEngine(node: ts.Node): string;
     compileCondition(expression: ts.Expression): string;
     fail(node: ts.Node, message: string): never;
 }
@@ -93,6 +98,7 @@ export function compilePickingIntrinsic(
             );
             return {
                 kind: "picking-info",
+                dataType: { kind: "handle", handle: "picking-info" },
                 cpp:
                     `bbl::gpu_pick(` +
                     `${context.requireEngine(picker, call)}, ` +
@@ -241,18 +247,10 @@ export function compilePickingIntrinsic(
             context.reachFeature("mesh:geometry-access", call);
             const info = context.compileValue(call.arguments[0]!);
             context.expectKind(info, "picking-info", call.arguments[0]!);
-            // The engine the pick's own value carries, or the scene's
-            // only one: upstream reads the mesh through a live node
-            // reference, so an info that crossed a function boundary --
-            // which is exactly how scene 113 hands its result to a
-            // placement helper -- still has to reach the collections the
-            // handle indexes.
-            const engine =
-                info.engineCpp ?? context.requireDefaultEngine(call);
             return {
                 kind: "data",
                 cpp:
-                    `bbl::picked_normal(${engine}, ${info.cpp}, ` +
+                    `bbl::picked_normal(${info.cpp}, ` +
                     `${
                         call.arguments.length === 2
                             ? context.compileCondition(call.arguments[1]!)

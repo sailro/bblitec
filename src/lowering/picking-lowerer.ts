@@ -254,10 +254,10 @@ PickingInfo gpu_pick(
     double x,
     double y) {
     const GpuPickerRecord& record = picker_record(engine, picker);
-    if (record.disposed || !engine.pick_hook) {
-        return PickingInfo{};
-    }
-    PickingInfo info = engine.pick_hook(picker, x, y);
+    PickingInfo info = record.disposed || !engine.pick_hook
+        ? PickingInfo{}
+        : engine.pick_hook(picker, x, y);
+    info.bind_engine(engine);
 ${detailed ? DETAILED_CONTINUATION : ""}    return info;
 }
 
@@ -287,6 +287,10 @@ MeshHandle picked_mesh(const PickingInfo& info) {
     return info.picked_kind == PickedNodeKind::mesh
         ? MeshHandle{info.picked_index}
         : MeshHandle{};
+}
+
+std::string picked_node_name(const PickingInfo& info) {
+    return picked_node_name(picking_engine(info), info);
 }
 
 js::Nullable<js::Tuple<3>> picked_point(
@@ -806,6 +810,12 @@ js::Nullable<js::Tuple<3>> picked_normal(
                  : std::array<float, 16>{},
         info,
         use_world_coordinates);
+}
+
+js::Nullable<js::Tuple<3>> picked_normal(
+    const PickingInfo& info,
+    bool use_world_coordinates) {
+    return picked_normal(picking_engine(info), info, use_world_coordinates);
 }
 `;
     }

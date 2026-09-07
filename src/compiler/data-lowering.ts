@@ -1,4 +1,5 @@
 import ts from "typescript";
+import { cppIdentifierPattern } from "../cpp-literals.js";
 import { pinnedHypotCall, pinnedMathSpelling } from "../lowering/pinned-operators.js";
 import { sceneRelativeSourceLabel } from "../source-location.js";
 import {
@@ -28,6 +29,7 @@ import {
     resizingArrayMethods,
 } from "./data-methods.js";
 import { isTrsVectorName } from "./assignments.js";
+import { pickedMeshHandleCpp } from "./properties.js";
 
 /**
  * The one-argument `Math` members scene code may call, each a `<cmath>`
@@ -778,7 +780,7 @@ export class DataLowerer {
                           ) as ts.ElementAccessExpression,
                       )
                     : undefined;
-            const owner =
+            let owner =
                 guardedOwner ??
                 this.compileDataPath(
                     unwrapped.expression,
@@ -806,6 +808,15 @@ export class DataLowerer {
                     : undefined);
             if (!owner) {
                 return undefined;
+            }
+            // A resource read can use both the value and its presence or
+            // owning-engine expression. Preserve one evaluation of computed
+            // receivers such as rows[index++].pickedMesh?.name.
+            if (mode === "read" && owner.dataType?.kind === "handle" &&
+                !cppIdentifierPattern.test(owner.cpp)) {
+                const temporary = this.context.allocateTemporaryCppName("property_owner");
+                this.context.emit(`[[maybe_unused]] const auto ${temporary} = ${owner.cpp};`);
+                owner = { ...owner, ...this.leafValue(temporary, owner.dataType) };
             }
             if (ts.isPropertyAccessChain(unwrapped)) {
                 const optional = this.optionalPropertyRead(
@@ -932,9 +943,7 @@ export class DataLowerer {
             present = `${temporary}.has_value()`;
             presentOwner = {
                 ...plainOwner,
-                kind: "data",
-                cpp: `(*${temporary})`,
-                dataType: owner.dataType.inner,
+                ...this.leafValue(`(*${temporary})`, owner.dataType.inner),
             };
         } else if (optionalFoundCpp !== undefined) {
             if (
@@ -1660,7 +1669,7 @@ export class DataLowerer {
                 ...(left.dataType !== undefined
                     ? { dataType: left.dataType }
                     : {}),
-                ...(left.engineCpp !== undefined
+                ...(left.engineCpp !== undefined && left.engineCpp === fallback.engineCpp
                     ? { engineCpp: left.engineCpp }
                     : {}),
                 ...(composedFound !== undefined
@@ -3065,6 +3074,9 @@ export class DataLowerer {
                           engineCpp:
                               this.context.defaultEngine()!,
                       }
+                    : {}),
+                ...(dataType.handle === "picking-info"
+                    ? { engineCpp: `bbl::picking_engine(${cpp})` }
                     : {}),
             };
         }
@@ -5751,7 +5763,7 @@ export class DataLowerer {
                     dataType.handle === "mesh" &&
                     rawValue.kind === "picked-node"
                 ) {
-                    return `bbl::picked_mesh(${rawValue.cpp})`;
+                    return pickedMeshHandleCpp(this.context, rawValue, this.context.defaultEngine(), unwrapped);
                 }
                 if (
                     dataType.handle ===

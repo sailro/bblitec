@@ -449,6 +449,18 @@ yet cover every morph-only/basic deformation combination, scene-authored
 skeleton, filter/ignore/discard option, thin instance/VAT id or result property.
 Viewport and unsupported multi-contributor cases refuse at their boundary.
 
+`PickingInfo` retains one result identity through nullable helper returns,
+records, arrays and Map/Set keys. The reached `hit`, `bu` and `bv` scalar
+fields share writes between aliases; point reads and picked-node/normal
+queries keep the existing property surface. Queries use the result's original
+engine, including after helper/container transport. Destroying or moving that
+engine makes subsequent mesh-name and normal queries throw; result payload
+reads remain available. This checked lifetime boundary does not retain native
+engines or meshes beyond their owner. Converting a transported result to a
+bare `Mesh` handle refuses because that handle cannot carry the checked owner;
+existing direct picks with a statically known entry engine retain their casts.
+Picked-point reads keep the existing tuple snapshot behavior.
+
 ## Display gizmos
 
 Display, editing and bounding-box gizmos share a generated utility-layer path.
