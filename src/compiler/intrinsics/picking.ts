@@ -107,7 +107,7 @@ export function compilePickingIntrinsic(
                     `${context.compileNumber(call.arguments[2]!, "double")})`,
                 ...(picker.engineCpp === undefined
                     ? {}
-                    : { engineCpp: picker.engineCpp }),
+                    : { engineCpp: picker.engineCpp, pickingEngineKnown: true as const }),
             };
         }
 

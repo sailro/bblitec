@@ -1670,7 +1670,11 @@ export class DataLowerer {
                     ? { dataType: left.dataType }
                     : {}),
                 ...(left.engineCpp !== undefined && left.engineCpp === fallback.engineCpp
-                    ? { engineCpp: left.engineCpp }
+                    ? {
+                        engineCpp: left.engineCpp,
+                        ...(left.pickingEngineKnown && fallback.pickingEngineKnown
+                            ? { pickingEngineKnown: true as const } : {}),
+                    }
                     : {}),
                 ...(composedFound !== undefined
                     ? { optionalFoundCpp: composedFound }
@@ -5763,7 +5767,7 @@ export class DataLowerer {
                     dataType.handle === "mesh" &&
                     rawValue.kind === "picked-node"
                 ) {
-                    return pickedMeshHandleCpp(this.context, rawValue, this.context.defaultEngine(), unwrapped);
+                    return pickedMeshHandleCpp(this.context, rawValue, unwrapped);
                 }
                 if (
                     dataType.handle ===

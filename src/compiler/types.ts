@@ -2123,6 +2123,10 @@ export interface Value {
    */
   handleIdentity?: string;
   engineCpp?: string;
+  /** A direct GPU readback belongs to the entry's single engine, including
+   * its lexical aliases. Data-transported results have a checked runtime
+   * owner instead and deliberately do not carry this compile-time fact. */
+  pickingEngineKnown?: true;
   /** A node's observable transform object retains its owning handle. */
   sceneNodeVector?: {
     owner: Value & { engineCpp: string };

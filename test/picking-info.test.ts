@@ -12,8 +12,29 @@ import { importPinnedModule } from "../src/pinned-shader-composer.js";
 import { optionalNativeFixtureTools, runNativeFixtureCompiler } from "./native-fixture.js";
 
 function program(twoEngines=false):string { return `
-import {createEngine,createSceneContext,createGpuPicker,pickAsync,disposePicker,getPickedNormal,
- type SceneContext,type PickingInfo} from "@babylonjs/lite";
+import {createEngine,createSceneContext,createUtilityLayer,createGpuPicker,pickAsync,disposePicker,getPickedNormal,
+ type EngineContext,type SceneContext,type PickingInfo,type Mesh} from "@babylonjs/lite";
+async function directPicks(engine:EngineContext):Promise<void> {
+ const scene=createSceneContext(engine);
+ const layer=createUtilityLayer(engine,scene);
+ const picker=createGpuPicker(layer.scene);
+ let calls=0;
+ const run=async():Promise<void>=>{
+  const info=await pickAsync(picker,1,0);
+  const alias=info;
+  if(!alias.hit || !alias.pickedMesh) throw new Error("direct hit");
+  const mesh=alias.pickedMesh as Mesh;
+  const implicit:Mesh[]=[info.pickedMesh!];
+  const explicit:Mesh[]=[mesh];
+  if(mesh.name!=="first" || implicit[0]!.name!=="first" || explicit[0]!==implicit[0]) throw new Error("aliased engine");
+  calls++;
+ };
+ const callbacks:Array<()=>Promise<void>>=[run];
+ await callbacks[0]!();
+ await callbacks[0]!();
+ if(calls!==2) throw new Error("callback state");
+ disposePicker(picker);
+}
 async function find(scene:SceneContext,canvas:HTMLCanvasElement,name:string):Promise<PickingInfo|null> {
  const picker=createGpuPicker(scene);
  for(let y=0;y<=12;y++) {
@@ -59,6 +80,7 @@ async function main() {
  if(read()!==1/3) throw new Error("retained result");
  alias.bu=0.75; alias.bv=0.5;
  if(first.bu!==0.75 || rows[0]!.bv!==0.5) throw new Error("shared scalar mutation");
+ await directPicks(firstEngine);
 }
 `; }
 
@@ -67,7 +89,7 @@ test("nullable picking results reuse data returns and preserve the unchanged sce
     assert.match(result.cpp, /Nullable<bbl::PickingInfo>/);
     assert.match(result.cpp, /return std::nullopt/);
     assert.match(result.cpp, /picked_normal\([^,]+, false\)/);
-    assert.equal(result.cpp.match(/bbl::gpu_pick\(/g)?.length, 4);
+    assert.equal(result.cpp.match(/bbl::gpu_pick\(/g)?.length, 5);
     assert.equal(result.cpp.match(/for \(;/g)?.length, 8);
     const fileName = "corpus/babylon-lite/lab/lite/src/lite/scene114.ts";
     const unchanged = compileSource(readFileSync(fileName, "utf8"), { fileName });
@@ -118,21 +140,23 @@ test("pinned result identity, nullable helpers and engine provenance satisfy the
     const pickAsync = async (picker:{scene:{engine:Host}},x:number,y:number) => {
         queries.push([x,y]);
         const info=createEmptyPickingInfo();
-        if(x!==160 || y!==60)return info;
+        if(!((x===160 && y===60) || (x===1 && y===0)))return info;
         // Only GPU readback is a seam. The result/default factory and normal
         // helper are the installed pin, and the source assertions are shared.
         Object.assign(info,{hit:true,pickedMesh:picker.scene.engine.mesh,pickedPoint:[1,2,3],faceId:0,bu:1/3,bv:1/7});
         return info;
     };
-    const run = new Function("createEngine","createSceneContext","createGpuPicker","pickAsync","disposePicker","getPickedNormal","document",`${javascript}\nreturn main();`);
-    await run(createEngine,createSceneContext,createGpuPicker,pickAsync,()=>{},pin.getPickedNormal,
+    // Graphics factories expose only engine/scene association at this seam.
+    const createUtilityLayer = (engine:Host) => ({scene:createSceneContext(engine)});
+    const run = new Function("createEngine","createSceneContext","createUtilityLayer","createGpuPicker","pickAsync","disposePicker","getPickedNormal","document",`${javascript}\nreturn main();`);
+    await run(createEngine,createSceneContext,createUtilityLayer,createGpuPicker,pickAsync,()=>{},pin.getPickedNormal,
         {getElementById:()=>({clientWidth:1280,clientHeight:720})});
-    assert.deepEqual(queries,[20,20,221,20].flatMap(count=>
-        Array.from({length:count},(_,index)=>[(index%17)*80,Math.floor(index/17)*60])));
+    assert.deepEqual(queries,[...[20,20,221,20].flatMap(count=>
+        Array.from({length:count},(_,index)=>[(index%17)*80,Math.floor(index/17)*60])),[1,0],[1,0]]);
 });
 
 const tools=optionalNativeFixtureTools(false);
-test("native picking preserves identity, query order and checked engine lifetime",{skip:!tools},()=>{
+test("native picking preserves identity, aliased callback engines, query order and checked lifetime",{skip:!tools},()=>{
     const output=resolve("artifacts/picking-info-check");
     const headers=join(output,"bblite/upstream");
     mkdirSync(headers,{recursive:true});

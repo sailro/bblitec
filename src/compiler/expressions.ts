@@ -321,7 +321,7 @@ export class ExpressionLowerer {
             if (asserted.kind === "picked-node") {
                 return {
                     kind: "mesh",
-                    cpp: pickedMeshHandleCpp(this.context, asserted, this.context.requireDefaultEngine(expression), expression),
+                    cpp: pickedMeshHandleCpp(this.context, asserted, expression),
                     ...(asserted.engineCpp
                         ? { engineCpp: asserted.engineCpp }
                         : {}),

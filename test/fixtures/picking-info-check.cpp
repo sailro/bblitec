@@ -27,6 +27,15 @@ Engine create_engine(EngineOptions options) {
     return engine;
 }
 Scene create_scene_context(Engine& engine) { Scene scene; scene.engine=&engine; return scene; }
+// Graphics factories expose only engine/scene association at this seam.
+UtilityLayerHandle create_utility_layer(Engine& engine, Scene&) {
+    auto layer = std::make_unique<UtilityLayerRecord>();
+    layer->scene = create_scene_context(engine);
+    const auto index = static_cast<std::uint32_t>(engine.utility_layers.size());
+    engine.utility_layers.push_back(std::move(layer));
+    return UtilityLayerHandle{index};
+}
+Scene& utility_layer_scene(Engine& engine, UtilityLayerHandle layer) { return engine.utility_layers.at(layer.value)->scene; }
 std::vector<float> mesh_cpu_positions(const Engine&, MeshHandle) { return {0,0,0,1,0,0,0,1,0}; }
 std::vector<float> mesh_cpu_normals(const Engine& engine, MeshHandle) {
     return engine.options.title=="first"?std::vector<float>{1,0,0,1,0,0,1,0,0}:std::vector<float>{0,1,0,0,1,0,0,1,0};
@@ -53,6 +62,9 @@ int main() {
                 static_cast<double>((index % 17) * 80),
                 static_cast<double>((index / 17) * 60)}));
         }
+    }
+    for (int call = 0; call < 2; ++call) {
+        assert((picking_queries.at(query++) == std::array<double,2>{1,0}));
     }
     assert(picking_queries.size() == query);
     {

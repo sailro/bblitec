@@ -1071,6 +1071,9 @@ export function readProperty(
       ? { textureStorage: rule.textureStorage }
       : {}),
     ...(engineCpp ? { engineCpp } : {}),
+    ...(rule.value === "picked-node" && owner.pickingEngineKnown
+      ? { pickingEngineKnown: true as const }
+      : {}),
     ...(rule.carriesScenePbrMaterial &&
     owner.scenePbrMaterialIndex !== undefined
       ? {
@@ -1154,15 +1157,15 @@ export function readProperty(
 }
 
 /** A bare MeshHandle can carry only the entry's statically known engine.
+ * Its lexical aliases may have different emitted names.
  * Data-transported picking results instead own a checked engine association;
  * dropping that carrier would lose both provenance and lifetime checks. */
 export function pickedMeshHandleCpp(
   context: Pick<PropertyContext, "fail">,
   value: Value,
-  sourceEngineCpp: string | undefined,
   site: ts.Node,
 ): string {
-  if (!sourceEngineCpp || value.engineCpp !== sourceEngineCpp) {
+  if (!value.engineCpp || !value.pickingEngineKnown) {
     context.fail(site,
       "A data-transported PickingInfo cannot become a bare Mesh handle; " +
       "read pickedMesh.name or getPickedNormal from the result so its checked engine owner travels with it.");
