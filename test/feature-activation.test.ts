@@ -399,6 +399,7 @@ function familyInputs(): FeatureActivationInputs {
             shadowBindings: [],
             caster: null,
             textures: [],
+            inputs: [],
             backFaceCulling: true,
             alphaBlending: false,
             envBindings: null,

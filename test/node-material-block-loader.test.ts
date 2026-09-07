@@ -9,6 +9,7 @@ import { executeModuleGraph } from "../src/executed-module-graph.js";
 import { LoweringContext } from "../src/lowering/context.js";
 import { FactoryLowerer } from "../src/lowering/factory-lowerer.js";
 import { composeNodeMaterial } from "../src/pinned-node-material.js";
+import { pinnedNodeVariantsHeader } from "../src/pinned-node-material-cpp.js";
 
 const scene83 = "corpus/babylon-lite/lab/lite/src/lite/scene83.ts";
 const scene83Graph =
@@ -96,6 +97,13 @@ test("executes pinned geometry delegation while preserving ordinary graphs and l
         geometryTasks: [{ index: 0, attachments: ["WORLD_POSITION", "VIEW_NORMAL", "ALBEDO"], emitColor: false }],
     });
     assert.deepEqual(composed.textures.map(({ name }) => name), ["albedo"]);
+    assert.deepEqual(composed.inputs, [{ name: "albedo", type: "texture2d" }]);
+    const inputHeader = pinnedNodeVariantsHeader("input metadata", [0, 1].map((index) => ({
+        index, vertexStem: `node-${index}.vert`, fragmentStem: `node-${index}.frag`, composed,
+    })), []);
+    assert.match(inputHeader, /std::array<NodeVariantInput, 2> node_variant_inputs/);
+    assert.match(inputHeader, /\{0, "albedo", "texture2d"\}/);
+    assert.match(inputHeader, /\{1, "albedo", "texture2d"\}/);
     assert.equal(composed.geometryViews[0]!.colorTargetCount, 3);
     assert.deepEqual(composed.geometryViews[0]!.attributes.map(({ name }) => name),
         ["position", "normal", "uv"]);

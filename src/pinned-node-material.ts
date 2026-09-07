@@ -108,6 +108,8 @@ export interface ComposedNodeMaterial {
     attributes: readonly ComposedNodeAttribute[];
     /** The texture pairs the graph declares, in the pin's allocation order. */
     textures: readonly ComposedNodeTextureBinding[];
+    /** Public input handles, as the actual pinned factory exposes them. */
+    inputs: readonly { name: string; type: string }[];
     /** `backFaceCulling` as the graph's JSON declares it. */
     backFaceCulling: boolean;
     /** Whether the graph selects BJS alpha-combine mode for its draw. */
@@ -321,6 +323,7 @@ interface PinnedNodeMaterial {
         string,
         { _offsetBytes: number; _values: Float32Array }
     >;
+    inputs: Readonly<Record<string, { type: string }>>;
 }
 
 interface PinnedNodeMaterialModule {
@@ -738,6 +741,7 @@ export async function composeNodeMaterial(
             texture: binding._texBinding,
             sampler: binding._sampBinding,
         })),
+        inputs: Object.entries(material.inputs).map(([name, input]) => ({ name, type: input.type })),
         backFaceCulling: material._graph.backFaceCulling,
         alphaBlending: material._graph.needsAlphaBlending,
         envBindings: env
