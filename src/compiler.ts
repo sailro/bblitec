@@ -213,6 +213,7 @@ import {
     callArgumentIsReadOnly,
     isSupportedFunction,
     parameterIsMutated,
+    retainedNativeMutationTarget,
     parameterIsReadOnly,
     recursiveStorageEscapes,
     writesThroughTrackedRoot,
@@ -1347,7 +1348,21 @@ class Compiler
      */
     private predeclareStoredObjectReferences(): void {
         const visit = (node: ts.Node): void => {
-            if (
+            const target = retainedNativeMutationTarget(this.symbols, node);
+            if (target) {
+                const targetType = this.checker.getTypeAtLocation(target);
+                // Existing accessor records keep their getter/setter lowering.
+                // Plain targets are retained by the group's generated writer.
+                const hasAccessors = targetType.getProperties().some((property) =>
+                    property.declarations?.some((declaration) =>
+                        ts.isAccessor(declaration) || ts.isMethodDeclaration(declaration)));
+                if (!hasAccessors) {
+                    const dataType = this.dataTypes.fromTsType(targetType, target);
+                    if (dataType?.kind === "struct") {
+                        this.dataTypes.markStoredObjectReferences(dataType);
+                    }
+                }
+            } else if (
                 (ts.isInterfaceDeclaration(node) ||
                     ts.isTypeAliasDeclaration(node)) &&
                 node.name
@@ -3945,6 +3960,13 @@ class Compiler
                             storingDataMethods.has(node.expression.name.text) &&
                             node.arguments.some(scan.containsAlias)
                         ) {
+                            return true;
+                        }
+                        const retainedTarget = retainedNativeMutationTarget(this.symbols, node);
+                        if (retainedTarget && isAlias(scan, retainedTarget)) {
+                            // The retained writer mutates this object later.
+                            // Choose its shared home before a typed alias can
+                            // otherwise snapshot the compile-time record.
                             return true;
                         }
                         const called =

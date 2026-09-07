@@ -306,9 +306,8 @@ export function compileAnimationIntrinsic(
                 "animation-clip",
                 call.arguments[2]!,
             );
-            // The clip's paths name the object kind they resolve
-            // against, so the target is checked against them rather than
-            // fixed: a mesh clip binds a mesh, a camera clip a camera.
+            // Plain objects resolve their fields independently of native
+            // mesh/camera lane names; a clip can bind either kind of target.
             const targetKind =
                 clip.animationTargetKind ?? "mesh";
             const paths = clip.animationPaths ?? [];
@@ -320,12 +319,7 @@ export function compileAnimationIntrinsic(
             }
             let targetsCpp: string;
             let engine: string;
-            if (targetKind === "record") {
-                context.expectKind(
-                    target,
-                    "record",
-                    call.arguments[1]!,
-                );
+            if (target.kind === "data" || target.kind === "record") {
                 const compiled =
                     context.compilePropertyAnimationTargets(
                         target,

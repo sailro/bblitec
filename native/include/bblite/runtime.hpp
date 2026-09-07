@@ -959,8 +959,8 @@ enum class PropertyAnimationComponent {
 /**
  * What a property clip is bound to. Upstream resolves a dotted path
  * against whatever object the caller passed, so the target and the path
- * travel together; here the reached objects are a mesh and a camera, and
- * each path belongs to one of them.
+ * travel together. Mesh and camera handles use their native lane writers;
+ * data objects and accessor records retain scalar callback writers.
  */
 enum class PropertyAnimationTargetKind {
     mesh,
@@ -973,6 +973,10 @@ struct PropertyAnimationTarget {
         PropertyAnimationTargetKind::mesh;
     std::uint32_t index = 0;
     js::Callback<void(float)> write_scalar;
+    // A plain-data writer retains this owner through its managed closure.
+    // The mixer keys the pin's resolved (object, property) pair.
+    const void* object_identity = nullptr;
+    std::string property;
     void gc_trace(const js::TraceVisitor& visitor) const { visitor(write_scalar); }
 };
 

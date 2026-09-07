@@ -8,7 +8,8 @@
 // animation.ts calls these through its context.
 import ts from "typescript";
 import type { Value } from "./types.js";
-import { renderClosure, type CapturedClosure } from "./closure-captures.js";
+import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "./closure-captures.js";
+import type { DataTypeRegistry } from "./data-types.js";
 
 export interface PropertyAnimationContext {
     readonly sourceFile: ts.SourceFile;
@@ -38,6 +39,7 @@ export interface PropertyAnimationContext {
 }
 
 export interface PropertyAnimationTargetContext {
+    readonly dataTypes: DataTypeRegistry;
     fail(node: ts.Node, message: string): never;
     allocateTemporaryCppName(label: string): string;
     captureManagedClosureLines(
@@ -52,9 +54,14 @@ export interface PropertyAnimationTargetContext {
     ): void;
     callbackIdentity(declaration: ts.Node, owner: Value | undefined): number;
     requireDefaultEngine(node: ts.Node): string;
+    emit(line: string): void;
+    useNativeValue(value: Value): void;
+    registerNativeBinding(name: string): NativeCaptureBinding;
+    cppString(value: string): string;
+    materializeEscapingValue(value: Value, label: string, node?: ts.Expression): Value;
 }
 
-/** Callback writers for record-backed animation paths. */
+/** Callback writers bound to the owner resolved when the group is created. */
 export class PropertyAnimationTargetLowerer {
     compile(
         context: PropertyAnimationTargetContext,
@@ -65,14 +72,24 @@ export class PropertyAnimationTargetLowerer {
         const bindings = paths.map((path) => {
             const segments = path.split(".");
             const property = segments.pop();
-            if (!property || segments.length === 0) {
+            if (!property || segments.some((segment) => !segment)) {
                 context.fail(
                     node,
-                    `Record property animation path '${path}' must be dotted.`,
+                    `Property animation path '${path}' must contain nonempty property names.`,
                 );
             }
             let owner = target;
             for (const segment of segments) {
+                if (owner.dataType?.kind === "struct") {
+                    const field = context.dataTypes.structField(owner.dataType.name, segment, node);
+                    if (!context.dataTypes.isReferenceStruct(owner.dataType.name)) {
+                        context.fail(node, `Property animation path '${path}' requires shared object ownership.`);
+                    }
+                    context.useNativeValue(target);
+                    context.emit(`if (!${owner.cpp}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`);
+                    owner = { kind: "data", cpp: `${owner.cpp}->${field.name}`, dataType: field.type };
+                    continue;
+                }
                 const next =
                     owner.kind === "record"
                         ? owner.recordProperties?.[segment]
@@ -85,6 +102,50 @@ export class PropertyAnimationTargetLowerer {
                 }
                 owner = next;
             }
+            if (owner.dataType?.kind === "struct") {
+                if (!context.dataTypes.isReferenceStruct(owner.dataType.name)) {
+                    context.fail(node, `Property animation path '${path}' requires shared object ownership.`);
+                }
+                const field = context.dataTypes.structField(owner.dataType.name, property, node);
+                if (field.type.kind !== "number" || field.readOnly) {
+                    context.fail(node, `Property animation path '${path}' must end at a mutable numeric data field.`);
+                }
+                if (resolvePropertyAnimationPath(path)?.stride !== 1) {
+                    context.fail(node, `Property animation path '${path}' requires a scalar track for a numeric data field.`);
+                }
+                const captured = context.allocateTemporaryCppName("property_animation_owner");
+                context.useNativeValue(target);
+                context.emit(`const auto ${captured} = ${owner.cpp};`);
+                context.emit(`if (!${captured}) throw std::runtime_error(${context.cppString(`Property animation path '${path}' requires an object owner.`)});`);
+                const binding = context.registerNativeBinding(captured);
+                const argument = context.allocateTemporaryCppName("property_animation_value");
+                const dataType = owner.dataType;
+                const closure = context.captureManagedClosureLines(() => {
+                    context.useNativeValue({ kind: "data", cpp: captured, dataType,
+                        nativeCaptures: [binding] });
+                    context.emit(`${captured}->${field.name} = static_cast<double>(${argument});`);
+                });
+                return `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
+                    `${renderClosure(closure, `float ${argument}`)}, ${captured}.get(), ${context.cppString(property)}}`;
+            }
+            if (owner.kind === "record" && owner.recordProperties?.[property]?.kind === "number" &&
+                !owner.recordSetters?.[property]) {
+                if (resolvePropertyAnimationPath(path)?.stride !== 1) {
+                    context.fail(node, `Property animation path '${path}' requires a scalar track for a numeric data field.`);
+                }
+                const retained = context.materializeEscapingValue(owner, "property_animation_owner");
+                const field = retained.recordProperties?.[property];
+                if (!field?.sharedRecordScalar || !field.sharedStorageCpp) {
+                    context.fail(node, `Property animation path '${path}' has no retained scalar storage.`);
+                }
+                const argument = context.allocateTemporaryCppName("property_animation_value");
+                const closure = context.captureManagedClosureLines(() => {
+                    context.useNativeValue(field);
+                    context.emit(`${field.cpp} = static_cast<double>(${argument});`);
+                });
+                return `bbl::PropertyAnimationTarget{bbl::PropertyAnimationTargetKind::callback, 0u, ` +
+                    `${renderClosure(closure, `float ${argument}`)}, ${field.sharedStorageCpp}.get(), ${context.cppString(property)}}`;
+            }
             const setter =
                 owner.kind === "record"
                     ? owner.recordSetters?.[property]
@@ -92,7 +153,7 @@ export class PropertyAnimationTargetLowerer {
             if (!setter) {
                 context.fail(
                     node,
-                    `Property animation path '${path}' must end at a scalar record setter.`,
+                    `Property animation path '${path}' must end at a mutable numeric data field or scalar record setter.`,
                 );
             }
             const identity = context.callbackIdentity(setter, owner);
@@ -251,12 +312,9 @@ export interface ResolvedPropertyAnimationPath {
 }
 
 /**
- * One path, resolved the way `resolvePropertyBinding` resolves it: the
- * whole lane, or one component of it.
- *
- * The walk splits on every dot upstream; no lane name contains one, so a
- * path of more than two parts has no lane to land on and resolves to
- * nothing here exactly as it throws there.
+ * Native lanes retain their whole-vector or component writers. Other
+ * static property names use scalar callback tracks; group construction
+ * validates the actual target's path and retains its resolved owner.
  */
 export function resolvePropertyAnimationPath(
     path: string,
@@ -273,6 +331,9 @@ export function resolvePropertyAnimationPath(
         };
     }
     const separator = path.lastIndexOf(".");
+    if (separator < 0 && /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(path)) {
+        return { lane: propertyAnimationLanes.get("__record_scalar__")!, component: "whole_lane", stride: 1, quaternion: false };
+    }
     if (separator < 0) return undefined;
     const lane = propertyAnimationLanes.get(path.slice(0, separator));
     const component = path.slice(separator + 1);
@@ -469,21 +530,14 @@ export function compilePropertyAnimationClip(
         });
         return `bbl::PropertyAnimationTrack{bbl::PropertyAnimationPath::${binding.lane.native}, bbl::PropertyAnimationComponent::${binding.component}, bbl::PropertyAnimationInterpolation::${interpolation}, ${binding.quaternion}, {${compiledKeys.join(", ")}}}`;
     });
-    if (targets.size > 1) {
-        // Upstream resolves each path against the one object the group
-        // was bound to, so a clip whose paths name different objects
-        // could never have bound at all.
-        context.fail(
-            tracks,
-            "Property animation tracks in one clip must animate the same object kind.",
-        );
-    }
     const name = context.compileStaticString(nameExpression);
     return {
         cpp: `bbl::create_property_animation_clip(${context.cppString(name)}, {${compiledTracks.join(", ")}}, ${frameRate})`,
         frameRate,
         duration: "0.0f",
-        target: [...targets][0] ?? "mesh",
+        // A plain object may have scalar fields named by several native
+        // lanes. Such clips require object binding at group construction.
+        target: targets.size === 1 ? [...targets][0]! : "record",
         paths,
     };
 }

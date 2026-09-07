@@ -11,6 +11,7 @@ import { renderClosure, type CapturedClosure, type NativeCaptureBinding } from "
 import { readOnlyDataMethods, storingDataMethods } from "./data-methods.js";
 import { nativeReturnTsType } from "./native-return-type.js";
 import { staticNumberValue, type PositiveIntegerContext } from "./option-helpers.js";
+import { CompilerSymbols } from "./symbols.js";
 
 type Fail = (node: ts.Node, message: string) => never;
 export type SupportedFunction =
@@ -202,6 +203,17 @@ export interface AliasedMutationScan {
     readonly addAlias: (symbol: ts.Symbol | undefined) => void;
 }
 
+/** A native API that retains an object and writes it after the call returns. */
+export function retainedNativeMutationTarget(
+    symbols: CompilerSymbols,
+    node: ts.Node,
+): ts.Expression | undefined {
+    return ts.isCallExpression(node) && ts.isIdentifier(node.expression) &&
+        symbols.importedName(node.expression) === "createPropertyAnimationGroup"
+        ? node.arguments[1]
+        : undefined;
+}
+
 /**
  * The alias-set + fixed-point skeleton every inferred-mutation walk shares.
  *
@@ -309,6 +321,7 @@ export function parameterIsMutated(
     }
     if (active.has(symbol)) return false;
     active.add(symbol);
+    const symbols = new CompilerSymbols(checker);
     const mutated = aliasedMutationScan(
         parameter,
         (name) => checker.getSymbolAtLocation(name),
@@ -323,6 +336,8 @@ export function parameterIsMutated(
                     return root !== undefined && scan.namesAlias(root);
                 };
                 if (writesThroughRoot(node, rootNamesAlias)) return true;
+                const retainedTarget = retainedNativeMutationTarget(symbols, node);
+                if (retainedTarget && rootNamesAlias(retainedTarget)) return true;
                 if (
                     ts.isBinaryExpression(node) &&
                     node.operatorToken.kind === ts.SyntaxKind.EqualsToken &&

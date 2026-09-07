@@ -1095,6 +1095,8 @@ PropertyAnimationBucket& track_bucket(
         if (
             candidate.target.kind == target.kind &&
             candidate.target.index == target.index &&
+            candidate.target.object_identity == target.object_identity &&
+            candidate.target.property == target.property &&
             candidate.property == track.path &&
             candidate.component == track.component) {
             return candidate;
@@ -1889,8 +1891,7 @@ void enable_animation_blending(
         // own width where the path names the lane, and one where it names
         // a component of it. Both come out of the same lane table the clip
         // lowerer resolves paths and validates keys against.
-        const trackArity = blending
-            ? `
+        const trackArity = `
 constexpr std::size_t track_stride(
     PropertyAnimationPath path,
     PropertyAnimationComponent component) {
@@ -1906,8 +1907,7 @@ ${[...propertyAnimationLanes.values()]
     }
     return 0;
 }
-`
-            : "";
+`;
         const mixerSource = blending
             ? this.lowerWeightedPointerMixer(msPerSecond)
             : "";
@@ -2530,6 +2530,17 @@ PropertyAnimationGroup create_property_animation_group(
     if (targets.size() != clip.tracks.size()) {
         throw std::runtime_error(
             "Property animation target count must match the clip tracks.");
+    }
+    // resolvePropertyBinding selects the writer from the actual target. Keep
+    // the source clip reusable when a native lane also binds plain data.
+    for (std::size_t index = 0; index < targets.size(); ++index) {
+        if (targets[index].kind != PropertyAnimationTargetKind::callback) continue;
+        auto& track = clip.tracks[index];
+        if (track_stride(track.path, track.component) != 1) {
+            throw std::runtime_error("Property animation callback target requires a scalar track.");
+        }
+        track.path = PropertyAnimationPath::record_scalar;
+        track.component = PropertyAnimationComponent::whole_lane;
     }
     auto group =
         js::make_gc_shared<PropertyAnimationGroupRecord>();
