@@ -37,6 +37,8 @@ import { join } from "node:path";
  * | 37 | SDL_GPU | differ, worst MAD 0.000059, max 1 | byte-identical |
  * | 120 | Dawn | differ | byte-identical |
  * | 120 | SDL_GPU | differ, worst MAD 0.000250, max 2 | byte-identical |
+ * | 121 | SDL_GPU | differ, worst MAD 0.000636, max 2 | byte-identical |
+ * | 121 | Dawn | differ, worst MAD 0.000642, max 2 | byte-identical |
  * | 122 | Dawn | differ, worst MAD 0.000155, max 1 | byte-identical |
  * | 122 | SDL_GPU | differ, worst MAD 0.000274, max 1 | byte-identical |
  * | 123 | Dawn | differ, worst MAD 0.000856, max 1 | byte-identical |
@@ -105,6 +107,14 @@ import { join } from "node:path";
  * published rows are 0.001 against thresholds of 0.003 and 0.007, about
  * four and eight times the band.
  *
+ * Scene 121 was measured at adoption on 2026-09-07. All four re-runs of
+ * five at 4x vary on each backend, worst MAD 0.000636 on SDL_GPU and
+ * 0.000642 on Dawn, max 2. Five runs per backend at one sample are
+ * byte-identical. Every capture uses the same source and generated build
+ * stamp; retained row bytes, bounds and update version also remain exact
+ * through idle and orbit checks. This reproduces the splat family's
+ * multisample repeatability boundary without changing its image gates.
+ *
  * Scene 122 joined on 2026-09-07 after a neutrality comparison found a
  * 5.3e-5 movement in its Dawn full MAD. Five consecutive runs per backend
  * reproduce the bands above on one unchanged binary; five per backend at
@@ -140,6 +150,7 @@ export const wobbleScenes: ReadonlyMap<string, ReadonlySet<string>> = new Map([
     // collapse pose rolls 0.005--0.006 / 0.033--0.037 between runs.
     ["scene44", new Set(["dawn", "sdl_gpu"])],
     ["scene120", new Set(["dawn", "sdl_gpu"])],
+    ["scene121", new Set(["dawn", "sdl_gpu"])],
     ["scene122", new Set(["dawn", "sdl_gpu"])],
     ["scene123", new Set(["dawn", "sdl_gpu"])],
     ["scene124", new Set(["dawn", "sdl_gpu"])],
